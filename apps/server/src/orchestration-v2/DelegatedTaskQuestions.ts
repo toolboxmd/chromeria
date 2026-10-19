@@ -113,7 +113,7 @@ export const reconcileDelegatedTaskQuestion = Effect.fnUntraced(function* <E>(
   }
 });
 
-/** Remote metadata enters the same durable queue owner without a foreign local child lookup. */
+/** Called under the parent dispatch lock, including recovery. Foreign children remain qualified. */
 export const reconcileRemoteDelegatedTaskQuestions = Effect.fnUntraced(function* <E>(
   task: OrchestrationV2Subagent,
   dispatch: (command: OrchestrationV2ServerCommand) => Effect.Effect<unknown, E>,
@@ -145,9 +145,14 @@ export const reconcileRemoteDelegatedTaskQuestions = Effect.fnUntraced(function*
       )
     )
       continue;
-    const key = `${task.id}:${request.environmentId}:${request.threadId}:${request.requestId}:${request.revision}`;
+    // Revision changes describe the same request, not another reason to wake the parent.
+    const key = `${task.id}:${request.environmentId}:${request.threadId}:${request.requestId}`;
     const messageId = MessageId.make(`message:remote-delegated-question:${key}`);
     pending.add(messageId);
+    // Older builds used revision-qualified identities. Preserve their accepted delivery.
+    const prior = parent.messages.filter((message) => message.id.startsWith(`${messageId}:`));
+    for (const message of prior) pending.add(message.id);
+    if (prior.length > 0) continue;
     const receipts = yield* CommandReceiptStoreV2;
     let commandId = CommandId.make(`server:remote-delegated-question:${key}`);
     let attempt = 0;
@@ -170,7 +175,7 @@ export const reconcileRemoteDelegatedTaskQuestions = Effect.fnUntraced(function*
       commandId,
       threadId: task.threadId,
       messageId,
-      text: `Delegated task ${task.id} has a pending ${request.kind === "user_input" ? "question" : "approval"} in ${remote.label}. Use t3_pending_request_read with threadId ${task.threadId}, requestId ${request.requestId}, requestTarget ${targetText}, requestRoute ${routeText}. Answer with t3_pending_request_respond using the same qualified target and route, expectedRevision from the read, and one stable clientRequestId for that answer. It may already have been answered or dismissed.`,
+      text: `Delegated task "${reportLabel(task.title?.trim() || task.prompt) ?? task.id}" (${task.id}), child ${request.threadId}, has a pending ${request.kind === "user_input" ? "question" : "approval"} in ${remote.label}.${request.detail === undefined ? "" : ` Request: ${request.detail}`} Use t3_pending_request_read with threadId ${task.threadId}, requestId ${request.requestId}, requestTarget ${targetText}, requestRoute ${routeText}. Answer with t3_pending_request_respond using the same qualified target and route, expectedRevision from the read, and one stable clientRequestId for that answer. It may already have been answered or dismissed.`,
       notification: {
         source: { kind: "delegated_task", taskIds: [task.id] },
         outcome: "updated",
@@ -194,7 +199,8 @@ export const reconcileRemoteDelegatedTaskQuestions = Effect.fnUntraced(function*
     if (
       run.status !== "queued" ||
       !priorIds.has(run.userMessageId) ||
-      pending.has(run.userMessageId)
+      pending.has(run.userMessageId) ||
+      (eligible && (remote.availability !== "current" || remote.snapshot.incomplete))
     )
       continue;
     yield* dispatch({

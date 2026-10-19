@@ -104,8 +104,8 @@ flowchart TD
     PAR["Peer attachments and request recovery"]
     %% PAR: #382 PR #563
     RTL --> PAR
-    RPR["Remote descendant requests"]
-    %% RPR: #369 #379 #532 PR #420 PR #539
+    RPR["Remote descendant requests and notices"]
+    %% RPR: #369 #379 #532 PR #420 PR #539 PR #531
     RTL --> RPR
     PAR --> RPR
     RBD["Remote browser and device control"]

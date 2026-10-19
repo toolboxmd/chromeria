@@ -168,7 +168,10 @@ import {
 } from "./RunGroups.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
-import { reconcileDelegatedTaskQuestion as deliverDelegatedTaskQuestion } from "./DelegatedTaskQuestions.ts";
+import {
+  reconcileDelegatedTaskQuestion as deliverDelegatedTaskQuestion,
+  reconcileRemoteDelegatedTaskQuestions,
+} from "./DelegatedTaskQuestions.ts";
 import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimit.ts";
 import {
   applyToProjection,
@@ -13922,6 +13925,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       yield* mapDispatchError(command)(offerDelegatedCompletionDeliveries(command.parentThreadId));
     }
 
+    if (
+      command.type === "delegated_task.remote.observe" ||
+      command.type === "delegated_task.remote.complete"
+    ) {
+      yield* reconcileRemoteRequestsWithParentLockHeld(command.parentThreadId, command.taskId);
+    }
+
     return {
       sequence: committed.receipt.resultSequence,
       storedEvents: committed.storedEvents,
@@ -13951,6 +13961,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? dispatch
         : threadDispatch.withLock(parentThreadId, dispatch);
     });
+
+  const reconcileRemoteRequestsWithParentLockHeld = (parentThreadId: ThreadId, taskId: NodeId) =>
+    Effect.gen(function* () {
+      const parent = yield* projectionStore.getThreadRecords(parentThreadId, ["subagents"]);
+      const task = parent.subagents.find(
+        (task) => task.id === taskId && task.origin === "app_owned",
+      );
+      if (task === undefined) return;
+      yield* reconcileRemoteDelegatedTaskQuestions(task, dispatchWithReceiptEffect).pipe(
+        Effect.provideService(ProjectionStoreV2, projectionStore),
+        Effect.provideService(CommandReceiptStoreV2, commandReceipts),
+      );
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Failed to reconcile remote descendant requests", {
+          parentThreadId,
+          taskId,
+          cause,
+        }),
+      ),
+    );
 
   const reconcileDelegatedTaskQuestionWithParentLockHeld = (
     task: OrchestrationV2Subagent,
@@ -14164,6 +14195,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // Finalization dismisses cancelled/interrupted child questions unless a
     // continuation still owns them. Do that before an idle parent can start a wake.
     yield* requestWake();
+    yield* projectionStore.getOpenRemoteDelegatedTasks.pipe(
+      Effect.flatMap((tasks) =>
+        Effect.forEach(
+          tasks,
+          (task) =>
+            threadDispatch.withLock(
+              task.parentThreadId,
+              reconcileRemoteRequestsWithParentLockHeld(task.parentThreadId, task.taskId),
+            ),
+          { discard: true },
+        ),
+      ),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Failed to inspect remote descendant requests during recovery", {
+          cause,
+        }),
+      ),
+    );
     yield* projectionStore.getRecoveryThreadIds("delegated-completions").pipe(
       Effect.tap((threadIds) =>
         Effect.annotateCurrentSpan("recovery.delegatedCompletionThreads", threadIds.length),

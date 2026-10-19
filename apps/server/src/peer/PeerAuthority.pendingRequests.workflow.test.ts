@@ -63,6 +63,129 @@ import {
   typed383Pair,
 } from "./PeerAuthority.workflow.fixture.ts";
 
+it.live.each(["question", "approval"] as const)(
+  "pending369 notice: peer observation carries %s content into one parent notice",
+  (kind) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(descriptorOf("notice-a", "A", { peerAuthority: 1 }), "disk", {
+          attachmentRequests: true,
+          productionKernel: true,
+        });
+        const b = yield* makeNode(descriptorOf("notice-b", "B", { peerAuthority: 1 }), "disk", {
+          attachmentRequests: true,
+          productionKernel: true,
+        });
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("notice-parent");
+        yield* seedParent(a, parent);
+        const child = yield* delegate(a, b, parent, "notice-child");
+        yield* activate(b, child.childId);
+        const requestId = yield* seedPending369(b, child.childId);
+        const pending = yield* b.threads.getThreadRecords(child.childId, [
+          "runtimeRequests",
+          "turnItems",
+          "providerThreads",
+        ]);
+        const item = pending.turnItems.find(
+          (item) => item.type === "user_input_request" && item.requestId === requestId,
+        );
+        if (item?.type !== "user_input_request") return yield* Effect.die("Expected question item");
+        const now = yield* DateTime.now;
+        yield* b.sink.write({
+          events: [
+            {
+              id: EventId.make("notice:request-content"),
+              type: "turn-item.updated",
+              threadId: child.childId,
+              occurredAt: now,
+              payload:
+                kind === "question"
+                  ? {
+                      ...item,
+                      questions: [
+                        {
+                          id: "color",
+                          header: "Color",
+                          question: "Which color?",
+                          options: [{ label: "Blue", description: "Use blue" }],
+                        },
+                      ],
+                    }
+                  : {
+                      ...item,
+                      type: "approval_request",
+                      requestKind: "command",
+                      prompt: "npm run build",
+                      options: [{ decision: "accept", label: "Approve build" }],
+                    },
+            },
+            ...(kind === "approval"
+              ? [
+                  {
+                    id: EventId.make("notice:approval-runtime"),
+                    type: "runtime-request.updated" as const,
+                    threadId: child.childId,
+                    occurredAt: now,
+                    payload: {
+                      ...pending.runtimeRequests.find((request) => request.id === requestId)!,
+                      kind: "command" as const,
+                      responseCapability: {
+                        type: "live" as const,
+                        providerSessionId: pending.providerThreads[0]!.providerSessionId!,
+                      },
+                    },
+                  },
+                ]
+              : []),
+          ],
+        });
+        const detail = kind === "question" ? "Which color?" : "npm run build";
+        const option = kind === "question" ? "Blue" : "Approve build";
+        const task = (yield* a.threads.getThreadRecords(parent, ["subagents"])).subagents.find(
+          (task) => task.id === child.taskId,
+        )!;
+        const connection = yield* a.reconnect();
+        const snapshot = yield* connection.peers.taskLifecycle!(
+          b.environmentId,
+          task.remoteChild!.launch!.linkIdentity,
+          {
+            pair: {
+              parentEnvironmentId: a.environmentId,
+              parentThreadId: parent,
+              taskId: task.id,
+              childEnvironmentId: b.environmentId,
+              childThreadId: child.childId,
+              childRunId: null,
+            },
+            operation: { type: "snapshot", after: 0, wait: false },
+          },
+        );
+        expect(snapshot.type).toBe("snapshot");
+        if (snapshot.type !== "snapshot") return yield* Effect.die("Expected snapshot");
+        expect(JSON.stringify(snapshot.snapshot.requests)).toContain(detail);
+        expect(JSON.stringify(snapshot.snapshot.requests)).toContain(option);
+        yield* a.threads.dispatch({
+          type: "delegated_task.remote.observe",
+          commandId: CommandId.make("notice:peer-snapshot"),
+          parentThreadId: parent,
+          taskId: task.id,
+          availability: "current",
+          observation: { cursor: 0, snapshot: snapshot.snapshot },
+        });
+        const messages = (yield* a.threads.getThreadRecords(parent, ["messages"])).messages.filter(
+          (message) =>
+            message.notification?.outcome === "updated" && message.text.includes(requestId),
+        );
+        expect(messages).toHaveLength(1);
+        expect(messages[0]!.text).toContain(detail);
+        expect(messages[0]!.text).toContain(option);
+        expect(messages[0]!.notification?.source).not.toHaveProperty("childThreadId");
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+
 it.live(
   "pending369: authenticated native HTTP proves pair ancestry and replays one native answer",
   () =>
