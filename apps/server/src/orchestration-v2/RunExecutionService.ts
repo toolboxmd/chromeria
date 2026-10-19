@@ -641,6 +641,8 @@ export interface RunExecutionServiceV2StartRootRunInput {
   readonly relatedProviderThreadIds?: ReadonlyArray<ProviderThreadId>;
   readonly shouldStartProviderTurn?: () => Effect.Effect<boolean, ProjectionStoreV2Error>;
   readonly shouldFinalizeRun?: () => Effect.Effect<boolean, ProjectionStoreV2Error>;
+  /** A newer attempt of this run is starting or running, as after a steering restart. */
+  readonly hasReplacementAttempt?: () => Effect.Effect<boolean, ProjectionStoreV2Error>;
   readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
   readonly loadRunInterruptReason?: () => Effect.Effect<string | undefined, never>;
   readonly message: ProviderAdapter.ProviderAdapterV2TurnMessage;
@@ -703,7 +705,8 @@ export const layer: Layer.Layer<
         ProviderEventIngestor.ProviderEventIngestorV2["Service"]["ingestNormalized"]
       >[0],
     ) => {
-      if (event.type !== "turn_item.updated") return providerEventIngestor.ingestNormalized(input);
+      if (event.type !== "turn_item.updated" && event.type !== "subagent.updated")
+        return providerEventIngestor.ingestNormalized(input);
       return Effect.gen(function* () {
         const previous = itemIngestions.get(event);
         if (previous !== undefined) return previous;
@@ -1176,6 +1179,7 @@ export const layer: Layer.Layer<
           }),
         );
         const rootTerminalSeen = yield* Ref.make(false);
+        const drainsForReplacement = yield* Ref.make(false);
         const rootRunFinalized = yield* Ref.make(false);
         const providerThreadOwnerLost = yield* Ref.make(false);
         const pendingBackgroundProviderTurns = new Set<ProviderTurnId>();
@@ -1257,7 +1261,13 @@ export const layer: Layer.Layer<
             const belongsToOwnedChildThread =
               event.subagent.threadId !== input.run.threadId &&
               routing.ownedThreadIds.has(event.subagent.threadId);
-            if (belongsToRootRun || belongsToOwnedChildThread) {
+            // An earlier attempt of this run keeps its own work after a steering
+            // restart. Track only work whose terminal this attempt still routes
+            // once its root ends, or ingestion would wait for it forever.
+            const stillRoutedAfterRoot =
+              event.subagent.threadId !== input.run.threadId ||
+              routing.ownedNodeIds.has(event.subagent.parentNodeId);
+            if ((belongsToRootRun && stillRoutedAfterRoot) || belongsToOwnedChildThread) {
               yield* Ref.update(activeChildSubagents, (current) => {
                 const next = new Map(current);
                 if (isSettledSubagentStatus(event.subagent.status)) {
@@ -1317,6 +1327,12 @@ export const layer: Layer.Layer<
           }
           if (event.type === "turn_item.updated") {
             const belongsToRootRun = event.turnItem.runId === input.run.id;
+            const stillRoutedAfterRoot =
+              event.turnItem.threadId !== input.run.threadId ||
+              (event.turnItem.providerTurnId === null
+                ? event.turnItem.nodeId !== null &&
+                  routing.ownedNodeIds.has(event.turnItem.nodeId)
+                : routing.ownedProviderTurnIds.has(event.turnItem.providerTurnId));
             const belongsToOwnedChildThread =
               event.turnItem.threadId !== input.run.threadId &&
               routing.ownedThreadIds.has(event.turnItem.threadId);
@@ -1326,7 +1342,9 @@ export const layer: Layer.Layer<
               inheritedBackgroundTurnItemsById.get(event.turnItem.id) === event.turnItem.runId;
             if (
               backgroundCapableTurnItemTypes.has(event.turnItem.type) &&
-              (belongsToRootRun || belongsToOwnedChildThread || belongsToInheritedBackgroundItem)
+              ((belongsToRootRun && stillRoutedAfterRoot) ||
+                belongsToOwnedChildThread ||
+                belongsToInheritedBackgroundItem)
             ) {
               yield* Ref.update(activeBackgroundTurnItems, (current) => {
                 const next = new Set(current);
@@ -1378,7 +1396,13 @@ export const layer: Layer.Layer<
             terminal.status !== "completed" &&
             !childTurnsContinue(terminal)
           ) {
-            return true;
+            // A soft steering restart cancels only the foreground, and its
+            // replacement subscribes later without replay. This attempt keeps
+            // the background work it already owns until that work settles.
+            return (
+              !(yield* Ref.get(drainsForReplacement)) ||
+              (yield* Ref.get(activeBackgroundTurnItems)).size === 0
+            );
           }
           if (pendingBackgroundProviderTurns.size > 0) {
             return false;
@@ -1699,6 +1723,18 @@ export const layer: Layer.Layer<
               }
               if (event.type === "turn.terminal") {
                 yield* writeBareReceipt(false);
+                if (
+                  event.status === "interrupted" &&
+                  event.backgroundWork !== "ended" &&
+                  input.hasReplacementAttempt !== undefined
+                ) {
+                  // An unreadable projection keeps the subscription: closing it
+                  // would drop work already queued behind this terminal.
+                  yield* Ref.set(
+                    drainsForReplacement,
+                    yield* input.hasReplacementAttempt().pipe(Effect.orElseSucceed(() => true)),
+                  );
+                }
                 yield* Ref.set(terminalEvent, event);
                 yield* Ref.set(rootTerminalSeen, true);
                 yield* finalizeRootRun(event);
