@@ -25,11 +25,13 @@ export interface ChromeCookieSnapshot {
   readonly cookies: ReadonlyArray<MirrorCookie>;
   readonly identities: ReadonlyArray<ManagedCookieKey>;
   readonly complete: boolean;
+  readonly processIdentity?: string;
   readonly unresolvedPartitions?: ReadonlyArray<
     Pick<CookieMirrorKey, "name" | "domain" | "path"> & { readonly topLevelSite: string }
   >;
 }
 interface ChromeState {
+  processIdentity: string | undefined;
   readonly profileId: string;
   readonly managed: Map<string, ManagedCookieKey>;
   readonly removed: Map<string, CookieMirrorKey>;
@@ -85,6 +87,7 @@ export class CookieMirror {
     this.mappings = metadata.mappings;
     for (const source of metadata.chrome)
       this.chrome.set(source.source, {
+        processIdentity: undefined,
         profileId: source.profileId,
         managed: managedKeys(source.managed),
         removed: keys(source.removed),
@@ -168,7 +171,12 @@ export class CookieMirror {
         label = `${name.slice(0, 48 - suffix.length)}${suffix}`;
         disambiguator += 1;
       }
-      const profile: CookieMirrorProfile = { id, name: label, kind: "persistent" };
+      const retained = profiles.find((profile) => profile.id === id);
+      const profile: CookieMirrorProfile = {
+        id,
+        name: retained?.name ?? label,
+        kind: "persistent",
+      };
       const next = profiles.map((old) => (old.id === id ? profile : old));
       if (!profiles.some((old) => old.id === id)) next.push(profile);
       if (!existing)
@@ -274,6 +282,7 @@ export class CookieMirror {
     return this.serial(async () => {
       if (profile.id === "incognito") return [];
       const source = this.chrome.get(sourceId) ?? {
+        processIdentity: undefined,
         profileId: profile.id,
         managed: new Map<string, ManagedCookieKey>(),
         removed: new Map<string, CookieMirrorKey>(),
@@ -296,8 +305,12 @@ export class CookieMirror {
               unknown.topLevelSite === previous.key.partitionKey?.topLevelSite,
           );
         if (!present.has(key) && !unresolved) {
-          // Chrome clears persisted sessions during startup after taking its lock.
-          if (previous.persistent) {
+          // A lock alone does not distinguish startup cleanup from signing out.
+          if (
+            previous.persistent ||
+            (snapshot.processIdentity !== undefined &&
+              source.processIdentity === snapshot.processIdentity)
+          ) {
             source.removed.set(key, previous.key);
             mutations.push({ type: "remove", key: previous.key });
           }
@@ -305,6 +318,7 @@ export class CookieMirror {
           source.cookies.delete(key);
         }
       }
+      source.processIdentity = snapshot.processIdentity;
       for (const cookie of snapshot.cookies) {
         const key = cookieMirrorKey(cookie);
         source.managed.set(key, identity(cookie));

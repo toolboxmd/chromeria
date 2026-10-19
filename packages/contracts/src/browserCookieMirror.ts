@@ -4,7 +4,6 @@ import { EnvironmentId } from "./baseSchemas.ts";
 import { BrowserProfileId, BrowserProfileName } from "./browserProfile.ts";
 
 export const COOKIE_MIRROR_PATH = "/api/browser-cookie-mirror";
-export const COOKIE_MIRROR_ENABLE_RPC = "preview.enableCookieMirror";
 export const COOKIE_MIRROR_GRANT_PATH = `${COOKIE_MIRROR_PATH}/grant`;
 export const COOKIE_MIRROR_MAX_MUTATIONS = 256;
 

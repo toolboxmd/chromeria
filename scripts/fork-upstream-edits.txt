@@ -531,6 +531,8 @@ apps/mobile/src/lib/threadActivity.ts
 apps/web/src/session-logic.ts
 
 # Chrome login mirror (#520)
+packages/shared/src/desktopBootstrapToken.test.ts
+packages/shared/src/desktopBootstrapToken.ts
 apps/desktop/src/ipc/methods/preview.test.ts
 apps/desktop/src/ipc/methods/preview.ts
 apps/desktop/src/preview/BrowserImport/BrowserImport.ts

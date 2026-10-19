@@ -2,7 +2,8 @@
 
 On macOS, Chromeria continuously mirrors Chrome's logins while the desktop app runs,
 including while Chrome is open. Chrome's Default profile uses Chromeria's default
-profile; other Chrome profiles get separate profiles. Names follow Chrome's labels.
+profile; other Chrome profiles get separate profiles, initially named from Chrome.
+After creation, your Chromeria profile names take precedence.
 Guest, System and Incognito profiles are excluded.
 You can add or remove Chromeria profiles normally. Removing a discovered Chrome
 profile keeps it removed, including after restarting Chromeria.
@@ -17,10 +18,11 @@ in that environment's Connections settings. Existing connections may need pairin
 again with that permission.
 
 When the Mac app is off, environments retain the cookies they last received.
-Persistent-cookie removals catch up after reconnect or restart. A vanished Chrome
-session cookie never signs out downstream: Chrome can clear it during shutdown or
-startup while already holding its process lock. An expired or replaced cookie can
-still end a session according to the site's own rules.
+Persistent-cookie removals catch up after reconnect or restart. Session-cookie
+sign-outs propagate when Chrome stays open between observations. After Chrome or
+Chromeria restarts, vanished session cookies are retained downstream because Chrome
+can clear them during startup. An expired or replaced cookie can still end a
+session according to the site's own rules.
 
 Some logins cannot move between devices. Google account sign-in on current macOS
 Chrome and other observed device-bound sites appear in **Settings > Integrations >

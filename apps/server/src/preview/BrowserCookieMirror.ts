@@ -5,7 +5,6 @@ import {
   type AuthSessionId,
   CookieMirrorBatch,
   type CookieMirrorGrant,
-  type OrchestrationClientOrigin,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -23,10 +22,6 @@ import * as ServerBrowser from "./ServerBrowser.ts";
 export class BrowserCookieMirror extends Context.Service<
   BrowserCookieMirror,
   {
-    readonly enable: (
-      session: AuthenticatedSession,
-      origin: OrchestrationClientOrigin,
-    ) => Effect.Effect<void, CookieMirrorError>;
     readonly grant: (
       session: AuthenticatedSession,
     ) => Effect.Effect<CookieMirrorGrant, CookieMirrorError>;
@@ -65,15 +60,6 @@ const make = Effect.gen(function* () {
         return yield* new CookieMirrorError({ reason: "forbidden" });
     });
   return BrowserCookieMirror.of({
-    enable: (session) =>
-      Effect.gen(function* () {
-        if (
-          !session.scopes.includes(AuthCookieMirrorWriteScope) ||
-          session.subject === "mcp-client"
-        )
-          return yield* new CookieMirrorError({ reason: "forbidden" });
-        yield* owner(session.sessionId);
-      }),
     grant: (session) =>
       Effect.gen(function* () {
         if (

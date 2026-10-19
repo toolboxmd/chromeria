@@ -179,7 +179,7 @@ it.layer(NodeServices.layer)("PairingGrantStore.layer", (it) => {
       const third = yield* bootstrapCredentials.consume("desktop-bootstrap-token");
 
       expect(first.method).toBe("desktop-bootstrap");
-      expect(first.scopes).toEqual([...AuthStandardClientScopes, AuthCookieMirrorWriteScope]);
+      expect(first.scopes).toEqual(AuthStandardClientScopes);
       expect(first.subject).toBe("desktop-bootstrap");
       expect(second.method).toBe("desktop-bootstrap");
       expect(third.method).toBe("desktop-bootstrap");
@@ -228,6 +228,12 @@ it.layer(NodeServices.layer)("PairingGrantStore.layer", (it) => {
         currentDesktopBootstrapToken("desktop-secret", now),
       );
       expect(current.method).toBe("desktop-bootstrap");
+      expect(current.scopes).not.toContain(AuthCookieMirrorWriteScope);
+      const main = yield* bootstrapCredentials.consume(
+        currentDesktopBootstrapToken("desktop-secret", now, "cookie-mirror"),
+      );
+      expect(main.scopes).toEqual([AuthCookieMirrorWriteScope]);
+      expect(main.subject).toBe("desktop-cookie-mirror");
 
       const stale = yield* Effect.flip(
         bootstrapCredentials.consume(

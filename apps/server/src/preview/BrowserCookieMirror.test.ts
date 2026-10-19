@@ -119,7 +119,6 @@ const fixture = Effect.gen(function* () {
   );
   const mirror = yield* BrowserCookieMirror.BrowserCookieMirror.pipe(Effect.provide(layer));
   const connect = Effect.gen(function* () {
-    yield* mirror.enable(parent, { surface: "desktop" });
     const grant = yield* mirror.grant(parent);
     expect(grant.environmentId).toBe(environmentId);
     return yield* mirror.open(child);
@@ -144,9 +143,6 @@ describe("server cookie mirror authority and ordering", () => {
       const f = yield* fixture;
       const ordinary = { ...f.parent, scopes: [AuthAccessWriteScope, AuthPreviewOperateScope] };
       f.setScope(ordinary.scopes);
-      expect(
-        (yield* f.mirror.enable(ordinary, { surface: "desktop" }).pipe(Effect.result))._tag,
-      ).toBe("Failure");
       expect((yield* f.mirror.grant(ordinary).pipe(Effect.result))._tag).toBe("Failure");
       expect(f.applied).toEqual([]);
     }),
@@ -167,22 +163,15 @@ describe("server cookie mirror authority and ordering", () => {
       }),
   );
 
-  it.effect(
-    "uses credential authority regardless of claimed surface and rejects ordinary preview access",
-    () =>
-      Effect.gen(function* () {
-        const f = yield* fixture;
-        expect(
-          (yield* f.mirror.enable(f.parent, { surface: "web" }).pipe(Effect.result))._tag,
-        ).toBe("Success");
-        expect((yield* f.mirror.grant(f.parent).pipe(Effect.result))._tag).toBe("Success");
-        f.setScope([AuthPreviewOperateScope]);
-        expect(
-          (yield* f.mirror.enable(f.parent, { surface: "desktop" }).pipe(Effect.result))._tag,
-        ).toBe("Failure");
-        expect((yield* f.mirror.open(f.parent).pipe(Effect.result))._tag).toBe("Failure");
-        expect(f.applied).toEqual([]);
-      }),
+  it.effect("requires dedicated credential authority and rejects ordinary preview access", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      expect((yield* f.mirror.grant(f.parent).pipe(Effect.result))._tag).toBe("Success");
+      f.setScope([AuthPreviewOperateScope]);
+      expect((yield* f.mirror.grant(f.parent).pipe(Effect.result))._tag).toBe("Failure");
+      expect((yield* f.mirror.open(f.parent).pipe(Effect.result))._tag).toBe("Failure");
+      expect(f.applied).toEqual([]);
+    }),
   );
 
   it.effect("rejects revoked parents, a different owner and the wrong destination", () =>

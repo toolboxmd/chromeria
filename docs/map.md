@@ -38,7 +38,7 @@ flowchart TD
     T3C --> PBI
 
     BLM["Chrome login mirror"]
-    %% BLM: #520
+    %% BLM: #520 PR #530
     T3C --> BLM --> T3R
     BLM --> PBI
 

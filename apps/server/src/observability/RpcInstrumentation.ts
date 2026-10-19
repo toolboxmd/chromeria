@@ -1,4 +1,3 @@
-import { COOKIE_MIRROR_ENABLE_RPC } from "@t3tools/contracts";
 import {
   ORCHESTRATION_V2_WS_METHODS,
   PROMACHOS_HOME_WS_METHODS,
@@ -206,7 +205,6 @@ const RPC_AGGREGATES = {
   [WS_METHODS.previewClose]: "preview",
   [WS_METHODS.previewList]: "preview",
   [WS_METHODS.previewClearProfile]: "preview",
-  [COOKIE_MIRROR_ENABLE_RPC]: "preview",
   [WS_METHODS.previewReportProfiles]: "preview",
   [WS_METHODS.previewReportStatus]: "preview",
   [WS_METHODS.subscribePreviewEvents]: "preview",

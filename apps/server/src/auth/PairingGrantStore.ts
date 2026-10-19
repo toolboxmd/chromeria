@@ -316,7 +316,7 @@ export const make = Effect.gen(function* () {
     const now = yield* DateTime.now;
     yield* seedGrant(config.desktopBootstrapToken, {
       method: "desktop-bootstrap",
-      scopes: [...AuthStandardClientScopes, AuthCookieMirrorWriteScope],
+      scopes: AuthStandardClientScopes,
       subject: "desktop-bootstrap",
       expiresAt: DateTime.add(now, {
         milliseconds: Duration.toMillis(DESKTOP_BOOTSTRAP_TTL_HOURS),
@@ -438,10 +438,26 @@ export const make = Effect.gen(function* () {
   const consume: PairingGrantStore["Service"]["consume"] = Effect.fn("PairingGrantStore.consume")(
     function* (credential, input) {
       const now = yield* DateTime.now;
+      if (
+        desktopBootstrapSecret !== undefined &&
+        isValidDesktopBootstrapToken(
+          desktopBootstrapSecret,
+          credential,
+          now.epochMilliseconds,
+          "cookie-mirror",
+        )
+      ) {
+        return {
+          method: "desktop-bootstrap",
+          scopes: [AuthCookieMirrorWriteScope],
+          subject: "desktop-cookie-mirror",
+          expiresAt: DateTime.add(now, { milliseconds: DESKTOP_BOOTSTRAP_TOKEN_WINDOW_MS }),
+        } satisfies BootstrapGrant;
+      }
       if (consumeRotatingDesktopToken(credential, now.epochMilliseconds)) {
         return {
           method: "desktop-bootstrap",
-          scopes: [...AuthStandardClientScopes, AuthCookieMirrorWriteScope],
+          scopes: AuthStandardClientScopes,
           subject: "desktop-bootstrap",
           expiresAt: DateTime.add(now, {
             milliseconds: DESKTOP_BOOTSTRAP_TOKEN_WINDOW_MS,

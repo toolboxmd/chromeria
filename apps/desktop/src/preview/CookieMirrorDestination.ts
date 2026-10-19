@@ -65,8 +65,8 @@ export const makeCookieMirrorDestinationResolver = Effect.gen(function* () {
         httpBaseUrl = config.value.httpBaseUrl.href;
         const bootstrap = config.value.bootstrap;
         const credential = bootstrap.desktopBootstrapSecret
-          ? currentDesktopBootstrapToken(bootstrap.desktopBootstrapSecret, now)
-          : bootstrap.desktopBootstrapToken;
+          ? currentDesktopBootstrapToken(bootstrap.desktopBootstrapSecret, now, "cookie-mirror")
+          : undefined;
         if (!credential) return yield* new CookieMirrorError({ reason: "forbidden" });
         bearer = (yield* bootstrapRemoteBearerSession({
           httpBaseUrl,

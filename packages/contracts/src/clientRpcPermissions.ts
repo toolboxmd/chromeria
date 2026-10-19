@@ -1,10 +1,8 @@
-import { COOKIE_MIRROR_ENABLE_RPC } from "./browserCookieMirror.ts";
 import { PROMACHOS_HOME_WS_METHODS } from "./promachosHome.ts";
 import * as Schema from "effect/Schema";
 import { GitPreparePullRequestThreadInput } from "./git.ts";
 import {
   AuthOrchestrationOperateScope,
-  AuthCookieMirrorWriteScope,
   AuthSettingsWriteScope,
   AuthSourceControlWriteScope,
   type AuthEnvironmentScope,
@@ -16,7 +14,6 @@ import { WS_METHODS } from "./rpc.ts";
 
 /** Incremental client enforcement; the server still authorizes every request. */
 export const CLIENT_GUARDED_RPC_SCOPES = {
-  [COOKIE_MIRROR_ENABLE_RPC]: AuthCookieMirrorWriteScope,
   [WS_METHODS.serverRunStorageCleanup]: AuthSettingsWriteScope,
   [WS_METHODS.serverCheckOtlpEndpoint]: AuthSettingsWriteScope,
   [PROMACHOS_HOME_WS_METHODS.create]: AuthOrchestrationOperateScope,

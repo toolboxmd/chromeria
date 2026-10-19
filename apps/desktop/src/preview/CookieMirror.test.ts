@@ -130,13 +130,42 @@ describe("one-way mirror service seam", () => {
     expect([...destination.cookies.values()]).toEqual([added]);
   });
 
-  it("never removes vanished Chrome session cookies, including startup cleanup while Chrome holds its lock", async () => {
+  it("removes a vanished Chrome session cookie in every environment while the same Chrome process stays open", async () => {
+    const first = store();
+    const second = store();
+    const mirror = new CookieMirror();
+    await mirror.addPartition("first", "bestia", profile, first);
+    await mirror.addPartition("second", "rocky", profile, second);
+    await mirror.observeChrome("chrome-default", profile, {
+      ...snapshot([cookie()]),
+      processIdentity: "mac:42:2026-10-19T08:00:00",
+    });
+    await prepare(mirror, "bestia");
+    await prepare(mirror, "rocky");
+    await mirror.observeChrome("chrome-default", profile, {
+      ...snapshot([]),
+      processIdentity: "mac:42:2026-10-19T08:00:00",
+    });
+    expect([...first.cookies.values()]).toEqual([]);
+    expect([...second.cookies.values()]).toEqual([]);
+    expect(mirror.snapshot("bestia")[0]?.mutations).toEqual([
+      { type: "remove", key: { name: "login", domain: "login.example.test", path: "/account" } },
+    ]);
+  });
+
+  it("preserves vanished Chrome session cookies after relaunch, an unknown process or a desktop restart", async () => {
     const destination = store();
     let mirror = new CookieMirror();
     await mirror.addPartition("partition", "env", profile, destination);
-    await source(mirror, [cookie()]);
+    await mirror.observeChrome("chrome-default", profile, {
+      ...snapshot([cookie()]),
+      processIdentity: "mac:42:first-start",
+    });
     await prepare(mirror);
-    await source(mirror, []);
+    await mirror.observeChrome("chrome-default", profile, {
+      ...snapshot([]),
+      processIdentity: "mac:42:second-start",
+    });
     expect([...destination.cookies.values()]).toEqual([cookie()]);
     await source(mirror, []);
     expect([...destination.cookies.values()]).toEqual([cookie()]);
@@ -339,7 +368,7 @@ describe("one-way mirror service seam", () => {
 });
 
 describe("persisted Chrome profile mapping", () => {
-  it("uses root and directory as identity, follows renames and disambiguates label collisions", async () => {
+  it("uses root and directory as identity, preserves user labels and disambiguates new label collisions", async () => {
     let mirror = new CookieMirror();
     const defaultProfile = await mirror.mapChromeProfile({
       root: "/synthetic/chrome",
@@ -371,9 +400,15 @@ describe("persisted Chrome profile mapping", () => {
       directory: "Profile 1",
       name: "Renamed",
       proposedId: "different-proposal",
-      profiles: second.profiles,
+      profiles: second.profiles.map((profile) =>
+        profile.id === "chrome-one" ? { ...profile, name: "My work account" } : profile,
+      ),
     });
-    expect(renamed.profile).toEqual({ id: "chrome-one", name: "Renamed", kind: "persistent" });
+    expect(renamed.profile).toEqual({
+      id: "chrome-one",
+      name: "My work account",
+      kind: "persistent",
+    });
   });
 
   it("enforces label length and the existing profile cap without merging accounts", async () => {

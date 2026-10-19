@@ -286,12 +286,8 @@ export async function adoptDesktopBrowserProfiles(
         handled.add(profile.id);
         changed = true;
       }
-      if (existing?.name === profile.name) continue;
-      browserProfiles = existing
-        ? browserProfiles.some((old) => old.id === profile.id)
-          ? browserProfiles.map((old) => (old.id === profile.id ? profile : old))
-          : [...browserProfiles, profile]
-        : [...browserProfiles, profile];
+      if (existing) continue;
+      browserProfiles = browserProfiles.concat(profile);
       changed = true;
     }
     return changed

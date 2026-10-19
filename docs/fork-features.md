@@ -2635,12 +2635,8 @@ sources and reasons.
 {
   "id": "chrome-login-mirror",
   "purpose": "Continuously mirror macOS Chrome cookies into persistent desktop partitions and authenticated environment browser profiles, preserving source-only removals and complete partition keys.",
-  "issues": [
-    "https://github.com/toolboxmd/chromeria/issues/520"
-  ],
-  "prs": [
-    "https://github.com/toolboxmd/chromeria/pull/530"
-  ],
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/520"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/530"],
   "newFiles": [
     "apps/desktop/src/ipc/methods/cookieMirror.ts",
     "apps/desktop/src/preview/ChromeCookieKey.test.ts",
@@ -2659,6 +2655,7 @@ sources and reasons.
     "apps/desktop/src/preview/CookieMirrorMetadata.ts",
     "apps/desktop/src/preview/CookieMirrorSocket.test.ts",
     "apps/desktop/src/preview/CookieMirrorSocket.ts",
+    "apps/desktop/src/preview/DesktopCookieMirror.test.ts",
     "apps/desktop/src/preview/DesktopCookieMirror.ts",
     "apps/desktop/src/preview/ElectronCookieMirror.integration.test.ts",
     "apps/desktop/src/preview/ElectronCookieMirror.ts",
@@ -2670,8 +2667,6 @@ sources and reasons.
     "apps/server/src/preview/ServerCookieMirror.integration.test.ts",
     "apps/server/src/preview/ServerCookieMirror.ts",
     "apps/server/src/preview/ServerCookieMirrorProfiles.ts",
-    "apps/web/.vitest/attachments/4e325a20f4dca6ebd698d0e4c8086b0fb0c7f90a.png",
-    "apps/web/.vitest/attachments/failure-screenshots/IntegrationsSettings.browser.test.tsx/Integrations-browser-discovery---shows-every-device-bound-site-reported-by-desktop-main-in-browser-settings.png",
     "apps/web/src/components/settings/ChromeCookieMirrorStatus.tsx",
     "apps/web/src/rpc/cookieMirrorConnection.ts",
     "apps/web/src/rpc/cookieMirrorStatus.ts",
@@ -2702,7 +2697,9 @@ sources and reasons.
     "packages/client-runtime/src/rpc/session.ts",
     "packages/contracts/src/browserProfile.test.ts",
     "packages/contracts/src/browserProfile.ts",
-    "packages/shared/src/authScopeOptions.ts"
+    "packages/shared/src/authScopeOptions.ts",
+    "packages/shared/src/desktopBootstrapToken.test.ts",
+    "packages/shared/src/desktopBootstrapToken.ts"
   ],
   "sharedFiles": [
     "apps/desktop/src/ipc/DesktopIpcHandlers.ts",
@@ -2716,6 +2713,7 @@ sources and reasons.
     "apps/server/src/server.ts",
     "apps/server/src/ws.ts",
     "apps/web/src/components/settings/IntegrationsSettings.tsx",
+    "apps/web/src/components/featureMap/featureMap.mermaid.test.tsx",
     "docs/fork.md",
     "docs/map.md",
     "packages/contracts/src/auth.ts",
@@ -2726,11 +2724,6 @@ sources and reasons.
     "packages/contracts/src/settings.ts",
     "packages/shared/package.json"
   ],
-  "keywords": [
-    "cookie mirror",
-    "CookieMirror",
-    "ChromeCookieSource",
-    "preview:mirror-cookies"
-  ]
+  "keywords": ["cookie mirror", "CookieMirror", "ChromeCookieSource", "preview:mirror-cookies"]
 }
 ```

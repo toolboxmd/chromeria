@@ -35,7 +35,11 @@ import {
   sourcePathContext,
 } from "./BrowserImport/Sources.ts";
 import { chromeCookieKeyCommandsEqual, makeChromeCookieKeyCache } from "./ChromeCookieKey.ts";
-import { readChromeCookieSnapshot, readChromeDeviceBoundSites } from "./ChromeCookieSource.ts";
+import {
+  readChromeCookieSnapshot,
+  readChromeDeviceBoundSites,
+  readChromeProcessIdentity,
+} from "./ChromeCookieSource.ts";
 import { CookieMirror } from "./CookieMirror.ts";
 import { CookieMirrorMetadataFile } from "./CookieMirrorMetadata.ts";
 import { requestCookieMirrorGrant } from "./CookieMirrorGrant.ts";
@@ -291,7 +295,9 @@ const make = Effect.gen(function* () {
             const began = yield* Clock.currentTimeMillis;
             const observed = yield* Effect.gen(function* () {
               const keys = yield* readKey(command);
+              const processBefore = yield* readChromeProcessIdentity(root);
               const snapshot = yield* readChromeCookieSnapshot(database, keys).pipe(Effect.scoped);
+              const processAfter = yield* readChromeProcessIdentity(root);
               const portable = snapshot.cookies.filter((cookie) => {
                 const host = cookie.domain.replace(/^\./, "");
                 const googleCredential =
@@ -308,7 +314,13 @@ const make = Effect.gen(function* () {
               });
               const sourceId = yield* encodeSource([root, source.directory]);
               const failures = yield* Effect.promise(() =>
-                mirror.observeChrome(sourceId, profile, { ...snapshot, cookies: portable }),
+                mirror.observeChrome(sourceId, profile, {
+                  ...snapshot,
+                  cookies: portable,
+                  ...(processBefore !== undefined && processBefore === processAfter
+                    ? { processIdentity: processBefore }
+                    : {}),
+                }),
               );
               sourceFiles.set(database, {
                 fingerprint: snapshot.complete ? stamp : (previous?.fingerprint ?? ""),
@@ -381,7 +393,9 @@ const make = Effect.gen(function* () {
             connections.set(input.environmentId, { socket, generation });
           }
           return {
-            connected: current?.socket.connected ?? false,
+            connected: input.environmentId
+              ? (connections.get(input.environmentId)?.socket.connected ?? false)
+              : false,
             generation: input.environmentId ? (generations.get(input.environmentId) ?? 0) : 0,
             profiles,
             limitations: [...limitations.values()],

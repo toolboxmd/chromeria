@@ -7,12 +7,10 @@ import {
   sessionGrantsScope,
 } from "./auth.ts";
 import {
-  COOKIE_MIRROR_ENABLE_RPC,
   CookieMirrorBatch,
   CookieMirrorConnectionStatus,
   CookieMirrorConnectionInput,
 } from "./browserCookieMirror.ts";
-import { clientRpcRequiredScopes } from "./clientRpcPermissions.ts";
 
 const decode = Schema.decodeUnknownOption(CookieMirrorBatch);
 const decodeStatus = Schema.decodeUnknownSync(CookieMirrorConnectionStatus);
@@ -68,9 +66,6 @@ describe("cookie mirror contracts", () => {
     expect(
       (AuthGrantScope.literals as ReadonlyArray<string>).includes(AuthCookieMirrorWriteScope),
     ).toBe(true);
-    expect(clientRpcRequiredScopes(COOKIE_MIRROR_ENABLE_RPC, {})).toEqual([
-      AuthCookieMirrorWriteScope,
-    ]);
     expect(
       sessionGrantsScope(
         { authenticated: true, scopes: ["access:write", "orchestration:operate"] },

@@ -3,11 +3,19 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as NodeCrypto from "node:crypto";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
+import { ChildProcessSpawner } from "effect/process";
+import { vi } from "vite-plus/test";
 
-import { readChromeCookieSnapshot, readChromeDeviceBoundSites } from "./ChromeCookieSource.ts";
+import {
+  readChromeCookieSnapshot,
+  readChromeDeviceBoundSites,
+  readChromeProcessIdentity,
+} from "./ChromeCookieSource.ts";
 
 const key = Buffer.from("0123456789abcdef");
 const encrypted = (host: string, value: string) => {
@@ -38,6 +46,54 @@ const schema = Effect.gen(function* () {
 });
 
 describe("Chrome snapshot observation", () => {
+  it.effect(
+    "identifies the local SingletonLock process by PID and start time without trusting stale or foreign locks",
+    () =>
+      Effect.gen(function* () {
+        let target = "synthetic-mac-42";
+        let started = "Mon Oct 19 08:00:00 2026\n";
+        const inspect = vi.fn<ChildProcessSpawner.ChildProcessSpawner["Service"]["string"]>(() =>
+          Effect.succeed(started),
+        );
+        const probe = readChromeProcessIdentity("/synthetic/chrome").pipe(
+          Effect.provideService(HostProcess.Hostname, "synthetic-mac"),
+          Effect.provide(
+            Layer.mergeAll(
+              Layer.succeed(
+                FileSystem.FileSystem,
+                FileSystem.makeNoop({ readLink: () => Effect.succeed(target) }),
+              ),
+              Layer.mock(ChildProcessSpawner.ChildProcessSpawner, { string: inspect }),
+            ),
+          ),
+        );
+        const first = yield* probe;
+        expect(first).toBe("synthetic-mac-42:Mon Oct 19 08:00:00 2026");
+        expect(inspect).toHaveBeenCalledWith(
+          expect.objectContaining({
+            command: "/bin/ps",
+            args: ["-p", "42", "-o", "lstart="],
+          }),
+        );
+        started = "Mon Oct 19 09:00:00 2026\n";
+        expect(yield* probe).not.toBe(first);
+        started = "";
+        expect(yield* probe).toBeUndefined();
+        inspect.mockClear();
+        for (const invalid of [
+          "another-mac-42",
+          "synthetic-mac-0",
+          "synthetic-mac-99999999999999999999",
+          "invalid",
+          "synthetic-mac-42;echo",
+        ]) {
+          target = invalid;
+          expect(yield* probe).toBeUndefined();
+        }
+        expect(inspect).not.toHaveBeenCalled();
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("reports each DBSC site without selecting its credential protobuf", () =>
     Effect.gen(function* () {
       const { database, layer } = yield* fixture;

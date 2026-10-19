@@ -1,5 +1,3 @@
-import { COOKIE_MIRROR_ENABLE_RPC } from "@t3tools/contracts";
-import * as BrowserCookieMirror from "./preview/BrowserCookieMirror.ts";
 import { stopSpectrum } from "./spectrum/humanStopRpc.ts";
 import { abandonScheduledReport } from "./spectrum/humanReportRpc.ts";
 import { SPECTRUM_WS_METHODS } from "@t3tools/contracts";
@@ -1183,7 +1181,6 @@ const layerWsRpc = (
   clientAnalyticsProps: Readonly<Record<string, unknown>>,
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
-  cookieMirror: BrowserCookieMirror.BrowserCookieMirror["Service"],
 ) =>
   Layer.unwrap(
     Effect.gen(function* () {
@@ -2965,7 +2962,6 @@ const layerWsRpc = (
         [WS_METHODS.previewClose]: (input) => previewManager.close(input),
         [WS_METHODS.previewList]: (input) => previewManager.list(input),
         [WS_METHODS.previewClearProfile]: (input) => serverBrowser.clearProfile(input.profileId),
-        [COOKIE_MIRROR_ENABLE_RPC]: () => cookieMirror.enable(currentSession, clientOrigin),
         [WS_METHODS.previewReportProfiles]: (input) => serverBrowser.reportProfiles(input),
         [WS_METHODS.previewReportStatus]: (input) => previewManager.reportStatus(input),
         [WS_METHODS.subscribePreviewEvents]: (_input) => previewManager.events,
@@ -3194,7 +3190,6 @@ export const layer = Layer.unwrap(
   Effect.gen(function* () {
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const serverBrowser = yield* ServerBrowser.ServerBrowser;
-    const cookieMirror = yield* BrowserCookieMirror.BrowserCookieMirror;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const pullRequests = yield* PullRequestService.PullRequestService;
     const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
@@ -3255,7 +3250,6 @@ export const layer = Layer.unwrap(
               clientAnalyticsProps,
               previewAutomationBroker,
               serverBrowser,
-              cookieMirror,
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               // Request fibers run in the handlers' context, so this reporter sees

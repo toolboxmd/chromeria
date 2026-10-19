@@ -15,14 +15,14 @@ export function ChromeCookieMirrorStatus() {
       pending = true;
       try {
         const status = await bridge({ action: "status" });
-        if (disposed) return;
-        recordCookieMirrorStatus(status);
-        if (status.profiles.length > 0) await adoptDesktopBrowserProfiles(status.profiles);
+        if (!disposed) {
+          recordCookieMirrorStatus(status);
+          if (status.profiles.length > 0) await adoptDesktopBrowserProfiles(status.profiles);
+        }
       } catch {
         // Main owns diagnostics; this metadata read carries no cookie payload.
-      } finally {
-        pending = false;
       }
+      pending = false;
     };
     void refresh();
     const timer = setInterval(() => {

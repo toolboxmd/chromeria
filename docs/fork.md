@@ -51,12 +51,14 @@ and discard the cached key. Ad-hoc signed builds lose Keychain's
 Remote pairings need the explicit **Mirror desktop browser logins** permission
 (`preview:mirror-cookies`) in Connections settings. Standard client scopes do not
 include it. Re-pair existing connections with that permission before live proof;
-the local desktop bootstrap can issue its separate, scoped main-process credential.
+the local desktop secret derives a separate, scoped main-process credential. The
+renderer bootstrap token cannot mint or rotate that credential.
 Desktop main resolves destinations and parent credentials from its own backend
 pool and saved connection catalog, verifies the environment identity and scope,
 and keeps mirror grants out of the renderer. A client-supplied surface is never
-authorization. Relay credentials need the same explicit permission; a standard
-cloud-connect session alone does not grant it.
+authorization. T3 Connect currently mints standard environment scopes only, so its
+automatic session does not grant cookie mirroring. Use an explicitly scoped direct
+pairing for the same environment to enable mirroring.
 
 Mirroring runs only while the desktop app runs. Desktop retains value-free managed
 identities and removal metadata; the server retains a profile catalog. Cookie values

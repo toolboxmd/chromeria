@@ -1,8 +1,12 @@
 import { CookieMirrorError, MirrorCookie } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { decryptChromiumValue } from "./BrowserImport/ChromiumCookies.ts";
 import { type ChromiumKeyMaterial } from "./BrowserImport/ChromiumKeys.ts";
@@ -29,6 +33,30 @@ const decodeVersion = Schema.decodeUnknownEffect(
   Schema.Array(Schema.Struct({ value: Schema.Union([Schema.Number, Schema.FiniteFromString]) })),
 );
 const decodeCookies = Schema.decodeUnknownEffect(Schema.Array(MirrorCookie));
+
+/** PID plus start time distinguishes a live Chrome logout from relaunch cleanup. */
+export const readChromeProcessIdentity = Effect.fnUntraced(
+  function* (root: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const host = yield* HostProcess.Hostname;
+    const target = yield* fs.readLink(path.join(root, "SingletonLock"));
+    const match = /^(.*)-(\d+)$/.exec(target);
+    if (!match || match[1] !== host) return undefined;
+    const pid = Number(match[2]);
+    if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const environment = yield* HostProcess.Environment;
+    const started = (yield* spawner.string(
+      ChildProcess.make("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
+        env: { ...environment, LC_ALL: "C" },
+        stdin: "ignore",
+      }),
+    )).trim();
+    return started ? `${target}:${started}` : undefined;
+  },
+  Effect.catchCause(() => Effect.succeed(undefined)),
+);
 
 /** Chrome stores the site in the key; never select the credential protobuf. */
 export const readChromeDeviceBoundSites = Effect.fnUntraced(function* (source: string) {
