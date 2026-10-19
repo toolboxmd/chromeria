@@ -664,8 +664,7 @@ export function useThreadComposerState() {
 
       // Resolved here rather than at drain time: the outbox can deliver minutes
       // later, and the choice belongs to the moment the user pressed send.
-      // A Steer is a target operation. If its run ended before delivery, the
-      // server rejects it instead of admitting work under a different purpose.
+      // The server turns a Steer into an ordinary send if the run ends before delivery.
       const followUpAction = resolveComposerDispatchMode({
         running: activeThreadBusy && canSteerActiveTurn,
         alternateModifier: followUpOverride !== undefined && followUpOverride !== followUpBehavior,
