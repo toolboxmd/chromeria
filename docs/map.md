@@ -98,6 +98,9 @@ flowchart TD
     RTL["Remote delegated task lifecycle"]
     %% RTL: #381 PR #392
     PGR --> RTL
+    DNC["Destination child discovery"]
+    %% DNC: PR #546 #379 #386
+    PGR --> DNC
     PAR["Peer attachments and request recovery"]
     %% PAR: #382 PR #410
     RTL --> PAR

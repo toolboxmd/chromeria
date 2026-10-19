@@ -1,3 +1,4 @@
+import { isThreadVisibleInNavigation } from "@t3tools/client-runtime/state/models";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { useAndroidControlSizing } from "../../components/ui/useAndroidControlSizing";
 import type { ThreadMoveDestination } from "../threads/threadOrder";
@@ -92,6 +93,7 @@ import { ThreadListFilters } from "./ThreadListFilters";
 interface HomeScreenProps {
   readonly projects: ReadonlyArray<EnvironmentProject>;
   readonly threads: ReadonlyArray<EnvironmentThreadShell>;
+  readonly navigationThreads: ReadonlyArray<EnvironmentThreadShell>;
   readonly pendingTasks: ReadonlyArray<PendingNewTask>;
   readonly catalogState: WorkspaceState;
   readonly savedConnectionsById: Readonly<Record<string, SavedRemoteConnection>>;
@@ -550,13 +552,13 @@ export function HomeScreen(props: HomeScreenProps) {
   const threadMoveAvailability = useMemo(() => {
     const sectionAvailability = (section: "pinned" | "active") =>
       computeThreadMoveAvailability({
-        allThreads: props.threads,
+        allThreads: props.navigationThreads,
         section,
         pendingOrder,
         reorderableEnvironmentIds:
           section === "pinned" ? pinReorderEnvironmentIds : activeReorderEnvironmentIds,
         ordered: getThreadListV2OrderedSection({
-          threads: props.threads,
+          threads: props.navigationThreads,
           section,
           projects: props.projects,
           pendingOrder,
@@ -575,7 +577,7 @@ export function HomeScreen(props: HomeScreenProps) {
     props.projects,
     pinReorderEnvironmentIds,
     activeReorderEnvironmentIds,
-    props.threads,
+    props.navigationThreads,
     pendingOrder,
     queuedThreadKeys,
     settlementEnvironmentIds,
@@ -584,11 +586,13 @@ export function HomeScreen(props: HomeScreenProps) {
     snoozeWakeTick,
   ]);
   const threadListV2Layout = useMemo(() => {
-    threadListInboxReturns.observe(workingShelfEnabled ? props.threads : null);
+    threadListInboxReturns.observe(workingShelfEnabled ? props.navigationThreads : null);
     return buildThreadListV2Items({
       pendingOrder,
       projects: props.projects,
-      threads: props.threads.filter((thread) => thread.archivedAt === null),
+      threads: props.threads.filter((thread) =>
+        isThreadVisibleInNavigation(thread, props.searchQuery),
+      ),
       environmentId: props.selectedEnvironmentId,
       projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
       searchQuery: props.searchQuery,
@@ -621,6 +625,7 @@ export function HomeScreen(props: HomeScreenProps) {
     settledVisibleCount,
     settlementEnvironmentIds,
     snoozeEnvironmentIds,
+    props.navigationThreads,
     props.searchQuery,
     props.selectedEnvironmentId,
     props.threads,
