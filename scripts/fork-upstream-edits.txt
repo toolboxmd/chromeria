@@ -487,3 +487,6 @@ packages/client-runtime/src/relay/index.ts
 apps/mobile/src/features/threads/useLinkedPullRequestActions.ts
 packages/client-runtime/src/pullRequestLinkInput.test.ts
 packages/client-runtime/src/pullRequestLinkInput.ts
+
+# Accepted explicit-send receipt replay during replacement startup (#298)
+apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts
