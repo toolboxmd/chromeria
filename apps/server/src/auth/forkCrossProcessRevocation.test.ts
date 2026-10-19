@@ -87,3 +87,23 @@ it.effect("keeps sessions open through a locked read and retries on the next tic
     expect(yield* Ref.get(invalidated)).toEqual([revoked]);
   }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
 );
+
+it.effect("checks a socket that registers while the commit version is being read", () =>
+  Effect.gen(function* () {
+    const late = AuthSessionId.make("late-session");
+    const open = yield* Ref.make<ReadonlyArray<AuthSessionId>>([kept]);
+    const invalidated = yield* Ref.make<ReadonlyArray<AuthSessionId>>([]);
+    yield* watchCrossProcessRevocations({
+      source: {
+        // The late socket registers during the version read, after a commit revoked it.
+        dataVersion: Ref.update(open, (current) => [...current, late]).pipe(Effect.as(1)),
+        listActive: (sessionIds) => Effect.succeed(sessionIds.filter((id) => id === kept)),
+      },
+      openSessionIds: Ref.get(open),
+      invalidate: (sessionId) => Ref.update(invalidated, (current) => [...current, sessionId]),
+    }).pipe(Effect.forkScoped({ startImmediately: true }));
+
+    yield* tick;
+    expect(yield* Ref.get(invalidated)).toEqual([late]);
+  }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+);

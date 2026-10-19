@@ -31,10 +31,12 @@ export const watchCrossProcessRevocations = <E>(options: {
   Effect.suspend(() => {
     let checkedVersion: number | undefined;
     const tick = Effect.gen(function* () {
-      const open = yield* options.openSessionIds;
-      if (open.length === 0) return;
+      if ((yield* options.openSessionIds).length === 0) return;
       const version = yield* options.source.dataVersion;
       if (version === checkedVersion) return;
+      // Snapshot after the version read: a socket registering later does its own first
+      // read after every commit this version covers, so advancing the cursor cannot skip it.
+      const open = yield* options.openSessionIds;
       const active = new Set(yield* options.source.listActive(open));
       yield* Effect.forEach(
         open.filter((sessionId) => !active.has(sessionId)),
