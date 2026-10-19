@@ -58,8 +58,6 @@ export const StartSpectrumInput = Schema.Struct({
   relayRounds: Schema.optional(SpectrumRelayRounds),
   turnsPerColor: Schema.optional(SpectrumTurnsPerColor),
   moderator: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
-  turnsPerColor: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 12 }))),
-  white: Schema.optional(TrimmedNonEmptyString),
 });
 export const StartSpectrumResult = Schema.Struct({
   threadId: ThreadId,
@@ -79,7 +77,7 @@ export const StartSpectrumResult = Schema.Struct({
 export const SpectrumToolkit = Toolkit.make(
   Tool.make("start_spectrum", {
     description:
-      "Open a visible provider-less Spectrum transcript with Drafter Colors chosen through Prism. Council runs independent answers, at least two relay barriers and moderator synthesis; free mode takes ordered turns. All replies are relayed verbatim. Send normal messages to join at the next barrier, reopen to continue after the report finishes or is explicitly abandoned, and Stop to cancel owned Drafter work. Omitted colors, White, mode and limits use Spectrum settings for the caller’s project/environment. Configure default slots in Settings > Spectrum, then pass only question. Explicit colors replace all slots and inherit no fallbacks. white names a slot label; moderator is its legacy zero-based index. relayRounds is council relay rounds (minimum 2); turnsPerColor (1-12) is stored for free-mode moderation. Legacy limit overrides the current mode’s total limit. A Color's fallbacks are tried in order only when its turn cannot start. Started by an agent from its own thread, the Spectrum is that thread's delegated task: taskId works with task_status (the report is its result) and task_cancel (Stop); the report message is the only wake.",
+      "Open a visible provider-less Spectrum transcript with Drafter Colors chosen through Prism. Council runs independent answers, at least two relay barriers and White's synthesis. Free mode opens in Color order, then White picks each next speaker with NEXT: <label> or DONE and writes the closing summary. All replies are relayed verbatim. Send normal messages to join at the next barrier, reopen to continue after the report finishes or is explicitly abandoned, and Stop to cancel owned Drafter work. Omitted colors, White, mode and limits use Spectrum settings for the caller’s project/environment. Configure default slots in Settings > Spectrum, then pass only question. Explicit colors replace all slots and inherit no fallbacks. white names a slot label; moderator is its legacy zero-based index. relayRounds is council relay rounds (minimum 2); turnsPerColor (1-12) times the number of Colors sets the free-mode cap on Color turns. Legacy limit overrides the current mode’s total limit. A Color's fallbacks are tried in order only when its turn cannot start. Started by an agent from its own thread, the Spectrum is that thread's delegated task: taskId works with task_status (the report is its result) and task_cancel (Stop); the report message is the only wake.",
     parameters: McpRouting.parameters(StartSpectrumInput),
     success: StartSpectrumResult,
     failure: OrchestratorMcpFailure,

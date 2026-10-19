@@ -214,6 +214,8 @@ it.effect("start_spectrum rejects invalid values before persisting a Spectrum", 
     const toolkit = yield* SpectrumToolkit.pipe(Effect.provide(Access.HandlersLayer.layer(layer)));
     for (const patch of [
       { limit: 1 },
+      { mode: "free" as const, limit: 1 },
+      { white: "Red", moderator: 0 },
       { relayRounds: 1 },
       { turnsPerColor: 0 },
       { white: "Missing" },

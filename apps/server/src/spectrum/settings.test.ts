@@ -63,6 +63,8 @@ it.each([
   { turnsPerColor: 0 },
   { white: "Missing" },
   { limit: 1 },
+  { mode: "free" as const, limit: 1 },
+  { white: "Red", moderator: 0 },
   {
     colors: [
       { label: "Red", ...primary },

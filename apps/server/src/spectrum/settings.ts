@@ -59,7 +59,7 @@ export function resolveSpectrumStart(input: SpectrumStartRequest, settings: Spec
   const limit = input.limit ?? (mode === "council" ? relayRounds : colors.length * turnsPerColor);
   if (
     !Number.isInteger(limit) ||
-    limit < (mode === "council" ? 2 : 1) ||
+    limit < (mode === "council" ? 2 : colors.length) ||
     (input.limit !== undefined && limit > 100)
   )
     throw new Error(

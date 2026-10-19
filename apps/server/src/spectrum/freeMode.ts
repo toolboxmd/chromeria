@@ -129,26 +129,3 @@ export function whiteInstruction(state: SpectrumState, phase: SpectrumRound["pha
     `NEXT: <label> to choose who speaks next (one of: ${labels}), or DONE to close the discussion.`,
   ].join("\n");
 }
-
-/** Resolves a start's cap and White from call input until Spectrum settings (#401) supply defaults. */
-export function spectrumShape(input: {
-  readonly mode: "council" | "free";
-  readonly labels: ReadonlyArray<string>;
-  readonly limit?: number | undefined;
-  readonly turnsPerColor?: number | undefined;
-  readonly moderator?: number | undefined;
-  readonly white?: string | undefined;
-}): { readonly limit: number; readonly moderator: number } | string {
-  const white = input.white === undefined ? undefined : input.labels.indexOf(input.white);
-  if (white === -1) return "white must name one of the Colors.";
-  if (white !== undefined && input.moderator !== undefined && white !== input.moderator)
-    return "white and moderator name different Colors.";
-  if (input.turnsPerColor !== undefined && (input.mode !== "free" || input.limit !== undefined))
-    return "turnsPerColor sets the free-mode cap; pass it or limit, not both.";
-  const limit =
-    input.limit ??
-    (input.mode === "council" ? 2 : input.labels.length * (input.turnsPerColor ?? 3));
-  if (input.mode === "free" && limit < input.labels.length)
-    return "The free-mode cap cannot be below the number of Colors.";
-  return { limit, moderator: white ?? input.moderator ?? 0 };
-}
