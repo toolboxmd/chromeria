@@ -257,6 +257,7 @@ const boxToolkitLayer = (
     });
   const layerBoxThreads = Layer.mock(ThreadManagement.ThreadManagementService)({
     readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
+    readRunRecovery: () => Effect.succeed({ state: "none" as const }),
     getThreadShell: shellOf,
     getProjectThreadRecords: (input) => projectionOf(input.threadId),
     getThreadRecords: (threadId) => projectionOf(threadId),
