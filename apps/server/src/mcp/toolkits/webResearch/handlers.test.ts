@@ -17,6 +17,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, McpServer } from "effect/ai";
 
 import * as ServerConfig from "../../../config.ts";
+import * as TinyFish from "../../../webResearch/TinyFish.ts";
 import * as WebResearch from "../../../webResearch/WebResearch.ts";
 import * as PageCache from "../../../webResearch/PageCache.ts";
 import * as PublicHttp from "../../../webResearch/PublicHttp.ts";
@@ -101,6 +102,7 @@ const fixture = Effect.fnUntraced(function* (
   ).pipe(Layer.provide(NodeServices.layer));
   const resources = Layer.mergeAll(config, NodeServices.layer);
   const reader = WebResearch.layer.pipe(
+    Layer.provide(Layer.succeed(TinyFish.TinyFish, { fetch: () => Effect.succeed(undefined) })),
     Layer.provide(cacheLayer),
     Layer.provide(
       Layer.succeed(PublicRender.PublicRender, {

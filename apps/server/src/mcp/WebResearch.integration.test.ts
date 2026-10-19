@@ -26,6 +26,7 @@ import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as EffectWorker from "../orchestration-v2/EffectWorker.ts";
 import * as Registry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as Replay from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import * as TinyFish from "../webResearch/TinyFish.ts";
 import * as WebResearch from "../webResearch/WebResearch.ts";
 import * as PageCache from "../webResearch/PageCache.ts";
 import * as PublicHttp from "../webResearch/PublicHttp.ts";
@@ -77,6 +78,7 @@ const fixture = Effect.fnUntraced(function* (
     { runEffectWorker: false },
   );
   const reader = WebResearch.layer.pipe(
+    Layer.provide(Layer.succeed(TinyFish.TinyFish, { fetch: () => Effect.succeed(undefined) })),
     Layer.provide(cacheLayer),
     Layer.provide(
       Layer.succeed(PublicRender.PublicRender, {
