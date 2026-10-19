@@ -1,9 +1,12 @@
-import type {
-  OrchestrationV2Command,
-  RepositoryIdentity,
-  ScopedThreadRef,
-  ThreadId,
-  ThreadPullRequestLink,
+import {
+  purposeSelectionOf,
+  savedPurposeIntentForScope,
+  type OrchestrationV2Command,
+  type PurposeSelection,
+  type RepositoryIdentity,
+  type ScopedThreadRef,
+  type ThreadId,
+  type ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import { canonicalizeGitCafePullRequestUrl } from "@t3tools/source-control-definitions/registry";
 import { threadPullRequestKeysEqual } from "@t3tools/shared/threadPullRequests";
@@ -155,6 +158,8 @@ export function threadPullRequestWatchInput(input: {
 export function createThreadPullRequestWatchAction<Result>(input: {
   readonly threadRef: ScopedThreadRef;
   readonly ownLinks: ReadonlyArray<ThreadPullRequestLink>;
+  /** Present when the environment advertises purpose v1: the thread's current selection. */
+  readonly purpose?: { readonly selection: PurposeSelection | undefined } | undefined;
   readonly watch: (command: {
     readonly environmentId: ScopedThreadRef["environmentId"];
     readonly input: WatchThreadPullRequestInput;
@@ -163,11 +168,21 @@ export function createThreadPullRequestWatchAction<Result>(input: {
   return (reference: ThreadPullRequestLink, watching: boolean) =>
     input.watch({
       environmentId: input.threadRef.environmentId,
-      input: threadPullRequestWatchInput({
-        threadId: input.threadRef.threadId,
-        ownLinks: input.ownLinks,
-        reference,
-        watching,
-      }),
+      input: {
+        ...threadPullRequestWatchInput({
+          threadId: input.threadRef.threadId,
+          ownLinks: input.ownLinks,
+          reference,
+          watching,
+        }),
+        // A new watch saves the thread's chosen purpose, as a schedule does.
+        ...(watching && input.purpose !== undefined
+          ? {
+              purposeIntent: savedPurposeIntentForScope(
+                purposeSelectionOf({ purposeSelection: input.purpose.selection }).scope,
+              ),
+            }
+          : {}),
+      },
     });
 }

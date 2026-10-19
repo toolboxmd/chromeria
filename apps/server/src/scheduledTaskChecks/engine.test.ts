@@ -1284,6 +1284,43 @@ it.effect("checked launches and crash replays keep their persisted peer origin",
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
+it.effect.each([false, true])(
+  "checked sends and crash recovery keep admitted purpose after a configuration edit (legacy=$0)",
+  (legacy) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const h = yield* harness();
+      yield* h.save({ checkCommand: "check", checkReason: "outcome" });
+      const reference = {
+        host: "github.com",
+        repository: "example/repo",
+        kind: "issue",
+        number: 11,
+      } as const;
+      const current = task({
+        threadId: null,
+        ...(legacy
+          ? {}
+          : { purposeIntent: { version: 1, intent: { type: "reference", reference } } }),
+      });
+      yield* h.decide("scheduled", NOW, current);
+      const admitted = (yield* h.state()).runs[0]!;
+      const scope = legacy
+        ? ({ type: "unscoped", reason: "legacy_no_intent" } as const)
+        : ({ type: "single", reference } as const);
+      assert.deepEqual(admitted.purpose?.scope, scope);
+      assert.deepEqual(admitted.sends[0]?.payload?.purposeSource?.scope, scope);
+      h.set({ landed: false, busy: false });
+      yield* h.runs.drive(
+        task({ ...current, purposeIntent: { version: 1, intent: { type: "unscoped" } } }),
+      );
+      const replayed = (yield* h.state()).runs[0]!;
+      assert.deepEqual(replayed.purpose, admitted.purpose);
+      assert.deepEqual(replayed.sends[0]?.payload, admitted.sends[0]?.payload);
+      assert.equal(h.sent.length, 1);
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
 it.effect(
   "bare checked sends pin task-only text, request and admitted reads across crash replay and task edits",
   () =>

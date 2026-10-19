@@ -1,4 +1,4 @@
-import { OrchestratorMcpCapabilitiesResult } from "@t3tools/contracts";
+import { OrchestratorMcpCapabilitiesResult, PurposeIntent } from "@t3tools/contracts";
 import * as Predicate from "effect/Predicate";
 import {
   type EnvironmentId,
@@ -35,6 +35,7 @@ import * as PeerMcpClient from "./PeerMcpClient.ts";
 export const FORWARDED_WAIT_CHUNK_MS = 50_000;
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
+const isPurposeIntent = Schema.is(PurposeIntent);
 
 type Scope = McpInvocationContext.McpInvocationScope;
 
@@ -150,6 +151,54 @@ const make = Effect.gen(function* () {
         params,
       ).pipe(Effect.mapError(unavailable))) as Record<string, unknown>;
       const { environmentId: _target, ...args } = encoded;
+      if (toolName === "t3_thread_send") {
+        if (args.delegatedContinuation !== undefined) {
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message:
+              "Only the origin's recorded delegated launch can supply continuation evidence.",
+          });
+        }
+        if (
+          scope.thread !== undefined &&
+          (args.purposeIntent === undefined ||
+            (isPurposeIntent(args.purposeIntent) &&
+              args.purposeIntent.intent.type === "inherit")) &&
+          (args.mode === undefined || args.mode === "auto" || args.mode === "queue")
+        ) {
+          const parent = yield* threads
+            .getThreadRecords(scope.thread.threadId, ["subagents"])
+            .pipe(Effect.mapError(unavailable));
+          const matches = parent.subagents.filter(
+            (task) =>
+              task.origin === "app_owned" &&
+              task.remoteChild?.environmentId === environmentId &&
+              task.remoteChild.threadId === args.threadId,
+          );
+          if (matches.length > 1) {
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "The original remote delegated launch is ambiguous.",
+            });
+          }
+          const task = matches[0];
+          if (task !== undefined) {
+            const evidence = task.remoteChild?.launch?.delegatedFrom.purposeLaunch;
+            // A launch that omitted intent recorded no evidence. Its omitted
+            // follow-up stays warned legacy unscoped there, as a local one does.
+            if (evidence !== undefined || args.purposeIntent !== undefined) {
+              if (evidence === undefined || evidence.threadId !== scope.thread.threadId) {
+                return yield* new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message:
+                    "The original remote delegated launch has no validated purpose evidence.",
+                });
+              }
+              args.delegatedContinuation = evidence;
+            }
+          }
+        }
+      }
       const carriesBare = (value: unknown): boolean =>
         Predicate.isObject(value) &&
         (("bare" in value && value.bare !== undefined) ||
@@ -169,6 +218,29 @@ const make = Effect.gen(function* () {
             code: "invalid_request",
             message: "The destination does not advertise bare launch; nothing was forwarded.",
           });
+      }
+      const carriesPurpose =
+        args.purposeIntent !== undefined ||
+        args.delegatedContinuation !== undefined ||
+        (Predicate.isObject(args.delegatedFrom) &&
+          "purposeLaunch" in args.delegatedFrom &&
+          args.delegatedFrom.purposeLaunch !== undefined);
+      if (carriesPurpose) {
+        const capabilities = yield* peers.call({
+          environmentId,
+          tool: "orchestrator_capabilities",
+          arguments: {},
+          limits,
+          success: OrchestratorMcpCapabilitiesResult,
+          ...(options === undefined ? {} : options),
+        });
+        if (capabilities.executionPurposeVersions?.includes(1) !== true) {
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message:
+              "The destination does not advertise execution purpose version 1; nothing was forwarded.",
+          });
+        }
       }
       // A pending upload lives here, so it cannot go with the call.
       if (

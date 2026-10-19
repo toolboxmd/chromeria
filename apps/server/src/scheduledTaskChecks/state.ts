@@ -1,3 +1,4 @@
+import { ExecutionPurpose } from "@t3tools/contracts";
 import { BareReadGrant } from "../orchestration-v2/bareReadGrant.ts";
 import { BareLaunchRequest } from "@t3tools/contracts";
 import {
@@ -47,6 +48,7 @@ export type CheckResult = typeof CheckResult.Type;
  * after a crash repeats it exactly even if the task or Prism's pick changed.
  */
 export const SendPayload = Schema.Struct({
+  purposeSource: Schema.optional(ExecutionPurpose),
   bareReadGrant: Schema.optional(BareReadGrant),
   bare: Schema.optional(BareLaunchRequest),
   text: Schema.String,
@@ -95,6 +97,7 @@ export const CommandResult = Schema.Struct({
 export type CommandResult = typeof CommandResult.Type;
 
 export const CheckedRun = Schema.Struct({
+  purpose: Schema.optional(ExecutionPurpose),
   id: TrimmedNonEmptyString,
   slot: IsoDateTime,
   /** The pinned outcome check of an agent run; command runs have none. */

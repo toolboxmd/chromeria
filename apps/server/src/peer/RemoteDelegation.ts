@@ -1,4 +1,6 @@
 import * as Prism from "../prism/PrismService.ts";
+import { executionPurposeOf } from "@t3tools/contracts";
+import * as PurposeAdmission from "../orchestration-v2/ExecutionPurpose.ts";
 import {
   CommandId,
   type EnvironmentId,
@@ -258,6 +260,25 @@ const make = Effect.gen(function* () {
           code: "invalid_request",
           message: PRISM_DELEGATE_ROLE_ERROR,
         });
+      const parentPurpose = executionPurposeOf(parentRun);
+      const resolvedPurpose = yield* PurposeAdmission.resolvePurposeIntent({
+        intent: input.purposeIntent,
+        selection: parent.thread.purposeSelection,
+        inherited: {
+          version: 1,
+          scope: parentPurpose.scope,
+          provenance: {
+            type: "parent_run",
+            threadId: parent.thread.id,
+            runId: parentRun.id,
+          },
+        },
+      }).pipe(
+        Effect.mapError(
+          (error) =>
+            new OrchestratorMcpFailure({ code: "invalid_request", message: error.message }),
+        ),
+      );
       const launch = {
         ...(input.bare === undefined ? {} : { bare: input.bare }),
         requestNamespace: scope.requestNamespace,
@@ -277,6 +298,17 @@ const make = Effect.gen(function* () {
           environmentId: hereId,
           threadId: parent.thread.id,
           title: parent.thread.title,
+          ...(input.purposeIntent === undefined
+            ? {}
+            : {
+                purposeLaunch: {
+                  environmentId: hereId,
+                  threadId: parent.thread.id,
+                  runId: parentRun.id,
+                  launchId: commandId,
+                  purpose: resolvedPurpose.purpose,
+                },
+              }),
         },
       };
       const remoteChild: OrchestrationV2RemoteTaskChild = {
@@ -287,6 +319,7 @@ const make = Effect.gen(function* () {
       const recorded = yield* threads
         .dispatch({
           type: "delegated_task.remote.request",
+          ...(input.purposeIntent === undefined ? {} : { purposeIntent: input.purposeIntent }),
           commandId,
           parentThreadId: scope.thread.threadId,
           parentRunId: parentRun.id,
@@ -473,6 +506,11 @@ const make = Effect.gen(function* () {
               ? {}
               : { interactionMode: launch.interactionMode }),
             delegatedFrom: launch.delegatedFrom,
+            ...(launch.delegatedFrom.purposeLaunch === undefined
+              ? {}
+              : {
+                  purposeIntent: { version: 1, intent: { type: "inherit" } },
+                }),
             message: task.prompt,
             clientRequestId: launch.clientRequestId,
           },

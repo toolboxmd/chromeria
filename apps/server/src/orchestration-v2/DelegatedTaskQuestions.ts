@@ -1,3 +1,4 @@
+import { purposeForRuntimeRequest } from "./ExecutionPurpose.ts";
 import {
   CommandId,
   MessageId,
@@ -73,6 +74,7 @@ export const reconcileDelegatedTaskQuestion = Effect.fnUntraced(function* <E>(
     // Success means the command and its stable receipt committed. If dispatch fails,
     // leave the old queued notice intact so a later recovery can retry the handoff.
     yield* dispatch({
+      purposeSource: yield* purposeForRuntimeRequest(task.childThreadId, request),
       type: "message.dispatch",
       commandId,
       threadId: task.threadId,

@@ -67,6 +67,7 @@ function threadDetailToShell(
   const pendingRequest =
     projection.runtimeRequests.find((request) => request.status === "pending") ?? null;
   return presentThreadShell(environmentId, {
+    purposeSelection: thread.purposeSelection,
     id: thread.id,
     projectId: thread.projectId,
     title: thread.title,

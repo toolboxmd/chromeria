@@ -1,3 +1,4 @@
+import { purposeFromCauses } from "./ExecutionPurpose.ts";
 import { CommandId, type OrchestrationV2ThreadProjection } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -199,6 +200,10 @@ export const layer = Layer.effectDiscard(
           }));
         const commandId = CommandId.make(`provider-continuation:${messageId}`);
         const dispatch = threads.dispatch({
+          purposeSource: purposeFromCauses(
+            (request.nativeCauses ?? []).map((cause) => cause.purpose),
+            (request.nativeCauses ?? []).map((cause) => cause.operationId),
+          ),
           type: "message.dispatch",
           commandId,
           threadId: request.threadId,
@@ -225,6 +230,7 @@ export const layer = Layer.effectDiscard(
             projectId: error.projectId,
             instanceId: error.instanceId,
           }).pipe(
+            Effect.andThen(request.recordDisposition?.("dropped_disabled") ?? Effect.void),
             Effect.andThen(
               request.clearIfCurrent !== undefined ? request.clearIfCurrent() : Effect.void,
             ),

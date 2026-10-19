@@ -495,3 +495,22 @@ apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts
 # Desktop preview Chrome identity (#460)
 apps/desktop/src/preview/Manager.ts
 apps/desktop/src/preview/Manager.test.ts
+
+# Execution purpose admission (#377)
+apps/mobile/src/features/threads/McpAppWebView.tsx
+apps/mobile/src/features/threads/NewTaskDraftScreen.tsx
+apps/mobile/src/features/threads/ThreadDetailScreen.tsx
+apps/mobile/src/state/pending-thread-creation.ts
+apps/mobile/src/state/thread-outbox-model.ts
+apps/mobile/src/state/thread-outbox.test.ts
+apps/mobile/src/state/use-thread-composer-state.ts
+apps/mobile/src/state/use-thread-outbox-drain.ts
+apps/server/src/mcp/toolkits/pullRequests/handlers.ts
+apps/server/src/orchestration-v2/ProviderContinuationService.test.ts
+apps/server/src/orchestration-v2/ProviderContinuationService.ts
+packages/client-runtime/src/state/models.ts
+packages/contracts/src/threadPullRequest.ts
+packages/provider-core/src/server/ProviderContinuationRequests.ts
+packages/provider-muse/src/server/adapter.ts
+packages/provider-pi/src/server/adapter.ts
+apps/server/src/mcp/toolkits/pullRequests/handlers.test.ts

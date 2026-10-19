@@ -640,4 +640,60 @@ describe("ProviderContinuationService", () => {
       );
     });
   });
+
+
+  it.effect(
+    "keeps earlier native causes for output that began before ingestion and preserves mixed or missing causes",
+    () =>
+      Effect.gen(function* () {
+        const dispatched = yield* Queue.unbounded<unknown>();
+        yield* Effect.gen(function* () {
+          const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+          const a = {
+            version: 1,
+            scope: {
+              type: "single",
+              reference: {
+                host: "github.com",
+                repository: "example/repo",
+                kind: "issue",
+                number: 11,
+              },
+            },
+            provenance: { type: "declared" },
+          } as const;
+          const b = {
+            ...a,
+            scope: { ...a.scope, reference: { ...a.scope.reference, number: 12 } },
+          } as const;
+          for (const [nativeCauses, expected] of [
+            [[{ operationId: "native:earlier-a", purpose: a }], a.scope],
+            [
+              [
+                { operationId: "native:earlier-a", purpose: a },
+                { operationId: "native:earlier-b", purpose: b },
+              ],
+              { type: "unscoped", reason: "mixed" },
+            ],
+            [
+              [{ operationId: "native:earlier-a", purpose: a }, { operationId: "native:missing" }],
+              { type: "unscoped", reason: "unknown_cause" },
+            ],
+          ] as const) {
+            yield* requests.offer({ ...request(), nativeCauses });
+            const command = (yield* Queue.take(dispatched)) as {
+              readonly purposeSource: { readonly scope: unknown };
+              readonly creationSource: string;
+            };
+            assert.deepEqual(command.purposeSource.scope, expected);
+            assert.equal(command.creationSource, "provider");
+          }
+        }).pipe(
+          Effect.provide(
+            layerTest({ dispatched, getThreadRecords: () => Effect.succeed(projection) }),
+          ),
+          Effect.scoped,
+        );
+      }),
+  );
 });

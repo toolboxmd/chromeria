@@ -185,6 +185,11 @@ One counted user-visible turn on a thread (T3 `Run`). Steering or a retry can
 give it several turns; each try is a run attempt (`RunAttempt`).
 _Avoid_: turn, pass
 
+**Native execution segment**:
+One native child start, resume, workflow member attempt or background operation
+and its initiating execution. Assigning its responses also requires a proved
+native input or turn boundary.
+
 **Queue**:
 Runs waiting on a thread (`t3_queue_*`).
 _Avoid_: inbox
@@ -205,6 +210,19 @@ _Avoid_: origin, human (Observer's old names, kept as aliases for one release)
 An owned work outcome, tracked by an Issue or PR, that may span sessions,
 threads and delegated tasks.
 _Avoid_: job, delegated task (for the outcome)
+
+**Tracking reference**:
+The host, repository, Issue or PR kind, and number that identify a task across
+runs and machines. A delivery PR link does not change that identity.
+
+**Execution purpose**:
+The task a run or native execution segment serves, or its explicit unscoped
+state. It is independent of delegated task binding and input authorship.
+_Avoid_: job ownership, thread ownership (for purpose)
+
+**Delivery relation**:
+An explicit declaration that a PR delivers a task's tracking reference. It
+neither aliases the references nor changes any execution purpose.
 
 **Delegated task**:
 One handoff from a parent to a child thread through `delegate_task` (`taskId`,

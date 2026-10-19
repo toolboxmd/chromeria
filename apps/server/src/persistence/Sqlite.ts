@@ -1,4 +1,5 @@
 import { ensureScheduledTaskBareSchema } from "./forkScheduledTaskBareSchema.ts";
+import { ensureExecutionPurposeSchema } from "./forkExecutionPurposeSchema.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as FileSystem from "effect/FileSystem";
@@ -47,6 +48,7 @@ const layerSetup = Layer.effectDiscard(
     yield* ensureThreadPeopleSchema;
     yield* ensureScheduledTaskOriginsSchema;
     yield* ensureScheduledTaskBareSchema;
+    yield* ensureExecutionPurposeSchema;
   }).pipe(Effect.withSpan("Sqlite.setup")),
 );
 
