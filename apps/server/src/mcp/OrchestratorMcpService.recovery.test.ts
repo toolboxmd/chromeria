@@ -212,6 +212,7 @@ describe("outside-agent thread read recovery", () => {
   it.effect.each([
     "none",
     "waiting_on_quota",
+    "controller_quota",
     "recovery_scheduled",
     "continued_by",
     "given_up",
@@ -225,7 +226,7 @@ describe("outside-agent thread read recovery", () => {
     const inProcess = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(Effect.provide(processLayer(path)));
     const expected =
-      state === "waiting_on_quota" || state === "reenabled"
+      state === "waiting_on_quota" || state === "reenabled" || state === "controller_quota"
         ? { state: "waiting_on_quota", resetAt }
         : state === "recovery_scheduled"
           ? { state, reason: "retry", expectedStartAt: null }
@@ -245,19 +246,32 @@ describe("outside-agent thread read recovery", () => {
         Effect.gen(function* () {
           yield* persist(
             "seed",
-            state === "waiting_on_quota" || state === "reenabled"
-              ? quotaEvents(true)
-              : state === "opted_out"
-                ? quotaEvents(false)
-                : recoveryEvents(run),
+            state === "controller_quota"
+              ? quotaEvents(true).map((event) =>
+                  event.type === "thread.created"
+                    ? { ...event, payload: { ...event.payload, limitRecovery: undefined } }
+                    : event,
+                )
+              : state === "waiting_on_quota" || state === "reenabled"
+                ? quotaEvents(true)
+                : state === "opted_out"
+                  ? quotaEvents(false)
+                  : recoveryEvents(run),
           );
-          if (state === "recovery_scheduled" || state === "stale_retry") {
+          if (
+            state === "recovery_scheduled" ||
+            state === "stale_retry" ||
+            state === "controller_quota"
+          ) {
             const error = errorFor(run);
             if (error.type !== "error") throw new Error("fixture");
             yield* (yield* Store.RecoveryStore).reconcile({
               previous: null,
               run,
-              failure: error.failure,
+              failure:
+                state === "controller_quota"
+                  ? { ...error.failure, class: "usage_limit", resetAt }
+                  : error.failure,
               stoppedOrRetired: false,
               autoResume: true,
             });

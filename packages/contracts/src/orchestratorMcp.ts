@@ -515,7 +515,8 @@ export const OrchestratorMcpThreadRun = Schema.Struct({
   startedAt: Schema.NullOr(IsoDateTime),
   completedAt: Schema.NullOr(IsoDateTime),
   restartCut: Schema.optional(OrchestrationV2RestartCutView),
-  recovery: OrchestratorMcpRunRecovery,
+  // Older linked environments omit this field; absence means unknown, not no recovery.
+  recovery: Schema.optional(OrchestratorMcpRunRecovery),
 });
 export type OrchestratorMcpThreadRun = typeof OrchestratorMcpThreadRun.Type;
 

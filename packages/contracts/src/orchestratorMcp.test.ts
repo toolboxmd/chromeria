@@ -9,6 +9,7 @@ import {
   OrchestratorMcpThreadInterruptInput,
   OrchestratorMcpThreadListInput,
   OrchestratorMcpThreadReadInput,
+  OrchestratorMcpThreadRun,
   OrchestratorMcpThreadSendInput,
   OrchestratorMcpThreadWaitInput,
 } from "./orchestratorMcp.ts";
@@ -18,11 +19,29 @@ const decodeDelegateTaskInput = Schema.decodeUnknownSync(OrchestratorMcpDelegate
 const decodeDelegateTaskResult = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskResult);
 const decodeThreadInterruptInput = Schema.decodeUnknownSync(OrchestratorMcpThreadInterruptInput);
 const decodeThreadListInput = Schema.decodeUnknownSync(OrchestratorMcpThreadListInput);
+const decodeThreadRun = Schema.decodeUnknownSync(OrchestratorMcpThreadRun);
 const decodeThreadReadInput = Schema.decodeUnknownSync(OrchestratorMcpThreadReadInput);
 const decodeThreadSendInput = Schema.decodeUnknownSync(OrchestratorMcpThreadSendInput);
 const decodeThreadWaitInput = Schema.decodeUnknownSync(OrchestratorMcpThreadWaitInput);
 
 describe("orchestrator MCP contracts", () => {
+  it("reads runs from older linked environments without inventing recovery facts", () => {
+    const olderRun = {
+      runId: "run:older-peer",
+      ordinal: 1,
+      status: "failed",
+      providerInstanceId: "codex",
+      model: "fixed",
+      requestedAt: "2026-10-08T10:00:00Z",
+      startedAt: null,
+      completedAt: "2026-10-08T10:01:00Z",
+    };
+    expect(decodeThreadRun(olderRun)).toEqual(olderRun);
+    expect(
+      decodeThreadRun({ ...olderRun, recovery: { state: "given_up", reason: "exhausted" } })
+        .recovery,
+    ).toEqual({ state: "given_up", reason: "exhausted" });
+  });
   it("accepts explicit worktree isolation and keeps shared delegation as the default", () => {
     expect(decodeDelegateTaskInput({ task: "Review changes" }).isolation).toBeUndefined();
     expect(

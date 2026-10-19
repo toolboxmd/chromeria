@@ -212,7 +212,11 @@ export const readRecoveryState = Effect.fn("Prism.readRecoveryState")(function* 
 /** Public read projection, without observing a failure or changing recovery policy. */
 export const readRunRecovery = Effect.fn("Prism.readRunRecovery")(function* (
   run: OrchestrationV2Run,
-): Effect.fn.Return<OrchestratorMcpThreadRun["recovery"], SqlError, SqlClient.SqlClient> {
+): Effect.fn.Return<
+  NonNullable<OrchestratorMcpThreadRun["recovery"]>,
+  SqlError,
+  SqlClient.SqlClient
+> {
   if (
     run.status !== "failed" &&
     !(

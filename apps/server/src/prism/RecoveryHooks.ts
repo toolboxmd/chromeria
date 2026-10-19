@@ -26,7 +26,7 @@ import { retryAdmission } from "./recoveryAdmission.ts";
 export class RecoveryHooks extends Context.Reference<{
   readonly readRunRecovery: (
     run: OrchestrationV2Run,
-  ) => Effect.Effect<OrchestratorMcpThreadRun["recovery"], SqlError>;
+  ) => Effect.Effect<NonNullable<OrchestratorMcpThreadRun["recovery"]>, SqlError>;
   readonly holdsFinalization: (
     threadId: ThreadId,
     expectedRunId: RunId,
