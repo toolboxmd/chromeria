@@ -76,7 +76,10 @@ export const SpectrumState = Schema.Struct({
   schedulerRunId: Schema.NullOr(Schema.String),
   question: Schema.String,
   mode: Schema.Literals(["council", "free"]),
-  limit: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 })),
+  turnsPerColor: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 12 })).pipe(
+    Schema.withDecodingDefault(Effect.succeed(3)),
+  ),
+  limit: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
   moderator: NonNegativeInt,
   participants: Schema.Array(Participant).check(
     Schema.isMinLength(2),

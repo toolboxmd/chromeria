@@ -87,6 +87,7 @@ const registry = Layer.mock(Providers.ProviderRegistry)({
   ),
 });
 const base = Layer.mergeAll(
+  Settings.layerTest(),
   Layer.mock(BareProjects.ProjectStoreV2)({}),
   database,
   adapters,
