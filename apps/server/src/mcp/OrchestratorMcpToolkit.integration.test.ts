@@ -1987,7 +1987,8 @@ describe("orchestrator MCP toolkit", () => {
             expect(serializedScheduleCall.isError).toBe(false);
             expect(serializedScheduleCall.structuredContent).toMatchObject({
               schedule: { type: "interval", everyMs: 3_600_000 },
-              boundThreadId: parentThreadId,
+              // An hour is past the 55-minute bind window, so an omitted bind starts fresh.
+              boundThreadId: null,
             });
             const serializedScheduledTaskId = (
               serializedScheduleCall.structuredContent as { scheduledTaskId: string }
