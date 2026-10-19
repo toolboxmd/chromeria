@@ -837,9 +837,9 @@ it.effect(
         yield* TestClock.adjust(15_000);
         yield* Deferred.succeed(secondRelease, undefined);
         yield* Fiber.join(second);
-        yield* TestClock.adjust(0);
-        expect(yield* Effect.sync(() => third.pollUnsafe())).toBeDefined();
+        // Releasing the prior request does not finish the queued MCP response's fiber.
         const result = yield* Fiber.join(third);
+        expect(yield* Clock.currentTimeMillis).toBe(40_000);
         expect(result.status).toBe("unavailable");
         expect(
           result.engines.every(
