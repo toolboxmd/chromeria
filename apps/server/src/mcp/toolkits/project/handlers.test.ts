@@ -201,6 +201,7 @@ it.effect("attributes a launched thread's first message to the calling thread", 
     } as OrchestrationV2ThreadShell;
     let launchedSender: ThreadId | undefined;
     let launchedOwner: string | undefined;
+    let launchedRole: string | undefined;
     const layerDependencies = Layer.mergeAll(
       ServerSettings.layerTest(),
       NodeCrypto.layer,
@@ -224,6 +225,7 @@ it.effect("attributes a launched thread's first message to the calling thread", 
         launch: (input) => {
           launchedSender = input.initialMessage?.senderThreadId;
           launchedOwner = input.owner;
+          launchedRole = input.prismRole;
           return Effect.succeed({
             threadId: input.threadId,
             projection: {
@@ -251,7 +253,11 @@ it.effect("attributes a launched thread's first message to the calling thread", 
       ),
     );
     const result = yield* toolkit
-      .handle("t3_thread_launch", { title: "Audit", message: "Review the change" })
+      .handle("t3_thread_launch", {
+        title: "Audit",
+        message: "Review the change",
+        prismRole: "promachos",
+      })
       .pipe(
         Stream.unwrap,
         Stream.runCollect,
@@ -261,6 +267,8 @@ it.effect("attributes a launched thread's first message to the calling thread", 
     expect(launchedSender).toBe(sourceThreadId);
     // Fork: a launched thread belongs to the caller's owner (toolboxmd/chromeria#170).
     expect(launchedOwner).toBe("Pauli");
+    // Fork: an agent cannot make itself the Promachos (toolboxmd/chromeria#532).
+    expect(launchedRole).toBeUndefined();
   }),
 );
 

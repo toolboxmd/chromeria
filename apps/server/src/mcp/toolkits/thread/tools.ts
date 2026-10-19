@@ -204,7 +204,7 @@ const PendingRequestReadTool = Tool.make("t3_pending_request_read", {
 const PendingRequestRespondTool = Tool.make("t3_pending_request_respond", {
   ...commandTool,
   description:
-    "Answer a pending question or descendant approval using the existing runtime response command. The child keeps its permission mode.",
+    "Answer a pending question or descendant approval using the existing runtime response command. The child keeps its permission mode. A Promachos conversation may also answer for the user when no ancestor can: the thread has no parent, or its parent is deleted or idle for 30 minutes; the answer is recorded as the Promachos's.",
   parameters: McpRouting.parameters(
     Schema.Struct({
       ...requestTarget,

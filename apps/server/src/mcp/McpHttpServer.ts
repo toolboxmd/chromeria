@@ -19,6 +19,7 @@ import {
   PreviewAutomationError,
   ProviderInteractionMode,
   RuntimeMode,
+  ThreadId,
 } from "@t3tools/contracts";
 
 import packageJson from "../../package.json" with { type: "json" };
@@ -182,6 +183,23 @@ const withModeLimit = (
     : { ...invocation, client: { ...invocation.client, narrowedTo: limit.value } };
 };
 
+/**
+ * A linked environment passes on that its caller is the Promachos there
+ * (toolboxmd/chromeria#532). Only a peer link may say so; other clients' headers are ignored.
+ */
+export const withPromachosThread = (
+  invocation: McpInvocationContext.McpInvocationScope | undefined,
+  headers: Readonly<Record<string, string | undefined>>,
+): McpInvocationContext.McpInvocationScope | undefined => {
+  const header = headers[McpInvocationContext.PROMACHOS_THREAD_HEADER]?.trim();
+  if (invocation?.client?.linked !== true || header === undefined || header.length === 0)
+    return invocation;
+  return {
+    ...invocation,
+    client: { ...invocation.client, promachosThreadId: ThreadId.make(header) },
+  };
+};
+
 const makeMcpAuthMiddleware = Effect.gen(function* () {
   const registry = yield* McpSessionRegistry.McpSessionRegistry;
   const clients = yield* Effect.serviceOption(McpClientAuthenticator);
@@ -207,7 +225,7 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
         offerOAuth: Option.isSome(clients) && !looksLikeProviderToken(token),
       });
     }
-    const limited = withModeLimit(invocation, request);
+    const limited = withPromachosThread(withModeLimit(invocation, request), request.headers);
     if (limited === undefined) return invalidModeLimit;
     return yield* httpEffect.pipe(
       Effect.provideService(McpInvocationContext.McpInvocationContext, limited),

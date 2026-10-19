@@ -1,4 +1,8 @@
-import { OrchestratorMcpCapabilitiesResult, PurposeIntent } from "@t3tools/contracts";
+import {
+  isPromachosThread,
+  OrchestratorMcpCapabilitiesResult,
+  PurposeIntent,
+} from "@t3tools/contracts";
 import * as Predicate from "effect/Predicate";
 import {
   type EnvironmentId,
@@ -107,7 +111,7 @@ const make = Effect.gen(function* () {
    * peer would see this environment's session, not the link the work came
    * from, so its fence could not hold.
    */
-  const callerLimits = (scope: Scope) =>
+  const forwardingCaller = (scope: Scope) =>
     loadCaller().pipe(
       Effect.tap((caller) =>
         callerLinkOrigin(caller) === undefined
@@ -119,7 +123,6 @@ const make = Effect.gen(function* () {
               }),
             ),
       ),
-      Effect.map((caller) => caller.limits),
       Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
       Effect.provideService(ThreadManagement.ThreadManagementService, threads),
     );
@@ -146,7 +149,8 @@ const make = Effect.gen(function* () {
     options?: { readonly expectedLinkIdentity: string },
   ) =>
     Effect.gen(function* () {
-      const limits = yield* callerLimits(scope);
+      const caller = yield* forwardingCaller(scope);
+      const limits = caller.limits;
       const encoded = (yield* Schema.encodeUnknownEffect(parameters as Schema.Encoder<unknown>)(
         params,
       ).pipe(Effect.mapError(unavailable))) as Record<string, unknown>;
@@ -263,6 +267,12 @@ const make = Effect.gen(function* () {
         limits,
         success: success as Schema.Decoder<A>,
         ...(options === undefined ? {} : options),
+        // The peer decides whether the Promachos may answer there (toolboxmd/chromeria#532).
+        ...(toolName.startsWith("t3_pending_request_") &&
+        caller.caller !== undefined &&
+        isPromachosThread(caller.caller)
+          ? { promachosThreadId: caller.caller.id }
+          : {}),
       });
     });
 

@@ -10,10 +10,11 @@ import {
 import * as Effect from "effect/Effect";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
 
-import { isCallerAncestor, readPendingRequest } from "../../../childThreads/pendingRequests.ts";
+import { readPendingRequest, requestAnswerer } from "../../../childThreads/pendingRequests.ts";
 import { assertSameLink } from "../../linkOrigin.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import {
+  assertTargetWithinLimits,
   dispatchFailure,
   newCommandId,
   readCaller,
@@ -188,7 +189,8 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     Effect.gen(function* () {
       const context = yield* readThread(input.threadId, ["runtimeRequests"]);
       const { projection } = context;
-      const descendant = yield* isCallerAncestor(context, projection.thread.id);
+      const answerer = yield* requestAnswerer(context, projection.thread);
+      const descendant = answerer !== undefined && answerer.kind !== "own";
       return {
         requestIds: projection.runtimeRequests
           .filter(
@@ -218,39 +220,45 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           };
     }),
   ),
-  t3_pending_request_respond: writesThread((input) =>
-    Effect.gen(function* () {
-      const context = yield* readPendingRequest(input);
-      const { threads, projection, item } = context;
-      if (
-        context.caller !== undefined &&
-        context.caller.id !== projection.thread.id &&
-        !(yield* isCallerAncestor(context, projection.thread.id))
-      )
-        return yield* new OrchestratorMcpFailure({
-          code: "capability_denied",
-          message: "Only an ancestor thread may answer a descendant request.",
-        });
-      if (
-        (item.type === "approval_request" && input.decision === undefined) ||
-        (item.type === "user_input_request" && input.answers === undefined)
-      )
-        return yield* new OrchestratorMcpFailure({
-          code: "invalid_request",
-          message: "Pass decision for an approval or answers for a question.",
-        });
-      const result = yield* threads
-        .dispatch({
-          type: "runtime-request.respond",
-          threadId: projection.thread.id,
-          commandId: yield* newCommandId(),
-          requestId: input.requestId,
-          answers: item.type === "user_input_request" ? input.answers : undefined,
-          decision: item.type === "approval_request" ? input.decision : undefined,
-        })
-        .pipe(Effect.mapError(dispatchFailure));
-      return { sequence: result.sequence };
-    }),
+  // A linked Promachos may answer the user's own threads here, outside its link's
+  // fence; the handler fences every other linked answer (toolboxmd/chromeria#532).
+  t3_pending_request_respond: McpToolAccess.writesThreads(
+    (input, scope) => (scope.client?.promachosThreadId === undefined ? [input.threadId] : []),
+    (input) =>
+      Effect.gen(function* () {
+        const context = yield* readPendingRequest(input);
+        const { threads, projection, item, answerer } = context;
+        if (answerer === undefined)
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message:
+              "Only an ancestor thread, or the Promachos once no ancestor is active, may answer a descendant request.",
+          });
+        if (context.scope.client?.promachosThreadId !== undefined) {
+          yield* assertTargetWithinLimits(context.limits, projection.thread);
+          if (answerer.kind !== "promachos") yield* assertSameLink(context, projection.thread);
+        }
+        if (
+          (item.type === "approval_request" && input.decision === undefined) ||
+          (item.type === "user_input_request" && input.answers === undefined)
+        )
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "Pass decision for an approval or answers for a question.",
+          });
+        const result = yield* threads
+          .dispatch({
+            type: "runtime-request.respond",
+            threadId: projection.thread.id,
+            commandId: yield* newCommandId(),
+            requestId: input.requestId,
+            answers: item.type === "user_input_request" ? input.answers : undefined,
+            decision: item.type === "approval_request" ? input.decision : undefined,
+            ...(answerer.kind === "promachos" ? { answeredBy: answerer.answeredBy } : {}),
+          })
+          .pipe(Effect.mapError(dispatchFailure));
+        return { sequence: result.sequence };
+      }),
   ),
   t3_queue_list: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
