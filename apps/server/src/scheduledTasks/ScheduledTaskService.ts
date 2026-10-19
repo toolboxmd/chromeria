@@ -813,10 +813,21 @@ export const layer = Layer.effect(
                     }),
                   ),
                 );
-        const resolvedPurpose = yield* PurposeAdmission.resolvePurposeIntent({ intent: active.purposeIntent });
-        const purposeSource: ExecutionPurpose = active.purposeIntent === undefined
-          ? resolvedPurpose.purpose
-          : { version: 1, scope: resolvedPurpose.purpose.scope, provenance: { type: "schedule", scheduledTaskId: active.id } };
+        const resolvedPurpose = yield* PurposeAdmission.resolvePurposeIntent({
+          intent: active.purposeIntent,
+        }).pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not resolve scheduled task purpose.", { taskId: active.id, cause }),
+          ),
+        );
+        const purposeSource: ExecutionPurpose =
+          active.purposeIntent === undefined
+            ? resolvedPurpose.purpose
+            : {
+                version: 1,
+                scope: resolvedPurpose.purpose.scope,
+                provenance: { type: "schedule", scheduledTaskId: active.id },
+              };
         return active.threadId === null
           ? yield* Effect.exit(
               dispatchVia(
