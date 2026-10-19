@@ -1,3 +1,5 @@
+import * as ThreadMcpConfig from "./ThreadMcpConfig.ts";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as BareLaunch from "./BareLaunch.ts";
 import * as RecoveryWaitSignals from "../peer/recoveryWaitSignals.ts";
 import * as RecoveryWait from "../peer/recoveryWait.ts";
@@ -145,6 +147,9 @@ const layerContextHandoffServiceProvided = ContextHandoffService.layer.pipe(
 
 const layerProviderAdapterRegistryProvided =
   ProviderAdapterRegistry.layerFromProviderInstanceRegistry;
+export const layerThreadMcpConfig = ThreadMcpConfig.layer.pipe(
+  Layer.provide(ServerSecretStore.layer),
+);
 export const layerBareLaunchProvided = BareLaunch.layer.pipe(
   Layer.provide(layerProviderAdapterRegistryProvided),
 );
@@ -309,6 +314,8 @@ const layerManagedProjectFoldersProvided = ManagedProjectFolders.layer.pipe(
   Layer.provide(layerProjectService),
 );
 const layerThreadLaunchProvided = ThreadLaunchService.layer.pipe(
+  Layer.provide(layerThreadMcpConfig),
+  Layer.provide(layerProviderAdapterRegistryProvided),
   Layer.provide(
     Layer.mergeAll(
       layerBareLaunchProvided,
@@ -431,6 +438,7 @@ const layerSpectrumProvided = Spectrum.layer.pipe(
 
 export const layerProduction = Layer.mergeAll(
   layerBareLaunchProvided,
+  layerThreadMcpConfig,
   layerSpectrumProvided,
   WightMode.layer.pipe(
     Layer.provide(Layer.mergeAll(ProjectionStore.layer, layerThreadManagementProvided)),

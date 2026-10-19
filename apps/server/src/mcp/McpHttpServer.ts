@@ -1,3 +1,5 @@
+import { ThreadMcpToolkit } from "./toolkits/threadMcp/tools.ts";
+import * as ThreadMcpHandlers from "./toolkits/threadMcp/handlers.ts";
 import * as SpectrumToolkit from "../spectrum/mcpToolkit.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -934,6 +936,7 @@ export const layer = Layer.mergeAll(
   layerPreviewToolkit,
   layerOrchestratorToolkit,
   layerThreadToolkit,
+  toolkitRegistration(ThreadMcpToolkit, ThreadMcpHandlers.layer),
   layerAttachmentToolkit,
   layerProjectRegistration,
   layerEnvironmentToolkit,

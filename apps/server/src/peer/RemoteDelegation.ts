@@ -1,3 +1,8 @@
+import {
+  toolAllowlistsEqual,
+  toolPolicyModeRejection,
+} from "@t3tools/provider-core/server/toolPolicy";
+import * as ThreadMcpConfig from "../orchestration-v2/ThreadMcpConfig.ts";
 import * as Prism from "../prism/PrismService.ts";
 import { executionPurposeOf } from "@t3tools/contracts";
 import * as PurposeAdmission from "../orchestration-v2/ExecutionPurpose.ts";
@@ -109,6 +114,7 @@ const isFinal = (error: OrchestratorMcpFailure) =>
   error.code === "run_not_found";
 
 const make = Effect.gen(function* () {
+  const configs = yield* Effect.serviceOption(ThreadMcpConfig.ThreadMcpConfig);
   const forwarding = yield* PeerForwarding.PeerForwarding;
   const links = yield* PeerLinks.PeerLinks;
   const threads = yield* ThreadManagement.ThreadManagementService;
@@ -279,8 +285,52 @@ const make = Effect.gen(function* () {
             new OrchestratorMcpFailure({ code: "invalid_request", message: error.message }),
         ),
       );
+      const earlier = (yield* threads.getThreadRecords(scope.thread.threadId, ["subagents"]).pipe(
+        Effect.mapError(
+          () =>
+            new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: "Unable to read prior delegated launches.",
+            }),
+        ),
+      )).subagents.find(
+        (task) =>
+          task.remoteChild?.launch?.requestNamespace === scope.requestNamespace &&
+          task.remoteChild.launch.clientRequestId === `delegate:${scope.thread.threadId}:${key}`,
+      )?.remoteChild?.launch;
+      if (earlier !== undefined && !toolAllowlistsEqual(input.tools, earlier.tools))
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "Launch tool allowlist changed.",
+        });
+      if (input.tools !== undefined) {
+        const modeError = toolPolicyModeRejection({
+          runtimeMode: runtimeMode ?? inheritedRuntimeMode,
+          interactionMode: interactionMode ?? parent.thread.interactionMode,
+        });
+        if (modeError !== undefined)
+          return yield* new OrchestratorMcpFailure({ code: "invalid_request", message: modeError });
+      }
+      let safeTools = earlier?.tools;
+      if (input.tools !== undefined && earlier === undefined) {
+        if (Option.isNone(configs))
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "Thread MCP configuration service is unavailable.",
+          });
+        safeTools = yield* configs.value.prepare(input.tools).pipe(
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "Thread MCP configuration could not be saved.",
+              }),
+          ),
+        );
+      }
       const launch = {
         ...(input.bare === undefined ? {} : { bare: input.bare }),
+        ...(safeTools === undefined ? {} : { tools: safeTools }),
         requestNamespace: scope.requestNamespace,
         clientRequestId: `delegate:${scope.thread.threadId}:${key}`,
         linkIdentity: link.launchIdentity,
@@ -484,6 +534,27 @@ const make = Effect.gen(function* () {
         ),
         requestNamespace: launch.requestNamespace,
       };
+      let tools: import("@t3tools/contracts").ThreadToolsRequest | undefined;
+      if (launch.tools !== undefined) {
+        let mcpServers: import("@t3tools/contracts").ThreadMcpServers | undefined;
+        if (launch.tools.mcpConfigId !== undefined) {
+          if (Option.isNone(configs))
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "Thread MCP configuration service is unavailable.",
+            });
+          mcpServers = yield* configs.value.read(launch.tools.mcpConfigId).pipe(
+            Effect.mapError(
+              () =>
+                new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message: "Thread MCP configuration is unavailable.",
+                }),
+            ),
+          );
+        }
+        tools = { allow: launch.tools.allow, ...(mcpServers === undefined ? {} : { mcpServers }) };
+      }
       const launched = yield* forwarding
         .call(
           scope,
@@ -492,6 +563,7 @@ const make = Effect.gen(function* () {
           {
             projectId: launch.projectId,
             ...(launch.bare === undefined ? {} : { bare: launch.bare }),
+            ...(tools === undefined ? {} : { tools }),
             title: launch.title,
             ...(launch.modelSelection === undefined
               ? {}
