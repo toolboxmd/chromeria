@@ -7435,16 +7435,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
 
       const parentPurpose = executionPurposeOf(parentRun);
-      if (
-        command.purposeIntent?.intent.type === "inherit" &&
-        parentPurpose.scope.type !== "single"
-      ) {
-        return yield* mapDispatchError(command)(
-          Effect.fail(
-            new ExecutionPurpose.PurposeAdmissionError({ reason: "inherit_source_missing" }),
-          ),
-        );
-      }
       const delegatedPurpose = yield* ExecutionPurpose.resolvePurposeIntent({
         intent: command.purposeIntent,
         selection: parentProjection.thread.purposeSelection,

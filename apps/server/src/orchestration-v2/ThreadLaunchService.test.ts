@@ -2152,6 +2152,36 @@ it.effect("launch receipt replay refuses inheritance from a different-purpose pa
   }).pipe(Effect.provide(harness.layer));
 });
 
+it.effect("a launch inheriting a deliberately unscoped parent run keeps that exact scope", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const parent = yield* launches.launch({
+      ...launchInput({
+        command: "purpose-unscoped-parent",
+        thread: "purpose-unscoped-parent",
+        message: "Parent fixture",
+      }),
+      purposeIntent: { version: 1, intent: { type: "unscoped" } },
+    });
+    const parentRun = { threadId: parent.threadId, runId: parent.projection.runs[0]!.id };
+    const child = yield* launches.launch({
+      ...launchInput({
+        command: "purpose-unscoped-child",
+        thread: "purpose-unscoped-child",
+        message: "Child fixture",
+      }),
+      purposeIntent: { version: 1, intent: { type: "inherit" } },
+      purposeParentRun: parentRun,
+    });
+    assert.deepEqual(child.projection.runs[0]?.purpose, {
+      version: 1,
+      scope: { type: "unscoped", reason: "deliberate" },
+      provenance: { type: "parent_run", ...parentRun },
+    });
+  }).pipe(Effect.provide(harness.layer));
+});
+
 it.effect("an agent's launch never starts work above the modes it asks for", () => {
   const harness = makeHarness();
   return Effect.gen(function* () {

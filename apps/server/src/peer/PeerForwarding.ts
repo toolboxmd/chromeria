@@ -184,13 +184,18 @@ const make = Effect.gen(function* () {
           const task = matches[0];
           if (task !== undefined) {
             const evidence = task.remoteChild?.launch?.delegatedFrom.purposeLaunch;
-            if (evidence === undefined || evidence.threadId !== scope.thread.threadId) {
-              return yield* new OrchestratorMcpFailure({
-                code: "invalid_request",
-                message: "The original remote delegated launch has no validated purpose evidence.",
-              });
+            // A launch that omitted intent recorded no evidence. Its omitted
+            // follow-up stays warned legacy unscoped there, as a local one does.
+            if (evidence !== undefined || args.purposeIntent !== undefined) {
+              if (evidence === undefined || evidence.threadId !== scope.thread.threadId) {
+                return yield* new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message:
+                    "The original remote delegated launch has no validated purpose evidence.",
+                });
+              }
+              args.delegatedContinuation = evidence;
             }
-            args.delegatedContinuation = evidence;
           }
         }
       }

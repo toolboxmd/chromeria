@@ -261,12 +261,6 @@ const make = Effect.gen(function* () {
           message: PRISM_DELEGATE_ROLE_ERROR,
         });
       const parentPurpose = executionPurposeOf(parentRun);
-      if (input.purposeIntent?.intent.type === "inherit" && parentPurpose.scope.type !== "single") {
-        return yield* new OrchestratorMcpFailure({
-          code: "invalid_request",
-          message: "Purpose inheritance requires the exact scoped parent run.",
-        });
-      }
       const resolvedPurpose = yield* PurposeAdmission.resolvePurposeIntent({
         intent: input.purposeIntent,
         selection: parent.thread.purposeSelection,

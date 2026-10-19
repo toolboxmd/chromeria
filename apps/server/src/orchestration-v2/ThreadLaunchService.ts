@@ -1048,7 +1048,7 @@ const make = Effect.gen(function* () {
           .getThreadRecords(source.threadId, ["runs"])
           .pipe(Effect.mapError(mapError(input, "dispatch-message")));
         const run = parent.runs.find((candidate) => candidate.id === source.runId);
-        if (run === undefined || executionPurposeOf(run).scope.type !== "single") {
+        if (run === undefined) {
           return yield* mapError(
             input,
             "dispatch-message",

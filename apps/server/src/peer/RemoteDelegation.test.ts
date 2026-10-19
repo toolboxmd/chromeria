@@ -26,6 +26,7 @@ import {
   type Project,
   type RepositoryIdentity,
   type ExecutionPurpose,
+  LEGACY_EXECUTION_PURPOSE,
   OrchestratorMcpThreadSendResult,
   RunId,
   ThreadId,
@@ -1009,6 +1010,81 @@ it.effect.each([false, true])(
           expect(JSON.stringify(missing.content)).toContain("remote purpose launch");
           expect((yield* actual.threads.getThreadProjection(childId)).runs).toEqual(after.runs);
         }
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect.each(["omitted", "inherit"] as const)(
+  "a remote child of an unscoped parent launched with $0 intent starts and continues",
+  (launchIntent) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const actual = yield* makeRealBox;
+        const b = yield* servePeer(box, boxToolkitLayer(thread, actual));
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers, linking);
+        yield* linkTo(a.links, b, "full-access");
+        const deliberate = { type: "unscoped", reason: "deliberate" } as const;
+        yield* seedParent(a, { version: 1, scope: deliberate, provenance: { type: "declared" } });
+        const launched = yield* a.call("delegate_task", {
+          task: "Unscoped purpose fixture in an isolated peer.",
+          target: {
+            environmentId: box.environmentId,
+            providerInstanceId: instanceId,
+            model: "gpt-5.4",
+          },
+          ...(launchIntent === "inherit"
+            ? { purposeIntent: { version: 1, intent: { type: "inherit" } } }
+            : {}),
+          mode: "async",
+          clientRequestId: `remote-unscoped-${launchIntent}`,
+        });
+        expect(launched.isError, JSON.stringify(launched.content)).toBe(false);
+        const childId = (yield* Ref.get(thread.launched))!;
+        const child = yield* actual.threads.getThreadProjection(childId);
+        const original = child.runs[0]!;
+        const expectedScope =
+          launchIntent === "inherit"
+            ? deliberate
+            : { type: "unscoped", reason: "legacy_no_intent" };
+        expect(original.purpose?.scope ?? LEGACY_EXECUTION_PURPOSE.scope).toEqual(expectedScope);
+        if (launchIntent === "inherit") {
+          expect(child.thread.delegatedFrom?.purposeLaunch?.purpose).toEqual({
+            version: 1,
+            scope: deliberate,
+            provenance: { type: "parent_run", threadId: parentThreadId, runId: parentRunId },
+          });
+        } else {
+          expect(child.thread.delegatedFrom?.purposeLaunch).toBeUndefined();
+        }
+        const now = yield* DateTime.now;
+        yield* actual.sink.write({
+          events: [
+            {
+              id: EventId.make(`remote-unscoped-${launchIntent}-stopped`),
+              type: "run.updated",
+              threadId: childId,
+              occurredAt: now,
+              payload: { ...original, status: "completed", completedAt: now },
+            },
+          ],
+        });
+        const continued = yield* a.call("t3_thread_send", {
+          environmentId: box.environmentId,
+          threadId: childId,
+          message: "Continue the delegated job.",
+          clientRequestId: `remote-unscoped-${launchIntent}-continue`,
+        });
+        expect(continued.isError, JSON.stringify(continued.content)).toBe(false);
+        expect(
+          (continued.structuredContent as { purpose: { scope: unknown } }).purpose.scope,
+        ).toEqual(expectedScope);
+        expect((yield* actual.threads.getThreadProjection(childId)).runs).toHaveLength(2);
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

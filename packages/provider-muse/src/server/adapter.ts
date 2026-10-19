@@ -100,7 +100,7 @@ const MuseProviderCapabilitiesV2 = {
     nativeInputs: "unsupported",
     childSegments: "unsupported",
     backgroundInventory: "unsupported",
-    nativeUsageFinality: "main_agent_only",
+    nativeUsageFinality: "unavailable",
   },
   runtimePolicy: { enforcement: "native" },
   sessions: {

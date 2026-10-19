@@ -553,6 +553,78 @@ it.effect(
     }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("a delegated child inherits a deliberately unscoped parent run exactly", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const now = yield* DateTime.now;
+    const parentId = ThreadId.make("thread:unscoped-inherit-parent");
+    yield* createThread(parentId);
+    yield* orchestrator.dispatch(
+      message(parentId, "unscoped-inherit-parent", { version: 1, intent: { type: "unscoped" } }),
+    );
+    const parentRun = (yield* orchestrator.getThreadProjection(parentId)).runs[0]!;
+    const parentNodeId = NodeId.make("node:unscoped-inherit-parent");
+    yield* sink.write({
+      commandId: CommandId.make("fixture:activate-unscoped-inherit-parent"),
+      events: [
+        {
+          id: EventId.make("event:unscoped-inherit-parent-run"),
+          type: "run.updated",
+          threadId: parentId,
+          occurredAt: now,
+          payload: { ...parentRun, rootNodeId: parentNodeId, status: "running", startedAt: now },
+        },
+        {
+          id: EventId.make("event:unscoped-inherit-parent-node"),
+          type: "node.updated",
+          threadId: parentId,
+          occurredAt: now,
+          payload: {
+            id: parentNodeId,
+            threadId: parentId,
+            runId: parentRun.id,
+            parentNodeId: null,
+            rootNodeId: parentNodeId,
+            kind: "root_turn",
+            status: "running",
+            countsForRun: true,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            runtimeRequestId: null,
+            checkpointScopeId: null,
+            startedAt: now,
+            completedAt: null,
+          },
+        },
+      ],
+    });
+    yield* orchestrator.dispatch({
+      type: "delegated_task.request",
+      commandId: CommandId.make("unscoped-inherit-delegate"),
+      parentThreadId: parentId,
+      parentRunId: parentRun.id,
+      parentNodeId,
+      task: "isolated child fixture",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      createdBy: "agent",
+      creationSource: "mcp",
+      completionWake: "always",
+      purposeIntent: { version: 1, intent: { type: "inherit" } },
+    });
+    const task = (yield* orchestrator.getThreadProjection(parentId)).subagents[0]!;
+    const child = yield* orchestrator.getThreadProjection(task.childThreadId!);
+    assert.deepEqual(child.runs[0]?.purpose, {
+      version: 1,
+      scope: { type: "unscoped", reason: "deliberate" },
+      provenance: { type: "parent_run", threadId: parentId, runId: parentRun.id },
+    });
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect(
   "an unscoped parent's continuation keeps launch A; human B keeps the job and notifies with B",
   () =>
