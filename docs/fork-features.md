@@ -2466,7 +2466,7 @@ sources and reasons.
 ```json
 {
   "id": "preview-chrome-identity",
-  "purpose": "Apply a paired Chrome UA and client-hint override only to listed desktop preview sites, retaining native identity elsewhere.",
+  "purpose": "Apply a paired Chrome identity to committed listed preview main frames, with abort cleanup and native iframe/worker identity.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/460"],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/470"],
   "newFiles": [

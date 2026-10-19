@@ -631,7 +631,11 @@ describe("PreviewManager", () => {
             off: vi.fn(),
             sendCommand: vi.fn(async () => undefined),
           };
+          const events = new Map<string, (...args: unknown[]) => unknown>();
           const contents = {
+            on: (event: string, listener: (...args: unknown[]) => unknown) =>
+              events.set(event, listener),
+            off: (event: string) => events.delete(event),
             id: 42,
             isDestroyed: () => false,
             isDevToolsOpened: () => false,
@@ -656,7 +660,14 @@ describe("PreviewManager", () => {
                   );
                 }),
             );
-          expect(yield* navigate("https://web.whatsapp.com/")).toEqual({ cancel: false });
+          expect(yield* navigate("https://web.whatsapp.com/")).toEqual({});
+          expect(debuggee.sendCommand).not.toHaveBeenCalled();
+          const commit = (url: string) =>
+            Effect.promise(() =>
+              Promise.resolve(events.get("did-frame-navigate")?.({}, url, 200, "OK", true, 1, 1)),
+            );
+          yield* commit("https://web.whatsapp.com/");
+          expect(previewSession.webRequest.onBeforeSendHeaders).not.toHaveBeenCalled();
           expect(debuggee.sendCommand).toHaveBeenCalledWith(
             "Emulation.setUserAgentOverride",
             expect.objectContaining({
@@ -667,7 +678,8 @@ describe("PreviewManager", () => {
               }),
             }),
           );
-          expect(yield* navigate("https://dash.cloudflare.com/login")).toEqual({ cancel: false });
+          expect(yield* navigate("https://dash.cloudflare.com/login")).toEqual({});
+          yield* commit("https://dash.cloudflare.com/login");
           expect(debuggee.sendCommand).toHaveBeenLastCalledWith("Emulation.setUserAgentOverride", {
             userAgent: "",
           });

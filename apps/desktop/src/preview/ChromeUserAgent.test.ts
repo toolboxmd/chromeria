@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { chromeIdentity, chromeRequestHeaders, usesChromeIdentity } from "./ChromeUserAgent.ts";
+import { chromeIdentity, usesChromeIdentity } from "./ChromeUserAgent.ts";
 
 const host = { arch: "arm64", platformVersion: "15.7.1" };
 const native =
@@ -48,18 +48,18 @@ describe("chromeIdentity", () => {
       expect(identity.userAgent).toBe(`${prefix} Chrome/152.0.0.0 Safari/537.36`);
       expect(identity.userAgentMetadata).toEqual({
         brands: [
-          { brand: "Not A(Brand", version: "99" },
           { brand: "Chromium", version: "152" },
+          { brand: "Not?A_Brand", version: "24" },
           { brand: "Google Chrome", version: "152" },
         ],
         fullVersionList: [
-          { brand: "Not A(Brand", version: "99.0.0.0" },
           { brand: "Chromium", version: "152.0.7977.130" },
+          { brand: "Not?A_Brand", version: "24.0.0.0" },
           { brand: "Google Chrome", version: "152.0.7977.130" },
         ],
         fullVersion: "152.0.7977.130",
         platform,
-        platformVersion: "15.7.1",
+        platformVersion: platform === "Linux" ? "" : "15.7.1",
         architecture: "arm",
         bitness: "64",
         mobile: false,
@@ -81,35 +81,33 @@ describe("chromeIdentity", () => {
     );
   });
 
-  it("uses the same brands and versions for headers and JS metadata", () => {
-    const headers = chromeRequestHeaders(
-      {
-        "User-Agent": native,
-        "Sec-CH-UA": '"Electron";v="44"',
-        "Sec-CH-UA-Full-Version-List": '"Electron";v="44.4.5"',
-        "Sec-CH-UA-Arch": '"x86"',
-        "Accept-Language": "pl-PL,pl;q=0.9",
-        Cookie: "session=private",
-      },
-      chromeIdentity(native, host),
-    );
-    expect(headers["User-Agent"]).toContain("Chrome/152.0.0.0 Safari/537.36");
-    expect(headers["User-Agent"]).not.toContain("Electron");
-    expect(headers["Sec-CH-UA"]).toBe(
-      '"Not A(Brand";v="99", "Chromium";v="152", "Google Chrome";v="152"',
-    );
-    expect(headers["Sec-CH-UA-Full-Version-List"]).toBe(
-      '"Not A(Brand";v="99.0.0.0", "Chromium";v="152.0.7977.130", "Google Chrome";v="152.0.7977.130"',
-    );
-    expect(headers["Sec-CH-UA-Arch"]).toBe('"arm"');
-    expect(headers["sec-ch-ua-platform"]).toBe('"macOS"');
-    expect(headers["Accept-Language"]).toBe("pl-PL,pl;q=0.9");
-    expect(headers.Cookie).toBe("session=private");
+  it("does not report a Linux kernel version as platformVersion", () => {
+    const linux = native.replace("Macintosh; Intel Mac OS X 10_15_7", "X11; Linux x86_64");
+    expect(
+      chromeIdentity(linux, { arch: "x64", platformVersion: "6.14.0-generic" }).userAgentMetadata
+        .platformVersion,
+    ).toBe("");
   });
 
-  it("does not send high entropy hints without the site's opt-in", () => {
-    const headers = chromeRequestHeaders({}, chromeIdentity(native, host));
-    expect(headers["sec-ch-ua-full-version-list"]).toBeUndefined();
-    expect(headers["sec-ch-ua-arch"]).toBeUndefined();
-  });
+  it.each([
+    [150, ["Not;A=Brand", "Chromium", "Google Chrome"], "8"],
+    [151, ["Not=A?Brand", "Google Chrome", "Chromium"], "99"],
+    [152, ["Chromium", "Not?A_Brand", "Google Chrome"], "24"],
+    [153, ["Google Chrome", "Not_A Brand", "Chromium"], "8"],
+    [154, ["Chromium", "Google Chrome", "Not A(Brand"], "99"],
+    [155, ["Google Chrome", "Chromium", "Not(A:Brand"], "24"],
+  ] as const)(
+    "uses Chromium's GREASE and permutation for major %i",
+    (major, brands, greaseVersion) => {
+      const agent = native.replace("152.0.7977.130", `${major}.0.1.2`);
+      const metadata = chromeIdentity(agent, host).userAgentMetadata;
+      expect(metadata.brands.map(({ brand }) => brand)).toEqual(brands);
+      expect(metadata.brands.find(({ brand }) => brand.startsWith("Not"))?.version).toBe(
+        greaseVersion,
+      );
+      expect(metadata.fullVersionList.find(({ brand }) => brand.startsWith("Not"))?.version).toBe(
+        `${greaseVersion}.0.0.0`,
+      );
+    },
+  );
 });

@@ -2,7 +2,6 @@ import type { Session, WebContents } from "electron";
 
 import {
   chromeIdentity,
-  chromeRequestHeaders,
   usesChromeIdentity,
   type ChromeIdentity,
   type ChromeIdentityHost,
@@ -15,84 +14,78 @@ export const installChromeIdentity = (
       readonly onBeforeRequest: (
         ...args: Parameters<Session["webRequest"]["onBeforeRequest"]>
       ) => void;
-      readonly onBeforeSendHeaders: (
-        ...args: Parameters<Session["webRequest"]["onBeforeSendHeaders"]>
-      ) => void;
     };
   },
   host: ChromeIdentityHost,
   configure: (contents: WebContents, identity: ChromeIdentity | null) => Promise<void>,
 ) => {
   const nativeUserAgent = session.getUserAgent();
-  const overridden = new WeakSet<WebContents>();
-  const pending = new WeakMap<WebContents, Promise<void>>();
+  const observed = new WeakMap<WebContents, (url: string) => void>();
   session.webRequest.onBeforeRequest((details, callback) => {
     const contents = details.webContents;
-    const listed = usesChromeIdentity(details.url);
-    if (
-      details.resourceType !== "mainFrame" ||
-      !contents ||
-      (!listed && !overridden.has(contents) && !pending.has(contents))
-    ) {
-      callback({});
-      return;
-    }
-    // A redirect or a second navigation cannot overtake an in-flight override.
-    const update = (pending.get(contents) ?? Promise.resolve())
-      .catch(() => {})
-      .then(async () => {
-        if (listed) {
-          // Even a rejected transport call may have reached Chromium; navigation away must reset it.
-          overridden.add(contents);
-          await configure(contents, chromeIdentity(nativeUserAgent, host));
-        } else if (overridden.has(contents)) {
-          await configure(contents, null);
-          overridden.delete(contents);
-        }
-      });
-    pending.set(contents, update);
-    const finish = (cancel: boolean) => {
-      if (pending.get(contents) === update) pending.delete(contents);
-      callback({ cancel });
-    };
-    // Failed CDP setup must not send a request with a half-configured identity.
-    void update.then(
-      () => finish(false),
-      () => finish(true),
-    );
-  });
-  session.webRequest.onBeforeSendHeaders((details, callback) => {
-    if (usesChromeIdentity(details.url)) {
-      try {
-        callback({
-          requestHeaders: chromeRequestHeaders(
-            details.requestHeaders,
-            chromeIdentity(nativeUserAgent, host),
-          ),
-        });
-      } catch {
-        callback({ cancel: true });
+    if (details.resourceType === "mainFrame" && contents) {
+      let started = observed.get(contents);
+      if (!started) {
+        let pendingListed = false;
+        let disposed = false;
+        let pending = Promise.resolve();
+        const apply = (identity: ChromeIdentity | null) => {
+          const command = async () => {
+            if (disposed || contents.isDestroyed()) return;
+            await configure(contents, identity);
+          };
+          // A failed command is reported by the Manager; a later clear must still run.
+          pending = pending.then(command, command);
+          void pending.catch(() => {});
+          return pending;
+        };
+        const committed = (
+          _event: Electron.Event,
+          url: string,
+          _code: number,
+          _status: string,
+          isMainFrame: boolean,
+        ) => {
+          if (!isMainFrame) return;
+          pendingListed = false;
+          return apply(usesChromeIdentity(url) ? chromeIdentity(nativeUserAgent, host) : null);
+        };
+        const stopped = () => {
+          if (!pendingListed) return;
+          pendingListed = false;
+          return apply(null);
+        };
+        const failed = (
+          _event: Electron.Event,
+          _code: number,
+          _description: string,
+          _url: string,
+          isMainFrame: boolean,
+        ) => {
+          if (isMainFrame) return stopped();
+        };
+        const destroyed = () => {
+          disposed = true;
+          contents.off("did-frame-navigate", committed);
+          contents.off("did-fail-load", failed);
+          contents.off("did-fail-provisional-load", failed);
+          contents.off("did-stop-loading", stopped);
+          contents.off("destroyed", destroyed);
+          observed.delete(contents);
+        };
+        contents.on("did-frame-navigate", committed);
+        contents.on("did-fail-load", failed);
+        contents.on("did-fail-provisional-load", failed);
+        contents.on("did-stop-loading", stopped);
+        contents.on("destroyed", destroyed);
+        started = (url) => {
+          pendingListed = usesChromeIdentity(url);
+        };
+        observed.set(contents, started);
       }
-      return;
+      started(details.url);
     }
-    if (!details.webContents || !overridden.has(details.webContents)) {
-      callback({ requestHeaders: details.requestHeaders });
-      return;
-    }
-    // Third-party requests from a listed tab must not inherit its Chrome product.
-    const requestHeaders: Record<string, string> = {};
-    for (const [name, value] of Object.entries(details.requestHeaders)) {
-      const key = name.toLowerCase();
-      requestHeaders[name] =
-        key === "user-agent"
-          ? nativeUserAgent
-          : key === "sec-ch-ua" || key === "sec-ch-ua-full-version-list"
-            ? value
-                .split(",")
-                .filter((brand) => !brand.includes('"Google Chrome"'))
-                .join(",")
-            : value;
-    }
-    callback({ requestHeaders });
+    // Observe the navigation only. Chromium alone pairs the main frame's JS and headers.
+    callback({});
   });
 };

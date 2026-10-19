@@ -38,22 +38,36 @@ export const chromeIdentity = (electronUserAgent: string, host: ChromeIdentityHo
     : platformToken.includes("Windows")
       ? "Windows"
       : "Linux";
-  const brands = [
-    { brand: "Not A(Brand", version: "99" },
+  // Chromium 152 user_agent_utils.cc: GREASE and brand permutation are seeded by the major.
+  const seed = Number(major);
+  const characters = [" ", "(", ":", "-", ".", "/", ")", ";", "=", "?", "_"];
+  const greaseBrand = `Not${characters[seed % characters.length]}A${characters[(seed + 1) % characters.length]}Brand`;
+  const greaseVersion = ["8", "99", "24"][seed % 3]!;
+  const originalBrands = [
+    { brand: greaseBrand, version: greaseVersion },
     { brand: "Chromium", version: major },
     { brand: "Google Chrome", version: major },
   ];
+  const order = [
+    [0, 1, 2],
+    [0, 2, 1],
+    [1, 0, 2],
+    [1, 2, 0],
+    [2, 0, 1],
+    [2, 1, 0],
+  ][seed % 6]!;
+  const brands = order.map((_, slot) => originalBrands[order.indexOf(slot)]!);
   return {
     userAgent: `${prefix} Chrome/${major}.0.0.0 Safari/${safariVersion}`,
     userAgentMetadata: {
       brands,
       fullVersionList: brands.map(({ brand, version }) => ({
         brand,
-        version: brand === "Not A(Brand" ? `${version}.0.0.0` : fullVersion,
+        version: brand === greaseBrand ? `${version}.0.0.0` : fullVersion,
       })),
       fullVersion: fullVersion,
       platform,
-      platformVersion: host.platformVersion,
+      platformVersion: platform === "Linux" ? "" : host.platformVersion,
       architecture: host.arch.startsWith("arm") ? "arm" : "x86",
       bitness: host.arch.endsWith("64") ? "64" : "32",
       mobile: false,
@@ -64,37 +78,3 @@ export const chromeIdentity = (electronUserAgent: string, host: ChromeIdentityHo
 };
 
 export type ChromeIdentity = ReturnType<typeof chromeIdentity>;
-
-const serializeBrands = (brands: ChromeIdentity["userAgentMetadata"]["brands"]) =>
-  brands.map(({ brand, version }) => `"${brand}";v="${version}"`).join(", ");
-
-/** Header policy is destination-specific even for subresources of a Chrome-identity tab. */
-export const chromeRequestHeaders = (
-  headers: Record<string, string>,
-  identity: ChromeIdentity,
-): Record<string, string> => {
-  const { userAgent, userAgentMetadata: metadata } = identity;
-  const replacements: Record<string, string> = {
-    "user-agent": userAgent,
-    "sec-ch-ua": serializeBrands(metadata.brands),
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": JSON.stringify(metadata.platform),
-    "sec-ch-ua-full-version": JSON.stringify(metadata.fullVersion),
-    "sec-ch-ua-full-version-list": serializeBrands(metadata.fullVersionList),
-    "sec-ch-ua-platform-version": JSON.stringify(metadata.platformVersion),
-    "sec-ch-ua-arch": JSON.stringify(metadata.architecture),
-    "sec-ch-ua-bitness": JSON.stringify(metadata.bitness),
-    "sec-ch-ua-model": '""',
-    "sec-ch-ua-wow64": metadata.wow64 ? "?1" : "?0",
-  };
-  const next: Record<string, string> = {};
-  for (const [name, value] of Object.entries(headers)) {
-    next[name] = replacements[name.toLowerCase()] ?? value;
-  }
-  // High entropy hints still require the site's Accept-CH opt-in.
-  for (const name of ["user-agent", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"]) {
-    if (!Object.keys(next).some((key) => key.toLowerCase() === name))
-      next[name] = replacements[name]!;
-  }
-  return next;
-};
