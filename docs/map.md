@@ -34,11 +34,11 @@ flowchart TD
     end
 
     PBI["Preview browser identity"]
-    %% PBI: #460
+    %% PBI: #460 PR #470
     T3C --> PBI
 
     PZ["Prism routing"]
-    %% PZ: #92 PR #408 PR #430 PR #479 PR #489 PR #512
+    %% PZ: #92 PR #408 PR #430 PR #479 PR #489 PR #512 PR #471 PR #476
     VT["Visible T3 threads"]
     %% VT: #10
     PM["Promachos bubbles and persona"]
@@ -46,7 +46,7 @@ flowchart TD
     WG["Wight mode"]
     %% WG: #117
     BL["Bare launch and receipts"]
-    %% BL: #289 PR #335
+    %% BL: #289 PR #335 PR #467 PR #469 PR #480
     DR["Drafters in any project"]
     %% DR: #114 #429 PR #475
     SC["Spectrum council and free"]
@@ -70,9 +70,9 @@ flowchart TD
     RS["Resume after restart"]
     %% RS: #264 #255 PR #417
     SN["Child notices"]
-    %% SN: #269 #341 #422 PR #431
+    %% SN: #269 #341 #422 PR #431 PR #492 PR #488
     ST["Urgent interruption"]
-    %% ST: #285 #298 PR #478
+    %% ST: #285 #298 PR #478 PR #495 PR #496 PR #493
     CK["Command keys"]
     %% CK: #232
     SP["Shown proof"]
@@ -82,9 +82,9 @@ flowchart TD
     XM["Cross-machine control"]
     %% XM: #164 #302
     NR["Network routes"]
-    %% NR: #292 #358
+    %% NR: #292 #358 PR #498 PR #497
     PRN["Paired session renewal"]
-    %% PRN: #323 #336
+    %% PRN: #323 #336 PR #477 PR #504 PR #473
     WR["Agent web research"]
     %% WR: #423 PR #453
     WRR["Headless page rendering"]
