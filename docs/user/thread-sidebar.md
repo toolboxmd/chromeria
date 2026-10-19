@@ -45,15 +45,10 @@ and worktree while you stay in the new thread composer. This requires a Git proj
 
 ## Track an Issue or PR outcome
 
-Choose **Purpose** above the composer on web, desktop or mobile and paste a
-GitHub Issue or PR URL. The same reference can track work across several
-threads. **Clear purpose** chooses unscoped work. Expand Purpose to see the
-purpose recorded for each run.
-
-Changing the selection affects subsequent ordinary messages. If A is running
-and you select B, **Send** queues a separate B run. **Steer** and **Restart**
-continue the running purpose and leave the selection unchanged. A message
-already queued keeps the purpose admitted when it was sent.
+Each run records the GitHub Issue or PR it works toward. Agents set it when
+they launch or delegate work; there is no composer control. **Steer** and
+**Restart** continue the running purpose. A message already queued keeps the
+purpose admitted when it was sent.
 
 A parent's continuation of its original delegated work keeps that launch's
 purpose. Your own follow-up in the child follows its visible selection while
