@@ -214,6 +214,18 @@ Merge this entry into your existing settings. Leave it unset, or set `host` to
 returns an error; reads and searches do not fall back to the source machine. These server
 settings apply to agents used from web, desktop and mobile.
 
+Logged-in reading is off by default. With your explicit account authorization,
+an agent can pass `useSession:true` and `session:{environmentId,profileId,tabId}`
+to read one page through an existing Chromeria profile tab selected with
+`preview_status`. The tab stays on its owning environment, even when your public
+research uses another server. A remote owner requires a direct agent-access link
+and `session.contextThreadId` for a live thread owned by that link with browser
+access; unrelated threads and forwarding through a second environment are refused.
+Human control, expired logins and account warnings stop the read. The reader
+does not log in or perform account actions, and adds no session pacing or quotas.
+Private results stay outside the public cache. Continue with the same session
+selection and explicit opt-in within five minutes, or read the URL again.
+
 Use `web_search(query, locale?)` for site/social and non-English community
 queries, preserving `site:` and `-site:` filters and a locale such as `pl-PL`.
 Keep the harness's own search for bulk discovery. Results include attributed

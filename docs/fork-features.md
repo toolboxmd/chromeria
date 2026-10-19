@@ -2213,14 +2213,15 @@ sources and reasons.
 ```json
 {
   "id": "agent-web-research",
-  "purpose": "Read research pages through one caller-gated MCP service with full text, typed failures, isolated headless rendering for thin/consent pages, a shared page cache, an origin limiter and provenance; optionally share one linked environment's reader with caller limits and cache ownership preserved; use a pinned zero-charge TinyFish fallback with shared quotas and bounded, nonpersistent hosted continuation; fan out locale/site discovery through SearXNG and pinned TinyFish search with per-engine health, shared spacing and budgets, and no stored SERPs.",
+  "purpose": "Read research pages through one caller-gated MCP service with full text, typed failures, isolated headless rendering for thin/consent pages, a shared page cache, an origin limiter and provenance; optionally share one linked environment's reader with caller limits and cache ownership preserved; use a pinned zero-charge TinyFish fallback with shared quotas and bounded, nonpersistent hosted continuation; fan out locale/site discovery through SearXNG and pinned TinyFish search with per-engine health, shared spacing and budgets, and no stored SERPs. Explicit default-off session reads reuse an existing profile tab on its owner, with caller/session-private continuation and no enforced pacing.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/423",
     "https://github.com/toolboxmd/chromeria/issues/440",
     "https://github.com/toolboxmd/chromeria/issues/442",
     "https://github.com/toolboxmd/chromeria/issues/443",
     "https://github.com/toolboxmd/chromeria/issues/444",
-    "https://github.com/toolboxmd/chromeria/issues/445"
+    "https://github.com/toolboxmd/chromeria/issues/445",
+    "https://github.com/toolboxmd/chromeria/issues/446"
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/449",
@@ -2231,6 +2232,8 @@ sources and reasons.
   ],
   "newFiles": [
     "apps/server/src/webResearch/Search.ts",
+    "apps/server/src/webResearch/SessionRead.ts",
+    "apps/server/src/mcp/WebResearchSession.integration.test.ts",
     "apps/server/src/webResearch/WebSearchHost.test.ts",
     "apps/server/src/mcp/WebSearch.integration.test.ts",
     "packages/contracts/src/webResearch.ts",
@@ -2273,6 +2276,9 @@ sources and reasons.
     "packages/contracts/src/settings.ts",
     "packages/contracts/src/index.ts",
     "packages/contracts/src/orchestratorMcp.ts",
+    "packages/contracts/src/previewAutomation.ts",
+    "apps/server/src/preview/ServerBrowser.ts",
+    "apps/server/src/preview/ServerBrowser.test.ts",
     "packages/provider-core/src/server/orchestrationInstructions.ts",
     "pnpm-lock.yaml"
   ],
