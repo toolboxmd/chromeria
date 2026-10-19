@@ -482,3 +482,8 @@ apps/mobile/src/features/connection/environmentSections.ts
 apps/mobile/src/features/connection/useConnectionController.ts
 apps/web/src/components/cloud/CloudEnvironmentConnectList.tsx
 packages/client-runtime/src/relay/index.ts
+
+# Parent-owned watch from descendant-linked PR rows (issues-links).
+apps/mobile/src/features/threads/useLinkedPullRequestActions.ts
+packages/client-runtime/src/pullRequestLinkInput.test.ts
+packages/client-runtime/src/pullRequestLinkInput.ts
