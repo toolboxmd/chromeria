@@ -1,15 +1,16 @@
-import type { OrchestrationV2TurnItem, SecretRequestAnswerInput } from "@t3tools/contracts";
+import {
+  SECRET_REQUEST_SINGLE_FIELD_NAME,
+  type OrchestrationV2TurnItem,
+  type SecretRequestAnswerInput,
+  type SecretRequestField,
+} from "@t3tools/contracts";
 
 export type SecretRequestItem = Extract<
   OrchestrationV2TurnItem,
   { readonly type: "secret_request" }
 >;
 
-/** A `file` request lets the agent's commands read the value, so its card must not promise more. */
-export const secretRequestPrivacyNote = (item: Pick<SecretRequestItem, "delivery">) =>
-  item.delivery === "file"
-    ? "Kept out of chat, in a private file this agent's commands can read for 24 hours"
-    : "Stored securely, never shown to the agent";
+export const SECRET_REQUEST_PRIVACY_NOTE = "Sent privately to the agent, never shown in chat";
 export const SECRET_REQUEST_DEFAULT_PLACEHOLDER = "Paste the secret";
 
 export type SecretRequestDisplay =
@@ -62,16 +63,58 @@ export function secretRequestDisplay(
   }
 }
 
+/** The inputs a card shows: its fields, or one field titled by the request itself. */
+export function secretRequestFields(
+  item: Pick<SecretRequestItem, "label" | "placeholder" | "fields">,
+): ReadonlyArray<SecretRequestField> {
+  return (
+    item.fields ?? [
+      {
+        name: SECRET_REQUEST_SINGLE_FIELD_NAME,
+        label: item.label,
+        ...(item.placeholder === undefined ? {} : { placeholder: item.placeholder }),
+      },
+    ]
+  );
+}
+
+/** Whether every field has a value; a blank one keeps Save disabled. */
+export function secretRequestComplete(
+  item: Pick<SecretRequestItem, "label" | "placeholder" | "fields">,
+  values: ReadonlyMap<string, string>,
+): boolean {
+  return secretRequestFields(item).every(
+    (field) => (values.get(field.name) ?? "").trim().length > 0,
+  );
+}
+
+/**
+ * Builds the RPC payload for an answer from values keyed by field name (a Map,
+ * so a field named like an Object property reads its own value). Values are
+ * sent exactly as typed. A save with any blank field returns null, since the
+ * server saves all fields or none; callers keep Save disabled instead.
+ */
 export function secretRequestAnswerInput(
-  item: Pick<SecretRequestItem, "id" | "threadId">,
-  answer: { readonly type: "save"; readonly secret: string } | { readonly type: "decline" },
+  item: Pick<SecretRequestItem, "id" | "threadId" | "label" | "placeholder" | "fields">,
+  answer:
+    | { readonly type: "save"; readonly values: ReadonlyMap<string, string> }
+    | { readonly type: "decline" },
 ): SecretRequestAnswerInput | null {
   if (answer.type === "decline") {
     return { threadId: item.threadId, turnItemId: item.id, answer: { type: "decline" } };
   }
-  const secret = answer.secret.trim();
-  if (secret.length === 0) return null;
-  return { threadId: item.threadId, turnItemId: item.id, answer: { type: "save", secret } };
+  if (!secretRequestComplete(item, answer.values)) return null;
+  const entries = secretRequestFields(item).map(
+    (field) => [field.name, answer.values.get(field.name) ?? ""] as const,
+  );
+  const secrets = Object.fromEntries(entries);
+  const secret = item.fields === undefined ? entries[0]?.[1] : undefined;
+  // A card without fields is answered as servers before multi-field cards expect.
+  return {
+    threadId: item.threadId,
+    turnItemId: item.id,
+    answer: secret !== undefined ? { type: "save", secret } : { type: "save", secrets },
+  };
 }
 
 const USER_FACING_FAILURE_TAGS = new Set(["SecretRequestError", "EnvironmentAuthorizationError"]);

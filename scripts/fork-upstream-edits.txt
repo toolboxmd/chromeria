@@ -545,3 +545,11 @@ apps/web/src/components/settings/IntegrationsSettings.browser.test.tsx
 apps/web/src/hooks/useSettings.test.ts
 packages/shared/src/authScopeOptions.ts
 apps/web/vite.config.ts
+apps/mobile/src/features/threads/SecretRequestCard.tsx
+apps/server/src/secrets/SecretRequests.test.ts
+apps/server/src/secrets/SecretRequests.ts
+apps/web/src/components/chat/SecretRequestCard.tsx
+packages/client-runtime/src/secretRequest.test.ts
+packages/client-runtime/src/secretRequest.ts
+packages/contracts/src/orchestratorMcp.test.ts
+packages/contracts/src/secretRequest.ts

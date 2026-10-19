@@ -4,12 +4,32 @@ import * as Schema from "effect/Schema";
 import {
   OrchestratorMcpDelegateTaskInput,
   OrchestratorMcpDelegateTaskResult,
+  OrchestratorMcpRequestSecretInput,
 } from "./orchestratorMcp.ts";
 
 const decodeDelegateTaskInput = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
 const decodeDelegateTaskResult = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskResult);
 
 describe("orchestrator MCP contracts", () => {
+  it("accepts 1-5 uniquely named secret fields that can each be a file name", () => {
+    const decode = Schema.decodeUnknownOption(OrchestratorMcpRequestSecretInput);
+    const ask = (fields: ReadonlyArray<{ name: string; label: string }>) =>
+      decode({ label: "Credentials", reason: "For the deploy job.", fields });
+    const field = (name: string) => ({ name, label: name });
+    expect(ask([field("client_id"), field("client-secret")])._tag).toBe("Some");
+    expect(ask([field("constructor")])._tag).toBe("Some");
+    for (const fields of [
+      [],
+      [field("a"), field("a")],
+      [1, 2, 3, 4, 5, 6].map((index) => field(`f${index}`)),
+      [field("../x")],
+      [field("Token")],
+      [field("__proto__")],
+    ]) {
+      expect(ask(fields)._tag).toBe("None");
+    }
+  });
+
   it("decodes cross-provider delegated task requests and durable results", () => {
     const request = decodeDelegateTaskInput({
       task: "Inspect the workspace and report the result.",

@@ -2717,3 +2717,40 @@ sources and reasons.
   "keywords": ["cookie mirror", "CookieMirror", "ChromeCookieSource", "preview:mirror-cookies"]
 }
 ```
+
+## usable-secret-requests
+
+```json
+{
+  "id": "usable-secret-requests",
+  "purpose": "request_secret asks for 1-5 named fields on one card and returns a private 0600 file per field under the environment's state directory, plus a one-use secretRef for one-field requests. Answers run one at a time, values are kept exactly as typed, and files expire through the existing secret sweep. Drop when upstream returns usable secret values to agents.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/550"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/551"],
+  "newFiles": [],
+  "upstreamFiles": [
+    "apps/mobile/src/features/threads/SecretRequestCard.tsx",
+    "apps/server/src/secrets/SecretRequests.test.ts",
+    "apps/server/src/secrets/SecretRequests.ts",
+    "apps/web/src/components/chat/SecretRequestCard.tsx",
+    "packages/client-runtime/src/secretRequest.test.ts",
+    "packages/client-runtime/src/secretRequest.ts",
+    "packages/contracts/src/orchestratorMcp.test.ts",
+    "packages/contracts/src/secretRequest.ts"
+  ],
+  "sharedFiles": [
+    "apps/server/src/mcp/OrchestratorMcpService.ts",
+    "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
+    "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+    "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "packages/contracts/src/orchestrationV2.ts",
+    "packages/contracts/src/orchestratorMcp.ts",
+    "packages/provider-core/src/server/orchestrationInstructions.ts"
+  ],
+  "keywords": [
+    "request_secret",
+    "secretRequestFields",
+    "SECRET_REQUEST_SINGLE_FIELD_NAME",
+    "secret-requests"
+  ]
+}
+```
