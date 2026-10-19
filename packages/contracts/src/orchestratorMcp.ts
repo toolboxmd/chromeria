@@ -595,6 +595,8 @@ export const OrchestratorMcpThreadSendResult = Schema.Union([
     threadId: ThreadId,
     messageId: MessageId,
     runId: RunId,
+    purpose: Schema.optional(ExecutionPurpose),
+    warnings: Schema.optional(Schema.Array(Schema.String)),
     taskId: Schema.optional(NodeId),
     status: OrchestrationV2RunStatus,
     delivery: Schema.Literals(["started", "queued", "steered", "restarted"]),
