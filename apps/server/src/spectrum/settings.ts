@@ -7,6 +7,16 @@ import {
 import * as Schema from "effect/Schema";
 import type { SpectrumStart, SpectrumStartRequest } from "./LaunchService.ts";
 
+export class SpectrumSlotsNotConfigured extends Schema.TaggedError<SpectrumSlotsNotConfigured>()(
+  "SpectrumSlotsNotConfigured",
+  {},
+) {
+  override get message() {
+    return "Configure two to eight Spectrum slots in Settings > Spectrum or pass colors to start_spectrum.";
+  }
+}
+export const isSlotsNotConfigured = Schema.is(SpectrumSlotsNotConfigured);
+
 const colorCandidate = (color: Color) => ({
   selection: { instanceId: color.instanceId, model: color.model },
   ...(color.effort === undefined ? {} : { effort: color.effort }),
@@ -17,6 +27,8 @@ const decodeSyncSpectrumTurnsPerColor = Schema.decodeSync(SpectrumTurnsPerColor)
 
 /** Resolve once, before registration persists the chosen candidates and limits. */
 export function resolveSpectrumStart(input: SpectrumStartRequest, settings: SpectrumSettings) {
+  if (input.colors === undefined && settings.slots.length === 0)
+    throw new SpectrumSlotsNotConfigured({});
   const colors: SpectrumStart["colors"] =
     input.colors ??
     settings.slots.map(({ label, primary, fallbacks }) => ({

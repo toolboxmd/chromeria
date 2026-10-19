@@ -5,7 +5,9 @@ import { Color } from "./prism.ts";
 
 export const SpectrumMode = Schema.Literals(["council", "free"]);
 export const SpectrumRelayRounds = Schema.Int.check(Schema.isGreaterThanOrEqualTo(2));
-export const SpectrumTurnsPerColor = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
+export const SpectrumTurnsPerColor = Schema.Int.check(
+  Schema.isBetween({ minimum: 1, maximum: 12 }),
+);
 export const SpectrumSettingsSlot = Schema.Struct({
   label: TrimmedNonEmptyString.check(
     Schema.makeFilter((label) => label.toLowerCase() !== "user" || "The label User is reserved."),

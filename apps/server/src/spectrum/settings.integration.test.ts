@@ -9,6 +9,7 @@ import {
   RunId,
   ThreadId,
   type SpectrumSettings,
+  DEFAULT_SPECTRUM_SETTINGS,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -147,7 +148,7 @@ it.effect(
       ).toMatchObject({ mode: "free", limit: 4, turnsPerColor: 2, moderator: 1 });
       for (const [key, preferences, expected] of [
         ["large-council", { ...defaults, relayRounds: 101 }, 101],
-        ["large-free", { ...defaults, mode: "free" as const, turnsPerColor: 51 }, 102],
+        ["large-free", { ...defaults, mode: "free" as const, turnsPerColor: 12 }, 24],
       ] as const) {
         yield* (yield* Settings.ServerSettingsService).updateSettings({
           projectSettingsOverrides: { [callerRecord.projectId]: { spectrum: preferences } },
@@ -235,5 +236,22 @@ it.effect("start_spectrum rejects invalid values before persisting a Spectrum", 
         Option.isNone(yield* readSpectrum(ThreadId.make("spectrum:settings-test:invalid"))),
       ).toBe(true);
     }
+    yield* (yield* Settings.ServerSettingsService).updateSettings({
+      spectrum: DEFAULT_SPECTRUM_SETTINGS,
+    });
+    const unconfigured = yield* toolkit
+      .handle("start_spectrum", { question: "No slots configured" })
+      .pipe(Stream.unwrap, Stream.runCollect);
+    expect(unconfigured).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          isFailure: true,
+          encodedResult: expect.objectContaining({
+            code: "invalid_request",
+            message: expect.stringContaining("Settings > Spectrum"),
+          }),
+        }),
+      ]),
+    );
   }).pipe(Effect.provide(runtime)),
 );

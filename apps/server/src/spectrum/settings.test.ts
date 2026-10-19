@@ -76,7 +76,7 @@ it.each([
 it("honors configured limits above the legacy tool cap, while explicit legacy limit stays capped", () => {
   expect(resolveSpectrumStart(request, { ...settings, relayRounds: 101 }).limit).toBe(101);
   expect(
-    resolveSpectrumStart({ ...request, mode: "free" }, { ...settings, turnsPerColor: 51 }).limit,
-  ).toBe(102);
+    resolveSpectrumStart({ ...request, mode: "free" }, { ...settings, turnsPerColor: 12 }).limit,
+  ).toBe(24);
   expect(() => resolveSpectrumStart({ ...request, limit: 101 }, settings)).toThrow();
 });

@@ -99,13 +99,11 @@ function SpectrumEditor({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const persist = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: false });
-  if (source !== saved) {
+  if (source !== saved && !dirty && !saving) {
     setSource(saved);
-    if (!dirty && !saving) {
-      setDraft(saved);
-      setSlotKeys(saved.slots.map((_, index) => index));
-      setNextSlotKey(saved.slots.length);
-    }
+    setDraft(saved);
+    setSlotKeys(saved.slots.map((_, index) => index));
+    setNextSlotKey(saved.slots.length);
   }
   const change = (next: SpectrumPreferences) => {
     setDraft(next);
@@ -119,7 +117,7 @@ function SpectrumEditor({
     const decoded = decodeUnknownExitSpectrumPreferences(draft);
     if (!reset && decoded._tag === "Failure") {
       setError(
-        "Use two to eight unique labels, a primary Color for every slot, White from those slots, at least two relay rounds and at least one turn per Color.",
+        "Use two to eight unique labels, a primary Color for every slot, White from those slots, at least two relay rounds and one to twelve turns per Color.",
       );
       return;
     }
@@ -149,6 +147,12 @@ function SpectrumEditor({
       () => {},
     );
     setSaving(false);
+    if (confirmed) {
+      setDirty(false);
+      setDraft(confirmed);
+      setSlotKeys(confirmed.slots.map((_, index) => index));
+      setNextSlotKey(confirmed.slots.length);
+    }
     if (result.failedEnvironments.length > 0) {
       setError(
         `Could not save Spectrum settings on ${result.failedEnvironments.map((value) => value.label).join(", ")}.`,
@@ -156,12 +160,8 @@ function SpectrumEditor({
       return;
     }
     setDirty(false);
-    if (confirmed) {
-      setDraft(confirmed);
-      setSlotKeys(confirmed.slots.map((_, index) => index));
-      setNextSlotKey(confirmed.slots.length);
-    }
   }
+
   const addColor = defaultColor(providers);
   return (
     <SettingsPageContainer width="wide">
@@ -318,6 +318,7 @@ function SpectrumEditor({
               <Input
                 id="spectrum-turns"
                 type="number"
+                max={12}
                 min={1}
                 step={1}
                 value={draft.turnsPerColor}

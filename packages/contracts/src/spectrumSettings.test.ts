@@ -49,6 +49,7 @@ describe("Spectrum settings", () => {
     { relayRounds: 1 },
     { relayRounds: 2.5 },
     { turnsPerColor: 0 },
+    { turnsPerColor: 13 },
     { turnsPerColor: 1.5 },
     { white: "Missing" },
     { white: null },

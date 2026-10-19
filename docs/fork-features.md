@@ -90,6 +90,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/web/src/components/settings/SpectrumSettings.logic.test.ts",
     "apps/web/src/components/settings/SpectrumSettings.logic.ts",
     "apps/web/src/components/settings/SpectrumSettings.tsx",
+    "apps/web/src/components/settings/SpectrumSettings.test.tsx",
     "apps/web/src/routes/settings.spectrum.tsx",
     "packages/contracts/src/spectrumSettings.test.ts",
     "packages/contracts/src/spectrumSettings.ts"

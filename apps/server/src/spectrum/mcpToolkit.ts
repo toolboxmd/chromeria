@@ -79,7 +79,7 @@ export const StartSpectrumResult = Schema.Struct({
 export const SpectrumToolkit = Toolkit.make(
   Tool.make("start_spectrum", {
     description:
-      "Open a visible provider-less Spectrum transcript with Drafter Colors chosen through Prism. Council runs independent answers, at least two relay barriers and moderator synthesis; free mode takes ordered turns. All replies are relayed verbatim. Send normal messages to join at the next barrier, reopen to continue after the report finishes or is explicitly abandoned, and Stop to cancel owned Drafter work. Omitted colors, White, mode and limits use Spectrum settings for the caller’s project/environment. Configure default slots in Settings > Spectrum, then pass only question. Explicit colors replace all slots and inherit no fallbacks. white names a slot label; moderator is its legacy zero-based index. relayRounds is council relay rounds (minimum 2); turnsPerColor (minimum 1) is stored for free-mode moderation. Legacy limit overrides the current mode’s total limit. A Color's fallbacks are tried in order only when its turn cannot start. Started by an agent from its own thread, the Spectrum is that thread's delegated task: taskId works with task_status (the report is its result) and task_cancel (Stop); the report message is the only wake.",
+      "Open a visible provider-less Spectrum transcript with Drafter Colors chosen through Prism. Council runs independent answers, at least two relay barriers and moderator synthesis; free mode takes ordered turns. All replies are relayed verbatim. Send normal messages to join at the next barrier, reopen to continue after the report finishes or is explicitly abandoned, and Stop to cancel owned Drafter work. Omitted colors, White, mode and limits use Spectrum settings for the caller’s project/environment. Configure default slots in Settings > Spectrum, then pass only question. Explicit colors replace all slots and inherit no fallbacks. white names a slot label; moderator is its legacy zero-based index. relayRounds is council relay rounds (minimum 2); turnsPerColor (1-12) is stored for free-mode moderation. Legacy limit overrides the current mode’s total limit. A Color's fallbacks are tried in order only when its turn cannot start. Started by an agent from its own thread, the Spectrum is that thread's delegated task: taskId works with task_status (the report is its result) and task_cancel (Stop); the report message is the only wake.",
     parameters: McpRouting.parameters(StartSpectrumInput),
     success: StartSpectrumResult,
     failure: OrchestratorMcpFailure,
@@ -129,7 +129,13 @@ export const layer = McpToolAccess.toLayer(SpectrumToolkit, {
             relayRounds: input.relayRounds,
             turnsPerColor: input.turnsPerColor,
           })
-          .pipe(Effect.mapError(unavailable));
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "SpectrumSlotsNotConfigured"
+                ? new OrchestratorMcpFailure({ code: "invalid_request", message: error.message })
+                : unavailable(),
+            ),
+          );
         return {
           threadId: state.threadId,
           taskId: state.delegatedTaskId,
