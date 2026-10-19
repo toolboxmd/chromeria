@@ -10,7 +10,7 @@ import {
 import * as ExecutionPurposeAdmission from "./ExecutionPurpose.ts";
 import type { BareReadGrant } from "./bareReadGrant.ts";
 import * as BareLaunch from "./BareLaunch.ts";
-import { type BareLaunchRequest } from "@t3tools/contracts";
+import { type BareLaunchRequest, type OrchestrationV2ThreadPrismRole } from "@t3tools/contracts";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
@@ -123,6 +123,8 @@ export interface ThreadLaunchInput {
   readonly delegatedFrom?: OrchestrationV2DelegatedFrom;
   /** Fork: the person who owns the new thread (toolboxmd/chromeria#170). */
   readonly owner?: string;
+  /** Fork: launched as the Promachos (toolboxmd/chromeria#532). */
+  readonly prismRole?: OrchestrationV2ThreadPrismRole;
   /** The linked environment this launch is for, if one asked for it. */
   readonly linkOrigin?: OrchestrationV2LinkOrigin;
   /** The parent there, when that environment's agent delegated this as a task. */
@@ -1243,6 +1245,7 @@ const make = Effect.gen(function* () {
                   ? {}
                   : { delegatedFrom: input.delegatedFrom }),
                 ...(input.owner === undefined ? {} : { owner: input.owner }),
+                ...(input.prismRole === undefined ? {} : { prismRole: input.prismRole }),
                 ...(input.linkOrigin === undefined ? {} : { linkOrigin: input.linkOrigin }),
                 ...(input.delegatedFrom === undefined
                   ? {}

@@ -1444,6 +1444,8 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
         threadId,
         requestId,
         answers: { color: "  Blue  ", sizes: ["Small", "Large"], note: "" },
+        // Fork: the Promachos answered for the user (toolboxmd/chromeria#532).
+        answeredBy: { kind: "promachos" as const, threadId: ThreadId.make("promachos") },
       };
       const accepted = yield* orchestrator.dispatch(command);
       const repeated = yield* orchestrator.dispatch(command);
@@ -1451,11 +1453,13 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
       const answered = yield* orchestrator.getThreadProjection(threadId);
       assert.equal(answered.runtimeRequests[0]?.status, "resolved");
       assert.deepEqual(answered.runtimeRequests[0]?.answers, command.answers);
+      assert.deepEqual(answered.runtimeRequests[0]?.answeredBy, command.answeredBy);
       assert.equal(answered.nodes.find((node) => node.id === nodeId)?.status, "completed");
       assert.equal(answered.turnItems.find((item) => item.id === itemId)?.status, "completed");
       const answeredItem = answered.turnItems.find((item) => item.id === itemId);
       assert.equal(answeredItem?.type, "user_input_request");
       if (answeredItem?.type === "user_input_request") {
+        assert.deepEqual(answeredItem.answeredBy, command.answeredBy);
         assert.deepEqual(answeredItem.questionAnswer, {
           requestId,
           answers: command.answers,
@@ -1614,6 +1618,34 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
       const request = failed.runtimeRequests.find((row) => row.id === requestId);
       assert.equal(request?.status, "resolved");
       assert.deepEqual(request?.answers, answers);
+    }),
+  );
+
+  it.effect("records a Promachos launch on the thread", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const create = (name: string, prismRole?: "promachos") =>
+        orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`${name}-create`),
+          createdBy: "user",
+          creationSource: "web",
+          threadId: ThreadId.make(name),
+          projectId: ProjectId.make(`${name}-project`),
+          title: name,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: process.cwd(),
+          ...(prismRole === undefined ? {} : { prismRole }),
+        });
+      yield* create("runtime-promachos", "promachos");
+      yield* create("runtime-ordinary");
+      const promachos = yield* orchestrator.getThreadShell(ThreadId.make("runtime-promachos"));
+      const ordinary = yield* orchestrator.getThreadShell(ThreadId.make("runtime-ordinary"));
+      assert.equal(promachos?.prismRole, "promachos");
+      assert.isUndefined(ordinary?.prismRole);
     }),
   );
 

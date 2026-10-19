@@ -200,6 +200,22 @@ const linkedEnvironmentsOff = HttpServerResponse.jsonUnsafe(
   },
   { status: 403, headers: { "cache-control": "no-store" } },
 );
+/**
+ * A linked environment passes on that its caller is the Promachos there
+ * (toolboxmd/chromeria#532). Only a peer link may say so; other clients' headers are ignored.
+ */
+export const withPromachosThread = (
+  invocation: McpInvocationContext.McpInvocationScope | undefined,
+  headers: Readonly<Record<string, string | undefined>>,
+): McpInvocationContext.McpInvocationScope | undefined => {
+  const header = headers[McpInvocationContext.PROMACHOS_THREAD_HEADER]?.trim();
+  if (invocation?.client?.linked !== true || header === undefined || header.length === 0)
+    return invocation;
+  return {
+    ...invocation,
+    client: { ...invocation.client, promachosThreadId: ThreadId.make(header) },
+  };
+};
 
 const makeMcpAuthMiddleware = Effect.gen(function* () {
   const registry = yield* McpSessionRegistry.McpSessionRegistry;
@@ -231,7 +247,7 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
         offerOAuth: Option.isSome(clients) && !looksLikeProviderToken(token),
       });
     }
-    const limited = withModeLimit(invocation, request);
+    const limited = withPromachosThread(withModeLimit(invocation, request), request.headers);
     if (limited === undefined) return invalidModeLimit;
     const linkedEnvironments = yield* linksEnabled;
     if (limited.client?.linked === true && !linkedEnvironments) return linkedEnvironmentsOff;

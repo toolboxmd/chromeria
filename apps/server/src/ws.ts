@@ -3,6 +3,7 @@ import { abandonScheduledReport } from "./spectrum/humanReportRpc.ts";
 import { SPECTRUM_WS_METHODS } from "@t3tools/contracts";
 import type * as PromachosLaunch from "./promachos/PromachosLaunch.ts";
 import * as PromachosRpc from "./promachos/PromachosRpc.ts";
+import { withoutPromachosClaims } from "./promachos/PromachosClientCommands.ts";
 import { PROMACHOS_HOME_WS_METHODS } from "@t3tools/contracts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -1881,7 +1882,7 @@ export const layerWsRpc = (
       // Fork: client-created threads and sharing changes carry the device's person
       // (toolboxmd/chromeria#170).
       const dispatchAsSessionPerson = (command: OrchestrationV2Command) =>
-        stampSessionPerson(sessions, currentSessionId, command).pipe(
+        stampSessionPerson(sessions, currentSessionId, withoutPromachosClaims(command)).pipe(
           Effect.flatMap(ThreadMessageIntake.dispatchCommand),
         );
       const launchThreadAsSessionPerson = (input: PromachosLaunch.PromachosLaunchInput) =>

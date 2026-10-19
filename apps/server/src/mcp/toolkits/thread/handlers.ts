@@ -11,10 +11,11 @@ import * as Effect from "effect/Effect";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
-import { isCallerAncestor, readPendingRequest } from "../../../childThreads/pendingRequests.ts";
+import { isCallerAncestor, readPendingRequest, requestAnswerer } from "../../../childThreads/pendingRequests.ts";
 import { assertSameLink } from "../../linkOrigin.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import {
+  assertTargetWithinLimits,
   dispatchFailure,
   newCommandId,
   readCaller,
@@ -232,38 +233,60 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     McpToolAccess.reads((input) =>
       Effect.gen(function* () {
         if (input.action === "list") {
-          const { projection } = yield* readThread(input.threadId, ["runtimeRequests"]);
+          const context = yield* readThread(input.threadId, ["runtimeRequests"]);
+          const { projection } = context;
+          const answerer = yield* requestAnswerer(context, projection.thread);
+          const descendant = answerer !== undefined && answerer.kind !== "own";
           return {
             requestIds: projection.runtimeRequests
-              .filter((request) => request.kind === "user_input" && request.status === "pending")
+              .filter((request) => request.status === "pending" && (request.kind === "user_input" || (descendant && request.kind !== "dynamic_tool_call" && request.kind !== "auth_refresh")))
               .map((request) => request.id),
           };
         }
         const requestId = yield* required(input.requestId, "requestId");
-        const { item } = yield* readQuestion({ threadId: input.threadId, requestId });
-        return { requestId, questions: item.questions };
+        const { item } = yield* readPendingRequest({ threadId: input.threadId, requestId });
+        return item.type === "user_input_request" ? { requestId, kind: "user-input" as const, questions: item.questions } : { requestId, kind: "approval" as const, requestKind: item.requestKind, prompt: item.prompt, appName: item.appName, options: item.options };
       }),
     ),
-    writesThread((input) =>
+    McpToolAccess.writesThreads(
+    (input, scope) => (scope.client?.promachosThreadId === undefined ? [input.threadId] : []),
+    (input) =>
       Effect.gen(function* () {
         const requestId = yield* required(input.requestId, "requestId");
-        const answers = yield* required(input.answers, "answers");
-        const { threads, projection } = yield* readQuestion({
-          threadId: input.threadId,
-          requestId,
-        });
+        const context = yield* readPendingRequest({ ...input, requestId });
+        const { threads, projection, item, answerer } = context;
+        if (answerer === undefined)
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message:
+              "Only an ancestor thread, or the Promachos once no ancestor is active, may answer a descendant request.",
+          });
+        if (context.scope.client?.promachosThreadId !== undefined) {
+          yield* assertTargetWithinLimits(context.limits, projection.thread);
+          if (answerer.kind !== "promachos") yield* assertSameLink(context, projection.thread);
+        }
+        if (
+          (item.type === "approval_request" && input.decision === undefined) ||
+          (item.type === "user_input_request" && input.answers === undefined)
+        )
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "Pass decision for an approval or answers for a question.",
+          });
         const result = yield* threads
           .dispatch({
             type: "runtime-request.respond",
             threadId: projection.thread.id,
             commandId: yield* newCommandId(),
             requestId,
-            answers,
+            answers: item.type === "user_input_request" ? input.answers : undefined,
+            decision: item.type === "approval_request" ? input.decision : undefined,
+            ...(answerer.kind === "promachos" ? { answeredBy: answerer.answeredBy } : {}),
           })
           .pipe(Effect.mapError(dispatchFailure));
         return { sequence: result.sequence };
       }),
-    ),
+  )
   ),
   t3_queue_resume: writesThread((input) =>
     dispatch(input.threadId, (common) => ({ ...common, type: "queue.resume" })),

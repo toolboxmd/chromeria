@@ -141,6 +141,40 @@ export const linkOriginIsFenced = (origin: OrchestrationV2LinkOrigin) =>
   origin.access !== "full-access";
 
 /**
+ * Fork: a thread launched as the Promachos (toolboxmd/chromeria#532). Set
+ * once at creation; the Promachos may answer requests no ancestor can.
+ */
+export const OrchestrationV2ThreadPrismRole = Schema.Literal("promachos");
+export type OrchestrationV2ThreadPrismRole = typeof OrchestrationV2ThreadPrismRole.Type;
+
+/**
+ * A Promachos conversation is always top-level. Subagent children copy their
+ * parent's record, so only a thread with no parent may act on the role.
+ */
+export const isPromachosThread = (thread: {
+  readonly prismRole?: OrchestrationV2ThreadPrismRole | undefined;
+  readonly lineage: { readonly parentThreadId: ThreadId | null };
+}): boolean => thread.prismRole === "promachos" && thread.lineage.parentThreadId === null;
+
+/**
+ * Fork: the Promachos thread that answered a request for the user
+ * (toolboxmd/chromeria#532). Absent when the user or an ancestor answered.
+ */
+export const OrchestrationV2RequestAnsweredBy = Schema.Struct({
+  kind: Schema.Literal("promachos"),
+  threadId: ThreadId,
+  /** Label of the link it answered through, when it runs in another environment. */
+  via: Schema.optional(Schema.String),
+});
+export type OrchestrationV2RequestAnsweredBy = typeof OrchestrationV2RequestAnsweredBy.Type;
+
+/** How every client labels a request the Promachos answered. */
+export const requestAnsweredByLabel = (answeredBy: OrchestrationV2RequestAnsweredBy): string =>
+  answeredBy.via === undefined
+    ? "Answered by the Promachos for you"
+    : `Answered by the Promachos on ${answeredBy.via} for you`;
+
+/**
  * The thread in a linked environment that delegated this one, when it did:
  * this thread is that parent's subagent, run here instead of there.
  */
@@ -474,6 +508,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
   // Fork: thread people (toolboxmd/chromeria#170). Unset owner is the default person.
   owner: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  prismRole: Schema.optional(OrchestrationV2ThreadPrismRole),
   coOwners: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
   id: ThreadId,
   projectId: ProjectId,
@@ -1387,6 +1422,7 @@ export const OrchestrationV2RuntimeRequest = Schema.Struct({
   decision: Schema.optional(ProviderApprovalDecision),
   feedback: Schema.optional(Schema.String),
   answers: Schema.optional(ProviderUserInputAnswers),
+  answeredBy: Schema.optional(OrchestrationV2RequestAnsweredBy),
 });
 export type OrchestrationV2RuntimeRequest = typeof OrchestrationV2RuntimeRequest.Type;
 
@@ -1795,6 +1831,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
     requestId: RuntimeRequestId,
     questions: Schema.Array(OrchestrationV2UserInputQuestion),
     questionAnswer: Schema.optional(UserInputAttachmentAnswerPayload),
+    answeredBy: Schema.optional(OrchestrationV2RequestAnsweredBy),
     responseMode: Schema.optional(Schema.Literal("message")),
   }),
   Schema.Struct({
@@ -1837,6 +1874,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
     type: Schema.Literal("approval_request"),
     requestId: RuntimeRequestId,
     requestKind: ProviderRequestKind,
+    answeredBy: Schema.optional(OrchestrationV2RequestAnsweredBy),
     prompt: Schema.optional(Schema.String),
     reason: Schema.optional(Schema.String),
     fullAccessOverride: Schema.optional(ProviderApprovalFullAccessOverride),
@@ -2218,6 +2256,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   ...OrchestrationV2CreationFields,
   // Fork: thread people (toolboxmd/chromeria#170). Unset owner is the default person.
   owner: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  prismRole: Schema.optional(OrchestrationV2ThreadPrismRole),
   coOwners: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
   id: ThreadId,
   projectId: ProjectId,
@@ -2640,6 +2679,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     requestId: RuntimeRequestId,
     questions: Schema.Array(OrchestrationV2UserInputQuestion),
     questionAnswer: Schema.optional(UserInputAttachmentAnswerPayload),
+    answeredBy: Schema.optional(OrchestrationV2RequestAnsweredBy),
     responseMode: Schema.optional(Schema.Literal("message")),
   }),
   Schema.Struct({
@@ -2682,6 +2722,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     type: Schema.Literal("approval_request"),
     requestId: RuntimeRequestId,
     requestKind: ProviderRequestKind,
+    answeredBy: Schema.optional(OrchestrationV2RequestAnsweredBy),
     prompt: Schema.optional(Schema.String),
     reason: Schema.optional(Schema.String),
     fullAccessOverride: Schema.optional(ProviderApprovalFullAccessOverride),
@@ -3073,6 +3114,7 @@ export const OrchestrationV2Command = Schema.Union([
     ...OrchestrationV2CreationFields,
     /** Fork: the person who owns the new thread, stamped by the server (toolboxmd/chromeria#170). */
     owner: Schema.optional(TrimmedNonEmptyString),
+    prismRole: Schema.optional(OrchestrationV2ThreadPrismRole),
     commandId: CommandId,
     threadId: ThreadId,
     projectId: ProjectId,
@@ -3470,6 +3512,7 @@ export const OrchestrationV2Command = Schema.Union([
     feedback: Schema.optional(Schema.String),
     answers: Schema.optional(ProviderUserInputAnswers),
     attachmentsByQuestionId: Schema.optional(UserInputAttachments),
+    answeredBy: Schema.optional(OrchestrationV2RequestAnsweredBy),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.user-input.dismiss"),

@@ -1221,3 +1221,25 @@ it.effect(
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
+
+// Fork: only a peer link may say its caller is the Promachos (toolboxmd/chromeria#532).
+it("honors the Promachos thread header from a peer link only", () => {
+  const header = { "t3-promachos-thread": " remote-promachos " };
+  const scope = (linked: boolean): McpInvocationContext.McpInvocationScope => ({
+    environmentId: EnvironmentId.make("env"),
+    capabilities: new Set(["orchestration"]),
+    issuedAt: 0,
+    requestNamespace: "request",
+    thread: undefined,
+    client: { sessionId: "client", label: "cavallo", access: "full-access", linked },
+  });
+  expect(McpHttpServer.withPromachosThread(scope(true), header)?.client?.promachosThreadId).toBe(
+    "remote-promachos",
+  );
+  expect(
+    McpHttpServer.withPromachosThread(scope(false), header)?.client?.promachosThreadId,
+  ).toBeUndefined();
+  expect(
+    McpHttpServer.withPromachosThread(scope(true), {})?.client?.promachosThreadId,
+  ).toBeUndefined();
+});

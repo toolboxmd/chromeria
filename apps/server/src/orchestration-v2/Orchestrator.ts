@@ -2837,6 +2837,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? {}
         : { bare: { ...command.bare, nativeHomeOwnerThreadId: command.threadId } }),
       ...(command.owner === undefined ? {} : { owner: command.owner }),
+      ...(command.prismRole === undefined ? {} : { prismRole: command.prismRole }),
       createdBy: command.createdBy,
       creationSource: command.creationSource,
       id: command.threadId,
@@ -4575,13 +4576,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       })
       .pipe(mapDispatchError(command));
 
+    // Fork: a fork is not the Promachos, whoever forks it (toolboxmd/chromeria#532).
+    const { prismRole: _prismRole, ...forkedThread } = targetThread;
     yield* emitEvent({
       type: "thread.created",
       threadId: command.targetThreadId,
       providerInstanceId: targetThread.providerInstanceId,
       occurredAt: now,
       // Fork: a fork belongs to the forking person and starts unshared (toolboxmd/chromeria#170).
-      payload: { ...targetThread, owner: command.owner ?? null, coOwners: [] },
+      payload: { ...forkedThread, owner: command.owner ?? null, coOwners: [] },
     });
     yield* emitEvent({
       type: "context-transfer.created",
@@ -9776,6 +9779,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.decision === undefined ? {} : { decision: command.decision }),
         ...(command.feedback === undefined ? {} : { feedback: command.feedback }),
         ...(answers === undefined ? {} : { answers }),
+        ...(command.answeredBy === undefined ? {} : { answeredBy: command.answeredBy }),
       };
       const emitEvent = emit(events, command);
       const requestNode = context.node;
@@ -9906,6 +9910,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   },
                 }
               : {}),
+            ...(command.answeredBy === undefined ? {} : { answeredBy: command.answeredBy }),
             status: resolvedNodeStatus,
             completedAt: now,
             updatedAt: now,

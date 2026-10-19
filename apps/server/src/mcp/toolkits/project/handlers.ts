@@ -310,6 +310,8 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 creationSource: "mcp",
                 // Fork: an agent's thread belongs to its caller's owner (toolboxmd/chromeria#170).
                 ...(caller === undefined ? {} : { owner: threadOwner(caller) }),
+                // An agent's launch never records the Promachos role: only the user's own
+                // Promachos conversations may answer for them (toolboxmd/chromeria#532).
                 ...(linkOrigin === undefined ? {} : { linkOrigin }),
                 // Kept only alongside linkOrigin: thread.create drops it otherwise.
                 ...(input.delegatedFrom === undefined

@@ -31,9 +31,7 @@ export class PromachosLaunchError extends Schema.TaggedError<PromachosLaunchErro
     }
   }
 }
-export type PromachosLaunchInput = ThreadLaunch.ThreadLaunchInput & {
-  readonly prismRole?: "promachos";
-};
+export type PromachosLaunchInput = ThreadLaunch.ThreadLaunchInput;
 
 export class PromachosLaunch extends Context.Service<
   PromachosLaunch,
@@ -51,8 +49,8 @@ const make = Effect.gen(function* () {
   const adapters = yield* Adapters.ProviderAdapterRegistryV2;
   const providers = yield* Providers.ProviderRegistry;
   const prepare = Effect.fn("PromachosLaunch.prepare")(function* (input: PromachosLaunchInput) {
-    const { prismRole, ...launch } = input;
-    if (prismRole === undefined) return launch;
+    // The role stays on the launch, so the new thread records it (toolboxmd/chromeria#532).
+    if (input.prismRole === undefined) return input;
     if (input.bare !== undefined) return yield* new PromachosLaunchError({ reason: "bare" });
     if (input.reuseExistingThread === true || input.initialMessage === undefined) {
       return yield* new PromachosLaunchError({ reason: "initial-only" });
@@ -88,7 +86,7 @@ const make = Effect.gen(function* () {
             Effect.mapError((cause) => new PromachosLaunchError({ reason: "read-thread", cause })),
           );
         if (Option.isSome(messageReceipt) && messageReceipt.value.status === "accepted") {
-          return { ...launch, modelSelection: existing.modelSelection };
+          return { ...input, modelSelection: existing.modelSelection };
         }
         // Creation can commit before the first message. Its retry keeps the stored model
         // and reads the current launch kit until that message has its own accepted receipt.
@@ -100,7 +98,7 @@ const make = Effect.gen(function* () {
           })
           .pipe(Effect.mapError((cause) => new PromachosLaunchError({ reason: "routing", cause })));
         return {
-          ...launch,
+          ...input,
           modelSelection: existing.modelSelection,
           initialMessage: {
             ...input.initialMessage,
@@ -123,7 +121,7 @@ const make = Effect.gen(function* () {
       })
       .pipe(Effect.mapError((cause) => new PromachosLaunchError({ reason: "routing", cause })));
     return {
-      ...launch,
+      ...input,
       modelSelection: selected.modelSelection,
       initialMessage: {
         ...input.initialMessage,

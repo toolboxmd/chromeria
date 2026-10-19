@@ -4,6 +4,7 @@ import {
   type PeerLinkError,
   type ProviderInteractionMode,
   type RuntimeMode,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -43,6 +44,8 @@ export class PeerMcpClient extends Context.Service<
       readonly success: S;
       /** Refuse a launch replay through a replacement OAuth grant. */
       readonly expectedLinkIdentity?: string;
+      /** The calling Promachos thread here, when it answers a request there. */
+      readonly promachosThreadId?: ThreadId;
     }) => Effect.Effect<S["Type"], OrchestratorMcpFailure>;
   }
 >()("t3/peer/PeerMcpClient") {}
@@ -179,7 +182,14 @@ const make = Effect.gen(function* () {
             method: "tools/call",
             params: { name: input.tool, arguments: input.arguments },
           },
-          { ...limitHeader, "mcp-session-id": sessionId, "mcp-protocol-version": PROTOCOL_VERSION },
+          {
+            ...limitHeader,
+            ...(input.promachosThreadId === undefined
+              ? {}
+              : { [McpInvocationContext.PROMACHOS_THREAD_HEADER]: input.promachosThreadId }),
+            "mcp-session-id": sessionId,
+            "mcp-protocol-version": PROTOCOL_VERSION,
+          },
         );
       const existing = (yield* Ref.get(sessions)).get(sessionKey);
       const sessionId = existing ?? (yield* openSession(resolved.url, resolved.token, limitHeader));

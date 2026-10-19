@@ -34,6 +34,12 @@ fix the cause and choose **Create** again.
 - Only conversations in the home show as chats. Other threads keep the standard view,
   and agents a conversation starts stay in its Lineage section.
 - Type a custom answer to a question in the composer, as in the standard view.
+- The Promachos can answer another thread's question or approval for you when no
+  parent thread can: the thread has no parent, or its parent was deleted or has
+  been idle for 30 minutes. A parent that is still active answers first.
+  The answered request shows "Answered by the Promachos for you". This works only
+  in conversations started in Promachos mode after this update, while the
+  Promachos list has a model.
 - A new conversation starts on the first model with capacity in the Promachos list
   under **Settings → Promachos**. If that list is empty, it starts on the model picked in
   the composer. If no listed model has capacity, the conversation does not start and

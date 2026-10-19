@@ -152,7 +152,7 @@ const pendingRequest = Schema.Union([
 const PendingRequestTool = Tool.make("t3_pending_request", {
   ...commandTool,
   description:
-    "Pending user questions and descendant approvals in a thread. Omit `threadId` for this thread. list: their ids; descendant approvals are included. read: one by `requestId`. respond: answer one with `answers`; this cannot approve a permission request.",
+    "Pending user questions and descendant approvals in a thread. Omit `threadId` for this thread. list: their ids; descendant approvals are included. read: one by `requestId`. respond: answer one with `answers`; use decision for a descendant approval. The Promachos may answer when no ancestor can.",
   parameters: Schema.Struct({
     action: Schema.Literals(["list", "read", "respond"]),
     environmentId: OrchestratorMcpEnvironmentTarget,

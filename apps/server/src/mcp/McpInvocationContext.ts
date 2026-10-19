@@ -48,6 +48,11 @@ export interface McpClientCaller {
   readonly narrowedTo?: ClientModes | undefined;
   /** The origin an outside client reached; its thread links open the web app there. */
   readonly webOrigin?: string | undefined;
+  /**
+   * The Promachos thread in the linked environment this call answers for
+   * (`T3-Promachos-Thread`), set only on a peer link (toolboxmd/chromeria#532).
+   */
+  readonly promachosThreadId?: ThreadId | undefined;
 }
 
 /**
@@ -57,6 +62,7 @@ export interface McpClientCaller {
  * `clientModeCeiling`), so a client gains nothing by sending a broad one.
  */
 export const MODE_LIMIT_HEADER = "t3-mode-limit";
+export const PROMACHOS_THREAD_HEADER = "t3-promachos-thread";
 
 export interface ClientModes {
   readonly runtimeMode: RuntimeMode;
