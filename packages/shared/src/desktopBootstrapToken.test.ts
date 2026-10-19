@@ -10,6 +10,16 @@ const SECRET = "desktop-secret";
 const WINDOW = DESKTOP_BOOTSTRAP_TOKEN_WINDOW_MS;
 
 describe("desktop bootstrap token", () => {
+  it("separates the main mirror credential from the renderer bootstrap credential", () => {
+    const renderer = currentDesktopBootstrapToken(SECRET, WINDOW);
+    const main = currentDesktopBootstrapToken(SECRET, WINDOW, "cookie-mirror");
+    expect(main).not.toBe(renderer);
+    expect(isValidDesktopBootstrapToken(SECRET, renderer, WINDOW, "cookie-mirror")).toBe(false);
+    expect(isValidDesktopBootstrapToken(SECRET, main, WINDOW)).toBe(false);
+    expect(isValidDesktopBootstrapToken(SECRET, main, WINDOW, "cookie-mirror")).toBe(true);
+    expect(isValidDesktopBootstrapToken(SECRET, main, WINDOW * 3, "cookie-mirror")).toBe(false);
+  });
+
   it("rotates every window and stays accepted for one more", () => {
     const issuedAt = 10 * WINDOW + 1;
     const token = currentDesktopBootstrapToken(SECRET, issuedAt);

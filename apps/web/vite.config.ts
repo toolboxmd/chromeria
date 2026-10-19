@@ -100,7 +100,16 @@ const browserTestProject = {
     browser: {
       enabled: true,
       headless: true,
-      provider: playwright(),
+      provider: playwright(
+        process.env.CHROMERIA_TEST_CHROMIUM
+          ? {
+              launchOptions: {
+                executablePath: process.env.CHROMERIA_TEST_CHROMIUM,
+                args: ["--no-sandbox"],
+              },
+            }
+          : {},
+      ),
       instances: [{ browser: "chromium" }],
       screenshotFailures: false,
     },

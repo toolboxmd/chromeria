@@ -1,3 +1,5 @@
+import * as BrowserCookieMirror from "./preview/BrowserCookieMirror.ts";
+import * as CookieMirrorRoute from "./preview/CookieMirrorRoute.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as ForkProviderMaintenance from "./provider/forkProviderMaintenance.ts";
 import * as ProviderAutoUpdate from "./provider/providerAutoUpdate.ts";
@@ -705,6 +707,7 @@ const layerMakeRoutes = Layer.mergeAll(
     ContextmdRoute.layer,
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
+    CookieMirrorRoute.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
   ),
@@ -728,6 +731,7 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.provide(layerPullRequestService),
   Layer.provide(layerIssues),
   // The stream route and the WebSocket RPCs share one browser.
+  Layer.provide(BrowserCookieMirror.layer),
   Layer.provide(ServerBrowser.layer.pipe(Layer.provide(DesktopBrowserChannel.layer))),
   Layer.provide(PreviewBrowser.layer),
   // Links to other environments, shared by Settings (WebSocket) and agents (/mcp).

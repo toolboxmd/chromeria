@@ -54,6 +54,10 @@ export interface ChromiumKeyMaterial {
 const derive = (passphrase: string, iterations: number) =>
   NodeCrypto.pbkdf2Sync(passphrase, KEY_SALT, iterations, KEY_LENGTH, "sha1");
 
+export const macChromiumKeyMaterial = (secret: string): ChromiumKeyMaterial => ({
+  cbcV10: derive(secret, MAC_KEY_ITERATIONS),
+});
+
 /**
  * Via the CLI the prompt says "security" and "Always Allow" grants trust to a
  * tool every process on the machine can invoke; in-process it names this app
@@ -263,7 +267,7 @@ export const resolveChromiumKeys = Effect.fn("ChromiumKeys.resolveChromiumKeys")
       return yield* new ChromiumKeyError({ reason: "unsupportedPlatform" });
     }
     const secret = yield* readKeychainSecret(request.keychainService, request.keychainAccount);
-    return { cbcV10: derive(secret, MAC_KEY_ITERATIONS) };
+    return macChromiumKeyMaterial(secret);
   }
 
   if (request.platform === "linux") {
