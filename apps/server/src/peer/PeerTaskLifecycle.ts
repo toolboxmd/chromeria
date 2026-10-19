@@ -74,6 +74,31 @@ const executionEffects = [
 ] as const;
 const lifecycleTypeSet = new Set<string>(lifecycleTypes);
 
+const requestDetail = (requestId: string, items: ReadonlyArray<OrchestrationV2TurnItem>) => {
+  const item = items.find(
+    (item) =>
+      (item.type === "user_input_request" || item.type === "approval_request") &&
+      item.requestId === requestId,
+  );
+  const text =
+    item?.type === "user_input_request"
+      ? json(item.questions)
+      : item?.type === "approval_request"
+        ? json({
+            requestKind: item.requestKind,
+            prompt: item.prompt,
+            appName: item.appName,
+            options: item.options,
+          })
+        : undefined;
+  return text === undefined
+    ? {}
+    : {
+        detail:
+          text.length <= 4096 ? text : `${text.slice(0, 4048)} [truncated; read the full request]`,
+      };
+};
+
 const make = Effect.gen(function* () {
   const authority = yield* PeerAuthority.PeerAuthority;
   const threads = yield* Threads.ThreadManagementService;
@@ -296,6 +321,7 @@ const make = Effect.gen(function* () {
                   revision: revisionById.get(request.id) ?? sequence,
                   kind: request.kind,
                   responseType: request.responseCapability.type,
+                  ...requestDetail(request.id, child.turnItems),
                 }));
               const seen = new Set([pair.childThreadId]);
               const queue = [...child.subagents];
@@ -372,8 +398,12 @@ const make = Effect.gen(function* () {
                     "providerThreads",
                     "providerTurns",
                     "runtimeRequests",
+                    "turnItems",
                   ],
-                  { messageRoles: ["user"] },
+                  {
+                    messageRoles: ["user"],
+                    turnItemTypes: ["user_input_request", "approval_request"],
+                  },
                 );
                 if (nested.thread.archivedAt !== null || nested.thread.deletedAt !== null) continue;
                 const nestedProgress = delegatedTaskProgress(nested);
@@ -419,6 +449,7 @@ const make = Effect.gen(function* () {
                       revision: nestedRevisionById.get(request.id) ?? sequence,
                       kind: request.kind,
                       responseType: request.responseCapability.type,
+                      ...requestDetail(request.id, nested.turnItems),
                     });
                 }
                 queue.push(...nested.subagents);
