@@ -103,6 +103,48 @@ describe("v2 thread shell lists", () => {
     registry.dispose();
   });
 
+  it("hides destination delegated children without losing offline qualified shells", () => {
+    const { registry, threads, snapshotAtom } = makeHarness([environmentId, remoteEnvironmentId]);
+    const delegatedFrom = {
+      environmentId: EnvironmentId.make("offline-parent"),
+      threadId: ThreadId.make("real-parent"),
+      title: "Real parent",
+    };
+    const child = { ...v2ThreadShell, delegatedFrom };
+    const linked = {
+      ...v2ThreadShell,
+      id: ThreadId.make("ordinary-linked"),
+      linkOrigin: { sessionId: "ordinary-link", label: "Linked work" },
+    };
+    registry.set(snapshotAtom(environmentId), { ...v2ShellSnapshot, threads: [child, linked] });
+    registry.set(snapshotAtom(remoteEnvironmentId), {
+      ...v2ShellSnapshot,
+      threads: [{ ...v2ThreadShell, title: "Same ID, other destination" }],
+    });
+    expect(registry.get(threads.threadShellsAtom)).toHaveLength(3);
+    const shell = registry.get(threads.threadShellAtom({ environmentId, threadId: child.id }));
+    expect(shell?.delegatedFrom).toBe(delegatedFrom);
+    expect(shell?.lineage.parentThreadId).toBeNull();
+    expect(
+      registry
+        .get(threads.navigationThreadShellsAtom)
+        .map((thread) => [thread.environmentId, thread.id]),
+    ).toEqual([
+      [environmentId, linked.id],
+      [remoteEnvironmentId, child.id],
+    ]);
+    expect(registry.get(threads.threadRefsAtom)).toContainEqual({
+      environmentId,
+      threadId: child.id,
+    });
+    expect(
+      registry.get(
+        threads.threadShellAtom({ environmentId: remoteEnvironmentId, threadId: child.id }),
+      )?.title,
+    ).toBe("Same ID, other destination");
+    registry.dispose();
+  });
+
   it("keeps navigation stable on hidden subagent updates and retains user forks", () => {
     const { registry, threads, snapshotAtom } = makeHarness();
     const root = v2ThreadShell;

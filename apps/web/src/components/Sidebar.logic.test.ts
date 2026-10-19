@@ -467,6 +467,48 @@ describe("resolveSidebarStageBadgeLabel", () => {
 });
 
 describe("sidebar thread lineage helpers", () => {
+  it("hides remote children by default but searches destination shells without the parent", () => {
+    const environmentId = EnvironmentId.make("destination");
+    const projectId = ProjectId.make("project");
+    const raw = makeThreadFixture({ environmentId, projectId, title: "Remote audit" }).source;
+    const child = presentThreadShell(environmentId, {
+      ...raw,
+      delegatedFrom: {
+        environmentId: EnvironmentId.make("offline-parent"),
+        threadId: ThreadId.make("parent"),
+        title: "Parent",
+      },
+    });
+    const ordinary = makeThreadFixture({ environmentId, projectId, id: ThreadId.make("ordinary") });
+    const otherEnvironment = { ...child, environmentId: EnvironmentId.make("other-destination") };
+    const localChild = {
+      ...child,
+      id: ThreadId.make("local-child"),
+      delegatedFrom: undefined,
+      lineage: { ...child.lineage, relationshipToParent: "subagent" as const },
+    };
+    const archived = {
+      ...child,
+      id: ThreadId.make("archived"),
+      archivedAt: "2026-01-02T00:00:00.000Z",
+    };
+    expect(isSidebarSubagentThread(child)).toBe(true);
+    const all = [child, ordinary, otherEnvironment, localChild, archived];
+    const scope = new Set([`${environmentId}:${projectId}`]);
+    expect(filterSidebarV2VisibleThreads(all, scope)).toEqual([ordinary]);
+    const searchable = filterSidebarV2VisibleThreads(all, scope, "Remote audit");
+    expect(searchSidebarThreads(searchable, "Remote audit")).toEqual([child]);
+    expect(
+      searchSidebarThreads(
+        filterSidebarV2VisibleThreads(all, scope, "contents"),
+        "contents",
+        new Set([threadSearchMatchKey({ environmentId, threadId: child.id })]),
+      ),
+    ).toEqual([child]);
+    expect(filterSidebarV2VisibleThreads(all, scope, "  ")).toEqual([ordinary]);
+    expect(all).toHaveLength(5);
+  });
+
   it("keeps only top-level, unarchived threads in the Sidebar V2 project scope", () => {
     const parentId = ThreadId.make("thread-parent");
     const projectId = ProjectId.make("project-visible");
