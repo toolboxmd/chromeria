@@ -490,3 +490,7 @@ packages/client-runtime/src/pullRequestLinkInput.ts
 
 # Accepted explicit-send receipt replay during replacement startup (#298)
 apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts
+
+# Desktop preview Chrome identity (#460)
+apps/desktop/src/preview/Manager.ts
+apps/desktop/src/preview/Manager.test.ts

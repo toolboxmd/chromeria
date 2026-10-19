@@ -2448,3 +2448,26 @@ sources and reasons.
   "keywords": ["launcher fixture ownership", "spawnedChildren", "serviceLauncher.test.ts"]
 }
 ```
+
+## preview-chrome-identity
+
+```json
+{
+  "id": "preview-chrome-identity",
+  "purpose": "Apply a paired Chrome identity before preview document requests, reconcile aborts with the committed page and restore after debugger reattachment.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/460"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/470"],
+  "newFiles": [
+    "apps/desktop/src/preview/ChromeUserAgent.ts",
+    "apps/desktop/src/preview/ChromeUserAgent.test.ts",
+    "apps/desktop/src/preview/ChromeIdentitySession.ts",
+    "apps/desktop/src/preview/ChromeIdentitySession.test.ts"
+  ],
+  "upstreamFiles": [
+    "apps/desktop/src/preview/Manager.ts",
+    "apps/desktop/src/preview/Manager.test.ts"
+  ],
+  "sharedFiles": [],
+  "keywords": ["preview user agent", "ChromeUserAgent", "ChromeIdentitySession"]
+}
+```

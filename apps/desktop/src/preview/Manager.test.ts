@@ -1,3 +1,4 @@
+import * as NodeEvents from "node:events";
 import { it as effectIt } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import type {
@@ -138,7 +139,15 @@ const {
   fromId: vi.fn<(_id?: number) => Electron.WebContents | null>((_id?: number) => null),
   getFocusedWebContents: vi.fn(() => null),
   mkdir: vi.fn((_path: string) => undefined),
-  previewSession: { on: vi.fn() },
+  previewSession: {
+    on: vi.fn(),
+    getUserAgent: () =>
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chromeria/0.1.0 Chrome/152.0.7977.130 Electron/44.4.5 Safari/537.36",
+    webRequest: {
+      onBeforeRequest: vi.fn<Electron.WebRequest["onBeforeRequest"]>(),
+      onBeforeSendHeaders: vi.fn<Electron.WebRequest["onBeforeSendHeaders"]>(),
+    },
+  },
   showItemInFolder: vi.fn(),
   webviewSend: vi.fn(),
   writeFile: vi.fn((_path: string, _data: Uint8Array) => undefined),
@@ -186,6 +195,7 @@ const layerEnvironment = Layer.succeed(
   DesktopEnvironment.DesktopEnvironment,
   DesktopEnvironment.DesktopEnvironment.of({
     browserArtifactsDir: "/tmp/t3/dev/browser-artifacts",
+    processArch: "x64",
     dirname: "/tmp/t3/desktop",
     path: {
       join: (...parts: ReadonlyArray<string>) => parts.join("/"),
@@ -540,6 +550,8 @@ describe("PreviewManager", () => {
     getFocusedWebContents.mockReturnValue(null);
     mkdir.mockClear();
     previewSession.on.mockClear();
+    previewSession.webRequest.onBeforeRequest.mockClear();
+    previewSession.webRequest.onBeforeSendHeaders.mockClear();
     writeFile.mockClear();
     showItemInFolder.mockClear();
     clipboardItemConstructor.mockClear();
@@ -547,6 +559,190 @@ describe("PreviewManager", () => {
     createFromPath.mockClear();
     webviewSend.mockClear();
   });
+
+  effectIt.effect(
+    "sets and clears the paired site identity through the shared preview debugger",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          yield* manager.getBrowserSession("profile");
+          yield* manager.getBrowserSession("profile");
+          expect(previewSession.webRequest.onBeforeRequest).toHaveBeenCalledOnce();
+          const request = previewSession.webRequest.onBeforeRequest.mock.calls[0]?.[0];
+          if (typeof request !== "function")
+            return yield* Effect.die("Missing preview request policy");
+          const debuggee = {
+            isAttached: () => false,
+            attach: vi.fn(),
+            detach: vi.fn(),
+            on: vi.fn(),
+            off: vi.fn(),
+            sendCommand: vi.fn(async () => undefined),
+          };
+          const events = new Map<string, (...args: unknown[]) => unknown>();
+          const contents = {
+            on: (event: string, listener: (...args: unknown[]) => unknown) =>
+              events.set(event, listener),
+            off: (event: string) => events.delete(event),
+            id: 42,
+            getURL: () => "https://example.com/",
+            isDestroyed: () => false,
+            isDevToolsOpened: () => false,
+            debugger: debuggee,
+          } as unknown as Electron.WebContents;
+          const navigate = (url: string) =>
+            Effect.promise(
+              () =>
+                new Promise<Electron.CallbackResponse>((resolve) => {
+                  request(
+                    {
+                      id: 1,
+                      url,
+                      method: "GET",
+                      webContents: contents,
+                      resourceType: "mainFrame",
+                      referrer: "",
+                      timestamp: 0,
+                      uploadData: [],
+                    },
+                    resolve,
+                  );
+                }),
+            );
+          expect(yield* navigate("https://web.whatsapp.com/")).toEqual({ cancel: false });
+          const commit = (url: string) =>
+            Effect.promise(() =>
+              Promise.resolve(events.get("did-frame-navigate")?.({}, url, 200, "OK", true, 1, 1)),
+            );
+          yield* commit("https://web.whatsapp.com/");
+          expect(previewSession.webRequest.onBeforeSendHeaders).not.toHaveBeenCalled();
+          expect(debuggee.sendCommand).toHaveBeenCalledWith(
+            "Emulation.setUserAgentOverride",
+            expect.objectContaining({
+              userAgent: expect.stringContaining("Chrome/152.0.0.0 Safari/537.36"),
+              userAgentMetadata: expect.objectContaining({
+                brands: expect.arrayContaining([{ brand: "Google Chrome", version: "152" }]),
+                fullVersion: "152.0.7977.130",
+              }),
+            }),
+          );
+          expect(yield* navigate("https://dash.cloudflare.com/login")).toEqual({ cancel: false });
+          yield* commit("https://dash.cloudflare.com/login");
+          expect(debuggee.sendCommand).toHaveBeenLastCalledWith("Emulation.setUserAgentOverride", {
+            userAgent: "",
+          });
+          expect(debuggee.attach).toHaveBeenCalledOnce();
+        }),
+      ),
+  );
+
+  for (const commitWhileOpen of [false, true]) {
+    effectIt.effect(
+      commitWhileOpen
+        ? "restores a listed commit remembered while DevTools was open"
+        : "restores committed WhatsApp identity after preview DevTools closes",
+      () =>
+        withManager((manager) =>
+          Effect.gen(function* () {
+            let markRestored = () => {};
+            const restored = new Promise<void>((resolve) => {
+              markRestored = resolve;
+            });
+            const events = new NodeEvents.EventEmitter();
+            let toolsOpen = false;
+            let attached = false;
+            let restoring = false;
+            let currentUrl = "https://example.com/";
+            const guest = makeAttachingGuest(42);
+            const debuggee = {
+              ...guest.wc.debugger,
+              isAttached: () => attached,
+              attach: vi.fn(() => {
+                attached = true;
+              }),
+              detach: vi.fn(() => {
+                attached = false;
+              }),
+              on: vi.fn(),
+              off: vi.fn(),
+              sendCommand: vi.fn(async (method: string) => {
+                if (!attached) throw new Error("Debugger is not attached");
+                if (restoring && method === "Emulation.setUserAgentOverride") {
+                  markRestored();
+                }
+              }),
+            };
+            const wc = {
+              ...guest.wc,
+              session: previewSession,
+              getURL: () => currentUrl,
+              on: events.on.bind(events),
+              off: events.off.bind(events),
+              once: events.once.bind(events),
+              isDevToolsOpened: () => toolsOpen,
+              openDevTools: () => {
+                toolsOpen = true;
+                events.emit("devtools-opened");
+              },
+              debugger: debuggee,
+            } as unknown as Electron.WebContents;
+            fromId.mockReturnValue(wc);
+            yield* manager.getBrowserSession("profile");
+            yield* manager.createTab("identity_devtools");
+            yield* manager.registerWebview("identity_devtools", 42);
+            const request = previewSession.webRequest.onBeforeRequest.mock.calls[0]?.[0];
+            if (typeof request !== "function")
+              return yield* Effect.die("Missing identity request policy");
+            const requestStarted = yield* Effect.promise(
+              () =>
+                new Promise<Electron.CallbackResponse>((resolve) =>
+                  request(
+                    {
+                      id: 1,
+                      url: "https://web.whatsapp.com/",
+                      method: "GET",
+                      webContents: wc,
+                      resourceType: "mainFrame",
+                      referrer: "",
+                      timestamp: 0,
+                      uploadData: [],
+                    },
+                    resolve,
+                  ),
+                ),
+            );
+            expect(requestStarted).toEqual({ cancel: false });
+            const commit = () => {
+              currentUrl = "https://web.whatsapp.com/";
+              return Promise.all(
+                events
+                  .listeners("did-frame-navigate")
+                  .map((listener) => listener({}, currentUrl, 200, "OK", true, 1, 1)),
+              );
+            };
+            if (!commitWhileOpen) yield* Effect.promise(commit);
+            yield* manager.openDevTools("identity_devtools");
+            expect(attached).toBe(false);
+            if (commitWhileOpen) yield* Effect.promise(() => expect(commit()).rejects.toThrow());
+            debuggee.sendCommand.mockClear();
+            restoring = true;
+            toolsOpen = false;
+            events.emit("devtools-closed");
+            yield* Effect.promise(() => restored);
+            expect(debuggee.sendCommand).toHaveBeenCalledWith(
+              "Emulation.setUserAgentOverride",
+              expect.objectContaining({
+                userAgent: expect.stringContaining("Chrome/152.0.0.0 Safari/537.36"),
+                userAgentMetadata: expect.objectContaining({
+                  brands: expect.arrayContaining([{ brand: "Google Chrome", version: "152" }]),
+                }),
+              }),
+            );
+            expect(debuggee.attach).toHaveBeenCalledTimes(2);
+          }),
+        ),
+    );
+  }
 
   effectIt.effect.each([
     ["linux", "ctrl+alt+[", "[", "BracketLeft", false],

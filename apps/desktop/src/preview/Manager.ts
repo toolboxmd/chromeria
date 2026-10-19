@@ -77,6 +77,8 @@ import {
 import { isPreviewAnnotationPayload } from "./PickedElementPayload.ts";
 import { captureFavicon, safeHttpOrigin, selectFaviconCandidates } from "./FaviconCapture.ts";
 import { DEFAULT_RECORDING_INPUT_OPTIONS, type RecordingInputOptions } from "./RecordingInput.ts";
+import { installChromeIdentity } from "./ChromeIdentitySession.ts";
+import type { ChromeIdentity } from "./ChromeUserAgent.ts";
 
 export type PreviewNavStatus =
   | { kind: "Idle" }
@@ -510,6 +512,7 @@ const isPreviewInputSignal = (value: unknown): value is PreviewInputSignal => {
 const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function* (
   artifactDirectory: string,
   pictureInPicturePreloadPath: string,
+  restoreBrowserIdentity: (contents: Electron.WebContents) => Promise<void>,
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const rendererHistory = yield* DesktopRendererHistory.DesktopRendererHistory;
@@ -1129,6 +1132,21 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         });
         return createControlSession();
       },
+    );
+  });
+
+  const configureChromeIdentity = Effect.fn("PreviewManager.configureChromeIdentity")(function* (
+    wc: Electron.WebContents,
+    identity: ChromeIdentity | null,
+  ) {
+    const control = yield* ensureControlSession(wc);
+    yield* control.semaphore.withPermit(
+      attemptPromise({ operation: "configureChromeIdentity", webContentsId: wc.id }, () =>
+        control.debugger.sendCommand(
+          "Emulation.setUserAgentOverride",
+          identity ?? { userAgent: "" },
+        ),
+      ),
     );
   });
 
@@ -2274,6 +2292,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         yield* detachControlSession(wc.id);
         return;
       }
+      yield* attemptPromise(
+        { operation: "restoreChromeIdentity", tabId, webContentsId: wc.id },
+        () => restoreBrowserIdentity(wc),
+      );
       if (afterAttach.serverTab) {
         yield* listenToBrowserHost;
         browserHost.attach(afterAttach.serverTab, { webContents: wc, debugger: control.debugger });
@@ -3274,6 +3296,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   yield* Effect.addFinalizer(() => destroy().pipe(Effect.ignore));
 
   return {
+    configureChromeIdentity,
     cancelPickElement,
     captureScreenshot,
     closeTab,
@@ -3563,6 +3586,11 @@ export const make = Effect.gen(function* PreviewManagerMake() {
   const browserHost = yield* DesktopBrowserHost.DesktopBrowserHost;
   const passkeys = yield* PreviewPasskeys.PreviewPasskeys;
   const downloadSessions = new WeakSet<Electron.Session>();
+  const identitySessions = new WeakMap<
+    Electron.Session,
+    ReturnType<typeof installChromeIdentity>
+  >();
+  const runIdentity = Effect.runPromiseWith(yield* Effect.context<never>());
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const runForkDownload = Effect.runForkWith(yield* Effect.context<never>());
@@ -3607,6 +3635,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
   const operations = yield* makeNativeOperations(
     environment.browserArtifactsDir,
     environment.path.join(environment.dirname, "preview-pip-preload.cjs"),
+    (contents) => identitySessions.get(contents.session)?.(contents) ?? Promise.resolve(),
   );
 
   return PreviewManager.of({
@@ -3621,6 +3650,23 @@ export const make = Effect.gen(function* PreviewManagerMake() {
               (cause) => new PreviewOperationError({ operation: "getBrowserSession", cause }),
             ),
           );
+        if (!identitySessions.has(session)) {
+          const restore = installChromeIdentity(
+            session,
+            { arch: environment.processArch, platformVersion: process.getSystemVersion?.() ?? "" },
+            (contents, identity) =>
+              runIdentity(
+                operations
+                  .configureChromeIdentity(contents, identity)
+                  .pipe(
+                    Effect.tapError((cause) =>
+                      Effect.logWarning("Preview browser identity setup failed.", { cause }),
+                    ),
+                  ),
+              ),
+          );
+          identitySessions.set(session, restore);
+        }
         placeServerDownloads(session);
         passkeys.installSessionHandlers(session);
         return session;
