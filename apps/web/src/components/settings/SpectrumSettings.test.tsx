@@ -90,7 +90,7 @@ beforeEach(() => {
       { label: "Blue", primary, fallbacks: [] },
       { label: "Red", primary, fallbacks: [] },
     ],
-    white: "Red",
+    white: { primary: { ...primary, model: "judge" }, fallbacks: [] },
     relayRounds: 4,
   };
   state.settings = [
@@ -127,6 +127,11 @@ it("retains an edited draft when the displayed environment ignores the setting",
   expect(save.disabled).toBe(false);
   await act(() => save.click());
   expect(state.persist).toHaveBeenCalled();
+  // White is saved as its own Colors alongside the edited limit.
+  expect(state.persist.mock.calls[0]![0].input.patch.spectrum).toMatchObject({
+    relayRounds: 3,
+    white: { primary: { model: "judge" }, fallbacks: [] },
+  });
   expect(rounds.value).toBe("3");
   expect(save.disabled).toBe(false);
   expect(container.querySelector('[role="alert"]')?.textContent).toContain("one");

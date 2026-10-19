@@ -34,7 +34,7 @@ const defaults: SpectrumSettings = {
     { label: "Blue", primary, fallbacks: [{ ...primary, instanceId: spareInstanceId }] },
     { label: "Red", primary, fallbacks: [] },
   ],
-  white: "Red",
+  white: { primary: { ...primary, instanceId: spareInstanceId }, fallbacks: [] },
   mode: "council",
   relayRounds: 4,
   turnsPerColor: 5,
@@ -125,7 +125,14 @@ it.effect(
         mode: "council",
         limit: 4,
         turnsPerColor: 5,
-        moderator: 1,
+      });
+      // The saved White is its own member with its own thread, beside the two saved slots.
+      expect(first.moderator).toBeUndefined();
+      expect(first.participants.map((color) => color.label)).toEqual(["Blue", "Red"]);
+      expect(first.white).toMatchObject({
+        threadId: `sub.${id}.white`,
+        label: "White",
+        selection: { ...primary, instanceId: spareInstanceId },
       });
       expect(first.participants[0]?.selection.options).toBeUndefined();
       expect(first.participants[0]?.fallbacks[0]?.options).toBeUndefined();
@@ -145,7 +152,12 @@ it.effect(
       yield* call({ question: "Project defaults", clientRequestId: "project" });
       expect(
         Option.getOrThrow(yield* readSpectrum(ThreadId.make("spectrum:settings-test:project"))),
-      ).toMatchObject({ mode: "free", limit: 4, turnsPerColor: 2, moderator: 1 });
+      ).toMatchObject({
+        mode: "free",
+        limit: 4,
+        turnsPerColor: 2,
+        white: { selection: { ...primary, instanceId: spareInstanceId } },
+      });
       for (const [key, preferences, expected] of [
         ["large-council", { ...defaults, relayRounds: 101 }, 101],
         ["large-free", { ...defaults, mode: "free" as const, turnsPerColor: 12 }, 24],
@@ -174,7 +186,10 @@ it.effect(
       const explicit = Option.getOrThrow(
         yield* readSpectrum(ThreadId.make("spectrum:settings-test:explicit")),
       );
-      expect(explicit).toMatchObject({ mode: "free", limit: 7, moderator: 0, turnsPerColor: 2 });
+      expect(explicit).toMatchObject({ mode: "free", limit: 7, turnsPerColor: 2 });
+      // A legacy moderator index copies that Color's model for White; the Color still speaks.
+      expect(explicit.participants).toHaveLength(2);
+      expect(explicit.white?.selection).toEqual(explicit.participants[0]?.selection);
       expect(explicit.participants[0]?.fallbacks).toEqual([]);
       expect(explicit.participants[1]?.fallbacks).toEqual([
         {
@@ -183,9 +198,9 @@ it.effect(
           options: [{ id: "reasoningEffort", value: "high" }],
         },
       ]);
-      for (const [key, labels, moderator] of [
-        ["explicit-white-first", ["Sol", "Grok"], 0],
-        ["explicit-white-matching-label", ["Sol", "Red"], 0],
+      for (const [key, labels] of [
+        ["explicit-white-first", ["Sol", "Grok"]],
+        ["explicit-white-matching-label", ["Sol", "Red"]],
       ] as const) {
         const result = yield* call({
           question: "Explicit slots choose White",
@@ -198,10 +213,39 @@ it.effect(
         const stored = Option.getOrThrow(
           yield* readSpectrum(ThreadId.make(`spectrum:settings-test:${key}`)),
         );
-        expect(stored.moderator).toBe(moderator);
+        // Explicit Colors ignore the saved White: White copies the first Color's model.
+        expect(stored.white?.selection).toEqual(stored.participants[0]?.selection);
+        expect(stored.white?.selection.instanceId).not.toBe(spareInstanceId);
         expect(stored.participants.map((color) => color.label)).toEqual(labels);
         expect(stored.participants.every((color) => color.fallbacks.length === 0)).toBe(true);
       }
+      const judged = yield* call({
+        question: "Explicit White",
+        clientRequestId: "explicit-white-color",
+        colors: [
+          { label: "Blue", ...primary },
+          { label: "Red", ...primary },
+        ],
+        white: { ...primary, instanceId: spareInstanceId, fallbacks: [{ ...primary }] },
+      });
+      expect(judged).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            isFailure: false,
+            result: expect.objectContaining({
+              white: expect.objectContaining({ label: "White", instanceId: spareInstanceId }),
+            }),
+          }),
+        ]),
+      );
+      const withWhite = Option.getOrThrow(
+        yield* readSpectrum(ThreadId.make("spectrum:settings-test:explicit-white-color")),
+      );
+      expect(withWhite.white).toMatchObject({
+        selection: { instanceId: spareInstanceId },
+        fallbacks: [{ instanceId: primary.instanceId }],
+      });
+      expect(withWhite.participants.map((color) => color.label)).toEqual(["Blue", "Red"]);
     }).pipe(Effect.provide(runtime)),
 );
 
@@ -235,6 +279,7 @@ it.effect("start_spectrum rejects invalid values before persisting a Spectrum", 
       [{ limit: 1 }, /at least two relay rounds/],
       [{ mode: "free", limit: 1 }, /cap cannot be below the number of Colors/],
       [{ white: "Red", moderator: 0 }, /different Colors/],
+      [{ white: { ...primary }, moderator: 0 }, /not both/],
       [{ relayRounds: 1 }, /relayRounds/],
       [{ turnsPerColor: 0 }, /turnsPerColor/],
       [{ white: "Missing" }, /White/],

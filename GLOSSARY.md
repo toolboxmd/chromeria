@@ -66,7 +66,8 @@ _Avoid_: model config, route
 
 **White**:
 The Spectrum member that moderates: it writes a council's synthesis, and in
-free mode picks each next speaker and writes the closing summary.
+free mode picks each next speaker and writes the closing summary. White runs
+on its own Color, set separately from the Colors, and never speaks as one.
 _Avoid_: moderator, host
 
 **Drafter**:

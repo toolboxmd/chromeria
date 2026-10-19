@@ -25,9 +25,9 @@ import * as Round from "./RoundService.ts";
 import * as Transcript from "./TranscriptService.ts";
 import * as Reports from "./ReportService.ts";
 import * as Settings from "../serverSettings.ts";
-import { base, input, setup } from "./controllerTestkit.ts";
+import { base, input, setup, spareInstanceId } from "./controllerTestkit.ts";
 import { NOW } from "./testFixtures.ts";
-import type { SpectrumState } from "./state.ts";
+import { memberOf, type SpectrumState } from "./state.ts";
 import { readSpectrum } from "./store.ts";
 
 const dependencies = Layer.mergeAll(base, serialization);
@@ -47,11 +47,11 @@ const runtime = Layer.fresh(
 );
 
 const selection = { instanceId: ProviderInstanceId.make("codex"), model: "test-model" };
-const free = (colors: ReadonlyArray<string>, limit: number): Launch.SpectrumStart => ({
+const free = (colors: ReadonlyArray<string>, limit: number): Launch.SpectrumStartRequest => ({
   ...input,
   mode: "free",
   limit,
-  moderator: 0,
+  moderator: undefined,
   colors: colors.map((label) => ({ label, selection })),
 });
 
@@ -72,7 +72,7 @@ const currentRun = Effect.fn("test.free.currentRun")(function* (state: SpectrumS
   return {
     run,
     prompt,
-    label: state.participants.find((c) => c.threadId === slot.threadId)!.label,
+    label: memberOf(state, slot.threadId)!.label,
   };
 });
 
@@ -161,7 +161,7 @@ it.effect("a question-only start uses configured White and cap throughout free m
     yield* (yield* Settings.ServerSettingsService).updateSettings({
       spectrum: {
         slots: ["Blue", "Red"].map((label) => ({ label, primary: selection, fallbacks: [] })),
-        white: "Red",
+        white: { primary: { ...selection, instanceId: spareInstanceId }, fallbacks: [] },
         mode: "free",
         relayRounds: 2,
         turnsPerColor: 1,
@@ -176,15 +176,21 @@ it.effect("a question-only start uses configured White and cap throughout free m
     });
     assert.strictEqual(state.limit, 2);
     assert.strictEqual(state.turnsPerColor, 1);
-    assert.strictEqual(state.moderator, 1);
+    // White is its own member on its own model, and never one of the Colors.
+    assert.isUndefined(state.moderator);
+    assert.strictEqual(state.white!.selection.instanceId, spareInstanceId);
+    assert.deepStrictEqual(
+      state.participants.map((color) => color.label),
+      ["Blue", "Red"],
+    );
     const spoken: string[] = [];
     for (const text of ["Blue opens.", "Red opens.", "DONE", "Configured White's summary."]) {
       const step = yield* answer(state, { text });
       spoken.push(step.spoke);
-      if (step.spoke === "moderation:Red") assert.include(step.prompt, "turn 2 of 2");
+      if (step.spoke === "moderation:White") assert.include(step.prompt, "turn 2 of 2");
       state = step.next;
     }
-    assert.deepStrictEqual(spoken, ["free:Blue", "free:Red", "moderation:Red", "summary:Red"]);
+    assert.deepStrictEqual(spoken, ["free:Blue", "free:Red", "moderation:White", "summary:White"]);
     assert.strictEqual(state.status, "settled");
     assert.include(state.report!.text, "Configured White's summary.");
   }).pipe(Effect.provide(runtime)),
@@ -193,11 +199,11 @@ it.effect("a question-only start uses configured White and cap throughout free m
 it.effect("White's NEXT decides the next speaker, including repeats, then DONE summarizes", () =>
   Effect.gen(function* () {
     yield* boot;
-    let state = yield* register(free(["White", "Red", "Green"], 9));
+    let state = yield* register(free(["Blue", "Red", "Green"], 9));
     const spoken: string[] = [];
     const prompts: string[] = [];
     for (const text of [
-      "White opens.",
+      "Blue opens.",
       "Red opens.",
       "Green opens.",
       "Red, go deeper.\nNEXT: Red",
@@ -213,7 +219,7 @@ it.effect("White's NEXT decides the next speaker, including repeats, then DONE s
       state = step.next;
     }
     assert.deepStrictEqual(spoken, [
-      "free:White",
+      "free:Blue",
       "free:Red",
       "free:Green",
       "moderation:White",
@@ -239,17 +245,18 @@ it.effect("White's NEXT decides the next speaker, including repeats, then DONE s
   }).pipe(Effect.provide(runtime)),
 );
 
-it.effect("the cap ends the discussion and White always moderates after the opening round", () =>
+it.effect("a Color labelled White speaks as a Color; the moderator is White (moderator)", () =>
   Effect.gen(function* () {
     yield* boot;
-    let state = yield* register(free(["White", "Red"], 3));
+    let state = yield* register(free(["White", "Red"], 6));
     const spoken: string[] = [];
     const prompts: string[] = [];
     for (const text of [
       "White opens.",
       "Red opens.",
-      "NEXT: Red",
-      "Red's last turn.",
+      "Back to the White Color.\nNEXT: White",
+      "The White Color again.",
+      "Enough.\nDONE",
       "Summary.",
     ]) {
       const step = yield* answer(state, { text });
@@ -257,9 +264,41 @@ it.effect("the cap ends the discussion and White always moderates after the open
       prompts.push(step.prompt);
       state = step.next;
     }
-    // The third Color turn reaches the cap, so the summary follows with no moderation call.
+    // NEXT: White names the Color, never the moderator.
     assert.deepStrictEqual(spoken, [
       "free:White",
+      "free:Red",
+      "moderation:White (moderator)",
+      "free:White",
+      "moderation:White (moderator)",
+      "summary:White (moderator)",
+    ]);
+    assert.include(prompts[2]!, "You are White (moderator), moderating");
+    assert.include(prompts[2]!, "(one of: White, Red)");
+    const transcript = yield* transcriptTexts(state.threadId);
+    assert.includeMembers(transcript, [
+      "[White]\nThe White Color again.",
+      "[White (moderator)]\nBack to the White Color.",
+      "[White (moderator)]\nSummary.",
+    ]);
+  }).pipe(Effect.provide(runtime)),
+);
+
+it.effect("the cap ends the discussion and White always moderates after the opening round", () =>
+  Effect.gen(function* () {
+    yield* boot;
+    let state = yield* register(free(["Blue", "Red"], 3));
+    const spoken: string[] = [];
+    const prompts: string[] = [];
+    for (const text of ["Blue opens.", "Red opens.", "NEXT: Red", "Red's last turn.", "Summary."]) {
+      const step = yield* answer(state, { text });
+      spoken.push(step.spoke);
+      prompts.push(step.prompt);
+      state = step.next;
+    }
+    // The third Color turn reaches the cap, so the summary follows with no moderation call.
+    assert.deepStrictEqual(spoken, [
+      "free:Blue",
       "free:Red",
       "moderation:White",
       "free:Red",
@@ -269,23 +308,23 @@ it.effect("the cap ends the discussion and White always moderates after the open
     assert.strictEqual(state.status, "settled");
 
     let minimal = yield* register({
-      ...free(["White", "Red"], 2),
+      ...free(["Blue", "Red"], 2),
       commandId: CommandId.make("register:minimal"),
       threadId: ThreadId.make("spectrum:minimal"),
     });
     const order: string[] = [];
-    for (const text of ["White opens.", "Red opens.", "NEXT: Red", "Summary."]) {
+    for (const text of ["Blue opens.", "Red opens.", "NEXT: Red", "Summary."]) {
       const step = yield* answer(minimal, { text });
       order.push(step.spoke);
       minimal = step.next;
     }
     // A NEXT past the cap goes straight to the summary.
-    assert.deepStrictEqual(order, ["free:White", "free:Red", "moderation:White", "summary:White"]);
+    assert.deepStrictEqual(order, ["free:Blue", "free:Red", "moderation:White", "summary:White"]);
     assert.strictEqual(minimal.status, "settled");
 
     const short = yield* (yield* Launch.SpectrumLaunchService)
       .register({
-        ...free(["White", "Red"], 1),
+        ...free(["Blue", "Red"], 1),
         commandId: CommandId.make("register:short"),
         threadId: ThreadId.make("spectrum:short"),
       })
@@ -299,11 +338,11 @@ it.effect(
   () =>
     Effect.gen(function* () {
       yield* boot;
-      let state = yield* register(free(["White", "Red"], 6));
+      let state = yield* register(free(["Blue", "Red"], 6));
       const spoken: string[] = [];
       const prompts: string[] = [];
       for (const text of [
-        "White opens.",
+        "Blue opens.",
         "Red opens.",
         "Malformed musing.\nNext speaker is Red",
         "Still wrong.\nNEXT: Purple",
@@ -315,7 +354,7 @@ it.effect(
         state = step.next;
       }
       assert.deepStrictEqual(spoken, [
-        "free:White",
+        "free:Blue",
         "free:Red",
         "moderation:White",
         "moderation:White",
@@ -341,10 +380,10 @@ it.effect(
   () =>
     Effect.gen(function* () {
       yield* boot;
-      let state = yield* register(free(["White", "Red"], 4));
+      let state = yield* register(free(["Blue", "Red"], 4));
       const spoken: string[] = [];
       for (const outcome of [
-        { text: "White opens." },
+        { text: "Blue opens." },
         { text: "Red opens." },
         { text: "DONE" },
         { failed: true as const },
@@ -355,7 +394,7 @@ it.effect(
         state = step.next;
       }
       assert.deepStrictEqual(spoken, [
-        "free:White",
+        "free:Blue",
         "free:Red",
         "moderation:White",
         "summary:White",
@@ -365,13 +404,13 @@ it.effect(
       assert.include(state.report!.text, "Summary on retry.");
 
       let failing = yield* register({
-        ...free(["White", "Red"], 4),
+        ...free(["Blue", "Red"], 4),
         commandId: CommandId.make("register:failing"),
         threadId: ThreadId.make("spectrum:failing"),
       });
       const order: string[] = [];
       for (const outcome of [
-        { text: "White opens." },
+        { text: "Blue opens." },
         { text: "Red opens." },
         { failed: true as const },
         { failed: true as const },
@@ -381,7 +420,7 @@ it.effect(
         failing = step.next;
       }
       assert.deepStrictEqual(order, [
-        "free:White",
+        "free:Blue",
         "free:Red",
         "moderation:White",
         "moderation:White",
@@ -395,11 +434,10 @@ it.effect(
 it.effect("a restart mid-moderation resumes without repeating the call", () =>
   Effect.gen(function* () {
     yield* boot;
-    let state = yield* register(free(["White", "Red"], 4));
-    for (const text of ["White opens.", "Red opens."])
-      state = (yield* answer(state, { text })).next;
+    let state = yield* register(free(["Blue", "Red"], 4));
+    for (const text of ["Blue opens.", "Red opens."]) state = (yield* answer(state, { text })).next;
     assert.strictEqual(state.round!.phase, "moderation");
-    const white = state.participants[0]!.threadId;
+    const white = state.white!.threadId;
     const projections = yield* Projection.ProjectionStoreV2;
     const runs = () =>
       projections.getThreadRecords(white, ["runs"]).pipe(Effect.map((r) => r.runs));
@@ -419,8 +457,8 @@ it.effect("a restart mid-moderation resumes without repeating the call", () =>
 it.effect("Stop during a free discussion settles with an explicit failed-summary outcome", () =>
   Effect.gen(function* () {
     yield* boot;
-    let state = yield* register(free(["White", "Red"], 4));
-    state = (yield* answer(state, { text: "White opens." })).next;
+    let state = yield* register(free(["Blue", "Red"], 4));
+    state = (yield* answer(state, { text: "Blue opens." })).next;
     yield* (yield* Orchestrator.OrchestratorV2).dispatch({
       type: "thread.stop",
       threadId: state.threadId,
@@ -435,9 +473,9 @@ it.effect("Stop during a free discussion settles with an explicit failed-summary
 it.effect("a twice-failed White call keeps its failed-summary report across a crash", () =>
   Effect.gen(function* () {
     yield* boot;
-    let state = yield* register(free(["White", "Red"], 4));
+    let state = yield* register(free(["Blue", "Red"], 4));
     for (const outcome of [
-      { text: "White opens." },
+      { text: "Blue opens." },
       { text: "Red opens." },
       { failed: true as const },
     ])
@@ -476,10 +514,10 @@ it.effect("a twice-failed White call keeps its failed-summary report across a cr
 it.effect("a Color's own NEXT or DONE line is discussion text, not a control line", () =>
   Effect.gen(function* () {
     yield* boot;
-    let state = yield* register(free(["White", "Red", "Green"], 9));
+    let state = yield* register(free(["Blue", "Red", "Green"], 9));
     const spoken: string[] = [];
     for (const text of [
-      "White opens.",
+      "Blue opens.",
       "Red opens.\nDONE",
       "Green opens.\nNEXT: Red",
       "NEXT: Green",
@@ -490,7 +528,7 @@ it.effect("a Color's own NEXT or DONE line is discussion text, not a control lin
       state = step.next;
     }
     assert.deepStrictEqual(spoken, [
-      "free:White",
+      "free:Blue",
       "free:Red",
       "free:Green",
       "moderation:White",
@@ -509,9 +547,8 @@ it.effect("a Color's own NEXT or DONE line is discussion text, not a control lin
 it.effect("Stop during a moderation call cancels it and settles failed-summary", () =>
   Effect.gen(function* () {
     yield* boot;
-    let state = yield* register(free(["White", "Red"], 4));
-    for (const text of ["White opens.", "Red opens."])
-      state = (yield* answer(state, { text })).next;
+    let state = yield* register(free(["Blue", "Red"], 4));
+    for (const text of ["Blue opens.", "Red opens."]) state = (yield* answer(state, { text })).next;
     assert.strictEqual(state.round!.phase, "moderation");
     const { run } = yield* currentRun(state);
     yield* (yield* Orchestrator.OrchestratorV2).dispatch({

@@ -100,7 +100,7 @@ const runtime = Layer.fresh(
     Round.layer,
   ).pipe(Layer.provideMerge(base)),
 );
-const input: Launch.SpectrumStart = {
+const input: Launch.SpectrumStartRequest = {
   commandId: CommandId.make("register:spectrum"),
   threadId: ThreadId.make("spectrum:launch"),
   callerThreadId: ThreadId.make("caller"),

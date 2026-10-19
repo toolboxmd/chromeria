@@ -15,6 +15,7 @@ import {
   removeSpectrumSlot,
   renameSpectrumSlot,
   spectrumSlotColors,
+  spectrumWhiteColors,
 } from "./SpectrumSettings.logic";
 import { planScopedSettingsPatch, planScopedSettingsClear } from "./scopedSettings";
 import { resolveSettingsScope } from "./settingsScope";
@@ -23,17 +24,32 @@ const decodeSyncSpectrumSettings = Schema.decodeSync(SpectrumSettings);
 const primary = { instanceId: ProviderInstanceId.make("codex"), model: "sol" };
 const blue = { label: "Blue", primary, fallbacks: [{ ...primary, model: "backup" }] };
 const red = { label: "Red", primary, fallbacks: [] };
-const configured = { ...DEFAULT_SPECTRUM_SETTINGS, slots: [blue, red], white: "Red" };
-it("renames White by identity, removes it safely, and allocates unique labels", () => {
-  expect(renameSpectrumSlot(configured, 1, "White").white).toBe("White");
-  expect(removeSpectrumSlot(configured, 1).white).toBe("Blue");
+const judge = { instanceId: ProviderInstanceId.make("claude"), model: "opus" };
+const white = { primary: judge, fallbacks: [primary] };
+const configured = { ...DEFAULT_SPECTRUM_SETTINGS, slots: [blue, red], white };
+it("keeps White separate from slot edits and allocates unique labels", () => {
+  // A slot may be called White; it stays a slot and White keeps its own Colors.
+  const renamed = renameSpectrumSlot(configured, 1, "White");
+  expect(renamed.slots.map((slot) => slot.label)).toEqual(["Blue", "White"]);
+  expect(renamed.white).toEqual(white);
+  expect(removeSpectrumSlot(configured, 1).white).toEqual(white);
+  expect(addSpectrumSlot(configured, primary).white).toEqual(white);
   const first = addSpectrumSlot(DEFAULT_SPECTRUM_SETTINGS, primary);
-  expect(first.white).toBe("Color 1");
+  expect(first.white).toEqual({ primary, fallbacks: [] });
   const next = addSpectrumSlot(
     { ...first, slots: [...first.slots, { ...red, label: "Color 3" }] },
     primary,
   );
   expect(next.slots.map((slot) => slot.label)).toEqual(["Color 1", "Color 3", "Color 4"]);
+});
+it("saves White's list as its primary and fallbacks, and resets to no White", () => {
+  const edited = { ...configured, white: spectrumWhiteColors(white, [primary, judge]) };
+  expect(edited.white).toEqual({ primary, fallbacks: [judge] });
+  expect(decodeSyncSpectrumSettings(edited)).toEqual(edited);
+  expect(spectrumWhiteColors(white, [])).toEqual(white);
+  expect(spectrumWhiteColors(null, [judge])).toEqual({ primary: judge, fallbacks: [] });
+  expect(() => decodeSyncSpectrumSettings({ ...configured, white: null })).toThrow();
+  expect(DEFAULT_SPECTRUM_SETTINGS.white).toBeNull();
 });
 it("keeps the first Color primary when reordering and never removes the last Color", () => {
   expect(spectrumSlotColors(blue, [blue.fallbacks[0]!, primary])).toEqual({

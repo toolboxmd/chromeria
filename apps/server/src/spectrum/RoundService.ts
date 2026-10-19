@@ -15,7 +15,7 @@ import { bindRun, fallBack, nextRound } from "./barrier.ts";
 import { whiteInstruction } from "./freeMode.ts";
 import { spectrumLaunchAdmission } from "./launchAdmission.ts";
 import { spectrumPlan } from "./spectrumPlan.ts";
-import type { SpectrumState } from "./state.ts";
+import { memberOf, type SpectrumState } from "./state.ts";
 import { readSpectrum } from "./store.ts";
 
 export class SpectrumRoundError extends Schema.TaggedError<SpectrumRoundError>()(
@@ -92,7 +92,7 @@ const make = Effect.gen(function* () {
       .map((message) => message.text)
       .join("\n\n");
     const commands: ReadonlyArray<OrchestrationV2Command> = round.slots.map((slot) => {
-      const participant = state.participants.find((color) => color.threadId === slot.threadId)!;
+      const participant = memberOf(state, slot.threadId)!;
       const instruction =
         round.phase === "moderation" || round.phase === "summary"
           ? whiteInstruction(state, round.phase)
