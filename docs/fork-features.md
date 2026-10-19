@@ -982,11 +982,18 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "purpose": "Deliver each finished requested follow-up once and rearm its parent wake while reusing the original delegated task and preserving its first result; exclude Monitor wakes. Upstream #17696 (c572cb71d2, already absorbed) fixes #13490 by creating fresh tasks, so it does not replace this adaptation. Retire when upstream preserves the same task identity and first result with equivalent per-run delivery, or the fork adopts its fresh-task lifecycle and the retained regressions pass.",
   "issues": [
     "https://github.com/pingdotgg/t3code/issues/13490",
-    "https://github.com/toolboxmd/chromeria/issues/212"
+    "https://github.com/toolboxmd/chromeria/issues/212",
+    "https://github.com/toolboxmd/chromeria/issues/214"
   ],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/213"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/213",
+    "https://github.com/toolboxmd/chromeria/pull/492"
+  ],
   "newFiles": [],
-  "upstreamFiles": ["apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts"],
+  "upstreamFiles": [
+    "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts",
+    "apps/server/src/orchestration-v2/ThreadDeletion.ts"
+  ],
   "sharedFiles": [
     "apps/server/src/childThreads/delegatedFollowups.ts",
     "apps/server/src/childThreads/delegatedFollowupQueries.ts",
@@ -996,6 +1003,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "packages/shared/src/forkToolInstructions.ts",
     "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
     "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "packages/contracts/src/orchestrationV2.ts",
     "apps/server/src/orchestration-v2/ProjectionStore.ts",
     "packages/provider-core/src/server/orchestrationInstructions.ts"
   ],
@@ -1005,7 +1013,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "recordSubagentFollowup",
     "finalizeAppOwnedSubagent",
     "priorResultTransfers",
-    "follow-up turn"
+    "follow-up turn",
+    "disposedBy"
   ]
 }
 ```

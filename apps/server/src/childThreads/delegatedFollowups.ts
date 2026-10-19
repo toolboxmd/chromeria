@@ -130,6 +130,22 @@ export function restartContinuationRuns(
   return runs.filter((run) => ids.has(run.id));
 }
 
+/** The run a restart-continuation chain started from. */
+export function restartContinuationSource(
+  runs: ReadonlyArray<OrchestrationV2Run>,
+  run: OrchestrationV2Run,
+) {
+  let source = run;
+  const seen = new Set([run.id]);
+  while (source.restartContinuationOfRunId !== undefined) {
+    const previous = runs.find((candidate) => candidate.id === source.restartContinuationOfRunId);
+    if (previous === undefined || seen.has(previous.id)) break;
+    seen.add(previous.id);
+    source = previous;
+  }
+  return source;
+}
+
 export function pendingDelegatedChildTasks(
   parent: Pick<OrchestrationV2ThreadProjection, "subagents">,
   children: ReadonlyMap<
@@ -142,7 +158,8 @@ export function pendingDelegatedChildTasks(
       task.origin !== "app_owned" ||
       task.result === null ||
       task.childThreadId === null ||
-      task.completionDelivery?.state === "disposed"
+      (task.completionDelivery?.state === "disposed" &&
+        task.completionDelivery.disposedBy !== "stop")
     )
       return false;
     const child = children.get(task.childThreadId);
