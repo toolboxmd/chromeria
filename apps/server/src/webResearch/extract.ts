@@ -125,22 +125,29 @@ export const extract = (html: string, url: string) => {
   return { title: title ?? "", text, refresh, password, visibleText: compact(rendered), links };
 };
 
-// A heading or link, not prose. The word cap stops a heading from swallowing the page.
-const CHROME_TOKEN =
-  /\[[^\]\n]{1,256}\]\((?:https?:\/\/|mailto:|tel:)[^)\s]+\)|#{1,6}\s+[A-Za-z0-9][A-Za-z0-9'’:,.&-]*(?:\s+[A-Za-z0-9][A-Za-z0-9'’:,.&-]*){0,8}/
-    .source;
-// The instruction is the whole remainder. A longer sentence, or one beside real prose, does not match.
-const JAVASCRIPT_INSTRUCTION =
-  /(?:please\s+)?(?:you\s+(?:need|must)\s+to\s+)?enable\s+javascript(?:\s+to\s+[A-Za-z0-9][A-Za-z0-9'’,-]*(?:\s+[A-Za-z0-9][A-Za-z0-9'’,-]*){0,5})?[.!]?(?:\s+(?:javascript\s+is\s+(?:required|disabled)|this\s+(?:page|site|app)\s+requires\s+javascript)[.!]?)?/
-    .source;
-const INSTRUCTIONAL_JAVASCRIPT_SHELL = new RegExp(
-  `^(?:(?:${CHROME_TOKEN})\\s+)*(?:${JAVASCRIPT_INSTRUCTION})(?:\\s+(?:${CHROME_TOKEN}))*$`,
-  "i",
-);
+// One whole line. A sentence before or after it, on this line or another, does not match.
+const JAVASCRIPT_INSTRUCTION_LINE =
+  /^(?:please\s+)?(?:you\s+(?:need|must)\s+to\s+)?enable\s+javascript(?:\s+to\s+[A-Za-z0-9][A-Za-z0-9'’,-]*(?:\s+[A-Za-z0-9][A-Za-z0-9'’,-]*){0,5})?[.!]?(?:\s+(?:javascript\s+is\s+(?:required|disabled)|this\s+(?:page|site|app)\s+requires\s+javascript)[.!]?)?$/i;
+const HEADING_LINE = /^#{1,6} .+$/;
+const MARKDOWN_LINK = /\[[^\]\n]{1,256}\]\((?:https?:\/\/|mailto:|tel:)[^)\s]+\)/g;
 
-/** Navigation and headings can push a JavaScript-only instruction past the length threshold. */
-const instructionalJavascriptShell = (visibleText: string) =>
-  INSTRUCTIONAL_JAVASCRIPT_SHELL.test(visibleText);
+const linksOnlyLine = (line: string) =>
+  line.includes("](") && line.replace(MARKDOWN_LINK, "").trim() === "";
+
+/** Headings and links stay on their own lines in page text, so prose beside an instruction stays readable. */
+const instructionalJavascriptShell = (text: string) => {
+  let instruction = false;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (line === "" || HEADING_LINE.test(line) || linksOnlyLine(line)) continue;
+    if (!instruction && JAVASCRIPT_INSTRUCTION_LINE.test(line)) {
+      instruction = true;
+      continue;
+    }
+    return false;
+  }
+  return instruction;
+};
 
 /** Classify the document itself, so a footer's login link is not mistaken for a wall. */
 export const classify = (
@@ -190,8 +197,9 @@ export const classify = (
       ))
   )
     return "consent";
-  // Headings and navigation alone are not page content, so they do not keep an instruction readable.
-  return (page.visibleText.length < 80 || instructionalJavascriptShell(page.visibleText)) &&
+  // A short page of headings, links, and one instruction line has no readable prose.
+  // Longer input skips this check, so a plain-text heading run cannot blow the regex stack.
+  return (page.visibleText.length < 80 || (short && instructionalJavascriptShell(page.text))) &&
     !page.text.includes("JSON-LD:")
     ? "thin"
     : "ok";

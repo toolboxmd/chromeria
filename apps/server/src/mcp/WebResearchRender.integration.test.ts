@@ -955,6 +955,55 @@ it("keeps short substantive pages, JSON-LD, and articles that mention JavaScript
   ).toBe("thin");
 });
 
+it("keeps opening hours readable when the enable-JavaScript line only follows them", () => {
+  const page = extract(
+    "<html><head><title>Hours</title></head><body><h1>Opening hours</h1><p>Monday to Friday, 9:00 to 17:00.</p><h2>Address</h2><p>12 Main Street, Springfield.</p><p>Enable JavaScript to view the map.</p></body></html>",
+    "https://hours.example/",
+  );
+  expect(page.visibleText.length).toBe(123);
+  expect(page.text).toContain("Monday to Friday, 9:00 to 17:00.");
+  expect(page.text).toContain("12 Main Street, Springfield.");
+  expect(classify(page, 200)).toBe("ok");
+});
+
+it("keeps product prices readable when the enable-JavaScript line only follows them", () => {
+  const page = extract(
+    "<html><head><title>Shop</title></head><body><h1>Mug</h1><p>Ceramic mug, 12 euros, ships in two days.</p><h2>Towel</h2><p>Linen towel, 18 euros, ships tomorrow.</p><p>Enable JavaScript to add items to your cart.</p></body></html>",
+    "https://shop.example/",
+  );
+  expect(page.visibleText.length).toBe(140);
+  expect(page.text).toContain("Ceramic mug, 12 euros, ships in two days.");
+  expect(page.text).toContain("Linen towel, 18 euros, ships tomorrow.");
+  expect(classify(page, 200)).toBe("ok");
+});
+
+it("keeps a paragraph after the enable-JavaScript line readable", () => {
+  const page = extract(
+    "<html><head><title>Notes</title></head><body><h1>Notes</h1><p>Enable JavaScript to see products</p><p>The ceramic mug is 12 euros and the linen towel is 18 euros, and both are already listed.</p></body></html>",
+    "https://notes.example/after",
+  );
+  expect(page.visibleText.length).toBe(131);
+  expect(page.text).toContain("The ceramic mug is 12 euros and the linen towel is 18 euros");
+  expect(classify(page, 200)).toBe("ok");
+});
+
+it("does not throw when a text/plain run of nine-word headings reaches the public body limit", () => {
+  const heading = "# a b c d e f g h i ";
+  const text = heading.repeat(Math.floor((4 * 1024 * 1024) / heading.length));
+  expect(text.length).toBeGreaterThan(3_950_000);
+  expect(text.length).toBeLessThanOrEqual(4 * 1024 * 1024);
+  const page = {
+    title: "",
+    text,
+    visibleText: text,
+    password: false,
+    refresh: undefined,
+    links: [],
+  };
+  expect(() => classify(page, 200)).not.toThrow();
+  expect(classify(page, 200)).toBe("ok");
+});
+
 it.effect(
   "renders an instructional JavaScript shell and leaves a substantive JavaScript article on HTTP",
   () =>
