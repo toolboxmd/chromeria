@@ -990,6 +990,12 @@ export const OrchestrationV2Subagent = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
   completionDelivery: Schema.optional(OrchestrationV2DelegatedCompletionTaskDelivery),
+  /**
+   * The Run group this task belongs to: every task one Run N delegation
+   * started. A member never wakes the parent alone; the group wakes it once
+   * after every member is terminal.
+   */
+  runGroupId: Schema.optional(NodeId),
   status: Schema.Literals([
     "idle",
     "pending",
@@ -3551,6 +3557,28 @@ const OrchestrationV2InternalCommand = Schema.Union([
     modelSelection: Schema.optional(ModelSelection),
     remoteChild: OrchestrationV2RemoteTaskChild,
     completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
+  }),
+  /**
+   * Records a Run group: one delegated task per member, each with its own
+   * Color, all sharing the parent's checkout. Every member commits in this
+   * one command or none does; member ids derive from `commandId` and the
+   * member's position, so a retry records nothing new.
+   */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.group.request"),
+    ...OrchestrationV2CreationFields,
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    parentRunId: RunId,
+    parentNodeId: NodeId,
+    groupId: NodeId,
+    task: TrimmedNonEmptyString,
+    title: Schema.optional(TrimmedNonEmptyString),
+    members: Schema.NonEmptyArray(
+      Schema.Struct({ modelSelection: ModelSelection, runtimeMode: RuntimeMode }),
+    ),
+    interactionMode: ProviderInteractionMode,
+    completionWake: Schema.Literals(["always", "settled_only"]),
   }),
   /** Serializes starting a pending launch against cancellation before any network I/O. */
   Schema.Struct({

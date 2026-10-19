@@ -17,6 +17,7 @@ const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const decodeServerSettings = Schema.decodeSync(ServerSettings);
 const decodeProjectOverrides = Schema.decodeSync(ProjectSettingsOverrides);
 const decodeKitsPatch = Schema.decodeSync(PrismRoleKitsPatch);
+const decodeUnknownKitsPatch = Schema.decodeUnknownSync(PrismRoleKitsPatch);
 const encodeKits = Schema.encodeSync(PrismRoleKits);
 const decodeUnknownServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeStored = Schema.decodeUnknownSync(StoredPrismRole);
@@ -274,5 +275,20 @@ describe("Prism role kits", () => {
     expect(decodeKitsPatch({ roast: { instructions: "Attack." } })).toEqual({
       roast: { instructions: "Attack." },
     });
+  });
+
+  it("run read-only roles once by default and accept a Run above 1 only for them", () => {
+    const kits = decodeServerSettings({}).prismRoles;
+    for (const role of ["researcher", "designer", "roast", "reviewer", "judge"] as const)
+      expect(kits[role].run).toBe(1);
+    expect(decodeKitsPatch({ roast: { run: 2 } })).toEqual({ roast: { run: 2 } });
+    expect(() => decodeKitsPatch({ roast: { run: 0 } })).toThrow();
+    expect(() => decodeUnknownKitsPatch({ worker: { run: 2 } })).toThrow(
+      "Run above 1 is only for read-only roles.",
+    );
+    expect(() => decodeUnknownKitsPatch({ planner: { run: 2 } })).toThrow(
+      "Run above 1 is only for read-only roles.",
+    );
+    expect(decodeKitsPatch({ planner: { run: 1 } })).toEqual({ planner: { run: 1 } });
   });
 });

@@ -200,11 +200,11 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           return {
             promachos: kit("promachos"),
             planner: kit("planner"),
-            researcher: kit("researcher"),
-            designer: kit("designer"),
-            roast: kit("roast"),
-            reviewer: kit("reviewer"),
-            judge: kit("judge"),
+            researcher: { ...kit("researcher"), run: 2 },
+            designer: { ...kit("designer"), run: 2 },
+            roast: { ...kit("roast"), run: 3 },
+            reviewer: { ...kit("reviewer"), run: 2 },
+            judge: { ...kit("judge"), run: 2 },
             worker: {
               instructions: `${scope} worker instructions.`,
               skills: ["operations", `${scope}-worker`],
@@ -1899,10 +1899,15 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const grok = { instanceId: ProviderInstanceId.make("grok"), model: "grok-4.7" };
       const luna = { instanceId: codex, model: "gpt-6-luna" };
       // What earlier builds stored: every role filled in, one lane actually set.
-      const legacyKits = (yield* encodePrismRoleKits(DEFAULT_PRISM_ROLE_KITS)) as Record<
-        string,
-        Record<string, unknown>
-      >;
+      // Those builds had no Run (#402).
+      const legacyKits = Object.fromEntries(
+        Object.entries(
+          (yield* encodePrismRoleKits(DEFAULT_PRISM_ROLE_KITS)) as Record<
+            string,
+            Record<string, unknown>
+          >,
+        ).map(([role, { run: _run, ...kit }]) => [role, kit]),
+      );
       const tuned = ProjectId.make("project-tuned");
       const untouched = ProjectId.make("project-untouched");
       const lanes = ProjectId.make("project-lanes");

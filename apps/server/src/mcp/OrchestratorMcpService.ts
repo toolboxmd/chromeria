@@ -40,6 +40,9 @@ import {
   type OrchestratorMcpTarget,
   type OrchestratorMcpTaskCancelInput,
   type OrchestratorMcpTaskCancelResult,
+  type OrchestratorMcpTaskOrRunGroupCancelResult,
+  type OrchestratorMcpTaskOrRunGroupResult,
+  type OrchestratorMcpRunGroupResult,
   type OrchestratorMcpUpdateScheduledTaskInput,
   type OrchestratorMcpListScheduledTasksInput,
   type ProjectId,
@@ -74,6 +77,7 @@ import {
   PRISM_DELEGATE_ROLE_ERROR,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue } from "@t3tools/shared/model";
+import { runGroupMembers } from "../orchestration-v2/RunGroups.ts";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import {
@@ -87,6 +91,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Result from "effect/Result";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -185,6 +190,21 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     input: OrchestratorMcpTaskCancelInput,
   ) => Effect.Effect<OrchestratorMcpTaskCancelResult, OrchestratorMcpFailure>;
+  /** `delegate_task`: one task, or a Run group when the role's Run is above 1 (#402). */
+  readonly delegateTaskOrRunGroup: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpDelegateTaskInput,
+  ) => Effect.Effect<OrchestratorMcpTaskOrRunGroupResult, OrchestratorMcpFailure>;
+  /** `task_status`: a task, or every member of the Run group `taskId` names. */
+  readonly taskOrRunGroupStatus: (
+    scope: McpInvocationScope,
+    taskId: NodeId,
+  ) => Effect.Effect<OrchestratorMcpTaskOrRunGroupResult, OrchestratorMcpFailure>;
+  /** `task_cancel`: a task, or every member of the Run group `taskId` names. */
+  readonly cancelTaskOrRunGroup: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpTaskCancelInput,
+  ) => Effect.Effect<OrchestratorMcpTaskOrRunGroupCancelResult, OrchestratorMcpFailure>;
   readonly createThreads: (
     scope: McpInvocationScope,
     input: OrchestratorMcpCreateThreadsInput,
@@ -1904,6 +1924,74 @@ const make = Effect.gen(function* () {
       effect.pipe(Effect.timeoutOption(Duration.millis(timeoutMs)), Effect.map(Option.flatten)),
   );
 
+  /** A Run group's members on this thread, in Color order; empty when `groupId` names none. */
+  const loadRunGroup = (scope: McpThreadInvocationScope, groupId: NodeId) =>
+    loadProjection(scope.thread.threadId).pipe(
+      Effect.map((parent) =>
+        runGroupMembers(parent.subagents, groupId).filter(
+          (task) => task.threadId === scope.thread.threadId,
+        ),
+      ),
+    );
+
+  const readRunGroup = (
+    scope: McpThreadInvocationScope,
+    groupId: NodeId,
+    members: ReadonlyArray<OrchestrationV2Subagent>,
+    waitTimedOut = false,
+  ): Effect.Effect<OrchestratorMcpRunGroupResult, OrchestratorMcpFailure> =>
+    Effect.forEach(members, (member) => readTask(scope, member.id, false, true)).pipe(
+      Effect.map((tasks) => ({
+        groupId,
+        status: tasks.every((task) => isTerminalTaskStatus(task.status))
+          ? ("completed" as const)
+          : ("running" as const),
+        tasks,
+        waitTimedOut,
+      })),
+    );
+
+  /**
+   * `mode=wait` on a Run group: until every member is terminal, one asks a
+   * blocking question, or the budget runs out. A wait that ends early leaves
+   * the group to wake the parent once it finishes, as for one task.
+   */
+  const awaitRunGroup = (
+    scope: McpThreadInvocationScope,
+    groupId: NodeId,
+    members: ReadonlyArray<OrchestrationV2Subagent>,
+    requestedTimeoutMs: number | undefined,
+  ) =>
+    Effect.gen(function* () {
+      const timeoutMs = Math.min(
+        MAX_WAIT_TIMEOUT_MS,
+        Math.max(1, requestedTimeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS),
+      );
+      const deadline = (yield* Clock.currentTimeMillis) + timeoutMs;
+      for (const member of members) {
+        const remaining = deadline - (yield* Clock.currentTimeMillis);
+        const waited =
+          remaining <= 0 ? Option.none() : yield* waitForTask(scope, member.id, remaining);
+        if (Option.isSome(waited) && isTerminalTaskStatus(waited.value.status)) continue;
+        for (const pending of members)
+          yield* threadManagement
+            .dispatch({
+              type: "delegated_task.wake-policy",
+              commandId: stableCommandId({
+                scope,
+                requestKey: pending.id,
+                operation: "delegate-task-wake-policy",
+              }),
+              parentThreadId: scope.thread.threadId,
+              taskId: pending.id,
+              completionWake: "always",
+            })
+            .pipe(Effect.ignoreCause({ log: true }));
+        return yield* readRunGroup(scope, groupId, members, Option.isNone(waited));
+      }
+      return yield* readRunGroup(scope, groupId, members);
+    });
+
   const scheduledTaskRunModes = Effect.fn("OrchestratorMcpService.scheduledTaskRunModes")(
     function* (task: ScheduledTask) {
       const modes = [{ runtimeMode: task.runtimeMode, interactionMode: task.interactionMode }];
@@ -1991,7 +2079,209 @@ const make = Effect.gen(function* () {
     return task;
   });
 
-  return OrchestratorMcpService.of({
+  type RunGroupMethods = "delegateTaskOrRunGroup" | "taskOrRunGroupStatus" | "cancelTaskOrRunGroup";
+
+  /**
+   * Run groups (#402): a read-only role whose Run is above 1 starts that many
+   * of its Colors on one task. Everything else is the single-task method.
+   */
+  const runGroupMethods = (
+    single: Omit<OrchestratorMcpServiceShape, RunGroupMethods>,
+  ): Pick<OrchestratorMcpServiceShape, RunGroupMethods> => ({
+    delegateTaskOrRunGroup: (callerScope, input) =>
+      Effect.gen(function* () {
+        const role =
+          input.prismRole === undefined
+            ? Prism.delegatedPrismRole(input.role)
+            : admitDelegateRole(input.prismRole, true);
+        const target = input.target;
+        // A named provider or model is one Color; so is a bare launch.
+        const explicit =
+          target !== undefined &&
+          (target.model !== undefined ||
+            target.providerInstanceId !== undefined ||
+            target.driverKind !== undefined);
+        if (role === undefined || explicit || input.bare !== undefined)
+          return yield* single.delegateTask(callerScope, input);
+        const scope = yield* requireThreadScope(callerScope, "delegate_task");
+        const caller = yield* loadProjection(scope.thread.threadId);
+        const key = yield* requestKey(input.clientRequestId);
+        const commandId = stableCommandId({
+          scope,
+          requestKey: key,
+          operation: "delegate-task-group",
+        });
+        const groupId = NodeId.make(`run-group:${commandId}`);
+        // A retry returns the group its first call committed, never a fuller one.
+        const committed = yield* loadRunGroup(scope, groupId);
+        if (committed.length > 0)
+          return yield* input.mode === "wait"
+            ? awaitRunGroup(scope, groupId, committed, input.timeoutMs)
+            : readRunGroup(scope, groupId, committed);
+        // A retry of a request accepted as one task stays one task.
+        const acceptedAsTask = yield* threadManagement.hasReceipt(
+          stableCommandId({ scope, requestKey: key, operation: "delegate-task" }),
+        );
+        const run = acceptedAsTask
+          ? 1
+          : yield* prism.run({ projectId: caller.thread.projectId, role });
+        if (run === 1) return yield* single.delegateTask(callerScope, input);
+        if (
+          target !== undefined &&
+          PeerForwarding.remoteTarget(callerScope, target.environmentId) !== undefined
+        )
+          return yield* failure(
+            "invalid_request",
+            `Prism role ${role} runs ${run} Colors, and a Run group cannot run in a linked environment. Name target.model to run one Color there.`,
+          );
+        if (
+          input.isolation === "worktree" ||
+          input.projectId !== undefined ||
+          input.workspaceStrategy !== undefined
+        )
+          return yield* failure(
+            "invalid_request",
+            `Prism role ${role} runs ${run} Colors that share this thread's checkout. Omit projectId, workspaceStrategy and isolation, or name target.model to run one Color.`,
+          );
+        const { parent } = yield* loadThreadCaller(callerScope, "delegate_task");
+        const parentRun = ThreadManagementService.latestActiveRun(parent);
+        if (
+          parentRun === undefined ||
+          parentRun.rootNodeId === null ||
+          parentRun.providerInstanceId !== scope.thread.providerInstanceId
+        )
+          return yield* failure(
+            "parent_not_active",
+            "Delegated tasks require an active run owned by this MCP provider session.",
+          );
+        const providers = yield* loadProviders;
+        const targets: Array<Effect.Success<ReturnType<typeof resolveTargetRechecking>>> = [];
+        // Prism walks the role's Colors in order; one that cannot start yields to the next.
+        const colors = yield* prism.resolve({
+          projectId: parent.thread.projectId,
+          role,
+          lane: input.lane,
+          inherited: parent.thread.modelSelection,
+          count: run,
+          validate: (selection) =>
+            resolveTargetRechecking({
+              parent,
+              projectId: undefined,
+              providers,
+              target: {
+                providerInstanceId: selection.instanceId,
+                model: selection.model,
+                options: selection.options,
+              },
+              skipProjectEnablementFilter: false,
+            }).pipe(
+              Effect.map((resolved) => {
+                targets.push(resolved);
+                return resolved.modelSelection;
+              }),
+            ),
+        });
+        const [first, ...rest] = yield* Effect.forEach(
+          colors.modelSelections,
+          (modelSelection, index) =>
+            resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode, targets[index]).pipe(
+              Effect.map((runtimeMode) => ({ modelSelection, runtimeMode })),
+            ),
+        );
+        yield* threadManagement
+          .dispatch({
+            type: "delegated_task.group.request",
+            createdBy: "agent",
+            creationSource: "mcp",
+            commandId,
+            parentThreadId: scope.thread.threadId,
+            parentRunId: parentRun.id,
+            parentNodeId: parentRun.rootNodeId,
+            groupId,
+            task: [colors.kitText, taskPrompt(input)].filter(Boolean).join("\n\n"),
+            ...(input.title === undefined ? {} : { title: input.title }),
+            members: [first!, ...rest],
+            interactionMode: yield* resolveInteractionMode(
+              parent.thread.interactionMode,
+              input.interactionMode,
+            ),
+            // As for one task: a wait delivers through this call unless it ends first.
+            completionWake: input.mode === "wait" ? "settled_only" : "always",
+          })
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "ThreadManagementProviderInstanceDisabledError"
+                ? threadManagementFailure(error)
+                : failure(
+                    "orchestration_error",
+                    `Unable to create Run group: ${errorMessage(error)}`,
+                  ),
+            ),
+          );
+        const members = yield* loadRunGroup(scope, groupId);
+        return yield* input.mode === "wait"
+          ? awaitRunGroup(scope, groupId, members, input.timeoutMs)
+          : readRunGroup(scope, groupId, members);
+      }),
+    taskOrRunGroupStatus: (callerScope, taskId) =>
+      Effect.gen(function* () {
+        const scope = yield* requireThreadScope(callerScope, "task_status");
+        const members = yield* loadRunGroup(scope, taskId);
+        return members.length === 0
+          ? yield* single.taskStatus(callerScope, taskId)
+          : yield* readRunGroup(scope, taskId, members);
+      }),
+    cancelTaskOrRunGroup: (callerScope, input) =>
+      Effect.gen(function* () {
+        const scope = yield* requireThreadScope(callerScope, "task_cancel");
+        const members = yield* loadRunGroup(scope, input.taskId);
+        if (members.length === 0) return yield* single.cancelTask(callerScope, input);
+        const key = yield* requestKey(input.clientRequestId);
+        // Cancelling the whole group gives up its wake; every member is asked
+        // to stop before the first refusal is reported.
+        const outcomes = yield* Effect.forEach(members, (member, index) =>
+          Effect.result(
+            single
+              .cancelTask(callerScope, {
+                ...input,
+                taskId: member.id,
+                clientRequestId: `${key}:${index}`,
+              })
+              .pipe(
+                Effect.tap(() =>
+                  threadManagement
+                    .dispatch({
+                      type: "delegated_task.completion-delivery.dispose",
+                      commandId: stableCommandId({
+                        scope,
+                        requestKey: `${key}:${index}`,
+                        operation: "cancel-run-group-delivery",
+                      }),
+                      parentThreadId: scope.thread.threadId,
+                      taskId: member.id,
+                    })
+                    .pipe(
+                      Effect.mapError((error) =>
+                        failure(
+                          "orchestration_error",
+                          `Unable to dispose delegated task ${member.id} completion delivery: ${errorMessage(error)}`,
+                        ),
+                      ),
+                    ),
+                ),
+              ),
+          ),
+        );
+        const tasks: Array<OrchestratorMcpTaskCancelResult> = [];
+        for (const outcome of outcomes) {
+          if (Result.isFailure(outcome)) return yield* outcome.failure;
+          tasks.push(outcome.success);
+        }
+        return { groupId: input.taskId, tasks };
+      }),
+  });
+
+  const service: Omit<OrchestratorMcpServiceShape, RunGroupMethods> = {
     scheduleTask: Effect.fn("OrchestratorMcpService.scheduleTask")(function* (scope, input) {
       const { parent, limits } = yield* loadCaller(scope);
       const projectId = yield* resolveProjectTarget(parent, input.projectId);
@@ -2774,9 +3064,11 @@ const make = Effect.gen(function* () {
       const parentTask = parentProjection.subagents.find(
         (task) => task.id === input.taskId && task.origin === "app_owned",
       );
+      // A Run group member's result stays owed to the group's one wake.
       const disposeCompletionDelivery =
-        parentTask?.completionDelivery?.state === "disposed" &&
-        parentTask.completionDelivery.disposedBy === undefined
+        (parentTask?.completionDelivery?.state === "disposed" &&
+          parentTask.completionDelivery.disposedBy === undefined) ||
+        parentTask?.runGroupId !== undefined
           ? Effect.void
           : threadManagement
               .dispatch({
@@ -3502,7 +3794,8 @@ const make = Effect.gen(function* () {
         status: result.type === "already_terminal" ? result.run.status : "interrupt_requested",
       } satisfies OrchestratorMcpThreadInterruptResult;
     }),
-  });
+  };
+  return OrchestratorMcpService.of({ ...service, ...runGroupMethods(service) });
 });
 
 export const layer: Layer.Layer<

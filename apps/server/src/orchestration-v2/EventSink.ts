@@ -754,6 +754,7 @@ const layerBase: Layer.Layer<
     const commitCommandEffect = Effect.fn("orchestrationV2.EventSink.commitCommand")(function* (
       input: Parameters<EventSinkV2Shape["commitCommand"]>[0],
     ) {
+      let drained: Effect.Effect<void> = Effect.void;
       const result = yield* commitThenPublish(
         Effect.gen(function* () {
           let standaloneDeclineEvent: OrchestrationV2DomainEvent | undefined;
@@ -933,16 +934,18 @@ const layerBase: Layer.Layer<
         }),
         (result) =>
           Effect.gen(function* () {
-            yield* effectOutbox.signalCancellations(
-              result.cancelledEffectIds,
-              input.cancelUnsettledEffects?.drain,
-            );
+            if (input.cancelUnsettledEffects?.drain === true)
+              drained = yield* effectOutbox.drains(result.cancelledEffectIds);
+            yield* effectOutbox.signalCancellations(result.cancelledEffectIds);
             if (result.enqueuedEffectCount > 0) {
               yield* effectOutbox.notifyAvailable(result.enqueuedEffectCount);
             }
             if (result.committed) yield* publishStoredEvents(result.storedEvents, result.outcomes);
           }),
       );
+      // A stopped start may still commit what it did, which takes the publish
+      // lane; waiting for it while holding that lane deadlocks every commit (#511).
+      yield* drained;
       return {
         receipt: result.receipt,
         storedEvents: result.storedEvents,

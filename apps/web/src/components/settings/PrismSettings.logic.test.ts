@@ -154,6 +154,12 @@ describe("Prism role preferences", () => {
     });
 
     const savedEnv = { ...scopedEnv, serverConfig: { ...scopedEnv.serverConfig, settings: next } };
+    // A Run edit stores only that role's Run; the environment keeps its own.
+    const runPlan = planPrismRolePatch(scope, [savedEnv], { kind: "run", role: "roast", run: 2 });
+    const withRun = applyServerSettingsPatch(next, runPlan.serverWrites[0]!.patch);
+    expect(withRun.projectSettingsOverrides[projectId]?.prismRoles?.roast).toEqual({ run: 2 });
+    expect(resolveProjectSettings(withRun, projectId).settings.prismRoles.roast.run).toBe(2);
+    expect(withRun.prismRoles.roast.run).toBe(1);
     const reset = planPrismRolesReset(scope, [savedEnv]);
     const afterReset = applyServerSettingsPatch(next, reset.serverWrites[0]!.patch);
     expect(afterReset.projectSettingsOverrides[projectId]).toEqual({

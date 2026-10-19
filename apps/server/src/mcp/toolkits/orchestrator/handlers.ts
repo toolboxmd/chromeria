@@ -48,21 +48,21 @@ const handlers = {
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.McpInvocationContext;
       const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-      return yield* service.delegateTask(scope, input);
+      return yield* service.delegateTaskOrRunGroup(scope, input);
     }),
   ),
   task_status: McpToolAccess.actsAsCaller(({ taskId }) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.McpInvocationContext;
       const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-      return yield* service.taskStatus(scope, taskId);
+      return yield* service.taskOrRunGroupStatus(scope, taskId);
     }),
   ),
   task_cancel: McpToolAccess.actsAsCaller((input) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.McpInvocationContext;
       const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-      return yield* service.cancelTask(scope, input);
+      return yield* service.cancelTaskOrRunGroup(scope, input);
     }),
   ),
   t3_workflow_stop: McpToolAccess.writesThreads(

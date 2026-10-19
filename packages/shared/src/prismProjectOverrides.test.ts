@@ -23,7 +23,7 @@ describe("Prism project override resolution", () => {
       },
     });
     const kits = resolveProjectSettings(environment, projectId).settings.prismRoles;
-    expect(kits.reviewer).toEqual({ instructions: "Review.", skills: [], models: [sol] });
+    expect(kits.reviewer).toMatchObject({ instructions: "Review.", skills: [], models: [sol] });
     expect(kits.worker.lanes).toEqual({ easy: [], medium: [grok], hard: [luna] });
     // A present empty list is the project's own value: the caller's model.
     expect(kits.planner.models).toEqual([]);
@@ -71,6 +71,22 @@ describe("Prism project override writes", () => {
     expect(kits.reviewer.models).toEqual([sol]);
     expect(kits.worker.lanes).toEqual({ easy: [], medium: [grok], hard: [sol] });
     expect(next.prismRoleOverridesPartial).toBe(true);
+  });
+
+  it("keeps a Run the project set and inherits the environment's otherwise", () => {
+    const environment = applyServerSettingsPatch(migrated, { prismRoles: { roast: { run: 2 } } });
+    const inherited = applyServerSettingsPatch(environment, {
+      projectSettingsOverrides: { [projectId]: legacyEntry },
+    });
+    expect(inherited.projectSettingsOverrides[projectId]?.prismRoles).not.toHaveProperty("roast");
+    expect(resolveProjectSettings(inherited, projectId).settings.prismRoles.roast.run).toBe(2);
+    const own = applyServerSettingsPatch(environment, {
+      projectSettingsOverrides: {
+        [projectId]: { prismRoles: { ...legacyEntry.prismRoles, roast: { run: 3 } } },
+      },
+    });
+    expect(own.projectSettingsOverrides[projectId]?.prismRoles?.roast).toEqual({ run: 3 });
+    expect(resolveProjectSettings(own, projectId).settings.prismRoles.roast.run).toBe(3);
   });
 
   it("keeps a declared empty list and marks the overrides partial; a false flag clears nothing", () => {

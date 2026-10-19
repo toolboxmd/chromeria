@@ -11,7 +11,6 @@ import {
   OrchestratorMcpCreateThreadsInput,
   OrchestratorMcpCreateThreadsResult,
   OrchestratorMcpDelegateTaskInput,
-  OrchestratorMcpDelegateTaskResult,
   OrchestratorMcpDeleteScheduledTaskInput,
   OrchestratorMcpDeleteScheduledTaskResult,
   OrchestratorMcpEnvironmentTarget,
@@ -23,7 +22,9 @@ import {
   OrchestratorMcpSaveScheduledTaskInput,
   OrchestratorMcpScheduleTaskResult,
   OrchestratorMcpTaskCancelInput,
-  OrchestratorMcpTaskCancelResult,
+  OrchestratorMcpTaskOrRunGroupCancelResult,
+  OrchestratorMcpTaskOrRunGroupResult,
+  OrchestratorMcpUpdateScheduledTaskInput,
   OrchestratorMcpTaskStatusInput,
   OrchestratorMcpThreadInterruptInput,
   OrchestratorMcpThreadInterruptResult,
@@ -86,9 +87,9 @@ const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {
 
 const DelegateTaskTool = Tool.make("delegate_task", {
   description:
-    "Start one child agent with only `task`. No parent history. Set `target.environmentId` to run it on a linked environment, with `target.projectId` for its project. The target's Prism picks provider, model and effort from the role kit and usage headroom; omit `target` unless the user chose a provider/model (an explicit target wins). `prismRole` picks a kit (planner, researcher, designer, worker, roast, reviewer or judge); without it, `role` review runs as reviewer, research as researcher, design as designer, else worker. `lane` sets worker difficulty; unconfigured roles inherit the parent model. Use visible T3 delegation instead of native or shell agent runners. Separate checkout or PR per child: `isolation:'worktree'`. Keep `taskId` for `task_status` and `task_cancel`.",
+    "Start one child agent with only `task`. No parent history. Set `target.environmentId` to run it on a linked environment, with `target.projectId` for its project. The target's Prism picks provider, model and effort from the role kit and usage headroom; omit `target` unless the user chose a provider/model (an explicit target wins). `prismRole` picks a kit (planner, researcher, designer, worker, roast, reviewer or judge); without it, `role` review runs as reviewer, research as researcher, design as designer, else worker. `lane` sets worker difficulty; unconfigured roles inherit the parent model. A read-only role (researcher, designer, roast, reviewer, judge) whose Run is above 1 in Prism settings starts that many Colors on this task, sharing this thread's checkout, and returns `{ groupId, tasks }`: a Run group. It wakes this thread once, after every member and its nested work ends, listing each member's status and result; `task_status` and `task_cancel` take the `groupId` or a member's `taskId`, and `mode:'wait'` waits for the whole group. An explicit target model, a bare delegation or a linked environment runs one Color; a linked environment without `target.model` refuses a Run above 1. Use visible T3 delegation instead of native or shell agent runners. Separate checkout or PR per child: `isolation:'worktree'`. Keep `taskId` for `task_status` and `task_cancel`.",
   parameters: McpRouting.parameters(OrchestratorMcpDelegateTaskInput),
-  success: OrchestratorMcpDelegateTaskResult,
+  success: OrchestratorMcpTaskOrRunGroupResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
   dependencies,
@@ -99,9 +100,9 @@ const DelegateTaskTool = Tool.make("delegate_task", {
 
 const TaskStatusTool = Tool.make("task_status", {
   description:
-    "Read one delegated task you started. Do not call it on a running task before its completion wakes you. `workState`: working, waiting_for_children, result_available. A finished turn with live child work is not done. `summary`: final result. Reading it marks it delivered. A Spectrum task from `start_spectrum` has no `childRunId`; its `summary` is the Spectrum report.",
+    "Read one delegated task you started. Do not call it on a running task before its completion wakes you. `workState`: working, waiting_for_children, result_available. A finished turn with live child work is not done. `summary`: final result. Reading it marks it delivered. A Spectrum task from `start_spectrum` has no `childRunId`; its `summary` is the Spectrum report. A Run group's `groupId` returns `{ groupId, status, tasks }` with every member.",
   parameters: McpRouting.parameters(OrchestratorMcpTaskStatusInput),
-  success: OrchestratorMcpDelegateTaskResult,
+  success: OrchestratorMcpTaskOrRunGroupResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
   dependencies,
@@ -113,9 +114,9 @@ const TaskStatusTool = Tool.make("task_status", {
 
 const TaskCancelTool = Tool.make("task_cancel", {
   description:
-    "Stop one delegated task by `taskId`. Stops its running and queued turns, its delegates, and its PR watches, including later runs in its child thread. A finished task keeps its result. On a Spectrum task it runs the Spectrum's Stop, which cancels every Color.",
+    "Stop one delegated task by `taskId`. Stops its running and queued turns, its delegates, and its PR watches, including later runs in its child thread. A finished task keeps its result. On a Spectrum task it runs the Spectrum's Stop, which cancels every Color. A Run group's `groupId` stops every member and disposes the group's wake; a member's `taskId` stops that member, and the group's wake still lists it.",
   parameters: McpRouting.parameters(OrchestratorMcpTaskCancelInput),
-  success: OrchestratorMcpTaskCancelResult,
+  success: OrchestratorMcpTaskOrRunGroupCancelResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
   dependencies,
