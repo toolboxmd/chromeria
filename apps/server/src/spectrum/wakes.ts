@@ -3,6 +3,8 @@ import {
   type OrchestrationV2DomainEvent,
   type OrchestrationV2StoredEvent,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -79,15 +81,18 @@ const readSpectrumWatch = Effect.fn("Spectrum.readWatch")(function* (state: Spec
   return { threads, effects } satisfies SpectrumWatch;
 });
 
+const RECONCILE_INTERVAL = Duration.seconds(60);
+
 /** Progress that cannot settle anything; the event that ends it wakes the Spectrum. */
 const settlesNothing = (event: OrchestrationV2DomainEvent) =>
   (event.type === "message.updated" && event.payload.streaming) ||
   (event.type === "turn-item.updated" && event.payload.status === "running");
 
 /**
- * Spectrums advance on events, never a timer (#404). Every Spectrum thread is
- * known; a live Spectrum also follows its watch. Wakes for one Spectrum
- * coalesce into one pending resume, and each resume re-reads its watch.
+ * Spectrums advance on events (#404). Every Spectrum thread is known; a live
+ * Spectrum also follows its watch. Wakes for one Spectrum coalesce into one
+ * pending resume, and each resume re-reads its watch. A slow reconcile runs
+ * only while some Spectrum is live, so nothing periodic runs while none is.
  */
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -161,16 +166,67 @@ export const layer = Layer.effectDiscard(
       return grew;
     });
 
+    const catchUp = Effect.gen(function* () {
+      const rows = yield* sql<{ readonly thread_id: string }>`SELECT thread_id FROM fork_spectra`;
+      for (const row of rows) {
+        const id = ThreadId.make(row.thread_id);
+        spectra.add(id);
+        yield* wake(id);
+      }
+    }).pipe(Effect.catchCause((cause) => Effect.logWarning("Spectrum catch-up failed", { cause })));
+
+    /**
+     * The fallback for a lost wake (a failed resume, routing or subscription):
+     * while any Spectrum is live or suspect, every live and active one is woken
+     * each interval. It ends on the first pass that finds none.
+     */
+    let reconciling = false;
+    let suspect = false;
+    const reconcile = Effect.gen(function* () {
+      for (;;) {
+        yield* Effect.sleep(RECONCILE_INTERVAL);
+        const rows = yield* sql<{ readonly thread_id: string }>`SELECT thread_id FROM fork_spectra
+          WHERE json_extract(payload_json, '$.status') = 'active'`.pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Spectrum reconcile read failed", { cause }).pipe(Effect.as(null)),
+          ),
+        );
+        const due = new Set(watches.keys());
+        for (const row of rows ?? []) due.add(ThreadId.make(row.thread_id));
+        if (rows !== null) suspect = false;
+        if (due.size === 0 && !suspect) {
+          reconciling = false;
+          return;
+        }
+        for (const id of due) {
+          spectra.add(id);
+          yield* wake(id);
+        }
+      }
+    });
+    const ensureReconcile = Effect.suspend(() => {
+      if (reconciling) return Effect.void;
+      reconciling = true;
+      return Effect.forkIn(reconcile, scope).pipe(Effect.asVoid);
+    });
+    const suspectLost = Effect.suspend(() => {
+      suspect = true;
+      return ensureReconcile;
+    });
+
     const refresh = (id: ThreadId) =>
       Effect.gen(function* () {
         const found = yield* readSpectrum(id);
         const watch = Option.isNone(found) ? null : yield* readSpectrumWatch(found.value);
         if (yield* index(id, watch)) yield* wake(id);
+        if (watch !== null) yield* ensureReconcile;
       }).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
         Effect.provideService(Projections.ProjectionStoreV2, projections),
         Effect.catchCause((cause) =>
-          Effect.logWarning("Spectrum watch refresh failed", { threadId: id, cause }),
+          Effect.logWarning("Spectrum watch refresh failed", { threadId: id, cause }).pipe(
+            Effect.andThen(suspectLost),
+          ),
         ),
       );
 
@@ -200,7 +256,10 @@ export const layer = Layer.effectDiscard(
         yield* wakeWatchers(event.threadId, event.type === "thread.metadata-updated");
       }).pipe(
         Effect.catchCause((cause) =>
-          Effect.logWarning("Spectrum event routing failed", { sequence: stored.sequence, cause }),
+          Effect.logWarning("Spectrum event routing failed", {
+            sequence: stored.sequence,
+            cause,
+          }).pipe(Effect.andThen(suspectLost)),
         ),
       );
 
@@ -211,22 +270,45 @@ export const layer = Layer.effectDiscard(
         .resume(id)
         .pipe(
           Effect.catchCause((cause) =>
-            Effect.logWarning("Spectrum resume failed", { threadId: id, cause }),
+            Effect.logWarning("Spectrum resume failed", { threadId: id, cause }).pipe(
+              Effect.andThen(suspectLost),
+            ),
           ),
         );
       yield* refresh(id);
     }).pipe(Effect.forever);
 
     // Subscribe before the catch-up: the stream replays from this sequence and signals buffer.
-    const after = yield* sink.latestSequence().pipe(Effect.orDie);
+    let cursor = yield* sink.latestSequence().pipe(Effect.orDie);
     const decisions = yield* signals.subscribe;
-    yield* forkParked(
-      sink.stream({ afterSequence: after }).pipe(
+    const follow = () =>
+      sink.stream({ afterSequence: cursor }).pipe(
         Stream.chunks,
-        Stream.runForEach((chunk) => Effect.forEach(chunk, route, { discard: true })),
-        Effect.catchCause((cause) => Effect.logWarning("Spectrum event stream failed", { cause })),
-      ),
-    );
+        Stream.runForEach((chunk) =>
+          Effect.forEach(
+            chunk,
+            (stored) =>
+              route(stored).pipe(Effect.andThen(Effect.sync(() => (cursor = stored.sequence)))),
+            { discard: true },
+          ),
+        ),
+      );
+    // A lost subscription resumes from the last routed event, then catches up for what routing dropped.
+    const followForever = Effect.gen(function* () {
+      for (let failures = 1; ; failures = Math.min(failures + 1, 6)) {
+        const seen = cursor;
+        const cause = yield* follow().pipe(
+          Effect.matchCause({ onFailure: (cause) => cause, onSuccess: () => "ended" }),
+        );
+        if (typeof cause !== "string" && Cause.hasInterruptsOnly(cause)) return;
+        if (cursor > seen) failures = 1;
+        yield* Effect.logWarning("Spectrum event stream failed; resubscribing", { cause });
+        yield* suspectLost;
+        yield* Effect.sleep(Duration.seconds(2 ** (failures - 1)));
+        yield* catchUp;
+      }
+    });
+    yield* forkParked(followForever);
     yield* forkParked(
       decisions.pipe(
         Stream.runForEach((threadId) =>
@@ -236,18 +318,6 @@ export const layer = Layer.effectDiscard(
         ),
       ),
     );
-    yield* forkParked(
-      Effect.gen(function* () {
-        const rows = yield* sql<{ readonly thread_id: string }>`SELECT thread_id FROM fork_spectra`;
-        for (const row of rows) {
-          const id = ThreadId.make(row.thread_id);
-          spectra.add(id);
-          yield* wake(id);
-        }
-      }).pipe(
-        Effect.catchCause((cause) => Effect.logWarning("Spectrum catch-up failed", { cause })),
-        Effect.andThen(work),
-      ),
-    );
+    yield* forkParked(catchUp.pipe(Effect.andThen(work)));
   }),
 );

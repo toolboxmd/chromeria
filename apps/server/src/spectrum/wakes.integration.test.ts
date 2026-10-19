@@ -9,10 +9,13 @@ import {
   type OrchestrationV2Run,
   type ThreadId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import * as Events from "../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
@@ -60,8 +63,31 @@ interface Resumed {
   readonly state: SpectrumState;
 }
 
+/** Faults a test injects around the production wake layer. */
+interface Faults {
+  /** While set, every resume fails before reaching the controller and is recorded here. */
+  failResumes: boolean;
+  readonly failed: Queue.Queue<number>;
+  /** Subscriptions up to this count fail at once; each subscription is recorded. */
+  readonly failSubscriptions: number;
+  readonly subscriptions: Queue.Queue<number>;
+  /** Sleeps the wake layer scheduled. */
+  sleeps: number;
+}
+
+const faults = (failSubscriptions = 0) =>
+  Effect.gen(function* () {
+    return {
+      failResumes: false,
+      failed: yield* Queue.unbounded<number>(),
+      failSubscriptions,
+      subscriptions: yield* Queue.unbounded<number>(),
+      sleeps: 0,
+    } satisfies Faults as Faults;
+  });
+
 /** The production wake layer around a controller that records each resume; nothing calls resume directly. */
-const wakes = (resumed: Queue.Queue<Resumed>) =>
+const wakes = (resumed: Queue.Queue<Resumed>, fault?: Faults) =>
   Wakes.layer.pipe(
     Layer.provide(
       Layer.effect(
@@ -73,6 +99,13 @@ const wakes = (resumed: Queue.Queue<Resumed>) =>
             resume: (id) =>
               Effect.gen(function* () {
                 const from = yield* sink.latestSequence().pipe(Effect.orDie);
+                if (fault?.failResumes === true) {
+                  yield* Queue.offer(fault.failed, from);
+                  return yield* new Controller.SpectrumControllerError({
+                    threadId: id,
+                    cause: "fixture",
+                  });
+                }
                 const state = yield* inner.resume(id);
                 const to = yield* sink.latestSequence().pipe(Effect.orDie);
                 yield* Queue.offer(resumed, { from, to, state });
@@ -82,7 +115,58 @@ const wakes = (resumed: Queue.Queue<Resumed>) =>
         }),
       ),
     ),
+    Layer.provide(
+      Layer.effect(
+        Events.EventSinkV2,
+        Effect.gen(function* () {
+          const sink = yield* Events.EventSinkV2;
+          let count = 0;
+          return {
+            ...sink,
+            stream: (input) => {
+              count += 1;
+              if (fault !== undefined) Queue.offerUnsafe(fault.subscriptions, count);
+              return count <= (fault?.failSubscriptions ?? 0)
+                ? Stream.fail(new Events.EventSinkStreamError({ cause: "fixture" }))
+                : sink.stream(input);
+            },
+          } satisfies Events.EventSinkV2Shape;
+        }),
+      ),
+    ),
+    Layer.provide(
+      Layer.effect(
+        Clock.Clock,
+        Effect.gen(function* () {
+          const clock = yield* Clock.clockWith(Effect.succeed);
+          return {
+            ...clock,
+            sleep: (duration) => {
+              if (fault !== undefined) fault.sleeps += 1;
+              return clock.sleep(duration);
+            },
+          } satisfies Clock.Clock;
+        }),
+      ),
+    ),
   );
+
+/** Waits until a resume that started after a fresh marker on the Spectrum thread has failed. */
+const failedSince = (fault: Faults, threadId: ThreadId) =>
+  Effect.gen(function* () {
+    const projections = yield* Projection.ProjectionStoreV2;
+    yield* commit([
+      {
+        id: EventId.make(`marker:failed:${threadId}:${yield* latest}`),
+        type: "thread.metadata-updated",
+        threadId,
+        occurredAt: NOW,
+        payload: yield* projections.getThread(threadId),
+      },
+    ]);
+    const after = yield* latest;
+    for (;;) if ((yield* Queue.take(fault.failed)) >= after) return;
+  });
 
 const until = (resumed: Queue.Queue<Resumed>, done: (entry: Resumed) => boolean) =>
   Effect.gen(function* () {
@@ -459,4 +543,84 @@ it.effect("no Spectrum work runs on a timer: the runtime registers no scheduler 
       }),
     );
   }).pipe(Effect.provide(Layer.fresh(dependencies))),
+);
+
+it.effect("a failed resume is retried by the reconcile without any new event", () =>
+  scenario((resumed) =>
+    Effect.gen(function* () {
+      const fault = yield* faults();
+      yield* Effect.gen(function* () {
+        const state = yield* (yield* Launch.SpectrumLaunchService).register(input);
+        yield* until(resumed, dispatched);
+        const running = yield* quiesce(resumed, state.threadId);
+        fault.failResumes = true;
+        yield* finish(yield* slotRun(running, 0), "Blue answer.");
+        yield* finish(yield* slotRun(running, 1), "Red answer.");
+        // Every wake from those events has now failed; nothing else is pending.
+        yield* failedSince(fault, state.threadId);
+        fault.failResumes = false;
+        const before = yield* latest;
+        yield* TestClock.adjust("60 seconds");
+        const relay = yield* until(resumed, (entry) => entry.state.round?.step === 1);
+        assert.strictEqual(relay.status, "active");
+        assert.isAtLeast(yield* latest, before);
+      }).pipe(Effect.provide(wakes(resumed, fault)));
+    }),
+  ),
+);
+
+it.effect("a failed event stream resubscribes and a later event wakes the Spectrum", () =>
+  scenario((resumed) =>
+    Effect.gen(function* () {
+      const fault = yield* faults(1);
+      const state = yield* (yield* Launch.SpectrumLaunchService).register(input);
+      yield* Effect.gen(function* () {
+        assert.strictEqual(yield* Queue.take(fault.subscriptions), 1);
+        // The start-up catch-up still dispatches round 1 without a subscription.
+        yield* until(resumed, dispatched);
+        yield* TestClock.adjust("1 second");
+        assert.strictEqual(yield* Queue.take(fault.subscriptions), 2);
+        const running = yield* quiesce(resumed, state.threadId);
+        yield* finish(yield* slotRun(running, 0), "Blue answer.");
+        yield* finish(yield* slotRun(running, 1), "Red answer.");
+        const relay = yield* until(resumed, (entry) => entry.state.round?.step === 1);
+        assert.strictEqual(relay.status, "active");
+      }).pipe(Effect.provide(wakes(resumed, fault)));
+    }),
+  ),
+);
+
+it.effect("the reconcile timer runs only while a Spectrum is live", () =>
+  scenario((resumed) =>
+    Effect.gen(function* () {
+      const fault = yield* faults();
+      yield* Effect.gen(function* () {
+        const state = yield* (yield* Launch.SpectrumLaunchService).register(input);
+        yield* until(resumed, dispatched);
+        yield* quiesce(resumed, state.threadId);
+        assert.strictEqual(fault.sleeps, 1);
+        const projections = yield* Projection.ProjectionStoreV2;
+        const caller = yield* projections.getThread(input.callerThreadId);
+        yield* commit([
+          {
+            id: EventId.make("caller:retire"),
+            type: "thread.metadata-updated",
+            threadId: caller.id,
+            occurredAt: NOW,
+            payload: { ...caller, forkRetirement: { token: CommandId.make("caller:stop") } },
+          },
+        ]);
+        yield* until(resumed, (entry) => entry.state.status === "retired");
+        const settled = yield* quiesce(resumed, state.threadId);
+        assert.strictEqual(settled.status, "retired");
+        // The pass after the last live Spectrum settles finds none and ends the timer.
+        yield* TestClock.adjust("60 seconds");
+        yield* quiesce(resumed, state.threadId);
+        const sleeps = fault.sleeps;
+        yield* TestClock.adjust("10 minutes");
+        assert.strictEqual(fault.sleeps, sleeps);
+        assert.strictEqual(yield* Queue.size(resumed), 0);
+      }).pipe(Effect.provide(wakes(resumed, fault)));
+    }),
+  ),
 );
