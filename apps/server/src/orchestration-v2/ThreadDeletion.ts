@@ -161,7 +161,8 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
       if (
         task.completionDelivery?.state === "acknowledged" ||
         task.completionDelivery?.state === "delivered" ||
-        task.completionDelivery?.state === "disposed"
+        (task.completionDelivery?.state === "disposed" &&
+          task.completionDelivery.disposedBy === undefined)
       ) {
         continue;
       }
