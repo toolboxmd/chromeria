@@ -198,6 +198,7 @@ import {
   firstValidTimestampMs,
   hasUnseenCompletion,
   isSidebarNestedLinkClick,
+  isSidebarSubagentThread,
   isSidebarThreadWorking,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
@@ -448,6 +449,7 @@ function routeThreadOnly(
 // the component body, later hook calls made the compiler treat these maps as
 // possibly mutated and recompute them, and every dnd-kit input with them.
 function useSidebarThreads(input: {
+  readonly searchQuery: string;
   readonly projectScopeKey: string | null;
   readonly scopedProjectKeys: ReadonlySet<string> | null;
   readonly serverConfigs: ReadonlyMap<EnvironmentId, EnvironmentServerConfig>;
@@ -584,6 +586,9 @@ function useSidebarThreads(input: {
       ...noProjectThreads,
       ...snoozedThreads,
       ...settledThreads,
+      ...filterSidebarV2VisibleThreads(threads, scopedProjectKeys, input.searchQuery).filter(
+        isSidebarSubagentThread,
+      ),
     ],
     settledVisibleCount,
     hiddenSettledCount: settledThreads.length - visibleSettledThreads.length,
@@ -3068,6 +3073,7 @@ export default function Sidebar() {
     pinnedKeysById,
     activeKeysById,
   } = useSidebarThreads({
+    searchQuery: threadSearchQuery,
     projectScopeKey,
     scopedProjectKeys,
     serverConfigs,

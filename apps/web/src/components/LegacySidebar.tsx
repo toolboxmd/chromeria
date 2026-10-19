@@ -67,7 +67,10 @@ import {
   settlePromise,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { threadRuntimeCanArchive } from "@t3tools/client-runtime/state/models";
+import {
+  isThreadVisibleInNavigation,
+  threadRuntimeCanArchive,
+} from "@t3tools/client-runtime/state/models";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import {
   MAX_SIDEBAR_THREAD_PREVIEW_COUNT,
@@ -1105,6 +1108,16 @@ function resolveProjectThreadStatus(
   });
 }
 
+export function legacySidebarVisibleThreads(
+  threads: readonly SidebarThreadSummary[],
+  sortOrder: SidebarThreadSortOrder,
+) {
+  return sortThreads(
+    threads.filter((thread) => isThreadVisibleInNavigation(thread)),
+    sortOrder,
+  );
+}
+
 // Thread derivations for one project row. Built in their own hooks so they reach
 // SidebarProjectItem frozen: inline, its later calls made the compiler fuse the
 // ordered keys with the route-dependent panel, handing every row a new array.
@@ -1156,10 +1169,7 @@ function useProjectThreads(project: SidebarProjectSnapshot) {
       resolveThreadLastVisitedAt(thread.lastVisitedAt, threadLastVisitedAts[index] ?? undefined),
     ]),
   );
-  const visibleProjectThreads = sortThreads(
-    sidebarThreads.filter((thread) => thread.archivedAt === null),
-    threadSortOrder,
-  );
+  const visibleProjectThreads = legacySidebarVisibleThreads(sidebarThreads, threadSortOrder);
   const projectStatus = resolveProjectStatusIndicator(
     visibleProjectThreads.map((thread) =>
       resolveProjectThreadStatus(thread, lastVisitedAtByThreadKey),
@@ -3180,10 +3190,8 @@ function useLegacySidebarThreads(input: {
     }
   }
   const visibleSidebarThreadKeys = sortedProjects.flatMap((project) => {
-    const projectThreads = sortThreads(
-      (threadsByProjectKey.get(project.projectKey) ?? []).filter(
-        (thread) => thread.archivedAt === null,
-      ),
+    const projectThreads = legacySidebarVisibleThreads(
+      threadsByProjectKey.get(project.projectKey) ?? [],
       sidebarThreadSortOrder,
     );
     const projectExpanded = resolveProjectExpanded(
