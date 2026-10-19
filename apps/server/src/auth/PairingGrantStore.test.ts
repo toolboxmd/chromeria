@@ -1,4 +1,4 @@
-import { AuthStandardClientScopes } from "@t3tools/contracts";
+import { AuthStandardClientScopes, AuthCookieMirrorWriteScope } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
@@ -203,6 +203,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("PairingGrantStor
         ),
       );
       expect(current.method).toBe("desktop-bootstrap");
+      expect(current.scopes).not.toContain(AuthCookieMirrorWriteScope);
+      const main = yield* bootstrapCredentials.consume(
+        yield* currentDesktopBootstrapToken("desktop-secret", now, "cookie-mirror").pipe(Effect.provide(NodeCrypto.layerMac)),
+      );
+      expect(main.scopes).toEqual([AuthCookieMirrorWriteScope]);
+      expect(main.subject).toBe("desktop-cookie-mirror");
 
       const staleToken = yield* currentDesktopBootstrapToken(
         "desktop-secret",

@@ -49,7 +49,19 @@ export interface ChromiumKeyMaterial {
 const derive = (passphrase: string, iterations: number) =>
   NodeCrypto.pbkdf2Sync(passphrase, KEY_SALT, iterations, KEY_LENGTH, "sha1");
 
-// In-process Keychain access attributes grants to this app. Keep modal prompts untimed to preserve their listener.
+export const macChromiumKeyMaterial = (secret: string): ChromiumKeyMaterial => ({
+  cbcV10: derive(secret, MAC_KEY_ITERATIONS),
+});
+
+/**
+ * Via the CLI the prompt says "security" and "Always Allow" grants trust to a
+ * tool every process on the machine can invoke; in-process it names this app
+ * and the grant belongs to it.
+ *
+ * Deliberately untimed: macOS answers this with a modal, and a timeout racing
+ * the user means the prompt can be approved while nothing is left listening,
+ * which reads as "approving did nothing".
+ */
 const readKeychainSecret = Effect.fn("ChromiumKeys.readKeychainSecret")(function* (
   service: string,
   account: string,
@@ -246,7 +258,7 @@ export const resolveChromiumKeys = Effect.fn("ChromiumKeys.resolveChromiumKeys")
       return yield* new ChromiumKeyError({ reason: "unsupportedPlatform" });
     }
     const secret = yield* readKeychainSecret(request.keychainService, request.keychainAccount);
-    return { cbcV10: derive(secret, MAC_KEY_ITERATIONS) };
+    return macChromiumKeyMaterial(secret);
   }
 
   if (request.platform === "linux") {

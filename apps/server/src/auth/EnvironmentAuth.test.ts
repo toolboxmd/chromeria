@@ -3,7 +3,13 @@ import * as NodeCrypto from "node:crypto";
 
 import * as NodePlatformCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { authScopeResponse, AuthStandardClientScopes } from "@t3tools/contracts";
+import { currentDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
+import * as Clock from "effect/Clock";
+import {
+  authScopeResponse,
+  AuthStandardClientScopes,
+  AuthCookieMirrorWriteScope,
+} from "@t3tools/contracts";
 import {
   computeDpopAccessTokenHash,
   computeDpopJwkThumbprint,
@@ -117,6 +123,22 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
   "EnvironmentAuth.layer",
   (it) => {
   // Fork: device people (toolboxmd/chromeria#170).
+  it.effect("rejects cookie mirror access requested with a renderer desktop bootstrap token", () =>
+    Effect.gen(function* () {
+      const auth = yield* EnvironmentAuth.EnvironmentAuth;
+      const result = yield* auth
+        .exchangeBootstrapCredentialForAccessToken(
+          "desktop-bootstrap-token",
+          [AuthCookieMirrorWriteScope],
+          requestMetadata,
+        )
+        .pipe(Effect.result);
+      expect(result._tag).toBe("Failure");
+    }).pipe(
+      Effect.provide(layerEnvironmentAuth({ desktopBootstrapToken: "desktop-bootstrap-token" })),
+    ),
+  );
+
   it.effect(
     "persists device person, exposes it to non-admin sessions and publishes live changes",
     () =>
@@ -154,6 +176,60 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
         expect((yield* auth.getSessionState(request)).person).toBeUndefined();
         expect(yield* sessions.getPerson(issued.sessionId)).toBeNull();
       }).pipe(Effect.provide(layerEnvironmentAuth()), Effect.scoped),
+  );
+
+  it.effect(
+    "keeps the dedicated main mirror credential separate from renderer session rotation",
+    () =>
+      Effect.gen(function* () {
+        const auth = yield* EnvironmentAuth.EnvironmentAuth;
+        const now = yield* Clock.currentTimeMillis;
+        const rendererCredential = yield* currentDesktopBootstrapToken("desktop-secret", now);
+        const mainCredential = yield* currentDesktopBootstrapToken("desktop-secret", now, "cookie-mirror");
+        const renderer = yield* auth.exchangeBootstrapCredentialForAccessToken(
+          rendererCredential,
+          undefined,
+          requestMetadata,
+        );
+        const first = yield* auth.exchangeBootstrapCredentialForAccessToken(
+          mainCredential,
+          [AuthCookieMirrorWriteScope],
+          requestMetadata,
+        );
+        const mirror = yield* auth.authenticateHttpRequest(makeBearerRequest(first.access_token));
+        expect(mirror.scopes).toEqual([AuthCookieMirrorWriteScope]);
+        expect(
+          (yield* auth.authenticateHttpRequest(makeBearerRequest(renderer.access_token))).scopes,
+        ).toEqual(AuthStandardClientScopes);
+        expect(
+          (yield* auth
+            .exchangeBootstrapCredentialForAccessToken(
+              rendererCredential,
+              [AuthCookieMirrorWriteScope],
+              requestMetadata,
+            )
+            .pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        expect(
+          (yield* auth.authenticateHttpRequest(makeBearerRequest(first.access_token))).scopes,
+        ).toEqual([AuthCookieMirrorWriteScope]);
+        const second = yield* auth.exchangeBootstrapCredentialForAccessToken(
+          mainCredential,
+          [AuthCookieMirrorWriteScope],
+          requestMetadata,
+        );
+        expect(
+          (yield* auth
+            .authenticateHttpRequest(makeBearerRequest(first.access_token))
+            .pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        expect(
+          (yield* auth.authenticateHttpRequest(makeBearerRequest(second.access_token))).scopes,
+        ).toEqual([AuthCookieMirrorWriteScope]);
+        expect(
+          (yield* auth.authenticateHttpRequest(makeBearerRequest(renderer.access_token))).scopes,
+        ).toEqual(AuthStandardClientScopes);
+      }).pipe(Effect.provide(layerEnvironmentAuth({ desktopBootstrapSecret: "desktop-secret" }))),
   );
 
     it.effect("uses the reusable dev cookie without overriding a normal scoped cookie", () =>

@@ -15,6 +15,16 @@ const SECRET = "desktop-secret";
 const WINDOW = DESKTOP_BOOTSTRAP_TOKEN_WINDOW_MS;
 
 describe("desktop bootstrap token", () => {
+  it.effect("separates the main mirror credential from the renderer bootstrap credential", () => Effect.gen(function* () {
+    const renderer = yield* currentDesktopBootstrapToken(SECRET, WINDOW);
+    const main = yield* currentDesktopBootstrapToken(SECRET, WINDOW, "cookie-mirror");
+    expect(main).not.toBe(renderer);
+    expect(yield* isValidDesktopBootstrapToken(SECRET, renderer, WINDOW, "cookie-mirror")).toBe(false);
+    expect(yield* isValidDesktopBootstrapToken(SECRET, main, WINDOW)).toBe(false);
+    expect(yield* isValidDesktopBootstrapToken(SECRET, main, WINDOW, "cookie-mirror")).toBe(true);
+    expect(yield* isValidDesktopBootstrapToken(SECRET, main, WINDOW * 3, "cookie-mirror")).toBe(false);
+  }).pipe(Effect.provide(PlatformNodeCrypto.layerMac)));
+
   it.effect("rotates every window and stays accepted for one more", () =>
     Effect.gen(function* () {
       const issuedAt = 10 * WINDOW + 1;

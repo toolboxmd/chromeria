@@ -180,7 +180,13 @@ export const writeCookies = Effect.fn("BrowserImport.writeCookies")(function* (
         new BrowserCookieWriteError({ url: cookie.url, cookieName: cookie.name, cause }),
     }).pipe(
       Effect.as(true),
-      Effect.tapError((error) => Effect.logDebug(error.message, { cause: error.cause })),
+      Effect.tapError((error) =>
+        Effect.logDebug("Browser cookie import write failed.", {
+          host: cookieHost(error.url),
+          name: error.name,
+          code: error._tag,
+        }),
+      ),
       Effect.catchTags({ BrowserCookieWriteError: () => Effect.succeed(false) }),
     );
     if (written) {
@@ -196,8 +202,8 @@ export const writeCookies = Effect.fn("BrowserImport.writeCookies")(function* (
       try: () => session.cookies.flushStore(),
       catch: (cause) => new BrowserCookieFlushError({ cause }),
     }).pipe(
-      Effect.tapError((error) =>
-        Effect.logWarning("Imported cookies could not be flushed to disk", { cause: error.cause }),
+      Effect.tapError(() =>
+        Effect.logWarning("Imported cookies could not be flushed to disk", { code: "cookie-flush-failed" }),
       ),
       Effect.ignore,
     );

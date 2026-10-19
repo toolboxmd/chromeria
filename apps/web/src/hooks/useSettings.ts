@@ -1,4 +1,9 @@
-import { useRef, useSyncExternalStore, use } from "react";
+import {
+  BROWSER_PROFILE_MAX_COUNT,
+  resolveBrowserProfiles,
+  type CookieMirrorProfile,
+} from "@t3tools/contracts";
+import { useEffect, useRef, useSyncExternalStore, use } from "react";
 import { useSyncExternalStoreWithSelector } from "use-sync-external-store/with-selector";
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import {
@@ -231,6 +236,7 @@ export async function persistClientSettingsUpdate(
     for (;;) {
       const current = getClientSettingsSnapshot();
       const next = update(current);
+      if (next === current) return current;
       await persist(next);
       if (getClientSettingsSnapshot() === current) {
         replaceClientSettingsSnapshot(next);
@@ -259,6 +265,33 @@ function splitPatch(patch: UnifiedSettingsPatch): {
     serverPatch: serverPatch as ServerSettingsPatch,
     clientPatch: clientPatch as ClientSettingsPatch,
   };
+}
+
+/** Discovery proposes additions; handled ids keep a user's deletion durable. */
+export async function adoptDesktopBrowserProfiles(
+  profiles: ReadonlyArray<CookieMirrorProfile>,
+): Promise<void> {
+  await persistClientSettingsUpdate((current) => {
+    const handled = new Set(current.chromeBrowserProfileIds);
+    let browserProfiles = current.browserProfiles;
+    let changed = false;
+    for (const profile of profiles) {
+      const existing = resolveBrowserProfiles(browserProfiles).find((old) => old.id === profile.id);
+      if (!existing && handled.has(profile.id)) continue;
+      if (!existing && resolveBrowserProfiles(browserProfiles).length >= BROWSER_PROFILE_MAX_COUNT)
+        continue;
+      if (!handled.has(profile.id)) {
+        handled.add(profile.id);
+        changed = true;
+      }
+      if (existing) continue;
+      browserProfiles = browserProfiles.concat(profile);
+      changed = true;
+    }
+    return changed
+      ? { ...current, browserProfiles, chromeBrowserProfileIds: [...handled] }
+      : current;
+  });
 }
 
 export function getClientSettings(): ClientSettings {
