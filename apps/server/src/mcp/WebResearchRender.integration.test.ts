@@ -1,3 +1,4 @@
+import * as Search from "../webResearch/Search.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
@@ -29,8 +30,13 @@ import * as PreviewBrowser from "../preview/PreviewBrowser.ts";
 import * as PageCache from "../webResearch/PageCache.ts";
 import * as PublicHttp from "../webResearch/PublicHttp.ts";
 import * as PublicRender from "../webResearch/PublicRender.ts";
+import * as TinyFish from "../webResearch/TinyFish.ts";
 import * as WebResearch from "../webResearch/WebResearch.ts";
-import { WebReadResult } from "../webResearch/schemas.ts";
+import { classify, extract } from "../webResearch/extract.ts";
+import { HostedWebReadResult } from "../webResearch/ResearchHost.ts";
+import * as Settings from "../serverSettings.ts";
+import * as PeerForwarding from "../peer/PeerForwarding.ts";
+import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as Invocation from "./McpInvocationContext.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 
@@ -47,7 +53,7 @@ const client = McpSchema.McpServerClient.of({
   },
   getClient: Effect.die("unused"),
 });
-const decodeResult = Schema.decodeUnknownEffect(WebReadResult);
+const decodeResult = Schema.decodeUnknownEffect(HostedWebReadResult);
 const read = Effect.fnUntraced(function* (arguments_: Record<string, unknown>) {
   const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
   yield* worker.drain();
@@ -103,6 +109,8 @@ const fixture = Effect.fnUntraced(function* (
     { runEffectWorker: false },
   );
   const reader = WebResearch.layer.pipe(
+    Layer.provide(Layer.mock(Search.Search)({})),
+    Layer.provide(Layer.succeed(TinyFish.TinyFish, { fetch: () => Effect.succeed(undefined) })),
     Layer.provide(PageCache.layer),
     Layer.provide(Layer.succeed(PublicRender.PublicRender, { render })),
     Layer.provide(
@@ -120,6 +128,9 @@ const fixture = Effect.fnUntraced(function* (
   const layer = McpHttpServer.layerWebResearchToolkit.pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
     Layer.provide(reader),
+    Layer.provide(Settings.layerTest()),
+    Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+    Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
     Layer.provideMerge(runtime),
     Layer.provide(NodeCrypto.layer),
   );
@@ -189,7 +200,11 @@ it.effect.each([
           nextOffset: 20_000,
           delayMs: 3000,
         });
-        const rest = yield* read({ cacheId: result.cacheId, offset: result.nextOffset });
+        const rest = yield* read({
+          cacheId: result.cacheId,
+          cacheEnvironmentId: result.cacheEnvironmentId,
+          offset: result.nextOffset,
+        });
         expect(result.text + rest.text).toContain("| Family | 4 |");
         expect(result.text + rest.text).toContain("https://render.example/camere");
         expect(result.text + rest.text).toContain('"numberOfRooms":8');
@@ -625,7 +640,11 @@ it.effect.each(["continuation", "repeat"] as const)(
         });
         const cached = yield* read(
           followUp === "continuation"
-            ? { cacheId: result.cacheId, offset: result.nextOffset }
+            ? {
+                cacheId: result.cacheId,
+                cacheEnvironmentId: result.cacheEnvironmentId,
+                offset: result.nextOffset,
+              }
             : { url: "https://render.example/" },
         );
         expect(cached).toMatchObject({
@@ -745,7 +764,11 @@ it.effect(
           expect(result.text.length + child.text.length).toBe(20_000);
           expect(child.nextOffset).not.toBeNull();
           expect(result.truncationReasons).toContain("output_budget");
-          const rest = yield* read({ cacheId: child.cacheId, offset: child.nextOffset });
+          const rest = yield* read({
+            cacheId: child.cacheId,
+            cacheEnvironmentId: child.cacheEnvironmentId,
+            offset: child.nextOffset,
+          });
           expect(rest).toMatchObject({ rung: "cache", sourceRung: "render", subpages: [] });
           expect(child.text + rest.text).toContain("| Family | 4 |");
           expect(child.text + rest.text).toContain('"numberOfRooms":8');
@@ -861,5 +884,181 @@ it.effect(
           ).toEqual(before);
         }).pipe(Effect.provide(f.layer));
       }).pipe(Effect.provide(pinnedRendererLayer(executable)));
+    }),
+);
+
+// Observed public shell: navigation, two headings, and one enable-JavaScript line.
+// Extracted text is 115 characters; compact visible text stays above 80.
+const javascriptShellHtml = `<html><head><title>JS Rendering Challenge to Learn Web Scraping - ScrapingCourse.com</title></head><body><nav><a href="https://www.scrapingcourse.com/">Scraping Course</a></nav><h1>JS Rendering</h1><h2>Challenge</h2><p>Enable JavaScript to see products</p></body></html>`;
+const javascriptShellUrl = "https://www.scrapingcourse.com/javascript-rendering/";
+const observedShellText =
+  "[Scraping Course](https://www.scrapingcourse.com/)\n\n# JS Rendering\n\n## Challenge\n\nEnable JavaScript to see products";
+
+it("classifies an instructional JavaScript shell as thin once navigation and headings pass 80 characters", () => {
+  const page = extract(javascriptShellHtml, javascriptShellUrl);
+  expect(page.title).toBe("JS Rendering Challenge to Learn Web Scraping - ScrapingCourse.com");
+  expect(page.text).toBe(observedShellText);
+  expect(page.text.length).toBe(115);
+  expect(page.visibleText.length).toBeGreaterThan(80);
+  expect(classify(page, 200)).toBe("thin");
+  expect(classify(page, 500)).toBe("origin_error");
+  expect(
+    classify(
+      extract(
+        javascriptShellHtml.replace(
+          "<title>JS Rendering Challenge to Learn Web Scraping - ScrapingCourse.com</title>",
+          "<title>Just a moment</title>",
+        ),
+        javascriptShellUrl,
+      ),
+      200,
+    ),
+  ).toBe("challenge");
+});
+
+it("keeps short substantive pages, JSON-LD, and articles that mention JavaScript", () => {
+  const nearMiss = extract(
+    javascriptShellHtml.replace(
+      "<p>Enable JavaScript to see products</p>",
+      "<p>Enable JavaScript to see products. The catalog already lists a ceramic mug at 12 euros and a linen towel at 18 euros.</p>",
+    ),
+    javascriptShellUrl,
+  );
+  expect(nearMiss.visibleText.length).toBeGreaterThan(80);
+  expect(nearMiss.visibleText).toContain("ceramic mug");
+  expect(classify(nearMiss, 200)).toBe("ok");
+
+  const article = extract(
+    "<html><head><title>Rendering notes</title></head><body><h1>Rendering notes</h1><p>This short article explains that browsers run JavaScript after HTML arrives, and the text is already here.</p></body></html>",
+    "https://notes.example/javascript",
+  );
+  expect(article.visibleText.length).toBeGreaterThan(80);
+  expect(article.text).toContain("browsers run JavaScript");
+  expect(classify(article, 200)).toBe("ok");
+
+  const structured = extract(
+    `<html><head><title>Shop facts</title><script type="application/ld+json">{"name":"Scraping Course","offers":8}</script></head><body>${javascriptShellHtml.match(/<body>(.*)<\/body>/)?.[1] ?? ""}</body></html>`,
+    javascriptShellUrl,
+  );
+  expect(structured.text).toContain("JSON-LD:");
+  expect(structured.visibleText).toContain("Enable JavaScript to see products");
+  expect(classify(structured, 200)).toBe("ok");
+
+  const factsOnly = extract(
+    '<html><head><title>Facts</title><script type="application/ld+json">{"numberOfRooms":8}</script></head><body><p>Eight.</p></body></html>',
+    "https://facts.example/",
+  );
+  expect(factsOnly.visibleText.length).toBeLessThan(80);
+  expect(classify(factsOnly, 200)).toBe("ok");
+  expect(
+    classify(extract("<title>Villa JS</title><div id='root'></div>", "https://app.example/"), 200),
+  ).toBe("thin");
+});
+
+it("keeps opening hours readable when the enable-JavaScript line only follows them", () => {
+  const page = extract(
+    "<html><head><title>Hours</title></head><body><h1>Opening hours</h1><p>Monday to Friday, 9:00 to 17:00.</p><h2>Address</h2><p>12 Main Street, Springfield.</p><p>Enable JavaScript to view the map.</p></body></html>",
+    "https://hours.example/",
+  );
+  expect(page.visibleText.length).toBe(123);
+  expect(page.text).toContain("Monday to Friday, 9:00 to 17:00.");
+  expect(page.text).toContain("12 Main Street, Springfield.");
+  expect(classify(page, 200)).toBe("ok");
+});
+
+it("keeps product prices readable when the enable-JavaScript line only follows them", () => {
+  const page = extract(
+    "<html><head><title>Shop</title></head><body><h1>Mug</h1><p>Ceramic mug, 12 euros, ships in two days.</p><h2>Towel</h2><p>Linen towel, 18 euros, ships tomorrow.</p><p>Enable JavaScript to add items to your cart.</p></body></html>",
+    "https://shop.example/",
+  );
+  expect(page.visibleText.length).toBe(140);
+  expect(page.text).toContain("Ceramic mug, 12 euros, ships in two days.");
+  expect(page.text).toContain("Linen towel, 18 euros, ships tomorrow.");
+  expect(classify(page, 200)).toBe("ok");
+});
+
+it("keeps a paragraph after the enable-JavaScript line readable", () => {
+  const page = extract(
+    "<html><head><title>Notes</title></head><body><h1>Notes</h1><p>Enable JavaScript to see products</p><p>The ceramic mug is 12 euros and the linen towel is 18 euros, and both are already listed.</p></body></html>",
+    "https://notes.example/after",
+  );
+  expect(page.visibleText.length).toBe(131);
+  expect(page.text).toContain("The ceramic mug is 12 euros and the linen towel is 18 euros");
+  expect(classify(page, 200)).toBe("ok");
+});
+
+it("does not throw when a text/plain run of nine-word headings reaches the public body limit", () => {
+  const heading = "# a b c d e f g h i ";
+  const text = heading.repeat(Math.floor((4 * 1024 * 1024) / heading.length));
+  expect(text.length).toBeGreaterThan(3_950_000);
+  expect(text.length).toBeLessThanOrEqual(4 * 1024 * 1024);
+  const page = {
+    title: "",
+    text,
+    visibleText: text,
+    password: false,
+    refresh: undefined,
+    links: [],
+  };
+  expect(() => classify(page, 200)).not.toThrow();
+  expect(classify(page, 200)).toBe("ok");
+});
+
+it.effect(
+  "renders an instructional JavaScript shell and leaves a substantive JavaScript article on HTTP",
+  () =>
+    Effect.gen(function* () {
+      const products =
+        "<html><head><title>Products</title></head><body><h1>Products</h1><p>Ceramic mug, 12 euros. Linen towel, 18 euros. Oak board, 24 euros. The shop lists these three products after scripts run.</p></body></html>";
+      const article =
+        "<html><head><title>Rendering notes</title></head><body><h1>Rendering notes</h1><p>This short article explains that browsers run JavaScript after HTML arrives, and the text is already here.</p></body></html>";
+      let renders = 0;
+      const f = yield* fixture(
+        (input) =>
+          Effect.sync(() => {
+            renders++;
+            expect(input.url.href).toBe("https://course.example/shell");
+            expect(input.initial.body).toBe(javascriptShellHtml);
+            return {
+              body: products,
+              finalUrl: input.url.href,
+              httpStatus: 200,
+              headers: {},
+            };
+          }),
+        (url) =>
+          Effect.succeed(
+            response(
+              url.hostname === "notes.example"
+                ? article
+                : url.pathname === "/shell"
+                  ? javascriptShellHtml
+                  : products,
+            ),
+          ),
+      );
+      yield* Effect.gen(function* () {
+        yield* f.setup;
+        const rendered = yield* Fiber.join(yield* f.start("https://course.example/shell"));
+        expect(renders).toBe(1);
+        expect(rendered).toMatchObject({
+          status: "ok",
+          rung: "render",
+          sourceRung: "render",
+          finalUrl: "https://course.example/shell",
+          title: "Products",
+        });
+        expect(rendered.text).toContain("Ceramic mug, 12 euros.");
+        expect(rendered.text).not.toContain("Enable JavaScript to see products");
+        const notes = yield* Fiber.join(yield* f.start("https://notes.example/article"));
+        expect(notes).toMatchObject({
+          status: "ok",
+          rung: "http",
+          sourceRung: "http",
+          title: "Rendering notes",
+        });
+        expect(notes.text).toContain("browsers run JavaScript");
+        expect(renders).toBe(1);
+      }).pipe(Effect.provide(f.layer));
     }),
 );

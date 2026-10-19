@@ -97,7 +97,16 @@ flowchart TD
     OAG["Outside-agent grants"]
     %% OAG: #553 PR #558
     WR["Agent web research"]
-    %% WR: #423 PR #453
+    %% WR: #423 PR #455 PR #535
+    WRF["Zero-charge hosted fallback"]
+    %% WRF: #444 PR #502
+    WR --- WRF
+    WRS["Locale and site search"]
+    %% WRS: #445 PR #505
+    WR --- WRS
+    WRL["Existing session reads"]
+    %% WRL: #446 PR #513
+    WR --- WRL
     WRR["Headless page rendering"]
     %% WRR: #442
     WR --- WRR
