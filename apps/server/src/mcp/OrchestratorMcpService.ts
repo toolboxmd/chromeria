@@ -2043,8 +2043,30 @@ const make = Effect.gen(function* () {
         const members = yield* loadRunGroup(scope, input.taskId);
         if (members.length === 0) return yield* single.cancelTask(callerScope, input);
         const key = yield* requestKey(input.clientRequestId);
-        // Cancelling the whole group gives up its wake; every member is asked
-        // to stop before the first refusal is reported.
+        // Cancelling the whole group gives up its wake. The group cancel is
+        // recorded on every member before any is stopped, so a member ending in
+        // any order stays quiet; every member is asked to stop before the first
+        // refusal is reported, and a refused member keeps its wake.
+        const groupCancelId = stableCommandId({
+          scope,
+          requestKey: key,
+          operation: "cancel-run-group",
+        });
+        yield* threadManagement
+          .dispatch({
+            type: "delegated_task.group-cancel",
+            commandId: groupCancelId,
+            parentThreadId: scope.thread.threadId,
+            groupId: input.taskId,
+          })
+          .pipe(
+            Effect.mapError((error) =>
+              failure(
+                "orchestration_error",
+                `Unable to cancel Run group ${input.taskId}: ${errorMessage(error)}`,
+              ),
+            ),
+          );
         const outcomes = yield* Effect.forEach(members, (member, index) =>
           Effect.result(
             single
@@ -2054,6 +2076,28 @@ const make = Effect.gen(function* () {
                 clientRequestId: `${key}:${index}`,
               })
               .pipe(
+                Effect.tapError(() =>
+                  threadManagement
+                    .dispatch({
+                      type: "delegated_task.group-cancel.release",
+                      commandId: stableCommandId({
+                        scope,
+                        requestKey: `${key}:${index}`,
+                        operation: "cancel-run-group-release",
+                      }),
+                      parentThreadId: scope.thread.threadId,
+                      taskId: member.id,
+                      groupCancelId,
+                    })
+                    .pipe(
+                      Effect.mapError((error) =>
+                        failure(
+                          "orchestration_error",
+                          `Unable to restore delegated task ${member.id} completion delivery: ${errorMessage(error)}`,
+                        ),
+                      ),
+                    ),
+                ),
                 Effect.tap(() =>
                   threadManagement
                     .dispatch({

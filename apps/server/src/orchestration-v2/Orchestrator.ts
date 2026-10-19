@@ -160,6 +160,7 @@ import type { OrchestrationEffectRequestV2, PendingOrchestrationEffectV2 } from 
 import {
   type RunGroupMember,
   runGroupMember,
+  runGroupMembers,
   runGroupWake,
   runGroupWakeDetail,
 } from "./RunGroups.ts";
@@ -571,6 +572,8 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "delegated_task.remote.attach":
     case "delegated_task.remote.complete":
     case "delegated_task.wake-policy":
+    case "delegated_task.group-cancel":
+    case "delegated_task.group-cancel.release":
     case "delegated_task.completion-delivery.acknowledge":
     case "delegated_task.completion-delivery.dispose":
     case "thread.created.record":
@@ -8436,6 +8439,152 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
   });
 
+  const readParentForGroupCancel = (parentThreadId: ThreadId) =>
+    projectionStore
+      .getThreadRecords(parentThreadId, ["subagents", "runs", "messages", "providerTurns"])
+      .pipe(
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: parentThreadId, cause }),
+        ),
+      );
+
+  // A whole-group task_cancel records its id on every member before any member
+  // is stopped, so a member ending at any point afterwards stays quiet.
+  const dispatchRunGroupCancel = Effect.fn("orchestrationV2.dispatch.runGroupCancel")(function* (
+    command: Extract<
+      OrchestrationV2ServerCommand,
+      { readonly type: "delegated_task.group-cancel" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const parentProjection = yield* readParentForGroupCancel(command.parentThreadId);
+    const members = runGroupMembers(parentProjection.subagents, command.groupId);
+    if (members.length === 0) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Run group ${command.groupId} has no members on thread ${command.parentThreadId}.`,
+      });
+    }
+    const now = yield* DateTime.now;
+    const emitEvent = emit(events, command);
+    for (const member of members) {
+      yield* emitEvent({
+        type: "subagent.updated",
+        threadId: command.parentThreadId,
+        ...(member.runId === null ? {} : { runId: member.runId }),
+        nodeId: member.id,
+        driver: member.driver,
+        providerInstanceId: member.providerInstanceId,
+        occurredAt: now,
+        payload: { ...member, groupCancel: { commandId: command.commandId }, updatedAt: now },
+      });
+    }
+  });
+
+  // A member whose stop was refused keeps running and owes the parent its wake.
+  const dispatchRunGroupCancelRelease = Effect.fn("orchestrationV2.dispatch.runGroupCancelRelease")(
+    function* (
+      command: Extract<
+        OrchestrationV2ServerCommand,
+        { readonly type: "delegated_task.group-cancel.release" }
+      >,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    ) {
+      const parentProjection = yield* readParentForGroupCancel(command.parentThreadId);
+      const task = parentProjection.subagents.find(
+        (candidate) => candidate.id === command.taskId && candidate.origin === "app_owned",
+      );
+      if (task === undefined) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Delegated task ${command.taskId} is not an app-owned task of thread ${command.parentThreadId}.`,
+        });
+      }
+      const now = yield* DateTime.now;
+      const emitEvent = emit(events, command);
+      if (task.groupCancel?.commandId !== command.groupCancelId) {
+        yield* emitEvent({
+          type: "subagent.updated",
+          threadId: command.parentThreadId,
+          ...(task.runId === null ? {} : { runId: task.runId }),
+          nodeId: task.id,
+          driver: task.driver,
+          providerInstanceId: task.providerInstanceId,
+          occurredAt: now,
+          payload: task,
+        });
+        return;
+      }
+      const { groupCancel: _released, ...rest } = task;
+      // The marker may have quieted a result that ended meanwhile; it owes its wake now.
+      const suppressed =
+        isTerminalDelegatedTaskStatus(task.status) &&
+        task.completionDelivery?.state === "disposed" &&
+        task.completionDelivery.disposedBy === undefined;
+      const { completionDelivery: _quieted, ...unquieted } = rest;
+      const updatedTask: OrchestrationV2Subagent = {
+        ...(suppressed ? unquieted : rest),
+        updatedAt: now,
+      };
+      const parentRun =
+        task.runId === null
+          ? undefined
+          : parentProjection.runs.find((candidate) => candidate.id === task.runId);
+      const completionPlan = suppressed
+        ? yield* planRunGroupCompletionDelivery({
+            parentProjection,
+            parentRun,
+            task: updatedTask,
+            updatedTask,
+            now,
+          })
+        : undefined;
+      yield* emitEvent({
+        type: "subagent.updated",
+        threadId: command.parentThreadId,
+        ...(task.runId === null ? {} : { runId: task.runId }),
+        nodeId: task.id,
+        driver: task.driver,
+        providerInstanceId: task.providerInstanceId,
+        occurredAt: now,
+        payload: completionPlan?.task ?? updatedTask,
+      });
+      if (completionPlan === undefined) return;
+      for (const event of releasedSiblingEvents(completionPlan.siblings, now))
+        yield* emitEvent(event);
+      if (completionPlan.parentRun !== undefined) {
+        yield* emitEvent({
+          type: "run.updated",
+          threadId: command.parentThreadId,
+          runId: completionPlan.parentRun.id,
+          ...(completionPlan.parentRun.rootNodeId === null
+            ? {}
+            : { nodeId: completionPlan.parentRun.rootNodeId }),
+          providerInstanceId: completionPlan.parentRun.providerInstanceId,
+          occurredAt: now,
+          payload: completionPlan.parentRun,
+        });
+      }
+      if (completionPlan.message !== undefined) {
+        yield* emitEvent({
+          type: "message.updated",
+          threadId: command.parentThreadId,
+          ...(completionPlan.message.runId === null ? {} : { runId: completionPlan.message.runId }),
+          ...(completionPlan.message.nodeId === null
+            ? {}
+            : { nodeId: completionPlan.message.nodeId }),
+          providerInstanceId:
+            completionPlan.parentRun?.providerInstanceId ??
+            parentProjection.thread.providerInstanceId,
+          occurredAt: now,
+          payload: completionPlan.message,
+        });
+      }
+    },
+  );
+
   const dispatchCreatedThreadRecord = Effect.fn("orchestrationV2.dispatch.createdThreadRecord")(
     function* (
       command: Extract<OrchestrationV2Command, { readonly type: "thread.created.record" }>,
@@ -11343,15 +11492,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
    */
   const planRunGroupCompletionDelivery = Effect.fn(
     "orchestrationV2.planRunGroupCompletionDelivery",
-  )(function* (
-    input: Omit<Parameters<typeof planDelegatedCompletionDelivery>[0], "siblingIds"> & {
-      /** The member's run ended on an explicit stop request. */
-      readonly stopRequested?: boolean;
-    },
-  ) {
-    const group = runGroupWake(input.parentProjection.subagents, input.updatedTask, {
-      stopRequested: input.stopRequested === true,
-    });
+  )(function* (input: Omit<Parameters<typeof planDelegatedCompletionDelivery>[0], "siblingIds">) {
+    // A member a group cancel gave up ends quietly, whenever it ends.
+    if (input.updatedTask.groupCancel !== undefined) {
+      return {
+        task:
+          input.updatedTask.completionDelivery === undefined
+            ? {
+                ...input.updatedTask,
+                completionDelivery: { state: "disposed" as const, observedByRunId: null },
+              }
+            : input.updatedTask,
+        parentRun: undefined,
+        message: undefined,
+        offer: false,
+        siblings: [],
+      };
+    }
+    const group = runGroupWake(input.parentProjection.subagents, input.updatedTask);
     if (group.type === "hold") {
       return {
         task: input.updatedTask,
@@ -11737,13 +11895,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
       // Stop records the terminal result but cannot reserve another parent wake.
       // A plain interruption has no request and still delivers its result.
-      const stopRequested =
+      const explicitlyStopped =
+        followUp &&
         childRun.status === "interrupted" &&
         (yield* projectionStore.getThreadRecords(childThreadId, ["turnItems"], {
           turnItemTypes: ["run_interrupt_request"],
           turnItemRunIds: [childRun.id],
         })).turnItems.length > 0;
-      const explicitlyStopped = followUp && stopRequested;
       const { completionDelivery: observedDelivery, ...unobservedTask } = task;
       const stopDisposed =
         observedDelivery?.state === "disposed" && observedDelivery.disposedBy === "stop";
@@ -11806,7 +11964,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               followUp || followUpEndsStoppedTask ? { ...task, completionWake: "always" } : task,
             updatedTask,
             now,
-            stopRequested,
           });
       const resultTransferId = yield* idAllocator.allocate.contextTransfer({
         sourceThreadId: childThreadId,
@@ -12713,6 +12870,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "delegated_task.wake-policy":
         yield* dispatchDelegatedTaskWakePolicy(command, events);
         break;
+      case "delegated_task.group-cancel":
+        yield* dispatchRunGroupCancel(command, events);
+        break;
+      case "delegated_task.group-cancel.release":
+        yield* dispatchRunGroupCancelRelease(command, events);
+        break;
       case "delegated_task.completion-delivery.acknowledge":
       case "delegated_task.completion-delivery.dispose":
         yield* dispatchDelegatedTaskCompletionDeliveryResolution(command, events);
@@ -13279,6 +13442,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     if (
       command.type === "delegated_task.wake-policy" ||
+      command.type === "delegated_task.group-cancel.release" ||
       command.type === "delegated_task.remote.complete"
     ) {
       yield* mapDispatchError(command)(offerDelegatedCompletionDeliveries(command.parentThreadId));

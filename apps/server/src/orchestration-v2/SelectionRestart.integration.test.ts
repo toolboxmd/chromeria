@@ -530,10 +530,11 @@ it.live.each(["unchanged", "messageId", "mode", "legacy"] as const)(
                 ? { mode: "auto" as const }
                 : {}),
           });
-          assert.deepEqual(replay.dispatch, {
-            sequence: accepted.dispatch.sequence,
-            storedEvents: originalEvents,
-          });
+          // The replay records nothing new and reports the first dispatch's sequence and events.
+          assert.equal(replay.dispatch.sequence, accepted.dispatch.sequence);
+          assert.deepEqual(replay.dispatch.storedEvents, originalEvents);
+          if (changedField !== "messageId")
+            assert.deepEqual(replay.dispatch.admittedRun, accepted.dispatch.admittedRun);
           assert.deepEqual(replay.message, accepted.message);
           assert.equal(replay.delivery, accepted.delivery);
           assert.equal(replay.run.id, accepted.run.id);

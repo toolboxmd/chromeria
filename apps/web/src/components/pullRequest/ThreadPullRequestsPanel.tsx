@@ -1,5 +1,4 @@
 import { createThreadPullRequestWatchAction } from "@t3tools/client-runtime/pull-request-link-input";
-import { purposeSelectionOf, savedPurposeIntentForScope } from "@t3tools/contracts";
 import type { ProjectId, ScopedThreadRef, ThreadPullRequestLink } from "@t3tools/contracts";
 import {
   sourceControlClients,
@@ -446,16 +445,10 @@ function EnabledThreadPullRequestsPanel({
   const handleSetWatching = createThreadPullRequestWatchAction({
     threadRef,
     ownLinks: thread?.pullRequests ?? [],
-    watch: (command: Parameters<typeof watch>[0]) =>
-      watch({
-        ...command,
-        input: {
-          ...command.input,
-          ...(command.input.watching && capabilities?.executionPurposeVersions?.includes(1) === true
-            ? { purposeIntent: savedPurposeIntentForScope(purposeSelectionOf(thread ?? {}).scope) }
-            : {}),
-        },
-      }),
+    ...(capabilities?.executionPurposeVersions?.includes(1) === true
+      ? { purpose: { selection: thread?.purposeSelection } }
+      : {}),
+    watch,
   });
 
   // Legend re-renders visible rows only when data or extraData changes, so everything the rows

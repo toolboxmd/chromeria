@@ -57,7 +57,6 @@ export type RunGroupWake =
 export function runGroupWake(
   subagents: ReadonlyArray<OrchestrationV2Subagent>,
   task: OrchestrationV2Subagent,
-  options?: { readonly stopRequested?: boolean },
 ): RunGroupWake {
   if (task.runGroupId === undefined) return { type: "single" };
   if (task.completionDelivery !== undefined) return { type: "hold" };
@@ -65,19 +64,6 @@ export function runGroupWake(
     (member) => member.id !== task.id,
   );
   if (siblings.some((member) => !isTerminal(member.status))) return { type: "hold" };
-  // Only a group cancel disposes a member's delivery, and it does so after each
-  // stop succeeds. A member it stopped can end before its own disposal lands; it
-  // must not release the cancelled group's wake. A refused member is never
-  // stopped, so its result still wakes the parent.
-  if (
-    options?.stopRequested === true &&
-    siblings.some(
-      (member) =>
-        member.completionDelivery?.state === "disposed" &&
-        member.completionDelivery.disposedBy === undefined,
-    )
-  )
-    return { type: "hold" };
   return {
     type: "release",
     siblings: siblings.filter((member) => member.completionDelivery === undefined),

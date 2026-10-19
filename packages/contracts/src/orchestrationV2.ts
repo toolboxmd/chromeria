@@ -898,6 +898,13 @@ export const OrchestrationV2Subagent = Schema.Struct({
    * after every member is terminal.
    */
   runGroupId: Schema.optional(NodeId),
+  /**
+   * Fork (#377): the whole-group `task_cancel` that gives up this member's
+   * wake. It is recorded for every member before any is stopped, so a member
+   * ending in any order stays quiet; a member whose stop is refused has it
+   * cleared and wakes the parent normally.
+   */
+  groupCancel: Schema.optional(Schema.Struct({ commandId: CommandId })),
   status: Schema.Literals([
     "idle",
     "pending",
@@ -3258,6 +3265,21 @@ export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
  * send them.
  */
 const OrchestrationV2InternalCommand = Schema.Union([
+  /** Marks every member of a Run group as given up by one group cancel. */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.group-cancel"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    groupId: NodeId,
+  }),
+  /** Clears one member's group cancel after its stop was refused. */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.group-cancel.release"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    groupCancelId: CommandId,
+  }),
   Schema.Struct({
     type: Schema.Literal("thread.pull-request-watch.sync"),
     commandId: CommandId,
