@@ -11,7 +11,7 @@ import { ForkDispatchPlans } from "../fork/ForkDispatchPlans.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
-import { bindRun, nextRound } from "./barrier.ts";
+import { bindRun, fallBack, nextRound } from "./barrier.ts";
 import { spectrumLaunchAdmission } from "./launchAdmission.ts";
 import { spectrumPlan } from "./spectrumPlan.ts";
 import type { SpectrumState } from "./state.ts";
@@ -48,6 +48,13 @@ const make = Effect.gen(function* () {
           : Effect.fail(new SpectrumRoundError({ threadId, cause: "Spectrum is not registered" })),
       ),
     );
+  /** Admission refused the start: nothing of it committed, and its command can never commit. */
+  const refusedBeforeCommit = (commandId: CommandId, error: { readonly _tag: string }) =>
+    error._tag === "ThreadManagementProviderInstanceDisabledError"
+      ? Effect.succeed(true)
+      : sql<{ readonly status: string }>`
+          SELECT status FROM orchestration_command_receipts WHERE command_id = ${commandId}
+        `.pipe(Effect.map((rows) => rows[0]?.status === "rejected"));
   const persist = Effect.fn("SpectrumRound.persist")(function* (
     commandId: CommandId,
     old: SpectrumState,
@@ -122,44 +129,67 @@ const make = Effect.gen(function* () {
   });
   const dispatch = Effect.fn("SpectrumRound.dispatch")(function* (
     threadId: ThreadId,
-    commandId: CommandId,
+    requested: CommandId,
   ) {
-    const state = yield* read(threadId);
-    const pending = state.outbox.find((command) => command.commandId === commandId);
-    if (pending?.type !== "message.dispatch" || state.round === null)
-      return yield* new SpectrumRoundError({
-        threadId,
-        cause: "Round command is absent from durable state",
-      });
-    // Fiber-local admission is rebuilt on every replay. No captured scope survives a restart.
-    const result = yield* threads
-      .dispatch(pending)
-      .pipe(
+    let state = yield* read(threadId);
+    let commandId = requested;
+    while (true) {
+      const current = state;
+      const pending = current.outbox.find((command) => command.commandId === commandId);
+      if (pending?.type !== "message.dispatch" || current.round === null)
+        return yield* new SpectrumRoundError({
+          threadId,
+          cause: "Round command is absent from durable state",
+        });
+      // Fiber-local admission is rebuilt on every replay. No captured scope survives a restart.
+      const outcome = yield* threads.dispatch(pending).pipe(
         Effect.provideService(ForkDispatchPlans, [
-          spectrumLaunchAdmission(threadId, state.generation, pending),
+          spectrumLaunchAdmission(threadId, current.generation, pending),
         ]),
+        Effect.map((result) => ({ type: "dispatched" as const, result })),
+        Effect.catch((error) =>
+          Effect.gen(function* () {
+            const fallback = fallBack(current, pending.commandId);
+            if (fallback === null || !(yield* refusedBeforeCommit(pending.commandId, error)))
+              return yield* error;
+            return { type: "fallback" as const, fallback };
+          }),
+        ),
       );
-    const run = result.storedEvents.find(
-      (stored) =>
-        stored.event.type === "run.created" &&
-        stored.event.payload.userMessageId === pending.messageId,
-    )?.event;
-    if (run?.type !== "run.created")
-      return yield* new SpectrumRoundError({
-        threadId,
-        cause: "Accepted Color launch has no exact run binding",
+      if (outcome.type === "fallback") {
+        // The next candidate is durable before its start, so a restart never retries a refused one.
+        state = yield* persist(
+          CommandId.make(`${pending.commandId}:refused`),
+          current,
+          outcome.fallback,
+        );
+        commandId = outcome.fallback.round!.slots.find(
+          (slot) => slot.threadId === pending.threadId && slot.runId === null,
+        )!.commandId;
+        continue;
+      }
+      const run = outcome.result.storedEvents.find(
+        (stored) =>
+          stored.event.type === "run.created" &&
+          stored.event.payload.userMessageId === pending.messageId,
+      )?.event;
+      if (run?.type !== "run.created")
+        return yield* new SpectrumRoundError({
+          threadId,
+          cause: "Accepted Color launch has no exact run binding",
+        });
+      const round = bindRun(current.round, {
+        generation: current.generation,
+        commandId,
+        run: run.payload,
       });
-    const round = bindRun(state.round, {
-      generation: state.generation,
-      commandId,
-      run: run.payload,
-    });
-    return yield* persist(CommandId.make(`${commandId}:bound`), state, {
-      ...state,
-      revision: state.revision + 1,
-      round,
-      outbox: state.outbox.filter((command) => command.commandId !== commandId),
-    });
+      return yield* persist(CommandId.make(`${commandId}:bound`), current, {
+        ...current,
+        revision: current.revision + 1,
+        round,
+        outbox: current.outbox.filter((command) => command.commandId !== commandId),
+      });
+    }
   });
   return SpectrumRoundService.of({
     prepare: (threadId) =>

@@ -2,6 +2,7 @@ import {
   CommandId,
   MessageId,
   ModelSelection,
+  NodeId,
   NonNegativeInt,
   OrchestrationV2Command,
   RunId,
@@ -23,6 +24,10 @@ const Participant = Schema.Struct({
   threadId: ThreadId,
   label: Schema.String,
   selection: ModelSelection,
+  /** Later candidates, tried in order only while this slot's Color run is not committed. */
+  fallbacks: Schema.Array(ModelSelection).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  /** Candidates that failed admission, so a restart never repeats them. */
+  attempted: Schema.Array(ModelSelection).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   instructions: Schema.optional(Schema.String),
 });
 
@@ -75,6 +80,8 @@ export const SpectrumState = Schema.Struct({
   inbox: Schema.Array(MessageId),
   outbox: Schema.Array(OutboxCommand),
   report: Schema.NullOr(SpectrumReport).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  /** The caller's delegated task row for an agent-started Spectrum; user starts have none. */
+  delegatedTaskId: Schema.NullOr(NodeId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   reportAbandonment: Schema.NullOr(
     Schema.Struct({
       commandId: CommandId,

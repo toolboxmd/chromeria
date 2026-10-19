@@ -250,7 +250,7 @@ const make = Effect.gen(function* () {
     );
     if (state.status === "active" && (retirement.retired || !retirement.complete)) {
       state = yield* cancelOwned(state, `spectrum:${id}:${state.generation}:retirement`);
-      yield* reports.settle(id, "Spectrum stopped.", true);
+      yield* reports.settle(id, "Spectrum stopped.", "cancelled");
     }
     for (let step = 0; step < 128; step++) {
       if (state.status === "retired") state = yield* reconcileRetired(state);
@@ -312,7 +312,7 @@ const make = Effect.gen(function* () {
             `spectrum:${id}:${state.generation}:failed:${slot.commandId}`,
             [completion],
           );
-          yield* reports.settle(id, `Spectrum could not finish: ${reply.reason}.`, true);
+          yield* reports.settle(id, `Spectrum could not finish: ${reply.reason}.`, "failed");
           return yield* drain(id);
         }
         if (reply.type !== "accepted") continue;

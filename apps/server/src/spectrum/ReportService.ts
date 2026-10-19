@@ -1,4 +1,9 @@
-import { CommandId, type OrchestrationV2Command, ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  type OrchestrationV2Command,
+  type OrchestrationV2DomainEvent,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -31,6 +36,7 @@ import {
   retryEvidence,
   type ReportCommand,
 } from "./reportPolicy.ts";
+import { spectrumTaskUpdate, type SpectrumTaskOutcome } from "./delegatedTask.ts";
 import { spectrumPlan } from "./spectrumPlan.ts";
 import type { SpectrumMutation, SpectrumState } from "./state.ts";
 import { readSpectrum } from "./store.ts";
@@ -53,7 +59,7 @@ export class SpectrumReportService extends Context.Service<
     readonly settle: (
       threadId: ThreadId,
       text: string,
-      retired?: boolean,
+      outcome?: SpectrumTaskOutcome,
     ) => Effect.Effect<SpectrumState, SpectrumReportError>;
     readonly deliver: (threadId: ThreadId) => Effect.Effect<SpectrumState, SpectrumReportError>;
     readonly abandon: (
@@ -85,6 +91,7 @@ const make = Effect.gen(function* () {
     old: SpectrumState,
     next: SpectrumState,
     plans: ReadonlyArray<ForkCommitPlan> = [],
+    taskEvents: ReadonlyArray<OrchestrationV2DomainEvent> = [],
   ) {
     const mutation: SpectrumMutation = {
       expectedRevision: old.revision,
@@ -99,7 +106,7 @@ const make = Effect.gen(function* () {
       threadId: old.threadId,
       commandType,
       acceptedAt: now,
-      events,
+      events: [...events, ...taskEvents],
       effects: [],
       forkPlans: [
         ...(thread === null || events.length === 0 ? [] : [lifecyclePlan(thread)]),
@@ -176,7 +183,7 @@ const make = Effect.gen(function* () {
   const settle = Effect.fn("SpectrumReport.settle")(function* (
     threadId: ThreadId,
     text: string,
-    retired: boolean,
+    outcome: SpectrumTaskOutcome,
   ) {
     const state = yield* read(threadId);
     const plans: ForkCommitPlan[] = [];
@@ -189,13 +196,23 @@ const make = Effect.gen(function* () {
         return yield* fail(threadId, "An earlier Spectrum report is still undelivered");
       plans.push(reportChainsUnchanged(threadId, [outcome.chain]));
     }
-    const next = { ...makeInitialReport(state, text, retired), revision: state.revision + 1 };
+    const next = {
+      ...makeInitialReport(state, text, outcome !== "completed"),
+      revision: state.revision + 1,
+    };
+    const commandId = CommandId.make(`${next.report!.commandId}:settle`);
     return yield* persist(
-      CommandId.make(`${next.report!.commandId}:settle`),
+      commandId,
       "spectrum.report.settle",
       state,
       next,
       plans,
+      yield* spectrumTaskUpdate(
+        next,
+        { status: outcome, result: text },
+        commandId,
+        yield* DateTime.now,
+      ).pipe(Effect.provideService(Projection.ProjectionStoreV2, projections)),
     );
   });
 
@@ -255,8 +272,8 @@ const make = Effect.gen(function* () {
         ),
       );
   return SpectrumReportService.of({
-    settle: (threadId, text, retired = false) =>
-      serialized(threadId, settle(threadId, text, retired)),
+    settle: (threadId, text, outcome = "completed") =>
+      serialized(threadId, settle(threadId, text, outcome)),
     deliver: (threadId) => serialized(threadId, deliver(threadId)),
     abandon: (threadId, commandId, person) =>
       serialized(threadId, abandon(threadId, commandId, person)),
