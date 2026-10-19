@@ -1,4 +1,5 @@
 import type { EnvironmentId } from "@t3tools/contracts";
+import { isAddableRelayEnvironment } from "@t3tools/client-runtime/relay";
 import type { RelayClientEnvironmentRecord } from "@t3tools/contracts/relay";
 import type { ConnectedEnvironmentSummary } from "../../state/remote-runtime-types";
 
@@ -37,7 +38,9 @@ export function splitEnvironmentSections(input: EnvironmentSectionsInput): Envir
       (environment) => environment.isRelayManaged,
     ),
     availableCloudEnvironments: (input.cloudEnvironments ?? []).filter(
-      (environment) => !savedEnvironmentIds.has(environment.environmentId),
+      (environment) =>
+        isAddableRelayEnvironment(environment) &&
+        !savedEnvironmentIds.has(environment.environmentId),
     ),
   };
 }
