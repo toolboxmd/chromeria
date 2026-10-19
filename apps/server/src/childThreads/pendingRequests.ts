@@ -78,7 +78,9 @@ const linkedPromachos = (context: Caller): OrchestrationV2RequestAnsweredBy | un
   const client = context.scope.client;
   if (context.caller !== undefined || client?.linked !== true) return undefined;
   if (client.promachosThreadId === undefined) return undefined;
-  // Only a full-access link may change the user's own work here, as in `linkOrigin.ts`.
+  // This environment cannot see the peer's threads, so it trusts the link's claim. Only a
+  // full-access link may make it: that link may already change this environment's settings
+  // and scheduled tasks (`assertNotLinked`), which is more than answering a question.
   const ceiling = clientModeCeiling(client);
   if (ceiling.runtimeMode !== "full-access" || ceiling.interactionMode !== "default")
     return undefined;
