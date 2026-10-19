@@ -218,7 +218,7 @@ export function DeviceStreamView(props: {
     onPhoneUnavailable,
     onScreen,
     props.deviceId,
-    props.environmentId,
+    refreshAccess,
     props.platform,
     props.visible,
   ]);

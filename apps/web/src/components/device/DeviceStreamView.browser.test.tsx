@@ -4,7 +4,12 @@ import { EnvironmentId } from "@t3tools/contracts";
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vite-plus/test";
 
 const accessStore = {
-  value: { httpBase: "http://test", wsBase: "ws://test", query: {}, credentials: true },
+  value: {
+    httpBase: "http://test",
+    wsBase: "ws://test",
+    query: { hostId: "local" },
+    credentials: true,
+  },
   listeners: new Set<() => void>(),
   refresh() {
     accessStore.value = { ...accessStore.value };

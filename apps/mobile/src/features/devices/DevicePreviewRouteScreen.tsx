@@ -9,7 +9,7 @@ import { DeviceViewerResource, EnvironmentId, ThreadId } from "@t3tools/contract
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 import * as Cause from "effect/Cause";
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import * as Haptics from "expo-haptics";
 import { Accelerometer } from "expo-sensors";
 import { AppState, BackHandler, Pressable, StatusBar, View } from "react-native";

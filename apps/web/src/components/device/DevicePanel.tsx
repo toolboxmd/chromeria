@@ -45,7 +45,18 @@ export function DevicePanel(props: DevicePanelProps) {
   return resource === undefined ? (
     <LocalDevicePanel {...props} />
   ) : (
-    <QualifiedDevicePanel {...props} resource={resource} />
+    <QualifiedDevicePanel
+      key={JSON.stringify([
+        resource.environmentId,
+        resource.threadId,
+        resource.hostId,
+        resource.deviceId,
+        resource.toolSessionId,
+        resource.platform,
+      ])}
+      {...props}
+      resource={resource}
+    />
   );
 }
 function QualifiedDevicePanel(props: DevicePanelProps & { resource: DeviceViewerResource }) {
@@ -54,7 +65,7 @@ function QualifiedDevicePanel(props: DevicePanelProps & { resource: DeviceViewer
   const [captureError, setCaptureError] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
   const capture = useRef<AbortController | null>(null);
-  useEffect(() => () => capture.current?.abort(), [resource]);
+  useEffect(() => () => capture.current?.abort(), []);
   const screenshot = () => {
     if (handle === null || capture.current !== null || !props.visible) return;
     const controller = new AbortController();

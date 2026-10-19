@@ -541,16 +541,10 @@ apps/server/src/mcp/toolkits/environment/handlers.ts
 apps/server/src/mcp/toolkits/preview/handlers.test.ts
 apps/server/src/mcp/toolkits/preview/handlers.ts
 apps/server/src/mcp/toolkits/previewControls/handlers.ts
-apps/server/src/mcp/toolkits/pullRequests/handlers.test.ts
-apps/server/src/mcp/toolkits/pullRequests/handlers.ts
 apps/server/src/mcp/toolkits/worktree/handlers.ts
 apps/server/src/orchestration-v2/AttachmentClaims.ts
 apps/server/src/project/ManagedProjectFolders.test.ts
 apps/server/src/project/ManagedProjectFolders.ts
-apps/server/src/device/DeviceService.ts
-apps/mobile/src/features/threads/ThreadDetailScreen.tsx
-packages/client-runtime/src/state/models.ts
-packages/client-runtime/src/state/threadDetail.ts
 packages/client-runtime/src/state/threadShell.test.ts
 packages/client-runtime/src/state/threadShell.ts
 packages/shared/src/agentAwareness.test.ts
@@ -563,7 +557,6 @@ packages/client-runtime/src/t3ToolSummary.test.ts
 # Typed native device commands and supported-runtime inspection (peer-links).
 apps/server/src/device/DeviceToolchain.ts
 apps/server/src/mcp/McpDeviceToolkit.test.ts
-packages/contracts/src/device.ts
 apps/mobile/src/features/browser/BrowserPreviewRouteScreen.tsx
 apps/mobile/src/features/browser/PreviewStreamWebView.tsx
 apps/mobile/src/features/browser/preview-stream-document.ts
@@ -588,8 +581,7 @@ apps/server/src/preview/SessionControl.test.ts
 apps/server/src/preview/SessionControl.ts
 apps/web/src/browser/ServerBrowserSurface.tsx
 apps/web/src/browser/serverPictureInPicture.ts
-apps/web/src/components/device/DevicePanel.tsx
-apps/web/src/components/device/DeviceStreamView.test.tsx
+apps/web/src/components/device/DeviceStreamView.browser.test.tsx
 apps/web/src/components/device/DeviceStreamView.tsx
 apps/web/src/components/preview/PreviewPanel.tsx
 apps/web/src/components/preview/ThreadPreviewMiniPlayer.tsx

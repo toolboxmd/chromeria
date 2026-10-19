@@ -472,7 +472,8 @@ export function ServerBrowserSurface(props: {
     accessDenied,
     cap,
     clearInput,
-    environmentId,
+    props.resource,
+    refreshAccess,
     followSize,
     hostSetup,
     tabId,
@@ -485,7 +486,7 @@ export function ServerBrowserSurface(props: {
     // A failed ticket mint, e.g. while the server restarts, never retries on its own.
     const timer = setInterval(() => refreshAccess(), ACCESS_RETRY_MS);
     return () => clearInterval(timer);
-  }, [access, accessDenied, environmentId, visible]);
+  }, [access, accessDenied, refreshAccess, visible]);
 
   useEffect(() => {
     const canvas = canvasRef.current;

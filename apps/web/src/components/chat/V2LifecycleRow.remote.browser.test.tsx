@@ -220,14 +220,13 @@ it.each([false, true].flatMap((connected) => entries.map((entry) => ({ connected
     const onOpenThread = vi.fn();
     const common = { parentRef, subagentId: NodeId.make("remote-agent"), onOpenThread };
     await act(async () => {
-      renderer = create(
+      root.render(
         entry === "transcript" ? (
           <SubagentNotificationLink
             {...common}
             outcome="completed"
             createdAt="2026-09-16T12:02:00Z"
             timestampFormat="locale"
-            providerStatuses={[]}
             fallback={<span>fallback</span>}
           />
         ) : entry === "notification" ? (
@@ -250,7 +249,7 @@ it.each([false, true].flatMap((connected) => entries.map((entry) => ({ connected
       entry === "transcript" ? "Open Remote roast" : "Open subagent thread",
     )[0];
     expect(button).toBeDefined();
-    await act(async () => button!.props.onClick({ stopPropagation: vi.fn() }));
+    await act(async () => button!.click());
     expect(onOpenThread).not.toHaveBeenCalled();
     expect(state.queries).toContainEqual({
       environmentId: EnvironmentId.make("test"),
@@ -261,7 +260,7 @@ it.each([false, true].flatMap((connected) => entries.map((entry) => ({ connected
         textOffset: 0,
       },
     });
-    expect(JSON.stringify(renderer!.toJSON())).toContain("Read through A");
+    expect(container.textContent).toContain("Read through A");
   },
 );
 
@@ -286,14 +285,13 @@ it.each(
     const onOpenThread = vi.fn();
     const common = { parentRef, subagentId: NodeId.make("remote-agent"), onOpenThread };
     await act(async () => {
-      renderer = create(
+      root.render(
         entry === "transcript" ? (
           <SubagentNotificationLink
             {...common}
             outcome="completed"
             createdAt="2026-09-16T12:02:00Z"
             timestampFormat="locale"
-            providerStatuses={[]}
             fallback={<span>fallback</span>}
           />
         ) : entry === "notification" ? (
@@ -317,7 +315,7 @@ it.each(
     );
     expect(buttons.length).toBe(local || connected ? 1 : 0);
     if (buttons[0]) {
-      await act(async () => buttons[0]!.props.onClick({ stopPropagation: vi.fn() }));
+      await act(async () => buttons[0]!.click());
       if (local) expect(onOpenThread).toHaveBeenCalledWith(ThreadId.make("local-child"));
       else
         expect(onOpenThread).toHaveBeenCalledWith(

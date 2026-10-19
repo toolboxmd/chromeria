@@ -528,7 +528,8 @@ export const snapshot = async (
       Date.now() < deadline &&
       snapshotTurns.get(input.page) === turn &&
       !(cause instanceof Error && cause.message === VALUE_TOO_LONG)
-    ) return capture(input, deadline, authorize);
+    )
+      return capture(input, deadline, authorize);
     throw cause;
   });
   try {

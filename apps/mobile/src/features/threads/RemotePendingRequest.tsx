@@ -1,5 +1,5 @@
 import { RequestActionButton } from "./RequestActionButton";
-import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
+import { AppText as Text, AppTextInput as TextInput } from "../../components/ui/AppText";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";

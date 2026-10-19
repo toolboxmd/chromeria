@@ -122,6 +122,7 @@ import {
 } from "effect/http";
 import { RpcSerialization, RpcServer } from "effect/rpc";
 import * as Struct from "effect/Struct";
+import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as ForkWsRpc from "./forkWsRpc.ts";
 
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
@@ -563,8 +564,30 @@ function projectFileFailureContext(
 const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 
 // Middleware added later wraps middleware added earlier, so instrumentation wraps authorization.
-const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
-const CoreServerWsRpcGroup = ServerWsRpcGroup.omit(...ForkWsRpc.methods);
+export const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
+const NonForkServerWsRpcGroup = ServerWsRpcGroup.omit(...ForkWsRpc.methods);
+// Infer handler services per domain to stay within the compiler's instantiation budget.
+type CoreRpc = RpcGroup.Rpcs<typeof NonForkServerWsRpcGroup>;
+type OrchestrationRpc = Extract<
+  CoreRpc,
+  {
+    readonly _tag: (typeof ORCHESTRATION_V2_WS_METHODS)[keyof typeof ORCHESTRATION_V2_WS_METHODS];
+  }
+>;
+const orchestrationMethodSet = new Set<string>(Object.values(ORCHESTRATION_V2_WS_METHODS));
+const isOrchestrationRpc = (rpc: CoreRpc): rpc is OrchestrationRpc =>
+  orchestrationMethodSet.has(rpc._tag);
+const coreRpcs = Array.from(NonForkServerWsRpcGroup.requests.values());
+export const OrchestrationServerWsRpcGroup = RpcGroup.make(
+  ...coreRpcs.filter(isOrchestrationRpc),
+).annotateMerge(NonForkServerWsRpcGroup.annotations);
+export const CoreServerWsRpcGroup = RpcGroup.make(
+  ...coreRpcs.filter((rpc): rpc is Exclude<CoreRpc, OrchestrationRpc> => !isOrchestrationRpc(rpc)),
+).annotateMerge(NonForkServerWsRpcGroup.annotations);
+const orchestrationMethods = Array.from(
+  OrchestrationServerWsRpcGroup.requests.values(),
+  (rpc) => rpc._tag,
+);
 // Replaying each intervening event costs a shell refetch; past this gap a
 // single O(active-threads) snapshot is cheaper and bounded.
 const SHELL_RESUME_MAX_GAP = 1_000;
@@ -3214,8 +3237,11 @@ const layerWsRpc = (
             ),
           ),
       });
-      return Layer.merge(
-        CoreServerWsRpcGroup.toLayer(Struct.omit(handlers, ForkWsRpc.methods)),
+      return Layer.mergeAll(
+        CoreServerWsRpcGroup.toLayer(
+          Struct.omit(handlers, [...ForkWsRpc.methods, ...orchestrationMethods]),
+        ),
+        OrchestrationServerWsRpcGroup.toLayer(Struct.pick(handlers, orchestrationMethods)),
         ForkWsRpc.group.toLayer(Struct.pick(handlers, ForkWsRpc.methods)),
       );
     }),

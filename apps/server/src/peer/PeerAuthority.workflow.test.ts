@@ -18,7 +18,10 @@ import {
   NativeBrowserDownloadAssetResource,
   PeerAttachmentAssetResource,
   PreviewViewerAccess,
-  PreviewViewerClientRpcGroup,
+  WsRpcGroup,
+  ORCHESTRATION_V2_WS_METHODS,
+  OrchestrationV2CommandOutputFrame,
+  type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 class DeviceViewerTestApi extends HttpApi.make("environment").add(
   EnvironmentHttpApi.groups.devices,
@@ -35,7 +38,11 @@ import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpServer from "effect/http/HttpServer";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
-import { RpcServer, RpcSerialization } from "effect/rpc";
+import { RpcGroup, RpcServer, RpcSerialization } from "effect/rpc";
+import { CoreServerWsRpcGroup, OrchestrationServerWsRpcGroup, ServerWsRpcGroup } from "../ws.ts";
+import * as ForkWsRpc from "../forkWsRpc.ts";
+import { rpcInstrumentationLayer } from "../observability/RpcInstrumentation.ts";
+import * as CommandOutputHub from "../orchestration-v2/CommandOutputHub.ts";
 import {
   PendingRequestClientRpcGroup,
   DeviceViewerClientRpcGroup,
@@ -261,6 +268,34 @@ import type { McpThreadInvocationScope } from "../mcp/McpInvocationContext.ts";
 const instanceId = ProviderInstanceId.make("codex");
 const driver = ProviderDriverKind.make("codex");
 const selection = { instanceId, model: "gpt-5.4" };
+// These are the actual production RPC objects, including their middleware.
+// This finite fixture exercises representative owners, not the complete Ws.layer.
+const nativeOwnerRpcGroup = RpcGroup.make(
+  ...Array.from(CoreServerWsRpcGroup.requests.values()).filter(
+    (
+      rpc,
+    ): rpc is Extract<
+      RpcGroup.Rpcs<typeof CoreServerWsRpcGroup>,
+      { readonly _tag: typeof WS_METHODS.peerLinksList }
+    > => rpc._tag === WS_METHODS.peerLinksList,
+  ),
+  ...Array.from(OrchestrationServerWsRpcGroup.requests.values()).filter(
+    (
+      rpc,
+    ): rpc is Extract<
+      RpcGroup.Rpcs<typeof OrchestrationServerWsRpcGroup>,
+      { readonly _tag: typeof ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput }
+    > => rpc._tag === ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput,
+  ),
+  ...Array.from(ForkWsRpc.group.requests.values()).filter(
+    (
+      rpc,
+    ): rpc is Extract<
+      RpcGroup.Rpcs<typeof ForkWsRpc.group>,
+      { readonly _tag: typeof WS_METHODS.previewViewerOpen | typeof WS_METHODS.previewViewerClose }
+    > => rpc._tag === WS_METHODS.previewViewerOpen || rpc._tag === WS_METHODS.previewViewerClose,
+  ),
+);
 const decodeSavedPngReceipt = Schema.decodeUnknownEffect(McpSavedSnapshotReceipt);
 const decodeScheduledTaskList = Schema.decodeUnknownEffect(
   OrchestratorToolkit.tools.list_scheduled_tasks.successSchema,
@@ -388,9 +423,7 @@ const makeNode = (
     const enrichment = ProjectEnrichment.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
-          Layer.succeed(RepositoryIdentity.RepositoryIdentityResolver, {
-            resolve: () => Effect.succeed(null),
-          }),
+          RepositoryIdentity.layer,
           Layer.succeed(ProjectFavicon.ProjectFaviconResolver, {
             resolvePath: () => Effect.succeed(null),
           }),
@@ -453,17 +486,28 @@ const makeNode = (
         }),
       ),
       Layer.provide(projectLayer),
+      Layer.provide(RepositoryIdentity.layer),
       Layer.provide(nodeConfig),
       Layer.provide(settings),
       Layer.provide(db),
     );
-    const runtime = yield* productionKernel
+    // Both kernels retain their full context; consumers require this shared native surface.
+    const runtime: Context.Context<
+      | EffectOutbox.EffectOutboxV2
+      | EventSink.EventSinkV2
+      | EffectWorker.OrchestrationEffectWorkerV2
+      | Orchestrator.OrchestratorV2
+      | ProjectionStore.ProjectionStoreV2
+      | ProviderSessionManager.ProviderSessionManagerV2
+      | Threads.ThreadManagementService
+    > = yield* productionKernel
       ? production.pipe(Layer.fresh, Layer.build)
       : Runtime.layerWithRegistry(
           { name: `peer-authority-${descriptor.label}` },
           Adapters.layerFromAdapters([adapter]),
           { databaseLayer: db, runEffectWorker: false },
         ).pipe(Layer.fresh, Layer.build);
+    const commandOutput = Context.getOption(runtime, CommandOutputHub.CommandOutputHub);
     if (productionKernel)
       yield* Effect.flatMap(ProjectStore.ProjectStoreV2, (projects) =>
         projects.apply({
@@ -516,7 +560,11 @@ const makeNode = (
         };
       }),
     ).pipe(Layer.provide(PeerNoticeDelivery.layer));
-    const baseServices = yield* Layer.mergeAll(noticeDelivery, PeerAuthority.layer).pipe(
+    const baseServices = yield* Layer.mergeAll(
+      noticeDelivery,
+      PeerAuthority.layer,
+      RepositoryIdentity.layer,
+    ).pipe(
       Layer.provideMerge(PeerLinks.layer),
       Layer.provideMerge(Secrets.layer),
       Layer.provide(Layer.succeedContext(runtime)),
@@ -628,7 +676,7 @@ const makeNode = (
           Layer.provide(db),
           Layer.provide(nodeConfig),
           Layer.provide(projectLayer),
-          Layer.provide(Layer.mock(RepositoryIdentity.RepositoryIdentityResolver)({})),
+          Layer.provide(RepositoryIdentity.layer),
           Layer.provide(environment),
           Layer.provide(FetchHttpClient.layer),
           Layer.fresh,
@@ -752,6 +800,7 @@ const makeNode = (
       yield* CheckStore.ensureCheckSchema.pipe(Effect.provide(db));
     }
     const spectrumLayer = SpectrumLaunch.layer.pipe(
+      Layer.provide(Adapters.layerFromAdapters([adapter])),
       Layer.provide(Prism.layer.pipe(Layer.provide(settings), Layer.provide(layerLaunchCatalog))),
       Layer.provide(ProjectStore.layer.pipe(Layer.provide(db))),
       Layer.provide(launchDependencies),
@@ -1486,6 +1535,7 @@ const makeNode = (
       ),
     }).pipe(Effect.provide(Layer.succeedContext(serverContext)));
     let nativeViewerRpcUrl: string | undefined;
+    const nativeCommandOutputFinalized = yield* Queue.unbounded<ThreadId>();
     if (previewControls !== undefined) {
       const http = yield* sourceHttp.pipe(Layer.fresh, Layer.build);
       const address = Context.get(http, HttpServer.HttpServer).address;
@@ -1501,22 +1551,53 @@ const makeNode = (
               const request = yield* HttpServerRequest.HttpServerRequest;
               const session = yield* peer.auth.authenticateWebSocketUpgrade(request);
               const { protocol, httpEffect } = yield* RpcServer.makeProtocolWithHttpEffectWebsocket;
-              yield* RpcServer.make(PreviewViewerClientRpcGroup, {
+              yield* RpcServer.make(nativeOwnerRpcGroup, {
                 disableTracing: true,
                 disableFatalDefects: true,
               }).pipe(
                 Effect.provideService(RpcServer.Protocol, protocol),
                 Effect.provide(
-                  Layer.merge(
-                    PreviewViewerClientRpcGroup.toLayer(
-                      BrowserStream.clientHandlers(session, fixtureBrowserViewers!),
-                    ),
+                  Layer.mergeAll(
+                    nativeOwnerRpcGroup.toLayer({
+                      ...BrowserStream.clientHandlers(session, fixtureBrowserViewers!),
+                      [WS_METHODS.peerLinksList]: () =>
+                        Context.get(services, PeerLinks.PeerLinks).list.pipe(
+                          Effect.map((links) => ({ links })),
+                        ),
+                      [ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput]: (input) =>
+                        Stream.unwrap(
+                          Effect.annotateCurrentSpan({
+                            "orchestration_v2.thread_id": input.threadId,
+                          }).pipe(
+                            Effect.as(
+                              Option.getOrThrow(commandOutput)
+                                .subscribe(input)
+                                .pipe(
+                                  Stream.ensuring(
+                                    Queue.offer(nativeCommandOutputFinalized, input.threadId),
+                                  ),
+                                ),
+                            ),
+                          ),
+                        ),
+                    }),
                     RpcAuthorization.layer(session.scopes),
+                    rpcInstrumentationLayer,
                   ),
                 ),
                 Effect.forkScoped,
               );
-              return yield* httpEffect;
+              return yield* Effect.acquireUseRelease(
+                fixtureBrowserViewerSessions!.markConnected(session.sessionId),
+                () =>
+                  Effect.raceFirst(
+                    httpEffect,
+                    fixtureBrowserViewerSessions!
+                      .awaitInvalidation(session.sessionId)
+                      .pipe(Effect.as(HttpServerResponse.empty())),
+                  ),
+                () => fixtureBrowserViewerSessions!.markDisconnected(session.sessionId),
+              );
             }),
           );
         }),
@@ -1635,6 +1716,8 @@ const makeNode = (
       fixtureDevice,
       fixtureViewers,
       nativeViewerRpcUrl,
+      nativeCommandOutputFinalized,
+      commandOutput: Option.getOrUndefined(commandOutput),
       fixtureBrowserViewers,
       fixtureBrowserViewerSessions,
       fixtureViewerSessions,
@@ -1709,7 +1792,7 @@ const makeNode = (
       forwarding: Context.get(services, PeerForwarding.PeerForwarding),
       remote: Context.get(services, RemoteDelegation.RemoteDelegation),
     };
-  });
+  }).pipe(Effect.provide(RepositoryIdentity.layer));
 type Node = Effect.Success<ReturnType<typeof makeNode>>;
 
 // Native CDP/file callbacks use promises; execute their effects on the owning
@@ -1742,6 +1825,7 @@ it.live(
         const parent = ThreadId.make("scheduler-replay382-parent");
         yield* seedParent(node, parent);
         const input = {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           prompt: "Original isolated schedule intent",
           title: "Original title",
           schedule: { type: "interval", everyMs: 60_000 },
@@ -1753,6 +1837,7 @@ it.live(
           Schema.Struct({ scheduledTaskId: Schema.String }),
         )(first.structuredContent);
         const later = yield* nativeCall(node, parent, "update_scheduled_task", {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           scheduledTaskId: result.scheduledTaskId,
           title: "Later independent title",
           clientRequestId: "scheduler-replay382-later-edit",
@@ -1784,6 +1869,7 @@ it.live(
         const firstPrivate = "ISOLATED_SCHEDULE_PROMPT_382_ALPHA_NEVER_IN_RECEIPTS";
         const changedPrivate = "ISOLATED_SCHEDULE_PROMPT_382_BETA_CHANGED_INPUT";
         const create = {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           prompt: firstPrivate,
           title: "Original",
           schedule: { type: "interval", everyMs: 60_000 },
@@ -1815,6 +1901,7 @@ it.live(
         ]);
         const id = receipt.scheduledTaskId;
         const edit1 = {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           scheduledTaskId: id,
           title: "First edit",
           prompt: "Independent prompt",
@@ -1823,6 +1910,7 @@ it.live(
           clientRequestId: "history382-edit1",
         };
         const edit2 = {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           scheduledTaskId: id,
           title: "Second edit",
           checkCommand: "test -f isolated-second",
@@ -1891,11 +1979,13 @@ it.live(
         const rivalEdits = yield* Effect.all(
           [
             nativeCall(active, parent, "update_scheduled_task", {
+              purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
               scheduledTaskId: id,
               title: "Rival A",
               clientRequestId: "history382-rival-a",
             }),
             nativeCall(active, parent, "update_scheduled_task", {
+              purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
               scheduledTaskId: id,
               prompt: "ISOLATED_RIVAL_PRIVATE_PROMPT_382",
               clientRequestId: "history382-rival-b",
@@ -1909,6 +1999,7 @@ it.live(
         expect(rivalTask?.prompt).toBe("ISOLATED_RIVAL_PRIVATE_PROMPT_382");
         expect(yield* sql`SELECT * FROM scheduled_mutation_receipts`).toHaveLength(5);
         const failure = yield* nativeCall(active, parent, "update_scheduled_task", {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           scheduledTaskId: id,
           schedule: { type: "once", at: "2000-01-01T00:00:00.000Z" },
           clientRequestId: "history382-before-commit",
@@ -1990,6 +2081,7 @@ it.live(
         const firstHex = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         yield* seed(firstHex);
         const input = {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           environmentId: b.environmentId,
           projectId: b.project.id,
           title: "Webhook",
@@ -2201,7 +2293,6 @@ it.live(
         const capabilities = new Set(["orchestration", "worktree"] as const);
         const input = {
           branch: "worktree382-accepted",
-          path: `${root}/accepted`,
           baseRef: "main",
           startFromOrigin: false,
           runSetupScript: false,
@@ -2209,11 +2300,17 @@ it.live(
         };
         const first = yield* nativeCall(node, parent, "t3_worktree_handoff", input, capabilities);
         expect(first.isError, json(first)).not.toBe(true);
-        yield* fs.writeFileString(`${root}/accepted/README.md`, "Later independent edit");
+        const accepted = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ worktreePath: Schema.String }),
+        )(first.structuredContent);
+        expect((yield* node.threads.getThreadShell(parent))?.worktreePath).toBe(
+          accepted.worktreePath,
+        );
+        yield* fs.writeFileString(`${accepted.worktreePath}/README.md`, "Later independent edit");
         const replay = yield* nativeCall(node, parent, "t3_worktree_handoff", input, capabilities);
         expect(replay.isError, json(replay)).not.toBe(true);
         expect(replay.structuredContent).toEqual(first.structuredContent);
-        expect(yield* fs.readFileString(`${root}/accepted/README.md`)).toBe(
+        expect(yield* fs.readFileString(`${accepted.worktreePath}/README.md`)).toBe(
           "Later independent edit",
         );
         const next = ThreadId.make("worktree382-ambiguous-parent");
@@ -2222,7 +2319,6 @@ it.live(
         const ambiguousInput = {
           ...input,
           branch: "worktree382-ambiguous",
-          path: `${root}/ambiguous`,
           clientRequestId: "worktree382-lost-native-reply",
         };
         const lost = yield* nativeCall(
@@ -2234,7 +2330,11 @@ it.live(
         );
         expect(lost.isError).toBe(true);
         expect(json(lost)).toContain("outcome_unknown");
-        expect(yield* fs.exists(`${root}/ambiguous/README.md`)).toBe(true);
+        const ambiguousPath = (yield* node.threads.getThreadShell(next))?.worktreePath;
+        if (ambiguousPath == null)
+          throw new Error("Expected the native worktree binding after reply loss");
+        expect(ambiguousPath).not.toBe(accepted.worktreePath);
+        expect(yield* fs.exists(`${ambiguousPath}/README.md`)).toBe(true);
         const again = yield* nativeCall(
           node,
           next,
@@ -2244,8 +2344,8 @@ it.live(
         );
         expect(again.isError).toBe(true);
         expect(json(again)).toContain("native_binding_accepted");
-        expect((yield* node.threads.getThreadShell(next))?.worktreePath).toBe(`${root}/ambiguous`);
-        expect(yield* fs.exists(`${root}/ambiguous/README.md`)).toBe(true);
+        expect((yield* node.threads.getThreadShell(next))?.worktreePath).toBe(ambiguousPath);
+        expect(yield* fs.exists(`${ambiguousPath}/README.md`)).toBe(true);
         const sql = Context.get(node.database, SqlClient.SqlClient);
         expect(
           yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE command_type='thread.metadata.update' AND command_id LIKE 'worktree-handoff:%'`,
@@ -2289,6 +2389,7 @@ it.live(
         const parent = ThreadId.make("manual382-command-parent");
         yield* seedParent(node, parent);
         const scheduled = yield* nativeCall(node, parent, "schedule_task", {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           prompt: "Isolated external command",
           command: "isolated-external-boundary-382",
           title: "One command",
@@ -4403,6 +4504,7 @@ it.live(
         const parent = ThreadId.make("manual382-parent");
         yield* seedParent(node, parent);
         const { task } = yield* node.scheduled.upsert({
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           commandId: CommandId.make("manual382-schedule"),
           title: "One native action",
           prompt: "Isolated manual work",
@@ -4490,6 +4592,7 @@ it.live(
         expect(denied._tag).toBe("Failure");
         yield* node.scheduled.delete({ id: task.id });
         yield* node.scheduled.upsert({
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           id: task.id,
           title: "Replacement",
           prompt: "Other action",
@@ -6128,6 +6231,7 @@ it.live(
           { runtimeMode: "auto", interactionMode: "plan" },
         ] as const) {
           const fixture = yield* b.scheduled.upsert({
+            purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
             title: `Legacy ${modes.runtimeMode}/${modes.interactionMode}`,
             prompt: "Never executed",
             enabled: false,
@@ -6964,6 +7068,7 @@ it.live(
             });
           }
           const fixture = yield* b.scheduled.upsert({
+            purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
             title: `fixture-${key}`,
             prompt: "Not executed",
             enabled: false,
@@ -6978,6 +7083,7 @@ it.live(
             creationSource: "web",
           });
           const created = yield* nativeCall(b, child, "schedule_task", {
+            purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
             title: `created-${key}`,
             prompt: "Not executed",
             enabled: false,
@@ -6986,6 +7092,7 @@ it.live(
             clientRequestId: `r2-schedule-${key}`,
           });
           const updated = yield* nativeCall(b, child, "update_scheduled_task", {
+            purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
             scheduledTaskId: fixture.task.id,
             title: `updated-${key}`,
           });
@@ -7624,6 +7731,7 @@ it.live.each([
             (grant) => grant.environmentId === source.environmentId,
           )!;
           const created = yield* b.scheduled.upsert({
+            purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
             title: `Webhook ${source.environmentId}`,
             prompt: "Not executed",
             enabled: false,
@@ -8491,6 +8599,7 @@ it.live("legacy direct full access keeps unstamped schedule operations and the t
         config: { ...native.config, endpoint: `${b.url}/mcp`, authorizationHeader },
       };
       const fixture = yield* b.scheduled.upsert({
+        purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
         title: "Unstamped legacy fixture",
         prompt: "Not executed",
         enabled: false,
@@ -8509,6 +8618,7 @@ it.live("legacy direct full access keeps unstamped schedule operations and the t
         unrelated,
         "update_scheduled_task",
         {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           scheduledTaskId: fixture.task.id,
           title: "Direct legacy updated",
         },
@@ -8824,6 +8934,7 @@ it.live(
         yield* activate(b, child);
         expect((yield* b.authority.checkThread(child))?.ceiling.runtimeMode).toBe("auto");
         const fixture = yield* b.scheduled.upsert({
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           title: "Full access webhook",
           prompt: "Never executed",
           enabled: false,
@@ -8858,6 +8969,7 @@ it.live(
         expect((yield* b.authority.checkThread(child))?.ceiling.runtimeMode).toBe("auto");
         const elevated = yield* list();
         const write = yield* nativeCall(b, child, "update_scheduled_task", {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           scheduledTaskId: fixture.task.id,
           title: "Forbidden higher-mode edit",
         });
@@ -8910,6 +9022,7 @@ it.live(
         yield* activate(b, child);
         expect((yield* b.authority.checkThread(child))?.ceiling.runtimeMode).toBe("full-access");
         const fixture = yield* b.scheduled.upsert({
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           title: "Full access webhook",
           prompt: "Never executed",
           enabled: false,
@@ -8944,6 +9057,7 @@ it.live(
         expect((yield* b.authority.checkThread(child))?.ceiling.runtimeMode).toBe("auto");
         const elevated = yield* list();
         const write = yield* nativeCall(b, child, "update_scheduled_task", {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           scheduledTaskId: fixture.task.id,
           title: "Forbidden higher-mode edit",
         });
@@ -11116,6 +11230,7 @@ it.live(
           });
           expect(renamed.isError, json(renamed)).not.toBe(true);
           const scheduled = yield* nativeCall(node, thread, "schedule_task", {
+            purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
             title: "Independent task",
             prompt: "Independent prompt",
             bindToCurrentThread: true,
@@ -11191,6 +11306,7 @@ it.live(
         const parent = ThreadId.make("reviewer382-rivals-parent");
         yield* seedParent(node, parent);
         const created = yield* nativeCall(node, parent, "schedule_task", {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           prompt: "Original prompt",
           title: "Original title",
           schedule: { type: "interval", everyMs: 60000 },
@@ -11217,11 +11333,13 @@ it.live(
         const results = yield* Effect.all(
           [
             nativeCall(node, parent, "update_scheduled_task", {
+              purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
               scheduledTaskId: receipt.scheduledTaskId,
               title: "Title A",
               clientRequestId: "reviewer-rival-a",
             }),
             nativeCall(node, parent, "update_scheduled_task", {
+              purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
               scheduledTaskId: receipt.scheduledTaskId,
               prompt: "Prompt B",
               clientRequestId: "reviewer-rival-b",
@@ -11260,6 +11378,7 @@ it.live(
         const parent = ThreadId.make("runtime382-parent");
         yield* seedParent(a, parent);
         const input = {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           environmentId: b.environmentId,
           projectId: b.project.id,
           title: "Original title",
@@ -11284,6 +11403,7 @@ it.live(
           }),
         );
         const update = yield* nativeCall(a, parent, "update_scheduled_task", {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           environmentId: b.environmentId,
           scheduledTaskId: receipt.scheduledTaskId,
           title: "Later independent title",
@@ -11330,6 +11450,7 @@ it.live(
         yield* seedParent(a, parent);
         yield* seedParent(b, target);
         const created = yield* nativeCall(b, target, "schedule_task", {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           title: "Manual target",
           prompt: "One queued message",
           bindToCurrentThread: true,
@@ -11479,6 +11600,7 @@ it.live(
         const parent = ThreadId.make("fence382-parent");
         yield* seedParent(node, parent);
         const created = yield* nativeCall(node, parent, "schedule_task", {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           title: "Original title",
           prompt: "Original prompt",
           enabled: false,
@@ -11502,6 +11624,7 @@ it.live(
           }),
         );
         const pending = yield* nativeCall(node, parent, "update_scheduled_task", {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           scheduledTaskId: receipt.scheduledTaskId,
           title: "Must not overwrite",
           clientRequestId: "fence382-update",
@@ -11922,6 +12045,7 @@ it.live(
         yield* seedParent(a, parent);
         yield* seedParent(a, other);
         const create = {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           environmentId: b.environmentId,
           projectId: b.project.id,
           title: "Original",
@@ -11936,6 +12060,7 @@ it.live(
           first.structuredContent,
         );
         const edit = {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           environmentId: b.environmentId,
           scheduledTaskId: receipt.scheduledTaskId,
           title: "Later",
@@ -12065,6 +12190,7 @@ it.live(
         const second = yield* delegate(b, c, first.childId, "history-chain382-b-c");
         yield* activate(c, second.childId);
         const create = {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           title: "Original downstream acceptance",
           prompt: "Isolated chain fixture",
           enabled: false,
@@ -12249,6 +12375,7 @@ it.live(
         yield* seedParent(c, other);
         yield* seedParent(b, local);
         const fields = {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           title: "Original",
           prompt: "Do nothing",
           enabled: false,
@@ -12355,6 +12482,7 @@ it.live(
         yield* seedParent(c, other);
         yield* seedParent(b, local);
         const fields = {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           title: "Original",
           prompt: "Do nothing",
           enabled: false,
@@ -14112,6 +14240,8 @@ it.live(
         });
         expect(launched.isError, json(launched.content)).not.toBe(true);
         const local = yield* decodePending369LocalTask(launched.structuredContent);
+        if ("groupId" in local)
+          return yield* Effect.die("Expected one native local child, received a Run group");
         if (local.childThreadId === null)
           return yield* Effect.die("Expected a real native local child");
         expect((yield* a.threads.getThreadShell(local.childThreadId))?.lineage).toMatchObject({
@@ -17980,4 +18110,258 @@ it.live(
         expect(retired.status).toBe(401);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+);
+
+it("native383-rpc-groups: production partitions preserve the complete public method schemas and middleware", () => {
+  const groups = [CoreServerWsRpcGroup, OrchestrationServerWsRpcGroup, ForkWsRpc.group];
+  const registered = [
+    ...CoreServerWsRpcGroup.requests.values(),
+    ...OrchestrationServerWsRpcGroup.requests.values(),
+    ...ForkWsRpc.group.requests.values(),
+  ];
+  expect(new Set(registered.map((rpc) => rpc._tag)).size).toBe(registered.length);
+  expect(registered.map((rpc) => rpc._tag).sort()).toEqual(
+    Array.from(WsRpcGroup.requests.keys()).sort(),
+  );
+  for (const group of groups) {
+    expect(group.annotations).toEqual(ServerWsRpcGroup.annotations);
+    for (const rpc of group.requests.values()) {
+      const original = ServerWsRpcGroup.requests.get(rpc._tag)!;
+      expect(rpc.payloadSchema).toBe(original.payloadSchema);
+      expect(rpc.successSchema).toBe(original.successSchema);
+      expect(rpc.errorSchema).toBe(original.errorSchema);
+      expect(rpc.defectSchema).toBe(original.defectSchema);
+      expect(rpc.annotations).toEqual(original.annotations);
+      expect(rpc.middlewares).toEqual(original.middlewares);
+      if (group !== ForkWsRpc.group) expect(rpc).toBe(original);
+    }
+  }
+});
+
+it.live(
+  "native383-rpc-groups: native authenticated core and real command output stream enforce scopes and finalize on session retirement",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent } = yield* typed383Pair("native383-rpc-groups", false, false, {
+          source: false,
+          destination: false,
+          destinationBrowser: true,
+        });
+        const now = yield* DateTime.now;
+        const itemId = TurnItemId.make("native383-rpc-command");
+        const item = {
+          id: itemId,
+          threadId: parent,
+          runId: null,
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 100,
+          title: null,
+          startedAt: now,
+          completedAt: null,
+          updatedAt: now,
+          type: "command_execution",
+          input: "deterministic external output",
+          status: "running",
+        } satisfies OrchestrationV2TurnItem;
+        yield* a.sink.write({
+          events: [
+            {
+              id: EventId.make("native383-rpc-command-start"),
+              type: "turn-item.updated",
+              threadId: parent,
+              occurredAt: now,
+              payload: item,
+            },
+          ],
+        });
+        yield* a.commandOutput!.append({ threadId: parent, itemId, chunk: "first native chunk\n" });
+        const decodeReply = Schema.decodeUnknownEffect(
+          Schema.fromJsonString(
+            Schema.Struct({
+              _tag: Schema.String,
+              requestId: Schema.optionalKey(Schema.String),
+              values: Schema.optionalKey(Schema.Array(OrchestrationV2CommandOutputFrame)),
+              exit: Schema.optionalKey(
+                Schema.Struct({
+                  _tag: Schema.String,
+                  value: Schema.optionalKey(Schema.Unknown),
+                  cause: Schema.optionalKey(Schema.Unknown),
+                }),
+              ),
+            }),
+          ),
+        );
+        const connect = (
+          scopes: ReadonlyArray<import("@t3tools/contracts").AuthEnvironmentScope>,
+        ) =>
+          Effect.gen(function* () {
+            const owner = yield* a.auth.issueSession({ scopes });
+            const authenticated = yield* a.auth.authenticateHttpRequest(
+              HttpServerRequest.fromWeb(
+                new Request(a.url, { headers: { authorization: `Bearer ${owner.token}` } }),
+              ),
+            );
+            const ticket = yield* a.auth.issueWebSocketTicket(authenticated);
+            const messages = yield* Queue.unbounded<string>();
+            const closed = Promise.withResolvers<void>();
+            const socket = yield* Effect.acquireRelease(
+              Effect.tryPromise({
+                try: () =>
+                  new Promise<WebSocket>((resolve, reject) => {
+                    const ws = new WebSocket(
+                      `${a.nativeViewerRpcUrl}/ws?wsTicket=${encodeURIComponent(ticket.ticket)}`,
+                    );
+                    ws.addEventListener("message", (event) =>
+                      Queue.offerUnsafe(messages, String(event.data)),
+                    );
+                    ws.addEventListener("open", () => resolve(ws), { once: true });
+                    ws.addEventListener(
+                      "error",
+                      () => reject(new Error("Native owner RPC refused")),
+                      { once: true },
+                    );
+                    ws.addEventListener("close", () => closed.resolve(), { once: true });
+                  }),
+                catch: (cause) =>
+                  new OrchestratorMcpFailure({
+                    code: "orchestration_error",
+                    message: String(cause),
+                  }),
+              }),
+              (ws) => Effect.sync(() => ws.close()),
+            );
+            return {
+              owner,
+              authenticated,
+              closed,
+              send: (id: string, tag: string, payload: unknown) =>
+                Effect.sync(() => {
+                  socket.send(json({ _tag: "Request", id, tag, payload, headers: [] }));
+                }),
+              next: Queue.take(messages).pipe(
+                Effect.flatMap(decodeReply),
+                Effect.tap((reply) =>
+                  reply._tag === "Chunk"
+                    ? Effect.sync(() =>
+                        socket.send(json({ _tag: "Ack", requestId: reply.requestId })),
+                      )
+                    : Effect.void,
+                ),
+              ),
+            };
+          });
+        const denied = yield* connect(["preview:operate"]);
+        yield* denied.send("1", WS_METHODS.peerLinksList, {});
+        const coreDenied = yield* denied.next;
+        expect(coreDenied.exit?._tag).toBe("Failure");
+        expect(json(coreDenied)).toContain("access:read");
+        yield* denied.send("2", ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput, {
+          threadId: parent,
+          itemId,
+        });
+        const streamDenied = yield* denied.next;
+        expect(streamDenied.exit?._tag).toBe("Failure");
+        expect(json(streamDenied)).toContain("orchestration:read");
+        const allowed = yield* connect(["access:read", "orchestration:read"]);
+        yield* allowed.send("1", WS_METHODS.peerLinksList, {});
+        const core = yield* allowed.next;
+        expect(core.exit?._tag).toBe("Success");
+        expect(core.exit?.value).toMatchObject({
+          links: [{ environmentId: b.environmentId, label: "B", status: "reachable" }],
+        });
+        expect(json(core)).not.toContain("launchIdentity");
+        yield* allowed.send("2", ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput, {
+          threadId: parent,
+          itemId,
+        });
+        const first = yield* allowed.next;
+        expect(first._tag).toBe("Chunk");
+        expect(first.requestId).toBe("2");
+        expect(first.values).toEqual([
+          { kind: "replace", text: "first native chunk\n", truncated: false, running: true },
+        ]);
+        yield* a.commandOutput!.append({
+          threadId: parent,
+          itemId,
+          chunk: "second native chunk\n",
+        });
+        const append = yield* allowed.next;
+        expect(append._tag).toBe("Chunk");
+        expect(append.values).toEqual([
+          { kind: "append", text: "second native chunk\n", truncated: false, running: true },
+        ]);
+        yield* a.sink.write({
+          events: [
+            {
+              id: EventId.make("native383-rpc-command-finish"),
+              type: "turn-item.updated",
+              threadId: parent,
+              occurredAt: now,
+              payload: {
+                ...item,
+                status: "completed",
+                completedAt: now,
+                output: "persisted final native output",
+              },
+            },
+          ],
+        });
+        yield* a.commandOutput!.finish({ threadId: parent, itemId });
+        const final = yield* allowed.next;
+        expect(final._tag).toBe("Chunk");
+        expect(final.values).toEqual([
+          {
+            kind: "replace",
+            text: "persisted final native output",
+            truncated: false,
+            running: false,
+          },
+        ]);
+        expect((yield* allowed.next).exit?._tag).toBe("Success");
+        expect(yield* Queue.take(a.nativeCommandOutputFinalized)).toBe(parent);
+        const liveItemId = TurnItemId.make("native383-rpc-command-retire");
+        yield* a.sink.write({
+          events: [
+            {
+              id: EventId.make("native383-rpc-command-retire-start"),
+              type: "turn-item.updated",
+              threadId: parent,
+              occurredAt: now,
+              payload: { ...item, id: liveItemId, ordinal: 101 },
+            },
+          ],
+        });
+        yield* allowed.send("3", ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput, {
+          threadId: parent,
+          itemId: liveItemId,
+        });
+        expect((yield* allowed.next).values?.[0]?.running).toBe(true);
+        // Revoke through the same native session owner used by the production-style socket lifetime.
+        expect(yield* a.fixtureBrowserViewerSessions!.revoke(allowed.owner.sessionId)).toBe(true);
+        yield* Effect.promise(() => allowed.closed.promise);
+        expect(yield* Queue.take(a.nativeCommandOutputFinalized)).toBe(parent);
+        // Ticket minting is not admission. The real upgrade owner must reject the retired session.
+        const retiredTicket = yield* a.auth.issueWebSocketTicket(allowed.authenticated);
+        const retired = yield* a.auth
+          .authenticateWebSocketUpgrade(
+            HttpServerRequest.fromWeb(
+              new Request(
+                `${a.nativeViewerRpcUrl!.replace(/^ws/, "http")}/ws?wsTicket=${encodeURIComponent(retiredTicket.ticket)}`,
+              ),
+            ),
+          )
+          .pipe(Effect.result);
+        expect(retired._tag).toBe("Failure");
+        yield* a.commandOutput!.append({
+          threadId: parent,
+          itemId: liveItemId,
+          chunk: "after retirement",
+        });
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
 );

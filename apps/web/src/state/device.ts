@@ -1,4 +1,4 @@
-import { useId, useMemo } from "react";
+import { useId } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import { createDeviceEnvironmentAtoms } from "@t3tools/client-runtime/state/device";
 import {
@@ -76,13 +76,10 @@ export function useDeviceHubAccessState(
         ? deviceEnvironment.viewerAccess({ environmentId, input: viewerInput, viewerKey })
         : deviceHubAccessAtom(environmentId),
   );
-  const access = useMemo(
-    () =>
-      query.isSuccess && query.data !== null
-        ? { ...query.data, query: { ...query.data.query, hostId } }
-        : null,
-    [query.isSuccess, query.data, hostId],
-  );
+  const access =
+    query.isSuccess && query.data !== null
+      ? { ...query.data, query: { ...query.data.query, hostId } }
+      : null;
   return { access, error: query.error, refresh: query.refresh };
 }
 
