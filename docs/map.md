@@ -87,7 +87,7 @@ flowchart TD
     %% WRF: #444 PR #502
     WR --- WRF
     WRS["Locale and site search"]
-    %% WRS: #445
+    %% WRS: #445 PR #505
     WR --- WRS
     WRR["Headless page rendering"]
     %% WRR: #442
