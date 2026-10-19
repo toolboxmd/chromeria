@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { BrowserProfileId, EnvironmentId, PreviewTabId, ThreadId } from "@t3tools/contracts";
 
 const ProviderCall = Schema.Struct({
   endpoint: Schema.Literal("tinyfish.web.fetch"),
@@ -13,7 +14,14 @@ const ProviderError = Schema.Struct({
 });
 
 const Hash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
-const CacheId = Schema.String.check(Schema.isPattern(/^(?:tinyfish:)?[a-f0-9]{64}$/));
+const CacheId = Schema.String.check(Schema.isPattern(/^(?:(?:tinyfish|session):)?[a-f0-9]{64}$/));
+
+export const SessionSelection = Schema.Struct({
+  environmentId: EnvironmentId,
+  profileId: BrowserProfileId,
+  tabId: PreviewTabId,
+  contextThreadId: Schema.optional(ThreadId),
+});
 
 export const WebReadInput = Schema.Struct({
   url: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096))),
@@ -70,10 +78,17 @@ export const WebReadPage = Schema.Struct({
   url: Schema.String,
   finalUrl: Schema.String,
   fetchedAt: Schema.String,
-  rung: Schema.Literals(["http", "render", "tinyfish", "cache"]),
+  rung: Schema.Literals(["http", "render", "tinyfish", "cache", "session"]),
   cacheStorage: Schema.Literals(["persistent", "memory"]),
   cacheExpiresAt: Schema.String,
-  sourceRung: Schema.Literals(["http", "render", "tinyfish"]),
+  sourceRung: Schema.Literals(["http", "render", "tinyfish", "session"]),
+  session: Schema.optional(
+    Schema.Struct({
+      environmentId: EnvironmentId,
+      profileId: BrowserProfileId,
+      tabId: PreviewTabId,
+    }),
+  ),
   providerCall: Schema.optional(ProviderCall),
   providerError: Schema.optional(ProviderError),
   status: PageStatus,
