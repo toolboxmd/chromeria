@@ -21,10 +21,12 @@ import {
   ThreadId,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ThreadProjection,
+  type ScheduledTaskUpsertInput,
   type ServerProvider,
 } from "@t3tools/contracts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as DateTime from "effect/DateTime";
+import * as TestClock from "effect/testing/TestClock";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -3485,5 +3487,274 @@ describe("OrchestratorMcpService thread stop", () => {
         }).pipe(Effect.provide(layerTest));
       }),
     ),
+  );
+});
+
+describe("schedule task thread binding", () => {
+  const NOW = Date.parse("2026-10-19T12:00:00.000Z");
+  const windowMs = 55 * 60 * 1_000;
+  const projectId = ProjectId.make("project:mcp-test");
+  const otherProjectId = ProjectId.make("project:schedule-other");
+  const parentThreadId = ThreadId.make("thread:schedule-parent");
+  const parent = idleThreadProjection(liveThreadShell(parentThreadId));
+  const scope: McpInvocationScope = {
+    environmentId: EnvironmentId.make("environment:schedule-bind"),
+    requestNamespace: "provider-session:schedule-bind",
+    thread: {
+      threadId: parentThreadId,
+      providerSessionId: "provider-session:schedule-bind",
+      providerInstanceId: ProviderInstanceId.make("codex"),
+    },
+    client: undefined,
+    capabilities: new Set(["orchestration"]),
+    issuedAt: 1,
+  };
+  const stored = (input: ScheduledTaskUpsertInput): ScheduledTask => ({
+    id: input.id ?? ScheduledTaskId.make("scheduled-task:bind"),
+    title: input.title,
+    prompt: input.prompt,
+    enabled: input.enabled,
+    schedule:
+      input.schedule.type === "webhook"
+        ? { type: "webhook", signature: null }
+        : input.schedule.type === "weekly"
+          ? { ...input.schedule, chosen: input.schedule.chosen ?? [] }
+          : input.schedule,
+    projectId: input.projectId,
+    threadId: input.threadId ?? null,
+    workspaceStrategy: input.workspaceStrategy,
+    modelSelection: input.modelSelection,
+    runtimeMode: input.runtimeMode,
+    interactionMode: input.interactionMode,
+    createdBy: "agent",
+    creationSource: "mcp",
+    createdAt: "2026-10-19T12:00:00.000Z",
+    updatedAt: "2026-10-19T12:00:00.000Z",
+    nextRunAt: null,
+    lastRunAt: null,
+    lastRunStatus: "never",
+    lastRunError: null,
+    runCount: 0,
+  });
+
+  const harness = (
+    tasks: Ref.Ref<ReadonlyArray<ScheduledTask>>,
+    saved: Ref.Ref<ReadonlyArray<ScheduledTaskUpsertInput>>,
+  ) =>
+    layerOrchestratorService.pipe(
+      Layer.provide(ServerSettings.layerTest()),
+      Layer.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
+            getThreadRecords: () => Effect.succeed(parent),
+            getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
+          }),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+          Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+            list: () => Effect.succeed([]),
+          }),
+          Layer.mock(ProjectService.ProjectService)({
+            getById: (id) =>
+              Effect.succeedSome({
+                id,
+                title: "Schedule test",
+                workspaceRoot: "/tmp/schedule-test",
+                defaultModelSelection: null,
+                scripts: [],
+                createdAt: "2026-10-19T12:00:00.000Z",
+                updatedAt: "2026-10-19T12:00:00.000Z",
+                deletedAt: null,
+              }),
+          }),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+            list: () => Ref.get(tasks).pipe(Effect.map((listed) => ({ tasks: listed }))),
+            upsert: (input) =>
+              Ref.update(saved, (rows) => [...rows, input]).pipe(
+                Effect.as({ task: stored(input) }),
+              ),
+          }),
+        ),
+      ),
+    );
+
+  const expectBinding = (input: ScheduledTaskUpsertInput, bound: boolean, message?: string) => {
+    assert.equal(input.threadId ?? null, bound ? parentThreadId : null, message);
+    assert.deepEqual(
+      input.workspaceStrategy,
+      bound ? { type: "root" } : { type: "worktree", baseRef: "main", startFromOrigin: true },
+      message,
+    );
+  };
+
+  const at = (offsetMs: number) => DateTime.formatIso(DateTime.makeUnsafe(NOW + offsetMs));
+  const run = <A, E>(
+    tasks: Ref.Ref<ReadonlyArray<ScheduledTask>>,
+    saved: Ref.Ref<ReadonlyArray<ScheduledTaskUpsertInput>>,
+    effect: Effect.Effect<A, E, OrchestratorMcpService.OrchestratorMcpService>,
+  ) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      return yield* effect;
+    }).pipe(Effect.provide(harness(tasks, saved)));
+
+  it.effect("binds a near run and leaves a later run unbound", () =>
+    Effect.gen(function* () {
+      const tasks = yield* Ref.make<ReadonlyArray<ScheduledTask>>([]);
+      const saved = yield* Ref.make<ReadonlyArray<ScheduledTaskUpsertInput>>([]);
+      const cases: ReadonlyArray<{
+        readonly name: string;
+        readonly schedule: ScheduledTaskUpsertInput["schedule"];
+        readonly bound: boolean;
+        readonly projectId?: ProjectId;
+      }> = [
+        { name: "once at the window", schedule: { type: "once", at: at(windowMs) }, bound: true },
+        {
+          name: "once past the window",
+          schedule: { type: "once", at: at(windowMs + 1) },
+          bound: false,
+        },
+        {
+          name: "interval at the window",
+          schedule: { type: "interval", everyMs: windowMs },
+          bound: true,
+        },
+        {
+          name: "interval past the window",
+          schedule: { type: "interval", everyMs: windowMs + 1 },
+          bound: false,
+        },
+        {
+          name: "fixed time",
+          schedule: { type: "fixed_time", timeOfDay: "09:00", weekdays: [1] },
+          bound: false,
+        },
+        {
+          name: "weekly",
+          schedule: {
+            type: "weekly",
+            weekdays: [1],
+            times: ["09:00"],
+            timeZone: "Europe/Warsaw",
+          },
+          bound: false,
+        },
+        { name: "webhook", schedule: { type: "webhook" }, bound: true },
+        {
+          name: "near interval in another project",
+          schedule: { type: "interval", everyMs: windowMs },
+          bound: false,
+          projectId: otherProjectId,
+        },
+      ];
+      yield* run(
+        tasks,
+        saved,
+        Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          for (const testCase of cases) {
+            yield* service.scheduleTask(scope, {
+              prompt: testCase.name,
+              schedule: testCase.schedule,
+              ...(testCase.projectId === undefined ? {} : { projectId: testCase.projectId }),
+            });
+          }
+        }),
+      );
+      const rows = yield* Ref.get(saved);
+      assert.equal(rows.length, cases.length);
+      cases.forEach((testCase, index) => {
+        const row = rows[index]!;
+        expectBinding(row, testCase.bound, testCase.name);
+        assert.equal(row.projectId, testCase.projectId ?? projectId, testCase.name);
+      });
+    }),
+  );
+
+  it.effect("an explicit bind overrides the schedule on create and update", () =>
+    Effect.gen(function* () {
+      const boundId = ScheduledTaskId.make("scheduled-task:bound");
+      const freshId = ScheduledTaskId.make("scheduled-task:fresh");
+      const modelSelection = {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5",
+      } as const;
+      const base = {
+        title: "Check",
+        prompt: "Check the repo.",
+        enabled: true,
+        projectId,
+        modelSelection,
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+      };
+      const boundTask = stored({
+        ...base,
+        id: boundId,
+        schedule: { type: "interval", everyMs: windowMs },
+        threadId: parentThreadId,
+        workspaceStrategy: { type: "root" },
+      });
+      const freshTask = stored({
+        ...base,
+        id: freshId,
+        schedule: { type: "fixed_time", timeOfDay: "09:00" },
+        threadId: null,
+        workspaceStrategy: { type: "worktree", baseRef: "main", startFromOrigin: true },
+      });
+      const tasks = yield* Ref.make<ReadonlyArray<ScheduledTask>>([boundTask]);
+      const saved = yield* Ref.make<ReadonlyArray<ScheduledTaskUpsertInput>>([]);
+      yield* run(
+        tasks,
+        saved,
+        Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          yield* service.scheduleTask(scope, {
+            prompt: "Force a later run onto this thread.",
+            schedule: { type: "once", at: at(windowMs + 1) },
+            bindToCurrentThread: true,
+          });
+          yield* service.scheduleTask(scope, {
+            prompt: "Force a near run into a fresh thread.",
+            schedule: { type: "interval", everyMs: windowMs },
+            bindToCurrentThread: false,
+          });
+          yield* service.updateScheduledTask(scope, {
+            scheduledTaskId: boundId,
+            schedule: { type: "once", at: at(windowMs + 1) },
+          });
+          yield* service.updateScheduledTask(scope, {
+            scheduledTaskId: boundId,
+            bindToCurrentThread: false,
+          });
+          yield* Ref.set(tasks, [freshTask]);
+          yield* service.updateScheduledTask(scope, {
+            scheduledTaskId: freshId,
+            schedule: { type: "interval", everyMs: windowMs },
+          });
+          yield* service.updateScheduledTask(scope, {
+            scheduledTaskId: freshId,
+            schedule: { type: "fixed_time", timeOfDay: "09:00" },
+            bindToCurrentThread: true,
+          });
+        }),
+      );
+      const rows = yield* Ref.get(saved);
+      assert.equal(rows.length, 6);
+      expectBinding(rows[0]!, true);
+      expectBinding(rows[1]!, false);
+      assert.equal(rows[2]?.threadId, parentThreadId);
+      assert.deepEqual(rows[2]?.workspaceStrategy, { type: "root" });
+      expectBinding(rows[3]!, false);
+      assert.equal(rows[4]?.threadId, null);
+      assert.deepEqual(rows[4]?.workspaceStrategy, {
+        type: "worktree",
+        baseRef: "main",
+        startFromOrigin: true,
+      });
+      expectBinding(rows[5]!, true);
+    }),
   );
 });

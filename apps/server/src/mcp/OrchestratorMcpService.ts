@@ -331,6 +331,30 @@ function scheduledTaskWorkspaceStrategy(
     : { type: "worktree", baseRef: "main", startFromOrigin: true };
 }
 
+/**
+ * Provider prompt caches last at most an hour. Five minutes of slack keeps a
+ * run that is still inside that window from reloading the calling thread cold.
+ */
+const SCHEDULE_BIND_WINDOW_MS = 55 * 60 * 1_000;
+
+/** A near once, a short interval, or a webhook stays on the caller. A later run starts fresh. */
+function scheduleBindsToCallerByDefault(
+  schedule: ScheduledTaskUpsertInput["schedule"],
+  nowMs: number,
+): boolean {
+  switch (schedule.type) {
+    case "webhook":
+      return true;
+    case "interval":
+      return schedule.everyMs <= SCHEDULE_BIND_WINDOW_MS;
+    case "once":
+      return Date.parse(schedule.at) - nowMs <= SCHEDULE_BIND_WINDOW_MS;
+    case "fixed_time":
+    case "weekly":
+      return false;
+  }
+}
+
 function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): OrchestratorMcpScheduledTask {
   return {
     ...(task.purposeIntent === undefined ? {} : { purposeIntent: task.purposeIntent }),
@@ -2355,9 +2379,13 @@ const make = Effect.gen(function* () {
       const projectId = yield* resolveProjectTarget(parent, input.projectId);
       yield* assertLiveCallerForOtherProject(scope, parent, projectId);
       const project = yield* requireProject(projectId);
+      const callerCanBind =
+        input.bare === undefined && parent !== undefined && parent.thread.projectId === projectId;
       const bindToCurrentThread =
-        input.bindToCurrentThread ??
-        (input.bare === undefined && parent !== undefined && parent.thread.projectId === projectId);
+        input.bindToCurrentThread !== undefined
+          ? input.bindToCurrentThread
+          : callerCanBind &&
+            scheduleBindsToCallerByDefault(input.schedule, yield* Clock.currentTimeMillis);
       if (bindToCurrentThread && (parent === undefined || parent.thread.projectId !== projectId)) {
         return yield* failure(
           "invalid_request",
