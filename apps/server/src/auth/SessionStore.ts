@@ -1064,7 +1064,12 @@ export const make = Effect.gen(function* () {
         WHERE session_id = ${refresh.claims.sid} AND token_hash = ${tokenHash(token)} RETURNING session_id`.pipe(
           Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
         );
-      if (updated.length !== 1) return yield* new MalformedSessionTokenError({});
+      if (updated.length !== 1) {
+        // A valid, bound token was already spent. Either bearer may be the thief,
+        // so cut off the shared authority and every access/refresh token it issued.
+        yield* revoke(refresh.claims.sid);
+        return yield* new MalformedSessionTokenError({});
+      }
       return { ...result, scopes: refresh.claims.scopes };
     });
 

@@ -1033,11 +1033,6 @@ it.effect("outside OAuth renews past 30 days without widening and revokes the wh
       runtimeModeCeiling: "auto",
       mcpLimits: { projectId: "wedding", operations: ["read", "send"] },
     });
-    expect(
-      (yield* Effect.result(
-        store.refreshMcpOAuthToken(first.refreshToken, "client-a", "https://box/mcp"),
-      ))._tag,
-    ).toBe("Failure");
     yield* store.revoke(issued.sessionId);
     expect((yield* Effect.result(read(renewed.token)))._tag).toBe("Failure");
     expect(
@@ -1100,4 +1095,65 @@ it.effect(
       expect(yield* store.revoke(issued.sessionId)).toBe(true);
       expect((yield* Effect.result(store.verify(issued.token)))._tag).toBe("Failure");
     }).pipe(Effect.provide(layerSessionStore().pipe(Layer.provide(NodeServices.layer)))),
+);
+
+it.effect("revokes outside OAuth authority when a rotated refresh token is reused", () =>
+  Effect.gen(function* () {
+    const store = yield* SessionStore.SessionStore;
+    const issued = yield* store.issue({
+      subject: "mcp-client",
+      method: "bearer-access-token",
+      ttl: Duration.days(36500),
+    });
+    const first = yield* store.issueMcpOAuthTokens(issued.token, "service", "https://box/mcp");
+    const current = yield* store.refreshMcpOAuthToken(
+      first.refreshToken,
+      "service",
+      "https://box/mcp",
+    );
+    expect((yield* store.verify(current.token)).sessionId).toBe(issued.sessionId);
+    expect(
+      (yield* Effect.result(
+        store.refreshMcpOAuthToken(first.refreshToken, "service", "https://box/mcp"),
+      ))._tag,
+    ).toBe("Failure");
+    expect((yield* Effect.result(store.verify(current.token)))._tag).toBe("Failure");
+    expect(
+      (yield* Effect.result(
+        store.refreshMcpOAuthToken(current.refreshToken, "service", "https://box/mcp"),
+      ))._tag,
+    ).toBe("Failure");
+    expect(
+      (yield* store.listActive()).some((session) => session.sessionId === issued.sessionId),
+    ).toBe(false);
+  }).pipe(Effect.provide(layerSessionStore().pipe(Layer.provide(NodeServices.layer)))),
+);
+
+it.effect("concurrent outside OAuth refreshes revoke the raced grant", () =>
+  Effect.gen(function* () {
+    const store = yield* SessionStore.SessionStore;
+    const issued = yield* store.issue({
+      subject: "mcp-client",
+      method: "bearer-access-token",
+      ttl: Duration.days(36500),
+    });
+    const first = yield* store.issueMcpOAuthTokens(issued.token, "service", "https://box/mcp");
+    const results = yield* Effect.all(
+      [
+        Effect.result(store.refreshMcpOAuthToken(first.refreshToken, "service", "https://box/mcp")),
+        Effect.result(store.refreshMcpOAuthToken(first.refreshToken, "service", "https://box/mcp")),
+      ],
+      { concurrency: "unbounded" },
+    );
+    expect(results.filter((result) => result._tag === "Success")).toHaveLength(1);
+    const winner = results.find((result) => result._tag === "Success");
+    if (winner === undefined)
+      throw new Error("Expected one refresh to rotate before detecting reuse");
+    expect((yield* Effect.result(store.verify(winner.success.token)))._tag).toBe("Failure");
+    expect(
+      (yield* Effect.result(
+        store.refreshMcpOAuthToken(winner.success.refreshToken, "service", "https://box/mcp"),
+      ))._tag,
+    ).toBe("Failure");
+  }).pipe(Effect.provide(layerSessionStore().pipe(Layer.provide(NodeServices.layer)))),
 );
