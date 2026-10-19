@@ -459,21 +459,32 @@ it.effect(
           watching: true,
           link: { url: "https://github.com/example/repo/pull/350", source: "agent" },
         } as const;
-        assert.equal(
-          (yield* Effect.exit(
-            orchestrator.dispatch({
-              ...watchCommand,
-              commandId: CommandId.make(`watch-no-intent-${legacy}`),
-            }),
-          ))._tag,
-          "Failure",
-        );
+        // An old client or agent omits intent: the watch starts, warned legacy unscoped.
+        yield* orchestrator.dispatch({
+          ...watchCommand,
+          commandId: CommandId.make(`watch-no-intent-${legacy}`),
+        });
+        const omitted = (yield* orchestrator.getThreadProjection(threadId)).thread.pullRequests![0]!
+          .watch!;
+        assert.isUndefined(omitted.purposeIntent);
         yield* orchestrator.dispatch({
           ...watchCommand,
           commandId: CommandId.make(`watch-save-a-${legacy}`),
           purposeIntent: { version: 1, intent: { type: "reference", reference: referenceA } },
         });
         let projection = yield* orchestrator.getThreadProjection(threadId);
+        // Re-watching without intent keeps the saved purpose and its generation.
+        const savedA = projection.thread.pullRequests![0]!.watch!;
+        yield* orchestrator.dispatch({
+          ...watchCommand,
+          commandId: CommandId.make(`watch-again-no-intent-${legacy}`),
+        });
+        projection = yield* orchestrator.getThreadProjection(threadId);
+        assert.deepEqual(
+          projection.thread.pullRequests![0]!.watch!.purposeIntent,
+          savedA.purposeIntent,
+        );
+        assert.equal(projection.thread.pullRequests![0]!.watch!.startedAt, savedA.startedAt);
         if (legacy) {
           const links = projection.thread.pullRequests!.map((link) => {
             const { purposeIntent: _intent, ...oldWatch } = link.watch!;

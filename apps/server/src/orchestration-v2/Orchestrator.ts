@@ -3217,15 +3217,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
     }
-    if (
-      command.type === "thread.pull-request.watch" &&
-      command.watching &&
-      command.purposeIntent === undefined
-    ) {
-      return yield* mapDispatchError(command)(
-        Effect.fail(new ExecutionPurpose.PurposeAdmissionError({ reason: "saved_intent_missing" })),
-      );
-    }
     const purposeDelivery =
       command.type === "thread.pull-request.link" && command.purposeDelivery !== undefined
         ? {
@@ -3582,6 +3573,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           const changedWatch =
             command.type === "thread.pull-request.watch" &&
             command.watching &&
+            command.purposeIntent !== undefined &&
             existing.watch !== undefined &&
             !purposeIntentsEqual(existing.watch.purposeIntent, command.purposeIntent)
               ? existing.watch
@@ -11351,8 +11343,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
    */
   const planRunGroupCompletionDelivery = Effect.fn(
     "orchestrationV2.planRunGroupCompletionDelivery",
-  )(function* (input: Omit<Parameters<typeof planDelegatedCompletionDelivery>[0], "siblingIds">) {
-    const group = runGroupWake(input.parentProjection.subagents, input.updatedTask);
+  )(function* (
+    input: Omit<Parameters<typeof planDelegatedCompletionDelivery>[0], "siblingIds"> & {
+      /** The member's run ended on an explicit stop request. */
+      readonly stopRequested?: boolean;
+    },
+  ) {
+    const group = runGroupWake(input.parentProjection.subagents, input.updatedTask, {
+      stopRequested: input.stopRequested === true,
+    });
     if (group.type === "hold") {
       return {
         task: input.updatedTask,
@@ -11738,13 +11737,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
       // Stop records the terminal result but cannot reserve another parent wake.
       // A plain interruption has no request and still delivers its result.
-      const explicitlyStopped =
-        followUp &&
+      const stopRequested =
         childRun.status === "interrupted" &&
         (yield* projectionStore.getThreadRecords(childThreadId, ["turnItems"], {
           turnItemTypes: ["run_interrupt_request"],
           turnItemRunIds: [childRun.id],
         })).turnItems.length > 0;
+      const explicitlyStopped = followUp && stopRequested;
       const { completionDelivery: observedDelivery, ...unobservedTask } = task;
       const stopDisposed =
         observedDelivery?.state === "disposed" && observedDelivery.disposedBy === "stop";
@@ -11807,6 +11806,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               followUp || followUpEndsStoppedTask ? { ...task, completionWake: "always" } : task,
             updatedTask,
             now,
+            stopRequested,
           });
       const resultTransferId = yield* idAllocator.allocate.contextTransfer({
         sourceThreadId: childThreadId,

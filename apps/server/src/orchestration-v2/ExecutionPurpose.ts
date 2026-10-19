@@ -28,7 +28,6 @@ export class PurposeAdmissionError extends Schema.TaggedError<PurposeAdmissionEr
       "delegated_launch_missing",
       "remote_launch_mismatch",
       "intent_reused",
-      "saved_intent_missing",
     ]),
   },
 ) {
@@ -50,8 +49,6 @@ export class PurposeAdmissionError extends Schema.TaggedError<PurposeAdmissionEr
         return "The continuation does not match the original remote purpose launch.";
       case "intent_reused":
         return "This command id was already admitted with a different purpose intent.";
-      case "saved_intent_missing":
-        return "Choose an Issue, PR or deliberately unscoped purpose before saving this trigger.";
     }
   }
 }

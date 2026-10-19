@@ -2044,34 +2044,36 @@ const make = Effect.gen(function* () {
         if (members.length === 0) return yield* single.cancelTask(callerScope, input);
         const key = yield* requestKey(input.clientRequestId);
         // Cancelling the whole group gives up its wake; every member is asked
-        // to stop before the first refusal is reported. Its delivery is disposed
-        // first: a member stopped before then would release the group's wake.
+        // to stop before the first refusal is reported.
         const outcomes = yield* Effect.forEach(members, (member, index) =>
           Effect.result(
-            threadManagement
-              .dispatch({
-                type: "delegated_task.completion-delivery.dispose",
-                commandId: stableCommandId({
-                  scope,
-                  requestKey: `${key}:${index}`,
-                  operation: "cancel-run-group-delivery",
-                }),
-                parentThreadId: scope.thread.threadId,
+            single
+              .cancelTask(callerScope, {
+                ...input,
                 taskId: member.id,
+                clientRequestId: `${key}:${index}`,
               })
               .pipe(
-                Effect.mapError((error) =>
-                  failure(
-                    "orchestration_error",
-                    `Unable to dispose delegated task ${member.id} completion delivery: ${errorMessage(error)}`,
-                  ),
-                ),
-                Effect.andThen(
-                  single.cancelTask(callerScope, {
-                    ...input,
-                    taskId: member.id,
-                    clientRequestId: `${key}:${index}`,
-                  }),
+                Effect.tap(() =>
+                  threadManagement
+                    .dispatch({
+                      type: "delegated_task.completion-delivery.dispose",
+                      commandId: stableCommandId({
+                        scope,
+                        requestKey: `${key}:${index}`,
+                        operation: "cancel-run-group-delivery",
+                      }),
+                      parentThreadId: scope.thread.threadId,
+                      taskId: member.id,
+                    })
+                    .pipe(
+                      Effect.mapError((error) =>
+                        failure(
+                          "orchestration_error",
+                          `Unable to dispose delegated task ${member.id} completion delivery: ${errorMessage(error)}`,
+                        ),
+                      ),
+                    ),
                 ),
               ),
           ),

@@ -679,6 +679,58 @@ describe("Run groups", () => {
     ),
   );
 
+  it.live("a member that refuses the group cancel keeps its result's wake", () =>
+    Effect.gen(function* () {
+      const refusedDone = yield* Deferred.make<void>();
+      yield* withParent(
+        roastRun([codexColor, claudeColor], 2),
+        (_turn, instanceId) =>
+          instanceId === claude
+            ? Deferred.await(refusedDone).pipe(Effect.as<TurnOutcome>("complete"))
+            : Effect.succeed<TurnOutcome>("hang"),
+        ({ orchestrator, invoke, offers, drain }) =>
+          Effect.gen(function* () {
+            const started = yield* group(
+              yield* invoke("delegate_task", { task: "Attack this plan.", prismRole: "roast" }),
+            );
+            const [stoppable, refusing] = started.tasks;
+            // The parent drops below full access; only the stoppable member follows it,
+            // so cancelling the refusing member would raise the parent's modes.
+            for (const [threadId, index] of [
+              [parentThreadId, 0],
+              [stoppable!.childThreadId!, 1],
+            ] as const) {
+              yield* orchestrator.dispatch({
+                type: "thread.runtime-mode.set",
+                commandId: CommandId.make(`command:run-group:lower-mode:${index}`),
+                threadId,
+                runtimeMode: "approval-required",
+              });
+            }
+            const cancelled = yield* invoke("task_cancel", { taskId: started.groupId });
+            expect(cancelled.isError).toBe(true);
+            yield* waitForProjection(
+              orchestrator,
+              parentThreadId,
+              (projection) =>
+                subagent(projection, stoppable!.taskId)?.completionDelivery?.state === "disposed",
+            );
+            yield* Deferred.succeed(refusedDone, undefined);
+            const woken = yield* waitForProjection(
+              orchestrator,
+              parentThreadId,
+              (projection) => subagent(projection, refusing!.taskId)?.status === "completed",
+            );
+            yield* drain;
+            expect(subagent(woken, refusing!.taskId)?.completionDelivery?.state).not.toBe(
+              "disposed",
+            );
+            expect(yield* Ref.get(offers)).toHaveLength(1);
+          }),
+      );
+    }),
+  );
+
   it.live("a member's nested work keeps the group open until it is terminal", () =>
     Effect.gen(function* () {
       const codexTurnDone = yield* Deferred.make<void>();
