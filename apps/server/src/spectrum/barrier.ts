@@ -62,6 +62,45 @@ export function barrierComplete(round: SpectrumRound): boolean {
   return round.slots.length > 0 && round.slots.every((slot) => slot.replyIds !== null);
 }
 
+/**
+ * Replace a Color start its candidate could not get admitted for with the slot's next
+ * candidate, under fresh identities: the refused command keeps its refusal receipt.
+ */
+export function fallBack(state: SpectrumState, commandId: CommandId): SpectrumState | null {
+  const pending = state.outbox.find((command) => command.commandId === commandId);
+  if (pending?.type !== "message.dispatch" || state.round === null) return null;
+  const participant = state.participants.find((color) => color.threadId === pending.threadId);
+  const [next, ...rest] = participant?.fallbacks ?? [];
+  if (participant === undefined || next === undefined) return null;
+  const retry = {
+    commandId: CommandId.make(`${pending.commandId}:fallback`),
+    messageId: MessageId.make(`${pending.messageId}:fallback`),
+  };
+  return {
+    ...state,
+    revision: state.revision + 1,
+    participants: state.participants.map((color) =>
+      color === participant
+        ? {
+            ...color,
+            selection: next,
+            fallbacks: rest,
+            attempted: [...color.attempted, color.selection],
+          }
+        : color,
+    ),
+    round: {
+      ...state.round,
+      slots: state.round.slots.map((slot) =>
+        slot.commandId === commandId && slot.runId === null ? { ...slot, ...retry } : slot,
+      ),
+    },
+    outbox: state.outbox.map((command) =>
+      command.commandId === commandId ? { ...pending, ...retry, modelSelection: next } : command,
+    ),
+  };
+}
+
 /** Bind a persisted request, not whichever run happens to be latest in the child. */
 export function bindRun(
   round: SpectrumRound,
