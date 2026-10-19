@@ -1030,6 +1030,8 @@ const make = Effect.gen(function* () {
           messageId,
         });
       }
+      // Pre-field events cannot distinguish restart intent from its native mechanism.
+      // Preserve their old mode-based response; recorded intent wins for newer events.
       const delivery: ThreadManagementSendResult["delivery"] =
         acceptedTurnItem === undefined || acceptedTurnItem.inputIntent === "queued_turn"
           ? "queued"
@@ -1040,7 +1042,7 @@ const make = Effect.gen(function* () {
                     event.type === "run-attempt.created" &&
                     event.payload.runId === run.id &&
                     event.payload.reason === "steering_restart" &&
-                    event.payload.deliveryIntent === "restart",
+                    (event.payload.deliveryIntent ?? input.mode) === "restart",
                 )
               ? "restarted"
               : "steered";

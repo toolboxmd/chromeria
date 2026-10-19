@@ -24,6 +24,7 @@ import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EffectWorker from "./EffectWorker.ts";
@@ -398,7 +399,7 @@ function makeCompletingHandoffAdapter(
   };
 }
 
-it.live.each(["unchanged", "messageId", "mode"] as const)(
+it.live.each(["unchanged", "messageId", "mode", "legacy"] as const)(
   "replays an accepted restart while replacement startup is held: %s",
   (changedField) =>
     Effect.scoped(
@@ -416,7 +417,7 @@ it.live.each(["unchanged", "messageId", "mode"] as const)(
         const entered = yield* Deferred.make<void>();
         const release = yield* Deferred.make<void>();
         const database = Persistence.layerMemory;
-        const layer = Layer.merge(
+        const layer = Layer.mergeAll(
           ProviderReplayHarness.layerWithRegistry(
             { name: "restart-receipt-replay" },
             ProviderAdapterRegistry.layerSingle(
@@ -428,6 +429,7 @@ it.live.each(["unchanged", "messageId", "mode"] as const)(
             { databaseLayer: database },
           ),
           CommandReceiptStore.layer.pipe(Layer.provide(database)),
+          database,
         );
         yield* Effect.gen(function* () {
           const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -495,6 +497,31 @@ it.live.each(["unchanged", "messageId", "mode"] as const)(
           const receipt = yield* receipts.getByCommandId(input.commandId);
           assert.equal(receipt._tag, "Some");
           const effects = yield* outbox.listByCommandId(input.commandId);
+          if (changedField === "legacy") {
+            const sql = yield* SqlClient.SqlClient;
+            // Recreate an accepted pre-upgrade event in this private SQLite fixture.
+            const changed = yield* sql`
+              UPDATE orchestration_events
+              SET payload_json = json_remove(payload_json, '$.deliveryIntent')
+              WHERE command_id = ${input.commandId} AND event_type = 'run-attempt.created'
+              RETURNING sequence
+            `;
+            assert.lengthOf(changed, 1);
+          }
+          const originalEvents = yield* sink
+            .readByCommandId({ commandId: input.commandId })
+            .pipe(Stream.runCollect);
+          if (changedField === "legacy") {
+            assert.isTrue(
+              originalEvents.some(
+                ({ event }) =>
+                  event.type === "run-attempt.created" &&
+                  event.payload.deliveryIntent === undefined,
+              ),
+            );
+          } else {
+            assert.deepEqual(originalEvents, accepted.dispatch.storedEvents);
+          }
           const replay = yield* threads.sendToThread({
             ...input,
             ...(changedField === "messageId"
@@ -503,7 +530,10 @@ it.live.each(["unchanged", "messageId", "mode"] as const)(
                 ? { mode: "auto" as const }
                 : {}),
           });
-          assert.deepEqual(replay.dispatch, accepted.dispatch);
+          assert.deepEqual(replay.dispatch, {
+            sequence: accepted.dispatch.sequence,
+            storedEvents: originalEvents,
+          });
           assert.deepEqual(replay.message, accepted.message);
           assert.equal(replay.delivery, accepted.delivery);
           assert.equal(replay.run.id, accepted.run.id);
