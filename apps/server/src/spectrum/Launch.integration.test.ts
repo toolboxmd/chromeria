@@ -82,6 +82,7 @@ const prism = Prism.layer.pipe(
   ),
 );
 const base = Layer.mergeAll(
+  Settings.layerTest(),
   Layer.mock(BareProjects.ProjectStoreV2)({}),
   database,
   adapters,

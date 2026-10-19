@@ -1,0 +1,202 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { expect, it } from "@effect/vitest";
+import {
+  CommandId,
+  EventId,
+  MessageId,
+  EnvironmentId,
+  ProviderInstanceId,
+  RunId,
+  ThreadId,
+  type SpectrumSettings,
+} from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
+import * as Invocation from "../mcp/McpInvocationContext.ts";
+import * as Access from "../mcp/McpToolAccess.ts";
+import { idleThreadProjection, liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
+import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
+import * as Events from "../orchestration-v2/EventSink.ts";
+import { makeRun, NOW } from "./testFixtures.ts";
+import { ensureCheckSchema } from "../scheduledTaskChecks/store.ts";
+import * as Settings from "../serverSettings.ts";
+import { base, input, setup, spareInstanceId } from "./controllerTestkit.ts";
+import * as Launch from "./LaunchService.ts";
+import { SpectrumToolkit, StartSpectrumInput, layer } from "./mcpToolkit.ts";
+import { readSpectrum } from "./store.ts";
+
+const primary = { instanceId: ProviderInstanceId.make("codex"), model: "test-model" };
+const defaults: SpectrumSettings = {
+  slots: [
+    { label: "Blue", primary, fallbacks: [{ ...primary, instanceId: spareInstanceId }] },
+    { label: "Red", primary, fallbacks: [] },
+  ],
+  white: "Red",
+  mode: "council",
+  relayRounds: 4,
+  turnsPerColor: 5,
+};
+const caller = liveThreadShell(input.callerThreadId, { activeRunId: RunId.make("caller-run") });
+const dependencies = Layer.mergeAll(
+  base,
+  NodeServices.layer,
+  Settings.layerTest({ spectrum: defaults }),
+  Layer.succeed(Invocation.McpInvocationContext, {
+    environmentId: EnvironmentId.make("test"),
+    requestNamespace: "settings-test",
+    thread: {
+      threadId: caller.id,
+      providerSessionId: "test",
+      providerInstanceId: primary.instanceId,
+    },
+    client: undefined,
+    capabilities: new Set(["orchestration"] as const),
+    issuedAt: 1,
+  }),
+  Layer.mock(Threads.ThreadManagementService)({
+    getThreadShell: () => Effect.succeed(caller),
+    getProjectThreadRecords: () => Effect.succeed(idleThreadProjection(caller)),
+  }),
+);
+const runtime = Layer.fresh(
+  Layer.mergeAll(dependencies, Launch.layer.pipe(Layer.provide(dependencies))),
+);
+
+it.effect(
+  "start_spectrum uses defaults, explicit overrides and persists settings once across replay",
+  () =>
+    Effect.gen(function* () {
+      const callerRecord = yield* setup;
+      yield* ensureCheckSchema;
+      const run = makeRun(
+        {
+          threadId: caller.id,
+          commandId: CommandId.make("caller-command"),
+          messageId: MessageId.make("caller-message"),
+          runId: null,
+          replyIds: null,
+        },
+        { id: RunId.make("caller-run"), status: "running", completedAt: null },
+      );
+      yield* (yield* Events.EventSinkV2).write({
+        events: [
+          {
+            id: EventId.make("caller-run-created"),
+            type: "run.updated",
+            threadId: caller.id,
+            occurredAt: NOW,
+            payload: run,
+          },
+        ],
+      });
+      const toolkit = yield* SpectrumToolkit.pipe(
+        Effect.provide(Access.HandlersLayer.layer(layer)),
+      );
+      const call = (value: typeof StartSpectrumInput.Type) =>
+        toolkit.handle("start_spectrum", value).pipe(Stream.unwrap, Stream.runCollect);
+      expect(yield* call({ question: "Question only", clientRequestId: "default" })).toEqual(
+        expect.arrayContaining([expect.objectContaining({ isFailure: false })]),
+      );
+      const id = ThreadId.make("spectrum:settings-test:default");
+      const first = Option.getOrThrow(yield* readSpectrum(id));
+      expect(first).toMatchObject({
+        question: "Question only",
+        mode: "council",
+        limit: 4,
+        turnsPerColor: 5,
+        moderator: 1,
+      });
+      expect(first.participants[0]?.fallbacks).toEqual([
+        { ...primary, instanceId: spareInstanceId },
+      ]);
+      yield* (yield* Settings.ServerSettingsService).updateSettings({
+        spectrum: { ...defaults, relayRounds: 7 },
+      });
+      yield* call({ question: "Replay", clientRequestId: "default" });
+      expect(Option.getOrThrow(yield* readSpectrum(id))).toEqual(first);
+      yield* (yield* Settings.ServerSettingsService).updateSettings({
+        projectSettingsOverrides: {
+          [callerRecord.projectId]: { spectrum: { ...defaults, mode: "free", turnsPerColor: 2 } },
+        },
+      });
+      yield* call({ question: "Project defaults", clientRequestId: "project" });
+      expect(
+        Option.getOrThrow(yield* readSpectrum(ThreadId.make("spectrum:settings-test:project"))),
+      ).toMatchObject({ mode: "free", limit: 4, turnsPerColor: 2, moderator: 1 });
+      yield* call({
+        question: "Explicit",
+        clientRequestId: "explicit",
+        colors: [
+          { label: "Blue", ...primary },
+          { label: "Red", ...primary, fallbacks: [{ ...primary, instanceId: spareInstanceId }] },
+        ],
+        mode: "free",
+        limit: 7,
+        moderator: 0,
+        turnsPerColor: 2,
+      });
+      const explicit = Option.getOrThrow(
+        yield* readSpectrum(ThreadId.make("spectrum:settings-test:explicit")),
+      );
+      expect(explicit).toMatchObject({ mode: "free", limit: 7, moderator: 0, turnsPerColor: 2 });
+      expect(explicit.participants[0]?.fallbacks).toEqual([]);
+      expect(explicit.participants[1]?.fallbacks).toEqual([
+        { ...primary, instanceId: spareInstanceId },
+      ]);
+    }).pipe(Effect.provide(runtime)),
+);
+
+it.effect("start_spectrum rejects invalid values before persisting a Spectrum", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    yield* ensureCheckSchema;
+    const run = makeRun(
+      {
+        threadId: caller.id,
+        commandId: CommandId.make("caller-command"),
+        messageId: MessageId.make("caller-message"),
+        runId: null,
+        replyIds: null,
+      },
+      { id: RunId.make("caller-run"), status: "running", completedAt: null },
+    );
+    yield* (yield* Events.EventSinkV2).write({
+      events: [
+        {
+          id: EventId.make("caller-run-created"),
+          type: "run.updated",
+          threadId: caller.id,
+          occurredAt: NOW,
+          payload: run,
+        },
+      ],
+    });
+    const toolkit = yield* SpectrumToolkit.pipe(Effect.provide(Access.HandlersLayer.layer(layer)));
+    for (const patch of [
+      { limit: 1 },
+      { relayRounds: 1 },
+      { turnsPerColor: 0 },
+      { white: "Missing" },
+      {
+        colors: [
+          { label: "Blue", ...primary },
+          { label: "Blue", ...primary },
+        ],
+      },
+    ]) {
+      const result = yield* toolkit
+        .handle("start_spectrum", { question: "Invalid", clientRequestId: "invalid", ...patch })
+        .pipe(Stream.unwrap, Stream.runCollect, Effect.exit);
+      // Schema failures fail the stream; domain failures are returned as MCP tool errors.
+      if (result._tag === "Success")
+        expect(result.value).toEqual(
+          expect.arrayContaining([expect.objectContaining({ isFailure: true })]),
+        );
+      expect(
+        Option.isNone(yield* readSpectrum(ThreadId.make("spectrum:settings-test:invalid"))),
+      ).toBe(true);
+    }
+  }).pipe(Effect.provide(runtime)),
+);

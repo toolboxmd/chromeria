@@ -1,4 +1,7 @@
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
+import * as Settings from "../serverSettings.ts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { resolveSpectrumStart } from "./settings.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import {
   CommandId,
@@ -50,6 +53,9 @@ export interface SpectrumStart {
   readonly question: string;
   readonly title?: string;
   readonly mode: "council" | "free";
+  readonly white?: string | undefined;
+  readonly relayRounds?: number | undefined;
+  readonly turnsPerColor?: number | undefined;
   readonly limit: number;
   readonly moderator: number;
   readonly colors: ReadonlyArray<
@@ -64,6 +70,16 @@ export interface SpectrumStart {
   >;
 }
 
+export type SpectrumStartRequest = Omit<
+  SpectrumStart,
+  "mode" | "colors" | "limit" | "moderator"
+> & {
+  readonly mode?: SpectrumStart["mode"] | undefined;
+  readonly colors?: SpectrumStart["colors"] | undefined;
+  readonly limit?: number | undefined;
+  readonly moderator?: number | undefined;
+};
+
 export class SpectrumLaunchError extends Schema.TaggedError<SpectrumLaunchError>()(
   "SpectrumLaunchError",
   { threadId: ThreadId, cause: Schema.Defect() },
@@ -71,7 +87,11 @@ export class SpectrumLaunchError extends Schema.TaggedError<SpectrumLaunchError>
 
 export class SpectrumLaunchService extends Context.Service<
   SpectrumLaunchService,
-  { readonly register: (input: SpectrumStart) => Effect.Effect<SpectrumState, SpectrumLaunchError> }
+  {
+    readonly register: (
+      input: SpectrumStartRequest,
+    ) => Effect.Effect<SpectrumState, SpectrumLaunchError>;
+  }
 >()("t3/spectrum/LaunchService/SpectrumLaunchService") {}
 
 const validateState = Schema.decodeEffect(SpectrumState);
@@ -124,6 +144,7 @@ function shell(
 }
 
 const make = Effect.gen(function* () {
+  const settings = yield* Settings.ServerSettingsService;
   const bareLaunch = yield* BareLaunch.BareLaunch;
   const projects = yield* ProjectStore.ProjectStoreV2;
   const prism = yield* Prism.PrismService;
@@ -133,38 +154,29 @@ const make = Effect.gen(function* () {
   const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
   const sink = yield* EventSink.EventSinkV2;
   const sql = yield* SqlClient.SqlClient;
-  const register = Effect.fn("SpectrumLaunch.register")(function* (input: SpectrumStart) {
-    const existing = yield* receipts.getByCommandId(input.commandId);
+  const register = Effect.fn("SpectrumLaunch.register")(function* (request: SpectrumStartRequest) {
+    const existing = yield* receipts.getByCommandId(request.commandId);
     if (Option.isSome(existing)) {
       if (
-        existing.value.threadId !== input.threadId ||
+        existing.value.threadId !== request.threadId ||
         existing.value.commandType !== "spectrum.register" ||
         existing.value.status !== "accepted"
       )
         return yield* new SpectrumLaunchError({
-          threadId: input.threadId,
+          threadId: request.threadId,
           cause: "Receipt mismatch",
         });
       return Option.getOrThrow(
-        yield* readSpectrum(input.threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+        yield* readSpectrum(request.threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       );
     }
-    if (
-      input.colors.length < 2 ||
-      input.colors.length > 8 ||
-      new Set(input.colors.map((color) => color.label)).size !== input.colors.length ||
-      input.colors.some(
-        (color) => color.label.trim().length === 0 || color.label.toLowerCase() === "user",
-      ) ||
-      (input.mode === "council" && input.limit < 2) ||
-      (input.mode === "free" && input.limit < input.colors.length) ||
-      input.moderator < 0 ||
-      input.moderator >= input.colors.length
-    )
-      return yield* new SpectrumLaunchError({
-        threadId: input.threadId,
-        cause: "Invalid Color configuration",
-      });
+    const caller = yield* projections.getThread(request.callerThreadId);
+    const defaults = resolveProjectSettings(yield* settings.getSettings, caller.projectId).settings
+      .spectrum;
+    const input = yield* Effect.try({
+      try: () => resolveSpectrumStart(request, defaults),
+      catch: (cause) => new SpectrumLaunchError({ threadId: request.threadId, cause }),
+    });
     if (
       input.colors.some((color) => color.bare !== undefined && (color.fallbacks?.length ?? 0) > 0)
     )
@@ -172,7 +184,6 @@ const make = Effect.gen(function* () {
         threadId: input.threadId,
         cause: "Bare Colors have no fallbacks.",
       });
-    const caller = yield* projections.getThread(input.callerThreadId);
     const withOverrides = Effect.fnUntraced(function* (
       base: ModelSelection,
       spec: SpectrumCandidate,
@@ -311,6 +322,7 @@ const make = Effect.gen(function* () {
       schedulerRunId: binding?.schedulerRunId ?? null,
       question: input.question,
       mode: input.mode,
+      turnsPerColor: input.turnsPerColor,
       limit: input.limit,
       moderator: input.moderator,
       participants: resolved,

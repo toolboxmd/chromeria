@@ -53,8 +53,8 @@ own, nudged by continue until its time box or quota line runs out.
 _Avoid_: Deep Work, autopilot, always-on loop
 
 **Spectrum**:
-A disposable thread where Drafters of several Colors talk with each other,
-either as a moderated council or freely.
+A disposable thread where Colors talk with each other, either as a council
+or in free mode.
 _Avoid_: room, channel, group chat
 
 **Color**:
