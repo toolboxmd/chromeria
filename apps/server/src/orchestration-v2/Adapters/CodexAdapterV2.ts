@@ -6199,6 +6199,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           yield* settleGoalHold(hold, "completed");
         });
 
+        const dropCommandTracking = (nativeTurnId: string) =>
+          Ref.update(runningCommandItemsByTurn, (current) => {
+            const updated = new Map(current);
+            updated.delete(nativeTurnId);
+            return updated;
+          });
+
         const flushReadyRootTerminals = Effect.fn("CodexAdapterV2.flushReadyRootTerminals")(
           function* () {
             const activeTurnContexts = Array.from((yield* Ref.get(activeTurns)).values());
@@ -6219,6 +6226,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return [ready, updated] as const;
             });
             for (const ready of readyEvents) {
+              yield* dropCommandTracking(ready.context.nativeTurnId);
               if (ready.providerTurn !== undefined)
                 yield* emitProviderEvent({
                   type: "provider_turn.updated",
@@ -6263,13 +6271,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             state.saved.clear();
           },
         );
-        const dropCommandTracking = (nativeTurnId: string) =>
-          Ref.update(runningCommandItemsByTurn, (current) => {
-            const updated = new Map(current);
-            updated.delete(nativeTurnId);
-            return updated;
-          });
-
         /** Ordinary Stop's retained-item settlement, without rewriting a completed turn. */
         const stopRetainedItems = Effect.fnUntraced(function* (
           context: ActiveCodexTurnContext,
@@ -6674,15 +6675,21 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 yield* Deferred.succeed(input.context.capacityRetryPending, undefined);
               }
               yield* flushReadyRootTerminals();
+              // A deferred root's processes can outlive it; Stop still has to
+              // terminate them, and the deferred terminal's flush drops them.
+              const awaitsDescendants = (yield* Ref.get(deferredRootTerminals)).has(
+                input.nativeTurnId,
+              );
               if (!retainSettledContext && !interruptInProgress && cutIn === undefined) {
-                yield* Ref.update(runningCommandItemsByTurn, (current) => {
-                  if (!current.has(input.nativeTurnId)) {
-                    return current;
-                  }
-                  const updated = new Map(current);
-                  updated.delete(input.nativeTurnId);
-                  return updated;
-                });
+                if (!awaitsDescendants)
+                  yield* Ref.update(runningCommandItemsByTurn, (current) => {
+                    if (!current.has(input.nativeTurnId)) {
+                      return current;
+                    }
+                    const updated = new Map(current);
+                    updated.delete(input.nativeTurnId);
+                    return updated;
+                  });
                 yield* Ref.update(runningDynamicToolsByTurn, (current) => {
                   if (!current.has(input.nativeTurnId)) {
                     return current;
@@ -7745,7 +7752,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     const threadCutIn = stopScope ? cutIns.get(threadKey) : undefined;
                     const isTarget = (context: ActiveCodexTurnContext) =>
                       context.providerTurnId === turnInput.providerTurnId;
-                    const deferredRoot = cutInCall
+                    // A naturally ended root keeps owning live descendants, so
+                    // ordinary Stop must find it just as a cut-in does.
+                    const deferredRoot = stopScope
                       ? Array.from((yield* Ref.get(deferredRootTerminals)).values()).find(
                           (deferred) =>
                             deferred.context.providerThread.id === threadKey &&
@@ -7758,14 +7767,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                         ? undefined
                         : Array.from(threadCutIn.roots).find(isTarget)) ??
                       deferredRoot ??
-                      (cutInCall
-                        ? (settledTurnContexts.find(isTarget) ??
-                          rootNamedByLiveDescendant(activeTurnContexts, turnInput.providerTurnId))
-                        : undefined) ??
                       (stopScope
-                        ? settledTurnContexts.find(
+                        ? (settledTurnContexts.find(isTarget) ??
+                          rootNamedByLiveDescendant(activeTurnContexts, turnInput.providerTurnId) ??
+                          settledTurnContexts.find(
                             (context) => context.providerThread.id === threadKey,
-                          )
+                          ))
                         : undefined);
                     const lineageRoots = Array.from(
                       new Set([
