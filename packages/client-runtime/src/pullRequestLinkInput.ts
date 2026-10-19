@@ -1,7 +1,20 @@
-import { pullRequestHostOf, type RepositoryIdentity } from "@t3tools/contracts";
+import {
+  pullRequestHostOf,
+  type RepositoryIdentity,
+  type OrchestrationV2Command,
+  type ScopedThreadRef,
+  type ThreadId,
+  type ThreadPullRequestLink,
+} from "@t3tools/contracts";
 import { parseChangeRequestUrl } from "@t3tools/shared/changeRequestUrl";
+import { threadPullRequestKeysEqual } from "@t3tools/shared/threadPullRequests";
 
 import { sourceControlClients } from "./sourceControlClients.ts";
+
+type WatchThreadPullRequestInput = Omit<
+  Extract<OrchestrationV2Command, { type: "thread.pull-request.watch" }>,
+  "type" | "commandId"
+>;
 
 const PULL_REQUEST_NUMBER_PATTERN = /^#?(\d+)$/;
 
@@ -101,4 +114,43 @@ export function resolveLinkPullRequestInput(input: {
   return {
     link: { ...webReference, url: webUrl },
   };
+}
+
+export function threadPullRequestWatchInput(input: {
+  readonly threadId: ThreadId;
+  readonly reference: ThreadPullRequestLink;
+  readonly ownLinks: ReadonlyArray<ThreadPullRequestLink>;
+  readonly watching: boolean;
+}): WatchThreadPullRequestInput {
+  return {
+    threadId: input.threadId,
+    host: input.reference.host,
+    repository: input.reference.repository,
+    number: input.reference.number,
+    watching: input.watching,
+    ...(input.watching &&
+    !input.ownLinks.some((link) => threadPullRequestKeysEqual(link, input.reference))
+      ? { link: { url: input.reference.url, source: "manual" } }
+      : {}),
+  };
+}
+
+export function createThreadPullRequestWatchAction<Result>(input: {
+  readonly threadRef: ScopedThreadRef;
+  readonly ownLinks: ReadonlyArray<ThreadPullRequestLink>;
+  readonly watch: (command: {
+    readonly environmentId: ScopedThreadRef["environmentId"];
+    readonly input: WatchThreadPullRequestInput;
+  }) => Result;
+}) {
+  return (reference: ThreadPullRequestLink, watching: boolean) =>
+    input.watch({
+      environmentId: input.threadRef.environmentId,
+      input: threadPullRequestWatchInput({
+        threadId: input.threadRef.threadId,
+        ownLinks: input.ownLinks,
+        reference,
+        watching,
+      }),
+    });
 }

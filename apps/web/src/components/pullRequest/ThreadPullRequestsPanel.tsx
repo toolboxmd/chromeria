@@ -1,3 +1,4 @@
+import { createThreadPullRequestWatchAction } from "@t3tools/client-runtime/pull-request-link-input";
 import type { ProjectId, ScopedThreadRef, ThreadPullRequestLink } from "@t3tools/contracts";
 import {
   sourceControlClients,
@@ -441,18 +442,11 @@ function EnabledThreadPullRequestsPanel({
       },
     });
   };
-  const handleSetWatching = (link: ThreadPullRequestLink, watching: boolean) => {
-    void watch({
-      environmentId: threadRef.environmentId,
-      input: {
-        threadId: threadRef.threadId,
-        host: link.host,
-        repository: link.repository,
-        number: link.number,
-        watching,
-      },
-    });
-  };
+  const handleSetWatching = createThreadPullRequestWatchAction({
+    threadRef,
+    ownLinks: thread?.pullRequests ?? [],
+    watch,
+  });
 
   // Legend re-renders visible rows only when data or extraData changes, so everything the rows
   // read from outside their line goes in here.
