@@ -187,6 +187,10 @@
       "types": "./src/server/usageLimits.ts",
       "import": "./src/server/usageLimits.ts"
     },
+    "./server/toolPolicy": {
+      "types": "./src/server/toolPolicy.ts",
+      "import": "./src/server/toolPolicy.ts"
+    },
     "./server/bareLaunch": {
       "types": "./src/server/bareLaunch.ts",
       "import": "./src/server/bareLaunch.ts"
