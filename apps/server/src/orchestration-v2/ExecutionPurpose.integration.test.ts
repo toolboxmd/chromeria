@@ -157,6 +157,112 @@ it.effect("pins A and B at admission; unnamed web/mobile Steer keeps A and the B
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("late web/mobile Steer admits one ordinary next message after the run ends", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const sql = yield* SqlClient.SqlClient;
+    for (const [source, legacy] of [
+      ["web", false],
+      ["mobile", false],
+      ["web", true],
+      ["mobile", true],
+    ] as const) {
+      const id = `${source}-${legacy ? "legacy" : "current"}`;
+      const threadId = ThreadId.make(`thread:late-steer-${id}`);
+      yield* createThread(threadId);
+      yield* orchestrator.dispatch(
+        message(threadId, `initial-${id}`, {
+          version: 1,
+          intent: { type: "reference", reference: referenceA },
+        }),
+      );
+      const initial = (yield* projections.getThreadProjection(threadId)).runs[0]!;
+      const lateSteer = {
+        ...message(threadId, `late-steer-${id}`, {
+          version: 1,
+          intent: { type: "target" },
+        }),
+        creationSource: source,
+        ...(legacy ? {} : { deliveryIntent: "steer" as const }),
+        dispatchMode: legacy
+          ? { type: "steer_active" as const, targetRunId: initial.id }
+          : { type: "start_immediately" as const },
+      };
+      yield* orchestrator.dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make(`late-steer-select-b-${id}`),
+        threadId,
+        purposeSelection: { expectedRevision: 1, scope: scopedB },
+      });
+      const now = yield* DateTime.now;
+      yield* sink.write({
+        commandId: CommandId.make(`fixture:late-steer-end-${id}`),
+        events: [
+          {
+            id: EventId.make(`event:late-steer-end-${id}`),
+            type: "run.updated",
+            threadId,
+            occurredAt: now,
+            payload: { ...initial, status: "completed", startedAt: now, completedAt: now },
+          },
+        ],
+      });
+      const admitted = yield* orchestrator.dispatch(lateSteer);
+      assert.equal((yield* orchestrator.dispatch(lateSteer)).sequence, admitted.sequence);
+      const projection = yield* projections.getThreadProjection(threadId);
+      assert.equal(projection.messages.filter((m) => m.id === lateSteer.messageId).length, 1);
+      const item = projection.turnItems.find(
+        (item) => item.type === "user_message" && item.messageId === lateSteer.messageId,
+      );
+      assert.isDefined(item);
+      assert.equal(item?.type === "user_message" ? item.inputIntent : undefined, "turn_start");
+      assert.equal(projection.runs.length, 2);
+      assert.equal(projection.runs[1]?.status, "starting");
+      assert.deepEqual(projection.runs[1]?.purpose, {
+        version: 1,
+        scope: scopedB,
+        provenance: { type: "selection", revision: 2 },
+      });
+      const effects = yield* sql<{ count: number }>`SELECT count(*) AS count
+        FROM orchestration_v2_effect_outbox WHERE command_id = ${lateSteer.commandId}
+        AND effect_type = 'provider-turn.start'`;
+      assert.equal(effects[0]?.count, 1);
+    }
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("an idle Steer starts a message but Restart still requires active work", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const threadId = ThreadId.make("thread:idle-steer");
+    yield* createThread(threadId);
+    assert.equal(
+      (yield* Effect.exit(
+        orchestrator.dispatch({
+          ...message(threadId, "idle-restart", { version: 1, intent: { type: "target" } }),
+          deliveryIntent: "restart",
+          dispatchMode: { type: "start_immediately" },
+        }),
+      ))._tag,
+      "Failure",
+    );
+    const admitted = yield* orchestrator.dispatch({
+      ...message(threadId, "idle-steer", { version: 1, intent: { type: "target" } }),
+      creationSource: "mobile",
+      deliveryIntent: "steer",
+      dispatchMode: { type: "start_immediately" },
+    });
+    assert.deepEqual(admitted.admittedRun?.purpose, {
+      version: 1,
+      scope: { type: "unscoped", reason: "deliberate" },
+      provenance: { type: "selection", revision: 0 },
+    });
+    assert.equal((yield* orchestrator.getThreadProjection(threadId)).runs.length, 1);
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect(
   "explicit PR deliveries preserve outcome identity after linking, replay and unlinking",
   () =>
@@ -310,19 +416,6 @@ it.effect("legacy omission stays warned unscoped; a replay cannot change declare
       type: "unscoped",
       reason: "legacy_no_intent",
     });
-    const empty = ThreadId.make("thread:new-mobile-targetless");
-    yield* createThread(empty);
-    assert.equal(
-      (yield* Effect.exit(
-        orchestrator.dispatch({
-          ...message(empty, "new-mobile-targetless", { version: 1, intent: { type: "target" } }),
-          creationSource: "mobile",
-          deliveryIntent: "steer",
-        }),
-      ))._tag,
-      "Failure",
-    );
-    assert.isEmpty((yield* orchestrator.getThreadProjection(empty)).runs);
   }).pipe(Effect.provide(layerTest)),
 );
 
