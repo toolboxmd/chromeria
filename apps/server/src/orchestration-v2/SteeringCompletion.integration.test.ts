@@ -13,6 +13,9 @@ import {
   ThreadId,
   TurnItemId,
   type ModelSelection,
+  type OrchestrationV2ProviderTurn,
+  type OrchestrationV2Subagent,
+  type OrchestrationV2TurnItem,
   type OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -463,6 +466,7 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
   options: {
     readonly planSelectionTransition?: ProviderAdapter.ProviderAdapterV2["Service"]["planSelectionTransition"];
     readonly endedTurnHold?: ProviderAdapterV2SessionRuntime["endedTurnHold"];
+    readonly supportsActiveSteering?: boolean;
   } = {},
 ) {
   const cwd = yield* checkpointWorkspace(name);
@@ -473,7 +477,7 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
     ...CodexProviderCapabilitiesV2,
     turns: {
       ...CodexProviderCapabilitiesV2.turns,
-      supportsActiveSteering: true,
+      supportsActiveSteering: options.supportsActiveSteering ?? true,
       supportsSteeringByInterruptRestart: supportsRestart,
     },
   };
@@ -1081,6 +1085,268 @@ it.effect.each([
                       }),
                   }),
                 ),
+              ),
+            ),
+          ),
+        );
+      }),
+    ),
+);
+
+it.effect.each([
+  "in the restart gap",
+  "after the replacement turn",
+  "after a mid-turn update",
+] as const)(
+  "keeps a soft-restarted attempt's surviving subagent to its terminal: completes %s",
+  (completes) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let oldTurn: OrchestrationV2ProviderTurn | undefined;
+        let survivor: Extract<ProviderAdapterV2Event, { type: "turn_item.updated" }> | undefined;
+        let survivorRow: OrchestrationV2Subagent | undefined;
+        const midTurn = completes === "after a mid-turn update";
+        const survivorCompleted = () =>
+          Effect.gen(function* () {
+            const now = yield* DateTime.now;
+            if (midTurn)
+              yield* Queue.offer(events, {
+                type: "subagent.updated",
+                driver,
+                subagent: {
+                  ...survivorRow!,
+                  status: "completed",
+                  result: "SURVIVOR_DONE",
+                  completedAt: now,
+                  updatedAt: now,
+                },
+              });
+            yield* Queue.offer(events, {
+              ...survivor!,
+              turnItem: {
+                ...survivor!.turnItem,
+                status: "completed",
+                result: "SURVIVOR_DONE",
+                completedAt: now,
+              } as OrchestrationV2TurnItem,
+            });
+          });
+        const { events, started, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+          `soft-restart-surviving-subagent-${completes.replaceAll(" ", "-")}`,
+          true,
+          // ACP without native steering restarts the turn on a routine steer.
+          // Its soft interrupt cancels the foreground and carries live
+          // subagents over instead of terminalizing them.
+          (input): Effect.Effect<void, ProviderAdapterInterruptError> =>
+            Effect.gen(function* () {
+              assert.notEqual(input.requestRuntimeRestart, true);
+              const now = yield* DateTime.now;
+              yield* Queue.offer(events, {
+                type: "provider_turn.updated",
+                driver,
+                providerTurn: { ...oldTurn!, status: "interrupted", completedAt: now },
+              });
+              yield* Queue.offer(events, {
+                type: "turn.terminal",
+                driver,
+                providerThreadId: oldTurn!.providerThreadId,
+                providerTurnId: oldTurn!.id,
+                runOrdinal: started[0]!.runOrdinal,
+                status: "interrupted",
+                failure: null,
+                threadDisposition: "reusable",
+              });
+              // Published before the replacement attempt has subscribed.
+              if (completes === "in the restart gap") yield* survivorCompleted();
+            }),
+          { supportsActiveSteering: false },
+        );
+        const oldIngestionEnded = yield* Deferred.make<void>();
+        const replacementIngestionEnded = yield* Deferred.make<void>();
+        let oldAttemptId: RunAttemptId | undefined;
+        let replacementAttemptId: RunAttemptId | undefined;
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const threadId = yield* startFirstTurn;
+          const first = started[0]!;
+          oldAttemptId = first.attemptId;
+          const now = yield* DateTime.now;
+          const watch = (predicate: (event: OrchestrationV2DomainEvent) => boolean) =>
+            orchestrator.streamDomainEvents.pipe(
+              Stream.filter(predicate),
+              Stream.take(1),
+              Stream.runDrain,
+              Effect.forkScoped({ startImmediately: true }),
+            );
+          oldTurn = (yield* orchestrator.getThreadProjection(threadId)).providerTurns[0]!;
+          survivor = {
+            type: "turn_item.updated",
+            driver,
+            turnItem: {
+              id: TurnItemId.make("subagent:surviving"),
+              type: "subagent",
+              threadId,
+              runId: first.runId,
+              nodeId: first.rootNodeId,
+              providerThreadId: first.providerThread.id,
+              providerTurnId: oldTurn.id,
+              nativeItemRef: { driver, nativeId: "surviving-task", strength: "strong" },
+              parentItemId: null,
+              ordinal: 1,
+              status: "running",
+              title: "Surviving subagent",
+              startedAt: now,
+              completedAt: null,
+              updatedAt: now,
+              subagentId: NodeId.make("node:surviving-subagent"),
+              origin: "provider_native",
+              driver,
+              providerInstanceId: instanceId,
+              childThreadId: null,
+              prompt: "keep working",
+              result: null,
+            },
+          };
+          const survivorRunning = yield* watch(
+            (event) =>
+              event.type === "turn-item.updated" && event.payload.id === survivor!.turnItem.id,
+          );
+          yield* Queue.offer(events, survivor);
+          yield* Fiber.join(survivorRunning);
+
+          const replacementRunning = yield* watch(
+            (event) =>
+              event.type === "provider-turn.updated" &&
+              event.payload.id !== oldTurn!.id &&
+              event.payload.status === "running",
+          );
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("soft-restart"),
+            threadId,
+            messageId: MessageId.make("message:soft-restart"),
+            text: "Change course",
+            attachments: [],
+            dispatchMode: { type: "steer_active", targetRunId: first.runId },
+            createdBy: "agent",
+            creationSource: "mcp",
+          });
+          yield* worker.drain();
+          yield* Fiber.join(replacementRunning);
+          assert.lengthOf(started, 2);
+          const replacement = started[1]!;
+          assert.equal(replacement.runId, first.runId);
+          replacementAttemptId = replacement.attemptId;
+          const nextTurn = (yield* orchestrator.getThreadProjection(threadId)).providerTurns.find(
+            (turn) => turn.runAttemptId === replacement.attemptId,
+          )!;
+          if (midTurn) {
+            // A progress update while the replacement root is open must not
+            // make the replacement wait for a terminal it will not receive.
+            survivorRow = {
+              id:
+                survivor!.turnItem.type === "subagent"
+                  ? survivor!.turnItem.subagentId
+                  : NodeId.make("unused"),
+              threadId,
+              runId: first.runId,
+              parentNodeId: first.rootNodeId,
+              origin: "provider_native",
+              createdBy: "agent",
+              driver,
+              providerInstanceId: instanceId,
+              providerThreadId: null,
+              childThreadId: null,
+              nativeTaskRef: { driver, nativeId: "surviving-task", strength: "strong" },
+              prompt: "keep working",
+              title: "Surviving subagent",
+              model: null,
+              status: "running",
+              result: null,
+              startedAt: now,
+              completedAt: null,
+              updatedAt: now,
+            };
+            const progressStored = yield* watch(
+              (event) =>
+                event.type === "turn-item.updated" &&
+                event.payload.id === survivor!.turnItem.id &&
+                event.payload.title === "Surviving subagent: still working",
+            );
+            yield* Queue.offer(events, { type: "subagent.updated", driver, subagent: survivorRow });
+            yield* Queue.offer(events, {
+              ...survivor!,
+              turnItem: { ...survivor!.turnItem, title: "Surviving subagent: still working" },
+            });
+            yield* Fiber.join(progressStored);
+          }
+          const replacementRootSettled = yield* watch(
+            (event) =>
+              event.type === "run.updated" &&
+              event.payload.activeAttemptId === replacement.attemptId &&
+              event.payload.status === "waiting",
+          );
+          yield* Queue.offer(events, {
+            type: "provider_turn.updated",
+            driver,
+            providerTurn: { ...nextTurn, status: "completed", completedAt: now },
+          });
+          yield* Queue.offer(events, {
+            type: "turn.terminal",
+            driver,
+            providerThreadId: replacement.providerThread.id,
+            providerTurnId: nextTurn.id,
+            runOrdinal: replacement.runOrdinal,
+            status: "completed",
+            failure: null,
+            threadDisposition: "reusable",
+          });
+          // The replacement root has settled before the survivor reports.
+          yield* Fiber.join(replacementRootSettled);
+          if (completes !== "in the restart gap") yield* survivorCompleted();
+          yield* Deferred.await(oldIngestionEnded);
+          yield* Deferred.await(replacementIngestionEnded);
+          yield* worker.drain();
+
+          const sequence = yield* orchestrator.getThreadEventSequence(threadId);
+          const stored = yield* orchestrator
+            .streamStoredEventsFrom({ threadId, afterSequence: 0 })
+            .pipe(
+              Stream.takeUntil((event) => event.sequence === sequence),
+              Stream.map((event) => event.event),
+              Stream.runCollect,
+            );
+          assert.deepEqual(
+            stored.flatMap((event) =>
+              event.type === "turn-item.updated" && event.payload.id === survivor!.turnItem.id
+                ? [event.payload.status]
+                : [],
+            ),
+            midTurn ? ["running", "running", "completed"] : ["running", "completed"],
+          );
+          const projected = yield* orchestrator.getThreadProjection(threadId);
+          if (midTurn)
+            assert.equal(
+              projected.subagents.find((row) => row.id === survivorRow!.id)?.status,
+              "completed",
+            );
+          assert.equal(projected.runs[0]?.status, "completed");
+        }).pipe(
+          Effect.provide(
+            layer.pipe(
+              Layer.provide(
+                Layer.succeed(StreamClock.StreamClockHooks, {
+                  beginAttempt: () => Effect.void,
+                  observe: () => Effect.void,
+                  endAttempt: (_threadId, _runId, attemptId) =>
+                    Effect.gen(function* () {
+                      if (attemptId === oldAttemptId)
+                        yield* Deferred.succeed(oldIngestionEnded, undefined);
+                      if (attemptId === replacementAttemptId)
+                        yield* Deferred.succeed(replacementIngestionEnded, undefined);
+                    }),
+                }),
               ),
             ),
           ),
