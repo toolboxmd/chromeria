@@ -535,6 +535,7 @@ const isPreviewInputSignal = (value: unknown): value is PreviewInputSignal => {
 const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function* (
   artifactDirectory: string,
   pictureInPicturePreloadPath: string,
+  restoreBrowserIdentity: (contents: Electron.WebContents) => Promise<void>,
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const rendererHistory = yield* DesktopRendererHistory.DesktopRendererHistory;
@@ -2353,6 +2354,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         yield* detachControlSession(wc.id);
         return;
       }
+      yield* attemptPromise(
+        { operation: "restoreChromeIdentity", tabId, webContentsId: wc.id },
+        () => restoreBrowserIdentity(wc),
+      );
       if (afterAttach.serverTab) {
         yield* listenForAgentPointers;
         browserHost.attach(afterAttach.serverTab, { webContents: wc, debugger: control.debugger });
@@ -3623,7 +3628,10 @@ export const make = Effect.gen(function* PreviewManagerMake() {
   const browserHost = yield* DesktopBrowserHost.DesktopBrowserHost;
   const passkeys = yield* PreviewPasskeys.PreviewPasskeys;
   const downloadSessions = new WeakSet<Electron.Session>();
-  const identitySessions = new WeakSet<Electron.Session>();
+  const identitySessions = new WeakMap<
+    Electron.Session,
+    ReturnType<typeof installChromeIdentity>
+  >();
   const runIdentity = Effect.runPromiseWith(yield* Effect.context<never>());
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -3669,6 +3677,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
   const operations = yield* makeNativeOperations(
     environment.browserArtifactsDir,
     environment.path.join(environment.dirname, "preview-pip-preload.cjs"),
+    (contents) => identitySessions.get(contents.session)?.(contents) ?? Promise.resolve(),
   );
 
   return PreviewManager.of({
@@ -3684,7 +3693,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
             ),
           );
         if (!identitySessions.has(session)) {
-          installChromeIdentity(
+          const restore = installChromeIdentity(
             session,
             { arch: environment.processArch, platformVersion: process.getSystemVersion?.() ?? "" },
             (contents, identity) =>
@@ -3698,7 +3707,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
                   ),
               ),
           );
-          identitySessions.add(session);
+          identitySessions.set(session, restore);
         }
         placeServerDownloads(session);
         passkeys.installSessionHandlers(session);

@@ -1,3 +1,4 @@
+import * as NodeEvents from "node:events";
 import { it as effectIt } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { DESKTOP_PREVIEW_RECORDING_CAPTURE_TRIGGER } from "@t3tools/contracts";
@@ -637,6 +638,7 @@ describe("PreviewManager", () => {
               events.set(event, listener),
             off: (event: string) => events.delete(event),
             id: 42,
+            getURL: () => "https://example.com/",
             isDestroyed: () => false,
             isDevToolsOpened: () => false,
             debugger: debuggee,
@@ -660,8 +662,7 @@ describe("PreviewManager", () => {
                   );
                 }),
             );
-          expect(yield* navigate("https://web.whatsapp.com/")).toEqual({});
-          expect(debuggee.sendCommand).not.toHaveBeenCalled();
+          expect(yield* navigate("https://web.whatsapp.com/")).toEqual({ cancel: false });
           const commit = (url: string) =>
             Effect.promise(() =>
               Promise.resolve(events.get("did-frame-navigate")?.({}, url, 200, "OK", true, 1, 1)),
@@ -678,7 +679,7 @@ describe("PreviewManager", () => {
               }),
             }),
           );
-          expect(yield* navigate("https://dash.cloudflare.com/login")).toEqual({});
+          expect(yield* navigate("https://dash.cloudflare.com/login")).toEqual({ cancel: false });
           yield* commit("https://dash.cloudflare.com/login");
           expect(debuggee.sendCommand).toHaveBeenLastCalledWith("Emulation.setUserAgentOverride", {
             userAgent: "",
@@ -687,6 +688,114 @@ describe("PreviewManager", () => {
         }),
       ),
   );
+
+  for (const commitWhileOpen of [false, true]) {
+    effectIt.effect(
+      commitWhileOpen
+        ? "restores a listed commit remembered while DevTools was open"
+        : "restores committed WhatsApp identity after preview DevTools closes",
+      () =>
+        withManager((manager) =>
+          Effect.gen(function* () {
+            let markRestored = () => {};
+            const restored = new Promise<void>((resolve) => {
+              markRestored = resolve;
+            });
+            const events = new NodeEvents.EventEmitter();
+            let toolsOpen = false;
+            let attached = false;
+            let restoring = false;
+            let currentUrl = "https://example.com/";
+            const guest = makeAttachingGuest(42);
+            const debuggee = {
+              ...guest.wc.debugger,
+              isAttached: () => attached,
+              attach: vi.fn(() => {
+                attached = true;
+              }),
+              detach: vi.fn(() => {
+                attached = false;
+              }),
+              on: vi.fn(),
+              off: vi.fn(),
+              sendCommand: vi.fn(async (method: string) => {
+                if (!attached) throw new Error("Debugger is not attached");
+                if (restoring && method === "Emulation.setUserAgentOverride") {
+                  markRestored();
+                }
+              }),
+            };
+            const wc = {
+              ...guest.wc,
+              session: previewSession,
+              getURL: () => currentUrl,
+              on: events.on.bind(events),
+              off: events.off.bind(events),
+              once: events.once.bind(events),
+              isDevToolsOpened: () => toolsOpen,
+              openDevTools: () => {
+                toolsOpen = true;
+                events.emit("devtools-opened");
+              },
+              debugger: debuggee,
+            } as unknown as Electron.WebContents;
+            fromId.mockReturnValue(wc);
+            yield* manager.getBrowserSession("profile");
+            yield* manager.createTab("identity_devtools");
+            yield* manager.registerWebview("identity_devtools", 42);
+            const request = previewSession.webRequest.onBeforeRequest.mock.calls[0]?.[0];
+            if (typeof request !== "function")
+              return yield* Effect.die("Missing identity request policy");
+            const requestStarted = yield* Effect.promise(
+              () =>
+                new Promise<Electron.CallbackResponse>((resolve) =>
+                  request(
+                    {
+                      id: 1,
+                      url: "https://web.whatsapp.com/",
+                      method: "GET",
+                      webContents: wc,
+                      resourceType: "mainFrame",
+                      referrer: "",
+                      timestamp: 0,
+                      uploadData: [],
+                    },
+                    resolve,
+                  ),
+                ),
+            );
+            expect(requestStarted).toEqual({ cancel: false });
+            const commit = () => {
+              currentUrl = "https://web.whatsapp.com/";
+              return Promise.all(
+                events
+                  .listeners("did-frame-navigate")
+                  .map((listener) => listener({}, currentUrl, 200, "OK", true, 1, 1)),
+              );
+            };
+            if (!commitWhileOpen) yield* Effect.promise(commit);
+            yield* manager.openDevTools("identity_devtools");
+            expect(attached).toBe(false);
+            if (commitWhileOpen) yield* Effect.promise(() => expect(commit()).rejects.toThrow());
+            debuggee.sendCommand.mockClear();
+            restoring = true;
+            toolsOpen = false;
+            events.emit("devtools-closed");
+            yield* Effect.promise(() => restored);
+            expect(debuggee.sendCommand).toHaveBeenCalledWith(
+              "Emulation.setUserAgentOverride",
+              expect.objectContaining({
+                userAgent: expect.stringContaining("Chrome/152.0.0.0 Safari/537.36"),
+                userAgentMetadata: expect.objectContaining({
+                  brands: expect.arrayContaining([{ brand: "Google Chrome", version: "152" }]),
+                }),
+              }),
+            );
+            expect(debuggee.attach).toHaveBeenCalledTimes(2);
+          }),
+        ),
+    );
+  }
 
   effectIt.effect("opens a target=_blank link as a new tab without navigating the opener", () =>
     withManager((manager) =>
