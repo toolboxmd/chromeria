@@ -5,6 +5,7 @@ import { wightAdmissionPlan } from "../wight/admission.ts";
 import {
   reconcileChildRequests,
   reconcilePendingChildRequests,
+  reconcileSubtreeChildRequests,
 } from "../childThreads/requestWake.ts";
 import {
   delegatedTaskRuns,
@@ -13580,6 +13581,36 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     };
   });
 
+  const newlyResumedThreadIds = Effect.fnUntraced(function* (
+    events: ReadonlyArray<OrchestrationV2DomainEvent>,
+  ) {
+    const resumed = new Map<ThreadId, ThreadId | null>();
+    for (const event of events) {
+      if (event.type !== "thread.metadata-updated") continue;
+      const tokens = event.payload.forkResumedRetirements ?? [];
+      if (tokens.length === 0) continue;
+      const current = yield* projectionStore
+        .getThread(event.threadId)
+        .pipe(
+          Effect.map(Option.some),
+          Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeedNone }),
+        );
+      const acknowledged = Option.isSome(current) ? current.value.forkResumedRetirements : [];
+      if (tokens.some((token) => !acknowledged?.includes(token)))
+        resumed.set(event.threadId, event.payload.lineage.parentThreadId);
+    }
+    // A resumed ancestor's subtree wake already covers its resumed descendants.
+    return [...resumed.keys()].filter((id) => {
+      const seen = new Set<ThreadId>();
+      for (let parent = resumed.get(id); parent != null; parent = resumed.get(parent)) {
+        if (seen.has(parent)) break;
+        seen.add(parent);
+        if (resumed.has(parent)) return false;
+      }
+      return true;
+    });
+  });
+
   const dispatchWithReceiptEffect = Effect.fn("orchestrationV2.dispatch.withReceipt")(function* (
     command: OrchestrationV2ServerCommand,
   ): Effect.fn.Return<OrchestratorV2DispatchResult, OrchestratorV2Error> {
@@ -13962,6 +13993,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(inserted ? {} : { replayed: true as const }),
       } satisfies OrchestratorV2DispatchResult;
     }
+    // Acknowledged tokens stay on a thread, so only the commit that adds one
+    // takes it out of Stop. Explicit input and Spectrum unsettle are those commits.
+    const resumedThreadIds =
+      resume || command.type === "thread.unsettle"
+        ? yield* mapDispatchError(command)(newlyResumedThreadIds(plan.events))
+        : [];
     const acceptedAt = plan.events.at(-1)?.occurredAt ?? (yield* DateTime.now);
     const committed = yield* eventSink
       .commitCommand({
@@ -14016,6 +14053,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (resume && state?.retired) {
       yield* mapDispatchError(command)(offerDelegatedCompletionDeliveries(command.threadId));
     }
+    // The wake takes ancestor locks, so it cannot run under ours.
+    for (const threadId of resumedThreadIds)
+      yield* requestSubtreeWake(threadId).pipe(Effect.forkIn(requestWakeScope));
     if (command.type === "notification.delivery.accept") {
       yield* mapDispatchError(command)(offerDelegatedCompletionDeliveries(command.threadId));
     }
@@ -14117,15 +14157,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
 
-  const requestWake = (threadId?: ThreadId) =>
-    (threadId === undefined
-      ? reconcilePendingChildRequests(dispatchWithReceiptEffect, (task, request) =>
-          reconcileDelegatedTaskQuestionWithParentLockHeld(task, request.id),
-        )
-      : reconcileChildRequests(threadId, dispatchWithReceiptEffect, (task, request) =>
-          reconcileDelegatedTaskQuestionWithParentLockHeld(task, request.id),
-        )
-    ).pipe(
+  const reconcileQuestion = (
+    task: OrchestrationV2Subagent,
+    request: { readonly id: RuntimeRequestId },
+  ) => reconcileDelegatedTaskQuestionWithParentLockHeld(task, request.id);
+  const runWake = <A, E>(
+    wake: Effect.Effect<
+      A,
+      E,
+      ProjectionStoreV2 | ThreadCommandExecutor.ThreadCommandExecutor | CommandReceiptStoreV2
+    >,
+  ) =>
+    wake.pipe(
       Effect.provideService(ProjectionStoreV2, projectionStore),
       Effect.provideService(ThreadCommandExecutor.ThreadCommandExecutor, threadDispatch),
       Effect.provideService(CommandReceiptStoreV2, commandReceipts),
@@ -14133,6 +14176,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         Effect.logWarning("Failed to reconcile descendant requests", { cause }),
       ),
     );
+  const requestWake = (threadId?: ThreadId) =>
+    runWake(
+      threadId === undefined
+        ? reconcilePendingChildRequests(dispatchWithReceiptEffect, reconcileQuestion)
+        : reconcileChildRequests(threadId, dispatchWithReceiptEffect, reconcileQuestion),
+    );
+  // Stop and resume change retirement for one thread and its descendants only.
+  const requestSubtreeWake = (threadId: ThreadId) =>
+    runWake(reconcileSubtreeChildRequests(threadId, dispatchWithReceiptEffect, reconcileQuestion));
 
   const handleRunUpdate = Effect.fn("Orchestrator.handleRunUpdate")(
     function* (stored: OrchestrationV2StoredEvent) {
@@ -14251,9 +14303,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       stored.event.type === "runtime-request.updated"
         ? requestWake(stored.event.threadId)
         : stored.event.type === "thread.metadata-updated" &&
-            (stored.event.payload.forkRetirement?.token === stored.commandId ||
-              (stored.event.payload.forkResumedRetirements?.length ?? 0) > 0)
-          ? requestWake()
+            stored.event.payload.forkRetirement?.token === stored.commandId
+          ? requestSubtreeWake(stored.event.threadId)
           : Effect.void,
     ),
     Effect.forkIn(requestWakeScope),
