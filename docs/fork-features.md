@@ -997,9 +997,15 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "https://github.com/toolboxmd/chromeria/issues/212",
     "https://github.com/toolboxmd/chromeria/issues/214"
   ],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/213"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/213",
+    "https://github.com/toolboxmd/chromeria/pull/492"
+  ],
   "newFiles": [],
-  "upstreamFiles": ["apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts"],
+  "upstreamFiles": [
+    "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts",
+    "apps/server/src/orchestration-v2/ThreadDeletion.ts"
+  ],
   "sharedFiles": [
     "apps/server/src/childThreads/delegatedFollowups.ts",
     "apps/server/src/childThreads/delegatedFollowupQueries.ts",
