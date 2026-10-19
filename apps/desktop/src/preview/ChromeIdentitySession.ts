@@ -42,9 +42,11 @@ export const installChromeIdentity = (
       let appliedListed: boolean | undefined = false;
       let debuggerGeneration = 0;
       let pending = Promise.resolve();
-      const apply = (url: string, force = false) => {
-        const listed = usesChromeIdentity(url);
+      const apply = (force = false) => {
+        // Read the destination when the command runs, so a superseded navigation queued behind a
+        // held command never applies its identity to the page that replaced it.
         const command = async () => {
+          const listed = usesChromeIdentity(pendingUrl ?? committedUrl);
           if (disposed || contents.isDestroyed() || (!force && appliedListed === listed)) return;
           // A failed transport call may still have changed Chromium, so invalidate before sending.
           appliedListed = undefined;
@@ -68,12 +70,12 @@ export const installChromeIdentity = (
         // Store the document even if DevTools currently prevents its emulation command.
         committedUrl = url;
         if (pendingUrl === url) pendingUrl = undefined;
-        return apply(pendingUrl ?? committedUrl);
+        return apply();
       };
       const stopped = () => {
         if (pendingUrl === undefined) return;
         pendingUrl = undefined;
-        return apply(committedUrl);
+        return apply();
       };
       const failed = (
         _event: Electron.Event,
@@ -109,9 +111,9 @@ export const installChromeIdentity = (
       controller = {
         start: (url) => {
           pendingUrl = url;
-          void apply(url);
+          void apply();
         },
-        restore: () => apply(pendingUrl ?? committedUrl, true),
+        restore: () => apply(true),
       };
       observed.set(contents, controller);
     }

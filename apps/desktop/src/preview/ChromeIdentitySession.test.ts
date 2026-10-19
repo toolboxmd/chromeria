@@ -272,22 +272,54 @@ describe("preview main-frame identity lifecycle", () => {
     expect(await test.request().completed).toEqual({});
   });
 
-  it("applies the latest destination when a navigation supersedes one in flight", async () => {
+  // A held command (here a debugger restore) queues the navigations that follow it.
+  const holdNext = () => {
     let release = () => {};
-    const blocked = new Promise<void>((resolve) => {
+    let held: Promise<void> | undefined = new Promise<void>((resolve) => {
       release = resolve;
     });
     const configure = vi.fn<
       (contents: WebContents, identity: ChromeIdentity | null) => Promise<void>
     >(async () => {
-      await blocked;
+      const wait = held;
+      held = undefined;
+      await wait;
     });
+    return { configure, release: () => release() };
+  };
+
+  it("never applies a superseded WhatsApp identity to the native page that replaced it", async () => {
+    const { configure, release } = holdNext();
     const test = harness(configure);
-    expect(await test.request().completed).toEqual({});
+    await test.request(ordinary).completed;
+    await test.commit(ordinary);
+    const restored = test.restore(test.contents);
+    await test.drain();
+    expect(await test.request(listed).completed).toEqual({});
     expect(await test.request(ordinary).completed).toEqual({});
+    const committed = test.commit(ordinary);
     release();
-    await test.restore(test.contents);
-    expect(configure).toHaveBeenLastCalledWith(test.contents, null);
+    await restored;
+    await committed;
+    expect(configure.mock.calls).toEqual([[test.contents, null]]);
+  });
+
+  it("never clears the identity of a WhatsApp page that replaced a native navigation", async () => {
+    const test = harness();
+    await test.request(listed).completed;
+    await test.commit(listed);
+    const { configure, release } = holdNext();
+    test.configure.mockImplementation(configure);
+    test.configure.mockClear();
+    const restored = test.restore(test.contents);
+    await test.drain();
+    expect(await test.request(ordinary).completed).toEqual({});
+    expect(await test.request("https://web.whatsapp.com/second").completed).toEqual({});
+    const committed = test.commit("https://web.whatsapp.com/second");
+    release();
+    await restored;
+    await committed;
+    expect(test.configure.mock.calls).toEqual([[test.contents, chromeIdentity(native, host)]]);
   });
 
   it("restores the old document after stopping while the provisional command is in flight", async () => {
