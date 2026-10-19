@@ -54,7 +54,7 @@ const sameSiteToCdp = { no_restriction: "None", lax: "Lax", strict: "Strict" } a
 // CDP's seconds round trip through Chromium's millisecond timestamp conversion.
 const expiryMillis = (expires: number) => Math.round(expires * 1000);
 
-export const cookieMirrorUrl = (cookie: CookieMirrorKey, secure: boolean) => {
+const cookieMirrorUrl = (cookie: CookieMirrorKey, secure: boolean) => {
   const host = cookie.domain.replace(/^\./, "");
   const authority = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
   return `${secure ? "https" : "http"}://${authority}${cookie.path}`;
