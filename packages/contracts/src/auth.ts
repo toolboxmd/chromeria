@@ -3,6 +3,7 @@ import * as HttpApiSchema from "effect/http-api/HttpApiSchema";
 
 import {
   AuthSessionId,
+  ProjectId,
   ForwardCompatibleArray,
   ClientSurface,
   ClientWebDeployment,
@@ -475,7 +476,7 @@ export const AuthMcpAuthorizationServerMetadata = Schema.Struct({
   token_endpoint: Schema.String,
   registration_endpoint: Schema.String,
   response_types_supported: Schema.Array(Schema.Literal("code")),
-  grant_types_supported: Schema.Array(Schema.Literal("authorization_code")),
+  grant_types_supported: Schema.Array(Schema.Literals(["authorization_code", "refresh_token"])),
   code_challenge_methods_supported: Schema.Array(Schema.Literal("S256")),
   token_endpoint_auth_methods_supported: Schema.Array(Schema.Literal("none")),
   scopes_supported: Schema.Array(AuthEnvironmentScope),
@@ -503,7 +504,7 @@ export const AuthMcpRegisteredClient = Schema.Struct({
   client_id: Schema.String,
   client_name: Schema.String,
   redirect_uris: Schema.Array(Schema.String),
-  grant_types: Schema.Array(Schema.Literal("authorization_code")),
+  grant_types: Schema.Array(Schema.Literals(["authorization_code", "refresh_token"])),
   response_types: Schema.Array(Schema.Literal("code")),
   token_endpoint_auth_method: Schema.Literal("none"),
 }).pipe(HttpApiSchema.status(201));
@@ -552,13 +553,29 @@ export const AuthMcpApprovalRedirect = Schema.Struct({
 });
 export type AuthMcpApprovalRedirect = typeof AuthMcpApprovalRedirect.Type;
 
+export const AuthMcpOperation = Schema.Literals(["launch", "send", "read", "interrupt", "settle"]);
+export type AuthMcpOperation = typeof AuthMcpOperation.Type;
+
+export const AuthMcpGrantLimits = Schema.Struct({
+  projectId: Schema.optionalKey(ProjectId),
+  operations: Schema.Array(AuthMcpOperation),
+});
+export type AuthMcpGrantLimits = typeof AuthMcpGrantLimits.Type;
+
+const mcpApprovalOptions = {
+  duration: Schema.optionalKey(Schema.Literals(["30-days", "until-revoked"])),
+  limits: Schema.optionalKey(AuthMcpGrantLimits),
+};
+
 export const AuthMcpApprovalDecision = Schema.Union([
   Schema.TaggedStruct("deny", {}),
   Schema.TaggedStruct("pairing-code", {
+    ...mcpApprovalOptions,
     access: AuthMcpClientAccess,
     code: TrimmedNonEmptyString,
   }),
   Schema.TaggedStruct("browser-session", {
+    ...mcpApprovalOptions,
     access: AuthMcpClientAccess,
     csrfToken: Schema.String,
   }),
@@ -579,6 +596,8 @@ export class AuthMcpApprovalError extends Schema.TaggedError<AuthMcpApprovalErro
 
 export const AuthMcpTokenRequest = Schema.Struct({
   grant_type: Schema.optionalKey(Schema.String),
+  refresh_token: Schema.optionalKey(Schema.String),
+  scope: Schema.optionalKey(Schema.String),
   code: Schema.optionalKey(Schema.String),
   redirect_uri: Schema.optionalKey(Schema.String),
   client_id: Schema.optionalKey(Schema.String),
@@ -589,6 +608,7 @@ export type AuthMcpTokenRequest = typeof AuthMcpTokenRequest.Type;
 
 export const AuthMcpTokenResult = Schema.Struct({
   access_token: Schema.String,
+  refresh_token: Schema.optionalKey(Schema.String),
   token_type: Schema.Literal("Bearer"),
   expires_in: Schema.Number,
   scope: Schema.String,

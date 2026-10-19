@@ -1,3 +1,4 @@
+import { refreshAuthorization } from "@modelcontextprotocol/sdk/client/auth.js";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   AuthMcpClientAccess,
@@ -87,7 +88,11 @@ const form = (body: Record<string, string>) => ({
 type Handler = (request: Request) => Effect.Effect<Response>;
 
 const withRoutes = <A, E>(
-  use: (handler: Handler, auth: EnvironmentAuth.EnvironmentAuth["Service"]) => Effect.Effect<A, E>,
+  use: (
+    handler: Handler,
+    auth: EnvironmentAuth.EnvironmentAuth["Service"],
+    fetchHandler: (request: Request) => Promise<Response>,
+  ) => Effect.Effect<A, E>,
 ) =>
   Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto;
@@ -102,7 +107,7 @@ const withRoutes = <A, E>(
         Effect.gen(function* () {
           const handler: Handler = (request) => Effect.promise(() => web.handler(request, context));
           yield* handler(at("/.well-known/oauth-authorization-server"));
-          return yield* use(handler, routerAuth!);
+          return yield* use(handler, routerAuth!, (request) => web.handler(request, context));
         }),
       (web) => Effect.promise(() => web.dispose()),
     );
@@ -120,7 +125,7 @@ const postJson = (path: string, body: unknown, cookie?: string) =>
 const decide = (
   handler: Handler,
   authorization: Record<string, string>,
-  decision: Record<string, string>,
+  decision: Record<string, unknown>,
   cookie?: string,
 ) =>
   handler(postJson("/oauth/mcp/decision", { authorization, decision }, cookie)).pipe(
@@ -288,7 +293,12 @@ it.live("signs in with a pairing code and issues a token only /mcp accepts", () 
       const token = (yield* json<unknown>(tokenResponse)) as {
         access_token: string;
         scope: string;
+        expires_in: number;
+        refresh_token?: string;
       };
+      expect(token.refresh_token).toBeUndefined();
+      expect(token.expires_in).toBeGreaterThanOrEqual(2591998);
+      expect(token.expires_in).toBeLessThanOrEqual(2592000);
       expect(token.scope).toBe("orchestration:read orchestration:operate");
 
       expect((yield* exchange(verifier)).status).toBe(400);
@@ -589,3 +599,95 @@ it("matches loopback redirects on everything but the port, and https redirects e
   expect(matches("https://bot.example/cb", "https://bot.example/cb?x=1")).toBe(false);
   expect(matches("https://bot.example/cb", "https://evil.example/cb")).toBe(false);
 });
+
+it.live("issues a refresh token only when until-revoked was explicitly approved", () =>
+  withRoutes((handler, auth, fetchHandler) =>
+    Effect.gen(function* () {
+      const clientId = yield* registeredClientId(handler);
+      const params = authorizeParams(clientId);
+      const pairing = yield* auth.issuePairingCredential();
+      const approved = yield* decide(handler, params, {
+        _tag: "pairing-code",
+        access: "auto",
+        code: pairing.credential,
+        duration: "until-revoked",
+        limits: {
+          projectId: "wedding",
+          operations: ["launch", "read", "send", "interrupt", "settle"],
+        },
+      });
+      expect(approved.status).toBe(200);
+      const response = yield* handler(
+        at(
+          "/oauth/mcp/token",
+          form({
+            grant_type: "authorization_code",
+            code: new URL(approved.redirectTo!).searchParams.get("code")!,
+            redirect_uri: params.redirect_uri,
+            client_id: clientId,
+            code_verifier: verifier,
+          }),
+        ),
+      );
+      const tokens = yield* json<{ access_token: string; refresh_token?: string }>(response);
+      expect(tokens.refresh_token).toEqual(expect.any(String));
+      expect((yield* auth.listSessions()).some((s) => s.client.label === "Claude Code")).toBe(true);
+      const sdkRefresh = () =>
+        refreshAuthorization(new URL(ORIGIN), {
+          metadata: {
+            issuer: ORIGIN,
+            authorization_endpoint: `${ORIGIN}/oauth/mcp/authorize`,
+            token_endpoint: `${ORIGIN}/oauth/mcp/token`,
+            response_types_supported: ["code"],
+            token_endpoint_auth_methods_supported: ["none"],
+          },
+          clientInformation: { client_id: clientId },
+          refreshToken: tokens.refresh_token!,
+          resource: new URL(`${ORIGIN}/mcp`),
+          fetchFn: async (input, init) => {
+            const request = new Request(input, init);
+            return fetchHandler(
+              at(new URL(request.url).pathname, {
+                method: request.method,
+                headers: Object.fromEntries(request.headers),
+                body: await request.text(),
+              }),
+            );
+          },
+        });
+      // The stock transport independently runs this SDK refresh path for concurrent 401s.
+      const [renewed, concurrent] = yield* Effect.promise(() =>
+        Promise.all([sdkRefresh(), sdkRefresh()]),
+      );
+      expect(renewed.refresh_token).toBe(concurrent.refresh_token);
+      expect(renewed.refresh_token).toEqual(expect.any(String));
+      expect(renewed.refresh_token).not.toBe(tokens.refresh_token);
+      const client = yield* auth.authenticateMcpClient(
+        HttpServerRequest.fromWeb(
+          at("/mcp", {
+            headers: { authorization: `Bearer ${renewed.access_token}` },
+          }),
+        ),
+      );
+      expect(client).toMatchObject({
+        access: "auto",
+        limits: {
+          projectId: "wedding",
+          operations: ["launch", "read", "send", "interrupt", "settle"],
+        },
+      });
+      const attemptWidening = yield* handler(
+        at(
+          "/oauth/mcp/token",
+          form({
+            grant_type: "refresh_token",
+            client_id: clientId,
+            refresh_token: renewed.refresh_token!,
+            scope: "access:write",
+          }),
+        ),
+      );
+      expect(attemptWidening.status).toBe(400);
+    }),
+  ),
+);

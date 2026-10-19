@@ -33,6 +33,7 @@ import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import type * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as EnvironmentAuth from "./EnvironmentAuth.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
+import * as SessionStore from "./SessionStore.ts";
 import {
   base64UrlDecodeUtf8,
   base64UrlEncode,
@@ -87,7 +88,7 @@ export const authorizationServerMetadata = (
   token_endpoint: `${urls.issuer}/oauth/mcp/token`,
   registration_endpoint: `${urls.issuer}/oauth/mcp/register`,
   response_types_supported: ["code"],
-  grant_types_supported: ["authorization_code"],
+  grant_types_supported: ["authorization_code", "refresh_token"],
   code_challenge_methods_supported: ["S256"],
   token_endpoint_auth_methods_supported: ["none"],
   scopes_supported: MCP_OAUTH_SCOPES,
@@ -176,6 +177,8 @@ export interface AuthorizationRequest {
 }
 
 interface PendingCode {
+  readonly renewable: boolean;
+  readonly limits: ApprovalDecision["limits"];
   readonly permanent: boolean;
   readonly clientId: string;
   readonly clientName: string;
@@ -240,6 +243,7 @@ export const redirectForError = (error: McpOAuthRedirectError, issuer: string) =
 const make = Effect.gen(function* () {
   const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
+  const sessions = yield* SessionStore.SessionStore;
   const crypto = yield* Crypto.Crypto;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const linksEnabled = serverSettings.getSettings.pipe(
@@ -409,6 +413,7 @@ const make = Effect.gen(function* () {
     authorization: AuthorizationRequest,
     access: AuthMcpClientAccess,
     permanent: boolean,
+    decision: ApprovalDecision,
   ) {
     const now = yield* Clock.currentTimeMillis;
     const code = Buffer.from(yield* crypto.randomBytes(32).pipe(Effect.orDie)).toString(
@@ -421,6 +426,8 @@ const make = Effect.gen(function* () {
         clientName: authorization.client.name,
         peerLink: authorization.client.peerLink,
         permanent,
+        renewable: decision.duration === "until-revoked",
+        limits: decision.limits,
         redirectUri: authorization.redirectUri,
         codeChallenge: authorization.codeChallenge,
         resource: authorization.resource,
@@ -464,6 +471,7 @@ const make = Effect.gen(function* () {
       input.authorization,
       decision.access,
       decision._tag === "pairing-code" && input.authorization.client.peerLink,
+      decision,
     );
     yield* Effect.logInfo("Approved an MCP client sign-in.", {
       client: input.authorization.client.name,
@@ -488,6 +496,30 @@ const make = Effect.gen(function* () {
     function* ({ request, urls, token }) {
       const fail = (error: AuthMcpTokenError["error"], description: string) =>
         new AuthMcpTokenError({ error, error_description: description });
+      if (token.grant_type === "refresh_token") {
+        if (!token.refresh_token || !token.client_id)
+          return yield* fail("invalid_request", "refresh_token and client_id are required.");
+        if (!sameResource(urls, token.resource) || token.scope !== undefined)
+          return yield* fail(
+            "invalid_grant",
+            "Renewal cannot change the approved resource or scopes.",
+          );
+        const renewed = yield* sessions
+          .refreshMcpOAuthToken(token.refresh_token, token.client_id, urls.resource)
+          .pipe(
+            Effect.mapError(() =>
+              fail("invalid_grant", "The refresh token is invalid or revoked."),
+            ),
+          );
+        const now = yield* Clock.currentTimeMillis;
+        return {
+          access_token: renewed.token,
+          refresh_token: renewed.refreshToken,
+          token_type: "Bearer" as const,
+          expires_in: Math.max(0, Math.floor((renewed.expiresAt.epochMilliseconds - now) / 1000)),
+          scope: encodeOAuthScope(renewed.scopes),
+        };
+      }
       if (token.grant_type !== "authorization_code") {
         return yield* fail("unsupported_grant_type", "Only authorization_code is supported.");
       }
@@ -528,6 +560,8 @@ const make = Effect.gen(function* () {
           access: pending.access,
           peerLink: pending.peerLink,
           permanent: pending.permanent,
+          ...(pending.renewable ? { renewable: { clientId, resource: pending.resource } } : {}),
+          ...(pending.limits === undefined ? {} : { limits: pending.limits }),
           client: deriveAuthClientMetadata({ request }),
         })
         .pipe(
@@ -541,6 +575,9 @@ const make = Effect.gen(function* () {
         );
       return {
         access_token: issued.token,
+        ...("refreshToken" in issued && issued.refreshToken !== undefined
+          ? { refresh_token: issued.refreshToken }
+          : {}),
         token_type: "Bearer",
         expires_in: Math.max(0, Math.floor((issued.expiresAt.epochMilliseconds - now) / 1000)),
         scope: encodeOAuthScope(mcpClientScopes(pending.access)),
@@ -581,6 +618,7 @@ export const layerMcpClientAuthenticator = Layer.effect(
                     label: client.label,
                     access: client.access,
                     linked: client.peerLink,
+                    ...(client.limits === undefined ? {} : { limits: client.limits }),
                     ...(client.peerLink ? {} : { webOrigin: requestUrls(request).issuer }),
                   },
                   capabilities: new Set<McpInvocationContext.McpCapability>([

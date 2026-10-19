@@ -1,5 +1,6 @@
 import { permanentPeerSessionTtl } from "../peer/permanentSession.ts";
 import {
+  type AuthMcpGrantLimits,
   AuthAccessTokenType,
   AuthAccessWriteScope,
   AuthCookieMirrorWriteScope,
@@ -82,6 +83,7 @@ export interface McpClientSession {
   readonly access: AuthMcpClientAccess;
   /** Another T3 Code environment's link, whose work here stays within it. */
   readonly peerLink: boolean;
+  readonly limits?: AuthMcpGrantLimits;
 }
 
 export interface AuthenticatedSession {
@@ -553,11 +555,14 @@ export class EnvironmentAuth extends Context.Service<
       readonly access: AuthMcpClientAccess;
       readonly peerLink: boolean;
       readonly permanent?: boolean;
+      readonly renewable?: { readonly clientId: string; readonly resource: string };
+      readonly limits?: AuthMcpGrantLimits;
       readonly client: AuthClientMetadata;
     }) => Effect.Effect<
       {
         readonly sessionId: AuthSessionId;
         readonly token: string;
+        readonly refreshToken?: string;
         readonly expiresAt: DateTime.DateTime;
       },
       ServerAuthInternalError
@@ -1343,6 +1348,7 @@ export const make = Effect.gen(function* () {
                 ? (session.runtimeModeCeiling ?? "approval-required")
                 : "read-only",
               peerLink: session.peerLink === true,
+              ...(session.mcpLimits === undefined ? {} : { limits: session.mcpLimits }),
             } satisfies McpClientSession)
           : Effect.fail(
               new ServerAuthInvalidCredentialError({
@@ -1364,16 +1370,28 @@ export const make = Effect.gen(function* () {
           method: "bearer-access-token",
           scopes: mcpClientScopes(input.access),
           ttl,
+          ...(input.renewable === undefined ? {} : { expiresAt: REUSABLE_DEV_SESSION_EXPIRES_AT }),
           ...(input.access === "read-only" ? {} : { runtimeModeCeiling: input.access }),
           peerLink: input.peerLink,
+          ...(input.limits === undefined ? {} : { mcpLimits: input.limits }),
           client: { ...input.client, label: input.label, deviceType: "bot" },
         })
         .pipe(
-          Effect.map((issued) => ({
-            sessionId: issued.sessionId,
-            token: issued.token,
-            expiresAt: issued.expiresAt,
-          })),
+          Effect.flatMap((issued) =>
+            input.renewable === undefined
+              ? Effect.succeed({
+                  sessionId: issued.sessionId,
+                  token: issued.token,
+                  expiresAt: issued.expiresAt,
+                })
+              : sessions
+                  .issueMcpOAuthTokens(
+                    issued.token,
+                    input.renewable.clientId,
+                    input.renewable.resource,
+                  )
+                  .pipe(Effect.map((tokens) => ({ sessionId: issued.sessionId, ...tokens }))),
+          ),
           Effect.mapError((cause) => new ServerAuthSessionTokenIssueError({ cause })),
           Effect.withSpan("EnvironmentAuth.issueMcpClientSession"),
         );

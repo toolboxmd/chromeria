@@ -6,6 +6,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as McpRouting from "./McpRouting.ts";
+import { checkOutsideGrant } from "./outsideGrant.ts";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
 import * as Struct from "effect/Struct";
@@ -64,7 +65,12 @@ export class Declaration<out Handler> {
   }
   static {
     declare = (handle) =>
-      new Declaration(builtHere, (params) => McpRouting.withContext(params, handle(params)));
+      new Declaration(builtHere, (params) =>
+        McpRouting.CurrentTool.pipe(
+          Effect.flatMap((tool) => checkOutsideGrant(tool?.name ?? "", params)),
+          Effect.andThen(McpRouting.withContext(params, handle(params))),
+        ),
+      );
     checkedHandler = Struct.lambda<CheckedHandler>((declaration) => declaration.#handle);
   }
 }

@@ -1,5 +1,6 @@
 import {
   AuthSessionId,
+  AuthMcpGrantLimits,
   AuthStandardClientScopes,
   AuthEnvironmentScopes,
   type AuthClientMetadata,
@@ -67,6 +68,7 @@ export interface VerifiedSession {
   readonly runtimeModeCeiling?: RuntimeMode;
   /** An MCP client that is another T3 Code environment's peer link. */
   readonly peerLink?: true;
+  readonly mcpLimits?: AuthMcpGrantLimits;
 }
 
 export interface VerifiedWebSocketTicket extends VerifiedSession {
@@ -383,6 +385,8 @@ export class SessionStore extends Context.Service<
     readonly issue: (input?: {
       readonly renewalCommitment?: string;
       readonly ttl?: Duration.Duration;
+      /** Absolute authority deadline, used for outside grants that last until revoked. */
+      readonly expiresAt?: DateTime.DateTime;
       readonly subject?: string;
       readonly method?: ServerAuthSessionMethod;
       readonly scopes?: ReadonlyArray<AuthEnvironmentScope>;
@@ -390,6 +394,7 @@ export class SessionStore extends Context.Service<
       readonly proofKeyThumbprint?: string;
       readonly runtimeModeCeiling?: RuntimeMode;
       readonly peerLink?: boolean;
+      readonly mcpLimits?: AuthMcpGrantLimits;
       /**
        * Atomically revoke active sessions with the same subject and method
        * before storing this session.
@@ -397,6 +402,27 @@ export class SessionStore extends Context.Service<
       readonly replaceActiveForSubjectAndMethod?: boolean;
       readonly replaceSessionId?: AuthSessionId;
     }) => Effect.Effect<IssuedSession, SessionCredentialInternalError>;
+    readonly issueMcpOAuthTokens: (
+      token: string,
+      clientId: string,
+      resource: string,
+    ) => Effect.Effect<
+      { token: string; refreshToken: string; expiresAt: DateTime.DateTime },
+      SessionCredentialError
+    >;
+    readonly refreshMcpOAuthToken: (
+      token: string,
+      clientId: string,
+      resource: string,
+    ) => Effect.Effect<
+      {
+        token: string;
+        refreshToken: string;
+        expiresAt: DateTime.DateTime;
+        scopes: ReadonlyArray<AuthEnvironmentScope>;
+      },
+      SessionCredentialError
+    >;
     readonly verify: (token: string) => Effect.Effect<VerifiedSession, SessionCredentialError>;
     readonly renewSession: (input: { secret: string; next: string }) => Effect.Effect<
       {
@@ -472,6 +498,7 @@ const SessionClaims = Schema.Struct({
   rtc: Schema.optionalKey(RuntimeMode),
   /** Signed, so a client cannot shed its peer link's limits. */
   plk: Schema.optionalKey(Schema.Literal(1)),
+  mcp: Schema.optionalKey(AuthMcpGrantLimits),
   iat: Schema.Number,
   exp: Schema.Number,
 });
@@ -531,6 +558,19 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const renewal = yield* SessionRenewal.SessionRenewal;
   const signingSecret = yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32);
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      yield* sql`CREATE TABLE IF NOT EXISTS auth_mcp_refresh (
+      session_id TEXT PRIMARY KEY REFERENCES auth_sessions(session_id),
+      token_hash TEXT NOT NULL, previous_hash TEXT, previous_valid_until INTEGER
+    )`;
+      const columns = yield* sql<{ name: string }>`PRAGMA table_info(auth_mcp_refresh)`;
+      if (!columns.some((column) => column.name === "previous_hash"))
+        yield* sql`ALTER TABLE auth_mcp_refresh ADD COLUMN previous_hash TEXT`;
+      if (!columns.some((column) => column.name === "previous_valid_until"))
+        yield* sql`ALTER TABLE auth_mcp_refresh ADD COLUMN previous_valid_until INTEGER`;
+    }),
+  );
   const connectedSessionsRef = yield* Ref.make(new Map<AuthSessionId, number>());
   // Sessions with a running awaitInvalidation; each registers before its first row read.
   const watchedSessionsRef = yield* SubscriptionRef.make<ReadonlyMap<AuthSessionId, number>>(
@@ -705,9 +745,12 @@ const make = Effect.gen(function* () {
           .pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ cause }))),
       );
       const issuedAt = yield* DateTime.now;
-      const expiresAt = DateTime.add(issuedAt, {
-        milliseconds: Duration.toMillis(input?.ttl ?? DEFAULT_SESSION_TTL),
-      });
+      const expiresAt =
+        input?.expiresAt === undefined
+          ? DateTime.add(issuedAt, {
+              milliseconds: Duration.toMillis(input?.ttl ?? DEFAULT_SESSION_TTL),
+            })
+          : DateTime.toUtc(input.expiresAt);
       const claims: SessionClaims = {
         v: 1,
         kind: "session",
@@ -718,6 +761,7 @@ const make = Effect.gen(function* () {
         ...(input?.proofKeyThumbprint ? { jkt: input.proofKeyThumbprint } : {}),
         ...(input?.runtimeModeCeiling ? { rtc: input.runtimeModeCeiling } : {}),
         ...(input?.peerLink === true ? { plk: 1 as const } : {}),
+        ...(input?.mcpLimits === undefined ? {} : { mcp: input.mcpLimits }),
         iat: issuedAt.epochMilliseconds,
         exp: expiresAt.epochMilliseconds,
       };
@@ -917,9 +961,129 @@ const make = Effect.gen(function* () {
         ...(claims.jkt ? { proofKeyThumbprint: claims.jkt } : {}),
         ...(claims.rtc ? { runtimeModeCeiling: claims.rtc } : {}),
         ...(claims.plk === 1 ? { peerLink: true as const } : {}),
+        ...(claims.mcp === undefined ? {} : { mcpLimits: claims.mcp }),
       } satisfies VerifiedSession;
     },
   );
+
+  // OAuth refresh authority has a separate signing domain and is never a bearer session.
+  const RefreshClaims = Schema.Struct({
+    clientId: Schema.String,
+    resource: Schema.String,
+    nonce: Schema.String,
+    claims: SessionClaims,
+  });
+  const decodeRefresh = Schema.decodeUnknownEffect(Schema.fromJsonString(RefreshClaims));
+  const encodeRefresh = Schema.encodeEffect(Schema.fromJsonString(RefreshClaims));
+  const signRefresh = (payload: string) => signPayload(`mcp-refresh.${payload}`, signingSecret);
+  const accessTokens = (
+    claims: SessionClaims,
+    clientId: string,
+    resource: string,
+    nextNonce?: string,
+  ) =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const expiresAt = DateTime.add(now, { hours: 1 });
+      const payload = yield* encodeClaims({
+        ...claims,
+        iat: now.epochMilliseconds,
+        exp: expiresAt.epochMilliseconds,
+      }).pipe(
+        Effect.map(base64UrlEncode),
+        Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
+      );
+      const nonce =
+        nextNonce ??
+        (yield* crypto
+          .randomUUIDv4()
+          .pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ cause }))));
+      const refreshPayload = yield* encodeRefresh({ claims, clientId, resource, nonce }).pipe(
+        Effect.map(base64UrlEncode),
+        Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
+      );
+      const refreshToken = `${refreshPayload}.${signRefresh(refreshPayload)}`;
+      return {
+        token: `${payload}.${signPayload(payload, signingSecret)}`,
+        refreshToken,
+        expiresAt,
+      };
+    });
+  const tokenHash = (token: string) => signPayload(`mcp-refresh-hash.${token}`, signingSecret);
+  const issueMcpOAuthTokens: SessionStore["Service"]["issueMcpOAuthTokens"] = (
+    token,
+    clientId,
+    resource,
+  ) =>
+    Effect.gen(function* () {
+      const verified = yield* verify(token);
+      if (verified.subject !== "mcp-client") return yield* new MalformedSessionTokenError({});
+      const claims = yield* decodeSessionClaims(base64UrlDecodeUtf8(token.split(".")[0]!)).pipe(
+        Effect.mapError((cause) => new InvalidSessionTokenPayloadError({ cause })),
+      );
+      const result = yield* accessTokens(claims, clientId, resource);
+      yield* sql`INSERT INTO auth_mcp_refresh (session_id, token_hash) VALUES (${claims.sid}, ${tokenHash(result.refreshToken)})`.pipe(
+        Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
+      );
+      return result;
+    });
+  const refreshMcpOAuthToken: SessionStore["Service"]["refreshMcpOAuthToken"] = (
+    token,
+    clientId,
+    resource,
+  ) =>
+    Effect.gen(function* () {
+      const [payload, signature, extra] = token.split(".");
+      if (
+        !payload ||
+        !signature ||
+        extra !== undefined ||
+        !timingSafeEqualBase64Url(signature, signRefresh(payload))
+      )
+        return yield* new MalformedSessionTokenError({});
+      const refresh = yield* decodeRefresh(base64UrlDecodeUtf8(payload)).pipe(
+        Effect.mapError((cause) => new InvalidSessionTokenPayloadError({ cause })),
+      );
+      if (
+        refresh.clientId !== clientId ||
+        refresh.resource !== resource ||
+        refresh.claims.sub !== "mcp-client"
+      )
+        return yield* new MalformedSessionTokenError({});
+      const authorityPayload = yield* encodeClaims(refresh.claims).pipe(
+        Effect.map(base64UrlEncode),
+        Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
+      );
+      yield* verify(`${authorityPayload}.${signPayload(authorityPayload, signingSecret)}`);
+      // A concurrent SDK request or a lost response must get the same successor,
+      // without persisting the refresh secret. Only the immediate predecessor can retry.
+      const result = yield* accessTokens(
+        refresh.claims,
+        clientId,
+        resource,
+        signPayload(`mcp-refresh-nonce.${token}`, signingSecret),
+      );
+      const now = (yield* DateTime.now).epochMilliseconds;
+      const updated =
+        yield* sql`UPDATE auth_mcp_refresh SET token_hash = ${tokenHash(result.refreshToken)},
+          previous_hash = ${tokenHash(token)}, previous_valid_until = ${now + 5_000}
+        WHERE session_id = ${refresh.claims.sid} AND token_hash = ${tokenHash(token)} RETURNING session_id`.pipe(
+          Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
+        );
+      if (updated.length !== 1) {
+        const retry = yield* sql`SELECT session_id FROM auth_mcp_refresh
+          WHERE session_id = ${refresh.claims.sid} AND token_hash = ${tokenHash(result.refreshToken)}
+            AND previous_hash = ${tokenHash(token)} AND previous_valid_until > ${now}`.pipe(
+          Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
+        );
+        if (retry.length !== 1) {
+          // Valid bound authority reused after the retry window, or after another rotation.
+          yield* revoke(refresh.claims.sid);
+          return yield* new MalformedSessionTokenError({});
+        }
+      }
+      return { ...result, scopes: refresh.claims.scopes };
+    });
 
   const encodeWsClaims = Schema.encodeEffect(Schema.fromJsonString(WebSocketClaims));
   const issueWebSocketToken: SessionStore["Service"]["issueWebSocketToken"] = Effect.fn(
@@ -1226,6 +1390,8 @@ const make = Effect.gen(function* () {
     legacyCookieName,
     issue,
     renewSession,
+    issueMcpOAuthTokens,
+    refreshMcpOAuthToken,
     verify,
     issueWebSocketToken,
     verifyWebSocketToken,

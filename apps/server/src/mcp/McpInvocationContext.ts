@@ -1,5 +1,6 @@
 import {
   type AuthMcpClientAccess,
+  type AuthMcpGrantLimits,
   type EnvironmentId,
   McpCapabilityUnavailableError,
   OrchestratorMcpFailure,
@@ -36,6 +37,7 @@ export interface McpClientCaller {
   readonly sessionId: string;
   readonly label: string;
   readonly access: AuthMcpClientAccess;
+  readonly limits?: AuthMcpGrantLimits;
   /**
    * Another T3 Code environment's peer link. What it starts here carries its
    * session as `linkOrigin`, and it changes only that work (`linkOrigin.ts`).
