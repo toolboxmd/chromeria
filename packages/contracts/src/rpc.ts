@@ -1,3 +1,4 @@
+import { COOKIE_MIRROR_ENABLE_RPC, CookieMirrorError } from "./browserCookieMirror.ts";
 import { PromachosHomeRpcGroup } from "./promachosHome.ts";
 import {
   OrchestrationV2SearchThreadError,
@@ -1548,6 +1549,11 @@ const WsPreviewClearProfileRpc = Rpc.make(WS_METHODS.previewClearProfile, {
   error: Schema.Union([PreviewClearProfileError, EnvironmentAuthorizationError]),
 });
 
+const WsCookieMirrorEnableRpc = Rpc.make(COOKIE_MIRROR_ENABLE_RPC, {
+  payload: Schema.Struct({}),
+  error: Schema.Union([CookieMirrorError, EnvironmentAuthorizationError]),
+});
+
 const WsPreviewReportProfilesRpc = Rpc.make(WS_METHODS.previewReportProfiles, {
   payload: PreviewReportProfilesInput,
   error: EnvironmentAuthorizationError,
@@ -2052,6 +2058,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsPreviewListRpc,
   WsPreviewClearProfileRpc,
   WsPreviewReportProfilesRpc,
+  WsCookieMirrorEnableRpc,
   WsPreviewReportStatusRpc,
   WsSubscribePreviewEventsRpc,
   WsSubscribeDiscoveredLocalServersRpc,

@@ -32,6 +32,7 @@ export const AuthOrchestrationOperateScope = "orchestration:operate" as const;
 export const AuthSettingsWriteScope = "settings:write" as const;
 export const AuthProvidersManageScope = "providers:manage" as const;
 export const AuthEnvironmentMaintainScope = "environment:maintain" as const;
+export const AuthCookieMirrorWriteScope = "preview:mirror-cookies" as const;
 export const AuthPreviewOperateScope = "preview:operate" as const;
 export const AuthDiagnosticsReadScope = "diagnostics:read" as const;
 export const AuthTerminalReadScope = "terminal:read" as const;
@@ -52,6 +53,7 @@ export const AuthEnvironmentScope = Schema.Literals([
   AuthProvidersManageScope,
   AuthEnvironmentMaintainScope,
   AuthPreviewOperateScope,
+  AuthCookieMirrorWriteScope,
   AuthDiagnosticsReadScope,
   AuthTerminalReadScope,
   AuthTerminalOperateScope,
@@ -69,7 +71,9 @@ export const AuthEnvironmentScopes = Schema.Array(AuthEnvironmentScope);
 export type AuthEnvironmentScopes = typeof AuthEnvironmentScopes.Type;
 
 export const AuthGrantScope = Schema.Literals(
-  AuthEnvironmentScope.literals.filter((scope) => scope !== AuthReviewWriteScope),
+  AuthEnvironmentScope.literals.filter(
+    (scope) => scope !== AuthReviewWriteScope && scope !== AuthCookieMirrorWriteScope,
+  ),
 );
 export type AuthGrantScope = typeof AuthGrantScope.Type;
 export const AuthGrantScopes = Schema.Array(AuthGrantScope);
@@ -112,7 +116,10 @@ const legacyParents: Partial<Record<AuthEnvironmentScope, AuthEnvironmentScope>>
 /** Keep permission denials decodable by clients with the original scope enum. */
 export function authScopeRequiredResponse(requiredPermission: AuthEnvironmentScope) {
   return {
-    requiredScope: legacyParents[requiredPermission] ?? requiredPermission,
+    requiredScope:
+      requiredPermission === AuthCookieMirrorWriteScope
+        ? AuthAccessWriteScope
+        : (legacyParents[requiredPermission] ?? requiredPermission),
     requiredPermission,
   };
 }

@@ -1,3 +1,4 @@
+import { resolveBrowserProfiles, type CookieMirrorProfile } from "@t3tools/contracts";
 import { useEffect, useRef, useSyncExternalStore, use } from "react";
 import { useSyncExternalStoreWithSelector } from "use-sync-external-store/with-selector";
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
@@ -261,6 +262,14 @@ function splitPatch(patch: UnifiedSettingsPatch): {
     serverPatch: serverPatch as ServerSettingsPatch,
     clientPatch: clientPatch as ClientSettingsPatch,
   };
+}
+
+/** Main owns Chrome profile discovery; this notification contains profile metadata only. */
+export function adoptDesktopBrowserProfiles(profiles: ReadonlyArray<CookieMirrorProfile>): void {
+  const current = getClientSettingsSnapshot();
+  const browserProfiles = resolveBrowserProfiles(profiles);
+  if (JSON.stringify(current.browserProfiles) === JSON.stringify(browserProfiles)) return;
+  replaceClientSettingsSnapshot({ ...current, browserProfiles });
 }
 
 export function getClientSettings(): ClientSettings {

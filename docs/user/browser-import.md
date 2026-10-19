@@ -1,4 +1,26 @@
-# Import browser sessions
+# Reuse browser logins
+
+On macOS, Chromeria continuously mirrors Chrome's logins while the desktop app runs,
+including while Chrome is open. Chrome's Default profile uses Chromeria's default
+profile; other Chrome profiles get separate profiles. Names follow Chrome's labels.
+Guest, System and Incognito profiles are excluded.
+
+Changes reach each connected environment's browser through its matching desktop
+partition. Allow roughly a minute for Chrome to save a change and Chromeria to
+observe it. Logins made inside one environment's desktop partition stay with that
+environment. Cookies created only downstream survive unless the mirror has managed
+that same cookie identity.
+
+When the Mac app is off, environments retain the cookies they last received.
+Persistent-cookie removals catch up after reconnect or restart. A session cookie
+disappearing at Chrome shutdown, or while Chromeria was off, does not sign out
+downstream. An observed removal while both apps run does.
+
+Some logins cannot move between devices. Google account sign-in on current macOS
+Chrome is reported per site as **device-bound, not mirrored**. Other sites may also
+require another sign-in. Cookie convergence alone does not prove a working login.
+
+## One-time imports
 
 The desktop app can import cookies from another browser so you can reuse its signed-in sessions
 in the preview browser.
@@ -7,8 +29,7 @@ Open **Settings → Integrations → Browser profiles → Add profile**, then ch
 **Import from**. Close the source browser before importing, and allow an operating-system keyring
 unlock prompt if one appears.
 
-This is a one-time copy. Later login changes stay separate between the two browsers, and some
-sites may still require you to sign in again.
+These imports are one-time copies. Continuous mirroring supports only Chrome on macOS.
 
 On macOS, Safari imports need Full Disk Access. Choose **Allow**, drag T3 Code into the
 System Settings permission list, and turn access on. **Continue** becomes available when access
@@ -17,4 +38,5 @@ the import wizard afterward. You can revoke Full Disk Access once the import is 
 
 On Windows, import supports Firefox and Helium profiles that use standard profile encryption.
 Other Chromium-based browsers use app-bound encryption and cannot be imported. Partitioned cookies
-are skipped on all platforms.
+are skipped by the one-time importer on all platforms. The continuous Chrome mirror
+preserves partitioned cookies.

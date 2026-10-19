@@ -2628,3 +2628,83 @@ sources and reasons.
   "keywords": ["purposeIntent", "nativeSegments", "executionPurposeVersions"]
 }
 ```
+
+## chrome-login-mirror
+
+```json
+{
+  "id": "chrome-login-mirror",
+  "purpose": "Continuously mirror macOS Chrome cookies into persistent desktop partitions and authenticated environment browser profiles, preserving source-only removals and complete partition keys.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/520"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...feat/520-mac-login-mirror"],
+  "newFiles": [
+    "apps/desktop/src/ipc/methods/cookieMirror.ts",
+    "apps/desktop/src/preview/ChromeCookieKey.test.ts",
+    "apps/desktop/src/preview/ChromeCookieKey.ts",
+    "apps/desktop/src/preview/ChromeCookieSource.test.ts",
+    "apps/desktop/src/preview/ChromeCookieSource.ts",
+    "apps/desktop/src/preview/CookieMirror.test.ts",
+    "apps/desktop/src/preview/CookieMirror.ts",
+    "apps/desktop/src/preview/CookieMirrorGrant.test.ts",
+    "apps/desktop/src/preview/CookieMirrorGrant.ts",
+    "apps/desktop/src/preview/CookieMirrorMetadata.test.ts",
+    "apps/desktop/src/preview/CookieMirrorMetadata.ts",
+    "apps/desktop/src/preview/CookieMirrorSocket.test.ts",
+    "apps/desktop/src/preview/CookieMirrorSocket.ts",
+    "apps/desktop/src/preview/DesktopCookieMirror.ts",
+    "apps/desktop/src/preview/ElectronCookieMirror.integration.test.ts",
+    "apps/desktop/src/preview/ElectronCookieMirror.ts",
+    "apps/desktop/src/preview/PartitionScope.ts",
+    "apps/server/src/preview/BrowserCookieMirror.test.ts",
+    "apps/server/src/preview/BrowserCookieMirror.ts",
+    "apps/server/src/preview/CookieMirrorRoute.test.ts",
+    "apps/server/src/preview/CookieMirrorRoute.ts",
+    "apps/server/src/preview/ServerCookieMirror.integration.test.ts",
+    "apps/server/src/preview/ServerCookieMirror.ts",
+    "apps/server/src/preview/ServerCookieMirrorProfiles.ts",
+    "apps/web/src/rpc/cookieMirrorConnection.ts",
+    "packages/contracts/src/browserCookieMirror.test.ts",
+    "packages/contracts/src/browserCookieMirror.ts",
+    "packages/shared/src/browserCookieMirror.test.ts",
+    "packages/shared/src/browserCookieMirror.ts"
+  ],
+  "upstreamFiles": [
+    "apps/desktop/src/ipc/methods/preview.test.ts",
+    "apps/desktop/src/ipc/methods/preview.ts",
+    "apps/desktop/src/preview/BrowserImport/BrowserImport.ts",
+    "apps/desktop/src/preview/BrowserImport/ChromiumKeys.ts",
+    "apps/desktop/src/settings/DesktopAppSettings.test.ts",
+    "apps/desktop/src/settings/DesktopAppSettings.ts",
+    "apps/desktop/src/settings/DesktopClientSettings.ts",
+    "apps/desktop/src/snapShot/DesktopSnapShot.test.ts",
+    "apps/server/src/preview/ServerBrowser.test.ts",
+    "apps/server/src/preview/ServerBrowser.ts",
+    "apps/server/src/preview/ServerBrowserStream.test.ts",
+    "apps/web/src/connection/runtime.ts",
+    "apps/web/src/hooks/useSettings.ts",
+    "docs/user/browser-import.md",
+    "packages/client-runtime/src/rpc/session.test.ts",
+    "packages/client-runtime/src/rpc/session.ts",
+    "packages/contracts/src/browserProfile.test.ts",
+    "packages/contracts/src/browserProfile.ts"
+  ],
+  "sharedFiles": [
+    "apps/desktop/src/ipc/DesktopIpcHandlers.ts",
+    "apps/desktop/src/ipc/channels.ts",
+    "apps/desktop/src/main.ts",
+    "apps/desktop/src/preload.ts",
+    "apps/server/src/observability/RpcInstrumentation.ts",
+    "apps/server/src/server.ts",
+    "apps/server/src/ws.ts",
+    "docs/fork.md",
+    "docs/map.md",
+    "packages/contracts/src/auth.ts",
+    "packages/contracts/src/clientRpcPermissions.ts",
+    "packages/contracts/src/index.ts",
+    "packages/contracts/src/ipc.ts",
+    "packages/contracts/src/rpc.ts",
+    "packages/shared/package.json"
+  ],
+  "keywords": ["cookie mirror", "CookieMirror", "ChromeCookieSource", "preview:mirror-cookies"]
+}
+```

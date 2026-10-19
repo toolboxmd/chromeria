@@ -1,3 +1,7 @@
+import type {
+  CookieMirrorConnectionInput,
+  CookieMirrorConnectionStatus,
+} from "./browserCookieMirror.ts";
 import type { AuthRenewalLocalRecord } from "./auth.ts";
 import * as Schema from "effect/Schema";
 
@@ -1027,6 +1031,9 @@ export const SystemSettingsPaneSchema = Schema.Literals(["full-disk-access"]);
 export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
 export interface DesktopBridge {
+  cookieMirrorConnection?: (
+    input: CookieMirrorConnectionInput,
+  ) => Promise<CookieMirrorConnectionStatus>;
   getAppBranding: () => DesktopAppBranding | null;
   getPathForFile?: (file: File) => string;
   getClientPlatform?: () => string;

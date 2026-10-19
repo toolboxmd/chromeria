@@ -509,6 +509,7 @@ const layerTest = (
           DesktopClientSettings.DesktopClientSettings.of({
             get: settingsGet,
             set: () => Effect.void,
+            update: (update) => settingsGet.pipe(Effect.map(update)),
           }),
         ),
         Layer.succeed(
