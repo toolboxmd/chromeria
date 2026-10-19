@@ -58,6 +58,12 @@ export function HomeRouteScreen() {
     Platform.OS === "android"
       ? primarySidebarSearchQuery
       : (workspace?.state.tabs.threads.query ?? localSearchQuery);
+  const listThreads = useAtomValueWhileVisible(
+    searchQuery.trim().length > 0
+      ? environmentThreadShells.threadShellsAtom
+      : environmentThreadShells.navigationThreadShellsAtom,
+    visible,
+  );
   const setSearchQuery = (query: string) => {
     if (Platform.OS === "android") setPrimarySidebarSearchQuery(query);
     else if (workspace) workspace.dispatch({ type: "query", query, tab: "threads" });
@@ -304,7 +310,8 @@ export function HomeRouteScreen() {
           searchQuery={searchQuery}
           selectedEnvironmentId={selectedEnvironmentId}
           selectedProjectKey={selectedProjectKey}
-          threads={threads}
+          threads={listThreads}
+          navigationThreads={threads}
         />
       </>
     </AndroidHomeFabLayout>

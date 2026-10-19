@@ -251,7 +251,9 @@ apps/web/src/components/files/BrowserDocumentFrame.tsx
 apps/web/src/components/chat/HtmlRenderDialog.browser.test.tsx
 
 # Peer links: upstream port and fork hooks (#164, #380)
+apps/mobile/src/features/home/HomeRouteScreen.tsx
 apps/mobile/src/features/settings/SettingsEnvironmentDetailRouteScreen.tsx
+apps/web/src/components/LegacySidebar.tsx
 packages/client-runtime/src/state/commandPermissions.test.ts
 apps/server/src/auth/McpOAuth.ts
 apps/server/src/binCli.ts
