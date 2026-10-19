@@ -220,10 +220,12 @@ export interface EffectOutboxV2Shape {
     readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
     readonly reason: string;
   }) => Effect.Effect<ReadonlyArray<string>, EffectOutboxError>;
-  readonly signalCancellations: (
-    effectIds: ReadonlyArray<string>,
-    drain?: boolean,
-  ) => Effect.Effect<void>;
+  readonly signalCancellations: (effectIds: ReadonlyArray<string>) => Effect.Effect<void>;
+  /**
+   * Waits until each listed effect that was running here has stopped. Take it
+   * before signalling: the worker forgets an effect once it stops.
+   */
+  readonly drains: (effectIds: ReadonlyArray<string>) => Effect.Effect<Effect.Effect<void>>;
   readonly awaitCancellation: (effectId: string) => Effect.Effect<void>;
   readonly clearCancellation: (effectId: string) => Effect.Effect<void>;
   /** Resolves once the effect is neither pending nor running, or right away when it does not exist. */
@@ -474,14 +476,16 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             (cause) => new EffectOutboxError({ operation: "cancel-unsettled", cause }),
           ),
         ),
-      signalCancellations: (effectIds, drain = false) =>
+      drains: (effectIds) =>
+        Effect.sync(() => {
+          const drains = effectIds.flatMap((id) => {
+            const done = cancellationDrains.get(id);
+            return done === undefined ? [] : [done];
+          });
+          return Effect.forEach(drains, Deferred.await, { discard: true });
+        }),
+      signalCancellations: (effectIds) =>
         Effect.gen(function* () {
-          const drains = drain
-            ? effectIds.flatMap((id) => {
-                const done = cancellationDrains.get(id);
-                return done === undefined ? [] : [done];
-              })
-            : [];
           yield* Effect.forEach(
             effectIds,
             (effectId) => {
@@ -492,7 +496,6 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           );
           yield* signalSettled(effectIds);
           if (effectIds.length > 0) yield* notifyAvailable(effectIds.length);
-          yield* Effect.forEach(drains, Deferred.await, { discard: true });
         }),
       awaitCancellation: (effectId) => {
         // Registration precedes the worker's durable recheck and external execution.

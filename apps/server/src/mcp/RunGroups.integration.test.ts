@@ -657,11 +657,7 @@ describe("Run groups", () => {
           const started = yield* group(
             yield* invoke("delegate_task", { task: "Attack this plan.", prismRole: "roast" }),
           );
-          // Cancel lands after every member's turn started; earlier can hang (#511).
-          for (const task of started.tasks)
-            yield* waitForProjection(orchestrator, task.childThreadId!, (projection) =>
-              projection.providerTurns.some((turn) => turn.status === "running"),
-            );
+          // At once, while members' turns are still starting (#511).
           const cancelled = yield* decodeGroupCancel(
             (yield* invoke("task_cancel", { taskId: started.groupId })).structuredContent,
           ).pipe(Effect.orDie);
