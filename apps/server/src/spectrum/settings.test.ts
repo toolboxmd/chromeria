@@ -59,6 +59,16 @@ it("explicit Colors never inherit saved fallbacks, while supplied fallbacks surv
   ).toMatchObject({ moderator: 0, limit: 6 });
 });
 it.each([
+  { labels: ["Sol", "Grok"], moderator: 0 },
+  { labels: ["Sol", "Red"], moderator: 1 },
+])("chooses White for explicit Colors without White or moderator: %j", ({ labels, moderator }) => {
+  const colors = labels.map((label) => ({ label, ...primary }));
+  expect(resolveSpectrumStart({ ...request, colors }, settings)).toMatchObject({
+    colors,
+    moderator,
+  });
+});
+it.each([
   { relayRounds: 1 },
   { turnsPerColor: 0 },
   { white: "Missing" },

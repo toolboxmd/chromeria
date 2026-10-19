@@ -183,6 +183,25 @@ it.effect(
           options: [{ id: "reasoningEffort", value: "high" }],
         },
       ]);
+      for (const [key, labels, moderator] of [
+        ["explicit-white-first", ["Sol", "Grok"], 0],
+        ["explicit-white-saved", ["Sol", "Red"], 1],
+      ] as const) {
+        const result = yield* call({
+          question: "Explicit slots choose White",
+          clientRequestId: key,
+          colors: labels.map((label) => ({ label, ...primary })),
+        });
+        expect(result).toEqual(
+          expect.arrayContaining([expect.objectContaining({ isFailure: false })]),
+        );
+        const stored = Option.getOrThrow(
+          yield* readSpectrum(ThreadId.make(`spectrum:settings-test:${key}`)),
+        );
+        expect(stored.moderator).toBe(moderator);
+        expect(stored.participants.map((color) => color.label)).toEqual(labels);
+        expect(stored.participants.every((color) => color.fallbacks.length === 0)).toBe(true);
+      }
     }).pipe(Effect.provide(runtime)),
 );
 

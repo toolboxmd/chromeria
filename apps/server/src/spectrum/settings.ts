@@ -40,7 +40,11 @@ export function resolveSpectrumStart(input: SpectrumStartRequest, settings: Spec
   const turnsPerColor = decodeSyncSpectrumTurnsPerColor(
     input.turnsPerColor ?? settings.turnsPerColor,
   );
-  const white = input.white ?? (input.moderator === undefined ? settings.white : null);
+  const defaultWhite =
+    input.colors === undefined || colors.some((slot) => slot.label === settings.white)
+      ? settings.white
+      : null;
+  const white = input.white ?? (input.moderator === undefined ? defaultWhite : null);
   const moderator =
     white === null ? (input.moderator ?? 0) : colors.findIndex((slot) => slot.label === white);
   if (colors.length < 2 || colors.length > 8)
