@@ -1550,6 +1550,64 @@ describe("EnvironmentSupervisor", () => {
       }).pipe(Effect.provide(TestClock.layer())),
   );
 
+  it.effect.each([1, 0, -1])(
+    "retries immediately when the server reports %s ms remaining",
+    (remainingMs) =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust("1 hour");
+        const attempts: number[] = [];
+        const record: AuthRenewalLocalRecord = {
+          revision: 1,
+          active: {
+            epoch: "epoch",
+            environmentId: TARGET.environmentId,
+            origin: TARGET.httpBaseUrl,
+            kind: "cookie",
+            current: "current-secret",
+            generation: 0,
+            pending: null,
+            accessToken: null,
+            expiresAt: 10_000 + remainingMs,
+            renewAfter: 5_000,
+          },
+          provisional: [],
+        };
+        const renewal = Renewal.SessionRenewal.of({
+          stage: () => Effect.die("Unexpected enrollment"),
+          complete: () => Effect.die("Unexpected completion"),
+          enrollExisting: () => Effect.void,
+          read: () => Effect.succeed(record),
+          ensure: () =>
+            Effect.gen(function* () {
+              attempts.push(yield* Clock.currentTimeMillis);
+              if (attempts.length === 2) return { _tag: "Unsupported" };
+              return {
+                _tag: "Renewed",
+                result: decodeRenewalResult({
+                  outcome: "current",
+                  generation: 0,
+                  expiresAt: 10_000 + remainingMs,
+                  renewAfter: 5_000,
+                  serverTime: 10_000,
+                }),
+              };
+            }),
+        });
+        const harness = yield* makeHarness();
+        const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+          initiallyDesired: true,
+        }).pipe(
+          Effect.provide(harness.dependencies),
+          Effect.provideService(Renewal.SessionRenewal, renewal),
+        );
+        yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+        yield* TestClock.adjust(0);
+        expect(attempts).toEqual([3_600_000, 3_600_000]);
+        expect((yield* SubscriptionRef.get(supervisor.state)).phase).toBe("connected");
+        yield* supervisor.disconnect;
+      }).pipe(Effect.provide(TestClock.layer())),
+  );
+
   it.effect("does not churn a healthy session when credentials change", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();

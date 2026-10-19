@@ -848,8 +848,10 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
             renewed.result.expiresAt -
             (renewed.result.serverTime ?? renewed.result.renewAfter) -
             elapsedMs;
+          // Millisecond timer rounding must not consume the last expiry margin.
+          if (remainingMs <= 2) continue;
           // Leave half the remaining lifetime for rotation, independent of the client clock.
-          yield* Effect.sleep(Math.min(60_000, Math.max(1, remainingMs / 2)));
+          yield* Effect.sleep(Math.min(60_000, remainingMs / 2));
         }
       }
     });
