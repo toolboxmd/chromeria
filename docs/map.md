@@ -34,7 +34,7 @@ flowchart TD
     end
 
     PBI["Preview browser identity"]
-    %% PBI: #460 PR #470
+    %% PBI: #460 PR #470 PR #527
     T3C --> PBI
 
     PZ["Prism routing"]
