@@ -231,8 +231,14 @@ const PreviewDragTool = browserTool(
 const PreviewUploadTool = browserTool(
   Tool.make("preview_upload", {
     description:
-      "Give files on the environment to the page in the tab selected by tabId, or this agent session's current tab when omitted. After clicking an upload control, preview_status reports the open fileChooser; call this with absolute paths to answer it, or with an empty list to cancel. Pass a locator for an <input type=file> to set its files without a picker. Server browser tabs only.",
-    parameters: McpRouting.parameters(PreviewAutomationUploadInput),
+      "Give files to a native browser tab. For a linked browser, pass artifacts from t3_attachment_inspect and the exact resource returned by preview_open/status; source-owned files transfer through verified native staging. Local legacy callers may pass absolute paths instead. Provide exactly one of paths or artifacts, at most20 files/100 MiB total. An empty list clears a named file input or cancels the open picker. Pass a locator for an <input type=file> to avoid a picker.",
+    parameters: McpRouting.parameters(PreviewAutomationUploadInput).check(
+      Schema.makeFilter(
+        (value) =>
+          Schema.is(PreviewAutomationUploadInput)(value) ||
+          "Provide either local paths or qualified artifacts for their exact browser resource within20files/100MiB.",
+      ),
+    ),
     success: PreviewActionResult,
     failure: PreviewToolFailure,
     dependencies,

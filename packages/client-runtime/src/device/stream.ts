@@ -388,6 +388,7 @@ export function createDeviceStreamClient(
   const duoControl = createDuoControl({
     send(request) {
       if (
+        access.canOperate === false ||
         !iosInputAdmitted ||
         iosInputUnavailable ||
         socket?.readyState !== WebSocket.OPEN ||
@@ -893,7 +894,7 @@ export function createDeviceStreamClient(
       if (
         event.code === 1008 ||
         event.code === 4401 ||
-        (event.code === 1006 && access.query.wsTicket)
+        (event.code === 1006 && (access.query.wsTicket || access.query.viewerTicket))
       )
         return handleUnauthorized();
       scheduleRetry("input", () => void connectIosInput());
@@ -910,7 +911,10 @@ export function createDeviceStreamClient(
     ws.onopen = () => {
       if (stopped || socket !== ws) return;
       connecting();
-      events.onInputConnected(true);
+      events.onInputConnected(
+        access.canOperate !== false,
+        access.canOperate === false ? "View only" : undefined,
+      );
     };
     ws.onmessage = (event) => {
       if (stopped || socket !== ws) return;
@@ -962,7 +966,7 @@ export function createDeviceStreamClient(
       if (
         event.code === 1008 ||
         event.code === 4401 ||
-        (event.code === 1006 && access.query.wsTicket)
+        (event.code === 1006 && (access.query.wsTicket || access.query.viewerTicket))
       )
         return handleUnauthorized();
       configuring = false;
@@ -981,7 +985,8 @@ export function createDeviceStreamClient(
     iosInputUnavailable = false;
     connecting();
     if (platform === "ios") {
-      if (!target.videoOnly) void connectIosInput();
+      if (!target.videoOnly && access.canOperate !== false) void connectIosInput();
+      else if (access.canOperate === false) events.onInputConnected(false, "View only");
       if (useWebCodecs) void readIosVideo();
       else fallBackToMjpeg();
     } else if (useWebCodecs) {
@@ -1023,6 +1028,7 @@ export function createDeviceStreamClient(
   const send = (payload: Uint8Array<ArrayBuffer> | string) => {
     if (
       !stopped &&
+      access.canOperate !== false &&
       (platform !== "ios" || (iosInputAdmitted && !iosInputUnavailable)) &&
       socket?.readyState === WebSocket.OPEN
     )

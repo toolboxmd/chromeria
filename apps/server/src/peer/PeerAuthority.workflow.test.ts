@@ -1,3 +1,29 @@
+import * as Cause from "effect/Cause";
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeHttp from "node:http";
+import * as ResourceWebSocketServer from "../http/ResourceWebSocketServer.ts";
+import { guardHttpResponseWriteErrors } from "../httpResponseErrorGuard.ts";
+import * as PubSub from "effect/PubSub";
+import { resourcesFromToolItem } from "@t3tools/shared/toolOutput";
+import { projectThreadProjectionForWire } from "../orchestration-v2/WireProjection.ts";
+import { NodeWS } from "@effect/platform-node/NodeSocket";
+import * as DeviceHubProxy from "../device/DeviceHubProxy.ts";
+import * as AuthHttp from "../auth/http.ts";
+import * as Auth from "../auth/EnvironmentAuth.ts";
+import * as HttpApi from "effect/http-api/HttpApi";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
+import { EnvironmentHttpApi, DeviceViewerAccess } from "@t3tools/contracts";
+import {
+  PreviewViewerResource,
+  NativeBrowserDownloadAssetResource,
+  PeerAttachmentAssetResource,
+  PreviewViewerAccess,
+  PreviewViewerClientRpcGroup,
+} from "@t3tools/contracts";
+class DeviceViewerTestApi extends HttpApi.make("environment").add(
+  EnvironmentHttpApi.groups.devices,
+) {}
+const decodeDeviceViewerAccess = Schema.decodeUnknownEffect(DeviceViewerAccess);
 import * as Tracer from "effect/Tracer";
 import { DeviceStandardToolkit as LegacyDeviceToolkit } from "../device/testing/LegacyDeviceTools.fixture.ts";
 import * as LegacyDeviceHandlers from "../device/testing/LegacyDeviceHandlers.fixture.ts";
@@ -12,14 +38,21 @@ import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { RpcServer, RpcSerialization } from "effect/rpc";
 import {
   PendingRequestClientRpcGroup,
+  DeviceViewerClientRpcGroup,
   RemotePendingRequestResult,
   WS_METHODS,
 } from "@t3tools/contracts";
 import * as PendingRequests from "../childThreads/PendingRequestService.ts";
 import * as RuntimeRequests from "../orchestration-v2/RuntimeRequestService.ts";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
+import * as ViewerSessions from "../auth/SessionStore.ts";
 import { AuthSessionId, RuntimeRequestId } from "@t3tools/contracts";
 import * as AttachmentStaging from "../assets/AttachmentStaging.ts";
+import * as AssetAccess from "../assets/AssetAccess.ts";
+import * as NativeAppIconResolver from "../assets/NativeAppIconResolver.ts";
+import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
+import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
+import * as GitHubCredentials from "@t3tools/source-control-github/server/GitHubCredentials";
 import * as AttachmentClaims from "../orchestration-v2/AttachmentClaims.ts";
 import * as Invocation from "../mcp/McpInvocationContext.ts";
 import { PeerAttachmentUploadResult } from "@t3tools/contracts";
@@ -89,6 +122,38 @@ import * as FileSystem from "effect/FileSystem";
 import * as PlatformError from "effect/PlatformError";
 import { EnvironmentToolkit } from "../mcp/toolkits/environment/tools.ts";
 import * as BrowserBroker from "../mcp/PreviewAutomationBroker.ts";
+import { PreviewControlsToolkit } from "../mcp/toolkits/previewControls/tools.ts";
+import * as PreviewControlHandlers from "../mcp/toolkits/previewControls/handlers.ts";
+import * as NativeBrowser from "../preview/ServerBrowser.ts";
+import * as NativePreviewManager from "../preview/Manager.ts";
+import * as NativeDesktopChannel from "../preview/DesktopBrowserChannel.ts";
+import {
+  makeExternalBrowserContext,
+  makeExternalBrowserDownload,
+  makeExternalBrowserFileChooser,
+} from "../preview/testing/BrowserExternal.fixture.ts";
+const browserExternalContexts: ReturnType<typeof makeExternalBrowserContext>[] = [];
+let beforeBrowserContextReturn = async () => {};
+vi.mock("../preview/ServerBrowserContexts.ts", () => ({
+  presentAsChrome: async () => {},
+  ServerBrowserContexts: class {
+    private readonly options: {
+      onContextClose?: (context: import("playwright-core").BrowserContext) => void;
+    };
+    constructor(options: {
+      onContextClose?: (context: import("playwright-core").BrowserContext) => void;
+    }) {
+      this.options = options;
+    }
+    async contextFor() {
+      const context = makeExternalBrowserContext(this.options.onContextClose);
+      browserExternalContexts.push(context);
+      await beforeBrowserContextReturn();
+      return context;
+    }
+    async close() {}
+  },
+}));
 import * as Instances from "../provider/ProviderInstanceRegistry.ts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -122,6 +187,8 @@ import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as HttpBody from "effect/http/HttpBody";
 import * as Schema from "effect/Schema";
 import { NodeHttpServer } from "@effect/platform-node";
+import * as NodeHttpPlatform from "@effect/platform-node/NodeHttpPlatform";
+import * as BrowserStream from "../preview/ServerBrowserStream.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
@@ -220,6 +287,10 @@ const makeNode = (
     preferencesOwner = false,
     nativeOwners = false,
     deviceOwner = false,
+    viewerOwner = false,
+    browserOwner = false,
+    previewControlsOwner = false,
+    viewerSocketOwner = false,
     legacyDeviceDomain = false,
     commandSpawner,
     ownerWorkspace,
@@ -229,6 +300,10 @@ const makeNode = (
     readonly preferencesOwner?: boolean;
     readonly nativeOwners?: boolean;
     readonly deviceOwner?: boolean;
+    readonly viewerOwner?: boolean;
+    readonly browserOwner?: boolean;
+    readonly previewControlsOwner?: boolean;
+    readonly viewerSocketOwner?: boolean;
     readonly legacyDeviceDomain?: boolean;
     readonly commandSpawner?: ChildProcessSpawner.ChildProcessSpawner["Service"];
     readonly ownerWorkspace?: string;
@@ -749,11 +824,30 @@ const makeNode = (
               Layer.provide(Layer.succeedContext(gitContext)),
             );
           });
-    const browser = yield* BrowserBroker.make;
+    const browser = yield* BrowserBroker.make.pipe(
+      Effect.provideService(
+        PeerAuthority.PeerAuthority,
+        Context.get(baseServices, PeerAuthority.PeerAuthority),
+      ),
+    );
     const previewBrowser = Layer.succeed(PreviewBrowser.PreviewBrowser, {
       installed: Effect.succeedNone,
       executable: Effect.die("This isolated fixture cannot launch a browser"),
     });
+    const nativeBrowser = browserOwner
+      ? yield* NativeBrowser.layer.pipe(
+          Layer.provideMerge(NativePreviewManager.layer),
+          Layer.provide(NativeDesktopChannel.layer),
+          Layer.provide(Layer.succeed(BrowserBroker.PreviewAutomationBroker, browser)),
+          Layer.provide(previewBrowser),
+          Layer.provide(nodeConfig),
+          Layer.provide(environment),
+          Layer.build,
+        )
+      : undefined;
+    const previewControls =
+      nativeBrowser ??
+      (previewControlsOwner ? yield* NativePreviewManager.layer.pipe(Layer.build) : undefined);
     const htmlLayer = HtmlRender.layer.pipe(
       Layer.provide(nodeConfig),
       Layer.provide(previewBrowser),
@@ -779,6 +873,46 @@ const makeNode = (
     const deviceShutdownCalls = yield* Ref.make(0);
     const deviceHubPlatform = yield* Ref.make<"android" | "ios">("android");
     const deviceHubBooted = yield* Ref.make(true);
+    const deviceViewerRequests: string[] = [];
+    const deviceViewerCurrentHook = yield* Ref.make<Effect.Effect<void>>(Effect.void);
+    const deviceViewerFrame = Uint8Array.of(0, 0, 0, 4, 0, 1, 100, 0);
+    const deviceViewerInputs: string[] = [];
+    const deviceViewerHttpInputs: Array<{
+      path: string;
+      method: string;
+      contentType: string;
+      body: string;
+    }> = [];
+    const deviceViewerOutput: { bytes: string | Uint8Array } = {
+      bytes: JSON.stringify({ ok: true }),
+    };
+    let viewerHubOrigin = "http://device382.invalid";
+    if (viewerSocketOwner) {
+      const hub = yield* Effect.acquireRelease(
+        Effect.sync(() => new NodeWS.WebSocketServer({ port: 0 })),
+        (server) =>
+          Effect.promise(
+            () =>
+              new Promise<void>((resolve) => {
+                for (const client of server.clients) client.terminate();
+                server.close(() => resolve());
+              }),
+          ),
+      );
+      if (!hub.address())
+        yield* Effect.promise(() => new Promise<void>((resolve) => hub.once("listening", resolve)));
+      const address = hub.address();
+      if (typeof address !== "object" || address === null)
+        throw new Error("Missing external hub port");
+      viewerHubOrigin = `http://127.0.0.1:${address.port}`;
+      hub.on("connection", (socket) => {
+        socket.on("message", (data) => {
+          deviceViewerInputs.push(data.toString());
+          socket.send(deviceViewerOutput.bytes);
+        });
+      });
+    }
+
     const deviceOldVersion = yield* Ref.make(false);
     const deviceCapabilities = yield* Ref.make({
       device: { id: "fixture-device382", platform: "android", target: "mobile", kind: "emulator" },
@@ -795,6 +929,10 @@ const makeNode = (
       ],
     });
     let fixtureDevice: NativeDevices.DeviceService["Service"] | undefined;
+    let fixtureViewers: DeviceHubProxy.DeviceViewers["Service"] | undefined;
+    let fixtureBrowserViewers: BrowserStream.PreviewViewers["Service"] | undefined;
+    let fixtureBrowserViewerSessions: ViewerSessions.SessionStore["Service"] | undefined;
+    let fixtureViewerSessions: ViewerSessions.SessionStore["Service"] | undefined;
     const deviceLayer = deviceOwner
       ? yield* Effect.gen(function* () {
           const settingsService = Context.get(settingsContext, Settings.ServerSettingsService);
@@ -929,9 +1067,10 @@ const makeNode = (
                 };
               }),
           });
+          const currentHub = yield* Ref.make<DeviceHost.DeviceHostReady | null>(null);
           const ready: DeviceHost.DeviceHostReady = {
             nodePath: "/remote-host/node-must-never-execute",
-            hub: { origin: "http://device382.invalid" },
+            hub: { origin: viewerHubOrigin },
             helpers: { serveSimAxSettings: null, serveSimCli: null },
             run: () => Effect.succeed({ code: 0, stdout: "", stderr: "" }),
           };
@@ -981,6 +1120,7 @@ const makeNode = (
                     )
                     .pipe(Effect.orDie),
                 ),
+                Effect.tap(() => Ref.set(currentHub, ready)),
                 Effect.as(ready),
               ),
             ensureAgentReady: () =>
@@ -995,12 +1135,53 @@ const makeNode = (
                   },
                 }),
               ),
-            current: Effect.succeed(null),
+            current: Ref.get(currentHub).pipe(
+              Effect.tap(() => Ref.get(deviceViewerCurrentHook).pipe(Effect.flatten)),
+            ),
             stopAgent: Effect.void,
-            stop: Effect.void,
+            stop: Ref.set(currentHub, null),
           };
+          const actualHttp = yield* Effect.serviceOption(HttpClient.HttpClient);
           const hub = HttpClient.make((request) =>
             Effect.gen(function* () {
+              if (!request.url.startsWith(`${viewerHubOrigin}/`)) {
+                if (Option.isNone(actualHttp))
+                  return yield* Effect.die("Native HTTP transport is unavailable in this fixture.");
+                return yield* actualHttp.value.execute(request);
+              }
+              const nativePath = new URL(request.url).pathname;
+              if (
+                request.method !== "GET" &&
+                request.method !== "HEAD" &&
+                /\/api\/(fold|stream-mode|stream-settings)$/.test(nativePath)
+              ) {
+                if (request.headers["content-type"] !== "application/json")
+                  return HttpClientResponse.fromWeb(request, new Response(null, { status: 415 }));
+                const body =
+                  request.body._tag === "Stream"
+                    ? Buffer.concat(
+                        yield* request.body.stream.pipe(Stream.orDie, Stream.runCollect),
+                      )
+                    : request.body._tag === "Uint8Array"
+                      ? request.body.body
+                      : new Uint8Array();
+                deviceViewerHttpInputs.push({
+                  path: nativePath,
+                  method: request.method,
+                  contentType: request.headers["content-type"],
+                  body: new TextDecoder().decode(body),
+                });
+                return HttpClientResponse.fromWeb(request, Response.json({ ok: true }));
+              }
+              if (request.url.endsWith("/stream.avcc")) {
+                deviceViewerRequests.push(request.url);
+                return HttpClientResponse.fromWeb(
+                  request,
+                  new Response(deviceViewerFrame, {
+                    headers: { "content-type": "application/octet-stream" },
+                  }),
+                );
+              }
               if (request.url.endsWith("/grid/api/start")) {
                 yield* assertStarted;
                 return HttpClientResponse.fromWeb(request, Response.json({ ok: true }));
@@ -1066,18 +1247,93 @@ const makeNode = (
             Effect.provide(Layer.merge(nodeConfig, Net.layer)),
           );
           fixtureDevice = service;
-          return Layer.succeed(NativeDevices.DeviceService, fixtureDevice);
+          const deviceServiceLayer = Layer.succeed(NativeDevices.DeviceService, service);
+          if (!viewerOwner) return deviceServiceLayer;
+          return Layer.mergeAll(
+            HttpApiBuilder.layer(DeviceViewerTestApi).pipe(
+              Layer.provide(DeviceHubProxy.layerApi),
+              Layer.provide(AuthHttp.layerAuthenticatedAuth),
+            ),
+            DeviceHubProxy.layer,
+            Layer.effectDiscard(
+              Effect.gen(function* () {
+                fixtureViewers = yield* DeviceHubProxy.DeviceViewers;
+                fixtureViewerSessions = yield* ViewerSessions.SessionStore;
+              }),
+            ),
+          ).pipe(
+            Layer.provideMerge(DeviceHubProxy.layerViewers),
+            Layer.provideMerge(deviceServiceLayer),
+            Layer.provide(Layer.succeed(HttpClient.HttpClient, hub)),
+          );
         })
       : Layer.mock(NativeDevices.DeviceService)({});
 
+    const artifactResponseHook = yield* Ref.make<Effect.Effect<void, OrchestratorMcpFailure>>(
+      Effect.void,
+    );
+    const artifactRequestHook = yield* Ref.make<
+      (checkOnly: boolean) => Effect.Effect<void, OrchestratorMcpFailure>
+    >(() => Effect.void);
+    const previewUploadContentTypes: string[] = [];
+    const artifactResponseBoundary = HttpRouter.middleware(
+      (effect) =>
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          if (request.method === "POST" && request.url.startsWith("/api/preview-stream/upload?"))
+            previewUploadContentTypes.push(request.headers["content-type"] ?? "");
+          if (request.method === "POST" && request.url === "/mcp/peer-control/attachment")
+            yield* (yield* Ref.get(artifactRequestHook))(
+              request.headers["t3-attachment-check-only"] === "1",
+            ).pipe(Effect.interruptible);
+          const response = yield* effect;
+          if (
+            request.method === "POST" &&
+            request.url === "/mcp/peer-control/attachment" &&
+            response.status === 200
+          )
+            yield* yield* Ref.get(artifactResponseHook);
+          return response;
+        }),
+      { global: true },
+    );
+    const browserMediaLayer =
+      previewControls === undefined
+        ? Layer.empty
+        : Layer.mergeAll(
+            BrowserStream.routeLayer.pipe(Layer.provide(NodeHttpPlatform.layer)),
+            Layer.effectDiscard(
+              Effect.gen(function* () {
+                fixtureBrowserViewers = yield* BrowserStream.PreviewViewers;
+                fixtureBrowserViewerSessions = yield* ViewerSessions.SessionStore;
+              }),
+            ),
+          ).pipe(
+            Layer.provideMerge(BrowserStream.layerViewers),
+            Layer.provide(
+              nativeBrowser === undefined ? Layer.empty : Layer.succeedContext(nativeBrowser),
+            ),
+            Layer.provide(AuthSessions.layer.pipe(Layer.provide(db))),
+            Layer.provide(FetchHttpClient.layer),
+            Layer.provide(environment),
+          );
     const toolsFor = (
       scheduleServices: typeof schedules,
       requests: typeof requestContext = requestContext,
       nativeServices = services,
     ) =>
       Layer.mergeAll(
+        artifactResponseBoundary,
         McpHttpServer.layerProjectRegistration,
         McpHttpServer.layerOrchestratorToolkit,
+        ...(previewControls === undefined
+          ? []
+          : [
+              McpHttpServer.toolkitRegistration(
+                PreviewControlsToolkit,
+                PreviewControlHandlers.layer,
+              ).pipe(Layer.provide(Layer.succeedContext(previewControls))),
+            ]),
         ...(preferencesOwner ? [McpHttpServer.layerEnvironmentToolkit] : []),
         ...(deviceOwner
           ? [
@@ -1105,6 +1361,22 @@ const makeNode = (
               McpHttpServer.layerPullRequestsToolkit,
               McpHttpServer.toolkitRegistration(AttachmentToolkit, AttachmentHandlers.layer),
               ServerHttp.layerAttachmentUploadRoute,
+              ServerHttp.layerAssetRoute.pipe(
+                HttpRouter.provideRequest(
+                  Layer.mergeAll(
+                    NodeHttpPlatform.layer,
+                    WorkspacePaths.layer,
+                    NativeAppIconResolver.layer.pipe(Layer.provide(nodeConfig)),
+                    Layer.succeedContext(runtime),
+                    // This fixture has no GitHub resource. Never access a real account.
+                    Layer.mock(GitHubCredentials.GitHubCredentials)({
+                      get: () =>
+                        Effect.die("No GitHub credential access in the native artifact fixture"),
+                    }),
+                  ),
+                ),
+                Layer.provide(environment),
+              ),
               McpHttpServer.layerPreviewToolkit,
               McpHttpServer.layerThreadToolkit,
               McpHttpServer.layerHtmlToolkit,
@@ -1113,11 +1385,19 @@ const makeNode = (
             ]
           : []),
       ).pipe(
-        Layer.provide(Layer.mergeAll(spectrumLayer, htmlLayer, previewBrowser)),
+        Layer.provide(
+          Layer.mergeAll(
+            spectrumLayer,
+            htmlLayer,
+            previewBrowser,
+            nativeBrowser === undefined ? Layer.empty : Layer.succeedContext(nativeBrowser),
+          ),
+        ),
         Layer.provide(
           Layer.mergeAll(
             Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
             deviceLayer,
+            browserMediaLayer,
           ),
         ),
         Layer.provide(ThreadSearch.layer.pipe(Layer.provide(db))),
@@ -1140,7 +1420,22 @@ const makeNode = (
         Layer.provide(Layer.mock(Repositories.SourceControlRepositoryService)({})),
       );
     const tools = toolsFor(schedules);
-    const serverContext = yield* NodeHttpServer.layerTest.pipe(Layer.fresh, Layer.build);
+    const sourceHttp = HttpServer.layerTestClient.pipe(
+      Layer.provide(
+        FetchHttpClient.layer.pipe(
+          Layer.provide(Layer.succeed(FetchHttpClient.RequestInit)({ keepalive: false })),
+        ),
+      ),
+      Layer.provideMerge(
+        ResourceWebSocketServer.layer(() => guardHttpResponseWriteErrors(NodeHttp.createServer()), {
+          host: "127.0.0.1",
+          port: 0,
+          gracefulShutdownTimeout: 0,
+          websocket: { perMessageDeflate: true },
+        }),
+      ),
+    );
+    const serverContext = yield* sourceHttp.pipe(Layer.fresh, Layer.build);
     const registry = yield* McpSessionRegistry.__testing
       .make()
       .pipe(
@@ -1183,8 +1478,56 @@ const makeNode = (
       database: db,
       registry,
       secretStore: Context.get(services, Secrets.ServerSecretStore),
-      authorityServices: Context.mergeAll(lifecycleContext, lifecycle, pendingRequests),
+      authorityServices: Context.mergeAll(
+        lifecycleContext,
+        lifecycle,
+        pendingRequests,
+        nativeBrowser ?? Context.empty(),
+      ),
     }).pipe(Effect.provide(Layer.succeedContext(serverContext)));
+    let nativeViewerRpcUrl: string | undefined;
+    if (previewControls !== undefined) {
+      const http = yield* sourceHttp.pipe(Layer.fresh, Layer.build);
+      const address = Context.get(http, HttpServer.HttpServer).address;
+      if (address._tag === "UnixPathAddress")
+        return yield* Effect.die("Expected native RPC fixture socket");
+      nativeViewerRpcUrl = `ws://127.0.0.1:${address.port}`;
+      const viewerHandlers = HttpRouter.use((router) =>
+        Effect.gen(function* () {
+          yield* router.add(
+            "GET",
+            "/ws",
+            Effect.gen(function* () {
+              const request = yield* HttpServerRequest.HttpServerRequest;
+              const session = yield* peer.auth.authenticateWebSocketUpgrade(request);
+              const { protocol, httpEffect } = yield* RpcServer.makeProtocolWithHttpEffectWebsocket;
+              yield* RpcServer.make(PreviewViewerClientRpcGroup, {
+                disableTracing: true,
+                disableFatalDefects: true,
+              }).pipe(
+                Effect.provideService(RpcServer.Protocol, protocol),
+                Effect.provide(
+                  Layer.merge(
+                    PreviewViewerClientRpcGroup.toLayer(
+                      BrowserStream.clientHandlers(session, fixtureBrowserViewers!),
+                    ),
+                    RpcAuthorization.layer(session.scopes),
+                  ),
+                ),
+                Effect.forkScoped,
+              );
+              return yield* httpEffect;
+            }),
+          );
+        }),
+      );
+      yield* HttpRouter.serve(viewerHandlers, { disableListenLog: true, disableLogger: true }).pipe(
+        Layer.provide(Layer.succeedContext(http)),
+        Layer.provide(RpcSerialization.layerJson),
+        Layer.fresh,
+        Layer.build,
+      );
+    }
     yield* Effect.addFinalizer(() =>
       Effect.forEach([...connectionScopes], (lifetime) => Scope.close(lifetime, Exit.void), {
         concurrency: "unbounded",
@@ -1206,7 +1549,7 @@ const makeNode = (
               Layer.build,
             )
           : Context.empty();
-        const http = yield* NodeHttpServer.layerTest.pipe(Layer.fresh, Layer.build);
+        const http = yield* sourceHttp.pipe(Layer.fresh, Layer.build);
         const renewed = yield* McpSessionRegistry.__testing
           .make()
           .pipe(
@@ -1222,7 +1565,12 @@ const makeNode = (
               RequestReceipts.McpRequestReceipts,
               AttachmentStaging.AttachmentStaging,
             )(services);
-        const currentAuthority = Context.mergeAll(lifecycleContext, lifecycle, pendingRequests);
+        const currentAuthority = Context.mergeAll(
+          lifecycleContext,
+          lifecycle,
+          pendingRequests,
+          nativeBrowser ?? Context.empty(),
+        );
         const authorityServices = durableRequests
           ? currentAuthority
           : Context.omit(
@@ -1276,7 +1624,26 @@ const makeNode = (
       requestContext,
       config: Context.get(nodeConfigContext, Config.ServerConfig),
       browser,
+      nativeBrowser:
+        nativeBrowser === undefined
+          ? undefined
+          : Context.get(nativeBrowser, NativeBrowser.ServerBrowser),
+      nativePreviewManager:
+        nativeBrowser === undefined
+          ? undefined
+          : Context.get(nativeBrowser, NativePreviewManager.PreviewManager),
       fixtureDevice,
+      fixtureViewers,
+      nativeViewerRpcUrl,
+      fixtureBrowserViewers,
+      fixtureBrowserViewerSessions,
+      fixtureViewerSessions,
+      deviceViewerRequests,
+      deviceViewerCurrentHook,
+      deviceViewerFrame,
+      deviceViewerInputs,
+      deviceViewerHttpInputs,
+      deviceViewerOutput,
       deviceProcessCalls,
       deviceProcessHook,
       deviceSummaryHook,
@@ -1285,6 +1652,9 @@ const makeNode = (
       deviceMediaPaths,
       deviceMediaOutside,
       deviceScreenshotCalls,
+      artifactResponseHook,
+      artifactRequestHook,
+      previewUploadContentTypes,
       deviceShutdownCalls,
       deviceHubPlatform,
       deviceHubBooted,
@@ -1295,6 +1665,24 @@ const makeNode = (
       deviceAgentStarts,
       deviceConfigurations,
       loseDeviceConfiguration,
+      issueAssetUrl: (input: Parameters<typeof AssetAccess.issueAssetUrl>[0]) =>
+        AssetAccess.issueAssetUrl(input).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              WorkspacePaths.layer,
+              ProjectFaviconResolver.layer.pipe(
+                Layer.provide(Layer.mergeAll(WorkspacePaths.layer, T3ProjectFileLoader.layer)),
+              ),
+              AuthSessions.layer.pipe(Layer.provide(db)),
+              Layer.succeedContext(services),
+              Layer.succeedContext(runtime),
+              Layer.succeedContext(requestContext),
+              nativeBrowser === undefined ? Layer.empty : Layer.succeedContext(nativeBrowser),
+              nodeConfig,
+              environment,
+            ),
+          ),
+        ),
       fixtureSettings: Context.get(settingsContext, Settings.ServerSettingsService),
       settingsWrites,
       loseSettingsConfirmation,
@@ -1323,6 +1711,23 @@ const makeNode = (
     };
   });
 type Node = Effect.Success<ReturnType<typeof makeNode>>;
+
+// Native CDP/file callbacks use promises; execute their effects on the owning
+// test's scoped fiber rather than starting detached runtimes inside callbacks.
+const makeNativePromiseBridge = Effect.gen(function* () {
+  const jobs = yield* Queue.unbounded<Effect.Effect<void>>();
+  yield* Effect.forever(Queue.take(jobs).pipe(Effect.flatMap((job) => job))).pipe(
+    Effect.forkScoped,
+  );
+  return <A, E>(effect: Effect.Effect<A, E>) =>
+    new Promise<A>((resolve, reject) => {
+      const job = Effect.matchCauseEffect(effect, {
+        onFailure: (cause) => Effect.sync(() => reject(Cause.squash(cause))),
+        onSuccess: (value) => Effect.sync(() => resolve(value)),
+      });
+      if (!Queue.offerUnsafe(jobs, job)) reject(new Error("Native callback scope is closed"));
+    });
+});
 
 it.live(
   "scheduler-replay382: replayed creation preserves later independent schedule edits",
@@ -1976,13 +2381,28 @@ const assertTyped383SourceIdle = (source: Node) =>
     expect(yield* Ref.get(source.deviceShutdownCalls)).toBe(0);
     expect(source.deviceProcessCalls).toHaveLength(0);
   });
-const typed383Pair = (id: string, legacyDeviceDomain = false, sourcePreferencesOwner = false) =>
+const typed383Pair = (
+  id: string,
+  legacyDeviceDomain = false,
+  sourcePreferencesOwner = false,
+  viewerOwner:
+    | boolean
+    | {
+        readonly source: boolean;
+        readonly destination: boolean;
+        readonly destinationSocket?: boolean;
+        readonly destinationBrowser?: boolean;
+      } = false,
+) =>
   Effect.gen(function* () {
     const a = yield* makeNode(descriptorOf(`${id}-a`, "A", { peerAuthority: 1 }), "disk", {
       productionKernel: true,
       attachmentRequests: true,
       preferencesOwner: sourcePreferencesOwner,
       deviceOwner: true,
+      viewerOwner: typeof viewerOwner === "boolean" ? viewerOwner : viewerOwner.source,
+      previewControlsOwner:
+        typeof viewerOwner !== "boolean" && viewerOwner.destinationBrowser === true,
     });
     yield* Effect.addFinalizer(() => assertTyped383SourceIdle(a));
     const b = yield* makeNode(descriptorOf(`${id}-b`, "B", { peerAuthority: 1 }), "disk", {
@@ -1991,6 +2411,9 @@ const typed383Pair = (id: string, legacyDeviceDomain = false, sourcePreferencesO
       preferencesOwner: true,
       legacyDeviceDomain,
       deviceOwner: true,
+      viewerOwner: typeof viewerOwner === "boolean" ? viewerOwner : viewerOwner.destination,
+      viewerSocketOwner: typeof viewerOwner !== "boolean" && viewerOwner.destinationSocket === true,
+      browserOwner: typeof viewerOwner !== "boolean" && viewerOwner.destinationBrowser === true,
     });
     yield* linkTo(a.links, b, "full-access");
     const parent = ThreadId.make(`${id}-parent`);
@@ -14211,4 +14634,3350 @@ it.live.each(["android", "ios"] as const)(
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
   30_000,
+);
+
+it.live(
+  "native383-viewer: authenticated HTTP binds one source viewer to the exact native opening",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const n = yield* makeNode(
+          descriptorOf("native383-viewer-local", "Source", { peerAuthority: 1 }),
+          "disk",
+          {
+            productionKernel: true,
+            attachmentRequests: true,
+            deviceOwner: true,
+            viewerOwner: true,
+          },
+        );
+        const parent = ThreadId.make("native383-viewer-parent");
+        yield* seedParent(n, parent);
+        yield* Ref.set(n.deviceHubPlatform, "ios");
+        const open = (key: string) =>
+          nativeCall(n, parent, "device_open", {
+            hostId: "local",
+            deviceId: "fixture-device382",
+            platform: "ios",
+            clientRequestId: key,
+          });
+        const opened = yield* open("viewer-opening");
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { target } = yield* decodeTyped383Open(opened.structuredContent);
+        const resource = {
+          type: "device",
+          environmentId: n.environmentId,
+          threadId: parent,
+          platform: "ios",
+          ...target,
+        };
+        const owner = yield* n.auth.issueSession({
+          scopes: ["orchestration:read", "orchestration:operate"],
+        });
+        const reader = yield* n.auth.issueSession({ scopes: ["orchestration:read"] });
+        const rival = yield* n.auth.issueSession({
+          scopes: ["orchestration:read", "orchestration:operate"],
+        });
+        const http = HttpClient.withScope(yield* HttpClient.HttpClient);
+        const post = (token: string, path: string, body: unknown) =>
+          http.execute(
+            HttpClientRequest.post(`${n.url}${path}`).pipe(
+              HttpClientRequest.setHeader("authorization", `Bearer ${token}`),
+              HttpClientRequest.setBody(HttpBody.text(json(body), "application/json")),
+            ),
+          );
+        const makeViewer = (token: string, operation: "view" | "control") =>
+          post(token, "/api/device-hub/viewer/open", { resource, operation });
+        const lawful = yield* makeViewer(owner.token, "control");
+        expect(lawful.status, yield* lawful.text).toBe(200);
+        const viewer = yield* decodeDeviceViewerAccess(yield* lawful.json);
+        const mediaPath = `/api/device-hub/vendor/serve-sim/helper/${target.deviceId}/stream.avcc`;
+        const media = (ticket: string, path = mediaPath) =>
+          http.get(`${n.url}${path}?viewerTicket=${encodeURIComponent(ticket)}`);
+        const video = yield* media(viewer.ticket);
+        expect(video.status, yield* video.text).toBe(200);
+        expect(new Uint8Array(yield* video.arrayBuffer)).toEqual(n.deviceViewerFrame);
+        const before = n.deviceViewerRequests.length;
+        expect(n.deviceViewerRequests).toEqual([
+          "http://device382.invalid/vendor/serve-sim/helper/fixture-device382/stream.avcc",
+        ]);
+        expect(
+          (yield* media(viewer.ticket, mediaPath.replace(target.deviceId, "rival-device"))).status,
+        ).toBe(403);
+        const refused = yield* makeViewer(reader.token, "control");
+        expect(refused.status).toBe(403);
+        const viewOnly = yield* makeViewer(reader.token, "view");
+        expect(viewOnly.status).toBe(200);
+        const readViewer = yield* decodeDeviceViewerAccess(yield* viewOnly.json);
+        expect((yield* media(readViewer.ticket)).status).toBe(200);
+        const afterRead = n.deviceViewerRequests.length;
+        const malformed = yield* post(owner.token, "/api/device-hub/viewer/open", {
+          resource: { ...resource, token: "must-not-be-a-public-option" },
+          operation: "control",
+        });
+        expect(malformed.status).toBe(400);
+        const agent = yield* n.auth.issueMcpClientSession({
+          label: "not a native human",
+          access: "full-access",
+          peerLink: false,
+          client: {
+            deviceType: "desktop",
+            os: "fixture",
+            browser: "fixture",
+            ipAddress: "127.0.0.1",
+          },
+        });
+        expect((yield* makeViewer(agent.token, "view")).status).toBe(401);
+        expect(n.deviceViewerRequests.length).toBe(afterRead);
+        const close = (token: string, viewerId: string) =>
+          post(token, "/api/device-hub/viewer/close", { viewerId });
+        const rivalClose = yield* close(rival.token, viewer.viewerId);
+        expect(yield* rivalClose.json).toBe(false);
+        const ownerClose = yield* close(owner.token, viewer.viewerId);
+        expect(yield* ownerClose.json).toBe(true);
+        expect((yield* media(viewer.ticket)).status).toBe(401);
+        expect((yield* media(readViewer.ticket)).status).toBe(200);
+        expect((yield* n.fixtureDevice!.sessionsForThread(parent))[0]?.toolSessionId).toBe(
+          target.toolSessionId,
+        );
+        const afterClose = n.deviceViewerRequests.length;
+        yield* n.auth.revokeSession(reader.sessionId);
+        expect((yield* media(readViewer.ticket)).status).toBe(401);
+        expect(n.deviceViewerRequests.length).toBe(afterClose);
+        expect(before).toBe(1);
+        const currentResponse = yield* makeViewer(owner.token, "view");
+        expect(currentResponse.status).toBe(200);
+        const current = yield* decodeDeviceViewerAccess(yield* currentResponse.json);
+        const closed = yield* nativeCall(n, parent, "device_close", {
+          hostId: target.hostId,
+          deviceId: target.deviceId,
+          clientRequestId: "viewer-tool-close",
+        });
+        expect(closed.isError, json(closed)).not.toBe(true);
+        const afterToolClose = n.deviceViewerRequests.length;
+        expect((yield* media(current.ticket)).status).toBe(409);
+        expect(n.deviceViewerRequests.length).toBe(afterToolClose);
+        const reopened = yield* open("viewer-later-opening");
+        expect(reopened.isError, json(reopened)).not.toBe(true);
+        const later = yield* decodeTyped383Open(reopened.structuredContent);
+        expect(later.target.toolSessionId).not.toBe(target.toolSessionId);
+        expect((yield* media(current.ticket)).status).toBe(409);
+        expect(n.deviceViewerRequests.length).toBe(afterToolClose);
+        const lateClose = yield* close(owner.token, current.viewerId);
+        expect(yield* lateClose.json).toBe(true);
+        expect((yield* n.fixtureDevice!.sessionsForThread(parent))[0]?.toolSessionId).toBe(
+          later.target.toolSessionId,
+        );
+        const freshResponse = yield* post(owner.token, "/api/device-hub/viewer/open", {
+          resource: { ...resource, ...later.target },
+          operation: "control",
+        });
+        expect(freshResponse.status).toBe(200);
+        const fresh = yield* decodeDeviceViewerAccess(yield* freshResponse.json);
+        const lawfulLater = yield* media(fresh.ticket);
+        expect(lawfulLater.status).toBe(200);
+        expect(new Uint8Array(yield* lawfulLater.arrayBuffer)).toEqual(n.deviceViewerFrame);
+        const afterLater = n.deviceViewerRequests.length;
+        const checks = yield* Ref.make(0);
+        yield* Ref.set(
+          n.deviceViewerCurrentHook,
+          Ref.updateAndGet(checks, (value) => value + 1).pipe(
+            Effect.flatMap((value) =>
+              value === 2
+                ? n.fixtureSettings
+                    .updateSettings({ enableDeviceSupport: false })
+                    .pipe(Effect.asVoid, Effect.orDie)
+                : Effect.void,
+            ),
+          ),
+        );
+        yield* Effect.result(media(fresh.ticket));
+        expect((yield* n.fixtureSettings.getSettings).enableDeviceSupport).toBe(false);
+        expect(
+          n.deviceViewerRequests.length,
+          "no hub dispatch after readiness retired native consent",
+        ).toBe(afterLater);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live.each([
+  ...(["subscribe", "extra-target", "consent", "session", "view-input"] as const).map((reason) => ({
+    platform: "android" as const,
+    reason,
+  })),
+  ...(["subscribe", "extra-target", "consent", "session"] as const).map((reason) => ({
+    platform: "ios" as const,
+    reason,
+  })),
+])(
+  "native383-viewer: $platform socket refuses $reason before the external leaf",
+  ({ platform, reason }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const n = yield* makeNode(
+          descriptorOf("native383-viewer-socket", "Source", { peerAuthority: 1 }),
+          "disk",
+          {
+            productionKernel: true,
+            attachmentRequests: true,
+            deviceOwner: true,
+            viewerOwner: true,
+            viewerSocketOwner: true,
+          },
+        );
+        const parent = ThreadId.make("native383-viewer-socket-parent");
+        yield* Ref.set(n.deviceHubPlatform, platform);
+        yield* seedParent(n, parent);
+        const opened = yield* nativeCall(n, parent, "device_open", {
+          hostId: "local",
+          deviceId: "fixture-device382",
+          platform,
+          clientRequestId: "socket-opening",
+        });
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { target } = yield* decodeTyped383Open(opened.structuredContent);
+        const owner = yield* n.auth.issueSession({
+          scopes: ["orchestration:read", "orchestration:operate"],
+        });
+        const http = HttpClient.withScope(yield* HttpClient.HttpClient);
+        const response = yield* http.execute(
+          HttpClientRequest.post(`${n.url}/api/device-hub/viewer/open`).pipe(
+            HttpClientRequest.setHeader("authorization", `Bearer ${owner.token}`),
+            HttpClientRequest.setBody(
+              HttpBody.text(
+                json({
+                  resource: {
+                    type: "device",
+                    environmentId: n.environmentId,
+                    threadId: parent,
+                    platform,
+                    ...target,
+                  },
+                  operation: reason === "view-input" ? "view" : "control",
+                }),
+                "application/json",
+              ),
+            ),
+          ),
+        );
+        expect(response.status).toBe(200);
+        const viewer = yield* decodeDeviceViewerAccess(yield* response.json);
+        const outcome = Promise.withResolvers<"closed" | "forwarded">();
+        const first = Promise.withResolvers<void>();
+        const lawful =
+          platform === "ios"
+            ? '\x03{"type":"begin","x":0.25,"y":0.5}'
+            : reason === "view-input"
+              ? '{"type":"reset-video","ack":true}'
+              : '{"type":"touch","action":"down","x":0.25,"y":0.5}';
+        const socket = yield* Effect.acquireRelease(
+          Effect.sync(
+            () =>
+              new NodeWS.WebSocket(
+                `${n.url.replace(/^http/, "ws")}/api/device-hub/vendor/${platform === "ios" ? "serve-sim/helper" : "serve-emu"}/ws?device=fixture-device382${platform === "android" ? "&frame-meta=1" : ""}&viewerTicket=${encodeURIComponent(viewer.ticket)}`,
+              ),
+          ),
+          (socket) => Effect.sync(() => socket.close()),
+        );
+        socket.once("error", (error) => {
+          first.reject(error);
+          outcome.reject(error);
+        });
+        socket.once("close", () => outcome.resolve("closed"));
+        socket.once("open", () =>
+          socket.send(platform === "ios" ? new TextEncoder().encode(lawful) : lawful),
+        );
+        let acknowledged = false;
+        socket.on("message", () => {
+          if (acknowledged) {
+            outcome.resolve("forwarded");
+            return;
+          }
+          acknowledged = true;
+          first.resolve();
+        });
+        yield* Effect.promise(() => first.promise);
+        if (reason === "consent")
+          yield* n.fixtureSettings.updateSettings({ enableDeviceSupport: false });
+        if (reason === "session") yield* n.auth.revokeSession(owner.sessionId);
+        const denied =
+          platform === "ios"
+            ? reason === "subscribe"
+              ? '\x10{"requestId":1,"command":{"control":"subscribe","device":"rival-device"}}'
+              : reason === "extra-target"
+                ? '\x03{"type":"move","x":0.2,"y":0.5,"device":"rival-device"}'
+                : '\x03{"type":"move","x":0.2,"y":0.5}'
+            : reason === "subscribe"
+              ? '{"type":"subscribe","device":"rival-device"}'
+              : reason === "extra-target"
+                ? '{"type":"touch","action":"down","x":0.2,"y":0.5,"device":"rival-device"}'
+                : '{"type":"touch","action":"move","x":0.5,"y":0.5}';
+        socket.send(platform === "ios" ? new TextEncoder().encode(denied) : denied);
+        expect(yield* Effect.promise(() => outcome.promise)).toBe("closed");
+        expect(acknowledged).toBe(true);
+        expect(n.deviceViewerInputs).toEqual([lawful]);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "native383-viewer: A-only human receives only source-owned access to the permitted B opening",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, child, route } = yield* typed383Pair(
+          "native383-remote-viewer",
+          false,
+          false,
+          true,
+        );
+        yield* Ref.set(b.deviceHubPlatform, "ios");
+        const opened = yield* nativeCall(a, parent, "device_open", {
+          ...route,
+          hostId: "local",
+          deviceId: "fixture-device382",
+          platform: "ios",
+          clientRequestId: "remote-viewer-open",
+        });
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { target } = yield* decodeTyped383Open(opened.structuredContent);
+        const owner = yield* a.auth.issueSession({
+          scopes: ["orchestration:read", "orchestration:operate"],
+        });
+        const http = HttpClient.withScope(yield* HttpClient.HttpClient);
+        const response = yield* http.execute(
+          HttpClientRequest.post(`${a.url}/api/device-hub/viewer/open`).pipe(
+            HttpClientRequest.setHeader("authorization", `Bearer ${owner.token}`),
+            HttpClientRequest.setBody(
+              HttpBody.text(
+                json({
+                  resource: {
+                    type: "device",
+                    environmentId: b.environmentId,
+                    threadId: child,
+                    platform: "ios",
+                    ...target,
+                  },
+                  operation: "control",
+                }),
+                "application/json",
+              ),
+            ),
+          ),
+        );
+        expect(response.status, yield* response.text).toBe(200);
+        const viewer = yield* decodeDeviceViewerAccess(yield* response.json);
+        expect(viewer.hubBasePath).toBe("/api/device-hub");
+        expect(json(viewer)).not.toContain(b.url);
+        const media = yield* http.get(
+          `${a.url}/api/device-hub/vendor/serve-sim/helper/fixture-device382/stream.avcc?viewerTicket=${encodeURIComponent(viewer.ticket)}`,
+        );
+        expect(media.status).toBe(200);
+        expect(new Uint8Array(yield* media.arrayBuffer)).toEqual(b.deviceViewerFrame);
+        expect(a.deviceViewerRequests).toEqual([]);
+        expect(b.deviceViewerRequests).toEqual([
+          "http://device382.invalid/vendor/serve-sim/helper/fixture-device382/stream.avcc",
+        ]);
+        const path = "/api/device-hub/vendor/serve-sim/helper/fixture-device382/stream.avcc";
+        const mediaAt = (origin: string, ticket: string, requestedPath = path) =>
+          http.get(`${origin}${requestedPath}?viewerTicket=${encodeURIComponent(ticket)}`);
+        const before = b.deviceViewerRequests.length;
+        expect(
+          (yield* mediaAt(a.url, viewer.ticket, path.replace("fixture-device382", "rival-device")))
+            .status,
+        ).toBe(403);
+        expect((yield* mediaAt(b.url, viewer.ticket)).status).toBe(401);
+        expect(b.deviceViewerRequests.length).toBe(before);
+        const grant = (yield* b.authority.grants)[0]!;
+        const checks = yield* Ref.make(0);
+        yield* Ref.set(
+          b.deviceViewerCurrentHook,
+          Ref.updateAndGet(checks, (n) => n + 1).pipe(
+            Effect.flatMap((n) =>
+              n === 2
+                ? b.authority
+                    .setGrant({ ...grant, device: false })
+                    .pipe(Effect.asVoid, Effect.orDie)
+                : Effect.void,
+            ),
+          ),
+        );
+        yield* Effect.result(mediaAt(a.url, viewer.ticket));
+        expect((yield* b.authority.grants)[0]!.device).toBe(false);
+        expect(
+          b.deviceViewerRequests.length,
+          "no hub dispatch after readiness retired the real grant",
+        ).toBe(before);
+        yield* Ref.set(b.deviceViewerCurrentHook, Effect.void);
+        yield* b.authority.setGrant({ ...grant, device: true });
+        yield* b.authority.setGrant({ ...grant, device: false });
+        expect((yield* mediaAt(a.url, viewer.ticket)).status).toBe(403);
+        expect(b.deviceViewerRequests.length).toBe(before);
+        yield* b.authority.setGrant({ ...grant, device: true });
+        const resumed = yield* mediaAt(a.url, viewer.ticket);
+        expect(resumed.status).toBe(200);
+        expect(new Uint8Array(yield* resumed.arrayBuffer)).toEqual(b.deviceViewerFrame);
+        const afterResume = b.deviceViewerRequests.length;
+        yield* a.links.unlink(b.environmentId);
+        yield* linkTo(a.links, b, "full-access");
+        expect((yield* mediaAt(a.url, viewer.ticket)).status).toBe(403);
+        expect(b.deviceViewerRequests.length).toBe(afterResume);
+        const enrolled = yield* nativeCall(a, parent, "t3_project_list", {
+          environmentId: b.environmentId,
+        });
+        expect(enrolled.isError, json(enrolled)).not.toBe(true);
+        const replacement = (yield* b.authority.grants).find(
+          (current) => current.sessionId !== grant.sessionId,
+        )!;
+        expect(replacement).toBeDefined();
+        yield* b.authority.setGrant({ ...replacement, device: true });
+        const reopenViewer = () =>
+          http.execute(
+            HttpClientRequest.post(`${a.url}/api/device-hub/viewer/open`).pipe(
+              HttpClientRequest.setHeader("authorization", `Bearer ${owner.token}`),
+              HttpClientRequest.setBody(
+                HttpBody.text(
+                  json({
+                    resource: {
+                      type: "device",
+                      environmentId: b.environmentId,
+                      threadId: child,
+                      platform: "ios",
+                      ...target,
+                    },
+                    operation: "control",
+                  }),
+                  "application/json",
+                ),
+              ),
+            ),
+          );
+        // The replacement created-work grant does not own the old session's context.
+        expect((yield* reopenViewer()).status).toBe(403);
+        expect(b.deviceViewerRequests.length).toBe(afterResume);
+        yield* b.authority.setGrant({
+          ...replacement,
+          device: true,
+          resourceScope: "environment-resources",
+        });
+        const freshResponse = yield* reopenViewer();
+        expect(freshResponse.status).toBe(200);
+        const fresh = yield* decodeDeviceViewerAccess(yield* freshResponse.json);
+        expect(fresh.viewerId).not.toBe(viewer.viewerId);
+        const freshMedia = yield* mediaAt(a.url, fresh.ticket);
+        expect(freshMedia.status).toBe(200);
+        expect(new Uint8Array(yield* freshMedia.arrayBuffer)).toEqual(b.deviceViewerFrame);
+        const original = yield* a.fixtureViewerSessions!.authenticateViewerToken(fresh.ticket);
+        if (original.resource.type !== "device")
+          return yield* Effect.die("Wrong fixture viewer resource");
+        const privateDestination = yield* a.fixtureViewers!.resolve(
+          fresh.viewerId,
+          {
+            resource: original.resource,
+            operation: original.operation,
+          },
+          original.generation,
+        );
+        expect(privateDestination.ticket).toBeDefined();
+        expect(json(fresh)).not.toContain(privateDestination.ticket!);
+        yield* b.fixtureViewerSessions!.authenticateViewerToken(privateDestination.ticket!);
+        const closed = yield* http.execute(
+          HttpClientRequest.post(`${a.url}/api/device-hub/viewer/close`).pipe(
+            HttpClientRequest.setHeader("authorization", `Bearer ${owner.token}`),
+            HttpClientRequest.setBody(
+              HttpBody.text(json({ viewerId: fresh.viewerId }), "application/json"),
+            ),
+          ),
+        );
+        expect(closed.status).toBe(200);
+        expect(
+          yield* b
+            .fixtureViewerSessions!.authenticateViewerToken(privateDestination.ticket!)
+            .pipe(Effect.result),
+        ).toMatchObject({ _tag: "Failure" });
+        const finalResponse = yield* reopenViewer();
+        expect(finalResponse.status).toBe(200);
+        const finalViewer = yield* decodeDeviceViewerAccess(yield* finalResponse.json);
+        const finalCount = b.deviceViewerRequests.length;
+        yield* a.auth.revokeSession(owner.sessionId);
+        expect((yield* mediaAt(a.url, finalViewer.ticket)).status).toBe(401);
+        expect(b.deviceViewerRequests.length).toBe(finalCount);
+        expect(a.deviceViewerRequests).toEqual([]);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "native383-viewer: old device peer refuses authenticated viewer admission without new destination effects",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, child, open, footprint } = yield* typed383Pair(
+          "native383-old-viewer",
+          false,
+          false,
+          { source: true, destination: false },
+        );
+        const opened = yield* open("old-viewer-opening");
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { target } = yield* decodeTyped383Open(opened.structuredContent);
+        const before = yield* footprint();
+        const owner = yield* a.auth.issueSession({
+          scopes: ["orchestration:read", "orchestration:operate"],
+        });
+        const http = HttpClient.withScope(yield* HttpClient.HttpClient);
+        const response = yield* http.execute(
+          HttpClientRequest.post(`${a.url}/api/device-hub/viewer/open`).pipe(
+            HttpClientRequest.setHeader("authorization", `Bearer ${owner.token}`),
+            HttpClientRequest.setBody(
+              HttpBody.text(
+                json({
+                  resource: {
+                    type: "device",
+                    environmentId: b.environmentId,
+                    threadId: child,
+                    platform: "android",
+                    ...target,
+                  },
+                  operation: "control",
+                }),
+                "application/json",
+              ),
+            ),
+          ),
+        );
+        expect(response.status).toBe(403);
+        expect(yield* response.json).toMatchObject({ reason: "device_viewer_unsupported" });
+        expect(yield* footprint()).toEqual(before);
+        expect(a.deviceViewerRequests).toEqual([]);
+        expect(b.deviceViewerRequests).toEqual([]);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "native383-viewer: source authenticated RPC admits qualified B view and keeps control guarded",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const {
+          a,
+          b,
+          child,
+          parent,
+          route: destination,
+        } = yield* typed383Pair("native383-viewer-rpc", false, false, true);
+        yield* Ref.set(b.deviceHubPlatform, "ios");
+        const opened = yield* nativeCall(a, parent, "device_open", {
+          ...destination,
+          hostId: "local",
+          deviceId: "fixture-device382",
+          platform: "ios",
+          clientRequestId: "rpc-viewer-device-opening",
+        });
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { target } = yield* decodeTyped383Open(opened.structuredContent);
+        const resource = {
+          type: "device" as const,
+          environmentId: b.environmentId,
+          threadId: child,
+          platform: "ios" as const,
+          ...target,
+        };
+        const server = yield* NodeHttpServer.layerTest.pipe(Layer.fresh, Layer.build);
+        const route = HttpRouter.add(
+          "GET",
+          "/ws",
+          Effect.gen(function* () {
+            const request = yield* HttpServerRequest.HttpServerRequest;
+            const authenticated = yield* a.auth
+              .authenticateWebSocketUpgrade(request)
+              .pipe(Effect.result);
+            if (authenticated._tag === "Failure") return HttpServerResponse.empty({ status: 403 });
+            const session = authenticated.success;
+            const { protocol, httpEffect } = yield* RpcServer.makeProtocolWithHttpEffectWebsocket;
+            yield* RpcServer.make(DeviceViewerClientRpcGroup, {
+              disableTracing: true,
+              disableFatalDefects: true,
+            }).pipe(
+              Effect.provideService(RpcServer.Protocol, protocol),
+              Effect.provide(
+                Layer.merge(
+                  DeviceViewerClientRpcGroup.toLayer(
+                    DeviceHubProxy.clientHandlers(session, a.fixtureViewers!),
+                  ),
+                  RpcAuthorization.layer(session.scopes),
+                ),
+              ),
+              Effect.forkScoped,
+            );
+            return yield* httpEffect;
+          }),
+        );
+        yield* HttpRouter.serve(route, { disableListenLog: true, disableLogger: true }).pipe(
+          Layer.provide(Layer.succeedContext(server)),
+          Layer.provide(RpcSerialization.layerJson),
+          Layer.fresh,
+          Layer.build,
+        );
+        const address = Context.get(server, HttpServer.HttpServer).address;
+        if (address._tag === "UnixPathAddress") return yield* Effect.die("Expected test socket");
+        const owner = yield* a.auth.issueSession({
+          scopes: ["orchestration:read", "orchestration:operate"],
+        });
+        const reader = yield* a.auth.issueSession({ scopes: ["orchestration:read"] });
+        const connect = (token: string) =>
+          Effect.gen(function* () {
+            const session = yield* a.auth.authenticateHttpRequest(
+              HttpServerRequest.fromWeb(
+                new Request(a.url, {
+                  headers: { authorization: `Bearer ${token}` },
+                }),
+              ),
+            );
+            const ticket = yield* a.auth.issueWebSocketTicket(session);
+            const messages = yield* Queue.unbounded<string>();
+            const socket = yield* Effect.acquireRelease(
+              Effect.tryPromise({
+                try: () =>
+                  new Promise<WebSocket>((resolve, reject) => {
+                    const socket = new WebSocket(
+                      `ws://127.0.0.1:${address.port}/ws?wsTicket=${encodeURIComponent(ticket.ticket)}`,
+                    );
+                    socket.addEventListener("message", (event) =>
+                      Queue.offerUnsafe(messages, String(event.data)),
+                    );
+                    socket.addEventListener("open", () => resolve(socket), { once: true });
+                    socket.addEventListener(
+                      "error",
+                      () => reject(new Error("Native viewer socket refused")),
+                      { once: true },
+                    );
+                  }),
+                catch: () =>
+                  new OrchestratorMcpFailure({
+                    code: "orchestration_error",
+                    message: "Native viewer socket failed",
+                  }),
+              }),
+              (socket) => Effect.sync(() => socket.close()),
+            );
+            let ordinal = 0;
+            return (tag: string, payload: unknown) =>
+              Effect.gen(function* () {
+                const id = String(++ordinal);
+                socket.send(json({ _tag: "Request", id, tag, payload, headers: [] }));
+                const reply = yield* decodePendingWsReply(yield* Queue.take(messages));
+                expect(reply.requestId).toBe(id);
+                return reply;
+              });
+          });
+        const rpc = yield* connect(owner.token);
+        const readonlyRpc = yield* connect(reader.token);
+        const viewed = yield* readonlyRpc(WS_METHODS.deviceViewerOpen, {
+          resource,
+          operation: "view",
+        });
+        expect(viewed.exit?._tag).toBe("Success");
+        const readViewer = yield* decodeDeviceViewerAccess(viewed.exit?.value);
+        const controlRefused = yield* readonlyRpc(WS_METHODS.deviceViewerOpen, {
+          resource,
+          operation: "control",
+        });
+        expect(controlRefused.exit?._tag).toBe("Failure");
+        expect(json(controlRefused)).toContain("orchestration:operate");
+        const controlled = yield* rpc(WS_METHODS.deviceViewerOpen, {
+          resource,
+          operation: "control",
+        });
+        expect(controlled.exit?._tag).toBe("Success");
+        const viewer = yield* decodeDeviceViewerAccess(controlled.exit?.value);
+        expect(json(viewer)).not.toContain(b.url);
+        const http = HttpClient.withScope(yield* HttpClient.HttpClient);
+        const media = yield* http.get(
+          `${a.url}/api/device-hub/vendor/serve-sim/helper/fixture-device382/stream.avcc?viewerTicket=${encodeURIComponent(viewer.ticket)}`,
+        );
+        expect(media.status).toBe(200);
+        expect(new Uint8Array(yield* media.arrayBuffer)).toEqual(b.deviceViewerFrame);
+        const rivalClose = yield* readonlyRpc(WS_METHODS.deviceViewerClose, {
+          viewerId: viewer.viewerId,
+        });
+        expect(rivalClose.exit?.value).toBe(false);
+        const closed = yield* rpc(WS_METHODS.deviceViewerClose, { viewerId: viewer.viewerId });
+        expect(closed.exit?.value).toBe(true);
+        expect(
+          (yield* http.get(
+            `${a.url}/api/device-hub/vendor/serve-sim/helper/fixture-device382/stream.avcc?viewerTicket=${encodeURIComponent(viewer.ticket)}`,
+          )).status,
+        ).toBe(401);
+        expect(
+          (yield* readonlyRpc(WS_METHODS.deviceViewerClose, { viewerId: readViewer.viewerId })).exit
+            ?.value,
+        ).toBe(true);
+        expect(a.deviceViewerRequests).toEqual([]);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live.each(["ios", "android"] as const)(
+  "native383-viewer: %s source socket keeps both peer hops bound after actual grant retirement",
+  (platform) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, child, parent, route } = yield* typed383Pair(
+          `native383-two-hop-${platform}`,
+          false,
+          false,
+          { source: true, destination: true, destinationSocket: true },
+        );
+        yield* Ref.set(b.deviceHubPlatform, platform);
+        const opened = yield* nativeCall(a, parent, "device_open", {
+          ...route,
+          hostId: "local",
+          deviceId: "fixture-device382",
+          platform,
+          clientRequestId: "two-hop-opening",
+        });
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { target } = yield* decodeTyped383Open(opened.structuredContent);
+        const owner = yield* a.auth.issueSession({
+          scopes: ["orchestration:read", "orchestration:operate"],
+        });
+        const http = HttpClient.withScope(yield* HttpClient.HttpClient);
+        const admitted = yield* http.execute(
+          HttpClientRequest.post(`${a.url}/api/device-hub/viewer/open`).pipe(
+            HttpClientRequest.setHeader("authorization", `Bearer ${owner.token}`),
+            HttpClientRequest.setBody(
+              HttpBody.text(
+                json({
+                  resource: {
+                    type: "device",
+                    environmentId: b.environmentId,
+                    threadId: child,
+                    platform,
+                    ...target,
+                  },
+                  operation: "control",
+                }),
+                "application/json",
+              ),
+            ),
+          ),
+        );
+        expect(admitted.status).toBe(200);
+        const viewer = yield* decodeDeviceViewerAccess(yield* admitted.json);
+        const first = Promise.withResolvers<void>();
+        const outcome = Promise.withResolvers<"closed" | "forwarded">();
+        const initial =
+          platform === "ios"
+            ? '\x03{"type":"begin","x":0.25,"y":0.5}'
+            : '{"type":"touch","action":"down","x":0.25,"y":0.5}';
+        const next =
+          platform === "ios"
+            ? '\x03{"type":"move","x":0.5,"y":0.5}'
+            : '{"type":"touch","action":"move","x":0.5,"y":0.5}';
+        const socket = yield* Effect.acquireRelease(
+          Effect.sync(
+            () =>
+              new NodeWS.WebSocket(
+                `${a.url.replace(/^http/, "ws")}/api/device-hub/vendor/${platform === "ios" ? "serve-sim/helper" : "serve-emu"}/ws?device=fixture-device382&viewerTicket=${encodeURIComponent(viewer.ticket)}`,
+              ),
+          ),
+          (socket) => Effect.sync(() => socket.close()),
+        );
+        socket.once("error", (error) => {
+          first.reject(error);
+          outcome.reject(error);
+        });
+        socket.once("close", () => outcome.resolve("closed"));
+        socket.once("open", () =>
+          socket.send(platform === "ios" ? new TextEncoder().encode(initial) : initial),
+        );
+        let received = false;
+        socket.on("message", () => {
+          if (received) outcome.resolve("forwarded");
+          else {
+            received = true;
+            first.resolve();
+          }
+        });
+        yield* Effect.promise(() => first.promise);
+        expect(b.deviceViewerInputs).toEqual([initial]);
+        expect(a.deviceViewerInputs).toEqual([]);
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, device: false });
+        socket.send(platform === "ios" ? new TextEncoder().encode(next) : next);
+        expect(yield* Effect.promise(() => outcome.promise)).toBe("closed");
+        expect(b.deviceViewerInputs).toEqual([initial]);
+        expect(a.deviceViewerInputs).toEqual([]);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "native383-browser: original grant retirement during element geometry prevents the later click",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const nativePromise = yield* makeNativePromiseBridge;
+        const { a, b, parent, route } = yield* typed383Pair(
+          "native383-browser-page-wait",
+          false,
+          false,
+          {
+            source: false,
+            destination: false,
+            destinationBrowser: true,
+          },
+        );
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        const capabilities = new Set(["orchestration", "preview", "device"] as const);
+        const credential = yield* a.registry.issue({
+          threadId: parent,
+          providerInstanceId: instanceId,
+          capabilities,
+        });
+        const opened = yield* nativeCall(
+          a,
+          parent,
+          "preview_open",
+          {
+            ...route,
+            url: "https://example.test/",
+            show: false,
+            clientRequestId: "browser-page-wait-opening",
+          },
+          capabilities,
+          credential,
+        );
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const status = yield* Schema.decodeUnknownEffect(Schema.Struct({ tabId: Schema.String }))(
+          opened.structuredContent,
+        );
+        const external = browserExternalContexts.at(-1)!;
+        const click = (key: string) =>
+          nativeCall(
+            a,
+            parent,
+            "preview_click",
+            {
+              ...route,
+              tabId: status.tabId,
+              selector: "#button",
+              clientRequestId: key,
+            },
+            capabilities,
+            credential,
+          );
+        const lawful = yield* click("browser-page-wait-lawful");
+        expect(lawful.isError, json(lawful)).not.toBe(true);
+        expect(external.effects.filter((effect) => effect === "click")).toHaveLength(1);
+        external.controls.beforeBounds = async () => {
+          await nativePromise(b.authority.setGrant({ ...grant, preview: false }));
+        };
+        const retired = yield* click("browser-page-wait-retired");
+        expect(
+          retired.isError,
+          json({
+            retired,
+            effects: external.effects,
+            preview: (yield* b.authority.grants)[0]?.preview,
+          }),
+        ).toBe(true);
+        expect((yield* b.authority.grants)[0]?.preview).toBe(false);
+        expect(external.effects.filter((effect) => effect === "click")).toHaveLength(1);
+        expect(json(retired)).toContain("outcome_unknown");
+        external.controls.beforeBounds = async () => {};
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        const replay = yield* click("browser-page-wait-retired");
+        expect(replay.isError, json(replay)).toBe(true);
+        expect(json(replay)).toContain("outcome_unknown");
+        expect(external.effects.filter((effect) => effect === "click")).toHaveLength(1);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "native383-browser: modern opener survives authenticated reads renewal and transport reconstruction without borrowing rival ownership",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, child, route } = yield* typed383Pair(
+          "native383-browser-identity",
+          false,
+          false,
+          {
+            source: false,
+            destination: false,
+            destinationBrowser: true,
+          },
+        );
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        const capabilities = new Set(["orchestration", "preview", "device"] as const);
+        let credential = yield* a.registry.issue({
+          threadId: parent,
+          providerInstanceId: instanceId,
+          capabilities,
+        });
+        const call = (tool: string, input: Record<string, unknown>) =>
+          nativeCall(a, parent, tool, { ...route, ...input }, capabilities, credential);
+        const opened = yield* call("preview_open", {
+          url: "https://example.test/",
+          show: false,
+          clientRequestId: "browser-identity-open",
+        });
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const status = yield* Schema.decodeUnknownEffect(Schema.Struct({ tabId: Schema.String }))(
+          opened.structuredContent,
+        );
+        const external = browserExternalContexts.at(-1)!;
+        const intent = {
+          tabId: status.tabId,
+          selector: "#button",
+          clientRequestId: "browser-identity-click",
+        };
+        expect((yield* call("preview_click", intent)).isError).not.toBe(true);
+        expect(external.effects.filter((effect) => effect === "click")).toHaveLength(1);
+        const sourceDb = Context.get(a.database, SqlClient.SqlClient);
+        const destinationDb = Context.get(b.database, SqlClient.SqlClient);
+        const receiptsBeforeRead = [
+          yield* sourceDb`SELECT id,state FROM mcp_request_receipts ORDER BY id`,
+          yield* destinationDb`SELECT id,state FROM mcp_request_receipts ORDER BY id`,
+        ];
+        const read = yield* call("preview_status", { tabId: status.tabId });
+        expect(read.isError, json(read)).not.toBe(true);
+        expect(read.structuredContent).toMatchObject({
+          tabId: status.tabId,
+          control: { ownedByCaller: true },
+        });
+        expect([
+          yield* sourceDb`SELECT id,state FROM mcp_request_receipts ORDER BY id`,
+          yield* destinationDb`SELECT id,state FROM mcp_request_receipts ORDER BY id`,
+        ]).toEqual(receiptsBeforeRead);
+        credential = yield* a.registry.issue({
+          threadId: parent,
+          providerInstanceId: instanceId,
+          capabilities,
+        });
+        expect(
+          (yield* call("preview_status", { tabId: status.tabId })).structuredContent,
+        ).toMatchObject({ control: { ownedByCaller: true } });
+        expect(
+          (yield* call("preview_click", { ...intent, clientRequestId: "browser-identity-renewed" }))
+            .isError,
+        ).not.toBe(true);
+        expect(external.effects.filter((effect) => effect === "click")).toHaveLength(2);
+        const reconstructed = { ...b, ...(yield* b.restartSchedulerTransport) };
+        yield* sourceDb`UPDATE peer_environment_links SET urls_json=${json([reconstructed.url])} WHERE environment_id=${b.environmentId}`;
+        expect(
+          (yield* call("preview_status", { tabId: status.tabId })).structuredContent,
+        ).toMatchObject({ control: { ownedByCaller: true } });
+        expect(
+          (yield* call("preview_click", {
+            ...intent,
+            clientRequestId: "browser-identity-reconstructed",
+          })).isError,
+        ).not.toBe(true);
+        expect(external.effects.filter((effect) => effect === "click")).toHaveLength(3);
+        expect(
+          (yield* call("preview_click", { ...intent, selector: "#changed-intent" })).isError,
+        ).toBe(true);
+        expect(external.effects.filter((effect) => effect === "click")).toHaveLength(3);
+        const rival = ThreadId.make("native383-browser-identity-rival");
+        yield* seedParent(a, rival);
+        for (const key of [intent.clientRequestId, "browser-identity-rival-fresh"])
+          expect(
+            (yield* nativeCall(a, rival, "preview_click", {
+              ...route,
+              ...intent,
+              clientRequestId: key,
+            })).isError,
+          ).toBe(true);
+        expect(external.effects.filter((effect) => effect === "click")).toHaveLength(3);
+        yield* b.authority.setGrant({ ...grant, preview: false });
+        for (const key of [intent.clientRequestId, "browser-identity-revoked-fresh"])
+          expect((yield* call("preview_click", { ...intent, clientRequestId: key })).isError).toBe(
+            true,
+          );
+        expect((yield* call("preview_status", { tabId: status.tabId })).isError).toBe(true);
+        expect(external.effects.filter((effect) => effect === "click")).toHaveLength(3);
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        const old = { ...b, ...(yield* b.restartWithoutRequestsTransport) };
+        yield* sourceDb`UPDATE peer_environment_links SET urls_json=${json([old.url])} WHERE environment_id=${b.environmentId}`;
+        const beforeOld = [...external.effects];
+        const beforeContexts = browserExternalContexts.length;
+        for (const tool of ["preview_status", "preview_open"])
+          expect(
+            (yield* call(
+              tool,
+              tool === "preview_status"
+                ? { tabId: status.tabId }
+                : { show: false, clientRequestId: "browser-old-peer-open" },
+            )).isError,
+          ).toBe(true);
+        expect(external.effects).toEqual(beforeOld);
+        expect(browserExternalContexts).toHaveLength(beforeContexts);
+        yield* sourceDb`UPDATE peer_environment_links SET urls_json=${json([reconstructed.url])} WHERE environment_id=${b.environmentId}`;
+        expect(
+          (yield* call("t3_preview_close", {
+            tabId: status.tabId,
+            clientRequestId: "browser-identity-close",
+          })).isError,
+        ).not.toBe(true);
+        const next = yield* call("preview_open", {
+          show: false,
+          clientRequestId: "browser-identity-reopen",
+        });
+        expect(next.isError, json(next)).not.toBe(true);
+        const nextStatus = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ tabId: Schema.String }),
+        )(next.structuredContent);
+        expect(nextStatus.tabId).not.toBe(status.tabId);
+        expect(
+          (yield* call("t3_preview_close", {
+            tabId: status.tabId,
+            clientRequestId: "browser-identity-close",
+          })).isError,
+        ).not.toBe(true);
+        expect(
+          (yield* b.nativePreviewManager!.list({ threadId: child })).sessions.map(
+            (session) => session.tabId,
+          ),
+        ).toContain(nextStatus.tabId);
+        expect(
+          (yield* call("preview_click", {
+            ...intent,
+            clientRequestId: "browser-identity-stale-tab",
+          })).isError,
+        ).toBe(true);
+        const oldLink = yield* a.links.resolve(b.environmentId);
+        yield* a.links.unlink(b.environmentId);
+        yield* linkTo(a.links, b, "full-access");
+        expect((yield* a.links.resolve(b.environmentId)).link.launchIdentity).not.toBe(
+          oldLink.link.launchIdentity,
+        );
+        expect(
+          (yield* nativeCall(a, parent, "t3_project_list", { environmentId: b.environmentId }))
+            .isError,
+        ).not.toBe(true);
+        const replacement = (yield* b.authority.grants).find(
+          (value) => value.sessionId !== grant.sessionId,
+        );
+        if (replacement === undefined)
+          return yield* Effect.die("Expected actual replacement grant");
+        yield* b.authority.setGrant({ ...replacement, preview: true });
+        expect(
+          (yield* call("preview_click", {
+            ...intent,
+            tabId: nextStatus.tabId,
+            clientRequestId: "browser-identity-old-generation",
+          })).isError,
+        ).toBe(true);
+        const launched = yield* nativeCall(a, parent, "t3_thread_launch", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          title: "New browser generation",
+          message: "Wait",
+          modelSelection: selection,
+          clientRequestId: "browser-identity-generation-child",
+        });
+        expect(launched.isError, json(launched)).not.toBe(true);
+        const newChild = (yield* decodeLaunchReceipt(launched.structuredContent)).threadId;
+        yield* activate(b, newChild);
+        const replacementRoute = { environmentId: b.environmentId, contextThreadId: newChild };
+        const legitimate = yield* nativeCall(a, parent, "preview_open", {
+          ...replacementRoute,
+          show: false,
+          clientRequestId: "browser-generation-lawful-open",
+        });
+        expect(legitimate.isError, json(legitimate)).not.toBe(true);
+        const finalStatus = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ tabId: Schema.String }),
+        )(legitimate.structuredContent);
+        expect(
+          (yield* nativeCall(a, parent, "preview_click", {
+            ...replacementRoute,
+            tabId: finalStatus.tabId,
+            selector: "#button",
+            clientRequestId: "browser-generation-lawful-click",
+          })).isError,
+        ).not.toBe(true);
+        expect(
+          (yield* nativeCall(a, parent, "preview_click", {
+            ...replacementRoute,
+            tabId: nextStatus.tabId,
+            selector: "#button",
+            clientRequestId: "browser-generation-old-tab",
+          })).isError,
+        ).toBe(true);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  60_000,
+);
+
+it.live.each(["layout", "clear"] as const)(
+  "native383-browser: actual grant retirement during %s prevents later capture or input dispatch",
+  (boundary) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const nativePromise = yield* makeNativePromiseBridge;
+        const { a, b, parent, route } = yield* typed383Pair(
+          `native383-browser-${boundary}`,
+          false,
+          false,
+          {
+            source: false,
+            destination: false,
+            destinationBrowser: true,
+          },
+        );
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        const opened = yield* nativeCall(a, parent, "preview_open", {
+          ...route,
+          show: false,
+          clientRequestId: `browser-${boundary}-open`,
+        });
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { tabId } = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ tabId: Schema.String }),
+        )(opened.structuredContent);
+        const external = browserExternalContexts.at(-1)!;
+        const tool = boundary === "layout" ? "preview_snapshot" : "preview_type";
+        const input =
+          boundary === "layout"
+            ? { ...route, tabId, includeImage: false }
+            : {
+                ...route,
+                tabId,
+                text: "literal",
+                clear: true,
+                clientRequestId: "browser-clear-lawful",
+              };
+        const lawful = yield* nativeCall(a, parent, tool, input);
+        expect(lawful.isError, json(lawful)).not.toBe(true);
+        const before = [...external.effects];
+        const retire = async () => {
+          await nativePromise(b.authority.setGrant({ ...grant, preview: false }));
+        };
+        if (boundary === "layout") external.controls.beforeLayout = retire;
+        else external.controls.afterKey = retire;
+        const retiredInput =
+          boundary === "layout" ? input : { ...input, clientRequestId: "browser-clear-retired" };
+        const denied = yield* nativeCall(a, parent, tool, retiredInput);
+        expect(denied.isError, json(denied)).toBe(true);
+        expect((yield* b.authority.grants)[0]?.preview).toBe(false);
+        expect(external.effects).toEqual(
+          boundary === "layout" ? before : [...before, "key:ControlOrMeta+A"],
+        );
+        external.controls.beforeLayout = async () => {};
+        external.controls.afterKey = async () => {};
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        if (boundary === "clear") {
+          const replay = yield* nativeCall(a, parent, tool, retiredInput);
+          expect(replay.isError, json(replay)).toBe(true);
+          expect(json(replay)).toContain("outcome_unknown");
+          expect(external.effects).toEqual([...before, "key:ControlOrMeta+A"]);
+        } else {
+          expect((yield* nativeCall(a, parent, tool, input)).isError).not.toBe(true);
+          expect(external.effects.filter((effect) => effect === "capture")).toHaveLength(2);
+        }
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "native383-browser: original grant retirement during context preparation prevents page creation",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const nativePromise = yield* makeNativePromiseBridge;
+        const { a, b, parent, route } = yield* typed383Pair(
+          "native383-browser-context-wait",
+          false,
+          false,
+          {
+            source: false,
+            destination: false,
+            destinationBrowser: true,
+          },
+        );
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            beforeBrowserContextReturn = async () => {};
+          }),
+        );
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        const open = (key: string) =>
+          nativeCall(a, parent, "preview_open", {
+            ...route,
+            url: "https://example.test/",
+            show: false,
+            reuseExistingTab: false,
+            clientRequestId: key,
+          });
+        const lawful = yield* open("browser-context-lawful");
+        expect(lawful.isError, json(lawful)).not.toBe(true);
+        expect(browserExternalContexts.at(-1)!.effects).toContain("navigate");
+        beforeBrowserContextReturn = async () => {
+          await nativePromise(b.authority.setGrant({ ...grant, preview: false }));
+        };
+        const denied = yield* open("browser-context-retired");
+        expect((yield* b.authority.grants)[0]?.preview).toBe(false);
+        expect(browserExternalContexts.at(-1)!.effects, json(denied)).not.toContain("new-page");
+        expect(denied.isError, json(denied)).toBe(true);
+        expect(json(denied)).toContain("outcome_unknown");
+        beforeBrowserContextReturn = async () => {};
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        const replay = yield* open("browser-context-retired");
+        expect(replay.isError, json(replay)).toBe(true);
+        expect(json(replay)).toContain("outcome_unknown");
+        expect(browserExternalContexts.at(-1)!.effects).not.toContain("new-page");
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "native383-browser: native human session retirement during viewer attachment prevents private capture",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const nativePromise = yield* makeNativePromiseBridge;
+        const { a, b, parent, child, route } = yield* typed383Pair(
+          "native383-browser-native-view",
+          false,
+          false,
+          {
+            source: false,
+            destination: false,
+            destinationBrowser: true,
+          },
+        );
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        const opened = yield* nativeCall(a, parent, "preview_open", {
+          ...route,
+          show: false,
+          clientRequestId: "browser-human-view-open",
+        });
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { tabId } = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ tabId: Schema.String }),
+        )(opened.structuredContent);
+        const issued = yield* b.auth.issueSession({
+          scopes: ["orchestration:read", "preview:operate"],
+        });
+        const nativeSession = yield* b.auth.authenticateHttpRequest(
+          HttpServerRequest.fromWeb(
+            new Request(b.url, { headers: { authorization: `Bearer ${issued.token}` } }),
+          ),
+        );
+        const authRepository = yield* AuthSessions.layer.pipe(
+          Layer.provide(Layer.succeedContext(b.database)),
+          Layer.build,
+        );
+        const authorization = yield* Auth.nativeSessionAuthorization(
+          nativeSession,
+          "orchestration:read",
+        ).pipe(Effect.provideContext(authRepository));
+        const input = {
+          threadId: child,
+          tabId,
+          maxWidth: 1280,
+          maxHeight: 800,
+          quality: 70,
+          canOperate: false,
+          authorize: () => nativePromise(authorization),
+        };
+        yield* Effect.scoped(b.nativeBrowser!.attachViewer(input));
+        const external = browserExternalContexts.at(-1)!;
+        expect(external.effects.filter((effect) => effect === "capture")).toHaveLength(1);
+        external.controls.beforeSession = async () => {
+          await nativePromise(
+            Effect.gen(function* () {
+              yield* Context.get(authRepository, AuthSessions.AuthSessionRepository).revoke({
+                sessionId: issued.sessionId,
+                revokedAt: yield* DateTime.now,
+              });
+            }),
+          );
+        };
+        const retired = yield* Effect.scoped(b.nativeBrowser!.attachViewer(input)).pipe(
+          Effect.result,
+        );
+        expect((yield* authorization.pipe(Effect.result))._tag).toBe("Failure");
+        expect(retired._tag, json({ result: retired._tag, effects: external.effects })).toBe(
+          "Failure",
+        );
+        expect(external.effects.filter((effect) => effect === "capture")).toHaveLength(1);
+        expect((yield* authorization.pipe(Effect.result))._tag).toBe("Failure");
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "native383-browser-viewer: A-only native session streams B JPEG controls exact viewer lifecycle and stops input after grant retirement",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, child, route } = yield* typed383Pair(
+          "native383-browser-viewer-loop",
+          false,
+          false,
+          {
+            source: false,
+            destination: false,
+            destinationBrowser: true,
+          },
+        );
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        const opened = yield* nativeCall(a, parent, "preview_open", {
+          ...route,
+          url: "https://example.test/",
+          show: false,
+          clientRequestId: "browser-viewer-tool-open",
+        });
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { resource } = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ resource: PreviewViewerResource }),
+        )(opened.structuredContent);
+        const owner = yield* a.auth.issueSession({
+          scopes: ["orchestration:read", "preview:operate"],
+        });
+        const native = yield* a.auth.authenticateHttpRequest(
+          HttpServerRequest.fromWeb(
+            new Request(a.url, { headers: { authorization: `Bearer ${owner.token}` } }),
+          ),
+        );
+        const connectRpc = (session: Auth.AuthenticatedSession) =>
+          Effect.gen(function* () {
+            const ticket = yield* a.auth.issueWebSocketTicket(session);
+            const messages = yield* Queue.unbounded<string>();
+            const socket = yield* Effect.acquireRelease(
+              Effect.tryPromise({
+                try: () =>
+                  new Promise<WebSocket>((resolve, reject) => {
+                    const ws = new WebSocket(
+                      `${a.nativeViewerRpcUrl}/ws?wsTicket=${encodeURIComponent(ticket.ticket)}`,
+                    );
+                    ws.addEventListener("message", (event) =>
+                      Queue.offerUnsafe(messages, String(event.data)),
+                    );
+                    ws.addEventListener("open", () => resolve(ws), { once: true });
+                    ws.addEventListener(
+                      "error",
+                      () => reject(new Error("Native browser viewer RPC refused")),
+                      { once: true },
+                    );
+                  }),
+                catch: (cause) =>
+                  new OrchestratorMcpFailure({
+                    code: "orchestration_error",
+                    message: String(cause),
+                  }),
+              }),
+              (socket) => Effect.sync(() => socket.close()),
+            );
+            let ordinal = 0;
+            return (tag: string, payload: unknown) =>
+              Effect.gen(function* () {
+                const id = String(++ordinal);
+                socket.send(json({ _tag: "Request", id, tag, payload, headers: [] }));
+                const reply = yield* decodePendingWsReply(yield* Queue.take(messages));
+                expect(reply.requestId).toBe(id);
+                return reply;
+              });
+          });
+        const rpc = yield* connectRpc(native);
+        const readOwner = yield* a.auth.issueSession({ scopes: ["orchestration:read"] });
+        const readNative = yield* a.auth.authenticateHttpRequest(
+          HttpServerRequest.fromWeb(
+            new Request(a.url, { headers: { authorization: `Bearer ${readOwner.token}` } }),
+          ),
+        );
+        const readRpc = yield* connectRpc(readNative);
+        const sourceDb = Context.get(a.database, SqlClient.SqlClient);
+        const beforeRefusal =
+          yield* sourceDb`SELECT id,record_json FROM peer_authority_records ORDER BY id`;
+        const forbiddenControl = yield* readRpc(WS_METHODS.previewViewerOpen, {
+          resource,
+          operation: "control",
+        });
+        expect(forbiddenControl.exit?._tag).toBe("Failure");
+        expect(json(forbiddenControl)).toContain("preview:operate");
+        expect(
+          yield* sourceDb`SELECT id,record_json FROM peer_authority_records ORDER BY id`,
+        ).toEqual(beforeRefusal);
+        const permittedView = yield* readRpc(WS_METHODS.previewViewerOpen, {
+          resource,
+          operation: "view",
+        });
+        expect(permittedView.exit?._tag).toBe("Success");
+        const readViewer = yield* Schema.decodeUnknownEffect(PreviewViewerAccess)(
+          permittedView.exit?.value,
+        );
+        expect(
+          (yield* readRpc(WS_METHODS.previewViewerClose, { viewerId: readViewer.viewerId })).exit
+            ?.value,
+        ).toBe(true);
+        const admitted = yield* rpc(WS_METHODS.previewViewerOpen, {
+          resource,
+          operation: "control",
+        });
+        expect(admitted.exit?._tag, json(admitted)).toBe("Success");
+        const viewer = yield* Schema.decodeUnknownEffect(PreviewViewerAccess)(admitted.exit?.value);
+        expect(viewer.streamBasePath).toBe("/api/preview-stream");
+        expect(json(viewer)).not.toContain(b.url);
+        const signed = yield* a.fixtureBrowserViewerSessions!.authenticateViewerToken(
+          viewer.ticket,
+        );
+        const resolved = yield* a.fixtureBrowserViewers!.resolve(
+          viewer.viewerId,
+          { resource, operation: "control" },
+          signed.generation,
+        );
+        if (resolved.type !== "peer") return yield* Effect.die("Expected private peer viewer");
+        expect(json(viewer)).not.toContain(resolved.ticket);
+        yield* b.fixtureBrowserViewerSessions!.authenticateViewerToken(resolved.ticket);
+        const frame = Promise.withResolvers<Uint8Array>();
+        const acquired = Promise.withResolvers<void>();
+        const pickerOffered = Promise.withResolvers<string>();
+        const closed = Promise.withResolvers<void>();
+        const decodeControl = Schema.decodeUnknownOption(
+          Schema.fromJsonString(
+            Schema.Struct({
+              type: Schema.String,
+              controller: Schema.optionalKey(Schema.String),
+              id: Schema.optionalKey(Schema.String),
+            }),
+          ),
+        );
+        const params = new URLSearchParams({
+          threadId: child,
+          tabId: resource.tabId,
+          viewerTicket: viewer.ticket,
+        });
+        const socket = yield* Effect.acquireRelease(
+          Effect.tryPromise({
+            try: () =>
+              new Promise<WebSocket>((resolve, reject) => {
+                const ws = new WebSocket(
+                  `${a.url.replace(/^http/, "ws")}/api/preview-stream/ws?${params}`,
+                );
+                ws.binaryType = "arraybuffer";
+                ws.addEventListener("message", (event) => {
+                  if (typeof event.data !== "string")
+                    frame.resolve(new Uint8Array(event.data as ArrayBuffer));
+                  else {
+                    const control = decodeControl(event.data);
+                    if (
+                      Option.isSome(control) &&
+                      control.value.type === "fileChooser" &&
+                      control.value.id !== undefined
+                    )
+                      pickerOffered.resolve(control.value.id);
+                    if (
+                      Option.isSome(control) &&
+                      control.value.type === "control" &&
+                      control.value.controller === "you"
+                    )
+                      acquired.resolve();
+                  }
+                });
+                ws.addEventListener("open", () => resolve(ws), { once: true });
+                ws.addEventListener(
+                  "error",
+                  () => reject(new Error("Source browser viewer refused")),
+                  { once: true },
+                );
+                ws.addEventListener("close", () => closed.resolve(), { once: true });
+              }),
+            catch: (cause) =>
+              new OrchestratorMcpFailure({ code: "orchestration_error", message: String(cause) }),
+          }),
+          (ws) => Effect.sync(() => ws.close()),
+        );
+        const jpeg = yield* Effect.promise(() => frame.promise);
+        expect(jpeg.byteLength).toBe(773);
+        expect(yield* typed383Digest(jpeg)).toBe(
+          "030b4f6d1c87d5d9ec0d9dd75721bf0137a6948d2719d6d3e7f5a6d273926acb",
+        );
+        expect(Array.from(jpeg.subarray(0, 2))).toEqual([255, 216]);
+        expect(Array.from(jpeg.subarray(-2))).toEqual([255, 217]);
+        socket.send(json({ type: "ack" }));
+        socket.send(json({ type: "takeControl" }));
+        yield* Effect.promise(() => acquired.promise);
+        const external = browserExternalContexts.at(-1)!;
+        const delivered = Promise.withResolvers<void>();
+        external.controls.afterInput = async (method) => {
+          if (method === "Input.insertText") delivered.resolve();
+        };
+        socket.send(json({ type: "text", text: "literal source A" }));
+        yield* Effect.promise(() => delivered.promise);
+        expect(external.inputs.filter((input) => input.method === "Input.insertText")).toEqual([
+          { method: "Input.insertText", params: { text: "literal source A" } },
+        ]);
+        const filePayloads: Array<{ name: string; mimeType: string; bytes: number[] }> = [];
+        const chooser = makeExternalBrowserFileChooser<
+          Parameters<
+            NativeBrowser.ServerBrowser["Service"]["answerFileChooser"]
+          >[0]["files"][number]
+        >(async (files) => {
+          for (const file of files)
+            filePayloads.push({
+              name: file.name,
+              mimeType: file.mimeType,
+              bytes: Array.from(file.buffer),
+            });
+        });
+        yield* Effect.promise(() => external.emitAsync("filechooser", chooser.chooser));
+        const chooserId = yield* Effect.promise(() => pickerOffered.promise);
+        const pickerUrl = `${a.url}/api/preview-stream/upload?${params}&chooser=${encodeURIComponent(chooserId)}`;
+        const form = () => {
+          const data = new FormData();
+          data.append(
+            "file",
+            new File([new Uint8Array([1, 3, 5, 7])], "phone.txt", { type: "text/plain" }),
+          );
+          return HttpBody.formData(data);
+        };
+        const pickerHttp = yield* HttpClient.HttpClient;
+        const uploaded = yield* pickerHttp.execute(
+          HttpClientRequest.post(pickerUrl).pipe(HttpClientRequest.setBody(form())),
+        );
+        expect(
+          uploaded.status,
+          json({
+            source: a.previewUploadContentTypes,
+            destination: b.previewUploadContentTypes,
+            body: yield* uploaded.text,
+          }),
+        ).toBe(204);
+        expect(filePayloads).toEqual([
+          { name: "phone.txt", mimeType: "text/plain", bytes: [1, 3, 5, 7] },
+        ]);
+        expect(chooser.calls).toHaveLength(1);
+        const repeated = yield* pickerHttp.execute(
+          HttpClientRequest.post(pickerUrl).pipe(HttpClientRequest.setBody(form())),
+        );
+        expect(repeated.status).toBe(409);
+        expect(chooser.calls).toHaveLength(1);
+        yield* b.authority.setGrant({ ...grant, preview: false });
+        socket.send(json({ type: "text", text: "must not arrive" }));
+        yield* Effect.promise(() => closed.promise);
+        expect(external.inputs.filter((input) => input.method === "Input.insertText")).toHaveLength(
+          1,
+        );
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        const rival = yield* a.auth.issueSession({
+          scopes: ["orchestration:read", "preview:operate"],
+        });
+        const rivalNative = yield* a.auth.authenticateHttpRequest(
+          HttpServerRequest.fromWeb(
+            new Request(a.url, { headers: { authorization: `Bearer ${rival.token}` } }),
+          ),
+        );
+        const rivalRpc = yield* connectRpc(rivalNative);
+        expect(
+          (yield* rivalRpc(WS_METHODS.previewViewerClose, { viewerId: viewer.viewerId })).exit
+            ?.value,
+        ).toBe(false);
+        expect(
+          (yield* rpc(WS_METHODS.previewViewerClose, { viewerId: viewer.viewerId })).exit?.value,
+        ).toBe(true);
+        expect(
+          (yield* b
+            .fixtureBrowserViewerSessions!.authenticateViewerToken(resolved.ticket)
+            .pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        expect(
+          (yield* b.nativePreviewManager!.list({ threadId: child })).sessions.map(
+            (session) => session.tabId,
+          ),
+        ).toContain(resource.tabId);
+        const reopenedReply = yield* rpc(WS_METHODS.previewViewerOpen, {
+          resource,
+          operation: "view",
+        });
+        expect(reopenedReply.exit?._tag).toBe("Success");
+        const reopened = yield* Schema.decodeUnknownEffect(PreviewViewerAccess)(
+          reopenedReply.exit?.value,
+        );
+        expect(reopened.viewerId).not.toBe(viewer.viewerId);
+        const before = [...external.effects];
+        for (const suffix of [`&tabId=other`, `&device=alternate`, `&viewerTicket=duplicate`]) {
+          const response = yield* (yield* HttpClient.HttpClient).get(
+            `${a.url}/api/preview-stream/download?${params}&id=missing${suffix}`,
+          );
+          expect(response.status).toBe(403);
+        }
+        expect(external.effects).toEqual(before);
+        expect(
+          (yield* rpc(WS_METHODS.previewViewerClose, { viewerId: reopened.viewerId })).exit?.value,
+        ).toBe(true);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "native383-artifact: A-only native access verifies a registered B capture and current grant",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, child, route, open } = yield* typed383Pair(
+          "native383-artifact-fetch",
+        );
+        const opened = yield* open("artifact-open");
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { target } = yield* decodeTyped383Open(opened.structuredContent);
+        const screenshot = yield* nativeCall(a, parent, "device_execute", {
+          ...route,
+          target,
+          command: { type: "screenshot" },
+          clientRequestId: "artifact-capture",
+        });
+        expect(screenshot.isError, json(screenshot)).not.toBe(true);
+        const { artifact } = yield* decodeTyped383Artifact(screenshot.structuredContent);
+        // Store the actual public result at the native event/projection owner,
+        // then consume its ordinary compact wire form. No B connection is added.
+        const now = yield* DateTime.now;
+        const itemId = TurnItemId.make("native383-qualified-capture-item");
+        yield* a.sink.write({
+          commandId: CommandId.make("native383-qualified-capture-output"),
+          events: [
+            {
+              id: EventId.make("native383-qualified-capture-output"),
+              type: "turn-item.updated",
+              threadId: parent,
+              occurredAt: now,
+              payload: {
+                id: itemId,
+                type: "dynamic_tool",
+                threadId: parent,
+                runId: null,
+                nodeId: null,
+                providerThreadId: null,
+                providerTurnId: null,
+                nativeItemRef: null,
+                parentItemId: null,
+                ordinal: 1,
+                status: "completed",
+                title: null,
+                startedAt: now,
+                completedAt: now,
+                updatedAt: now,
+                toolName: "device_execute",
+                input: { ...route, target, command: { type: "screenshot" } },
+                output: screenshot,
+              },
+            },
+          ],
+        });
+        const wire = projectThreadProjectionForWire(
+          yield* a.orchestrator.getThreadProjection(parent),
+        );
+        const projected = wire.turnItems.find((item) => item.id === itemId);
+        if (projected?.type !== "dynamic_tool")
+          return yield* Effect.die("Missing native tool projection");
+        const resources = resourcesFromToolItem(projected);
+        expect(resources).toEqual([
+          {
+            _tag: "peer-attachment",
+            threadId: child,
+            reference: artifact,
+          },
+        ]);
+        expect(json(projected.output)).not.toContain("quickStart");
+        expect(json(projected.output)).not.toContain(b.config.attachmentsDir);
+        const qualified = resources[0];
+        if (qualified === undefined || !("_tag" in qualified))
+          return yield* Effect.die("Missing qualified projected artifact");
+        const owner = yield* a.auth.issueSession({ scopes: ["orchestration:read"] });
+        const native = yield* a.auth.authenticateHttpRequest(
+          HttpServerRequest.fromWeb(
+            new Request(a.url, {
+              headers: { authorization: `Bearer ${owner.token}` },
+            }),
+          ),
+        );
+        const resource = { ...qualified, disposition: "inline" as const };
+        const issued = yield* a.issueAssetUrl({ resource, session: native });
+        expect(issued.relativeUrl).toMatch(/^\/api\/assets\//);
+        expect(json(issued)).not.toContain(b.url);
+        expect(json(issued)).not.toContain(b.config.attachmentsDir);
+        const client = yield* HttpClient.HttpClient;
+        const fetchAsset = (method: "GET" | "HEAD", headers: Record<string, string> = {}) =>
+          Effect.gen(function* () {
+            const ticket = yield* a.auth.issueWebSocketTicket(native);
+            return yield* client.execute(
+              HttpClientRequest.make(method)(
+                `${a.url}${issued.relativeUrl}?wsTicket=${encodeURIComponent(ticket.ticket)}`,
+              ).pipe(HttpClientRequest.setHeaders(headers)),
+            );
+          });
+        const fetched = yield* fetchAsset("GET");
+        expect(fetched.status).toBe(200);
+        const body = new Uint8Array(yield* fetched.arrayBuffer);
+        expect(body.byteLength).toBe(artifact.sizeBytes);
+        expect(yield* typed383Digest(body)).toBe(artifact.digest);
+        const head = yield* fetchAsset("HEAD");
+        expect(head.status).toBe(200);
+        expect(head.headers["content-length"]).toBe(String(body.byteLength));
+        expect((yield* head.arrayBuffer).byteLength).toBe(0);
+        const range = yield* fetchAsset("GET", { range: "bytes=1-3" });
+        expect(range.status).toBe(206);
+        expect(Array.from(new Uint8Array(yield* range.arrayBuffer))).toEqual(
+          Array.from(body.subarray(1, 4)),
+        );
+        const rival = yield* a.auth.issueSession({ scopes: ["orchestration:read"] });
+        const rivalNative = yield* a.auth.authenticateHttpRequest(
+          HttpServerRequest.fromWeb(
+            new Request(a.url, {
+              headers: { authorization: `Bearer ${rival.token}` },
+            }),
+          ),
+        );
+        const rivalTicket = yield* a.auth.issueWebSocketTicket(rivalNative);
+        const rivalFetch = yield* client.execute(
+          HttpClientRequest.get(
+            `${a.url}${issued.relativeUrl}?wsTicket=${encodeURIComponent(rivalTicket.ticket)}`,
+          ),
+        );
+        expect(rivalFetch.status).toBe(403);
+        const receiptsBefore = yield* Context.get(
+          b.database,
+          SqlClient.SqlClient,
+        )`SELECT * FROM mcp_request_receipts`;
+        const capturesBefore = yield* Ref.get(b.deviceScreenshotCalls);
+        for (const changed of [
+          { ...resource, threadId: parent },
+          { ...resource, reference: { ...artifact, digest: "0".repeat(64) } },
+          { ...resource, reference: { ...artifact, owner: "0".repeat(64) } },
+          { ...resource, reference: { ...artifact, mimeType: "text/html" } },
+          { ...resource, reference: { ...artifact, sizeBytes: artifact.sizeBytes - 1 } },
+        ]) {
+          expect(
+            (yield* a.issueAssetUrl({ resource: changed, session: native }).pipe(Effect.result))
+              ._tag,
+          ).toBe("Failure");
+        }
+        const fs = yield* FileSystem.FileSystem;
+        const stored = resolveAttachmentPathById({
+          attachmentsDir: b.config.attachmentsDir,
+          attachmentId: artifact.attachmentId,
+        });
+        expect(stored).not.toBeNull();
+        const altered = body.slice();
+        altered[altered.length - 1] = altered.at(-1)! ^ 1;
+        yield* fs.writeFile(stored!, altered);
+        expect((yield* fetchAsset("GET")).status).toBe(403);
+        yield* fs.writeFile(stored!, body);
+        expect((yield* fetchAsset("GET")).status).toBe(200);
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* Ref.set(
+          b.artifactResponseHook,
+          b.authority
+            .setGrant({ ...grant, device: false })
+            .pipe(Effect.andThen(Ref.set(b.artifactResponseHook, Effect.void))),
+        );
+        expect(
+          (yield* fetchAsset("GET")).status,
+          "retirement after B read and before A publication must prevent the public response",
+        ).toBe(403);
+        yield* b.authority.setGrant(grant);
+        expect((yield* fetchAsset("GET")).status).toBe(200);
+        yield* b.authority.setGrant({ ...grant, device: false });
+        expect((yield* fetchAsset("GET")).status).toBe(403);
+        yield* b.authority.setGrant(grant);
+        expect((yield* fetchAsset("GET")).status).toBe(200);
+        expect(yield* Ref.get(b.deviceScreenshotCalls)).toBe(capturesBefore);
+        expect(
+          yield* Context.get(b.database, SqlClient.SqlClient)`SELECT * FROM mcp_request_receipts`,
+        ).toEqual(receiptsBefore);
+        // The URL is source-session-bound and also pinned to the actual link generation.
+        yield* a.links.unlink(b.environmentId);
+        yield* linkTo(a.links, b, "full-access");
+        expect((yield* fetchAsset("GET")).status).toBe(403);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "native383-browser: human popup uses its native current session after the agent grant retires",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const nativePromise = yield* makeNativePromiseBridge;
+        const { a, b, parent, child, route } = yield* typed383Pair(
+          "native383-human-popup",
+          false,
+          false,
+          { source: false, destination: false, destinationBrowser: true },
+        );
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        const opened = yield* nativeCall(a, parent, "preview_open", {
+          ...route,
+          show: false,
+          clientRequestId: "popup-agent-open",
+        });
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { resource } = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ resource: PreviewViewerResource }),
+        )(opened.structuredContent);
+        const opener = browserExternalContexts.at(-1)!;
+        const issued = yield* b.auth.issueSession({
+          scopes: ["orchestration:read", "preview:operate"],
+        });
+        const native = yield* b.auth.authenticateHttpRequest(
+          HttpServerRequest.fromWeb(
+            new Request(b.url, { headers: { authorization: `Bearer ${issued.token}` } }),
+          ),
+        );
+        const repository = yield* AuthSessions.layer.pipe(
+          Layer.provide(Layer.succeedContext(b.database)),
+          Layer.build,
+        );
+        const read = yield* Auth.nativeSessionAuthorization(native, "orchestration:read").pipe(
+          Effect.provideContext(repository),
+        );
+        const operate = yield* Auth.nativeSessionAuthorization(native, "preview:operate").pipe(
+          Effect.provideContext(repository),
+        );
+        const viewer = yield* b.nativeBrowser!.attachViewer({
+          threadId: child,
+          tabId: resource.tabId,
+          maxWidth: 1280,
+          maxHeight: 800,
+          quality: 70,
+          canOperate: true,
+          authorize: () => nativePromise(read.pipe(Effect.andThen(operate))),
+        });
+        yield* viewer.input({ type: "takeControl" });
+        yield* viewer.input({
+          type: "mouse",
+          action: "down",
+          x: 10,
+          y: 10,
+          button: "left",
+          buttons: 1,
+        });
+        expect(opener.inputs.some((input) => input.method === "Input.dispatchMouseEvent")).toBe(
+          true,
+        );
+        const events = yield* b.nativePreviewManager!.subscribeEvents;
+        const observeOpening = Effect.gen(function* () {
+          while (true) {
+            const event = yield* PubSub.take(events);
+            if (event.type === "opened")
+              return { state: "opened" as const, snapshot: event.snapshot };
+          }
+        });
+        const popup = makeExternalBrowserContext();
+        const closed = yield* Deferred.make<{ state: "closed" }>();
+        popup.controls.afterClose = async () => {
+          await nativePromise(Deferred.succeed(closed, { state: "closed" as const }));
+        };
+        yield* b.authority.setGrant({ ...grant, preview: false });
+        opener.emit("popup", popup.page);
+        const outcome = yield* observeOpening.pipe(Effect.raceFirst(Deferred.await(closed)));
+        expect(outcome.state, json(outcome)).toBe("opened");
+        if (outcome.state !== "opened") return;
+        expect(outcome.snapshot.automationOwner).toBeUndefined();
+        // The opened event precedes the manager transaction's publication. Await
+        // the actual viewer notification, then attach through the native owner.
+        const popupResource = yield* Effect.gen(function* () {
+          while (true) {
+            const output = yield* Queue.take(viewer.output);
+            if (output._tag === "frame") yield* output.ack;
+            if (output._tag === "popup") return output.resource;
+          }
+        });
+        expect(popupResource?.tabId).toBe(outcome.snapshot.tabId);
+        yield* b.nativeBrowser!.attachViewer({
+          threadId: child,
+          tabId: outcome.snapshot.tabId,
+          maxWidth: 1280,
+          maxHeight: 800,
+          quality: 70,
+          canOperate: false,
+          authorize: () => nativePromise(read),
+        });
+        // The native authorization remains live independently of the retired MCP actor.
+        yield* read;
+        yield* operate;
+        const next = makeExternalBrowserContext();
+        const nextClosed = yield* Deferred.make<void>();
+        next.controls.afterClose = async () => {
+          await nativePromise(Deferred.succeed(nextClosed, undefined));
+        };
+        yield* Context.get(repository, AuthSessions.AuthSessionRepository).revoke({
+          sessionId: issued.sessionId,
+          revokedAt: yield* DateTime.now,
+        });
+        const before = (yield* b.nativePreviewManager!.list({ threadId: child })).sessions.map(
+          (session) => session.tabId,
+        );
+        opener.emit("popup", next.page);
+        yield* Deferred.await(nextClosed);
+        expect(
+          (yield* b.nativePreviewManager!.list({ threadId: child })).sessions.map(
+            (session) => session.tabId,
+          ),
+        ).toEqual(before);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "native383-attachment: public inspection distinguishes incomplete uploads before typed source input transfer",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, route, open, footprint } =
+          yield* typed383Pair("native383-public-input");
+        const opened = yield* open("public-input-open");
+        const { target } = yield* decodeTyped383Open(opened.structuredContent);
+        const bytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
+        const upload = {
+          type: "file" as const,
+          name: "app.apk",
+          mimeType: "application/vnd.android.package-archive",
+          sizeBytes: bytes.length,
+        };
+        const prepared = yield* nativeCall(a, parent, "t3_attachment_prepare_upload", {
+          upload,
+          digest: yield* typed383Digest(bytes),
+          clientRequestId: "public-input-upload",
+        });
+        expect(prepared.isError, json(prepared)).not.toBe(true);
+        const issued = yield* decodeTyped383Upload(prepared.structuredContent);
+        const inspect = { source: { type: "upload", attachmentId: issued.attachmentId, upload } };
+        const raw = yield* nativeRpcCall(a, parent, "t3_attachment_inspect", inspect);
+        expect(raw, raw).not.toContain('"error"');
+        const incomplete = (yield* sendResult(raw)).result;
+        expect(incomplete.isError, json(incomplete)).not.toBe(true);
+        expect(incomplete.structuredContent).toEqual({
+          type: "upload",
+          inspection: { stage: "awaiting-bytes" },
+        });
+        const http = yield* HttpClient.HttpClient;
+        expect(
+          (yield* http.execute(
+            HttpClientRequest.post(`${a.url}${issued.relativeUrl}`).pipe(
+              HttpClientRequest.setBody(HttpBody.uint8Array(bytes)),
+            ),
+          )).status,
+        ).toBe(204);
+        const staged = yield* nativeCall(a, parent, "t3_attachment_inspect", inspect);
+        expect(staged.isError, json(staged)).not.toBe(true);
+        const { inspection } = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({
+            inspection: Schema.Struct({
+              stage: Schema.Literal("staged"),
+              reference: PeerAttachmentReference,
+            }),
+          }),
+        )(staged.structuredContent);
+        expect(inspection.reference.environmentId).toBe(a.environmentId);
+        expect(inspection.reference.digest).toBe(yield* typed383Digest(bytes));
+        const before = yield* footprint();
+        const drive = (key: string) =>
+          nativeCall(a, parent, "device_execute", {
+            ...route,
+            target,
+            command: { type: "install", app: "com.example.app", artifact: inspection.reference },
+            clientRequestId: key,
+          });
+        yield* Ref.set(a.dropCommittedToolReply, "device_execute");
+        const lost = yield* drive("public-input-install");
+        expect(lost.isError, json(lost)).toBe(true);
+        expect(json(lost)).toContain("Isolated committed tool reply loss");
+        const after = yield* footprint();
+        const installed = yield* drive("public-input-install");
+        expect(installed.isError, json(installed)).not.toBe(true);
+        expect(yield* footprint()).toEqual(after);
+        expect(after.process).toBeGreaterThan(before.process);
+        const leaf = b.deviceProcessCalls.at(-1)!;
+        const inputPath = leaf.args.at(-1)!;
+        const fs = yield* FileSystem.FileSystem;
+        expect(Array.from(yield* fs.readFile(inputPath))).toEqual(Array.from(bytes));
+        expect(inputPath).not.toContain(a.config.attachmentsDir);
+        expect(json(installed)).not.toContain(inputPath);
+        expect((yield* drive("public-input-install")).structuredContent).toEqual(
+          installed.structuredContent,
+        );
+        expect(yield* footprint()).toEqual(after);
+        const reused = yield* drive("public-input-different-consumer");
+        expect(reused.isError, json(reused)).toBe(true);
+        expect(yield* footprint()).toEqual(after);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "native383-attachment: original MCP actor acquires a B capture into one native source publication",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, child, route, open } = yield* typed383Pair(
+          "native383-public-acquire",
+        );
+        const opened = yield* open("public-acquire-open");
+        const { target } = yield* decodeTyped383Open(opened.structuredContent);
+        const screenshot = yield* nativeCall(a, parent, "device_execute", {
+          ...route,
+          target,
+          command: { type: "screenshot" },
+          clientRequestId: "public-acquire-capture",
+        });
+        expect(screenshot.isError, json(screenshot)).not.toBe(true);
+        const { artifact } = yield* decodeTyped383Artifact(screenshot.structuredContent);
+        const resource = { _tag: "peer-attachment" as const, threadId: child, reference: artifact };
+        const input = { resource, clientRequestId: "public-acquire-copy" };
+        const raw = yield* nativeRpcCall(a, parent, "t3_attachment_acquire", input);
+        expect(raw, raw).not.toContain('"error"');
+        const acquired = (yield* sendResult(raw)).result;
+        expect(acquired.isError, json(acquired)).not.toBe(true);
+        const value = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({
+            resource: Schema.Struct({ reference: PeerAttachmentReference }),
+            path: Schema.String,
+          }),
+        )(acquired.structuredContent);
+        expect(value.resource.reference.environmentId).toBe(a.environmentId);
+        expect(value.resource.reference.digest).toBe(artifact.digest);
+        expect(value.path).toBe(
+          resolveAttachmentPathById({
+            attachmentsDir: a.config.attachmentsDir,
+            attachmentId: value.resource.reference.attachmentId,
+          }),
+        );
+        expect(json(acquired)).not.toContain(b.config.attachmentsDir);
+        expect(json(acquired)).not.toContain("ISOLATED_DEVICE_TOKEN");
+        const fs = yield* FileSystem.FileSystem;
+        const original = yield* fs.readFile(value.path);
+        expect(yield* typed383Digest(original)).toBe(artifact.digest);
+        const replay = yield* nativeCall(a, parent, "t3_attachment_acquire", input);
+        expect(replay.structuredContent).toEqual(acquired.structuredContent);
+        const nativeRows = yield* Context.get(
+          a.database,
+          SqlClient.SqlClient,
+        )`SELECT * FROM attachment_staging WHERE id=${value.resource.reference.attachmentId}`;
+        expect(nativeRows).toHaveLength(1);
+        expect(nativeRows[0]).toMatchObject({
+          digest: artifact.digest,
+          expected_digest: artifact.digest,
+          publication_capability: "device",
+        });
+        // Every nativeCall issues a fresh lawful credential. Same-disk source and
+        // destination transport reconstruction must still use the accepted copy.
+        const activeA = { ...a, ...(yield* a.restartSchedulerTransport) };
+        yield* Context.get(
+          b.database,
+          SqlClient.SqlClient,
+        )`UPDATE peer_environment_links SET urls_json=${json([activeA.url])} WHERE environment_id=${a.environmentId}`;
+        const activeB = { ...b, ...(yield* b.restartSchedulerTransport) };
+        yield* Context.get(
+          a.database,
+          SqlClient.SqlClient,
+        )`UPDATE peer_environment_links SET urls_json=${json([activeB.url])} WHERE environment_id=${b.environmentId}`;
+        expect(
+          (yield* nativeCall(activeA, parent, "t3_attachment_acquire", input)).structuredContent,
+        ).toEqual(acquired.structuredContent);
+        const edited = new Uint8Array([9, 8, 7]);
+        yield* fs.writeFile(value.path, edited);
+        const historical = yield* nativeCall(activeA, parent, "t3_attachment_acquire", input);
+        expect(historical.isError, json(historical)).not.toBe(true);
+        expect(historical.structuredContent).toEqual(acquired.structuredContent);
+        expect(Array.from(yield* fs.readFile(value.path))).toEqual(Array.from(edited));
+        expect(
+          yield* Context.get(
+            a.database,
+            SqlClient.SqlClient,
+          )`SELECT * FROM attachment_staging WHERE id=${value.resource.reference.attachmentId}`,
+        ).toEqual(nativeRows);
+        expect(
+          (yield* nativeCall(activeA, parent, "t3_attachment_acquire", {
+            ...input,
+            resource: { ...resource, reference: { ...artifact, name: "changed.png" } },
+          })).isError,
+        ).toBe(true);
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, device: false });
+        expect((yield* nativeCall(activeA, parent, "t3_attachment_acquire", input)).isError).toBe(
+          true,
+        );
+        expect(Array.from(yield* fs.readFile(value.path))).toEqual(Array.from(edited));
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live.each(["agent", "human"] as const)(
+  "native383-browser: %s download rechecks its actual actor after readiness before saving bytes",
+  (actor) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const nativePromise = yield* makeNativePromiseBridge;
+        const { a, b, parent, child, route } = yield* typed383Pair(
+          `native383-download-${actor}`,
+          false,
+          false,
+          { source: false, destination: false, destinationBrowser: true },
+        );
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        const opened = yield* nativeCall(a, parent, "preview_open", {
+          ...route,
+          show: false,
+          clientRequestId: "download-open",
+        });
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { resource } = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ resource: PreviewViewerResource }),
+        )(opened.structuredContent);
+        const external = browserExternalContexts.at(-1)!;
+        const fs = yield* FileSystem.FileSystem;
+        const bytes = new TextEncoder().encode("native download bytes");
+        let retire: Effect.Effect<void>;
+        if (actor === "human") {
+          const issued = yield* b.auth.issueSession({
+            scopes: ["orchestration:read", "preview:operate"],
+          });
+          const native = yield* b.auth.authenticateHttpRequest(
+            HttpServerRequest.fromWeb(
+              new Request(b.url, { headers: { authorization: `Bearer ${issued.token}` } }),
+            ),
+          );
+          const repository = yield* AuthSessions.layer.pipe(
+            Layer.provide(Layer.succeedContext(b.database)),
+            Layer.build,
+          );
+          const read = yield* Auth.nativeSessionAuthorization(native, "orchestration:read").pipe(
+            Effect.provideContext(repository),
+          );
+          const operate = yield* Auth.nativeSessionAuthorization(native, "preview:operate").pipe(
+            Effect.provideContext(repository),
+          );
+          const viewer = yield* b.nativeBrowser!.attachViewer({
+            threadId: child,
+            tabId: resource.tabId,
+            maxWidth: 800,
+            maxHeight: 600,
+            quality: 70,
+            canOperate: true,
+            authorize: () => nativePromise(read.pipe(Effect.andThen(operate))),
+          });
+          yield* viewer.input({ type: "takeControl" });
+          yield* viewer.input({
+            type: "mouse",
+            action: "down",
+            x: 10,
+            y: 10,
+            button: "left",
+            buttons: 1,
+            clickCount: 1,
+            modifiers: 0,
+          });
+          // Human ownership does not borrow the retired opening agent's grant.
+          yield* b.authority.setGrant({ ...grant, preview: false });
+          retire = Context.get(repository, AuthSessions.AuthSessionRepository)
+            .revoke({ sessionId: issued.sessionId, revokedAt: yield* DateTime.now })
+            .pipe(Effect.asVoid, Effect.orDie);
+        } else
+          retire = b.authority
+            .setGrant({ ...grant, preview: false })
+            .pipe(Effect.asVoid, Effect.orDie);
+        const lawful = makeExternalBrowserDownload((path) =>
+          nativePromise(fs.writeFile(path, bytes)),
+        );
+        yield* Effect.promise(() => external.emitAsync("download", lawful.download));
+        expect(lawful.saves).toHaveLength(1);
+        expect(Array.from(yield* fs.readFile(lawful.saves[0]!))).toEqual(Array.from(bytes));
+        const refused = makeExternalBrowserDownload(
+          (path) => nativePromise(fs.writeFile(path, bytes)),
+          () => nativePromise(retire),
+        );
+        yield* Effect.promise(() => external.emitAsync("download", refused.download));
+        expect(
+          refused.saves,
+          "readiness retirement must prevent the next native saveAs dispatch",
+        ).toHaveLength(0);
+        expect(Array.from(yield* fs.readFile(lawful.saves[0]!))).toEqual(Array.from(bytes));
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "native383-browser: registered download status does not instruct an A-only caller to use a B path",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const nativePromise = yield* makeNativePromiseBridge;
+        const { a, b, parent, route } = yield* typed383Pair(
+          "native383-download-reference",
+          false,
+          false,
+          { source: false, destination: false, destinationBrowser: true },
+        );
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        const opened = yield* nativeCall(a, parent, "preview_open", {
+          ...route,
+          show: false,
+          clientRequestId: "download-reference-open",
+        });
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { resource } = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ resource: PreviewViewerResource }),
+        )(opened.structuredContent);
+        const fs = yield* FileSystem.FileSystem;
+        const bytes = new TextEncoder().encode("portable browser download");
+        const download = makeExternalBrowserDownload((path) =>
+          nativePromise(fs.writeFile(path, bytes)),
+        );
+        yield* Effect.promise(() =>
+          browserExternalContexts.at(-1)!.emitAsync("download", download.download),
+        );
+        expect(download.saves).toHaveLength(1);
+        const status = yield* nativeCall(a, parent, "preview_status", {
+          ...route,
+          tabId: resource.tabId,
+        });
+        expect(status.isError, json(status)).not.toBe(true);
+        expect(json(status)).toContain("report.txt");
+        expect(
+          json(status),
+          "A-only registered output must not expose a B-local download path",
+        ).not.toContain(b.config.stateDir);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "native383-download: qualified source HTTP fetch and native acquisition retain exact bytes and current owners",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const nativePromise = yield* makeNativePromiseBridge;
+        const { a, b, parent, child, route } = yield* typed383Pair(
+          "native383-download-fetch",
+          false,
+          false,
+          { source: false, destination: false, destinationBrowser: true },
+        );
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        const opened = yield* nativeCall(a, parent, "preview_open", {
+          ...route,
+          show: false,
+          clientRequestId: "download-fetch-open",
+        });
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { resource: browser } = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ resource: PreviewViewerResource }),
+        )(opened.structuredContent);
+        const fs = yield* FileSystem.FileSystem;
+        const bytes = Uint8Array.from({ length: 2 * 1024 * 1024 + 7 }, (_, index) => index % 251);
+        const download = makeExternalBrowserDownload((path) =>
+          nativePromise(fs.writeFile(path, bytes)),
+        );
+        yield* Effect.promise(() =>
+          browserExternalContexts.at(-1)!.emitAsync("download", download.download),
+        );
+        const status = yield* nativeCall(a, parent, "preview_status", {
+          ...route,
+          tabId: browser.tabId,
+        });
+        expect(status.isError, json(status)).not.toBe(true);
+        const { downloads } = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({
+            downloads: Schema.Array(
+              Schema.Struct({ resource: NativeBrowserDownloadAssetResource }),
+            ),
+          }),
+        )(status.structuredContent);
+        const resource = downloads[0]!.resource;
+        expect(resource.sizeBytes).toBe(bytes.length);
+        expect(resource.digest).toBe(yield* typed383Digest(bytes));
+        expect(resource.resource).toEqual(browser);
+        const owner = yield* a.auth.issueSession({ scopes: ["orchestration:read"] });
+        const native = yield* a.auth.authenticateHttpRequest(
+          HttpServerRequest.fromWeb(
+            new Request(a.url, { headers: { authorization: `Bearer ${owner.token}` } }),
+          ),
+        );
+        const issued = yield* a.issueAssetUrl({ resource, session: native });
+        expect(json(issued)).not.toContain(b.url);
+        expect(json(issued)).not.toContain(b.config.stateDir);
+        const client = yield* HttpClient.HttpClient;
+        const fetchAsset = (method: "GET" | "HEAD", headers: Record<string, string> = {}) =>
+          Effect.gen(function* () {
+            const ticket = yield* a.auth.issueWebSocketTicket(native);
+            return yield* client.execute(
+              HttpClientRequest.make(method)(
+                `${a.url}${issued.relativeUrl}?wsTicket=${encodeURIComponent(ticket.ticket)}`,
+              ).pipe(HttpClientRequest.setHeaders(headers)),
+            );
+          });
+        const head = yield* fetchAsset("HEAD");
+        expect(head.status).toBe(200);
+        expect(head.headers["content-length"]).toBe(String(bytes.length));
+        expect((yield* head.arrayBuffer).byteLength).toBe(0);
+        const fetched = yield* fetchAsset("GET");
+        expect(fetched.status).toBe(200);
+        expect(yield* typed383Digest(new Uint8Array(yield* fetched.arrayBuffer))).toBe(
+          resource.digest,
+        );
+        const range = yield* fetchAsset("GET", { range: "bytes=1048574-1048580" });
+        expect(range.status).toBe(206);
+        expect(Array.from(new Uint8Array(yield* range.arrayBuffer))).toEqual(
+          Array.from(bytes.subarray(1048574, 1048581)),
+        );
+        expect((yield* fetchAsset("GET", { range: `bytes=${bytes.length}-` })).status).toBe(416);
+        const beforeRetirement = yield* Context.get(
+          a.database,
+          SqlClient.SqlClient,
+        )`SELECT * FROM attachment_staging`;
+        let retiredBlocks = 0;
+        const retirementObserved = yield* Deferred.make<void>();
+        let binaryStarted = false;
+        yield* Ref.set(b.artifactRequestHook, (checkOnly) =>
+          Effect.gen(function* () {
+            if (checkOnly && binaryStarted) yield* Deferred.await(retirementObserved);
+            if (!checkOnly) binaryStarted = true;
+          }),
+        );
+        yield* Ref.set(
+          b.artifactResponseHook,
+          Effect.gen(function* () {
+            retiredBlocks += 1;
+            yield* b.authority.setGrant({ ...grant, preview: false });
+            yield* Deferred.succeed(retirementObserved, undefined);
+            yield* Ref.set(b.artifactResponseHook, Effect.void);
+          }).pipe(Effect.orDie),
+        );
+        const interrupted = yield* fetchAsset("GET").pipe(
+          Effect.flatMap((response) => response.arrayBuffer),
+          Effect.result,
+        );
+        expect(
+          interrupted._tag,
+          "retirement after the native block read must prevent source publication",
+        ).toBe("Failure");
+        expect(retiredBlocks).toBe(1);
+        expect(
+          yield* Context.get(a.database, SqlClient.SqlClient)`SELECT * FROM attachment_staging`,
+        ).toEqual(beforeRetirement);
+        yield* Ref.set(b.artifactRequestHook, () => Effect.void);
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        const rival = yield* a.auth.issueSession({ scopes: ["orchestration:read"] });
+        expect(
+          (yield* client.execute(
+            HttpClientRequest.get(`${a.url}${issued.relativeUrl}`).pipe(
+              HttpClientRequest.setHeader("authorization", `Bearer ${rival.token}`),
+            ),
+          )).status,
+        ).toBe(403);
+        const acquired = yield* nativeCall(a, parent, "t3_attachment_acquire", {
+          resource,
+          clientRequestId: "download-acquire",
+        });
+        expect(acquired.isError, json(acquired)).not.toBe(true);
+        const acquiredValue = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ path: Schema.String, resource: PeerAttachmentAssetResource }),
+        )(acquired.structuredContent);
+        expect(acquiredValue.resource.reference.environmentId).toBe(a.environmentId);
+        expect(yield* typed383Digest(yield* fs.readFile(acquiredValue.path))).toBe(resource.digest);
+        expect(
+          (yield* nativeCall(a, parent, "t3_attachment_acquire", {
+            resource,
+            clientRequestId: "download-acquire",
+          })).structuredContent,
+        ).toEqual(acquired.structuredContent);
+        yield* fs.writeFile(
+          download.saves[0]!,
+          bytes.map((byte) => byte ^ 1),
+        );
+        expect((yield* fetchAsset("HEAD")).status).toBe(403);
+        expect(
+          (yield* nativeCall(a, parent, "t3_attachment_acquire", {
+            resource,
+            clientRequestId: "download-corrupt",
+          })).isError,
+        ).toBe(true);
+        yield* b.authority.setGrant({ ...grant, preview: false });
+        expect((yield* fetchAsset("GET")).status).toBe(403);
+        expect(yield* typed383Digest(yield* fs.readFile(acquiredValue.path))).toBe(resource.digest);
+        expect(resource.resource.threadId).toBe(child);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "native383-download: native 1 GiB sparse owner streams a bounded range and refuses larger publication before staging",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const nativePromise = yield* makeNativePromiseBridge;
+        const { a, b, parent, route } = yield* typed383Pair(
+          "native383-download-gib",
+          false,
+          false,
+          { source: false, destination: false, destinationBrowser: true },
+        );
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        const opened = yield* nativeCall(a, parent, "preview_open", {
+          ...route,
+          show: false,
+          clientRequestId: "download-gib-open",
+        });
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { resource: browser } = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ resource: PreviewViewerResource }),
+        )(opened.structuredContent);
+        const fs = yield* FileSystem.FileSystem;
+        const size = 1024 * 1024 * 1024;
+        const external = browserExternalContexts.at(-1)!;
+        const save = (length: number) =>
+          makeExternalBrowserDownload((path) =>
+            nativePromise(
+              fs.writeFile(path, new Uint8Array(0)).pipe(Effect.andThen(fs.truncate(path, length))),
+            ),
+          );
+        const download = save(size);
+        yield* Effect.promise(() => external.emitAsync("download", download.download));
+        expect(download.saves).toHaveLength(1);
+        const status = yield* nativeCall(a, parent, "preview_status", {
+          ...route,
+          tabId: browser.tabId,
+        });
+        expect(status.isError, json(status)).not.toBe(true);
+        const { downloads } = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({
+            downloads: Schema.Array(
+              Schema.Struct({ resource: NativeBrowserDownloadAssetResource }),
+            ),
+          }),
+        )(status.structuredContent);
+        expect(downloads).toHaveLength(1);
+        const resource = downloads[0]!.resource;
+        expect(resource.sizeBytes).toBe(size);
+        // Independent Python hashlib oracle over1024 repeated1 MiB zero blocks.
+        expect(resource.digest).toBe(
+          "49bc20df15e412a64472421e13fe86ff1c5165e18b2afccf160d4dc19fe68a14",
+        );
+        const sql = Context.get(a.database, SqlClient.SqlClient);
+        const before = yield* sql`SELECT * FROM attachment_staging`;
+        const acquired = yield* nativeCall(a, parent, "t3_attachment_acquire", {
+          resource,
+          clientRequestId: "download-gib-acquire",
+        });
+        expect(acquired.isError, json(acquired)).toBe(true);
+        expect(json(acquired)).toContain("50 MiB");
+        expect(yield* sql`SELECT * FROM attachment_staging`).toEqual(before);
+        const owner = yield* a.auth.issueSession({ scopes: ["orchestration:read"] });
+        const native = yield* a.auth.authenticateHttpRequest(
+          HttpServerRequest.fromWeb(
+            new Request(a.url, { headers: { authorization: `Bearer ${owner.token}` } }),
+          ),
+        );
+        const issued = yield* a.issueAssetUrl({ resource, session: native });
+        const client = yield* HttpClient.HttpClient;
+        const fetchAsset = (method: "GET" | "HEAD", headers: Record<string, string> = {}) =>
+          Effect.gen(function* () {
+            const ticket = yield* a.auth.issueWebSocketTicket(native);
+            return yield* client.execute(
+              HttpClientRequest.make(method)(
+                `${a.url}${issued.relativeUrl}?wsTicket=${encodeURIComponent(ticket.ticket)}`,
+              ).pipe(HttpClientRequest.setHeaders(headers)),
+            );
+          });
+        const head = yield* fetchAsset("HEAD");
+        expect(head.status).toBe(200);
+        expect(head.headers["content-length"]).toBe(String(size));
+        expect((yield* head.arrayBuffer).byteLength).toBe(0);
+        const range = yield* fetchAsset("GET", { range: `bytes=${size - 7}-` });
+        expect(range.status).toBe(206);
+        expect(Array.from(new Uint8Array(yield* range.arrayBuffer))).toEqual([0, 0, 0, 0, 0, 0, 0]);
+        const nativeViewer = yield* a.fixtureBrowserViewers!.open(native, {
+          resource: browser,
+          operation: "view",
+        });
+        const viewerUrl = (ticket: string) =>
+          `${a.url}/api/preview-stream/download?${new URLSearchParams({ threadId: browser.threadId, tabId: browser.tabId, id: resource.downloadId, viewerTicket: ticket })}`;
+        const viewerHead = yield* client.execute(
+          HttpClientRequest.head(viewerUrl(nativeViewer.ticket)),
+        );
+        expect(viewerHead.status).toBe(200);
+        expect(viewerHead.headers["content-length"]).toBe(String(size));
+        expect(viewerHead.headers.etag).toBe(`"sha256-${resource.digest}"`);
+        const viewerRange = yield* client.execute(
+          HttpClientRequest.get(viewerUrl(nativeViewer.ticket)).pipe(
+            HttpClientRequest.setHeader("range", `bytes=${size - 7}-`),
+          ),
+        );
+        expect(viewerRange.status).toBe(206);
+        expect(Array.from(new Uint8Array(yield* viewerRange.arrayBuffer))).toEqual([
+          0, 0, 0, 0, 0, 0, 0,
+        ]);
+        expect(yield* a.fixtureBrowserViewers!.close(native.sessionId, nativeViewer.viewerId)).toBe(
+          true,
+        );
+        expect(
+          (yield* client.execute(HttpClientRequest.head(viewerUrl(nativeViewer.ticket)))).status,
+        ).toBe(403);
+        const reopenedViewer = yield* a.fixtureBrowserViewers!.open(native, {
+          resource: browser,
+          operation: "view",
+        });
+        expect(reopenedViewer.viewerId).not.toBe(nativeViewer.viewerId);
+        expect(yield* a.fixtureBrowserViewers!.close(native.sessionId, nativeViewer.viewerId)).toBe(
+          false,
+        );
+        expect(
+          (yield* client.execute(HttpClientRequest.head(viewerUrl(reopenedViewer.ticket)))).status,
+        ).toBe(200);
+        expect(
+          yield* a.fixtureBrowserViewers!.close(native.sessionId, reopenedViewer.viewerId),
+        ).toBe(true);
+        const secondEntered = yield* Deferred.make<void>();
+        const cancelled = yield* Deferred.make<void>();
+        const hold = yield* Deferred.make<void>();
+        const firstConsumed = yield* Deferred.make<void>();
+        let blockReplies = 0;
+        yield* Ref.set(b.artifactRequestHook, (checkOnly) =>
+          Effect.gen(function* () {
+            if (checkOnly) return;
+            blockReplies += 1;
+            if (blockReplies === 2) {
+              yield* Deferred.succeed(secondEntered, undefined);
+              yield* Deferred.await(hold).pipe(
+                Effect.ensuring(Deferred.succeed(cancelled, undefined)),
+              );
+            }
+          }),
+        );
+        const downstream = yield* Scope.make();
+        yield* Effect.addFinalizer(() => Scope.close(downstream, Exit.void));
+        const cancellationTicket = yield* a.auth.issueWebSocketTicket(native);
+        const streaming = yield* HttpClient.withScope(client)
+          .execute(
+            HttpClientRequest.get(
+              `${a.url}${issued.relativeUrl}?wsTicket=${encodeURIComponent(cancellationTicket.ticket)}`,
+            ),
+          )
+          .pipe(Scope.provide(downstream));
+        expect(streaming.status).toBe(200);
+        let consumed = 0;
+        const consumer = yield* streaming.stream.pipe(
+          Stream.runForEach((chunk) =>
+            Effect.gen(function* () {
+              consumed += chunk.byteLength;
+              if (consumed >= 1024 * 1024) {
+                yield* Deferred.succeed(firstConsumed, undefined);
+                yield* Deferred.await(hold);
+              }
+            }),
+          ),
+          Effect.forkScoped,
+        );
+        yield* Deferred.await(firstConsumed);
+        yield* Deferred.await(secondEntered);
+        expect(blockReplies).toBe(2);
+        yield* Scope.close(downstream, Exit.void);
+        yield* Fiber.interrupt(consumer);
+        yield* Deferred.await(cancelled);
+        expect(blockReplies, "cancellation must stop subsequent native HTTP block reads").toBe(2);
+        yield* Ref.set(b.artifactRequestHook, () => Effect.void);
+        const excess = save(size + 1);
+        yield* Effect.promise(() => external.emitAsync("download", excess.download));
+        expect(excess.saves).toHaveLength(1);
+        expect(yield* fs.exists(excess.saves[0]!)).toBe(false);
+        const remaining = yield* nativeCall(a, parent, "preview_status", {
+          ...route,
+          tabId: browser.tabId,
+        });
+        expect(
+          (yield* Schema.decodeUnknownEffect(
+            Schema.Struct({ downloads: Schema.Array(Schema.Unknown) }),
+          )(remaining.structuredContent)).downloads,
+        ).toHaveLength(1);
+        const closed = yield* nativeCall(a, parent, "t3_preview_close", {
+          ...route,
+          tabId: browser.tabId,
+          clientRequestId: "download-gib-close",
+        });
+        expect(closed.isError, json(closed)).not.toBe(true);
+        expect((yield* fetchAsset("HEAD")).status).toBe(403);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "native383-input: public qualified browser upload reaches the exact native file input once",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const nativePromise = yield* makeNativePromiseBridge;
+        const { a, b, parent, child, route } = yield* typed383Pair(
+          "native383-browser-input",
+          false,
+          false,
+          { source: false, destination: false, destinationBrowser: true },
+        );
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        const opened = yield* nativeCall(a, parent, "preview_open", {
+          ...route,
+          show: false,
+          clientRequestId: "browser-input-open",
+        });
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { resource } = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ resource: PreviewViewerResource }),
+        )(opened.structuredContent);
+        const bytes = new Uint8Array([7, 8, 9, 10]);
+        const upload = {
+          type: "file" as const,
+          name: "report.txt",
+          mimeType: "text/plain",
+          sizeBytes: bytes.length,
+        };
+        const prepared = yield* nativeCall(a, parent, "t3_attachment_prepare_upload", {
+          upload,
+          digest: yield* typed383Digest(bytes),
+          clientRequestId: "browser-input-upload",
+        });
+        expect(prepared.isError, json(prepared)).not.toBe(true);
+        const issued = yield* decodeTyped383Upload(prepared.structuredContent);
+        const http = yield* HttpClient.HttpClient;
+        expect(
+          (yield* http.execute(
+            HttpClientRequest.post(`${a.url}${issued.relativeUrl}`).pipe(
+              HttpClientRequest.setBody(HttpBody.uint8Array(bytes)),
+            ),
+          )).status,
+        ).toBe(204);
+        const staged = yield* nativeCall(a, parent, "t3_attachment_inspect", {
+          source: { type: "upload", attachmentId: issued.attachmentId, upload },
+        });
+        expect(staged.isError, json(staged)).not.toBe(true);
+        const { inspection } = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({
+            inspection: Schema.Struct({
+              stage: Schema.Literal("staged"),
+              reference: PeerAttachmentReference,
+            }),
+          }),
+        )(staged.structuredContent);
+        const external = browserExternalContexts.at(-1)!;
+        const fs = yield* FileSystem.FileSystem;
+        const observed: Array<ReadonlyArray<number>> = [];
+        external.controls.afterSetFiles = async (paths) => {
+          for (const path of paths)
+            observed.push(Array.from(await nativePromise(fs.readFile(path))));
+        };
+        const input = {
+          ...route,
+          tabId: resource.tabId,
+          resource,
+          artifacts: [inspection.reference],
+          locator: "input[type=file]",
+          clientRequestId: "browser-input-pick",
+        };
+        const raw = yield* nativeRpcCall(a, parent, "preview_upload", input);
+        expect(
+          raw,
+          "qualified public upload must be registered, not interpreted as private paths",
+        ).not.toContain('"error"');
+        const result = (yield* sendResult(raw)).result;
+        expect(result.isError, json(result)).not.toBe(true);
+        expect(observed).toEqual([[7, 8, 9, 10]]);
+        expect(json(result)).not.toContain(b.config.attachmentsDir);
+        expect((yield* nativeCall(a, parent, "preview_upload", input)).structuredContent).toEqual(
+          result.structuredContent,
+        );
+        expect(observed).toHaveLength(1);
+        const stageAnother = (name: string) =>
+          Effect.gen(function* () {
+            const upload = {
+              type: "file" as const,
+              name,
+              mimeType: "text/plain",
+              sizeBytes: bytes.length,
+            };
+            const prepared = yield* nativeCall(a, parent, "t3_attachment_prepare_upload", {
+              upload,
+              digest: yield* typed383Digest(bytes),
+              clientRequestId: `prepare-${name}`,
+            });
+            expect(prepared.isError, json(prepared)).not.toBe(true);
+            const issued = yield* decodeTyped383Upload(prepared.structuredContent);
+            expect(
+              (yield* http.execute(
+                HttpClientRequest.post(`${a.url}${issued.relativeUrl}`).pipe(
+                  HttpClientRequest.setBody(HttpBody.uint8Array(bytes)),
+                ),
+              )).status,
+            ).toBe(204);
+            const staged = yield* nativeCall(a, parent, "t3_attachment_inspect", {
+              source: { type: "upload", attachmentId: issued.attachmentId, upload },
+            });
+            const { inspection } = yield* Schema.decodeUnknownEffect(
+              Schema.Struct({
+                inspection: Schema.Struct({
+                  stage: Schema.Literal("staged"),
+                  reference: PeerAttachmentReference,
+                }),
+              }),
+            )(staged.structuredContent);
+            return inspection.reference;
+          });
+        const second = yield* stageAnother("second.txt");
+        const lostInput = { ...input, artifacts: [second], clientRequestId: "browser-input-lost" };
+        yield* Ref.set(a.dropCommittedToolReply, "preview_upload");
+        const lost = yield* nativeCall(a, parent, "preview_upload", lostInput);
+        expect(lost.isError, json(lost)).toBe(true);
+        expect(json(lost)).toContain("Isolated committed tool reply loss");
+        expect(observed).toHaveLength(2);
+        expect((yield* nativeCall(a, parent, "preview_upload", lostInput)).isError).not.toBe(true);
+        expect(observed).toHaveLength(2);
+        const activeA = { ...a, ...(yield* a.restartSchedulerTransport) };
+        yield* Context.get(
+          b.database,
+          SqlClient.SqlClient,
+        )`UPDATE peer_environment_links SET urls_json=${json([activeA.url])} WHERE environment_id=${a.environmentId}`;
+        const activeB = { ...b, ...(yield* b.restartSchedulerTransport) };
+        yield* Context.get(
+          a.database,
+          SqlClient.SqlClient,
+        )`UPDATE peer_environment_links SET urls_json=${json([activeB.url])} WHERE environment_id=${b.environmentId}`;
+        expect((yield* nativeCall(activeA, parent, "preview_upload", lostInput)).isError).not.toBe(
+          true,
+        );
+        expect(observed).toHaveLength(2);
+        const sourceRows = yield* Context.get(
+          a.database,
+          SqlClient.SqlClient,
+        )`SELECT * FROM attachment_staging`;
+        const destinationRows = yield* Context.get(
+          b.database,
+          SqlClient.SqlClient,
+        )`SELECT * FROM attachment_staging`;
+        for (const bad of [
+          { ...lostInput, artifacts: [{ ...second, name: "changed.txt" }] },
+          { ...lostInput, clientRequestId: "browser-input-consumed" },
+          {
+            ...input,
+            paths: ["/private/source/report.txt"],
+            artifacts: undefined,
+            resource: undefined,
+            clientRequestId: "browser-input-foreign-path",
+          },
+          {
+            ...input,
+            resource: { ...resource, serverEpoch: "replacement" },
+            clientRequestId: "browser-input-epoch",
+          },
+        ])
+          expect((yield* nativeCall(activeA, parent, "preview_upload", bad)).isError).toBe(true);
+        expect(observed).toHaveLength(2);
+        expect(
+          yield* Context.get(a.database, SqlClient.SqlClient)`SELECT * FROM attachment_staging`,
+        ).toEqual(sourceRows);
+        expect(
+          yield* Context.get(b.database, SqlClient.SqlClient)`SELECT * FROM attachment_staging`,
+        ).toEqual(destinationRows);
+        const rival = ThreadId.make("native383-browser-input-rival");
+        yield* seedParent(a, rival);
+        for (const key of [input.clientRequestId, "browser-input-rival-fresh"])
+          expect(
+            (yield* nativeCall(activeA, rival, "preview_upload", {
+              ...input,
+              clientRequestId: key,
+            })).isError,
+          ).toBe(true);
+        expect(observed).toHaveLength(2);
+        const clear = { ...input, artifacts: [], clientRequestId: "browser-input-clear" };
+        const beforeClear = external.effects.filter((effect) => effect === "files").length;
+        expect((yield* nativeCall(activeA, parent, "preview_upload", clear)).isError).not.toBe(
+          true,
+        );
+        expect(external.effects.filter((effect) => effect === "files")).toHaveLength(
+          beforeClear + 1,
+        );
+        expect((yield* nativeCall(activeA, parent, "preview_upload", clear)).isError).not.toBe(
+          true,
+        );
+        expect(external.effects.filter((effect) => effect === "files")).toHaveLength(
+          beforeClear + 1,
+        );
+        const chooser = makeExternalBrowserFileChooser(async (paths) => {
+          for (const path of paths)
+            observed.push(Array.from(await nativePromise(fs.readFile(path))));
+        });
+        yield* Effect.promise(() => external.emitAsync("filechooser", chooser.chooser));
+        const beforeCancel = yield* nativeCall(activeA, parent, "preview_status", {
+          ...route,
+          tabId: resource.tabId,
+        });
+        expect(
+          (yield* Schema.decodeUnknownEffect(Schema.Struct({ fileChooser: Schema.Unknown }))(
+            beforeCancel.structuredContent,
+          )).fileChooser,
+        ).toEqual({ multiple: false, accept: "" });
+        const { locator: _locator, ...cancel } = clear;
+        expect(
+          (yield* nativeCall(activeA, parent, "preview_upload", {
+            ...cancel,
+            clientRequestId: "browser-input-cancel",
+          })).isError,
+        ).not.toBe(true);
+        expect(chooser.calls).toEqual([]);
+        const afterCancel = yield* nativeCall(activeA, parent, "preview_status", {
+          ...route,
+          tabId: resource.tabId,
+        });
+        expect(
+          (yield* Schema.decodeUnknownEffect(Schema.Struct({ fileChooser: Schema.Unknown }))(
+            afterCancel.structuredContent,
+          )).fileChooser,
+        ).toBeNull();
+        yield* b.authority.setGrant({ ...grant, preview: false });
+        expect((yield* nativeCall(activeA, parent, "preview_upload", lostInput)).isError).toBe(
+          true,
+        );
+        expect(observed).toHaveLength(2);
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        const oldLink = yield* a.links.resolve(b.environmentId);
+        yield* a.links.unlink(b.environmentId);
+        yield* linkTo(a.links, activeB, "full-access");
+        expect((yield* a.links.resolve(b.environmentId)).link.launchIdentity).not.toBe(
+          oldLink.link.launchIdentity,
+        );
+        expect(
+          (yield* nativeCall(activeA, parent, "t3_project_list", {
+            environmentId: b.environmentId,
+          })).isError,
+        ).not.toBe(true);
+        const replacement = (yield* b.authority.grants).find(
+          (value) => value.sessionId !== grant.sessionId,
+        );
+        if (replacement === undefined)
+          return yield* Effect.die("Expected actual replacement input grant");
+        yield* b.authority.setGrant({ ...replacement, preview: true });
+        for (const key of [lostInput.clientRequestId, "browser-input-new-generation"])
+          expect(
+            (yield* nativeCall(activeA, parent, "preview_upload", {
+              ...lostInput,
+              clientRequestId: key,
+            })).isError,
+          ).toBe(true);
+        expect(observed).toHaveLength(2);
+        const launched = yield* nativeCall(activeA, parent, "t3_thread_launch", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          title: "New input generation",
+          message: "Wait",
+          modelSelection: selection,
+          clientRequestId: "browser-input-new-child",
+        });
+        expect(launched.isError, json(launched)).not.toBe(true);
+        const newChild = (yield* decodeLaunchReceipt(launched.structuredContent)).threadId;
+        yield* activate(b, newChild);
+        const newRoute = { environmentId: b.environmentId, contextThreadId: newChild };
+        const newOpening = yield* nativeCall(activeA, parent, "preview_open", {
+          ...newRoute,
+          show: false,
+          clientRequestId: "browser-input-new-open",
+        });
+        expect(newOpening.isError, json(newOpening)).not.toBe(true);
+        const { resource: newResource } = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ resource: PreviewViewerResource }),
+        )(newOpening.structuredContent);
+        expect(
+          (yield* nativeCall(activeA, parent, "preview_upload", {
+            ...newRoute,
+            resource: newResource,
+            artifacts: [],
+            locator: "input[type=file]",
+            clientRequestId: "browser-input-new-clear",
+          })).isError,
+        ).not.toBe(true);
+        expect(resource.threadId).toBe(child);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "native383-input: whole mixed browser batch is verified before new source transfer",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const nativePromise = yield* makeNativePromiseBridge;
+        const { a, b, parent, route } = yield* typed383Pair(
+          "native383-browser-batch",
+          false,
+          false,
+          { source: false, destination: false, destinationBrowser: true },
+        );
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        const opened = yield* nativeCall(a, parent, "preview_open", {
+          ...route,
+          show: false,
+          clientRequestId: "batch-open",
+        });
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { resource } = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ resource: PreviewViewerResource }),
+        )(opened.structuredContent);
+        const http = yield* HttpClient.HttpClient;
+        const stage = (remote: boolean, name: string, bytes: Uint8Array) =>
+          Effect.gen(function* () {
+            const target = remote ? route : {};
+            const upload = {
+              type: "file" as const,
+              name,
+              mimeType: "text/plain",
+              sizeBytes: bytes.length,
+            };
+            const prepared = yield* nativeCall(a, parent, "t3_attachment_prepare_upload", {
+              ...target,
+              upload,
+              digest: yield* typed383Digest(bytes),
+              clientRequestId: `batch-${name}`,
+            });
+            expect(prepared.isError, json(prepared)).not.toBe(true);
+            const issued = yield* decodeTyped383Upload(prepared.structuredContent);
+            expect(
+              (yield* http.execute(
+                HttpClientRequest.post(`${remote ? b.url : a.url}${issued.relativeUrl}`).pipe(
+                  HttpClientRequest.setBody(HttpBody.uint8Array(bytes)),
+                ),
+              )).status,
+            ).toBe(204);
+            const inspected = yield* nativeCall(a, parent, "t3_attachment_inspect", {
+              ...target,
+              source: { type: "upload", attachmentId: issued.attachmentId, upload },
+            });
+            expect(inspected.isError, json(inspected)).not.toBe(true);
+            return (yield* Schema.decodeUnknownEffect(
+              Schema.Struct({
+                inspection: Schema.Struct({
+                  stage: Schema.Literal("staged"),
+                  reference: PeerAttachmentReference,
+                }),
+              }),
+            )(inspected.structuredContent)).inspection.reference;
+          });
+        const local = yield* stage(false, "source.txt", new Uint8Array([1, 2]));
+        const destination = yield* stage(true, "destination.txt", new Uint8Array([3, 4]));
+        const fs = yield* FileSystem.FileSystem;
+        const external = browserExternalContexts.at(-1)!;
+        const batches: number[][][] = [];
+        external.controls.afterSetFiles = async (paths) => {
+          const batch = [];
+          for (const path of paths) batch.push(Array.from(await nativePromise(fs.readFile(path))));
+          batches.push(batch);
+        };
+        const input = {
+          ...route,
+          resource,
+          artifacts: [local, destination],
+          locator: "input[type=file]",
+          clientRequestId: "mixed-input",
+        };
+        const accepted = yield* nativeCall(a, parent, "preview_upload", input);
+        expect(accepted.isError, json(accepted)).not.toBe(true);
+        expect(batches).toEqual([
+          [
+            [1, 2],
+            [3, 4],
+          ],
+        ]);
+        expect((yield* nativeCall(a, parent, "preview_upload", input)).structuredContent).toEqual(
+          accepted.structuredContent,
+        );
+        expect(batches).toHaveLength(1);
+        const fresh = yield* stage(false, "fresh.txt", new Uint8Array([5, 6]));
+        const sourceDb = Context.get(a.database, SqlClient.SqlClient);
+        const destinationDb = Context.get(b.database, SqlClient.SqlClient);
+        const sourceRows = yield* sourceDb`SELECT * FROM attachment_staging`;
+        const destinationRows = yield* destinationDb`SELECT * FROM attachment_staging`;
+        for (const bad of [
+          {
+            ...input,
+            artifacts: [fresh, { ...destination, digest: "0".repeat(64) }],
+            clientRequestId: "mixed-forged",
+          },
+          { ...input, artifacts: [fresh, destination], clientRequestId: "mixed-consumed" },
+        ]) {
+          expect((yield* nativeCall(a, parent, "preview_upload", bad)).isError).toBe(true);
+          expect(yield* sourceDb`SELECT * FROM attachment_staging`).toEqual(sourceRows);
+          expect(yield* destinationDb`SELECT * FROM attachment_staging`).toEqual(destinationRows);
+          expect(batches).toHaveLength(1);
+        }
+        for (const artifacts of [
+          Array.from({ length: 21 }, () => fresh),
+          [fresh, { ...destination, sizeBytes: 51 * 1024 * 1024 }],
+          [
+            fresh,
+            { ...destination, sizeBytes: 50 * 1024 * 1024 },
+            { ...fresh, attachmentId: destination.attachmentId, sizeBytes: 50 * 1024 * 1024 },
+          ],
+        ]) {
+          const response = yield* nativeRpcCall(a, parent, "preview_upload", {
+            ...input,
+            artifacts,
+            clientRequestId: "mixed-bounds",
+          });
+          expect(response).toContain('"code":-32602');
+          expect(yield* sourceDb`SELECT * FROM attachment_staging`).toEqual(sourceRows);
+          expect(yield* destinationDb`SELECT * FROM attachment_staging`).toEqual(destinationRows);
+          expect(batches).toHaveLength(1);
+        }
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "native383-input: lost destination prepare reply preserves partial browser transfer and consumes once on retry",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const nativePromise = yield* makeNativePromiseBridge;
+        const { a, b, parent, route } = yield* typed383Pair(
+          "native383-browser-partial",
+          false,
+          false,
+          { source: false, destination: false, destinationBrowser: true },
+        );
+        yield* b.authority.setGrant({ ...(yield* b.authority.grants)[0]!, preview: true });
+        const opened = yield* nativeCall(a, parent, "preview_open", {
+          ...route,
+          show: false,
+          clientRequestId: "partial-open",
+        });
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { resource } = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ resource: PreviewViewerResource }),
+        )(opened.structuredContent);
+        const http = yield* HttpClient.HttpClient;
+        const artifacts = [];
+        for (const name of ["first.txt", "second.txt"]) {
+          const bytes = new TextEncoder().encode(name);
+          const upload = {
+            type: "file" as const,
+            name,
+            mimeType: "text/plain",
+            sizeBytes: bytes.length,
+          };
+          const prepared = yield* nativeCall(a, parent, "t3_attachment_prepare_upload", {
+            upload,
+            digest: yield* typed383Digest(bytes),
+            clientRequestId: `partial-${name}`,
+          });
+          expect(prepared.isError, json(prepared)).not.toBe(true);
+          const issued = yield* decodeTyped383Upload(prepared.structuredContent);
+          expect(
+            (yield* http.execute(
+              HttpClientRequest.post(`${a.url}${issued.relativeUrl}`).pipe(
+                HttpClientRequest.setBody(HttpBody.uint8Array(bytes)),
+              ),
+            )).status,
+          ).toBe(204);
+          const inspected = yield* nativeCall(a, parent, "t3_attachment_inspect", {
+            source: { type: "upload", attachmentId: issued.attachmentId, upload },
+          });
+          artifacts.push(
+            (yield* Schema.decodeUnknownEffect(
+              Schema.Struct({
+                inspection: Schema.Struct({
+                  stage: Schema.Literal("staged"),
+                  reference: PeerAttachmentReference,
+                }),
+              }),
+            )(inspected.structuredContent)).inspection.reference,
+          );
+        }
+        const external = browserExternalContexts.at(-1)!;
+        const fs = yield* FileSystem.FileSystem;
+        const selected: string[][] = [];
+        external.controls.afterSetFiles = async (paths) => {
+          const bytes = [];
+          for (const path of paths) bytes.push(await nativePromise(fs.readFileString(path)));
+          selected.push(bytes);
+        };
+        const input = {
+          ...route,
+          resource,
+          artifacts,
+          locator: "input[type=file]",
+          clientRequestId: "partial-pick",
+        };
+        yield* Ref.set(a.dropCommittedToolReply, "t3_attachment_prepare_upload");
+        const lost = yield* nativeCall(a, parent, "preview_upload", input);
+        expect(lost.isError, json(lost)).toBe(true);
+        expect(json(lost)).toContain("Isolated committed tool reply loss");
+        expect(selected).toEqual([]);
+        const db = Context.get(b.database, SqlClient.SqlClient);
+        expect(yield* db`SELECT * FROM attachment_staging`).toHaveLength(1);
+        expect((yield* nativeCall(a, parent, "preview_upload", input)).isError).not.toBe(true);
+        expect(selected).toEqual([["first.txt", "second.txt"]]);
+        const accepted = yield* db`SELECT * FROM attachment_staging`;
+        expect(accepted).toHaveLength(2);
+        expect((yield* nativeCall(a, parent, "preview_upload", input)).isError).not.toBe(true);
+        expect(selected).toHaveLength(1);
+        expect(yield* db`SELECT * FROM attachment_staging`).toEqual(accepted);
+        expect(
+          (yield* nativeCall(a, parent, "preview_upload", {
+            ...input,
+            clientRequestId: "partial-new-consumer",
+          })).isError,
+        ).toBe(true);
+        expect(selected).toHaveLength(1);
+        expect(yield* db`SELECT * FROM attachment_staging`).toEqual(accepted);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live.each(["android", "ios"] as const)(
+  "native383-parser: %s source and external hub reject oversize on distinct native hops",
+  (platform) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, child, route } = yield* typed383Pair(
+          `native383-parser-${platform}`,
+          false,
+          false,
+          { source: true, destination: true, destinationSocket: true },
+        );
+        yield* Ref.set(b.deviceHubPlatform, platform);
+        const opened = yield* nativeCall(a, parent, "device_open", {
+          ...route,
+          hostId: "local",
+          deviceId: "fixture-device382",
+          platform,
+          clientRequestId: "parser-open",
+        });
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { target } = yield* decodeTyped383Open(opened.structuredContent);
+        const owner = yield* a.auth.issueSession({
+          scopes: ["orchestration:read", "orchestration:operate"],
+        });
+        const http = yield* HttpClient.HttpClient;
+        const admission = yield* http.execute(
+          HttpClientRequest.post(`${a.url}/api/device-hub/viewer/open`).pipe(
+            HttpClientRequest.setHeader("authorization", `Bearer ${owner.token}`),
+            HttpClientRequest.setBody(
+              HttpBody.text(
+                json({
+                  resource: {
+                    type: "device",
+                    environmentId: b.environmentId,
+                    threadId: child,
+                    platform,
+                    ...target,
+                  },
+                  operation: "control",
+                }),
+                "application/json",
+              ),
+            ),
+          ),
+        );
+        expect(admission.status).toBe(200);
+        const viewer = yield* decodeDeviceViewerAccess(yield* admission.json);
+        const endpoint = `${a.url.replace(/^http/, "ws")}/api/device-hub/vendor/${platform === "ios" ? "serve-sim/helper" : "serve-emu"}/ws?device=fixture-device382&viewerTicket=${encodeURIComponent(viewer.ticket)}`;
+        const connect = Effect.acquireRelease(
+          Effect.promise(
+            () =>
+              new Promise<NodeWS.WebSocket>((resolve, reject) => {
+                const socket = new NodeWS.WebSocket(endpoint);
+                socket.on("error", () => {});
+                socket.once("open", () => resolve(socket));
+                socket.once("error", reject);
+              }),
+          ),
+          (socket) => Effect.sync(() => socket.terminate()),
+        );
+        const input =
+          platform === "ios"
+            ? new TextEncoder().encode('\x03{"type":"begin","x":0.25,"y":0.5}')
+            : '{"type":"touch","action":"down","x":0.25,"y":0.5}';
+        const messageOrClose = (socket: NodeWS.WebSocket) =>
+          new Promise<{ kind: "message"; bytes: number } | { kind: "close"; code: number }>(
+            (resolve) => {
+              const message = (bytes: Buffer) => {
+                socket.off("close", close);
+                resolve({ kind: "message", bytes: bytes.byteLength });
+              };
+              const close = (code: number) => {
+                socket.off("message", message);
+                resolve({ kind: "close", code });
+              };
+              socket.once("message", message);
+              socket.once("close", close);
+            },
+          );
+        const source = yield* connect;
+        const lawful = messageOrClose(source);
+        source.send(input);
+        expect(yield* Effect.promise(() => lawful)).toEqual({ kind: "message", bytes: 11 });
+        expect(b.deviceViewerInputs).toHaveLength(1);
+        const sourceRejected = messageOrClose(source);
+        source.send(Buffer.alloc(9 * 1024 * 1024));
+        expect(yield* Effect.promise(() => sourceRejected)).toEqual({ kind: "close", code: 1009 });
+        expect(b.deviceViewerInputs).toHaveLength(1);
+        const downstream = yield* connect;
+        const lawfulAgain = messageOrClose(downstream);
+        downstream.send(input);
+        expect(yield* Effect.promise(() => lawfulAgain)).toEqual({ kind: "message", bytes: 11 });
+        expect(b.deviceViewerInputs).toHaveLength(2);
+        b.deviceViewerOutput.bytes = Buffer.alloc(9 * 1024 * 1024);
+        const hubRejected = messageOrClose(downstream);
+        downstream.send(input);
+        expect((yield* Effect.promise(() => hubRejected)).kind).toBe("close");
+        expect(b.deviceViewerInputs).toHaveLength(3);
+        expect(a.deviceViewerInputs).toEqual([]);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+);
+
+it.live(
+  "native383-http: current native session retired while control body arrives cannot dispatch another hub mutation",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const n = yield* makeNode(
+          descriptorOf("native383-http-body", "Local", { peerAuthority: 1 }),
+          "disk",
+          {
+            productionKernel: true,
+            attachmentRequests: true,
+            deviceOwner: true,
+            viewerOwner: true,
+          },
+        );
+        const parent = ThreadId.make("native383-http-body-parent");
+        yield* seedParent(n, parent);
+        const opened = yield* nativeCall(n, parent, "device_open", {
+          hostId: "local",
+          deviceId: "fixture-device382",
+          platform: "android",
+          clientRequestId: "http-body-open",
+        });
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { target } = yield* decodeTyped383Open(opened.structuredContent);
+        const owner = yield* n.auth.issueSession({
+          scopes: ["orchestration:read", "orchestration:operate"],
+        });
+        const http = yield* HttpClient.HttpClient;
+        const admitted = yield* http.execute(
+          HttpClientRequest.post(`${n.url}/api/device-hub/viewer/open`).pipe(
+            HttpClientRequest.setHeader("authorization", `Bearer ${owner.token}`),
+            HttpClientRequest.setBody(
+              HttpBody.text(
+                json({
+                  resource: {
+                    type: "device",
+                    environmentId: n.environmentId,
+                    threadId: parent,
+                    platform: "android",
+                    ...target,
+                  },
+                  operation: "control",
+                }),
+                "application/json",
+              ),
+            ),
+          ),
+        );
+        expect(admitted.status).toBe(200);
+        const viewer = yield* decodeDeviceViewerAccess(yield* admitted.json);
+        const endpoint = `${n.url}/api/device-hub/vendor/serve-emu/api/fold?device=fixture-device382&viewerTicket=${encodeURIComponent(viewer.ticket)}`;
+        const lawful = yield* http.execute(
+          HttpClientRequest.post(endpoint).pipe(
+            HttpClientRequest.bodyText('{"posture":"closed"}', "application/json"),
+          ),
+        );
+        expect(lawful.status).toBe(200);
+        yield* lawful.text;
+        expect(n.deviceViewerHttpInputs.map((value) => value.body)).toEqual([
+          '{"posture":"closed"}',
+        ]);
+        const oversized = yield* http.execute(
+          HttpClientRequest.post(endpoint).pipe(
+            HttpClientRequest.bodyText('"' + "x".repeat(8 * 1024) + '"', "application/json"),
+          ),
+        );
+        expect(oversized.status).toBe(413);
+        yield* oversized.text;
+        expect(n.deviceViewerHttpInputs).toHaveLength(1);
+        const beforeBody = yield* Deferred.make<void>();
+        let checks = 0;
+        yield* Ref.set(
+          n.deviceViewerCurrentHook,
+          Effect.gen(function* () {
+            checks++;
+            if (checks === 2) yield* Deferred.succeed(beforeBody, undefined);
+          }),
+        );
+        const nativeSession = yield* n.auth.authenticateHttpRequest(
+          HttpServerRequest.fromWeb(
+            new Request(n.url, { headers: { authorization: `Bearer ${owner.token}` } }),
+          ),
+        );
+        const tail = Deferred.await(beforeBody).pipe(
+          Effect.andThen(n.auth.revokeSession(nativeSession.sessionId)),
+          Effect.as(new TextEncoder().encode('"opened"}')),
+        );
+        const bytes = Stream.concat(
+          Stream.succeed(new TextEncoder().encode('{"posture":')),
+          Stream.fromEffect(tail),
+        );
+        const retired = yield* http.execute(
+          HttpClientRequest.post(endpoint).pipe(
+            HttpClientRequest.bodyStream(bytes, { contentType: "application/json" }),
+          ),
+        );
+        yield* retired.text.pipe(Effect.result);
+        expect(checks).toBeGreaterThanOrEqual(2);
+        expect(
+          n.deviceViewerHttpInputs,
+          "no new hub effect after real source session retirement at the body wait",
+        ).toHaveLength(1);
+        expect(retired.status).toBe(401);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );

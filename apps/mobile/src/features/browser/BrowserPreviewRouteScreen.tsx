@@ -1,16 +1,27 @@
 import { useIsFocused, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import {
+  PreviewViewerResource,
   EnvironmentId,
-  FILL_PREVIEW_VIEWPORT,
   ThreadId,
   type PreviewSessionSnapshot,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+import * as Option from "effect/Option";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Alert, AppState, Platform, TextInput, View } from "react-native";
+import {
+  ActivityIndicator,
+  Alert,
+  AppState,
+  Platform,
+  TextInput,
+  View,
+  Pressable,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { AppText } from "../../components/AppText";
 import { ControlPill } from "../../components/ControlPill";
 import { ScreenHeader } from "../../components/ScreenHeader";
 import { NativeHeaderToolbar } from "../../native/StackHeader";
@@ -32,12 +43,21 @@ type BrowserPreviewRouteScreenProps = StaticScreenProps<{
   readonly environmentId: string;
   readonly threadId: string;
   readonly tabId?: string;
+  readonly resource?: PreviewViewerResource;
 }>;
 
 /** The nested native stack supplies the navigation bar inside the modal. */
 export function BrowserPreviewRouteScreen({ route }: BrowserPreviewRouteScreenProps) {
   const navigation = useNavigation();
   const onClose = useCallback(() => navigation.goBack(), [navigation]);
+  const resource =
+    route.params.resource === undefined
+      ? undefined
+      : Option.getOrNull(Schema.decodeUnknownOption(PreviewViewerResource)(route.params.resource));
+  useEffect(() => {
+    if (resource === null) onClose();
+  }, [resource, onClose]);
+  if (resource === null) return null;
   return (
     <View collapsable={false} className="flex-1 bg-sheet">
       <BrowserPreviewStack.Navigator
@@ -50,16 +70,158 @@ export function BrowserPreviewRouteScreen({ route }: BrowserPreviewRouteScreenPr
         }}
       >
         <BrowserPreviewStack.Screen name="BrowserPreview">
-          {() => (
-            <BrowserPreviewScreen
-              environmentId={EnvironmentId.make(route.params.environmentId)}
-              threadId={ThreadId.make(route.params.threadId)}
-              initialTabId={route.params.tabId ?? null}
-              onClose={onClose}
-            />
-          )}
+          {() =>
+            resource === undefined ? (
+              <BrowserPreviewScreen
+                environmentId={EnvironmentId.make(route.params.environmentId)}
+                threadId={ThreadId.make(route.params.threadId)}
+                initialTabId={route.params.tabId ?? null}
+                onClose={onClose}
+              />
+            ) : (
+              <QualifiedBrowserPreviewScreen
+                environmentId={EnvironmentId.make(route.params.environmentId)}
+                resource={resource}
+                onClose={onClose}
+              />
+            )
+          }
         </BrowserPreviewStack.Screen>
       </BrowserPreviewStack.Navigator>
+    </View>
+  );
+}
+
+function QualifiedBrowserPreviewScreen({
+  environmentId,
+  resource,
+  onClose,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly resource: PreviewViewerResource;
+  readonly onClose: () => void;
+}) {
+  const focused = useIsFocused();
+  const { themeVariables } = useAppearancePreferences();
+  const [foreground, setForeground] = useState(AppState.currentState !== "background");
+  const [selected, setSelected] = useState(resource);
+  const [tabs, setTabs] = useState([resource]);
+  const [address, setAddress] = useState("");
+  const [canControl, setCanControl] = useState(false);
+  const [streaming, setStreaming] = useState(false);
+  const [pictureInPicture, setPictureInPicture] = useState(NO_PICTURE_IN_PICTURE);
+  const streamRef = useRef<PreviewStreamRef>(null);
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) =>
+      setForeground(state !== "background"),
+    );
+    return () => subscription.remove();
+  }, []);
+  useEffect(() => {
+    setSelected(resource);
+    setTabs([resource]);
+  }, [resource]);
+  const navigate = () => {
+    if (canControl && streaming && address.trim())
+      streamRef.current?.command({ type: "navigate", url: normalizePreviewUrl(address) });
+  };
+  return (
+    <View className="flex-1 bg-sheet">
+      <ScreenHeader
+        title="Browser"
+        sidebar={false}
+        onBack={onClose}
+        options={{ headerBackVisible: false }}
+        actions={
+          Platform.OS === "ios" && pictureInPicture.supported
+            ? [
+                {
+                  accessibilityLabel: pictureInPicture.active
+                    ? "Exit picture in picture"
+                    : "Picture in picture",
+                  icon: {
+                    ios: pictureInPicture.active ? "pip.exit" : "pip.enter",
+                    android: "visibility",
+                  },
+                  onPress: () => streamRef.current?.togglePictureInPicture(),
+                },
+              ]
+            : []
+        }
+        menus={
+          tabs.length > 1
+            ? [
+                {
+                  title: "Tabs",
+                  icon: "square.on.square",
+                  items: tabs.map((tab, index) => ({
+                    id: `tab-${index}`,
+                    title: `Browser ${index + 1}`,
+                    selected: tab.tabId === selected.tabId,
+                    onPress: () => {
+                      setSelected(tab);
+                      setPictureInPicture(NO_PICTURE_IN_PICTURE);
+                    },
+                  })),
+                },
+              ]
+            : []
+        }
+      />
+      <View className="flex-row items-center gap-3 px-4 py-2">
+        <Pressable accessibilityRole="button" onPress={onClose}>
+          <AppText>Close view</AppText>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          disabled={!streaming || !canControl}
+          onPress={() => streamRef.current?.command({ type: "history", delta: -1 })}
+        >
+          <AppText>Back</AppText>
+        </Pressable>
+        <TextInput
+          className="flex-1 text-foreground"
+          accessibilityLabel="Browser address"
+          placeholder="Address"
+          value={address}
+          onChangeText={setAddress}
+          onSubmitEditing={navigate}
+          autoCapitalize="none"
+          autoCorrect={false}
+          editable={streaming && canControl}
+        />
+        <Pressable
+          accessibilityRole="button"
+          disabled={!streaming || !canControl}
+          onPress={navigate}
+        >
+          <AppText>Go</AppText>
+        </Pressable>
+      </View>
+      <PreviewStreamWebView
+        key={`${selected.environmentId}:${selected.threadId}:${selected.tabId}:${selected.serverEpoch}`}
+        environmentId={environmentId}
+        resource={selected}
+        threadId={selected.threadId}
+        tabId={selected.tabId}
+        paused={!((focused && foreground) || pictureInPicture.active)}
+        ref={streamRef}
+        interactive
+        background={themeVariables["--color-sheet-solid"]}
+        onPictureInPicture={(state, detail) => {
+          setPictureInPicture(state);
+          if (detail) Alert.alert("Picture in picture is unavailable", detail);
+        }}
+        onStreamingChange={setStreaming}
+        onControl={(control) => setCanControl(control?.controller === "you")}
+        onPopup={(popup) => {
+          setTabs((current) =>
+            current.some((tab) => tab.tabId === popup.tabId) ? current : [...current, popup],
+          );
+          setSelected(popup);
+          setPictureInPicture(NO_PICTURE_IN_PICTURE);
+        }}
+      />
     </View>
   );
 }

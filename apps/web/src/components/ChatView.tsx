@@ -10911,6 +10911,10 @@ export default function ChatView(props: ChatViewProps) {
           mode="embedded"
           threadRef={activeThreadRef}
           tabId={renderedRightPanelSurface.resourceId}
+          {...(!("resource" in renderedRightPanelSurface) ||
+          renderedRightPanelSurface.resource === undefined
+            ? {}
+            : { resource: renderedRightPanelSurface.resource })}
           configuredUrls={configuredPreviewUrls}
           visible={rightPanelOpen}
           onSendAnnotation={(annotation, image) => {

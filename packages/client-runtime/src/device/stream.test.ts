@@ -49,7 +49,7 @@ describe("native device stream transport", () => {
     vi.unstubAllGlobals();
   });
 
-  function setup(platform: "ios" | "android") {
+  function setup(platform: "ios" | "android", canOperate?: boolean) {
     vi.useFakeTimers();
     vi.stubGlobal("VideoDecoder", vi.fn());
     vi.stubGlobal("EncodedVideoChunk", vi.fn());
@@ -94,6 +94,7 @@ describe("native device stream transport", () => {
           wsBase: "wss://environment.test/api/device-hub",
           credentials: false,
           query: { wsTicket: "stream-ticket", hostId: "ssh-host" },
+          ...(canOperate === undefined ? {} : { canOperate }),
         },
       },
       { getContext: () => null } as unknown as HTMLCanvasElement,
@@ -101,6 +102,29 @@ describe("native device stream transport", () => {
     );
     return { client, opened, waitForSocket, events, fetch };
   }
+
+  it("observes an iOS read-only view without starting an input helper", () => {
+    const { client, events, fetch } = setup("ios", false);
+    client.start();
+    expect(events.onMjpegFallback).toHaveBeenCalledTimes(1);
+    expect(events.onInputConnected).toHaveBeenCalledWith(false, "View only");
+    expect(fetch).not.toHaveBeenCalled();
+    client.sendTouch("begin", 0.2, 0.3);
+    client.pressButton("home");
+    client.stop();
+  });
+
+  it("receives Android view frames without sending input on the multiplexed socket", async () => {
+    const { client, opened, events } = setup("android", false);
+    client.start();
+    const socket = await opened;
+    socket.onopen?.();
+    expect(events.onInputConnected).toHaveBeenCalledWith(false, "View only");
+    client.sendTouch("begin", 0.2, 0.3);
+    client.pressButton("home");
+    expect(socket.send).not.toHaveBeenCalled();
+    client.stop();
+  });
 
   it("uses authenticated iOS MJPEG and forwards controls without a cross-origin video fetch", async () => {
     const { client, opened, events, fetch } = setup("ios");

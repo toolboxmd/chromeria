@@ -283,6 +283,10 @@ import {
   PreviewReportProfilesInput,
   PreviewNavigateInput,
   PreviewOpenInput,
+  PreviewViewerOpenInput,
+  PreviewViewerCloseInput,
+  PreviewViewerAccess,
+  PreviewViewerUnavailableError,
   PreviewRefreshInput,
   PreviewReportStatusInput,
   PreviewResizeInput,
@@ -291,6 +295,9 @@ import {
 } from "./preview.ts";
 import {
   DeviceActionInput,
+  DeviceViewerOpenInput,
+  DeviceViewerCloseInput,
+  DeviceViewerAccess,
   DeviceCloseInput,
   DeviceConfigureInput,
   DeviceDetail,
@@ -304,7 +311,6 @@ import {
   DeviceSession,
   DeviceShutdownInput,
 } from "./device.ts";
-import {} from "./previewAutomation.ts";
 import {
   ServerConfigStreamEvent,
   DesktopUpdateCommitInput,
@@ -470,6 +476,8 @@ export const WS_METHODS = {
 
   // Preview methods
   previewOpen: "preview.open",
+  previewViewerOpen: "preview.viewerOpen",
+  previewViewerClose: "preview.viewerClose",
   previewNavigate: "preview.navigate",
   previewResize: "preview.resize",
   previewAdjust: "preview.adjust",
@@ -485,6 +493,8 @@ export const WS_METHODS = {
   deviceList: "device.list",
   deviceTestHost: "device.testHost",
   deviceOpen: "device.open",
+  deviceViewerOpen: "device.viewerOpen",
+  deviceViewerClose: "device.viewerClose",
   deviceClose: "device.close",
   deviceShutdown: "device.shutdown",
   deviceDetail: "device.detail",
@@ -1678,6 +1688,18 @@ const WsDeviceOpenRpc = Rpc.make(WS_METHODS.deviceOpen, {
   error: Schema.Union([DeviceError, EnvironmentAuthorizationError]),
 });
 
+const WsDeviceViewerOpenRpc = Rpc.make(WS_METHODS.deviceViewerOpen, {
+  payload: DeviceViewerOpenInput,
+  success: DeviceViewerAccess,
+  error: Schema.Union([DeviceError, EnvironmentAuthorizationError]),
+});
+
+const WsDeviceViewerCloseRpc = Rpc.make(WS_METHODS.deviceViewerClose, {
+  payload: DeviceViewerCloseInput,
+  success: Schema.Boolean,
+  error: EnvironmentAuthorizationError,
+});
+
 const WsDeviceCloseRpc = Rpc.make(WS_METHODS.deviceClose, {
   payload: DeviceCloseInput,
   error: Schema.Union([DeviceError, EnvironmentAuthorizationError]),
@@ -1965,6 +1987,24 @@ export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthori
   { error: EnvironmentAuthorizationError },
 ) {}
 
+export const DeviceViewerClientRpcGroup = RpcGroup.make(
+  WsDeviceViewerOpenRpc,
+  WsDeviceViewerCloseRpc,
+).middleware(RpcScopeAuthorization);
+
+export const PreviewViewerClientRpcGroup = RpcGroup.make(
+  Rpc.make(WS_METHODS.previewViewerOpen, {
+    payload: PreviewViewerOpenInput,
+    success: PreviewViewerAccess,
+    error: Schema.Union([PreviewViewerUnavailableError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.previewViewerClose, {
+    payload: PreviewViewerCloseInput,
+    success: Schema.Boolean,
+    error: EnvironmentAuthorizationError,
+  }),
+).middleware(RpcScopeAuthorization);
+
 export const PendingRequestClientRpcGroup = RpcGroup.make(
   WsRemoteTaskRequestReadRpc,
   WsRemoteTaskRequestRpc,
@@ -2179,6 +2219,8 @@ export const WsRpcGroup = RpcGroup.make(
   ...FeatureMapRpcs,
 )
   // Fork: Issue links (toolboxmd/t3code#28).
+  .merge(DeviceViewerClientRpcGroup)
+  .merge(PreviewViewerClientRpcGroup)
   .merge(PromachosHomeRpcGroup)
   .merge(IssueLinksRpcGroup)
   // Fork: Spectrum report abandonment (toolboxmd/chromeria#176).

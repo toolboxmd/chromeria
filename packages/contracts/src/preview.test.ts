@@ -18,6 +18,7 @@ import {
   PreviewAutomationResizeInput,
   PreviewAutomationResizeResult,
   PreviewAutomationStatus,
+  PreviewAutomationUploadInput,
 } from "./previewAutomation.ts";
 
 const decodePreviewEvent = Schema.decodeUnknownSync(PreviewEvent);
@@ -360,5 +361,61 @@ describe("ConfiguredLocalServerUrls", () => {
     expect(() =>
       decodeConfiguredLocalServerUrls([`http://localhost/${"a".repeat(PREVIEW_URL_MAX_LENGTH)}`]),
     ).toThrow();
+  });
+});
+
+describe("qualified preview upload", () => {
+  const resource = {
+    type: "preview",
+    environmentId: "b",
+    threadId: "thread-b",
+    tabId: "tab-b",
+    serverEpoch: "epoch-b",
+  };
+  const artifact = {
+    environmentId: "a",
+    attachmentId: "thread-a-550e8400-e29b-41d4-a716-446655440000",
+    owner: "a".repeat(64),
+    digest: "b".repeat(64),
+    name: "report.txt",
+    mimeType: "text/plain",
+    sizeBytes: 50 * 1024 * 1024,
+  };
+  const decode = Schema.decodeUnknownSync(PreviewAutomationUploadInput);
+  it("preserves local paths and deliberate empty clear/cancel while binding artifacts to their opening", () => {
+    expect(decode({ paths: [] })).toEqual({ paths: [] });
+    expect(decode({ paths: ["/local/report.txt"], locator: "input[type=file]" }).paths).toEqual([
+      "/local/report.txt",
+    ]);
+    expect(decode({ resource, artifacts: [], locator: "input[type=file]" }).artifacts).toEqual([]);
+    expect(
+      decode({ resource, artifacts: [artifact, { ...artifact, environmentId: "b" }] }).artifacts,
+    ).toHaveLength(2);
+  });
+  it("rejects conflict, missing/contradictory target, duplicate files and aggregate limits", () => {
+    for (const input of [
+      {},
+      { paths: [], artifacts: [], resource },
+      { artifacts: [] },
+      { resource, artifacts: [], tabId: "other" },
+      { resource, artifacts: [artifact, artifact] },
+      {
+        resource,
+        artifacts: Array.from({ length: 21 }, (_, index) => ({
+          ...artifact,
+          attachmentId: `thread-${index}-550e8400-e29b-41d4-a716-446655440000`,
+          sizeBytes: 1,
+        })),
+      },
+      {
+        resource,
+        artifacts: Array.from({ length: 3 }, (_, index) => ({
+          ...artifact,
+          attachmentId: `thread-${index}-550e8400-e29b-41d4-a716-446655440000`,
+        })),
+      },
+      { resource, artifacts: [{ ...artifact, sizeBytes: artifact.sizeBytes + 1 }] },
+    ])
+      expect(() => decode(input)).toThrow();
   });
 });

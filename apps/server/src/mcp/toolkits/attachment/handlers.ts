@@ -7,11 +7,21 @@ import {
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import * as ServerBrowser from "../../../preview/ServerBrowser.ts";
+import * as AssetAccess from "../../../assets/AssetAccess.ts";
 import * as Upload from "../../../assets/AttachmentUpload.ts";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
-import { newCommandId, readThread, unavailable } from "../../threadAccess.ts";
+import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as PeerAuthority from "../../../peer/PeerAuthority.ts";
+import {
+  loadCaller,
+  assertLiveCaller,
+  newCommandId,
+  readThread,
+  unavailable,
+} from "../../threadAccess.ts";
 import { AttachmentToolkit } from "./tools.ts";
 import * as Staging from "../../../assets/AttachmentStaging.ts";
 import { CurrentRequest, requestDigest } from "../../McpRequestReceipts.ts";
@@ -100,6 +110,51 @@ export const layer = McpToolAccess.toLayer(
             return { ...result, ...(transferState === undefined ? {} : { transferState }) };
           }),
         { linkedCallers: "allowed" },
+      ),
+      t3_attachment_acquire: McpToolAccess.actsAsCaller((input) =>
+        AssetAccess.acquireAttachment(input.resource, input.clientRequestId),
+      ),
+      t3_attachment_inspect: McpToolAccess.readsAsCaller((input) =>
+        Effect.gen(function* () {
+          const scope = yield* McpInvocationContext.McpInvocationContext;
+          const staging = yield* Effect.serviceOption(Staging.AttachmentStaging);
+          if (Option.isNone(staging)) return yield* unavailable();
+          const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+          const threads = yield* ThreadManagement.ThreadManagementService;
+          const authorize = Effect.gen(function* () {
+            yield* loadCaller().pipe(Effect.flatMap(assertLiveCaller));
+            if (scope.authority !== undefined) {
+              if (Option.isNone(authority) || scope.thread === undefined)
+                return yield* unavailable();
+              yield* authority.value.checkTarget(scope, {
+                type: "thread",
+                threadId: scope.thread.threadId,
+              });
+            }
+          }).pipe(
+            Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+            Effect.provideService(ThreadManagement.ThreadManagementService, threads),
+          );
+          yield* authorize;
+          if (input.source.type === "capabilities") {
+            const browser = yield* Effect.serviceOption(ServerBrowser.ServerBrowser);
+            return {
+              type: "capabilities" as const,
+              version: 1 as const,
+              maxBytes: 52428800 as const,
+              ...(Option.isSome(browser) && browser.value.authorizeViewer !== undefined
+                ? { previewInputArtifacts: 1 as const }
+                : {}),
+            };
+          }
+          const inspection = yield* staging.value.inspectUpload(
+            scope,
+            input.source.attachmentId,
+            input.source.upload,
+            authorize,
+          );
+          return { type: "upload" as const, inspection };
+        }),
       ),
       t3_attachment_discard: McpToolAccess.writes(
         (input) =>

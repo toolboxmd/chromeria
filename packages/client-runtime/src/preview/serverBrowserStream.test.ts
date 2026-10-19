@@ -1,3 +1,4 @@
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { createPreviewStreamClient, type PreviewStreamControl } from "./serverBrowserStream.ts";
@@ -63,6 +64,53 @@ describe("preview stream control", () => {
     dialog: null,
   };
 
+  it("keeps popup identities qualified to the current source viewer's destination and epoch", () => {
+    const resource = {
+      type: "preview" as const,
+      environmentId: EnvironmentId.make("B"),
+      threadId: ThreadId.make("thread"),
+      tabId: "tab",
+      serverEpoch: "epoch-b",
+    };
+    const onPopup = vi.fn();
+    const client = createPreviewStreamClient(
+      { ...target, resource },
+      {
+        onFrame: vi.fn(),
+        onViewport: vi.fn(),
+        onConnectedChange: vi.fn(),
+        onUnauthorized: vi.fn(),
+        onPopup,
+      },
+    );
+    const socket = FakeSocket.current;
+    const popup = { ...resource, tabId: "popup" };
+    socket.message(JSON.stringify({ type: "popup", tabId: "popup", resource: popup }));
+    expect(onPopup.mock.calls).toEqual([["popup", popup]]);
+    for (const invalid of [
+      undefined,
+      { ...popup, tabId: "other" },
+      { ...popup, environmentId: "C" },
+      { ...popup, threadId: "other-thread" },
+      { ...popup, serverEpoch: "later" },
+      { ...popup, ticket: "private" },
+    ]) {
+      socket.message(JSON.stringify({ type: "popup", tabId: "popup", resource: invalid }));
+    }
+    expect(onPopup).toHaveBeenCalledTimes(1);
+    client.stop();
+    const legacy = createPreviewStreamClient(target, {
+      onFrame: vi.fn(),
+      onViewport: vi.fn(),
+      onConnectedChange: vi.fn(),
+      onUnauthorized: vi.fn(),
+      onPopup,
+    });
+    FakeSocket.current.message(JSON.stringify({ type: "popup", tabId: "legacy-popup" }));
+    expect(onPopup).toHaveBeenLastCalledWith("legacy-popup", undefined);
+    legacy.stop();
+  });
+
   it("marks passive viewers without changing active viewer URLs", () => {
     const { client, socket } = connect();
     expect(new URL(socket.url).searchParams.has("interactive")).toBe(false);
@@ -93,6 +141,28 @@ describe("preview stream control", () => {
       { type: "takeControl" },
       { type: "text", text: "owned" },
     ]);
+    client.stop();
+  });
+
+  it("preserves a source view-only admission even when destination control metadata offers operation", () => {
+    const onFrame = vi.fn();
+    const client = createPreviewStreamClient(
+      { ...target, access: { ...target.access, canOperate: false } },
+      {
+        onFrame,
+        onViewport: vi.fn(),
+        onConnectedChange: vi.fn(),
+        onUnauthorized: vi.fn(),
+      },
+    );
+    const socket = FakeSocket.current;
+    socket.control({ ...agent, controller: "you" });
+    const frame = new ArrayBuffer(3);
+    socket.message(frame);
+    expect(onFrame).toHaveBeenCalledWith(frame);
+    expect(client.send({ type: "takeControl" })).toBe(false);
+    expect(client.send({ type: "text", text: "must not send" })).toBe(false);
+    expect(socket.sent).toEqual(['{"type":"ack"}']);
     client.stop();
   });
 

@@ -160,7 +160,7 @@ const handlers = {
     Effect.gen(function* () {
       yield* requireDeviceAccess;
       const devices = yield* DeviceService.DeviceService;
-      return yield* devices.commandCatalog(input.hostId);
+      return yield* devices.commandCatalog(input.hostId, input.target);
     }),
   ),
   device_execute: McpToolAccess.actsAsCaller(
@@ -270,6 +270,13 @@ const handlers = {
               return {
                 device,
                 target: commandTarget,
+                resource: {
+                  type: "device" as const,
+                  environmentId: scope.environmentId,
+                  threadId: scope.thread.threadId,
+                  ...commandTarget,
+                  platform: device.platform,
+                },
                 quickStart: deviceCommandQuickStart(commandTarget, scope),
               };
             }
