@@ -118,7 +118,7 @@ describe("ColorList while a save is pending", () => {
 });
 
 describe("ColorList adding a fallback", () => {
-  it("appends the picked Color and keeps existing rows mounted when the save lands", async () => {
+  it("saves the picked provider at its first model and keeps existing rows mounted when the save lands", async () => {
     const codex: ColorProviderChoice = {
       instanceId: first.instanceId,
       driverKind: ProviderDriverKind.make("codex"),
@@ -131,9 +131,11 @@ describe("ColorList adding a fallback", () => {
     const { rows } = list;
     await list.render();
     const [firstRow, secondRow] = rows();
+    // Picking a provider in the add row saves at once; there is no separate Add button.
     await act(() =>
-      container.querySelector<HTMLButtonElement>('[aria-label="Add Reviewer fallback"]')!.click(),
+      container.querySelector<HTMLElement>('[aria-label="Add Reviewer fallback"]')!.click(),
     );
+    await act(() => [...document.querySelectorAll<HTMLElement>('[role="option"]')][0]!.click());
     expect(list.save).toHaveBeenCalledWith([
       first,
       second,

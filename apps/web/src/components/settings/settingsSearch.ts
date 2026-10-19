@@ -295,15 +295,6 @@ export const SETTINGS_SEARCH_ITEMS = [
     forkAdded: true,
   },
   {
-    id: "prism-capacity",
-    title: "Prism live capacity",
-    to: "/settings/prism",
-    targetId: "prism-capacity",
-    scope: "environment",
-    searchTerms: ["usage", "limits", "provider"],
-    forkAdded: true,
-  },
-  {
     id: "storage-worktrees",
     title: "Worktree cleanup",
     to: "/settings/worktrees",

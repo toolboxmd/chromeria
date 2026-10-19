@@ -11,7 +11,6 @@ describe("fork-added search entries", () => {
       .sort();
     expect(flagged).toEqual([
       "auto-update-providers",
-      "prism-capacity",
       "prism-roles",
       "promachos-colors",
       "spectrum-defaults",
