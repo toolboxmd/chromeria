@@ -1876,7 +1876,8 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/pull/410",
     "https://github.com/toolboxmd/chromeria/pull/416",
     "https://github.com/toolboxmd/chromeria/pull/420",
-    "https://github.com/toolboxmd/chromeria/pull/421"
+    "https://github.com/toolboxmd/chromeria/pull/421",
+    "https://github.com/toolboxmd/chromeria/pull/539"
   ],
   "newFiles": [
     "packages/contracts/src/peerTask.ts",
@@ -1893,6 +1894,7 @@ sources and reasons.
     "apps/server/src/mcp/linkOrigin.ts",
     "apps/server/src/orchestration-v2/RemoteDelegatedTask.test.ts",
     "apps/server/src/peer/*",
+    "apps/web/src/components/settings/PeerGrantSettings.tsx",
     "apps/server/src/persistence/forkPeerLinksSchema.test.ts",
     "apps/server/src/persistence/forkPeerLinksSchema.ts",
     "packages/contracts/src/peerLink.ts",
@@ -1915,7 +1917,7 @@ sources and reasons.
     "packages/contracts/src/peerAuthority.ts",
     "apps/mobile/src/features/threads/RemotePendingRequest.test.tsx",
     "apps/mobile/src/features/threads/RemotePendingRequest.tsx",
-    "apps/web/src/components/chat/RemotePendingRequest.test.tsx",
+    "apps/web/src/components/chat/RemotePendingRequest.browser.test.tsx",
     "apps/web/src/components/chat/RemotePendingRequest.tsx",
     "apps/server/src/device/AgentDeviceCommand.ts",
     "apps/server/src/device/AgentDeviceCommand.test.ts",

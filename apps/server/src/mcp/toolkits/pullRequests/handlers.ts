@@ -397,18 +397,20 @@ const make = Effect.gen(function* () {
             Effect.as(wasLinked),
             Effect.catchCause(dispatchFailure(PullRequestLinkFailedError)),
           );
-        return request === undefined ? {
-          ...target,
-          alreadyLinked,
-          ...(input.purposeDelivery === undefined
-            ? {}
-            : {
-                purposeDelivery: {
-                  version: 1 as const,
-                  purpose: normalizeTrackingReference(input.purposeDelivery.purpose),
-                },
-              }),
-        } : confirmed(request);
+        return request === undefined
+          ? {
+              ...target,
+              alreadyLinked,
+              ...(input.purposeDelivery === undefined
+                ? {}
+                : {
+                    purposeDelivery: {
+                      version: 1 as const,
+                      purpose: normalizeTrackingReference(input.purposeDelivery.purpose),
+                    },
+                  }),
+            }
+          : confirmed(request);
       }),
     ),
     unlink_pull_request: writesThread((input) =>

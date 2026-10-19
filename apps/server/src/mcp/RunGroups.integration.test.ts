@@ -1052,15 +1052,22 @@ describe("Run groups", () => {
           expect(
             (yield* decodeTask(explicit.structuredContent).pipe(Effect.orDie)).providerInstanceId,
           ).toBe(claude);
-          // Reviewer keeps Run 1: the result is exactly today's single-task shape.
+          // Run 1 keeps the single-task contract; optional remote/terminal observations
+          // are absent on a newly launched local task.
           const single = yield* invoke("delegate_task", { task: "Review it.", role: "review" });
-          // `remoteChild` is present only for a task in a linked environment, and
-          // `latestTerminalPurpose` only once a later run has ended.
-          expect(Object.keys(single.structuredContent ?? {}).toSorted()).toEqual(
-            Object.keys(OrchestratorMcpDelegateTaskResult.fields)
-              .filter((key) => key !== "remoteChild" && key !== "latestTerminalPurpose")
-              .toSorted(),
-          );
+          expect(single.isError).toBe(false);
+          const task = yield* decodeTask(single.structuredContent);
+          expect(task).toMatchObject({
+            providerInstanceId: codex,
+            model: codexModel,
+          });
+          expect(task.childThreadId).not.toBeNull();
+          expect(task.childThreadId).not.toBe(parentThreadId);
+          expect(task.taskId).toBeDefined();
+          expect(single.structuredContent).not.toHaveProperty("groupId");
+          expect(single.structuredContent).not.toHaveProperty("remoteChild");
+          expect(single.structuredContent).not.toHaveProperty("remoteObservation");
+          expect(single.structuredContent).not.toHaveProperty("latestTerminalPurpose");
         }),
     ),
   );
