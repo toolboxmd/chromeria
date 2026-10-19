@@ -1,9 +1,13 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
+import * as Clock from "effect/Clock";
 import { EnvironmentId } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -17,6 +21,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as SessionStore from "./SessionStore.ts";
+import { CROSS_PROCESS_REVOCATION_POLL_INTERVAL } from "./forkCrossProcessRevocation.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
 import { base64UrlDecodeUtf8, base64UrlEncode, signPayload } from "./utils.ts";
 
@@ -152,6 +157,134 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
       expect(moved).toBe(original);
       expect(other).not.toBe(original);
     }),
+  );
+
+  it.effect("closes a real socket when another process revokes its session", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cross-process-revoke-" });
+      const storeLayer = yield* makeDiskSessionStoreLayer(baseDir);
+      const server = Context.get(yield* Layer.build(storeLayer), SessionStore.SessionStore);
+      const cli = Context.get(yield* Layer.build(storeLayer), SessionStore.SessionStore);
+      const owner = yield* server.issue({ subject: "owner" });
+      const client = yield* server.issue(relaySessionInput);
+      const clock = yield* Clock.Clock;
+      // Mirrors the /ws route: verify at upgrade, then race the socket against invalidation.
+      const routes = HttpRouter.use((router) =>
+        router.add(
+          "GET",
+          "/ws",
+          Effect.gen(function* () {
+            const request = yield* HttpServerRequest.HttpServerRequest;
+            const token = new URL(request.url, "http://localhost").searchParams.get("token") ?? "";
+            const session = yield* server.verify(token);
+            const socket = yield* request.upgrade;
+            const reader = yield* socket.reader;
+            const writer = yield* socket.writer;
+            yield* Effect.acquireUseRelease(
+              server.markConnected(session.sessionId),
+              () =>
+                Effect.raceFirst(
+                  Effect.forever(reader.pull.pipe(Effect.flatMap(writer.writeAll))),
+                  server
+                    .awaitInvalidation(session.sessionId)
+                    .pipe(Effect.provideService(Clock.Clock, clock)),
+                ),
+              () => server.markDisconnected(session.sessionId),
+            );
+            return HttpServerResponse.empty();
+          }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty()))),
+        ),
+      );
+      const http = Context.get(
+        yield* Layer.build(
+          HttpRouter.serve(routes, { disableListenLog: true }).pipe(
+            Layer.provideMerge(NodeHttpServer.layerTest),
+          ),
+        ),
+        HttpServer.HttpServer,
+      );
+      const origin = HttpServer.formatAddress(http.address).replace(/^http/, "ws");
+      const connect = (token: string) =>
+        Effect.acquireRelease(
+          Effect.promise(
+            () =>
+              new Promise<{ socket: WebSocket; closed: Promise<void> }>((resolve, reject) => {
+                const socket = new WebSocket(`${origin}/ws?token=${encodeURIComponent(token)}`);
+                const closed = new Promise<void>((done) =>
+                  socket.addEventListener("close", () => done()),
+                );
+                socket.addEventListener("open", () => resolve({ socket, closed }));
+                socket.addEventListener("error", reject);
+              }),
+          ),
+          ({ socket }) => Effect.sync(() => socket.close()),
+        );
+      const ownerSocket = yield* connect(owner.token);
+      const clientSocket = yield* connect(client.token);
+
+      expect(yield* cli.revoke(client.sessionId)).toBe(true);
+      yield* TestClock.adjust(CROSS_PROCESS_REVOCATION_POLL_INTERVAL);
+      yield* Effect.promise(() => clientSocket.closed);
+
+      expect(ownerSocket.socket.readyState).toBe(WebSocket.OPEN);
+      const echo = new Promise<string>((resolve) =>
+        ownerSocket.socket.addEventListener("message", (event) => resolve(String(event.data)), {
+          once: true,
+        }),
+      );
+      ownerSocket.socket.send("still connected");
+      expect(yield* Effect.promise(() => echo)).toBe("still connected");
+      const reconnect = yield* server.verify(client.token).pipe(Effect.flip);
+      expect(reconnect._tag).toBe("SessionTokenRevokedError");
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("covers a watcher whose session read precedes a cross-process revocation", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cross-process-order-" });
+      const storeLayer = yield* makeDiskSessionStoreLayer(baseDir);
+      const server = Context.get(yield* Layer.build(storeLayer), SessionStore.SessionStore);
+      const cli = Context.get(yield* Layer.build(storeLayer), SessionStore.SessionStore);
+      const owner = yield* server.issue({ subject: "owner" });
+      const client = yield* server.issue(relaySessionInput);
+      yield* server.markConnected(owner.sessionId);
+      // The watcher reads a valid row before the revocation commits. Connection
+      // bookkeeping is the caller's, so the shared check must cover the watcher itself.
+      const watcher = yield* server
+        .awaitInvalidation(client.sessionId)
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      expect(yield* cli.revoke(client.sessionId)).toBe(true);
+      yield* TestClock.adjust(CROSS_PROCESS_REVOCATION_POLL_INTERVAL);
+      yield* Fiber.join(watcher);
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("closes a socket that starts watching after a tick already passed its revocation", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cross-process-late-" });
+      const storeLayer = yield* makeDiskSessionStoreLayer(baseDir);
+      const server = Context.get(yield* Layer.build(storeLayer), SessionStore.SessionStore);
+      const cli = Context.get(yield* Layer.build(storeLayer), SessionStore.SessionStore);
+      const marker = yield* server.issue({ subject: "marker" });
+      const late = yield* server.issue(relaySessionInput);
+      const markerWatcher = yield* server
+        .awaitInvalidation(marker.sessionId)
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+
+      // t0: the late socket passes its upgrade check.
+      yield* server.verify(late.token);
+      // t1: another process revokes it, and the marker so the tick is observable.
+      yield* cli.revoke(late.sessionId);
+      yield* cli.revoke(marker.sessionId);
+      // t2/t3: a tick reads the new version and snapshots without the late socket.
+      yield* TestClock.adjust(CROSS_PROCESS_REVOCATION_POLL_INTERVAL);
+      yield* Fiber.join(markerWatcher);
+      // t4: the late socket starts watching; no later commit or tick may be needed.
+      yield* server.awaitInvalidation(late.sessionId);
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
   it.effect("keeps reusable dev auth local across disk-backed stores and restarts", () =>

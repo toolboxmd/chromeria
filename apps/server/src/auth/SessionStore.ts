@@ -19,10 +19,13 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as Option from "effect/Option";
 
 import * as SqlClient from "effect/sql/SqlClient";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as SessionRenewal from "./SessionRenewal.ts";
+import { watchCrossProcessRevocations } from "./forkCrossProcessRevocation.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
@@ -529,6 +532,10 @@ const make = Effect.gen(function* () {
   const renewal = yield* SessionRenewal.SessionRenewal;
   const signingSecret = yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32);
   const connectedSessionsRef = yield* Ref.make(new Map<AuthSessionId, number>());
+  // Sessions with a running awaitInvalidation; each registers before its first row read.
+  const watchedSessionsRef = yield* SubscriptionRef.make<ReadonlyMap<AuthSessionId, number>>(
+    new Map(),
+  );
   const changesPubSub = yield* PubSub.unbounded<SessionCredentialChange>();
   const cookieInput = {
     mode: serverConfig.mode,
@@ -577,6 +584,27 @@ const make = Effect.gen(function* () {
       type: "clientRemoved",
       sessionId,
     }).pipe(Effect.asVoid);
+
+  // Reads run on the WAL reader so a lock held by another process cannot stall the writer.
+  yield* watchCrossProcessRevocations({
+    source: {
+      dataVersion: sql<{ readonly data_version: number }>`PRAGMA data_version`.pipe(
+        Effect.map((rows) => rows[0]?.data_version ?? 0),
+        NodeSqliteClient.readOnly,
+      ),
+      listActive: (sessionIds) =>
+        sql<{ readonly sessionId: AuthSessionId }>`
+          SELECT session_id AS "sessionId"
+          FROM auth_sessions
+          WHERE ${sql.in("session_id", sessionIds)} AND revoked_at IS NULL
+        `.pipe(
+          Effect.map((rows) => rows.map((row) => row.sessionId)),
+          NodeSqliteClient.readOnly,
+        ),
+    },
+    watchedSessions: watchedSessionsRef,
+    invalidate: emitRemoved,
+  }).pipe(Effect.forkScoped);
 
   const loadActiveSession = Effect.fn("SessionStore.loadActiveSession")(function* (
     sessionId: AuthSessionId,
@@ -1089,6 +1117,21 @@ const make = Effect.gen(function* () {
   const awaitInvalidation = Effect.fn(function* (sessionId: AuthSessionId) {
     return yield* Effect.scoped(
       Effect.gen(function* () {
+        // Registered before the first read, so a revocation committed after that read
+        // is covered by the cross-process check's next snapshot.
+        yield* Effect.acquireRelease(
+          SubscriptionRef.update(watchedSessionsRef, (current) =>
+            new Map(current).set(sessionId, (current.get(sessionId) ?? 0) + 1),
+          ),
+          () =>
+            SubscriptionRef.update(watchedSessionsRef, (current) => {
+              const next = new Map(current);
+              const remaining = (next.get(sessionId) ?? 0) - 1;
+              if (remaining > 0) next.set(sessionId, remaining);
+              else next.delete(sessionId);
+              return next;
+            }),
+        );
         const subscription = yield* PubSub.subscribe(changesPubSub);
         while (true) {
           const row = yield* authSessions
