@@ -83,6 +83,9 @@ flowchart TD
     %% PRN: #323
     WR["Agent web research"]
     %% WR: #423 PR #455
+    WRF["Zero-charge hosted fallback"]
+    %% WRF: #444 PR #502
+    WR --- WRF
     WRR["Headless page rendering"]
     %% WRR: #442
     WR --- WRR
