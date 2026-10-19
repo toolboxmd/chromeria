@@ -3,8 +3,8 @@ import * as Settings from "../serverSettings.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   resolveSpectrumStart,
-  SpectrumSlotsNotConfigured,
-  isSlotsNotConfigured,
+  SpectrumStartValidationError,
+  isStartValidationError,
 } from "./settings.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import {
@@ -94,7 +94,7 @@ export class SpectrumLaunchService extends Context.Service<
   {
     readonly register: (
       input: SpectrumStartRequest,
-    ) => Effect.Effect<SpectrumState, SpectrumLaunchError | SpectrumSlotsNotConfigured>;
+    ) => Effect.Effect<SpectrumState, SpectrumLaunchError | SpectrumStartValidationError>;
   }
 >()("t3/spectrum/LaunchService/SpectrumLaunchService") {}
 
@@ -180,9 +180,11 @@ const make = Effect.gen(function* () {
     const input = yield* Effect.try({
       try: () => resolveSpectrumStart(request, defaults),
       catch: (cause) =>
-        isSlotsNotConfigured(cause)
+        isStartValidationError(cause)
           ? cause
-          : new SpectrumLaunchError({ threadId: request.threadId, cause }),
+          : Schema.isSchemaError(cause)
+            ? new SpectrumStartValidationError({ message: cause.message })
+            : new SpectrumLaunchError({ threadId: request.threadId, cause }),
     });
     if (
       input.colors.some((color) => color.bare !== undefined && (color.fallbacks?.length ?? 0) > 0)
@@ -442,7 +444,7 @@ const make = Effect.gen(function* () {
     register: (input) =>
       register(input).pipe(
         Effect.mapError((cause) =>
-          isSlotsNotConfigured(cause)
+          isStartValidationError(cause)
             ? cause
             : new SpectrumLaunchError({ threadId: input.threadId, cause }),
         ),

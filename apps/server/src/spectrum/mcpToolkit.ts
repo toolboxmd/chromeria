@@ -129,7 +129,7 @@ export const layer = McpToolAccess.toLayer(SpectrumToolkit, {
           })
           .pipe(
             Effect.mapError((error) =>
-              error._tag === "SpectrumSlotsNotConfigured"
+              error._tag === "SpectrumStartValidationError"
                 ? new OrchestratorMcpFailure({ code: "invalid_request", message: error.message })
                 : unavailable(),
             ),

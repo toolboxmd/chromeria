@@ -212,27 +212,46 @@ it.effect("start_spectrum rejects invalid values before persisting a Spectrum", 
       ],
     });
     const toolkit = yield* SpectrumToolkit.pipe(Effect.provide(Access.HandlersLayer.layer(layer)));
-    for (const patch of [
-      { limit: 1 },
-      { mode: "free" as const, limit: 1 },
-      { white: "Red", moderator: 0 },
-      { relayRounds: 1 },
-      { turnsPerColor: 0 },
-      { white: "Missing" },
-      {
-        colors: [
-          { label: "Blue", ...primary },
-          { label: "Blue", ...primary },
-        ],
-      },
-    ]) {
+    for (const [patch, message] of [
+      [{ limit: 1 }, /at least two relay rounds/],
+      [{ mode: "free", limit: 1 }, /cap cannot be below the number of Colors/],
+      [{ white: "Red", moderator: 0 }, /different Colors/],
+      [{ relayRounds: 1 }, /relayRounds/],
+      [{ turnsPerColor: 0 }, /turnsPerColor/],
+      [{ white: "Missing" }, /White/],
+      [
+        {
+          colors: [
+            { label: "Blue", ...primary },
+            { label: "Blue", ...primary },
+          ],
+        },
+        /labels must be unique/,
+      ],
+    ] as const) {
       const result = yield* toolkit
         .handle("start_spectrum", { question: "Invalid", clientRequestId: "invalid", ...patch })
         .pipe(Stream.unwrap, Stream.runCollect, Effect.exit);
-      // Schema failures fail the stream; domain failures are returned as MCP tool errors.
+      // Parameter validation and service validation retain their actionable errors.
       if (result._tag === "Success")
         expect(result.value).toEqual(
-          expect.arrayContaining([expect.objectContaining({ isFailure: true })]),
+          expect.arrayContaining([
+            expect.objectContaining({
+              isFailure: true,
+              encodedResult:
+                "relayRounds" in patch || "turnsPerColor" in patch
+                  ? expect.objectContaining({
+                      reason: expect.objectContaining({
+                        _tag: "ToolParameterValidationError",
+                        description: expect.stringMatching(message),
+                      }),
+                    })
+                  : expect.objectContaining({
+                      code: "invalid_request",
+                      message: expect.stringMatching(message),
+                    }),
+            }),
+          ]),
         );
       expect(
         Option.isNone(yield* readSpectrum(ThreadId.make("spectrum:settings-test:invalid"))),
