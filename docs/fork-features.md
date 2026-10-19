@@ -1259,6 +1259,45 @@ Child creation paths are owned by child-threads and shared with thread-people.
 }
 ```
 
+## run-groups
+
+```json
+{
+  "id": "run-groups",
+  "purpose": "Let one delegate_task call run several Colors of a read-only Prism role (Researcher, Designer, Roast, Reviewer, Judge) as one Run group: one command commits every member that can start, members share the caller's checkout, and the parent wakes once after every member is terminal. task_status and task_cancel take the groupId or a member; Run 1 keeps the single-task result.",
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/402",
+    "https://github.com/toolboxmd/chromeria/issues/511"
+  ],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/512"],
+  "newFiles": [
+    "apps/server/src/mcp/RunGroups.integration.test.ts",
+    "apps/server/src/orchestration-v2/RunGroups.ts"
+  ],
+  "upstreamFiles": [],
+  "sharedFiles": [
+    "apps/server/src/mcp/OrchestratorMcpService.ts",
+    "apps/server/src/mcp/toolkits/orchestrator/handlers.ts",
+    "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+    "apps/server/src/orchestration-v2/EffectOutbox.ts",
+    "apps/server/src/orchestration-v2/EventSink.ts",
+    "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+    "apps/server/src/prism/PrismService.ts",
+    "apps/server/src/serverSettings.test.ts",
+    "apps/web/src/components/settings/PrismSettings.logic.test.ts",
+    "apps/web/src/components/settings/PrismSettings.logic.ts",
+    "apps/web/src/components/settings/PrismSettings.tsx",
+    "packages/contracts/src/orchestrationV2.ts",
+    "packages/contracts/src/orchestratorMcp.ts",
+    "packages/contracts/src/prism.test.ts",
+    "packages/contracts/src/prism.ts",
+    "packages/provider-core/src/server/orchestrationInstructions.ts"
+  ],
+  "keywords": ["Run group", "runGroupId", "delegated_task.group.request", "groupId"]
+}
+```
+
 ## tool-instructions
 
 ```json

@@ -119,6 +119,7 @@ function existingThreadIdsForCommand(
         ? [command.sourceThreadId]
         : [command.sourceThreadId, command.targetThreadId];
     case "delegated_task.request":
+    case "delegated_task.group.request":
     case "delegated_task.wake-policy":
     case "delegated_task.completion-delivery.acknowledge":
     case "delegated_task.completion-delivery.dispose":
@@ -825,6 +826,21 @@ const make = Effect.gen(function* () {
                   });
             }),
           );
+      case "delegated_task.group.request":
+        return orchestrator.getThreadRecords(command.parentThreadId, []).pipe(
+          Effect.flatMap((parent) =>
+            Effect.forEach(
+              command.members,
+              (member) =>
+                assertProviderInstanceEnabled({
+                  projectId: parent.thread.projectId,
+                  commandId: command.commandId,
+                  instanceId: member.modelSelection.instanceId,
+                }),
+              { discard: true },
+            ),
+          ),
+        );
       default:
         return Effect.void;
     }

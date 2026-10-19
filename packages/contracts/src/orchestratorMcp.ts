@@ -263,13 +263,39 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
 });
 export type OrchestratorMcpDelegateTaskResult = typeof OrchestratorMcpDelegateTaskResult.Type;
 
+/**
+ * A Run group: the tasks one delegation started on several Colors of a
+ * read-only role, in Color order. `taskId` reads and cancels each member;
+ * `groupId` reads and cancels them all.
+ */
+export const OrchestratorMcpRunGroupResult = Schema.Struct({
+  groupId: NodeId,
+  status: Schema.Literals(["running", "completed"]).annotate({
+    description:
+      "completed once every member and its nested work is terminal; each member's own status says how it ended.",
+  }),
+  tasks: Schema.Array(OrchestratorMcpDelegateTaskResult),
+  waitTimedOut: Schema.Boolean.annotate({
+    description:
+      "True only on that mode=wait call when timeoutMs elapsed before every member was terminal.",
+  }),
+});
+export type OrchestratorMcpRunGroupResult = typeof OrchestratorMcpRunGroupResult.Type;
+
+/** One task, or the Run group a Run N role started. */
+export const OrchestratorMcpTaskOrRunGroupResult = Schema.Union([
+  OrchestratorMcpDelegateTaskResult,
+  OrchestratorMcpRunGroupResult,
+]);
+export type OrchestratorMcpTaskOrRunGroupResult = typeof OrchestratorMcpTaskOrRunGroupResult.Type;
+
 export const OrchestratorMcpTaskStatusInput = Schema.Struct({
-  taskId: NodeId,
+  taskId: NodeId.annotate({ description: "A taskId, or a Run group's groupId." }),
 });
 export type OrchestratorMcpTaskStatusInput = typeof OrchestratorMcpTaskStatusInput.Type;
 
 export const OrchestratorMcpTaskCancelInput = Schema.Struct({
-  taskId: NodeId,
+  taskId: NodeId.annotate({ description: "A taskId, or a Run group's groupId." }),
   reason: Schema.optional(Schema.String.check(Schema.isMaxLength(2_000))),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
@@ -280,6 +306,19 @@ export const OrchestratorMcpTaskCancelResult = Schema.Struct({
   status: Schema.Literals(["cancel_requested", "completed", "failed", "cancelled", "interrupted"]),
 });
 export type OrchestratorMcpTaskCancelResult = typeof OrchestratorMcpTaskCancelResult.Type;
+
+export const OrchestratorMcpRunGroupCancelResult = Schema.Struct({
+  groupId: NodeId,
+  tasks: Schema.Array(OrchestratorMcpTaskCancelResult),
+});
+export type OrchestratorMcpRunGroupCancelResult = typeof OrchestratorMcpRunGroupCancelResult.Type;
+
+export const OrchestratorMcpTaskOrRunGroupCancelResult = Schema.Union([
+  OrchestratorMcpTaskCancelResult,
+  OrchestratorMcpRunGroupCancelResult,
+]);
+export type OrchestratorMcpTaskOrRunGroupCancelResult =
+  typeof OrchestratorMcpTaskOrRunGroupCancelResult.Type;
 
 export const OrchestratorMcpCreateThreadRequest = Schema.Struct({
   bare: Schema.optional(BareLaunchRequest),

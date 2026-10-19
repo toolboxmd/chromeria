@@ -181,6 +181,12 @@ import {
 import * as EffectOutbox from "./EffectOutbox.ts";
 import { withCommandMetrics } from "../observability/Metrics.ts";
 import type { OrchestrationEffectRequestV2, PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
+import {
+  type RunGroupMember,
+  runGroupMember,
+  runGroupWake,
+  runGroupWakeDetail,
+} from "./RunGroups.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import {
@@ -676,6 +682,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "provider.switch":
       return command.threadId;
     case "delegated_task.request":
+    case "delegated_task.group.request":
     case "delegated_task.remote.request":
     case "delegated_task.remote.stop":
     case "delegated_task.remote.launch":
@@ -1488,6 +1495,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
     });
+
+  const releasedSiblingEvents = (
+    siblings: ReadonlyArray<OrchestrationV2Subagent>,
+    now: DateTime.Utc,
+  ) =>
+    siblings.map((task) => ({
+      type: "subagent.updated" as const,
+      threadId: task.threadId,
+      ...(task.runId === null ? {} : { runId: task.runId }),
+      nodeId: task.id,
+      driver: task.driver,
+      providerInstanceId: task.providerInstanceId,
+      occurredAt: now,
+      payload: task,
+    }));
 
   const completionDeliveryRun = (
     projection: Pick<OrchestrationV2ThreadProjection, "messages" | "runs">,
@@ -5853,7 +5875,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       )
         restartCuts.push(id);
     }
-    return delegatedCompletionWakeDetail(taskIds, tasks, restartCuts);
+    if (!taskIds.some((id) => parent.subagents.find((task) => task.id === id)?.runGroupId))
+      return delegatedCompletionWakeDetail(taskIds, tasks, restartCuts);
+    const groupIds = new Set<NodeId>();
+    const singleIds = taskIds.filter((id) => {
+      const groupId = parent.subagents.find((task) => task.id === id)?.runGroupId;
+      if (groupId !== undefined) groupIds.add(groupId);
+      return groupId === undefined;
+    });
+    return [
+      ...(singleIds.length === 0 ? [] : [delegatedCompletionWakeDetail(singleIds, tasks)]),
+      ...Array.from(groupIds, (groupId) => runGroupWakeDetail(parent, groupId)),
+      ...(restartCuts.length === 0
+        ? []
+        : [
+            `A server restart cut the work for ${restartCuts.join(", ")}. task_status reports the continuation outcome.`,
+          ]),
+    ].join("\n\n");
   });
 
   const dispatchMessage = Effect.fn("Orchestrator.dispatchMessage")(function* (
@@ -8153,6 +8191,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command: Extract<OrchestrationV2Command, { readonly type: "delegated_task.request" }>,
       events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
       effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+      member?: RunGroupMember,
     ) {
       const parentProjection = yield* projectionStore
         .getThreadRecords(
@@ -8214,23 +8253,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
 
       const now = command.createdAt ?? (yield* DateTime.now);
-      const taskNodeId = idAllocator.derive.delegatedTaskNode({
-        commandId: command.commandId,
-      });
-      const childThreadId = idAllocator.derive.delegatedTaskThread({
-        commandId: command.commandId,
-      });
-      const childMessageId = idAllocator.derive.delegatedTaskMessage({
-        commandId: command.commandId,
-      });
-      const taskTurnItemId = idAllocator.derive.delegatedTaskTurnItem({
-        commandId: command.commandId,
-      });
+      const idSeed = { commandId: member?.idSeed ?? command.commandId };
+      const taskNodeId = idAllocator.derive.delegatedTaskNode(idSeed);
+      const childThreadId = idAllocator.derive.delegatedTaskThread(idSeed);
+      const childMessageId = idAllocator.derive.delegatedTaskMessage(idSeed);
+      const taskTurnItemId = idAllocator.derive.delegatedTaskTurnItem(idSeed);
       const taskTitle = subagentThreadTitle({
         parentTitle: parentProjection.thread.title,
         prompt: command.task,
         ...(command.title === undefined ? {} : { title: command.title }),
-        ordinal: (yield* subagentCount(command.parentThreadId)) + 1,
+        ordinal: (yield* subagentCount(command.parentThreadId)) + 1 + (member?.index ?? 0),
       });
       const destinationProjectId = command.projectId ?? parentProjection.thread.projectId;
       const destination =
@@ -8301,6 +8333,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         title: command.title ?? null,
         model: command.modelSelection.model,
         ...(command.completionWake === undefined ? {} : { completionWake: command.completionWake }),
+        ...(member === undefined ? {} : { runGroupId: member.groupId }),
         status: "running",
         result: null,
         startedAt: now,
@@ -8334,7 +8367,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerTurnId: parentProviderTurn?.id ?? null,
         nativeItemRef: null,
         parentItemId: null,
-        ordinal: yield* nextTurnItemOrdinal(parentProjection),
+        // Earlier members of the same group hold the next ordinals in this command.
+        ordinal: (yield* nextTurnItemOrdinal(parentProjection)) + (member?.index ?? 0),
         status: "running",
         title: command.title ?? taskTitle,
         startedAt: now,
@@ -8463,6 +8497,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     },
   );
+
+  // Every member commits in this one command, so a Run group exists whole or not at all.
+  const dispatchDelegatedTaskGroupRequest = Effect.fn(
+    "orchestrationV2.dispatch.delegatedTaskGroupRequest",
+  )(function* (
+    command: Extract<
+      OrchestrationV2ServerCommand,
+      { readonly type: "delegated_task.group.request" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const { members, groupId, ...shared } = command;
+    for (const [index, member] of members.entries()) {
+      yield* dispatchDelegatedTaskRequest(
+        { ...shared, ...member, type: "delegated_task.request" },
+        events,
+        effects,
+        runGroupMember(command.commandId, groupId, index),
+      );
+    }
+  });
 
   const recordSubagentFollowup = Effect.fnUntraced(function* (
     command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
@@ -8947,7 +9003,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       task.runId === null
         ? undefined
         : parentProjection.runs.find((candidate) => candidate.id === task.runId);
-    const plan = yield* planDelegatedCompletionDelivery({
+    const plan = yield* planRunGroupCompletionDelivery({
       parentProjection,
       parentRun,
       task,
@@ -8964,6 +9020,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       occurredAt: now,
       payload: plan.task,
     });
+    for (const event of releasedSiblingEvents(plan.siblings, now)) yield* emitEvent(event);
     if (plan.parentRun !== undefined) {
       yield* emitEvent({
         type: "run.updated",
@@ -9151,7 +9208,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       isTerminalDelegatedTaskStatus(task.status) &&
       parentRun !== undefined &&
       hasLiveRun({ runs: [parentRun] })
-        ? yield* planDelegatedCompletionDelivery({
+        ? yield* planRunGroupCompletionDelivery({
             parentProjection,
             parentRun,
             task: updatedTask,
@@ -9172,6 +9229,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (completionPlan === undefined) {
       return;
     }
+    for (const event of releasedSiblingEvents(completionPlan.siblings, now))
+      yield* emitEvent(event);
     if (completionPlan.parentRun !== undefined) {
       yield* emitEvent({
         type: "run.updated",
@@ -12994,6 +13053,48 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       awaitsRestartContinuation,
     ).pipe(Effect.map((pending) => pending.includes(true)));
 
+  /**
+   * A Run group member holds its wake until every member is terminal; the
+   * last one delivers with every held sibling, which take its delivery state.
+   */
+  const planRunGroupCompletionDelivery = Effect.fn(
+    "orchestrationV2.planRunGroupCompletionDelivery",
+  )(function* (input: Omit<Parameters<typeof planDelegatedCompletionDelivery>[0], "siblingIds">) {
+    const group = runGroupWake(input.parentProjection.subagents, input.updatedTask);
+    if (group.type === "hold") {
+      return {
+        task: input.updatedTask,
+        parentRun: undefined,
+        message: undefined,
+        offer: false,
+        siblings: [],
+      };
+    }
+    const siblings = group.type === "release" ? group.siblings : [];
+    const plan = yield* planDelegatedCompletionDelivery({
+      ...input,
+      parentProjection: {
+        ...input.parentProjection,
+        subagents: input.parentProjection.subagents.map((task) =>
+          task.id === input.updatedTask.id ? input.updatedTask : task,
+        ),
+      },
+      siblingIds: siblings.map((task) => task.id),
+    });
+    const delivery = plan.task.completionDelivery;
+    return {
+      ...plan,
+      siblings:
+        plan.task === input.updatedTask || delivery === undefined
+          ? []
+          : siblings.map((task) => ({
+              ...task,
+              completionDelivery: delivery,
+              updatedAt: input.now,
+            })),
+    };
+  });
+
   const planDelegatedCompletionDelivery = Effect.fn(
     "orchestrationV2.planDelegatedCompletionDelivery",
   )(function* (input: {
@@ -13005,6 +13106,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly task: OrchestrationV2Subagent;
     readonly updatedTask: OrchestrationV2Subagent;
     readonly now: DateTime.Utc;
+    /** Held Run group members this result releases into the same wake. */
+    readonly siblingIds: ReadonlyArray<NodeId>;
   }) {
     const taskDelivery = input.updatedTask.completionDelivery;
     if (
@@ -13064,7 +13167,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const deliveryRun = completionDeliveryRun(input.parentProjection, delivery);
     if (delivery !== null) {
       if (deliveryRun?.status === "queued" && deliveryRun.userMessageId === delivery.messageId) {
-        const taskIds = Array.from(new Set([...delivery.taskIds, input.task.id]));
+        const taskIds = Array.from(
+          new Set([...delivery.taskIds, input.task.id, ...input.siblingIds]),
+        );
         const message = completionDeliveryMessage(input.parentProjection, delivery);
         const nextCohort = {
           ...cohort!,
@@ -13122,7 +13227,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           offer: false,
         };
       }
-      const taskIds = Array.from(new Set([...delivery.taskIds, input.task.id]));
+      const taskIds = Array.from(
+        new Set([...delivery.taskIds, input.task.id, ...input.siblingIds]),
+      );
       const nextCohort = {
         ...cohort!,
         delivery: {
@@ -13163,7 +13270,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       delivery: {
         generation,
         messageId,
-        taskIds: [input.task.id],
+        taskIds: [input.task.id, ...input.siblingIds],
       },
     };
     return {
@@ -13406,8 +13513,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             parentRun: undefined,
             message: undefined,
             offer: false,
+            siblings: [],
           }
-        : yield* planDelegatedCompletionDelivery({
+        : yield* planRunGroupCompletionDelivery({
             parentProjection,
             parentRun:
               followUp &&
@@ -13464,6 +13572,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           occurredAt: now,
           payload: completionPlan.task,
         },
+        ...releasedSiblingEvents(completionPlan.siblings, now),
         ...(completionPlan.parentRun === undefined
           ? []
           : [
@@ -14341,6 +14450,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "delegated_task.request":
         yield* dispatchDelegatedTaskRequest(command, events, effects);
         break;
+      case "delegated_task.group.request":
+        yield* dispatchDelegatedTaskGroupRequest(command, events, effects);
+        break;
       case "delegated_task.remote.request":
         yield* dispatchRemoteDelegatedTaskRequest(command, events);
         break;
@@ -14499,10 +14611,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
 
     const admissionThreadId =
-      command.type === "delegated_task.request" ? command.parentThreadId : commandThreadId(command);
+      command.type === "delegated_task.request" || command.type === "delegated_task.group.request"
+        ? command.parentThreadId
+        : commandThreadId(command);
     const needsAdmission =
       command.type === "message.dispatch" ||
       command.type === "delegated_task.request" ||
+      command.type === "delegated_task.group.request" ||
       command.type === "prepared-run.release" ||
       command.type === "prepared-run.retry" ||
       command.type === "queue.resume";
