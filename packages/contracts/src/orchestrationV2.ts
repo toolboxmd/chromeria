@@ -777,6 +777,8 @@ export const OrchestrationV2RunAttempt = Schema.Struct({
   providerThreadId: ProviderThreadId,
   providerTurnId: Schema.NullOr(ProviderTurnId),
   reason: Schema.Literals(["initial", "steering_restart", "retry", "provider_recovery"]),
+  // A provider restart may implement a steer; retain the accepted send intent.
+  deliveryIntent: Schema.optional(Schema.Literals(["steer", "restart"])),
   /** Who requested this steering restart, separately from the message's author. Absent on older rows. */
   requestedBy: Schema.optional(
     Schema.Struct({

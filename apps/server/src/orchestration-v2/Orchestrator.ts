@@ -5119,6 +5119,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       providerThreadId: restartProviderThread.id,
       providerTurnId: null,
       reason: "steering_restart",
+      deliveryIntent:
+        input.command.type === "message.dispatch" &&
+        input.command.dispatchMode?.type === "restart_active"
+          ? "restart"
+          : "steer",
       requestedBy: {
         createdBy: input.requestedBy.createdBy,
         creationSource: input.requestedBy.creationSource,

@@ -352,14 +352,21 @@ only when that file set changes; this is not an exhaustive history of follow-ups
 {
   "id": "urgent-steering-interruption",
   "purpose": "Use Stop's native scope for urgent agent restart or human Steer, while routine Claude updates queue and interruption context names the requester.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/285"],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/300"],
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/285",
+    "https://github.com/toolboxmd/chromeria/issues/298"
+  ],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/300",
+    "https://github.com/toolboxmd/chromeria/compare/main...fix/298-restart-retry-receipt"
+  ],
   "newFiles": [
     "apps/server/src/orchestration-v2/SteeringInterruption.ts",
     "apps/server/src/orchestration-v2/SteeringInterruption.test.ts",
     "apps/server/src/orchestration-v2/UrgentRestart.integration.test.ts"
   ],
   "upstreamFiles": [
+    "apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts",
     "apps/server/src/orchestration-v2/ProviderTurnControlService.ts",
     "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
     "apps/server/src/orchestration-v2/SteeringCompletion.integration.test.ts",

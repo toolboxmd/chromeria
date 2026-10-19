@@ -914,15 +914,36 @@ const make = Effect.gen(function* () {
       dispatchMode = { type: "queue_after_active" };
     } else if (input.mode === "steer" || input.mode === "restart") {
       if (steerableRun === undefined) {
-        return yield* new ThreadManagementNoSteerableRunError({
-          threadId: input.threadId,
-          mode: input.mode,
-        });
+        const receipt = yield* receipts.getByCommandId(input.commandId).pipe(
+          Effect.mapError(
+            (cause) =>
+              new Orchestrator.OrchestratorDispatchError({
+                commandId: input.commandId,
+                commandType: "message.dispatch",
+                cause,
+              }),
+          ),
+        );
+        if (
+          Option.isNone(receipt) ||
+          receipt.value.status !== "accepted" ||
+          receipt.value.commandType !== "message.dispatch" ||
+          receipt.value.threadId !== input.threadId
+        ) {
+          return yield* new ThreadManagementNoSteerableRunError({
+            threadId: input.threadId,
+            mode: input.mode,
+          });
+        }
+        // Receipt replay ignores this mode and returns the original events.
+        // Replacement startup must not require a newly steerable target.
+        dispatchMode = { type: "start_immediately" };
+      } else {
+        dispatchMode = {
+          type: input.mode === "steer" ? "steer_active" : "restart_active",
+          targetRunId: steerableRun.id,
+        };
       }
-      dispatchMode = {
-        type: input.mode === "steer" ? "steer_active" : "restart_active",
-        targetRunId: steerableRun.id,
-      };
     } else if (input.mode === "auto" && steerableRun !== undefined) {
       dispatchMode = { type: "steer_active", targetRunId: steerableRun.id };
     } else {
@@ -946,39 +967,55 @@ const make = Effect.gen(function* () {
       creationSource: notice === undefined ? input.creationSource : "server",
       ...(notice === undefined ? {} : { notification: notice.notification }),
     });
+    // Retries may change their payload; only committed events identify the
+    // accepted message and delivery, even after its run has moved on.
+    const acceptedMessage = dispatched.storedEvents.flatMap(({ event }) =>
+      event.type === "message.updated" && event.payload.role === "user" ? [event.payload] : [],
+    )[0];
+    if (acceptedMessage === undefined) {
+      return yield* new ThreadManagementDurableRunProjectionError({
+        threadId: input.threadId,
+        messageId: input.messageId,
+      });
+    }
+    const messageId = acceptedMessage.id;
+    const acceptedTurnItem = dispatched.storedEvents.flatMap(({ event }) =>
+      event.type === "turn-item.updated" &&
+      event.payload.type === "user_message" &&
+      event.payload.messageId === messageId
+        ? [event.payload]
+        : [],
+    )[0];
     const projection = yield* getProjectThreadRecords(input, ["runs", "messages", "turnItems"], {
-      messageIds: [input.messageId],
+      messageIds: [messageId],
       turnItemTypes: ["user_message"],
     });
-    const message = projection.messages.find((candidate) => candidate.id === input.messageId);
-    const run =
-      message?.runId === null || message?.runId === undefined
-        ? undefined
-        : projection.runs.find((candidate) => candidate.id === message.runId);
+    const message = projection.messages.find((candidate) => candidate.id === messageId);
+    const run = projection.runs.find((candidate) => candidate.id === acceptedMessage.runId);
     const turnItem =
       projection.turnItems.find(
         (
           candidate,
         ): candidate is Extract<OrchestrationV2TurnItem, { readonly type: "user_message" }> =>
-          candidate.type === "user_message" && candidate.messageId === input.messageId,
+          candidate.type === "user_message" && candidate.messageId === messageId,
       ) ?? null;
-    if (notice !== undefined) {
-      const createdRun = dispatched.storedEvents.flatMap(({ event }) =>
-        event.type === "run.created" && event.payload.userMessageId === input.messageId
-          ? [event.payload]
-          : [],
-      )[0];
+    const createdRun = dispatched.storedEvents.flatMap(({ event }) =>
+      event.type === "run.created" && event.payload.userMessageId === messageId
+        ? [event.payload]
+        : [],
+    )[0];
+    if (acceptedMessage.notification !== undefined) {
       if (
         message?.notification === undefined ||
         message.delegatedCompletion !== undefined ||
         run === undefined ||
-        run.userMessageId !== input.messageId ||
+        run.userMessageId !== messageId ||
         createdRun === undefined ||
         createdRun.id !== run.id
       )
         return yield* new ThreadManagementDurableRunProjectionError({
           threadId: input.threadId,
-          messageId: input.messageId,
+          messageId,
         });
       return {
         dispatch: dispatched,
@@ -989,22 +1026,35 @@ const make = Effect.gen(function* () {
         delivery: createdRun.status === "queued" ? ("queued" as const) : ("started" as const),
       };
     }
+    // A queued message's user turn item is deliberately not emitted at
+    // dispatch time — it materializes when the queued turn actually starts,
+    // so it can map onto the provider turn. Every other dispatch mode still
+    // produces its turn item transactionally with the run.
     if (
       message === undefined ||
       run === undefined ||
-      (turnItem === null && run.status !== "queued")
+      (acceptedTurnItem === undefined && createdRun?.status !== "queued") ||
+      (turnItem === null && acceptedTurnItem !== undefined)
     ) {
       return yield* new ThreadManagementDurableRunProjectionError({
         threadId: input.threadId,
-        messageId: input.messageId,
+        messageId,
       });
     }
+    // Pre-field events cannot distinguish restart intent from its native mechanism.
+    // Preserve their old mode-based response; recorded intent wins for newer events.
     const delivery: ThreadManagementSendResult["delivery"] =
-      turnItem === null || turnItem.inputIntent === "queued_turn"
+      acceptedTurnItem === undefined || acceptedTurnItem.inputIntent === "queued_turn"
         ? "queued"
-        : turnItem.inputIntent === "turn_start"
+        : acceptedTurnItem.inputIntent === "turn_start"
           ? "started"
-          : input.mode === "restart"
+          : dispatched.storedEvents.some(
+                ({ event }) =>
+                  event.type === "run-attempt.created" &&
+                  event.payload.runId === run.id &&
+                  event.payload.reason === "steering_restart" &&
+                  (event.payload.deliveryIntent ?? input.mode) === "restart",
+              )
             ? "restarted"
             : "steered";
     return { dispatch: dispatched, projection, message, run, turnItem, delivery };

@@ -68,7 +68,7 @@ flowchart TD
     SN["Child notices"]
     %% SN: #269 #341 #422 PR #431
     ST["Urgent interruption"]
-    %% ST: #285
+    %% ST: #285 #298 PR #478
     CK["Command keys"]
     %% CK: #232
     SP["Shown proof"]
