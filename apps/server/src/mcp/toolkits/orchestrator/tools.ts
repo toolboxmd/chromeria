@@ -99,8 +99,8 @@ const DelegateTaskTool = Tool.make("delegate_task", {
 
 const TaskStatusTool = Tool.make("task_status", {
   description:
-    "Read one delegated task you started. Do not call it on a running task before its completion wakes you. `workState`: working, waiting_for_children, result_available. A finished turn with live child work is not done. `summary`: final result. Reading it marks it delivered.",
-  parameters: OrchestratorMcpTaskStatusInput,
+    "Read one delegated task you started. Do not call it on a running task before its completion wakes you. `workState`: working, waiting_for_children, result_available. A finished turn with live child work is not done. `summary`: final result. Reading it marks it delivered. A Spectrum task from `start_spectrum` has no `childRunId`; its `summary` is the Spectrum report.",
+  parameters: McpRouting.parameters(OrchestratorMcpTaskStatusInput),
   success: OrchestratorMcpDelegateTaskResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
@@ -113,8 +113,8 @@ const TaskStatusTool = Tool.make("task_status", {
 
 const TaskCancelTool = Tool.make("task_cancel", {
   description:
-    "Stop one delegated task by `taskId`. Stops its running and queued turns, its delegates, and its PR watches, including later runs in its child thread. A finished task keeps its result.",
-  parameters: OrchestratorMcpTaskCancelInput,
+    "Stop one delegated task by `taskId`. Stops its running and queued turns, its delegates, and its PR watches, including later runs in its child thread. A finished task keeps its result. On a Spectrum task it runs the Spectrum's Stop, which cancels every Color.",
+  parameters: McpRouting.parameters(OrchestratorMcpTaskCancelInput),
   success: OrchestratorMcpTaskCancelResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",

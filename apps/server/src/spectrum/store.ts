@@ -88,6 +88,7 @@ export const checkSpectrumMutation = Effect.fn("Spectrum.checkMutation")(functio
     next.callerRunId !== current.callerRunId ||
     next.scheduledTaskId !== current.scheduledTaskId ||
     next.schedulerRunId !== current.schedulerRunId ||
+    next.delegatedTaskId !== current.delegatedTaskId ||
     next.generation < current.generation ||
     next.generation > current.generation + 1 ||
     (current.status === "retired" &&

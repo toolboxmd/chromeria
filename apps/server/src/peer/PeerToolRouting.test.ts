@@ -236,6 +236,7 @@ const makeFixture = (realHtml = false) =>
                 callerThreadId: input.callerThreadId,
                 mode: input.mode,
                 participants: [],
+                delegatedTaskId: null,
               } as never,
               input,
             ),

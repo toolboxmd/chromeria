@@ -28,8 +28,8 @@ export function makeState(overrides: Partial<SpectrumState> = {}): SpectrumState
     limit: 2,
     moderator: 1,
     participants: [
-      { threadId: ThreadId.make("blue"), label: "Blue", selection },
-      { threadId: ThreadId.make("red"), label: "Red", selection },
+      { threadId: ThreadId.make("blue"), label: "Blue", selection, fallbacks: [], attempted: [] },
+      { threadId: ThreadId.make("red"), label: "Red", selection, fallbacks: [], attempted: [] },
     ],
     generation: 0,
     revision: 0,
@@ -41,6 +41,7 @@ export function makeState(overrides: Partial<SpectrumState> = {}): SpectrumState
     inbox: [],
     outbox: [],
     report: null,
+    delegatedTaskId: null,
     reportAbandonment: null,
     ...overrides,
   };

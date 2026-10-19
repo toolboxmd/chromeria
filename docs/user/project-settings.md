@@ -109,13 +109,19 @@ when you stop using it in Chromeria 1.
 
 Ask your agent to start a Spectrum with a question and two to eight named
 Colors. Each Color is a Drafter selected through Prism, with an optional role
-or explicit model. **Council** collects independent answers, runs at least two
+or explicit model. A Color can name fallback models; Chromeria tries them in
+order only when that Color's turn cannot start, never after it started. **Council** collects independent answers, runs at least two
 relay rounds, then asks the moderator Color to synthesize. **Free** lets Colors
 speak in order for a fixed number of turns.
 
 The Spectrum thread shows the full discussion. Send a message there to join at
 the next barrier. **Stop** cancels its owned Drafter work. After the report
 finishes or you explicitly abandon it, reopen the thread to continue.
+
+A Spectrum an agent starts from its own thread is one of that agent's delegated
+tasks. The agent can check it with `task_status`, whose result is the report,
+and stop it with `task_cancel`. The agent still learns of the result from the
+report message.
 
 ## Webhook automations
 

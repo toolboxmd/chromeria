@@ -2753,6 +2753,24 @@ const make = Effect.gen(function* () {
         }
       });
       yield* assertStoppable(childThreadId);
+    // Fork: a Spectrum task has no run of its own; its Stop cancels every Color. Once
+    // its report exists that report is the caller's wake, so nothing is stopped.
+    const spectrum = yield* (yield* SpectrumMcpInterrupt).stop(
+      threadManagement,
+      { threadId: childThreadId, reason: input.reason, keepReported: true },
+      stableCommandId({ scope, requestKey: key, operation: "cancel-task" }),
+    );
+    if (spectrum !== null) {
+      // The report may have settled after `current` was read; its row then reads terminal.
+      const latest = spectrum === "reported" ? yield* readTask(scope, input.taskId) : current;
+      return {
+        taskId: input.taskId,
+        status:
+          spectrum === "reported" && isTerminalTaskStatus(latest.status)
+            ? latest.status
+            : "cancel_requested",
+      } satisfies OrchestratorMcpTaskCancelResult;
+    }
       const parentTask = parentProjection.subagents.find(
         (task) => task.id === input.taskId && task.origin === "app_owned",
       );

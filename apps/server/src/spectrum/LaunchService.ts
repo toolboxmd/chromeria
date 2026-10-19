@@ -8,6 +8,7 @@ import {
   threadOwner,
   type ModelSelection,
   type OrchestrationV2AppThread,
+  type OrchestratorMcpFailure,
   type PrismLane,
   type PrismRole,
   type RunId,
@@ -26,31 +27,41 @@ import * as ProviderAdapters from "../orchestration-v2/ProviderAdapterRegistry.t
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Prism from "../prism/PrismService.ts";
 import { resolveSchedulerRun, schedulerRunOpenGuard } from "../scheduledTaskChecks/handoff.ts";
+import { spectrumTaskEvent, spectrumTaskId, spectrumTaskRow } from "./delegatedTask.ts";
 import { spectrumRegistrationPlan } from "./registrationPlan.ts";
 import { SpectrumState } from "./state.ts";
 import { readSpectrum } from "./store.ts";
+
+/** A Color candidate: a full selection, or overrides of the inherited one. */
+interface SpectrumCandidate {
+  readonly selection?: ModelSelection | undefined;
+  readonly instanceId?: string | undefined;
+  readonly model?: string | undefined;
+  readonly effort?: string | undefined;
+}
 
 export interface SpectrumStart {
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
   readonly callerThreadId: ThreadId;
   readonly callerRunId: RunId | null;
+  /** An agent in the caller thread started it, so the Spectrum is that thread's delegated task. */
+  readonly delegatedTask?: boolean | undefined;
   readonly question: string;
   readonly title?: string;
   readonly mode: "council" | "free";
   readonly limit: number;
   readonly moderator: number;
-  readonly colors: ReadonlyArray<{
-    readonly bare?: import("@t3tools/contracts").BareLaunchRequest | undefined;
-    readonly label: string;
-    readonly role?: PrismRole | undefined;
-    readonly lane?: PrismLane | undefined;
-    readonly selection?: ModelSelection | undefined;
-    readonly instructions?: string | undefined;
-    readonly instanceId?: string | undefined;
-    readonly model?: string | undefined;
-    readonly effort?: string | undefined;
-  }>;
+  readonly colors: ReadonlyArray<
+    SpectrumCandidate & {
+      readonly bare?: import("@t3tools/contracts").BareLaunchRequest | undefined;
+      readonly label: string;
+      readonly role?: PrismRole | undefined;
+      readonly lane?: PrismLane | undefined;
+      readonly instructions?: string | undefined;
+      readonly fallbacks?: ReadonlyArray<SpectrumCandidate> | undefined;
+    }
+  >;
 }
 
 export class SpectrumLaunchError extends Schema.TaggedError<SpectrumLaunchError>()(
@@ -153,52 +164,96 @@ const make = Effect.gen(function* () {
         threadId: input.threadId,
         cause: "Invalid Color configuration",
       });
+    if (
+      input.colors.some((color) => color.bare !== undefined && (color.fallbacks?.length ?? 0) > 0)
+    )
+      return yield* new SpectrumLaunchError({
+        threadId: input.threadId,
+        cause: "Bare Colors have no fallbacks.",
+      });
     const caller = yield* projections.getThread(input.callerThreadId);
+    const withOverrides = Effect.fnUntraced(function* (
+      base: ModelSelection,
+      spec: SpectrumCandidate,
+    ) {
+      if (spec.instanceId === undefined && spec.model === undefined && spec.effort === undefined)
+        return base;
+      const instanceId =
+        spec.instanceId === undefined ? base.instanceId : ProviderInstanceId.make(spec.instanceId);
+      const provider = (yield* providers.getProviders).find(
+        (provider) => provider.instanceId === instanceId,
+      );
+      const effortOption =
+        provider?.driver === "codex" || provider?.driver === "grok"
+          ? "reasoningEffort"
+          : provider?.driver === "opencode"
+            ? "variant"
+            : "effort";
+      return {
+        ...base,
+        instanceId,
+        model: spec.model ?? base.model,
+        ...(spec.effort === undefined
+          ? {}
+          : { options: [{ id: effortOption, value: spec.effort }] }),
+      } satisfies ModelSelection;
+    });
     const resolved = yield* Effect.forEach(input.colors, (color, index) =>
       Effect.gen(function* () {
-        let explicit =
+        const primary =
           color.selection ?? (color.role === undefined ? caller.modelSelection : undefined);
-        const inheritedSelection = explicit ?? caller.modelSelection;
-        if (
-          color.instanceId !== undefined ||
-          color.model !== undefined ||
-          color.effort !== undefined
-        ) {
-          const instanceId =
-            color.instanceId === undefined
-              ? inheritedSelection.instanceId
-              : ProviderInstanceId.make(color.instanceId);
-          const provider = (yield* providers.getProviders).find(
-            (provider) => provider.instanceId === instanceId,
+        const explicit =
+          primary === undefined &&
+          color.instanceId === undefined &&
+          color.model === undefined &&
+          color.effort === undefined
+            ? undefined
+            : yield* withOverrides(primary ?? caller.modelSelection, color);
+        const resolveCandidate = (candidate: ModelSelection | undefined) =>
+          prism.resolve({
+            bare: color.bare !== undefined,
+            projectId: caller.projectId,
+            role: color.role ?? "worker",
+            lane: color.lane,
+            explicit: candidate,
+            inherited: caller.modelSelection,
+            validate: (selection) =>
+              Prism.validateLaunchSelection(selection, color.bare !== undefined).pipe(
+                Effect.provideService(ProviderAdapters.ProviderAdapterRegistryV2, adapters),
+                Effect.provideService(ProviderRegistry.ProviderRegistry, providers),
+              ),
+          });
+        const attempted: ModelSelection[] = [];
+        // A candidate that cannot start now is recorded and skipped while a later one remains.
+        const resolveFrom = (
+          candidate: ModelSelection | undefined,
+          later: ReadonlyArray<ModelSelection>,
+        ): Effect.Effect<
+          {
+            readonly target: { readonly modelSelection: ModelSelection; readonly kitText: string };
+            readonly fallbacks: ReadonlyArray<ModelSelection>;
+          },
+          OrchestratorMcpFailure
+        > =>
+          resolveCandidate(candidate).pipe(
+            Effect.map((target) => ({ target, fallbacks: later })),
+            Effect.catch((error) => {
+              const [next, ...rest] = later;
+              if (
+                next === undefined ||
+                (error.code !== "provider_unavailable" && error.code !== "model_unavailable")
+              )
+                return Effect.fail(error);
+              if (candidate !== undefined) attempted.push(candidate);
+              return resolveFrom(next, rest);
+            }),
           );
-          const effortOption =
-            provider?.driver === "codex" || provider?.driver === "grok"
-              ? "reasoningEffort"
-              : provider?.driver === "opencode"
-                ? "variant"
-                : "effort";
-          explicit = {
-            ...inheritedSelection,
-            instanceId,
-            model: color.model ?? inheritedSelection.model,
-            ...(color.effort === undefined
-              ? {}
-              : { options: [{ id: effortOption, value: color.effort }] }),
-          };
-        }
-        const target = yield* prism.resolve({
-          bare: color.bare !== undefined,
-          projectId: caller.projectId,
-          role: color.role ?? "worker",
-          lane: color.lane,
+        const { target, fallbacks } = yield* resolveFrom(
           explicit,
-          inherited: caller.modelSelection,
-          validate: (selection) =>
-            Prism.validateLaunchSelection(selection, color.bare !== undefined).pipe(
-              Effect.provideService(ProviderAdapters.ProviderAdapterRegistryV2, adapters),
-              Effect.provideService(ProviderRegistry.ProviderRegistry, providers),
-            ),
-        });
+          yield* Effect.forEach(color.fallbacks ?? [], (fallback) =>
+            withOverrides(fallback.selection ?? caller.modelSelection, fallback),
+          ),
+        );
         const selection = target.modelSelection;
         const project =
           color.bare === undefined || caller.worktreePath !== null
@@ -228,6 +283,8 @@ const make = Effect.gen(function* () {
           threadId: ThreadId.make(`sub.${input.threadId}.color.${index}`),
           label: color.label,
           selection,
+          fallbacks,
+          attempted,
           instructions: [
             color.bare !== undefined || color.role === undefined ? "" : target.kitText,
             color.instructions ?? "",
@@ -266,14 +323,35 @@ const make = Effect.gen(function* () {
       inbox: [],
       outbox: [],
       report: null,
+      delegatedTaskId:
+        input.delegatedTask === true ? spectrumTaskId({ threadId: input.threadId }) : null,
       reportAbandonment: null,
     });
     const now = yield* DateTime.now;
+    const title = input.title ?? `Spectrum: ${input.question.slice(0, 60)}`;
+    const callerRun =
+      state.delegatedTaskId === null || input.callerRunId === null
+        ? undefined
+        : (yield* projections.getThreadRecords(caller.id, ["runs"])).runs.find(
+            (run) => run.id === input.callerRunId,
+          );
+    const task =
+      state.delegatedTaskId === null
+        ? null
+        : spectrumTaskRow({
+            state,
+            caller,
+            parentNodeId: callerRun?.rootNodeId ?? null,
+            driver: (yield* adapters.get(caller.modelSelection.instanceId)).driver,
+            selection: caller.modelSelection,
+            title,
+            now,
+          });
     const threads = [
       shell(caller, {
         id: state.threadId,
         parentId: caller.id,
-        title: input.title ?? `Spectrum: ${input.question.slice(0, 60)}`,
+        title,
         selection: caller.modelSelection,
         now,
       }),
@@ -296,16 +374,19 @@ const make = Effect.gen(function* () {
         threadId: state.threadId,
         commandType: "spectrum.register",
         acceptedAt: now,
-        events: threads.map((thread) => ({
-          id: EventId.make(`${input.commandId}:create:${thread.id}`),
-          type: "thread.created" as const,
-          threadId: thread.id,
-          occurredAt: now,
-          payload:
-            thread.id === boundState.threadId
-              ? { ...thread, forkSpectrumRunning: boundState.status === "active" }
-              : thread,
-        })),
+        events: [
+          ...threads.map((thread) => ({
+            id: EventId.make(`${input.commandId}:create:${thread.id}`),
+            type: "thread.created" as const,
+            threadId: thread.id,
+            occurredAt: now,
+            payload:
+              thread.id === boundState.threadId
+                ? { ...thread, forkSpectrumRunning: boundState.status === "active" }
+                : thread,
+          })),
+          ...(task === null ? [] : [spectrumTaskEvent(task, input.commandId, now)]),
+        ],
         effects: [],
         forkPlans: [
           {

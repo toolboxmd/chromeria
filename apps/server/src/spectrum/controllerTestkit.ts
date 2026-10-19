@@ -35,21 +35,23 @@ const adapter = {
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
   openSession: () => Effect.die("No provider process runs in this test"),
 } satisfies ProviderAdapterV2["Service"];
-const adapters = Adapters.layerFromAdapters([adapter]);
+/** A second launchable instance, for slot fallbacks. */
+export const spareInstanceId = ProviderInstanceId.make("codex-spare");
+const adapters = Adapters.layerFromAdapters([adapter, { ...adapter, instanceId: spareInstanceId }]);
 const database = Database.layerMemory;
 const registry = Layer.mock(Providers.ProviderRegistry)({
   getProviders: Effect.map(
     buildUnavailableProviderSnapshot({ driverKind: "codex", instanceId, reason: "fixture" }),
-    (p) => [
-      {
+    (p) =>
+      [instanceId, spareInstanceId].map((id) => ({
         ...p,
+        instanceId: id,
         enabled: true,
         installed: true,
         status: "ready" as const,
         availability: "available" as const,
         models: [{ slug: "test-model", name: "Test", isCustom: false, capabilities: null }],
-      },
-    ],
+      })),
   ),
 });
 const prism = Prism.layer.pipe(

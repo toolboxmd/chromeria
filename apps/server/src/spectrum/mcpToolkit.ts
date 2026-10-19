@@ -2,6 +2,7 @@ import { BareLaunchRequest } from "@t3tools/contracts";
 import * as McpRouting from "../mcp/McpRouting.ts";
 import {
   CommandId,
+  NodeId,
   ThreadId,
   PrismRole,
   PrismLane,
@@ -25,6 +26,12 @@ import {
 import * as Launch from "./LaunchService.ts";
 import { assertSameLink } from "../mcp/linkOrigin.ts";
 
+const Candidate = Schema.Struct({
+  selection: Schema.optional(ModelSelection),
+  instanceId: Schema.optional(TrimmedNonEmptyString),
+  model: Schema.optional(TrimmedNonEmptyString),
+  effort: Schema.optional(TrimmedNonEmptyString),
+});
 const Color = Schema.Struct({
   bare: Schema.optional(BareLaunchRequest),
   label: TrimmedNonEmptyString,
@@ -35,6 +42,7 @@ const Color = Schema.Struct({
   instanceId: Schema.optional(TrimmedNonEmptyString),
   model: Schema.optional(TrimmedNonEmptyString),
   effort: Schema.optional(TrimmedNonEmptyString),
+  fallbacks: Schema.optional(Schema.Array(Candidate).check(Schema.isMaxLength(4))),
 });
 export const StartSpectrumInput = Schema.Struct({
   callerThreadId: Schema.optional(ThreadId),
@@ -48,6 +56,7 @@ export const StartSpectrumInput = Schema.Struct({
 });
 export const StartSpectrumResult = Schema.Struct({
   threadId: ThreadId,
+  taskId: Schema.NullOr(NodeId),
   callerThreadId: ThreadId,
   mode: Schema.Literals(["council", "free"]),
   participants: Schema.Array(
@@ -63,7 +72,7 @@ export const StartSpectrumResult = Schema.Struct({
 export const SpectrumToolkit = Toolkit.make(
   Tool.make("start_spectrum", {
     description:
-      "Open a visible provider-less Spectrum transcript with Drafter Colors chosen through Prism. Council runs independent answers, at least two relay barriers and moderator synthesis; free mode takes ordered turns. All replies are relayed verbatim. Send normal messages to join at the next barrier, reopen to continue after the report finishes or is explicitly abandoned, and Stop to cancel owned Drafter work. limit is council relay rounds (default2) or free turns (default3 per Color).",
+      "Open a visible provider-less Spectrum transcript with Drafter Colors chosen through Prism. Council runs independent answers, at least two relay barriers and moderator synthesis; free mode takes ordered turns. All replies are relayed verbatim. Send normal messages to join at the next barrier, reopen to continue after the report finishes or is explicitly abandoned, and Stop to cancel owned Drafter work. limit is council relay rounds (default2) or free turns (default3 per Color). A Color's fallbacks are tried in order only when its turn cannot start. Started by an agent from its own thread, the Spectrum is that thread's delegated task: taskId works with task_status (the report is its result) and task_cancel (Stop); the report message is the only wake.",
     parameters: McpRouting.parameters(StartSpectrumInput),
     success: StartSpectrumResult,
     failure: OrchestratorMcpFailure,
@@ -102,6 +111,7 @@ export const layer = McpToolAccess.toLayer(SpectrumToolkit, {
             threadId: ThreadId.make(key),
             callerThreadId: projection.thread.id,
             callerRunId: caller.activeRunId,
+            delegatedTask: scope.thread?.threadId === projection.thread.id,
             question: input.question,
             ...(input.title === undefined ? {} : { title: input.title }),
             colors: input.colors,
@@ -112,6 +122,7 @@ export const layer = McpToolAccess.toLayer(SpectrumToolkit, {
           .pipe(Effect.mapError(unavailable));
         return {
           threadId: state.threadId,
+          taskId: state.delegatedTaskId,
           callerThreadId: state.callerThreadId,
           mode: state.mode,
           participants: state.participants.map((color) => ({

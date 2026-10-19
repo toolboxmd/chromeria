@@ -124,17 +124,6 @@ export function makeInitialReport(
   };
 }
 
-/** Stop drops a report attempt that was never sent. Revision-neutral, like makeInitialReport. */
-export function dropUnsentReport(state: SpectrumState): SpectrumState {
-  const report = state.report;
-  return report === null
-    ? state
-    : {
-        ...state,
-        outbox: state.outbox.filter((command) => command.commandId !== report.commandId),
-      };
-}
-
 /**
  * Rebuilt from durable data for every send and replay: only the current,
  * unabandoned attempt in the outbox. A retired transcript does not refuse a
