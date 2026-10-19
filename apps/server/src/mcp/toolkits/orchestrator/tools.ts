@@ -7,7 +7,6 @@ import {
   OrchestratorMcpCreateThreadsInput,
   OrchestratorMcpCreateThreadsResult,
   OrchestratorMcpDelegateTaskInput,
-  OrchestratorMcpDelegateTaskResult,
   OrchestratorMcpDeleteScheduledTaskInput,
   OrchestratorMcpDeleteScheduledTaskResult,
   OrchestratorMcpRequestSecretInput,
@@ -18,7 +17,8 @@ import {
   OrchestratorMcpScheduleTaskInput,
   OrchestratorMcpScheduleTaskResult,
   OrchestratorMcpTaskCancelInput,
-  OrchestratorMcpTaskCancelResult,
+  OrchestratorMcpTaskOrRunGroupCancelResult,
+  OrchestratorMcpTaskOrRunGroupResult,
   OrchestratorMcpUpdateScheduledTaskInput,
   OrchestratorMcpTaskStatusInput,
   OrchestratorMcpThreadInterruptInput,
@@ -72,9 +72,9 @@ const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {
 
 export const DelegateTaskTool = Tool.make("delegate_task", {
   description:
-    "Needs an agent running inside a T3 thread. Delegate one task to a T3-owned child agent/subagent of THIS thread and run it with only the supplied task prompt, without copying parent conversation history. Set target.environmentId to run on a linked environment, with target.projectId to select its project. The target Prism chooses provider, model and effort from the configured role kit and usage headroom. Omit target unless the user chose a provider/model explicitly; an explicit target wins. Optional lane chooses worker difficulty; prismRole chooses an explicit kit: planner, researcher, designer, worker, roast, reviewer or judge. Without prismRole, role review runs as reviewer, research as researcher, design as designer and everything else as worker. Use visible T3 delegation for same-provider and cross-provider work instead of native or shell agent runners. For every T3 delegated review round, call delegate_task again with the original brief, prior findings, responses, and unresolved objections in the task prompt. Track each round by its own taskId and use a distinct clientRequestId per round, stable across retries of that round. The childThreadId is backing storage, not the target for starting another delegated review round through t3_thread_send. Unconfigured roles inherit the parent model. Runtime mode and interaction mode retain the upstream ceiling. Prefer mode='async' for long work; mode='wait' blocks until completion, a blocking question, or timeout. If hasPendingQuestion, pass threadId=childThreadId to t3_pending_request_list, t3_pending_request_read (with requestId) and t3_pending_request_respond, or ask the user; the task's completion still wakes this thread. timeoutMs on mode=wait is only the parent's wait budget and does not cancel the child. waitTimedOut on that wait call means the timeout fired; keep that taskId and read status on later task_status. An async child's completion wakes this thread through a notification, steered into active turns where supported or queued otherwise, so end the turn instead of polling or spawning watchers; use task_status only when the result is needed mid-turn.",
+    "Needs an agent running inside a T3 thread. Delegate one task to a T3-owned child agent/subagent of THIS thread and run it with only the supplied task prompt, without copying parent conversation history. Set target.environmentId to run on a linked environment, with target.projectId to select its project. The target Prism chooses provider, model and effort from the configured role kit and usage headroom. Omit target unless the user chose a provider/model explicitly; an explicit target wins. Optional lane chooses worker difficulty; prismRole chooses an explicit kit: planner, researcher, designer, worker, roast, reviewer or judge. Without prismRole, role review runs as reviewer, research as researcher, design as designer and everything else as worker. A read-only role (researcher, designer, roast, reviewer, judge) whose Run is above 1 in Prism settings starts that many of its Colors on this same task, sharing this thread's checkout, and returns { groupId, tasks }: a Run group. Its members do not wake this thread one by one; it wakes once after every member and its nested work is terminal, listing each member's status and result. task_status and task_cancel take the groupId or a member's taskId; mode='wait' waits for the whole group. An explicit target model, a bare delegation or a linked environment runs one Color, and a linked environment without target.model refuses a Run above 1. Use visible T3 delegation for same-provider and cross-provider work instead of native or shell agent runners. For every T3 delegated review round, call delegate_task again with the original brief, prior findings, responses, and unresolved objections in the task prompt. Track each round by its own taskId and use a distinct clientRequestId per round, stable across retries of that round. The childThreadId is backing storage, not the target for starting another delegated review round through t3_thread_send. Unconfigured roles inherit the parent model. Runtime mode and interaction mode retain the upstream ceiling. Prefer mode='async' for long work; mode='wait' blocks until completion, a blocking question, or timeout. If hasPendingQuestion, pass threadId=childThreadId to t3_pending_request_list, t3_pending_request_read (with requestId) and t3_pending_request_respond, or ask the user; the task's completion still wakes this thread. timeoutMs on mode=wait is only the parent's wait budget and does not cancel the child. waitTimedOut on that wait call means the timeout fired; keep that taskId and read status on later task_status. An async child's completion wakes this thread through a notification, steered into active turns where supported or queued otherwise, so end the turn instead of polling or spawning watchers; use task_status only when the result is needed mid-turn.",
   parameters: McpRouting.parameters(OrchestratorMcpDelegateTaskInput),
-  success: OrchestratorMcpDelegateTaskResult,
+  success: OrchestratorMcpTaskOrRunGroupResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
   dependencies,
@@ -85,9 +85,9 @@ export const DelegateTaskTool = Tool.make("delegate_task", {
 
 const TaskStatusTool = Tool.make("task_status", {
   description:
-    "Needs an agent running inside a T3 thread. Read a T3-owned delegated task created by this parent thread. childRunId identifies the original delegated run. workState distinguishes working, waiting_for_children, and result_available; a completed turn with live nested work is not a completed task. summary is the final task result, including provider errors on failure, and remains stable after publication. hasPendingChildRuns reports later queued or executing turns in the backing child thread, even after the task is terminal; it does not reopen the task, and task_cancel stops those turns too. Turns held in a stopped queue wait for the user and do not count. latestTerminal* provides later non-monitor turn results. Reading a terminal result acknowledges its automatic parent delivery. A Spectrum task from start_spectrum has no childRunId; its summary is the Spectrum report.",
+    "Needs an agent running inside a T3 thread. Read a T3-owned delegated task created by this parent thread. childRunId identifies the original delegated run. workState distinguishes working, waiting_for_children, and result_available; a completed turn with live nested work is not a completed task. summary is the final task result, including provider errors on failure, and remains stable after publication. hasPendingChildRuns reports later queued or executing turns in the backing child thread, even after the task is terminal; it does not reopen the task, and task_cancel stops those turns too. Turns held in a stopped queue wait for the user and do not count. latestTerminal* provides later non-monitor turn results. Reading a terminal result acknowledges its automatic parent delivery. A Spectrum task from start_spectrum has no childRunId; its summary is the Spectrum report. A Run group's groupId returns { groupId, status, tasks } with every member.",
   parameters: McpRouting.parameters(OrchestratorMcpTaskStatusInput),
-  success: OrchestratorMcpDelegateTaskResult,
+  success: OrchestratorMcpTaskOrRunGroupResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
   dependencies,
@@ -99,9 +99,9 @@ const TaskStatusTool = Tool.make("task_status", {
 
 const TaskCancelTool = Tool.make("task_cancel", {
   description:
-    "Needs an agent running inside a T3 thread. Stop a T3-owned delegated task and dispose its automatic parent delivery. Its child thread stops like a user Stop: the running turn is interrupted, queued turns are held, pull request watches end, and the tasks it delegated stop too. This includes later child-thread runs, even after the task is terminal. A terminal task returns its existing status, and published task results remain available. On a Spectrum task it runs the Spectrum's Stop, which cancels every Color.",
+    "Needs an agent running inside a T3 thread. Stop a T3-owned delegated task and dispose its automatic parent delivery. Its child thread stops like a user Stop: the running turn is interrupted, queued turns are held, pull request watches end, and the tasks it delegated stop too. This includes later child-thread runs, even after the task is terminal. A terminal task returns its existing status, and published task results remain available. On a Spectrum task it runs the Spectrum's Stop, which cancels every Color. A Run group's groupId stops every member and disposes the group's wake; a member's taskId stops that member, and the group's wake still lists it.",
   parameters: McpRouting.parameters(OrchestratorMcpTaskCancelInput),
-  success: OrchestratorMcpTaskCancelResult,
+  success: OrchestratorMcpTaskOrRunGroupCancelResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
   dependencies,

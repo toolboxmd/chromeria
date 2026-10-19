@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
-import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
+import { PositiveInt, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 /**
@@ -88,6 +88,16 @@ export function admitDelegateRole(
   return isReplay ? REMOVED_PRISM_ROLES[role as keyof typeof REMOVED_PRISM_ROLES] : undefined;
 }
 
+/**
+ * Read-only roles, the only ones whose Run may exceed 1: one delegation then
+ * starts that many of the role's Colors as one Run group.
+ */
+const PRISM_RUN_GROUP_ROLES = ["researcher", "designer", "roast", "reviewer", "judge"] as const;
+export type PrismRunGroupRole = (typeof PRISM_RUN_GROUP_ROLES)[number];
+export function isPrismRunGroupRole(role: PrismRole): role is PrismRunGroupRole {
+  return (PRISM_RUN_GROUP_ROLES as ReadonlyArray<PrismRole>).includes(role);
+}
+
 /** Work difficulty a job or spawn runs at; the worker keeps one model list per lane. */
 const PRISM_LANES = ["easy", "medium", "hard"] as const;
 export const PrismLane = Schema.Literals(PRISM_LANES);
@@ -168,38 +178,39 @@ const workerKit = Schema.Struct({ ...kitFields, lanes: PrismLaneModels }).pipe(
   Schema.withDecodingDefault(Effect.succeed({})),
 );
 
-/**
- * Every other role keeps one ordered list. Settings saved before that kept
- * one list per lane; the medium list becomes the single list.
- */
+/** Every other role keeps one ordered list. */
 const singleList = Schema.Struct({ ...kitFields, models: modelList });
+/** How many of the role's Colors one delegation starts; Run above 1 makes a Run group. */
+const runField = { run: PositiveInt.pipe(Schema.withDecodingDefault(Effect.succeed(1))) };
+const runGroupList = Schema.Struct({ ...kitFields, ...runField, models: modelList });
+/** Settings saved before one list per role kept one list per lane; medium becomes the list. */
+const fromLegacyLanes = SchemaTransformation.transform({
+  decode: ({ lanes, ...saved }: Record<string, unknown>) => {
+    const legacy = (lanes as { medium?: unknown } | undefined)?.medium;
+    return (
+      saved.models === undefined && legacy !== undefined ? { ...saved, models: legacy } : saved
+    ) as never;
+  },
+  encode: (decoded: object) => decoded as Record<string, unknown>,
+});
 const singleListKit = Schema.Record(Schema.String, Schema.Unknown).pipe(
-  Schema.decodeTo(
-    singleList,
-    SchemaTransformation.transform({
-      decode: ({ lanes, ...fields }) => {
-        const legacy = (lanes as { medium?: unknown } | undefined)?.medium;
-        return (
-          fields.models === undefined && legacy !== undefined
-            ? { ...fields, models: legacy }
-            : fields
-        ) as typeof singleList.Encoded;
-      },
-      encode: (fields) => fields as Record<string, unknown>,
-    }),
-  ),
+  Schema.decodeTo(singleList, fromLegacyLanes),
+  Schema.withDecodingDefault(Effect.succeed({})),
+);
+const runGroupKit = Schema.Record(Schema.String, Schema.Unknown).pipe(
+  Schema.decodeTo(runGroupList, fromLegacyLanes),
   Schema.withDecodingDefault(Effect.succeed({})),
 );
 
 /** Kits of removed roles in saved settings are dropped like any unknown key. */
 export const PrismRoleKits = Schema.Struct({
   planner: singleListKit,
-  researcher: singleListKit,
-  designer: singleListKit,
+  researcher: runGroupKit,
+  designer: runGroupKit,
   worker: workerKit,
-  roast: singleListKit,
-  reviewer: singleListKit,
-  judge: singleListKit,
+  roast: runGroupKit,
+  reviewer: runGroupKit,
+  judge: runGroupKit,
   promachos: singleListKit,
 });
 export type PrismRoleKits = typeof PrismRoleKits.Type;
@@ -224,15 +235,26 @@ const singleListKitPatch = Schema.Struct({
   ...kitPatchFields,
   models: Schema.optionalKey(Schema.Array(Color)),
 });
+/** Worker and Planner may write only a Run of 1: they change things, so they never run as a group. */
+const singleRun = {
+  run: Schema.optionalKey(
+    Schema.Literal(1).annotate({ message: "Run above 1 is only for read-only roles." }),
+  ),
+};
+const runGroupKitPatch = Schema.Struct({
+  ...singleListKitPatch.fields,
+  run: Schema.optionalKey(PositiveInt),
+});
 
 /** Per-role, per-field, per-lane update; arrays (skills, a model list) replace whole. */
 export const PrismRoleKitsPatch = Schema.Struct({
-  planner: Schema.optionalKey(singleListKitPatch),
-  researcher: Schema.optionalKey(singleListKitPatch),
-  designer: Schema.optionalKey(singleListKitPatch),
+  planner: Schema.optionalKey(Schema.Struct({ ...singleListKitPatch.fields, ...singleRun })),
+  researcher: Schema.optionalKey(runGroupKitPatch),
+  designer: Schema.optionalKey(runGroupKitPatch),
   worker: Schema.optionalKey(
     Schema.Struct({
       ...kitPatchFields,
+      ...singleRun,
       lanes: Schema.optionalKey(
         Schema.Struct({
           easy: Schema.optionalKey(Schema.Array(Color)),
@@ -242,9 +264,9 @@ export const PrismRoleKitsPatch = Schema.Struct({
       ),
     }),
   ),
-  roast: Schema.optionalKey(singleListKitPatch),
-  reviewer: Schema.optionalKey(singleListKitPatch),
-  judge: Schema.optionalKey(singleListKitPatch),
+  roast: Schema.optionalKey(runGroupKitPatch),
+  reviewer: Schema.optionalKey(runGroupKitPatch),
+  judge: Schema.optionalKey(runGroupKitPatch),
   promachos: Schema.optionalKey(singleListKitPatch),
 });
 export type PrismRoleKitsPatch = typeof PrismRoleKitsPatch.Type;
@@ -299,7 +321,7 @@ export function overlayPrismRoleKits<Kits extends PrismRoleKits | PrismRoleKitsP
 }
 
 /**
- * Drop the empty lists and blank instructions that a
+ * Drop the empty lists, blank instructions and Run of 1 that a
  * whole-kit Prism override carries for roles the project never set, so those
  * roles inherit the environment. Set values are kept; `undefined` when
  * nothing is left.
@@ -312,7 +334,8 @@ function dropUnsetPrismRoleFields(kits: PrismProjectRoleKits): PrismProjectRoleK
     const fields: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(kit ?? {})) {
       if (key !== "lanes") {
-        if (isSet(value)) fields[key] = value;
+        // A whole kit fills Run with its default of 1, which the project never chose.
+        if (isSet(value) && !(key === "run" && value === 1)) fields[key] = value;
         continue;
       }
       const lanes = Object.fromEntries(

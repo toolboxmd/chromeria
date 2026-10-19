@@ -6,6 +6,7 @@ import {
   type Color,
   type PrismRole,
   type PrismRoleKits,
+  type PrismRunGroupRole,
   type PrismRoleKitsPatch,
   type PrismLane,
   type ProjectSettingsOverrides,
@@ -65,7 +66,8 @@ export type PrismRoleUpdate =
       kind: "models";
       role: Exclude<PrismRole, "worker">;
       models: readonly Color[];
-    };
+    }
+  | { kind: "run"; role: PrismRunGroupRole; run: number };
 
 function prismRolePatch(update: PrismRoleUpdate): PrismRoleKitsPatch {
   switch (update.kind) {
@@ -73,6 +75,8 @@ function prismRolePatch(update: PrismRoleUpdate): PrismRoleKitsPatch {
       return { worker: { lanes: { [update.lane]: update.models } } };
     case "models":
       return { [update.role]: { models: update.models } };
+    case "run":
+      return { [update.role]: { run: update.run } };
   }
 }
 
