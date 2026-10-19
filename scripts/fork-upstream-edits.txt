@@ -475,3 +475,9 @@ apps/server/src/serviceLauncher.test.ts
 
 # Atomic ACP replay status publication before response-driven teardown (#244)
 apps/server/scripts/acp-replay-agent.ts
+
+# Shared account deregistration discovery refresh (#363, network-routes).
+apps/mobile/src/features/cloud/managedRelayState.ts
+apps/web/src/cloud/managedRelayState.ts
+packages/client-runtime/src/relay/managedRelayState.test.ts
+packages/client-runtime/src/relay/managedRelayState.ts

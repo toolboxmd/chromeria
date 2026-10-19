@@ -15,6 +15,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { useCallback, useEffect } from "react";
 
 import * as Runtime from "../../lib/runtime";
+import { connectionAtomRuntime } from "../../connection/runtime";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { cloudDebugLog } from "./cloudDebugLog";
 
@@ -28,7 +29,7 @@ export const managedRelayQueryManager = createManagedRelayQueryManager(managedRe
 const managedRelayMutationScheduler = createAtomCommandScheduler();
 
 export const deregisterManagedRelayEnvironmentCommand = createRuntimeCommand(
-  managedRelayAtomRuntime,
+  connectionAtomRuntime,
   {
     label: "mobile:managed-relay:deregister-environment",
     scheduler: managedRelayMutationScheduler,
