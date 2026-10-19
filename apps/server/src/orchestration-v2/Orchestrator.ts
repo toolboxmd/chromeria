@@ -5739,16 +5739,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     )?.delegatedTaskId;
 
     const activePurposeTarget = projection.runs.findLast(isBlockingRun);
+    const isLateSteer =
+      activePurposeTarget === undefined &&
+      (command.deliveryIntent === "steer" ||
+        (command.deliveryIntent === undefined && command.dispatchMode.type === "steer_active"));
     const isTargetOperation =
-      (activePurposeTarget !== undefined &&
+      !isLateSteer &&
+      ((activePurposeTarget !== undefined &&
         command.purposeIntent === undefined &&
         isMobileSteer(command, command.deliveryIntent)) ||
-      command.deliveryIntent === "steer" ||
-      command.deliveryIntent === "restart" ||
-      command.purposeIntent?.intent.type === "target" ||
-      (command.deliveryIntent === undefined &&
-        (command.dispatchMode.type === "steer_active" ||
-          command.dispatchMode.type === "restart_active"));
+        command.deliveryIntent === "steer" ||
+        command.deliveryIntent === "restart" ||
+        command.purposeIntent?.intent.type === "target" ||
+        (command.deliveryIntent === undefined &&
+          (command.dispatchMode.type === "steer_active" ||
+            command.dispatchMode.type === "restart_active")));
     const requestedPurposeTargetId =
       command.dispatchMode.type === "steer_active" ||
       command.dispatchMode.type === "restart_active"
@@ -5822,10 +5827,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     const resolvedPurpose = yield* ExecutionPurpose.resolvePurposeIntent({
       intent:
-        command.purposeIntent ??
-        (inheritedPurpose === undefined
-          ? undefined
-          : { version: 1, intent: { type: "inherit" } }),
+        // With no work left to steer, admit the message under the current
+        // selection just as an ordinary next message, within this dispatch lock.
+        isLateSteer && command.purposeIntent?.intent.type === "target"
+          ? {
+              version: 1,
+              intent: {
+                type: "selection",
+                expectedRevision: purposeSelectionOf(projection.thread).revision,
+              },
+            }
+          : (command.purposeIntent ??
+            (inheritedPurpose === undefined
+              ? undefined
+              : { version: 1, intent: { type: "inherit" } })),
       selection: projection.thread.purposeSelection,
       inherited: inheritedPurpose,
       ...(target === undefined && inheritedPurpose === undefined
@@ -5963,13 +5978,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       projection = yield* getProjectionWithPendingEvents(command.threadId, events);
     }
     const modelSelection = command.modelSelection ?? projection.thread.modelSelection;
-    let dispatchMode = resolveMessageDispatchIntent(
-      projection,
-      command.dispatchMode,
-      command.deliveryIntent,
-      command,
-      command.purposeIntent,
-    );
+    let dispatchMode = isLateSteer
+      ? { type: "start_immediately" as const }
+      : resolveMessageDispatchIntent(
+          projection,
+          command.dispatchMode,
+          command.deliveryIntent,
+          command,
+          command.purposeIntent,
+        );
     if (
       !isTargetOperation &&
       activePurposeTarget !== undefined &&
