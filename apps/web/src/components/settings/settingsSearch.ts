@@ -22,6 +22,7 @@ export type SettingsPath =
   | "/settings/snap-shot"
   | "/settings/prism"
   | "/settings/promachos"
+  | "/settings/spectrum"
   | "/settings/providers"
   | "/settings/integrations"
   | "/settings/scheduled-tasks"
@@ -83,6 +84,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/providers": "Providers",
   "/settings/prism": "Prism",
   "/settings/promachos": "Promachos",
+  "/settings/spectrum": "Spectrum",
   "/settings/integrations": "Integrations",
   "/settings/scheduled-tasks": "Scheduled Tasks",
   "/settings/source-control": "Source Control",
@@ -157,6 +159,25 @@ export const SETTINGS_SEARCH_ITEMS = [
     targetId: "prism-roles",
     scope: "project-defaults",
     searchTerms: ["model", "routing", "worker", "lane", "kit", "effort"],
+  },
+  {
+    id: "spectrum-defaults",
+    title: "Spectrum defaults",
+    to: "/settings/spectrum",
+    targetId: "spectrum-defaults",
+    scope: "project-defaults",
+    searchTerms: [
+      "Color",
+      "White",
+      "mode",
+      "council",
+      "free",
+      "relay",
+      "rounds",
+      "turns",
+      "fallback",
+      "label",
+    ],
   },
   {
     id: "promachos-colors",
@@ -1034,6 +1055,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/providers": null,
   "/settings/prism": "project-defaults",
   "/settings/promachos": "project-defaults",
+  "/settings/spectrum": "project-defaults",
   "/settings/integrations": null,
   "/settings/source-control": "environment-defaults",
   "/settings/storage": "project-defaults",

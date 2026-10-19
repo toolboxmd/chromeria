@@ -17,11 +17,13 @@ only when that file set changes; this is not an exhaustive history of follow-ups
   "purpose": "Run council and free Spectrum conversations with durable server-authored transcripts and exact-run barriers.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/176",
-    "https://github.com/toolboxmd/chromeria/issues/396"
+    "https://github.com/toolboxmd/chromeria/issues/396",
+    "https://github.com/toolboxmd/chromeria/issues/401"
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/176-spectrum-v2",
-    "https://github.com/toolboxmd/chromeria/pull/494"
+    "https://github.com/toolboxmd/chromeria/pull/494",
+    "https://github.com/toolboxmd/chromeria/pull/508"
   ],
   "newFiles": [
     "apps/mobile/src/features/settings/spectrumReportAction.tsx",
@@ -81,7 +83,17 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "packages/client-runtime/src/spectrumStop.test.ts",
     "packages/contracts/src/spectrum.ts",
     "packages/contracts/src/spectrumRpc.test.ts",
-    "packages/contracts/src/spectrumRpc.ts"
+    "packages/contracts/src/spectrumRpc.ts",
+    "apps/server/src/spectrum/settings.integration.test.ts",
+    "apps/server/src/spectrum/settings.test.ts",
+    "apps/server/src/spectrum/settings.ts",
+    "apps/web/src/components/settings/SpectrumSettings.logic.test.ts",
+    "apps/web/src/components/settings/SpectrumSettings.logic.ts",
+    "apps/web/src/components/settings/SpectrumSettings.tsx",
+    "apps/web/src/components/settings/SpectrumSettings.test.tsx",
+    "apps/web/src/routes/settings.spectrum.tsx",
+    "packages/contracts/src/spectrumSettings.test.ts",
+    "packages/contracts/src/spectrumSettings.ts"
   ],
   "upstreamFiles": [
     "apps/mobile/src/features/threads/ThreadRouteScreen.tsx",
@@ -121,7 +133,15 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "packages/contracts/src/index.ts",
     "packages/contracts/src/orchestratorMcp.ts",
     "packages/contracts/src/orchestrationV2.ts",
-    "packages/contracts/src/rpc.ts"
+    "packages/contracts/src/rpc.ts",
+    "GLOSSARY.md",
+    "apps/web/src/components/settings/ColorList.tsx",
+    "apps/web/src/components/settings/SettingsSidebarNav.tsx",
+    "apps/web/src/components/settings/settingsSearch.test.ts",
+    "apps/web/src/components/settings/settingsSearch.ts",
+    "apps/web/src/routeTree.gen.ts",
+    "docs/map.md",
+    "packages/contracts/src/settings.ts"
   ],
   "keywords": [
     "Spectrum",

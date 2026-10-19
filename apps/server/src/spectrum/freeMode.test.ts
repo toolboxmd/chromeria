@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { parseModeration, spectrumShape } from "./freeMode.ts";
+import { parseModeration } from "./freeMode.ts";
 import { makeState } from "./testFixtures.ts";
 
 describe("parseModeration", () => {
@@ -20,29 +20,5 @@ describe("parseModeration", () => {
   it("rejects unknown labels and decorated control lines", () => {
     for (const text of ["NEXT: Purple", "NEXT: red", "**DONE**", "Done", "", "NEXT:"])
       expect(parseModeration(state, text)).toEqual({ type: "malformed" });
-  });
-});
-
-describe("spectrumShape", () => {
-  const labels = ["Blue", "Red", "Green"];
-
-  it("defaults free mode to three turns per Color with the first Color as White", () => {
-    expect(spectrumShape({ mode: "free", labels })).toEqual({ limit: 9, moderator: 0 });
-    expect(spectrumShape({ mode: "free", labels, turnsPerColor: 2, white: "Green" })).toEqual({
-      limit: 6,
-      moderator: 2,
-    });
-    expect(spectrumShape({ mode: "council", labels })).toEqual({ limit: 2, moderator: 0 });
-  });
-
-  it("rejects a cap below the Color count and contradictory input", () => {
-    expect(spectrumShape({ mode: "free", labels, limit: 2 })).toBeTypeOf("string");
-    expect(spectrumShape({ mode: "free", labels, white: "Purple" })).toBeTypeOf("string");
-    expect(spectrumShape({ mode: "free", labels, white: "Red", moderator: 0 })).toBeTypeOf(
-      "string",
-    );
-    expect(spectrumShape({ mode: "free", labels, limit: 6, turnsPerColor: 2 })).toBeTypeOf(
-      "string",
-    );
   });
 });

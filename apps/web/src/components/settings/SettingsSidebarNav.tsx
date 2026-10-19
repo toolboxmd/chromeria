@@ -86,6 +86,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/providers": BotIcon,
   "/settings/prism": RouteIcon,
   "/settings/promachos": BotIcon,
+  "/settings/spectrum": PaletteIcon,
   "/settings/integrations": BlocksIcon,
   "/settings/scheduled-tasks": CalendarClockIcon,
   "/settings/source-control": GitBranchIcon,
@@ -349,7 +350,9 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                       >
                         <Icon />
                         <span className="truncate">{item.label}</span>
-                        {item.to === "/settings/prism" || item.to === "/settings/promachos" ? (
+                        {item.to === "/settings/prism" ||
+                        item.to === "/settings/promachos" ||
+                        item.to === "/settings/spectrum" ? (
                           <ChromeriaFeatureMark focusable={false} />
                         ) : null}
                       </SidebarMenuButton>
