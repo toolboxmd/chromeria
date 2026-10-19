@@ -2447,11 +2447,11 @@ sources and reasons.
   "upstreamFiles": [
     "apps/server/src/htmlRender/publicProxy.ts",
     "apps/server/src/preview/ServerBrowserContexts.ts",
-    "apps/server/src/preview/ServerBrowser.test.ts",
-    "apps/server/src/preview/ServerBrowser.ts",
     "packages/contracts/src/previewAutomation.ts"
   ],
   "sharedFiles": [
+    "apps/server/src/preview/ServerBrowser.test.ts",
+    "apps/server/src/preview/ServerBrowser.ts",
     "GLOSSARY.md",
     "apps/server/package.json",
     "apps/server/src/mcp/McpHttpServer.ts",

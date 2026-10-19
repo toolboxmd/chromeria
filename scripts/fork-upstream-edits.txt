@@ -571,6 +571,4 @@ apps/server/src/auth/mcpOAuthHttp.ts
 apps/web/src/components/auth/ConnectAgentSurface.tsx
 
 # Session research reads reuse the existing browser controller (#446)
-apps/server/src/preview/ServerBrowser.test.ts
-apps/server/src/preview/ServerBrowser.ts
 packages/contracts/src/previewAutomation.ts
