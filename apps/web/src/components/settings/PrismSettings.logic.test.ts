@@ -311,3 +311,23 @@ describe("syncPrismDraft", () => {
     ]);
   });
 });
+
+it("resets environment Prism roles without changing the Promachos launch kit", () => {
+  const env = environment("one");
+  env.serverConfig.settings.prismRoles = {
+    ...roles,
+    promachos: { ...roles.promachos, models: [second], instructions: "Persona" },
+  };
+  const plan = planPrismRolesReset(resolveSettingsScope({}, [], [env]), [env]);
+  expect(plan.unavailableReason).toBeNull();
+  expect(plan.serverWrites).toHaveLength(1);
+  const next = applyServerSettingsPatch(env.serverConfig.settings, plan.serverWrites[0]!.patch);
+  expect(next.prismRoles.promachos).toEqual(env.serverConfig.settings.prismRoles.promachos);
+  expect(next.prismRoles.worker).toEqual(DEFAULT_SERVER_SETTINGS.prismRoles.worker);
+  expect(prismWriteObserved(plan, [env], { kind: "inherit" })).toBe(false);
+  expect(
+    prismWriteObserved(plan, [{ ...env, serverConfig: { ...env.serverConfig, settings: next } }], {
+      kind: "inherit",
+    }),
+  ).toBe(true);
+});

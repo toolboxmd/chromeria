@@ -1175,21 +1175,29 @@ Child creation paths are owned by child-threads and shared with thread-people.
 ```json
 {
   "id": "prism-settings",
-  "purpose": "Keep scoped Prism kits for the seven delegated roles (Planner, Researcher, Designer, Worker lanes, Roast, Reviewer, Judge) plus the stored Promachos kit editable with ordered Color lists and saved settings replay. Removed role kits drop at decode; stored records that name a removed role read as its successor. Project overrides are partial role maps over the environment kits.",
+  "purpose": "Keep scoped Prism kits for the seven delegated roles (Planner, Researcher, Designer, Worker lanes, Roast, Reviewer, Judge) and the stored Promachos kit on its own page editable with ordered Color lists and saved settings replay. Removed role kits drop at decode; stored records that name a removed role read as its successor. Project overrides are partial role maps over the environment kits; each page resets only its own kits.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/169",
     "https://github.com/toolboxmd/chromeria/issues/395",
     "https://github.com/toolboxmd/chromeria/issues/397",
-    "https://github.com/toolboxmd/chromeria/issues/399"
+    "https://github.com/toolboxmd/chromeria/issues/399",
+    "https://github.com/toolboxmd/chromeria/issues/400"
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/183",
-    "https://github.com/toolboxmd/chromeria/pull/408"
+    "https://github.com/toolboxmd/chromeria/pull/408",
+    "https://github.com/toolboxmd/chromeria/pull/499"
   ],
   "newFiles": [
     "apps/server/src/prism/PrismRoleOverrides.test.ts",
     "apps/server/src/prism/PrismRoleOverrides.ts",
     "packages/shared/src/prismProjectOverrides.test.ts",
+    "apps/web/src/components/settings/ColorList.tsx",
+    "apps/web/src/components/settings/PromachosSettings.tsx",
+    "apps/web/src/components/settings/PromachosSettings.logic.ts",
+    "apps/web/src/components/settings/PromachosSettings.logic.test.ts",
+    "apps/web/src/components/settings/usePrismSettingsSave.ts",
+    "apps/web/src/routes/settings.promachos.tsx",
     "apps/web/src/components/settings/ColorPicker.logic.test.ts",
     "apps/web/src/components/settings/ColorPicker.logic.ts",
     "apps/web/src/components/settings/ColorPicker.tsx",
@@ -1203,6 +1211,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
   ],
   "upstreamFiles": [
     "apps/server/src/serverSettings.ts",
+    "apps/web/src/components/settings/settingsSearch.test.ts",
     "apps/web/src/components/settings/SettingsSidebarNav.tsx",
     "apps/web/src/routeTree.gen.ts",
     "packages/shared/src/projectSettings.ts"

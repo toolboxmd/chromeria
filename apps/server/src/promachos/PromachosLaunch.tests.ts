@@ -107,6 +107,41 @@ export function registerPromachosLaunchTests<E>({
       }).pipe(Effect.provide(layerPromachos.pipe(Layer.provideMerge(harness.layer))));
     },
   );
+  it.effect(
+    "Promachos launch uses the project's configured Color over the environment Color",
+    () => {
+      const input = {
+        ...launchInput({
+          command: "promachos:project-color",
+          thread: "promachos:project-color",
+          message: "Hello",
+        }),
+        modelSelection: { ...modelSelection, model: "composer" },
+        prismRole: "promachos" as const,
+      };
+      const harness = makeHarness({
+        providers: [promachosProvider],
+        serverSettings: {
+          prismRoleOverridesPartial: true,
+          prismRoles: { promachos: { models: [{ ...modelSelection, model: "environment" }] } },
+          projectSettingsOverrides: {
+            [input.projectId]: {
+              prismRoles: { promachos: { models: [{ ...modelSelection, effort: "high" }] } },
+            },
+          },
+        },
+      });
+      return Effect.gen(function* () {
+        const promachos = yield* PromachosLaunch.PromachosLaunch;
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const launched = yield* launches.launch(yield* promachos.prepare(input));
+        expect(launched.projection.thread.modelSelection).toEqual({
+          ...modelSelection,
+          options: [{ id: "reasoningEffort", value: "high" }],
+        });
+      }).pipe(Effect.provide(layerPromachos.pipe(Layer.provideMerge(harness.layer))));
+    },
+  );
   it.effect("Promachos launch retains the kit after only its create receipt commits", () => {
     const harness = makeHarness({
       providers: [promachosProvider],

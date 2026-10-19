@@ -25,6 +25,7 @@ export type SettingsPath =
   | "/settings/keybindings"
   | "/settings/snap-shot"
   | "/settings/prism"
+  | "/settings/promachos"
   | "/settings/providers"
   | "/settings/threads"
   | "/settings/browser"
@@ -106,6 +107,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/labs": "Labs",
   "/settings/about": "About",
   "/settings/prism": "Prism",
+  "/settings/promachos": "Promachos",
   "/settings/archived": "Archive",
 };
 
@@ -232,6 +234,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     targetId: "prism-roles",
     scope: "project-defaults",
     searchTerms: ["model", "routing", "worker", "lane", "kit", "effort"],
+  },
+  {
+    id: "promachos-colors",
+    title: "Promachos Colors",
+    to: "/settings/promachos",
+    targetId: "promachos-colors",
+    scope: "project-defaults",
+    searchTerms: ["model", "provider", "effort", "fallback", "persona"],
   },
   {
     id: "prism-capacity",
@@ -1193,6 +1203,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/browser": null,
   "/settings/devices": null,
   "/settings/prism": "project-defaults",
+  "/settings/promachos": "project-defaults",
   "/settings/source-control": "environment-defaults",
   "/settings/worktrees": "project-defaults",
   "/settings/connections": "connections",

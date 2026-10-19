@@ -1,45 +1,15 @@
-import {
-  type Color,
-  PRISM_ROLE_DESCRIPTIONS,
-  PRISM_ROLE_LABELS,
-  PrismLane,
-} from "@t3tools/contracts";
-import {
-  closestCenter,
-  DndContext,
-  type DragEndEvent,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
-} from "@dnd-kit/core";
-import { restrictToVerticalAxis } from "@dnd-kit/modifiers";
-import {
-  arrayMove,
-  SortableContext,
-  sortableKeyboardCoordinates,
-  useSortable,
-  verticalListSortingStrategy,
-} from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
+import { PRISM_ROLE_DESCRIPTIONS, PRISM_ROLE_LABELS, PrismLane } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
-import { type ReactNode, useEffect, useState } from "react";
-import { useStore } from "zustand";
-import { useEnvironmentProviders, useEnvironments } from "../../state/environments";
-import { prismSaveStore } from "./PrismSettings.state";
+import { type ReactNode, useState } from "react";
+import { useEnvironmentProviders } from "../../state/environments";
 import {
-  ArrowDownIcon,
-  ArrowUpIcon,
   FlameIcon,
-  GripVerticalIcon,
   HammerIcon,
   ListChecksIcon,
   PencilRulerIcon,
-  RouteIcon,
   ScaleIcon,
   SearchCheckIcon,
   SearchIcon,
-  TrashIcon,
 } from "lucide-react";
 import { getCustomModelOptionsByInstance } from "../../modelSelection";
 import {
@@ -48,8 +18,7 @@ import {
 } from "../../providerInstances";
 import { cn } from "../../lib/utils";
 import { useThreadShells } from "../../state/entities";
-import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
-import { useAtomCommand } from "../../state/use-atom-command";
+import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
 import { Button } from "../ui/button";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { SettingsGroup } from "./SettingsGroup";
@@ -57,26 +26,11 @@ import { useSettingsScope } from "./SettingsScopeContext";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
 import { useScopedSettings } from "./useScopedSettings";
 import { useScopedModelDisabledReason } from "./useScopedModelAvailability";
-import { persistScopedSettingsPatch } from "./scopedSettings";
-import {
-  movePrismPreference,
-  planPrismRolePatch,
-  planPrismRolesReset,
-  nextPrismEntryId,
-  syncPrismDraft,
-  type PrismDraftPreference,
-  type PrismRoleUpdate,
-  type PrismWriteExpectation,
-} from "./PrismSettings.logic";
-import { ColorPicker } from "./ColorPicker";
-import {
-  colorProviderChoices,
-  defaultColor,
-  findColorChoice,
-  type ColorProviderChoice,
-} from "./ColorPicker.logic";
+import { planPrismRolesReset } from "./PrismSettings.logic";
+import { usePrismSettingsSave } from "./usePrismSettingsSave";
+import { ColorList } from "./ColorList";
+import { colorProviderChoices } from "./ColorPicker.logic";
 
-/** Promachos stays here until its own page lands (#400). */
 const PAGE_ROLES = [
   "planner",
   "researcher",
@@ -85,7 +39,6 @@ const PAGE_ROLES = [
   "roast",
   "reviewer",
   "judge",
-  "promachos",
 ] as const;
 type PageRole = (typeof PAGE_ROLES)[number];
 
@@ -97,231 +50,9 @@ const ROLE_ICONS: Record<PageRole, ReactNode> = {
   roast: <FlameIcon />,
   reviewer: <SearchCheckIcon />,
   judge: <ScaleIcon />,
-  promachos: <RouteIcon />,
 };
 
 const LANE_LABELS: Record<PrismLane, string> = { easy: "Easy", medium: "Medium", hard: "Hard" };
-
-type DraftPreference = PrismDraftPreference;
-const editablePreference = (model: Color, entryId: number): DraftPreference => ({
-  ...model,
-  entryId,
-});
-const savedPreferences = (models: readonly DraftPreference[]) =>
-  models.map(({ entryId: _entryId, ...model }) => model);
-
-function ModelRow({
-  entry,
-  index,
-  count,
-  title,
-  providers,
-  disabled,
-  onChange,
-  onMove,
-  onRemove,
-}: {
-  entry: DraftPreference;
-  index: number;
-  count: number;
-  title: string;
-  providers: readonly ColorProviderChoice[];
-  disabled: boolean;
-  onChange: (color: Color) => void;
-  onMove: (direction: -1 | 1) => void;
-  onRemove: () => void;
-}) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: entry.entryId,
-    disabled,
-  });
-  const available = findColorChoice(providers, entry).model !== undefined;
-  return (
-    <li
-      ref={setNodeRef}
-      style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={cn(
-        "flex flex-wrap items-center gap-2 rounded-lg border bg-card p-2",
-        isDragging && "relative z-10 shadow-md",
-      )}
-    >
-      <Button
-        size="icon-sm"
-        variant="ghost-muted"
-        className="cursor-grab touch-none"
-        aria-label={`Drag ${title} preference ${index + 1}`}
-        disabled={disabled}
-        {...attributes}
-        {...listeners}
-      >
-        <GripVerticalIcon />
-      </Button>
-      <span className="w-16 shrink-0 text-xs text-muted-foreground">
-        {index === 0 ? "Primary" : `Fallback ${index}`}
-      </span>
-      <span className="min-w-0 flex-1">
-        <ColorPicker
-          value={entry}
-          providers={providers}
-          label={`${title} preference ${index + 1}`}
-          disabled={disabled}
-          onChange={onChange}
-        />
-        {!available && (
-          <span className="mt-1 block text-xs text-muted-foreground">
-            Unavailable on one or more selected targets.
-          </span>
-        )}
-      </span>
-      <Button
-        size="icon-sm"
-        variant="ghost"
-        aria-label={`Move ${title} preference ${index + 1} up`}
-        disabled={disabled || index === 0}
-        onClick={() => onMove(-1)}
-      >
-        <ArrowUpIcon />
-      </Button>
-      <Button
-        size="icon-sm"
-        variant="ghost"
-        aria-label={`Move ${title} preference ${index + 1} down`}
-        disabled={disabled || index === count - 1}
-        onClick={() => onMove(1)}
-      >
-        <ArrowDownIcon />
-      </Button>
-      <Button
-        size="icon-sm"
-        variant="ghost"
-        aria-label={`Remove ${title} preference ${index + 1}`}
-        disabled={disabled}
-        onClick={onRemove}
-      >
-        <TrashIcon />
-      </Button>
-    </li>
-  );
-}
-
-/** One ordered list, saved on every change like the Providers page. */
-export function ModelList({
-  title,
-  saved,
-  providers,
-  mixed,
-  disabled,
-  saving,
-  save,
-}: {
-  title: string;
-  saved: readonly Color[];
-  providers: readonly ColorProviderChoice[];
-  mixed: boolean;
-  disabled: boolean;
-  saving: boolean;
-  save: (models: readonly Color[]) => Promise<void>;
-}) {
-  const [draft, setDraft] = useState<readonly DraftPreference[]>(() =>
-    saved.map(editablePreference),
-  );
-  // The draft leads while a write is in flight; afterwards it follows what the server streams.
-  if (!saving) {
-    const synced = syncPrismDraft(draft, saved);
-    if (synced !== draft) setDraft(synced);
-  }
-  // The Color being added; null follows the scope's first choice.
-  const [adding, setAdding] = useState<Color | null>(null);
-  const addColor = adding ?? defaultColor(providers);
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
-  );
-  const commit = (next: readonly DraftPreference[]) => {
-    // One write at a time: an edit while one is in flight is ignored, so this save owns the restore.
-    if (saving) return;
-    setDraft(next);
-    // The page shows the failure; the list returns to what is saved.
-    save(savedPreferences(next)).catch(() => setDraft((current) => syncPrismDraft(current, saved)));
-  };
-  const onDragEnd = ({ active, over }: DragEndEvent) => {
-    const from = draft.findIndex((entry) => entry.entryId === active.id);
-    const to = draft.findIndex((entry) => entry.entryId === over?.id);
-    if (from >= 0 && to >= 0 && from !== to) commit(arrayMove([...draft], from, to));
-  };
-  return (
-    <div className="space-y-3">
-      {mixed && (
-        <p className="text-sm text-muted-foreground">
-          Preferences differ across this scope. A change replaces this list on the selected targets.
-        </p>
-      )}
-      {draft.length === 0 && <p className="text-sm text-muted-foreground">No Colors configured.</p>}
-      <DndContext
-        sensors={sensors}
-        collisionDetection={closestCenter}
-        modifiers={[restrictToVerticalAxis]}
-        onDragEnd={onDragEnd}
-      >
-        <SortableContext
-          items={draft.map((entry) => entry.entryId)}
-          strategy={verticalListSortingStrategy}
-        >
-          <ol className="space-y-2">
-            {draft.map((entry, index) => (
-              <ModelRow
-                key={entry.entryId}
-                entry={entry}
-                index={index}
-                count={draft.length}
-                title={title}
-                providers={providers}
-                disabled={disabled}
-                onChange={(color) =>
-                  commit(
-                    draft.map((model, position) =>
-                      position === index ? { ...color, entryId: model.entryId } : model,
-                    ),
-                  )
-                }
-                onMove={(direction) => commit(movePrismPreference(draft, index, direction))}
-                onRemove={() => commit(draft.filter((_, position) => position !== index))}
-              />
-            ))}
-          </ol>
-        </SortableContext>
-      </DndContext>
-      {addColor && (
-        <div className="flex flex-wrap items-center gap-2">
-          <ColorPicker
-            value={addColor}
-            providers={providers}
-            label={`New ${title} Color`}
-            disabled={disabled}
-            onChange={setAdding}
-          />
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={disabled || saving || !findColorChoice(providers, addColor).model}
-            onClick={() => {
-              commit([...draft, editablePreference(addColor, nextPrismEntryId(draft))]);
-              setAdding(null);
-            }}
-            aria-label={`Add ${title} Color`}
-          >
-            Add Color
-          </Button>
-        </div>
-      )}
-      {providers.length === 0 && (
-        <p className="text-xs text-muted-foreground">
-          Enable models in Providers for this scope to add preferences.
-        </p>
-      )}
-    </div>
-  );
-}
 
 function RoleRow({
   role,
@@ -366,43 +97,7 @@ function RoleRow({
 export function PrismSettings() {
   const { scope, target, targets, environments, connectedEnvironments } = useSettingsScope();
   const settings = useScopedSettings();
-  const { pendingWrite, saveError, setSaveError } = useStore(prismSaveStore);
-  const { environments: allEnvironments } = useEnvironments();
-  const persist = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: false });
-  useEffect(() => {
-    if (pendingWrite?.acknowledged) prismSaveStore.getState().observe(allEnvironments);
-  }, [allEnvironments, pendingWrite]);
-  async function savePlan(
-    plan: ReturnType<typeof planPrismRolePatch>,
-    expectation: PrismWriteExpectation,
-  ) {
-    if (plan.unavailableReason) throw new Error(plan.unavailableReason);
-    if (!prismSaveStore.getState().begin(plan, expectation)) {
-      throw new Error("Wait for the current settings update to finish.");
-    }
-    let result;
-    try {
-      result = await persistScopedSettingsPatch(plan, persist, () => {});
-    } catch (cause) {
-      prismSaveStore
-        .getState()
-        .fail(cause instanceof Error ? cause.message : "Could not save preferences.");
-      throw cause;
-    }
-    const failed = new Set(result.failedEnvironments.map((env) => env.environmentId));
-    prismSaveStore.getState().acknowledge(failed);
-    if (failed.size) {
-      const message = `Could not save preferences on ${result.failedEnvironments.map((env) => env.label).join(", ")}.${result.savedEnvironmentCount ? " Other selected environments saved the change." : ""}`;
-      // The list editor restores its order silently, so the page shows why.
-      setSaveError(message);
-      throw new Error(message);
-    }
-  }
-  const saveRole = (update: PrismRoleUpdate) =>
-    savePlan(planPrismRolePatch(scope, environments, update), update).catch((cause: unknown) => {
-      setSaveError(cause instanceof Error ? cause.message : "Could not save preferences.");
-      throw cause;
-    });
+  const { pendingWrite, saveError, setSaveError, savePlan, saveRole } = usePrismSettingsSave();
   const [selectedRole, setSelectedRole] = useState<PageRole>("planner");
   const [workerLane, setWorkerLane] = useState<PrismLane>("medium");
 
@@ -434,24 +129,24 @@ export function PrismSettings() {
         title="Prism (Model Router)"
         variant="plain"
         headerAction={
-          scope.kind === "project" || scope.kind === "checkout" ? (
-            <Button
-              size="xs"
-              variant="ghost-muted"
-              disabled={!target || pendingWrite !== null}
-              onClick={() => {
-                void savePlan(planPrismRolesReset(scope, environments), {
-                  kind: "inherit",
-                }).catch((cause: unknown) =>
-                  setSaveError(
-                    cause instanceof Error ? cause.message : "Could not reset role settings.",
-                  ),
-                );
-              }}
-            >
-              Use environment role settings
-            </Button>
-          ) : null
+          <Button
+            size="xs"
+            variant="ghost-muted"
+            disabled={!target || pendingWrite !== null}
+            onClick={() => {
+              void savePlan(planPrismRolesReset(scope, environments), {
+                kind: "inherit",
+              }).catch((cause: unknown) =>
+                setSaveError(
+                  cause instanceof Error ? cause.message : "Could not reset role settings.",
+                ),
+              );
+            }}
+          >
+            {scope.kind === "project" || scope.kind === "checkout"
+              ? "Use environment role settings"
+              : "Reset role settings"}
+          </Button>
         }
       >
         <p className="px-3 text-sm text-muted-foreground sm:px-4">
@@ -516,7 +211,7 @@ export function PrismSettings() {
                     </Toggle>
                   ))}
                 </ToggleGroup>
-                <ModelList
+                <ColorList
                   key={`worker:${workerLane}`}
                   title={`Worker ${workerLane}`}
                   saved={settings.prismRoles.worker.lanes[workerLane]}
@@ -534,7 +229,7 @@ export function PrismSettings() {
                 />
               </>
             ) : (
-              <ModelList
+              <ColorList
                 key={selectedRole}
                 title={PRISM_ROLE_LABELS[selectedRole]}
                 saved={settings.prismRoles[selectedRole].models}

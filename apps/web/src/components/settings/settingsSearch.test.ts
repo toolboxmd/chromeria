@@ -329,3 +329,17 @@ describe("movedSettingsPath", () => {
     expect(movedSettingsPath("/settings/appearance", "theme")).toBeNull();
   });
 });
+
+it("finds Promachos Colors in settings search with project scope", () => {
+  expect(searchSettings("Promachos")).toContainEqual(
+    expect.objectContaining({
+      to: "/settings/promachos",
+      targetId: "promachos-colors",
+      scope: "project-defaults",
+    }),
+  );
+  expect(getSettingsSearchTargetScope("promachos-colors")).toEqual({
+    title: "Promachos Colors",
+    scope: "project-defaults",
+  });
+});
