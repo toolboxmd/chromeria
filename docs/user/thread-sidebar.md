@@ -51,11 +51,11 @@ they launch or delegate work; there is no composer control. **Steer** and
 purpose admitted when it was sent.
 
 A parent's continuation of its original delegated work keeps that launch's
-purpose. Your own follow-up in the child follows its visible selection while
+purpose. Your own follow-up in the child uses the child's stored purpose while
 the original parent still receives the result. When linking a PR, an agent can
 declare the outcome it delivers. Linking or unlinking a PR never reassigns
 runs. Legacy callers and saved schedules without a purpose
-remain visibly unscoped; choose a purpose before editing a legacy schedule.
+are recorded as unscoped; choose a purpose before editing a legacy schedule.
 
 ## Keep a thread working with Wight mode
 
