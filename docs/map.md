@@ -33,6 +33,10 @@ flowchart TD
         T3S --> T3M
     end
 
+    PBI["Preview browser identity"]
+    %% PBI: #460
+    T3C --> PBI
+
     PZ["Prism routing"]
     %% PZ: #92 PR #408 PR #430 PR #479 PR #489 PR #512
     VT["Visible T3 threads"]
