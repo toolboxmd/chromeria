@@ -275,6 +275,27 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
+  it.effect("covers a watcher whose session read precedes a cross-process revocation", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cross-process-order-" });
+      const storeLayer = yield* makeDiskSessionStoreLayer(baseDir);
+      const server = Context.get(yield* Layer.build(storeLayer), SessionStore.SessionStore);
+      const cli = Context.get(yield* Layer.build(storeLayer), SessionStore.SessionStore);
+      const owner = yield* server.issue({ subject: "owner" });
+      const client = yield* server.issue(relaySessionInput);
+      yield* server.markConnected(owner.sessionId);
+      // The watcher reads a valid row before the revocation commits. Connection
+      // bookkeeping is the caller's, so the shared check must cover the watcher itself.
+      const watcher = yield* server
+        .awaitInvalidation(client.sessionId)
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      expect(yield* cli.revoke(client.sessionId)).toBe(true);
+      yield* TestClock.adjust(CROSS_PROCESS_REVOCATION_POLL_INTERVAL);
+      yield* Fiber.join(watcher);
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
   it.effect("keeps reusable dev auth local across disk-backed stores and restarts", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

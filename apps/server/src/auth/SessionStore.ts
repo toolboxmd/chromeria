@@ -530,6 +530,8 @@ export const make = Effect.gen(function* () {
   const renewal = yield* SessionRenewal.SessionRenewal;
   const signingSecret = yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32);
   const connectedSessionsRef = yield* Ref.make(new Map<AuthSessionId, number>());
+  // Sessions with a running awaitInvalidation; each registers before its first row read.
+  const watchedSessionsRef = yield* Ref.make(new Map<AuthSessionId, number>());
   const changesPubSub = yield* PubSub.unbounded<SessionCredentialChange>();
   const cookieInput = {
     mode: serverConfig.mode,
@@ -596,8 +598,8 @@ export const make = Effect.gen(function* () {
           NodeSqliteClient.readOnly,
         ),
     },
-    openSessionIds: Ref.get(connectedSessionsRef).pipe(
-      Effect.map((connected) => Array.from(connected.keys())),
+    openSessionIds: Ref.get(watchedSessionsRef).pipe(
+      Effect.map((watched) => Array.from(watched.keys())),
     ),
     invalidate: emitRemoved,
   }).pipe(Effect.forkScoped);
@@ -1129,6 +1131,21 @@ export const make = Effect.gen(function* () {
   const awaitInvalidation = Effect.fn(function* (sessionId: AuthSessionId) {
     return yield* Effect.scoped(
       Effect.gen(function* () {
+        // Registered before the first read, so a revocation committed after that read
+        // is covered by the cross-process check's next snapshot.
+        yield* Effect.acquireRelease(
+          Ref.update(watchedSessionsRef, (current) =>
+            new Map(current).set(sessionId, (current.get(sessionId) ?? 0) + 1),
+          ),
+          () =>
+            Ref.update(watchedSessionsRef, (current) => {
+              const next = new Map(current);
+              const remaining = (next.get(sessionId) ?? 0) - 1;
+              if (remaining > 0) next.set(sessionId, remaining);
+              else next.delete(sessionId);
+              return next;
+            }),
+        );
         const subscription = yield* PubSub.subscribe(changesPubSub);
         while (true) {
           const row = yield* authSessions
