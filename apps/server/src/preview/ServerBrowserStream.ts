@@ -288,7 +288,11 @@ export const layerViewers = Layer.effect(
         return {
           viewerId: issued.viewerId,
           ticket: issued.token,
-          expiresAt: DateTime.formatIso(issued.expiresAt),
+          expiresAt:
+            binding.type === "outgoing" &&
+            binding.access.expiresAt < DateTime.formatIso(issued.expiresAt)
+              ? binding.access.expiresAt
+              : DateTime.formatIso(issued.expiresAt),
           streamBasePath: PREVIEW_STREAM_ROUTE_PREFIX,
         } satisfies PreviewViewerAccess;
       });
