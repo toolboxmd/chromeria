@@ -2404,3 +2404,292 @@ it.live(
     ).pipe(Effect.provide(NodeServices.layer)),
   120_000,
 );
+
+it.live(
+  "automation384-r5: repeated unlink and reconstruction retain only the original recovery identity",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(
+          descriptorOf("r5-moving-a", "R5 source", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const b = yield* makeNode(
+          descriptorOf("r5-moving-b", "R5 destination", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("r5-moving-parent");
+        yield* seedParent(a, parent);
+        const created = yield* nativeCall(a, parent, "schedule_task", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
+          prompt: "R5 isolated relocation recovery",
+          bindToCurrentThread: false,
+          schedule: { type: "interval", everyMs: 60000 },
+          clientRequestId: "r5-moving-create",
+        });
+        expect(created.isError, json(created)).not.toBe(true);
+        yield* a.stopConnections;
+        yield* a.links.unlink(b.environmentId);
+        const originalSession = (yield* b.linkedSessions)[0]!;
+        yield* b.auth.revokeSession(originalSession.sessionId);
+        const pending = (yield* a.authority.pendingAutomationDisables)[0]!;
+        const original = yield* a.links.resolveAutomationRecovery!(
+          pending.environmentId,
+          pending.generation,
+        );
+        const restarted = yield* b.restartSchedulerTransport;
+        expect(restarted.url).not.toBe(original.url);
+        yield* linkTo(a.links, restarted, "full-access");
+        const ordinary = yield* a.links.resolve(b.environmentId);
+        expect(ordinary.url).toBe(restarted.url);
+        expect(ordinary.link.launchIdentity).not.toBe(pending.generation);
+        const requests: string[] = [];
+        const movedTransport = Layer.effect(
+          HttpClient.HttpClient,
+          Effect.map(HttpClient.HttpClient, (client) =>
+            HttpClient.transform(client, (effect, request) => {
+              requests.push(request.url);
+              return request.url.startsWith(original.url + "/")
+                ? Effect.succeed(
+                    HttpClientResponse.fromWeb(request, new Response(null, { status: 503 })),
+                  )
+                : effect;
+            }),
+          ),
+        ).pipe(Layer.provide(FetchHttpClient.layer));
+        // Reopen the pre-R5 private schema while the replacement ordinary link still exists.
+        const sourceSql = Context.get(a.database, SqlClient.SqlClient);
+        if (
+          (yield* sourceSql<{
+            name: string;
+          }>`PRAGMA table_info(fork_automation_retired_links)`).some(
+            (column) => column.name === "paired_primary_origin",
+          )
+        )
+          yield* sourceSql`ALTER TABLE fork_automation_retired_links DROP COLUMN paired_primary_origin`;
+        const recoveredAuthority = (yield* a.reconstructAutomation).authority;
+        const rebuildLinks = Effect.gen(function* () {
+          return Context.get(
+            yield* PeerLinks.layer.pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  Layer.succeedContext(a.database),
+                  Layer.succeed(
+                    Secrets.ServerSecretStore,
+                    Context.get(a.services, Secrets.ServerSecretStore),
+                  ),
+                  Layer.succeed(Environment.ServerEnvironment, {
+                    getEnvironmentId: Effect.succeed(a.environmentId),
+                    getDescriptor: Effect.succeed(
+                      descriptorOf("r5-moving-a", "R5 source", { peerAuthority: 1 }),
+                    ),
+                  }),
+                  movedTransport,
+                ),
+              ),
+              Layer.fresh,
+              Layer.build,
+            ),
+            PeerLinks.PeerLinks,
+          );
+        });
+        const relocatedLinks = yield* rebuildLinks;
+        const relocatedClient = Context.get(
+          yield* PeerMcpClient.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.succeed(PeerLinks.PeerLinks, relocatedLinks),
+                Layer.succeed(PeerAuthority.PeerAuthority, recoveredAuthority),
+                movedTransport,
+              ),
+            ),
+            Layer.fresh,
+            Layer.build,
+          ),
+          PeerMcpClient.PeerMcpClient,
+        );
+        const recovered = {
+          authority: recoveredAuthority,
+          links: relocatedLinks,
+          peers: relocatedClient,
+        };
+        const storedDescriptor = yield* Ref.get(restarted.descriptor);
+        yield* Ref.set(restarted.descriptor, {
+          ...storedDescriptor,
+          environmentId: EnvironmentId.make("r5-unrelated-destination"),
+        });
+        expect(
+          (yield* Effect.result(
+            recovered.links.resolveAutomationRecovery!(pending.environmentId, pending.generation),
+          ))._tag,
+        ).toBe("Failure");
+        yield* recovered.peers.drainAutomationDisables!;
+        expect(yield* recovered.authority.pendingAutomationDisables).toHaveLength(1);
+        expect(requests.some((url) => url.endsWith("/automation-disable"))).toBe(false);
+        yield* Ref.set(restarted.descriptor, storedDescriptor);
+        expect(
+          (yield* Effect.result(
+            recovered.links.resolveAutomationRecovery!(
+              pending.environmentId,
+              "r5-wrong-original-generation",
+            ),
+          ))._tag,
+        ).toBe("Failure");
+        const resolved = yield* Effect.result(
+          recovered.links.resolveAutomationRecovery!(pending.environmentId, pending.generation),
+        );
+        expect(resolved._tag).toBe("Success");
+        if (resolved._tag === "Failure") return yield* Effect.die(resolved.failure);
+        expect(resolved.success.url).toBe(restarted.url);
+        expect(resolved.success.token).toBe(original.token);
+        expect(resolved.success.link.launchIdentity).toBe(pending.generation);
+        const successor = (yield* sourceSql<{
+          secret_name: string;
+        }>`SELECT secret_name FROM peer_environment_links WHERE environment_id=${b.environmentId}`)[0]!;
+        yield* recovered.links.unlink(b.environmentId);
+        expect((yield* Effect.result(recovered.links.resolve(b.environmentId)))._tag).toBe(
+          "Failure",
+        );
+        expect(
+          yield* Context.get(a.services, Secrets.ServerSecretStore).get(successor.secret_name),
+        ).toEqual(Option.none());
+        const rebuiltLinks = yield* rebuildLinks;
+        yield* Ref.set(restarted.descriptor, {
+          ...storedDescriptor,
+          environmentId: EnvironmentId.make("r5-unrelated-after-unlink"),
+        });
+        expect(
+          (yield* Effect.result(
+            rebuiltLinks.resolveAutomationRecovery!(pending.environmentId, pending.generation),
+          ))._tag,
+        ).toBe("Failure");
+        yield* Ref.set(restarted.descriptor, storedDescriptor);
+        const afterUnlink = yield* rebuiltLinks.resolveAutomationRecovery!(
+          pending.environmentId,
+          pending.generation,
+        );
+        expect(afterUnlink.url).toBe(restarted.url);
+        expect(afterUnlink.token).toBe(original.token);
+        expect(afterUnlink.link.launchIdentity).toBe(pending.generation);
+        // A further paired generation must not be required to keep the earlier route alive.
+        const pairing = yield* restarted.auth.issuePairingCredential();
+        yield* rebuiltLinks.link({
+          url: restarted.url,
+          alternateUrls: ["https://unpaired.invalid"],
+          pairingCode: pairing.credential,
+          access: "full-access",
+        });
+        yield* rebuiltLinks.unlink(b.environmentId);
+        const finalLinks = yield* rebuildLinks;
+        const unreachableStart = requests.length;
+        yield* Ref.set(restarted.descriptor, {
+          ...storedDescriptor,
+          environmentId: EnvironmentId.make("r5-unrelated-final"),
+        });
+        expect(
+          (yield* Effect.result(
+            finalLinks.resolveAutomationRecovery!(pending.environmentId, pending.generation),
+          ))._tag,
+        ).toBe("Failure");
+        expect(
+          requests
+            .slice(unreachableStart)
+            .some((url) => url.startsWith("https://unpaired.invalid")),
+        ).toBe(false);
+        yield* Ref.set(restarted.descriptor, storedDescriptor);
+        const finalClient = Context.get(
+          yield* PeerMcpClient.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.succeed(PeerLinks.PeerLinks, finalLinks),
+                Layer.succeed(PeerAuthority.PeerAuthority, recoveredAuthority),
+                movedTransport,
+              ),
+            ),
+            Layer.fresh,
+            Layer.build,
+          ),
+          PeerMcpClient.PeerMcpClient,
+        );
+        const requestCount = requests.length;
+        yield* finalClient.drainAutomationDisables!;
+        expect(yield* recovered.authority.pendingAutomationDisables).toEqual([]);
+        expect(
+          requests
+            .slice(requestCount)
+            .some(
+              (url) => url.startsWith(restarted.url + "/") && url.endsWith("/automation-disable"),
+            ),
+        ).toBe(true);
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        expect(yield* sql`SELECT 1 FROM fork_automation_disable_acks`).toHaveLength(1);
+        expect(
+          (yield* Effect.result(
+            finalLinks.resolveAutomationRecovery!(pending.environmentId, pending.generation),
+          ))._tag,
+        ).toBe("Failure");
+        expect(
+          (yield* sourceSql<{
+            origin: string | null;
+          }>`SELECT paired_primary_origin AS origin FROM fork_automation_retired_links WHERE generation=${pending.generation}`)[0]
+            ?.origin,
+        ).toBeNull();
+        // The original protected token is valid for its exact registered disable at the new destination route.
+        const http = yield* HttpClient.HttpClient;
+        const ordinaryRetired = yield* http.execute(
+          HttpClientRequest.post(restarted.url + "/mcp").pipe(
+            HttpClientRequest.setHeader("authorization", "Bearer " + original.token),
+            HttpClientRequest.setBody(
+              HttpBody.text(
+                json({ jsonrpc: "2.0", id: "retired-r5", method: "tools/list", params: {} }),
+                "application/json",
+              ),
+            ),
+          ),
+        );
+        expect(ordinaryRetired.status).toBe(401);
+        const wrong = yield* http.execute(
+          HttpClientRequest.post(restarted.url + "/mcp/peer-control/automation-disable").pipe(
+            HttpClientRequest.setHeader("authorization", "Bearer " + original.token),
+            HttpClientRequest.setBody(
+              HttpBody.text(
+                json({
+                  version: 1,
+                  dependency: { ...pending.dependency, definitionDigest: "r5-wrong-definition" },
+                }),
+                "application/json",
+              ),
+            ),
+          ),
+        );
+        expect(wrong.status).toBe(403);
+        const response = yield* http.execute(
+          HttpClientRequest.post(restarted.url + "/mcp/peer-control/automation-disable").pipe(
+            HttpClientRequest.setHeader("authorization", "Bearer " + original.token),
+            HttpClientRequest.setBody(
+              HttpBody.text(
+                json({ version: 1, dependency: pending.dependency }),
+                "application/json",
+              ),
+            ),
+          ),
+        );
+        expect(response.status).toBe(200);
+        const ack = yield* decodeAutomationAck(yield* response.text);
+        expect(ack.dependency).toEqual(pending.dependency);
+        yield* recovered.authority.acknowledgeAutomationDisable(
+          ack,
+          pending.environmentId,
+          pending.generation,
+        );
+        expect(yield* recovered.authority.pendingAutomationDisables).toEqual([]);
+        expect(yield* sql`SELECT 1 FROM fork_automation_disable_acks`).toHaveLength(1);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30000,
+);

@@ -176,9 +176,26 @@ const make = Effect.gen(function* () {
       .pipe(Effect.map(Hex.encode), Effect.orDie);
 
   yield* ensureAutomationAuthoritySchema.pipe(Effect.catch(failStorage));
-  yield* sql`CREATE TABLE IF NOT EXISTS fork_automation_retired_links (generation TEXT PRIMARY KEY,environment_id TEXT NOT NULL,secret_name TEXT NOT NULL,label TEXT NOT NULL,urls_json TEXT NOT NULL,access TEXT NOT NULL,linked_at TEXT NOT NULL,expires_at TEXT NOT NULL,last_reached_at TEXT,last_error TEXT)`.pipe(
+  yield* sql`CREATE TABLE IF NOT EXISTS fork_automation_retired_links (generation TEXT PRIMARY KEY,environment_id TEXT NOT NULL,secret_name TEXT NOT NULL,label TEXT NOT NULL,urls_json TEXT NOT NULL,access TEXT NOT NULL,linked_at TEXT NOT NULL,expires_at TEXT NOT NULL,last_reached_at TEXT,last_error TEXT,paired_primary_origin TEXT)`.pipe(
     Effect.catch(failStorage),
   );
+  if (
+    !(yield* sql<{ name: string }>`PRAGMA table_info(fork_automation_retired_links)`).some(
+      (column) => column.name === "paired_primary_origin",
+    )
+  )
+    yield* sql`ALTER TABLE fork_automation_retired_links ADD COLUMN paired_primary_origin TEXT`.pipe(
+      Effect.catch(failStorage),
+    );
+  // Route knowledge outlives ordinary links only while an original disable
+  // remains unacknowledged. It never retains a replacement's bearer or alternates.
+  const rememberRecoveryPrimary = (environmentId: string, primary: string) =>
+    sql`UPDATE fork_automation_retired_links SET paired_primary_origin=${primary}
+        WHERE environment_id=${environmentId} AND EXISTS (
+          SELECT 1 FROM fork_automation_obligations
+          WHERE next_environment_id=${environmentId}
+            AND next_generation=fork_automation_retired_links.generation AND ack_json IS NULL
+        )`;
   const retireAutomationLink = (row: PeerLinkRow) =>
     Effect.gen(function* () {
       const generation = yield* launchIdentity(row.secret_name);
@@ -187,9 +204,12 @@ const make = Effect.gen(function* () {
       );
       const obligations =
         yield* sql`SELECT 1 FROM fork_automation_obligations WHERE next_environment_id=${row.environment_id} AND next_generation=${generation} AND ack_json IS NULL LIMIT 1`;
-      if (obligations.length === 0) return false;
-      yield* sql`INSERT INTO fork_automation_retired_links ${sql.insert({ generation, ...row })} ON CONFLICT DO NOTHING`;
-      return true;
+      const retained = obligations.length !== 0;
+      if (retained)
+        yield* sql`INSERT INTO fork_automation_retired_links ${sql.insert({ generation, ...row })} ON CONFLICT DO NOTHING`;
+      const primary = (yield* decodeUrls(row.urls_json))[0];
+      if (primary !== undefined) yield* rememberRecoveryPrimary(row.environment_id, primary);
+      return retained;
     });
   const clientFor = (origin: string) =>
     HttpApiClient.make(EnvironmentHttpApi, { baseUrl: origin }).pipe(
@@ -419,6 +439,7 @@ const make = Effect.gen(function* () {
           last_reached_at = excluded.last_reached_at,
           last_error = NULL
       `;
+            yield* rememberRecoveryPrimary(linked.environmentId, primary);
             return retain;
           }),
         )
@@ -549,11 +570,15 @@ const make = Effect.gen(function* () {
         yield* sql`SELECT 1 FROM fork_automation_obligations WHERE next_environment_id=${environmentId} AND next_generation=${generation} AND ack_json IS NULL LIMIT 1`.pipe(
           Effect.catch(failStorage),
         );
-      if (obligations.length === 0)
+      if (obligations.length === 0) {
+        yield* sql`UPDATE fork_automation_retired_links SET paired_primary_origin=NULL WHERE environment_id=${environmentId} AND generation=${generation}`.pipe(
+          Effect.catch(failStorage),
+        );
         return yield* new PeerLinkError({
           reason: "unknown_link",
           message: "No original automation disable dependency is registered.",
         });
+      }
       const link = yield* toLink(row);
       const stored = yield* secrets.get(row.secret_name).pipe(Effect.catch(failStorage));
       if (Option.isNone(stored))
@@ -566,8 +591,19 @@ const make = Effect.gen(function* () {
       const pairedOrigins = Option.isSome(ordinary)
         ? yield* decodeUrls(ordinary.value.urls_json).pipe(Effect.catch(failStorage))
         : [];
+      const retainedPrimary = (yield* sql<{
+        origin: string | null;
+      }>`SELECT paired_primary_origin AS origin FROM fork_automation_retired_links WHERE environment_id=${environmentId} AND generation=${generation}`.pipe(
+        Effect.catch(failStorage),
+      ))[0]?.origin;
       const url = yield* Effect.findFirst(
-        [...new Set([...pairedOrigins.slice(0, 1), ...link.urls])],
+        [
+          ...new Set([
+            ...pairedOrigins.slice(0, 1),
+            ...(retainedPrimary == null ? [] : [retainedPrimary]),
+            ...link.urls,
+          ]),
+        ],
         (candidate) =>
           describe(candidate).pipe(
             Effect.map(
