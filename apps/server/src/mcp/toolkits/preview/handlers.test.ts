@@ -1,3 +1,14 @@
+import { McpSchema, McpServer } from "effect/ai";
+import * as Deferred from "effect/Deferred";
+import * as Stream from "effect/Stream";
+import * as McpHttpServer from "../../McpHttpServer.ts";
+import * as Broker from "../../PreviewAutomationBroker.ts";
+import * as Receipts from "../../McpRequestReceipts.ts";
+import * as Threads from "../../../orchestration-v2/ThreadManagementService.ts";
+import { liveThreadShell } from "../../McpToolAccess.testkit.ts";
+import * as PreviewHandlers from "./handlers.ts";
+import { PreviewStandardToolkit } from "./tools.ts";
+import { PreviewTabId, SERVER_BROWSER_AUTOMATION_CLIENT_ID } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
@@ -187,4 +198,140 @@ describe("claimPreviewRecording", () => {
       ),
     ),
   );
+});
+
+const vaultMcpClient = McpSchema.McpServerClient.of({
+  clientId: 1,
+  protocolVersion: "2025-06-18",
+  clientCapabilities: {},
+  clientInfo: { name: "vault-receipt-test", version: "1" },
+  initializePayload: {
+    protocolVersion: "2025-06-18",
+    capabilities: {},
+    clientInfo: { name: "vault-receipt-test", version: "1" },
+  },
+  getClient: Effect.die("unused"),
+});
+
+it.effect.each([
+  ["preview_fill_credential", "completed"],
+  ["preview_end_login", "completed"],
+  ["preview_fill_credential", "unresolved"],
+  ["preview_end_login", "unresolved"],
+  ["preview_fill_credential", "legacy"],
+  ["preview_end_login", "legacy"],
+] as const)("vault379: registered %s preserves %s boundaries", ([name, scenario]) => {
+  let live = true;
+  const database = Sqlite.layerMemory.pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-vault-receipts-" })),
+    Layer.provideMerge(NodeServices.layer),
+  );
+  const services = Layer.mergeAll(
+    Receipts.layer,
+    Layer.effect(Broker.PreviewAutomationBroker, Broker.make),
+    Layer.mock(Threads.ThreadManagementService)({
+      getThreadShell: (id) =>
+        Effect.succeed(liveThreadShell(id, live ? {} : { activeRunId: null })),
+    }),
+  ).pipe(Layer.provideMerge(database));
+  const registered = McpHttpServer.toolkitRegistration(
+    PreviewStandardToolkit,
+    PreviewHandlers.layerStandard,
+  ).pipe(Layer.provideMerge(McpServer.McpServer.layer), Layer.provideMerge(services));
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* Broker.PreviewAutomationBroker;
+      const server = yield* McpServer.McpServer;
+      const ready = yield* Deferred.make<void>();
+      const tabId = PreviewTabId.make("vault-tab");
+      const operation = name === "preview_fill_credential" ? "fillCredential" : "endLogin";
+      const result =
+        name === "preview_fill_credential"
+          ? { filled: true, item: "synthetic-item", field: "password", site: "example.test", tabId }
+          : { closed: [tabId] };
+      let effects = 0;
+      let loseReply = false;
+      yield* Stream.runForEach(
+        yield* broker.connect({
+          clientId: SERVER_BROWSER_AUTOMATION_CLIENT_ID,
+          environmentId: recordingScope.environmentId,
+          supportedOperations: [operation, "status"],
+        }),
+        (event) =>
+          Effect.gen(function* () {
+            if (event.type === "connected") {
+              yield* Deferred.succeed(ready, undefined);
+              return;
+            }
+            const request = event.request;
+            if (request.operation === operation) effects++;
+            yield* broker.respond({
+              clientId: SERVER_BROWSER_AUTOMATION_CLIENT_ID,
+              connectionId: event.connectionId,
+              requestId: request.requestId,
+              ...(request.operation === operation && loseReply
+                ? {
+                    ok: false,
+                    error: {
+                      _tag: "PreviewAutomationExecutionError",
+                      message: "synthetic reply lost after effect",
+                    },
+                  }
+                : {
+                    ok: true,
+                    result: request.operation === "status" ? { available: true } : result,
+                  }),
+            });
+          }),
+      ).pipe(Effect.forkScoped);
+      yield* Deferred.await(ready);
+      const call = (key: string, scope: Invocation.McpInvocationScope = recordingScope) =>
+        server
+          .callTool({
+            name,
+            arguments: {
+              tabId,
+              ...(name === "preview_fill_credential"
+                ? { item: "synthetic-item", field: "password", locator: "#password" }
+                : {}),
+              clientRequestId: key,
+            },
+          })
+          .pipe(
+            Effect.provideService(Invocation.McpInvocationContext, scope),
+            Effect.provideService(McpSchema.McpServerClient, vaultMcpClient),
+          );
+      if (scenario === "completed") {
+        const first = yield* call("completed");
+        expect(first.isError, JSON.stringify(first)).not.toBe(true);
+        expect(first.structuredContent).toMatchObject(result);
+        expect((yield* call("completed")).structuredContent).toEqual(first.structuredContent);
+        expect(effects).toBe(1);
+        live = false;
+        const revoked = yield* call("completed");
+        expect(JSON.stringify(revoked)).toContain("parent_not_active");
+        expect(effects).toBe(1);
+      } else if (scenario === "legacy") {
+        const legacy = yield* call("legacy", {
+          ...recordingScope,
+          client: {
+            sessionId: "legacy-peer",
+            label: "Legacy",
+            access: "full-access",
+            linked: true,
+          },
+        });
+        expect(JSON.stringify(legacy)).toContain("capability_denied");
+        expect(effects).toBe(0);
+      } else {
+        loseReply = true;
+        const uncertain = yield* call("unresolved");
+        expect(JSON.stringify(uncertain)).toContain("outcome_unknown");
+        expect(JSON.stringify(uncertain)).toContain("dispatch_started");
+        expect(effects).toBe(1);
+        expect(JSON.stringify(yield* call("unresolved"))).toContain("outcome_unknown");
+        expect(effects).toBe(1);
+      }
+    }),
+  ).pipe(Effect.provide(registered));
 });
