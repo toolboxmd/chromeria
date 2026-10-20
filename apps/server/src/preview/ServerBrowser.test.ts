@@ -43,6 +43,7 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
     async contextFor(profileId: string, isolationKey?: string) {
       contextRequests.push({ profileId, isolated: isolationKey !== undefined });
       if (contextFailure) throw contextFailure;
+      contextStarted?.();
       await contextGate?.promise;
       const context = makeContext(this.onClose);
       contexts.push(context);
@@ -190,6 +191,7 @@ function makeContext(onClose?: (context: BrowserContext) => void) {
 const contexts: ReturnType<typeof makeContext>[] = [];
 const contextRequests: Array<{ profileId: string; isolated: boolean }> = [];
 let contextGate: PromiseWithResolvers<void> | null = null;
+let contextStarted: (() => void) | null = null;
 let pageCopy = "";
 let keyCopy = "";
 let focusedFrame: ReturnType<typeof makeFrame> | null = null;
@@ -323,6 +325,7 @@ beforeEach(() => {
   contexts.length = 0;
   contextRequests.length = 0;
   contextGate = null;
+  contextStarted = null;
   contextFailure = null;
   vaultValue = null;
   vaultReads.gate = null;
@@ -1372,6 +1375,43 @@ it.live("settlement closes only the thread's unwatched agent tabs and permits re
       ).toBe("evaluated");
     }),
   ).pipe(Effect.provide(layer)),
+);
+
+it.live(
+  "settlement also disposes agent tabs that were still opening, then allows a fresh open",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { broker, tabId } = yield* ready;
+        const manager = yield* Manager.PreviewManager;
+        const events = yield* manager.subscribeEvents;
+        contextGate = Promise.withResolvers<void>();
+        const entered = Promise.withResolvers<void>();
+        contextStarted = () => entered.resolve();
+        const open = broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false },
+        });
+        const opening = yield* open.pipe(Effect.exit, Effect.forkScoped);
+        let event = yield* PubSub.take(events);
+        while (event.type !== "opened") event = yield* PubSub.take(events);
+        const pendingId = event.tabId;
+        yield* Effect.promise(() => entered.promise);
+        yield* settleThread(testThread.threadId);
+        event = yield* PubSub.take(events);
+        while (event.type !== "closed" || event.tabId !== tabId) event = yield* PubSub.take(events);
+        contextGate.resolve();
+        contextGate = null;
+        expect((yield* Fiber.join(opening))._tag).toBe("Failure");
+        event = yield* PubSub.take(events);
+        while (event.type !== "closed" || event.tabId !== pendingId)
+          event = yield* PubSub.take(events);
+        expect(contexts[1]!.page.close).toHaveBeenCalled();
+        expect((yield* manager.list({ threadId: testThread.threadId })).sessions).toEqual([]);
+        expect((yield* open).available).toBe(true);
+      }),
+    ).pipe(Effect.provide(layer)),
 );
 
 it.live("an agent's tabs stop at the limit until an unwatched idle tab closes", () =>

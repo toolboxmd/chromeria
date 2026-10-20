@@ -629,7 +629,10 @@ const make = Effect.gen(function* () {
   const setupCommand = yield* resolveRootCliCommand(PreviewBrowserHost.SETUP_SUBCOMMAND);
 
   const tabs = new Map<string, ServerTab>();
-  const pendingTabs = new Map<string, Promise<ServerTab>>();
+  const pendingTabs = new Map<
+    string,
+    { readonly threadId: string; readonly opening: Promise<ServerTab>; settled: boolean }
+  >();
   // Retain the original invocation across a failed launch or a desktop reconnect.
   // These are current checks, never cached grant results.
   const tabAuthorizations = new Map<string, () => Promise<void>>();
@@ -652,6 +655,12 @@ const make = Effect.gen(function* () {
   const profileLogins = new Map<string, { ending: boolean; context: BrowserContext }>();
   let loginEpoch = 0;
   const inLogin = (tab: ServerTab) => profileLogins.has(tab.profileKey);
+  const mayCloseSettledTab = (tab: ServerTab) =>
+    tab.control.agentId !== null &&
+    tab.control.controller === null &&
+    tab.viewers.size === 0 &&
+    // Quarantine ends only after the whole profile context closes.
+    !inLogin(tab);
   const profileTabs = (profileKey: string) =>
     [...tabs.values()].filter((tab) => tab.profileKey === profileKey);
   const endLoginsOf = (context: BrowserContext) => {
@@ -1131,6 +1140,10 @@ const make = Effect.gen(function* () {
         throw new ServerBrowserTabNotFoundError({ threadId: tab.threadId, tabId: tab.tabId });
       }
       tabs.set(key, tab);
+      if (pendingTabs.get(key)?.settled && mayCloseSettledTab(tab)) {
+        dropTab(tab, true);
+        throw new ServerBrowserTabNotFoundError({ threadId: tab.threadId, tabId: tab.tabId });
+      }
       if (inLogin(tab)) report(tab, { _tag: "Idle" });
       reportLiveTabs();
       // A popup is already loading its own URL, and the desktop loads its tab's.
@@ -1692,7 +1705,7 @@ const make = Effect.gen(function* () {
     if (authorize !== undefined && !tabAuthorizations.has(key))
       tabAuthorizations.set(key, authorize);
     const pending = pendingTabs.get(key);
-    if (pending) return pending;
+    if (pending) return pending.opening;
     const existing = tabs.get(key);
     if (existing) return Promise.resolve(existing);
     const opening = createTab(snapshot, tabAuthorizations.get(key) ?? (async () => {}))
@@ -1709,7 +1722,7 @@ const make = Effect.gen(function* () {
         pendingTabs.delete(key);
         closedPendingTabs.delete(key);
       });
-    pendingTabs.set(key, opening);
+    pendingTabs.set(key, { threadId: snapshot.threadId, opening, settled: false });
     return opening;
   };
 
@@ -3325,16 +3338,11 @@ const make = Effect.gen(function* () {
     Stream.runForEach((event) =>
       Effect.sync(() => {
         if (event.type !== "thread.settled") return;
+        for (const pending of pendingTabs.values()) {
+          if (pending.threadId === event.threadId) pending.settled = true;
+        }
         for (const tab of tabs.values()) {
-          if (
-            tab.threadId === event.threadId &&
-            tab.control.agentId !== null &&
-            tab.control.controller === null &&
-            tab.viewers.size === 0 &&
-            // Quarantine ends only after the whole profile context closes.
-            !inLogin(tab)
-          )
-            dropTab(tab, true);
+          if (tab.threadId === event.threadId && mayCloseSettledTab(tab)) dropTab(tab, true);
         }
       }),
     ),
