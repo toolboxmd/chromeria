@@ -1,5 +1,8 @@
 # Reuse browser logins
 
+The [Browser guide](browser.md) explains native and streamed tabs, profiles,
+and their separate login stores.
+
 On macOS, the Chrome login source is off by default on each machine.
 [Configure the Chrome key command](../fork.md#desktop-and-data-isolation) on the source
 Mac to enable continuous mirroring. Removing the command stops Chrome observation.

@@ -63,6 +63,7 @@ function runCheck(cwd: string, ...args: Array<string>): { status: number; output
     const output = NodeChildProcess.execFileSync("bash", [forkCheck, ...args], {
       cwd,
       encoding: "utf8",
+      env: { ...process.env, GITHUB_EVENT_NAME: "", GITHUB_EVENT_PATH: "" },
     });
     return { status: 0, output };
   } catch (error) {
