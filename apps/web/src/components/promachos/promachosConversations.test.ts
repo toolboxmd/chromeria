@@ -1,3 +1,5 @@
+import { presentThreadShell } from "@t3tools/client-runtime/state/models";
+import { makeThreadFixture } from "../../test-fixtures";
 import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -32,6 +34,49 @@ function thread(
 }
 
 describe("promachosConversations", () => {
+  it("hides destination children in the home but keeps inherited-provenance user forks", () => {
+    const child = presentThreadShell(home.environmentId, {
+      ...makeThreadFixture({ projectId: home.projectId }).source,
+      delegatedFrom: {
+        environmentId: EnvironmentId.make("offline-parent"),
+        threadId: ThreadId.make("parent"),
+        title: "Parent",
+      },
+    });
+    const fork = {
+      ...child,
+      id: ThreadId.make("user-fork"),
+      lineage: {
+        ...child.lineage,
+        parentThreadId: child.id,
+        relationshipToParent: "fork" as const,
+      },
+    };
+    const otherMachine = {
+      ...fork,
+      environmentId: homeOnB.environmentId,
+      projectId: homeOnB.projectId,
+    };
+    const archived = {
+      ...fork,
+      id: ThreadId.make("archived"),
+      archivedAt: "2026-01-02T00:00:00.000Z",
+    };
+    const localChild = {
+      ...child,
+      id: ThreadId.make("local-child"),
+      lineage: { ...child.lineage, relationshipToParent: "subagent" as const },
+    };
+    const all = [child, fork, otherMachine, archived, localChild];
+    const visible = promachosConversations(all, [home, homeOnB]);
+    expect(visible.map((entry) => [entry.environmentId, entry.id])).toEqual([
+      [home.environmentId, fork.id],
+      [homeOnB.environmentId, fork.id],
+    ]);
+    expect(fork.delegatedFrom).toBe(child.delegatedFrom);
+    expect(all).toContain(child);
+  });
+
   it("lists the home's own top-level threads on every machine it spans", () => {
     const threads = [
       thread("chat"),

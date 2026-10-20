@@ -1,3 +1,4 @@
+import { PeerGrantSettings } from "./PeerGrantSettings";
 import { SessionPermissions } from "./SessionPermissions";
 import { ChevronRightIcon, EllipsisIcon } from "lucide-react";
 import { useAtomValue } from "@effect/atom-react";
@@ -1062,6 +1063,23 @@ function ConnectionsSettingsContent({
         </div>
       ) : null}
       {renderPairingClientsList(visibleDesktopPairingLinks, desktopClientSessions)}
+      {primaryEnvironment?.serverConfig?.environment.capabilities.peerAuthority === 1 ? (
+        <PeerGrantSettings environmentId={primaryEnvironment.environmentId} />
+      ) : null}
+      <PairingClientsList
+        endpointUrl={desktopServerExposureState?.endpointUrl}
+        endpoints={visibleDesktopAdvertisedEndpoints}
+        defaultEndpointKey={defaultDesktopAdvertisedEndpointKey}
+        isLoading={isLoadingDesktopAccessManagement}
+        pairingLinks={visibleDesktopPairingLinks}
+        createdPairingCredentials={createdPairingCredentials}
+        clientSessions={desktopClientSessions}
+        revokingPairingLinkId={revokingDesktopPairingLinkId}
+        revokingClientSessionId={revokingDesktopClientSessionId}
+        onRevokePairingLink={handleRevokeDesktopPairingLink}
+        onRevokeClientSession={handleRevokeDesktopClientSession}
+        canRevoke={canWriteAccess}
+      />
     </>
   );
   const renderNetworkAccessRow = () => (

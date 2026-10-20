@@ -100,6 +100,8 @@ it.effect("buffered run updates coalesce recovery without sweeping settled child
   Effect.gen(function* () {
     const sink = yield* EventSink.EventSinkV2;
     const recovered = yield* Deferred.make<void>();
+    const observing = yield* Deferred.make<void>();
+    let markerObserved = false;
     const touched: string[] = [];
     const marker = {
       ...run,
@@ -121,7 +123,13 @@ it.effect("buffered run updates coalesce recovery without sweeping settled child
             touched.push(threadId);
           }).pipe(
             Effect.andThen(
-              threadId === marker.threadId ? Deferred.succeed(recovered, undefined) : Effect.void,
+              threadId !== marker.threadId
+                ? Effect.void
+                : Effect.suspend(() => {
+                    const signal = markerObserved ? recovered : observing;
+                    markerObserved = true;
+                    return Deferred.succeed(signal, undefined);
+                  }),
             ),
             Effect.asVoid,
           ),
@@ -159,6 +167,20 @@ it.effect("buffered run updates coalesce recovery without sweeping settled child
           effects: [],
         });
       }
+      // Confirm the observer has consumed startup replay before measuring a live buffered batch.
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("recovery-live-ready"),
+            type: "run.updated",
+            threadId: marker.threadId,
+            occurredAt: marker.requestedAt,
+            payload: marker,
+          },
+        ],
+      });
+      yield* Deferred.await(observing);
+      touched.length = 0;
       yield* sink.write({
         events: [run, run, run, marker].map((changed, index) => ({
           id: EventId.make(`changed-active-run:${index}`),

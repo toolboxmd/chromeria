@@ -47,7 +47,7 @@ flowchart TD
     T3M --> VCF --> PBI
 
     PZ["Prism routing"]
-    %% PZ: #92 #579 #573 #568 #564 PR #556 #554 PR #408 PR #430 PR #479 PR #489 PR #512 PR #471 PR #476
+    %% PZ: #92 #579 #573 #568 #564 PR #556 #554 PR #408 PR #430 PR #479 PR #489 PR #512 PR #471 PR #476 PR #539
     VT["Visible T3 threads"]
     %% VT: #10
     PM["Promachos bubbles and persona"]
@@ -92,6 +92,31 @@ flowchart TD
     %% TF: #259
     XM["Cross-machine control"]
     %% XM: #164 #302
+    PGR["Remote return and onward delegation"]
+    %% PGR: #380
+    XM --> PGR
+    RTL["Remote delegated task lifecycle"]
+    %% RTL: #381 PR #392 PR #582
+    PGR --> RTL
+    DNC["Destination child discovery"]
+    %% DNC: PR #546 #379 #386
+    PGR --> DNC
+    PAR["Peer attachments and request recovery"]
+    %% PAR: #382 PR #563
+    RTL --> PAR
+    RPR["Remote descendant requests and notices"]
+    %% RPR: #369 #379 #532 PR #420 PR #539 PR #531
+    RTL --> RPR
+    PAR --> RPR
+    RBD["Remote browser and device control"]
+    %% RBD: #383 PR #421 PR #534
+    PGR --> RBD
+    PAR --> RBD
+    DAA["Destination automations"]
+    %% DAA: #384 PR #555
+    PGR --> DAA
+    PAR --> DAA
+    RPR --> DAA
     NR["Network routes"]
     %% NR: #292 #358 PR #498 PR #497
     EP["Execution purpose"]

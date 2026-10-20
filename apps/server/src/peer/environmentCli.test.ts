@@ -9,11 +9,18 @@ import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
 import * as TestConsole from "effect/testing/TestConsole";
 import { Command } from "effect/cli";
+import type * as CliError from "effect/cli/CliError";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import { cli } from "../binCli.ts";
 import { descriptorOf, servePeer } from "./PeerLinks.testkit.ts";
 
-const run = (args: ReadonlyArray<string>) => Command.runWith(cli, { version: "test" })(args);
+const run = (
+  args: ReadonlyArray<string>,
+): Effect.Effect<
+  void,
+  Command.Error<typeof cli> | CliError.CliError,
+  Command.Services<typeof cli> | Command.Environment
+> => Command.runWith(cli, { version: "test" })(args);
 const output = TestConsole.logLines.pipe(
   Effect.map((lines) => lines.findLast((line): line is string => typeof line === "string") ?? ""),
 );

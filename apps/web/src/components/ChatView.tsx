@@ -2495,6 +2495,7 @@ export default function ChatView(props: ChatViewProps) {
     shortcuts: threadLifecycleShortcuts,
   } = useThreadLifecycle({
     environmentId,
+    serverSubagents: serverProjection?.subagents,
     routeThreadKey,
     currentRouteThreadKeyRef,
     canOperateThread,

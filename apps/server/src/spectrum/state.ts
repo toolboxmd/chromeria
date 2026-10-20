@@ -1,3 +1,4 @@
+import * as SchemaTransformation from "effect/SchemaTransformation";
 import {
   CommandId,
   MessageId,
@@ -68,7 +69,8 @@ export type FreeProgress = typeof FreeProgress.Type;
 
 // Only durable command data goes in the outbox, never closures or provider handles.
 const OutboxCommand = Schema.Union([OrchestrationV2Command, SpectrumTranscriptAppend]);
-export const SpectrumState = Schema.Struct({
+const SpectrumStateValue = Schema.Struct({
+  automationCertificateId: Schema.optionalKey(Schema.String),
   version: Schema.Literal(2),
   threadId: ThreadId,
   callerThreadId: ThreadId,
@@ -124,6 +126,23 @@ export const SpectrumState = Schema.Struct({
       ? true
       : "White must have its own thread.";
   }),
+);
+const StampedSpectrum = Schema.Struct({
+  version: Schema.Literal("destination-automation-v1"),
+  status: SpectrumStateValue.fields.status,
+  state: SpectrumStateValue,
+});
+export const SpectrumState = Schema.Union([SpectrumStateValue, StampedSpectrum]).pipe(
+  Schema.decodeTo(
+    Schema.toType(SpectrumStateValue),
+    SchemaTransformation.transform({
+      decode: (value) => (value.version === "destination-automation-v1" ? value.state : value),
+      encode: (value) =>
+        value.automationCertificateId === undefined
+          ? value
+          : { version: "destination-automation-v1" as const, status: value.status, state: value },
+    }),
+  ),
 );
 export type SpectrumState = typeof SpectrumState.Type;
 

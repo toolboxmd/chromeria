@@ -1,3 +1,4 @@
+import { isThreadVisibleInNavigation } from "@t3tools/client-runtime/state/models";
 import type { OlderSettledScope } from "@t3tools/client-runtime/state/threads";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useMemo, useSyncExternalStore } from "react";
@@ -44,7 +45,10 @@ function observeInbox(
  * its own memo boundary to preserve the list's identity during unrelated navigation renders.
  */
 export function useThreadListV2(input: {
+  /** Candidates for the list; navigation visibility and search decide which are shown. */
   readonly threads: LayoutInput["threads"];
+  /** The threads navigation tracks: inbox returns and move availability read these. */
+  readonly navigationThreads: LayoutInput["threads"];
   /** Scratch projects group their threads in the No project shelf. */
   readonly projects: LayoutInput["projects"];
   readonly pendingTasks: ReadonlyArray<PendingNewTask>;
@@ -69,7 +73,7 @@ export function useThreadListV2(input: {
   readonly settledShelfExpanded: boolean;
   readonly selectedThreadKey: string | null;
 }) {
-  const { threads, workingShelfEnabled } = input;
+  const { threads, navigationThreads, workingShelfEnabled } = input;
   const layoutTime = useMemo(
     () => threadListV2LayoutTime({ threads, now: input.now, searchQuery: input.searchQuery }),
     [threads, input.now, input.searchQuery],
@@ -80,14 +84,14 @@ export function useThreadListV2(input: {
     threadListInboxReturns.getSnapshot,
   );
   const inbox = useMemo(
-    () => observeInbox(workingShelfEnabled ? threads : null, inboxVersion),
-    [threads, workingShelfEnabled, inboxVersion],
+    () => observeInbox(workingShelfEnabled ? navigationThreads : null, inboxVersion),
+    [navigationThreads, workingShelfEnabled, inboxVersion],
   );
   // Compute move availability per section; per-row planning is quadratic.
   const moveAvailability = useMemo(() => {
     const sectionAvailability = (section: "pinned" | "active") =>
       computeThreadMoveAvailability({
-        allThreads: threads,
+        allThreads: navigationThreads,
         section,
         projects: input.projects,
         pendingOrder: input.pendingOrder,
@@ -143,7 +147,7 @@ export function useThreadListV2(input: {
         pendingOrder: input.pendingOrder,
         projects: input.projects,
         noProjectShelfExpanded: input.noProjectShelfExpanded,
-        threads: threads.filter((thread) => thread.archivedAt === null),
+        threads: threads.filter((thread) => isThreadVisibleInNavigation(thread, input.searchQuery)),
         environmentId: input.environmentId,
         projectRefs: input.projectRefs,
         searchQuery: input.searchQuery,

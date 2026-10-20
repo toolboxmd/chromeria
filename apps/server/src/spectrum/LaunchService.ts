@@ -1,3 +1,9 @@
+import { ForkCommitGuardRejected } from "../childThreads/ForkCommitPlan.ts";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
+import * as AutomationAuthority from "../scheduledTasks/DestinationAutomationAuthority.ts";
+import * as Invocation from "../mcp/McpInvocationContext.ts";
+import { PeerDispatchAuthority } from "../peer/peerEffectAuthority.ts";
+import { CurrentRequest, requestDigest } from "../mcp/McpRequestReceipts.ts";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as Settings from "../serverSettings.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -158,6 +164,7 @@ function shell(
 }
 
 const make = Effect.gen(function* () {
+  const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
   const settings = yield* Settings.ServerSettingsService;
   const bareLaunch = yield* BareLaunch.BareLaunch;
   const projects = yield* ProjectStore.ProjectStoreV2;
@@ -409,6 +416,57 @@ const make = Effect.gen(function* () {
           : { bare: { ...color.bare, nativeHomeOwnerThreadId: color.threadId } }),
       })),
     ];
+    const scope = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+    if (Option.isSome(scope) && scope.value.authority !== undefined && Option.isNone(authority))
+      return yield* new SpectrumLaunchError({
+        threadId: state.threadId,
+        cause: "Native automation authority is unavailable",
+      });
+    const automationBinding: AutomationAuthority.AutomationBinding = {
+      kind: "spectrum",
+      resourceId: state.threadId,
+      threadId: state.threadId,
+      callerThreadId: caller.id,
+      memberThreadIds: [
+        resolved[0]!.threadId,
+        ...resolved.slice(1).map((member) => member.threadId),
+        white.threadId,
+      ],
+      projectId: caller.projectId,
+      incarnation: null,
+      definitionGeneration: input.commandId,
+      workflowGeneration: state.generation,
+      definitionDigest: requestDigest({
+        input,
+        resolved,
+        white,
+        runtimeMode: caller.runtimeMode,
+        interactionMode: caller.interactionMode,
+      }),
+    };
+    const action = yield* CurrentRequest;
+    const accepted = Option.isNone(authority)
+      ? undefined
+      : yield* authority.value.captureAutomation(
+          Option.getOrUndefined(scope),
+          automationBinding,
+          action ?? { nativeCommandId: input.commandId },
+          {
+            runtimeMode: caller.runtimeMode,
+            interactionMode: caller.interactionMode,
+            resourceScope: "environment-resources",
+            onward: true,
+            capabilities: Option.isSome(scope)
+              ? [...scope.value.capabilities]
+              : ["orchestration", "worktree", "pull-requests", "preview", "device"],
+          },
+        );
+    const admission =
+      accepted === undefined || Option.isNone(authority)
+        ? undefined
+        : yield* authority.value.automationAdmission(accepted, automationBinding, input.commandId);
+    if (accepted !== undefined)
+      state = { ...state, automationCertificateId: accepted.certificate.id };
     const commit = (boundState: SpectrumState) =>
       sink.commitCommand({
         commandId: input.commandId,
@@ -432,6 +490,22 @@ const make = Effect.gen(function* () {
         forkPlans: [
           {
             ...spectrumRegistrationPlan(boundState, caller),
+            mutations: [
+              ...spectrumRegistrationPlan(boundState, caller).mutations,
+              ...(admission === undefined
+                ? []
+                : [
+                    admission.commit.pipe(
+                      Effect.mapError(
+                        () =>
+                          new ForkCommitGuardRejected({
+                            threadId: state.threadId,
+                            kind: "invalid_transition",
+                          }),
+                      ),
+                    ),
+                  ]),
+            ],
             guards: [
               ...spectrumRegistrationPlan(boundState, caller).guards,
               ...(boundState.schedulerRunId === null || boundState.scheduledTaskId === null
@@ -448,11 +522,14 @@ const make = Effect.gen(function* () {
         ],
       });
     yield* commit(state).pipe(
+      Effect.provideService(PeerDispatchAuthority, admission?.record.id),
       Effect.catchTags({
         ForkCommitGuardRejected: (error) => {
           if (binding === null || error.kind !== "state_conflict") return Effect.fail(error);
           state = { ...state, scheduledTaskId: null, schedulerRunId: null };
-          return commit(state);
+          return commit(state).pipe(
+            Effect.provideService(PeerDispatchAuthority, admission?.record.id),
+          );
         },
       }),
     );

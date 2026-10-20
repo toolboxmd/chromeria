@@ -292,6 +292,10 @@ const layerAgentSessionImporterProvided = AgentSessionImporter.layer.pipe(
   ),
 );
 
+const layerRecoveryWaitProvided = RecoveryWait.layer.pipe(
+  Layer.provide(Layer.mergeAll(layerPrismRecoveryHooksProvided, RecoveryWaitSignals.layerSignals)),
+);
+
 const layerThreadManagementProvided = ThreadManagementService.layerWithLegacyImporter.pipe(
   Layer.provide(layerPrismRecoveryHooksProvided),
   Layer.provide(
@@ -300,11 +304,7 @@ const layerThreadManagementProvided = ThreadManagementService.layerWithLegacyImp
       layerLegacyV1ThreadImporterProvided,
       layerCommandReceiptStoreProvided,
       layerProviderSessionManagerProvided,
-      RecoveryWait.layer.pipe(
-        Layer.provide(
-          Layer.mergeAll(layerPrismRecoveryHooksProvided, RecoveryWaitSignals.layerSignals),
-        ),
-      ),
+      layerRecoveryWaitProvided,
     ),
   ),
 );
@@ -315,6 +315,7 @@ export const layerProjectSetupScriptRunner = ProjectSetupScriptRunner.layer.pipe
 );
 const layerManagedProjectFoldersProvided = ManagedProjectFolders.layer.pipe(
   Layer.provide(layerProjectService),
+  Layer.provide(layerCommandReceiptStoreProvided),
 );
 const layerThreadLaunchProvided = ThreadLaunchService.layer.pipe(
   Layer.provide(layerThreadMcpConfig),
@@ -345,6 +346,7 @@ const layerScheduledTaskProvided = ScheduledTaskChecks.withOutcomeChecks(
       layerThreadManagementProvided,
       layerManagedProjectFoldersProvided,
       layerSecretRequestsProvided,
+      layerCommandReceiptStoreProvided,
       ProjectionStore.layer,
       ProjectStore.layer,
       ProcessRunner.layer,
@@ -419,6 +421,12 @@ const layerMcpAppRequestsProvided = McpAppRequests.layer.pipe(
 
 export const layer = Layer.mergeAll(
   layerCommandOutputHubProvided,
+  // Pending request reads share the runtime's native projection and SQL snapshot.
+  ProjectionStore.layer,
+  // Transport lifecycle receipts and the worker share the same durable effect owner.
+  EffectOutbox.layer,
+  layerCommandReceiptStoreProvided,
+  layerRecoveryWaitProvided,
   layerOrchestratorProvided,
   layerMcpAppRequestsProvided,
   layerThreadManagementProvided,

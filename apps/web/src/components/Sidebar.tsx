@@ -187,6 +187,7 @@ import {
   filterSidebarProjectScopeItems,
   firstValidTimestampMs,
   isSidebarNestedLinkClick,
+  isSidebarSubagentThread,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
   planSidebarThreadDrop,
@@ -415,6 +416,7 @@ function routeThreadOnly(
 
 // Separate hooks cache maps independently of later Sidebar hooks and preserve dnd-kit inputs.
 function useSidebarThreads(input: {
+  readonly searchQuery: string;
   readonly projectScopeKey: string | null;
   readonly scopedProjectKeys: ReadonlySet<string> | null;
   readonly serverConfigs: ReadonlyMap<EnvironmentId, EnvironmentServerConfig>;
@@ -603,6 +605,9 @@ function useSidebarThreads(input: {
       ...noProjectThreads,
       ...snoozedThreads,
       ...settledThreads,
+      ...filterSidebarV2VisibleThreads(threads, scopedProjectKeys, input.searchQuery).filter(
+        isSidebarSubagentThread,
+      ),
     ],
     settledVisibleCount,
     settledCount,
@@ -1372,6 +1377,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     pinnedKeysById,
     activeKeysById,
   } = useSidebarThreads({
+    searchQuery: threadSearchQuery,
     projectScopeKey,
     scopedProjectKeys,
     serverConfigs,

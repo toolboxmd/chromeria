@@ -94,6 +94,7 @@ import { ThreadListFilters } from "./ThreadListFilters";
 interface HomeScreenProps {
   readonly projects: ReadonlyArray<EnvironmentProject>;
   readonly threads: ReadonlyArray<EnvironmentThreadShell>;
+  readonly navigationThreads: ReadonlyArray<EnvironmentThreadShell>;
   readonly pendingTasks: ReadonlyArray<PendingNewTask>;
   readonly catalogState: WorkspaceState;
   readonly savedConnectionsById: Readonly<Record<string, SavedRemoteConnection>>;
@@ -465,6 +466,7 @@ export function HomeScreen(props: HomeScreenProps) {
     olderSettledShelf,
   } = useThreadListV2({
     threads: props.threads,
+    navigationThreads: props.navigationThreads,
     projects: props.projects,
     pendingTasks: props.pendingTasks,
     environmentId: props.selectedEnvironmentId,

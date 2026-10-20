@@ -1,10 +1,11 @@
+import * as Automation from "../scheduledTasks/DestinationAutomationAuthority.ts";
 import { ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { SpectrumState, type SpectrumMutation } from "./state.ts";
+import { SpectrumState, membersOf, type SpectrumMutation } from "./state.ts";
 
 export class SpectrumStoreError extends Schema.TaggedError<SpectrumStoreError>()(
   "SpectrumStoreError",
@@ -87,6 +88,29 @@ export const checkSpectrumMutation = Effect.fn("Spectrum.checkMutation")(functio
     return yield* new SpectrumMutationRejected({ threadId, kind: "stale" });
   }
   const next = mutation.state;
+  if (next.automationCertificateId !== current.automationCertificateId) {
+    const accepted = yield* Effect.serviceOption(Automation.CurrentAutomationAcceptance);
+    const certificate = Option.isSome(accepted) ? accepted.value.certificate : undefined;
+    if (
+      certificate === undefined ||
+      certificate.id !== next.automationCertificateId ||
+      certificate.binding.kind !== "spectrum" ||
+      certificate.binding.resourceId !== threadId ||
+      certificate.binding.threadId !== threadId ||
+      certificate.binding.callerThreadId !== next.callerThreadId ||
+      certificate.binding.workflowGeneration !== next.generation ||
+      current.status === "active" ||
+      next.status !== "active" ||
+      next.generation !== current.generation + 1 ||
+      certificate.binding.memberThreadIds.length !== membersOf(next).length ||
+      !membersOf(next).every(
+        (member) =>
+          certificate.binding.kind === "spectrum" &&
+          certificate.binding.memberThreadIds.includes(member.threadId),
+      )
+    )
+      return yield* new SpectrumMutationRejected({ threadId, kind: "invalid-transition" });
+  }
   if (
     next.revision !== current.revision + 1 ||
     next.callerThreadId !== current.callerThreadId ||

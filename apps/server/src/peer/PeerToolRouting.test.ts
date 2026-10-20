@@ -585,12 +585,6 @@ const cases = [
     operation: "queued-run.edit",
   },
   {
-    group: "pending requests",
-    name: "t3_pending_request_respond",
-    args: { threadId, requestId: "question", answers: {} },
-    operation: "runtime-request.respond",
-  },
-  {
     group: "projects",
     name: "t3_project_update",
     args: { projectId, title: "Remote" },
@@ -614,13 +608,6 @@ const cases = [
     name: "request_secret",
     args: { label: "A secret", reason: "Test", clientRequestId: "secret-1" },
     operation: "secret-request",
-    context: true,
-  },
-  {
-    group: "preview controls",
-    name: "t3_preview_close",
-    args: { tabId: "tab" },
-    operation: "preview-close",
     context: true,
   },
   {
@@ -725,24 +712,115 @@ it.effect("new native tools retain local execution when no environment is select
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect.each(cases)("$group reaches the peer and refuses a narrower link", (test) =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const f = yield* fixture;
-      yield* f.link("full-access");
-      const result = yield* f.call(test.name, test.args, test.context);
-      expect(result.isError, JSON.stringify(result)).toBe(false);
-      expect(yield* Ref.get(f.seen)).toContainEqual(
-        expect.objectContaining({ operation: test.operation, environmentId: box.environmentId }),
-      );
-      const before = (yield* Ref.get(f.seen)).length;
-      yield* f.link("auto");
-      const refused = yield* f.call(test.name, test.args, test.context);
-      expect(refused.isError, JSON.stringify(refused)).toBe(true);
-      expect((yield* Ref.get(f.seen)).length).toBe(before);
-      expect((yield* Ref.get(f.b.bearers)).length).toBeGreaterThan(0);
-    }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+it.effect(
+  "pending request mutations refuse an old peer before its unverified request handler",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* fixture;
+        yield* f.link("full-access");
+        const before = yield* Ref.get(f.seen);
+        const result = yield* f.call(
+          "t3_pending_request_respond",
+          { threadId, requestId: "question", answers: {} },
+          false,
+        );
+        expect(result.isError).toBe(true);
+        expect(JSON.stringify(result)).toContain(
+          "does not support verified pending request actions",
+        );
+        expect(yield* Ref.get(f.seen)).toEqual(before);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+// Lawful linked close/reopen is exercised with the actual authority owner in
+// PeerAuthority.workflow.test.ts: "modern opener survives authenticated reads...".
+// This older routing fixture intentionally has no verified original PeerAuthority.
+it.effect(
+  "legacy preview close stays local but linked close requires current original authority",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* fixture;
+        const local = yield* f.call("t3_preview_close", { tabId: "tab" }, true, capabilities, null);
+        expect(local.isError, JSON.stringify(local)).toBe(false);
+        expect(yield* Ref.get(f.seen)).toContainEqual(
+          expect.objectContaining({
+            operation: "preview-close",
+            environmentId: laptop.environmentId,
+          }),
+        );
+        yield* Ref.set(f.seen, []);
+        yield* f.link("full-access");
+        const unverified = yield* f.call("t3_preview_close", { tabId: "tab" }, true);
+        expect(unverified.isError, JSON.stringify(unverified)).toBe(true);
+        expect(JSON.stringify(unverified)).toContain(
+          "Current original preview authority is unavailable",
+        );
+        expect(yield* Ref.get(f.seen)).toEqual([]);
+        yield* f.link("auto");
+        const narrowed = yield* f.call("t3_preview_close", { tabId: "tab" }, true);
+        expect(narrowed.isError, JSON.stringify(narrowed)).toBe(true);
+        expect(yield* Ref.get(f.seen)).toEqual([]);
+        yield* f.link("full-access");
+        const noPreview = yield* f.call(
+          "t3_preview_close",
+          { tabId: "tab" },
+          true,
+          new Set(["orchestration"]),
+        );
+        expect(noPreview.isError).toBe(true);
+        expect(yield* Ref.get(f.seen)).toEqual([]);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+const automationCases = cases.filter(
+  (test) => test.name === "schedule_task" || test.name === "start_spectrum",
+);
+
+it.effect.each(automationCases)(
+  "$group refuses this old peer before its unverified service",
+  (test) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* fixture;
+        for (const access of ["full-access", "auto"] as const) {
+          yield* f.link(access);
+          const before = yield* Ref.get(f.seen);
+          const result = yield* f.call(test.name, test.args, test.context);
+          expect(result.isError, JSON.stringify(result)).toBe(true);
+          if (access === "full-access")
+            expect(JSON.stringify(result)).toContain(
+              "does not support destination automation authority v1",
+            );
+          expect(yield* Ref.get(f.seen)).toEqual(before);
+        }
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect.each(cases.filter((test) => !automationCases.includes(test)))(
+  "$group reaches the peer and refuses a narrower link",
+  (test) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* fixture;
+        yield* f.link("full-access");
+        const result = yield* f.call(test.name, test.args, test.context);
+        expect(result.isError, JSON.stringify(result)).toBe(false);
+        expect(yield* Ref.get(f.seen)).toContainEqual(
+          expect.objectContaining({ operation: test.operation, environmentId: box.environmentId }),
+        );
+        const before = (yield* Ref.get(f.seen)).length;
+        yield* f.link("auto");
+        const refused = yield* f.call(test.name, test.args, test.context);
+        expect(refused.isError, JSON.stringify(refused)).toBe(true);
+        expect((yield* Ref.get(f.seen)).length).toBe(before);
+        expect((yield* Ref.get(f.b.bearers)).length).toBeGreaterThan(0);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("remote reads return the destination's state", () =>

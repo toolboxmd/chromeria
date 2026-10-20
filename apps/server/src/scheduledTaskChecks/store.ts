@@ -125,3 +125,13 @@ export const isCurrentTask = Effect.fn("ScheduledTaskChecks.isCurrentTask")(func
   `;
   return rows.length === 1;
 });
+
+export const bindCheckAutomation = (
+  taskId: import("@t3tools/contracts").ScheduledTaskId,
+  certificateId: string,
+) =>
+  Effect.gen(function* () {
+    const state = yield* readCheckState(taskId);
+    if (state !== null)
+      yield* writeCheckState(state, { ...state, automationCertificateId: certificateId });
+  });

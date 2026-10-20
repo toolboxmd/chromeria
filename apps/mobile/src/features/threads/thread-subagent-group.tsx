@@ -1,3 +1,5 @@
+import { hasSourceRemoteTaskView } from "@t3tools/client-runtime/state/remote-tasks";
+import { RemoteTaskViewer } from "./RemoteTaskViewer";
 import { useAtomValue } from "@effect/atom-react";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -108,6 +110,7 @@ export function ThreadSubagentGroup(props: {
   readonly iconSubtleColor: ColorValue;
   readonly onToggleRow: (rowId: string, anchorKey: string) => void;
 }) {
+  const [remoteTaskId, setRemoteTaskId] = useState<string | null>(null);
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
   const serverConfigs = useServerConfigs();
   const navigation = useNavigation();
@@ -137,6 +140,7 @@ export function ThreadSubagentGroup(props: {
       remoteChild: live?.remoteChild ?? item.remoteChild,
     };
   });
+  const selectedRemote = agents.find((agent) => agent.item.subagentId === remoteTaskId);
   const grouped = agents.length > 1;
   const label = `${agents.length} subagents`;
   const summary = summarizeSubagentStatuses(agents.map((agent) => agent.status));
@@ -147,6 +151,19 @@ export function ThreadSubagentGroup(props: {
     item.remoteChild === undefined ? config : serverConfigs.get(item.remoteChild.environmentId);
   return (
     <WorkLogBlock>
+      {selectedRemote ? (
+        <RemoteTaskViewer
+          environmentId={props.environmentId}
+          task={{
+            id: selectedRemote.item.subagentId,
+            threadId: selectedRemote.item.threadId,
+            title: selectedRemote.title,
+            result: selectedRemote.result,
+            remoteChild: selectedRemote.remoteChild,
+          }}
+          onClose={() => setRemoteTaskId(null)}
+        />
+      ) : null}
       {grouped ? (
         <Pressable
           accessibilityRole="button"
@@ -196,23 +213,34 @@ export function ThreadSubagentGroup(props: {
         <View className="mb-1 gap-px rounded-xl border border-border bg-card/30 p-1">
           {agents.map((agent) => {
             // A task in a linked environment opens there, if this app is connected to it.
-            const target = subagentThreadTarget(agent, props.environmentId, (id) =>
+            const localTarget = subagentThreadTarget(agent, props.environmentId, (id) =>
               presentationById.has(id),
             );
+            const resolvedTarget = subagentChildTarget(agent);
+            const unreachable = resolvedTarget?.environmentId != null && !presentationById.has(resolvedTarget.environmentId);
+            const target = hasSourceRemoteTaskView(agent) ? resolvedTarget : localTarget;
             return (
               <Pressable
                 key={agent.item.id}
                 accessible
                 accessibilityRole={target === null ? undefined : "link"}
                 accessibilityHint={
-                  target !== null
-                    ? "Opens this agent's thread"
-                    : agent.remoteChild !== undefined
-                      ? `Runs on ${agent.remoteChild.label}`
-                      : "Provider-managed agent"
+                  unreachable
+                    ? !hasSourceRemoteTaskView(agent)
+                      ? `Runs on ${agent.remoteChild?.label ?? "another machine"}, which this device is not connected to`
+                      : `Runs on ${agent.remoteChild.label}, available through this conversation`
+                    : target === null
+                      ? agent.remoteChild
+                        ? `Running on ${agent.remoteChild.label}. Its thread opens once the launch there is attached`
+                        : "Provider-managed agent"
+                      : "Opens this agent's thread"
                 }
                 disabled={target === null}
                 onPress={() => {
+                  if (agent.remoteChild?.threadId !== undefined && hasSourceRemoteTaskView(agent)) {
+                    setRemoteTaskId(agent.item.subagentId);
+                    return;
+                  }
                   if (target === null) return;
                   if (
                     openInspector(

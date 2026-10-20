@@ -188,29 +188,58 @@ environment's own URL.
 ## Agent calls across environments
 
 Peer calls keep the calling agent's capability and mode limits. The destination
-checks its own declaration again against the narrower link grant. A direct
-full-access/default peer session can manage projects, preferences and scheduled
-tasks; narrower sessions and linked descendant agents retain the environment
-fence. Thread and scheduled-task mutations remain restricted to the link's own work.
+checks its own declaration again against the narrower link grant. Environment
+mutations preserve the direct full-access/default peer exception and require
+explicit authority for linked descendants. Thread and scheduled-task mutations
+must satisfy every contributing authority's actual resource predicate, including
+the link's created-work restriction where it applies.
 Scheduled tasks retain their immutable link origin through edits, restarts and
-ordinary or checked launches; binding and execution recheck thread ownership. A peer
-cannot forward through the destination's links.
+ordinary or checked launches; binding and execution recheck thread ownership.
+Onward delegation requires explicit grants, with every contributing authority
+still checked at the actual destination.
 
 Tools that act as their caller need a destination-owned thread. The selected
-thread must belong to the authenticated link, stay within its mode ceiling and
-have a live MCP credential. Its existing capability grants intersect those sent
-by the caller. A supplied thread ID cannot create a credential or borrow an
-unrelated thread. See [routing](../../apps/server/src/mcp/McpRouting.ts).
+thread must satisfy the authenticated authority's resource predicate and stay
+within its mode ceiling. Native credential grants, when applicable, intersect
+those sent by the caller; negotiated peer authority remains server-owned. A
+supplied thread ID cannot create a credential or borrow an unrelated thread. See [routing](../../apps/server/src/mcp/McpRouting.ts).
 
 Image results cross the peer boundary before client presentation bounds text or
 omits images. The originating registration then formats them for its reader.
-Upload references and filesystem paths name destination resources; a forwarded
-upload returns its destination origin, without transferring local files.
+A forwarded upload returns its destination origin. Send and launch can also
+transfer authenticated source attachment bytes into destination staging. An
+environment-qualified reference is not a source path: its owner, metadata and
+digest bind the bytes, which the destination recomputes before acceptance.
 
 A forwarded HTML render prepares the document on the destination, including its
 local images, then stores that self-contained output in the originating thread.
 This preserves the local attachment reference consumed by web, desktop and
 mobile, without requiring a connection to the peer in the reader's client.
+
+Request identity follows the verified originating thread or persisted client,
+not its current provider credential. Negotiated peers preserve that identity
+and its original grant generation downstream. Rotating a credential cannot
+create another acceptance; replacing a grant cannot replay protected old work.
+Imported receipts without verifiable ownership remain unsupported for automatic
+replay. See [request ownership](../../apps/server/src/mcp/McpRequestReceipts.ts).
+
+Saved remote PNGs remain subject to the original outgoing generation and current
+source and destination preview/context authority. Their negotiated authorization
+path calls the same preview owner without a renderer; the destination server
+must still answer. Missing feature support refuses replay before a new snapshot
+or save. Accepted source files never become bearer authority for a remote context.
+
+Recovery follows the actual effect owner. Attachment claims record the consuming
+command and complete manifest before publishing files; native command acceptance
+proves consumption even after pending files expire. A scheduler confirmation
+commits with its native row and outcome-check state and retains the original
+incarnation after deletion. It never asserts that a current resource still
+matches the historical mutation. Nontransactional settings and external adapters
+can retain a started stage with `outcome_unknown`; retry must not execute them
+again. One-use secret consumption still cannot share the scheduler's SQLite
+transaction: consume-to-acceptance uncertainty stays unknown until #385 closes
+that reservation contract. Native launch acceptance and scheduler admission do
+not prove provider or shell completion.
 
 Delegation keeps its task record and completion delivery on the source parent.
 Its top-level destination field aliases `target.environmentId`, entering the

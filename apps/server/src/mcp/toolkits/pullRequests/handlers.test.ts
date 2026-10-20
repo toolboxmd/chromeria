@@ -1,3 +1,4 @@
+import * as Schema from "effect/Schema";
 import {
   EnvironmentId,
   ProjectId,
@@ -457,6 +458,7 @@ describe("pull request toolkit handlers", () => {
         repository: "group/sub/project",
         number: 42,
       });
+      if ("type" in result) throw new Error("Unkeyed calls keep their legacy result.");
       expect(result.url).toBe("https://gitlab.com/group/sub/project/-/merge_requests/42");
       expect(result.host).toBe("gitlab.com");
       const other = yield* harness.call("link_pull_request", {
@@ -518,6 +520,7 @@ describe("pull request toolkit handlers", () => {
       const result = yield* harness.call("link_pull_request", {
         url: "https://github.com/t3tools/t3code/pull/123",
       });
+      if ("type" in result) throw new Error("Unkeyed calls keep their legacy result.");
       expect(result.alreadyLinked).toBe(true);
     }),
   );
@@ -544,6 +547,7 @@ describe("pull request toolkit handlers", () => {
       const missing = yield* harness.call("unlink_pull_request", {
         url: "https://github.com/t3tools/t3code/pull/9",
       });
+      if ("type" in missing) throw new Error("Unkeyed calls keep their legacy result.");
       expect(missing.wasLinked).toBe(false);
       expect(yield* Ref.get(harness.commands)).toMatchObject([
         { type: "thread.pull-request.unlink", number: 5 },

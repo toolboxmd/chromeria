@@ -39,6 +39,11 @@ import {
 import type { ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
 import { spectrumPlan } from "./spectrumPlan.ts";
 import { planTranscriptAppend } from "./transcript.ts";
+import * as Automation from "../scheduledTasks/DestinationAutomationAuthority.ts";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
+import * as Invocation from "../mcp/McpInvocationContext.ts";
+import { CurrentRequest, requestDigest } from "../mcp/McpRequestReceipts.ts";
+import { ForkCommitGuardRejected } from "../childThreads/ForkCommitPlan.ts";
 
 const plan = Effect.fn("Spectrum.commandPlan")(function* (
   command: OrchestrationV2ServerCommand,
@@ -63,6 +68,8 @@ const plan = Effect.fn("Spectrum.commandPlan")(function* (
     let next = state;
     const events: OrchestrationV2DomainEvent[] = [];
     const guards: ForkCommitPlan[] = [];
+    let acceptance: Automation.ValidatedAcceptance | undefined;
+    let acceptanceCommit: Effect.Effect<void, ForkCommitGuardRejected> | undefined;
     if (command.type === "thread.stop") {
       // Common Stop still records retirement, cancels/drains core effects and propagates native lineage.
       // These exact-run commands explicitly retain Spectrum's participant ownership after restart.
@@ -180,6 +187,71 @@ const plan = Effect.fn("Spectrum.commandPlan")(function* (
           report: null,
           reportAbandonment: null,
         };
+        const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+        if (state.automationCertificateId !== undefined && Option.isNone(authority))
+          return yield* new ForkCommandPlanError({
+            threadId: state.threadId,
+            cause: "Native automation authority is unavailable.",
+          });
+        if (Option.isSome(authority)) {
+          const scope = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+          const action = yield* CurrentRequest;
+          const members = membersOf(state);
+          const first = members[0];
+          if (first === undefined)
+            return yield* new ForkCommandPlanError({
+              threadId: state.threadId,
+              cause: "The Spectrum has no accepted members.",
+            });
+          const binding: Automation.AutomationBinding = {
+            kind: "spectrum",
+            resourceId: state.threadId,
+            threadId: state.threadId,
+            callerThreadId: state.callerThreadId,
+            memberThreadIds: [first.threadId, ...members.slice(1).map((member) => member.threadId)],
+            projectId: thread.projectId,
+            incarnation: null,
+            definitionGeneration: command.commandId,
+            workflowGeneration: next.generation,
+            definitionDigest: requestDigest({
+              command,
+              state: next,
+              runtimeMode: thread.runtimeMode,
+              interactionMode: thread.interactionMode,
+            }),
+          };
+          acceptance = yield* authority.value.captureAutomation(
+            Option.getOrUndefined(scope),
+            binding,
+            action ?? { nativeCommandId: command.commandId },
+            {
+              runtimeMode: thread.runtimeMode,
+              interactionMode: thread.interactionMode,
+              resourceScope: "environment-resources",
+              onward: true,
+              capabilities: Option.isSome(scope)
+                ? [...scope.value.capabilities]
+                : ["orchestration", "worktree", "pull-requests", "preview", "device"],
+            },
+          );
+          if (acceptance !== undefined) {
+            const admitted = yield* authority.value.automationAdmission(
+              acceptance,
+              binding,
+              command.commandId,
+            );
+            acceptanceCommit = admitted.commit.pipe(
+              Effect.mapError(
+                () =>
+                  new ForkCommitGuardRejected({
+                    threadId: state.threadId,
+                    kind: "invalid_transition",
+                  }),
+              ),
+            );
+            next = { ...next, automationCertificateId: acceptance.certificate.id };
+          }
+        }
         // The reopened Spectrum is working again; its next report settles the row anew.
         events.push(
           ...(yield* spectrumTaskUpdate(next, { status: "running" }, command.commandId, now)),
@@ -257,21 +329,38 @@ const plan = Effect.fn("Spectrum.commandPlan")(function* (
     }
     if (command.type === "thread.stop")
       events.push(...lifecycleEvents(thread, next, command.commandId, now));
+    const nativePlan = spectrumPlan(
+      { expectedRevision: state.revision, expectedGeneration: state.generation, state: next },
+      command.type === "thread.stop"
+        ? undefined
+        : {
+            resume: command.type === "thread.unsettle" || explicitMessage(command),
+            humanOverride: command.type === "thread.unsettle" || humanMessage(command),
+          },
+    );
+    const pendingAcceptance = acceptance;
+    const reopenPlan: ForkCommitPlan =
+      pendingAcceptance === undefined
+        ? nativePlan
+        : {
+            guards: nativePlan.guards.map((guard) =>
+              guard.pipe(
+                Effect.provideService(Automation.CurrentAutomationAcceptance, pendingAcceptance),
+              ),
+            ),
+            mutations: [
+              ...(acceptanceCommit === undefined ? [] : [acceptanceCommit]),
+              ...nativePlan.mutations.map((mutation) =>
+                mutation.pipe(
+                  Effect.provideService(Automation.CurrentAutomationAcceptance, pendingAcceptance),
+                ),
+              ),
+            ],
+          };
     return {
       events,
       effects: [],
-      forkPlans: [
-        ...guards,
-        spectrumPlan(
-          { expectedRevision: state.revision, expectedGeneration: state.generation, state: next },
-          command.type === "thread.stop"
-            ? undefined
-            : {
-                resume: command.type === "thread.unsettle" || explicitMessage(command),
-                humanOverride: command.type === "thread.unsettle" || humanMessage(command),
-              },
-        ),
-      ],
+      forkPlans: [...guards, reopenPlan],
     };
   }).pipe(
     Effect.mapError((cause) =>
@@ -296,6 +385,19 @@ const providerlessMessages = Layer.effect(
   }),
 );
 export const layer = Layer.merge(
-  Layer.succeed(ForkCommandInterceptor, { plan }),
+  Layer.effect(
+    ForkCommandInterceptor,
+    Effect.gen(function* () {
+      const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+      return {
+        plan: (command: OrchestrationV2ServerCommand) =>
+          Option.isNone(authority)
+            ? plan(command)
+            : plan(command).pipe(
+                Effect.provideService(PeerAuthority.PeerAuthority, authority.value),
+              ),
+      };
+    }),
+  ),
   providerlessMessages,
 );

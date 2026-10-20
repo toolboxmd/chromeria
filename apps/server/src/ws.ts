@@ -1,3 +1,8 @@
+import { qualifiedAttachmentReader, qualifiedNativeDownloadReader } from "./assets/AssetAccess.ts";
+import { clientHandlers as pendingRequestClientHandlers } from "./childThreads/PendingRequestIngress.ts";
+import * as PendingRequestService from "./childThreads/PendingRequestService.ts";
+import * as RemoteDelegation from "./peer/RemoteDelegation.ts";
+import * as PeerAuthority from "./peer/PeerAuthority.ts";
 import { stopSpectrum } from "./spectrum/humanStopRpc.ts";
 import { abandonScheduledReport } from "./spectrum/humanReportRpc.ts";
 import { SPECTRUM_WS_METHODS } from "@t3tools/contracts";
@@ -35,6 +40,7 @@ import {
   AuthAccessStreamError,
   type AuthAccessStreamEvent,
   AuthOrchestrationOperateScope,
+  AuthPreviewOperateScope,
   type AuthEnvironmentScope,
   type ScheduledTaskListResult,
   AuthSessionId,
@@ -117,6 +123,7 @@ import {
 } from "effect/http";
 import { RpcGroup, RpcSerialization, RpcServer } from "effect/rpc";
 import * as Struct from "effect/Struct";
+import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as ForkWsRpc from "./forkWsRpc.ts";
 
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
@@ -201,6 +208,8 @@ import * as TerminalManager from "./terminal/Manager.ts";
 import { terminalOutputStream, withTerminalOutputWindow } from "./terminal/OutputProtocol.ts";
 import * as ServerBrowser from "./preview/ServerBrowser.ts";
 import * as DeviceService from "./device/DeviceService.ts";
+import * as DeviceHubProxy from "./device/DeviceHubProxy.ts";
+import * as ServerBrowserStream from "./preview/ServerBrowserStream.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
@@ -638,27 +647,29 @@ function projectFileFailureContext(
 const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 
 // Middleware added later wraps middleware added earlier, so instrumentation wraps authorization.
-const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
+export const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
 
-// RpcGroup.toLayer derives each handler's requirements by scanning every RPC in
-// the group, so its type cost grows with handlers × RPCs. Near 200 methods that
-// crosses TypeScript's instantiation limit and the layer's requirements degrade to
-// `any`, so the handlers are registered as two disjoint, smaller groups.
-// Fork RPCs are registered as their own group below, outside this split.
-const CoreServerWsRpcGroup = ServerWsRpcGroup.omit(...ForkWsRpc.methods);
-type ServerWsRpc = RpcGroup.Rpcs<typeof CoreServerWsRpcGroup>;
-const SPLIT_WS_RPC_PREFIXES = ["server", "pullRequests", "provider", "orchestration"] as const;
-type SplitWsRpc = Extract<
-  ServerWsRpc,
-  { readonly _tag: `${(typeof SPLIT_WS_RPC_PREFIXES)[number]}.${string}` }
+// RpcGroup derives each handler's requirements by scanning every RPC in the group, so near
+// 200 methods its type cost crosses TypeScript's instantiation limit. Handlers register as
+// disjoint groups: orchestration, the other core RPCs, and fork RPCs (toolboxmd/chromeria#304).
+const NonForkServerWsRpcGroup = ServerWsRpcGroup.omit(...ForkWsRpc.methods);
+type CoreRpc = RpcGroup.Rpcs<typeof NonForkServerWsRpcGroup>;
+type OrchestrationRpc = Extract<
+  CoreRpc,
+  {
+    readonly _tag: (typeof ORCHESTRATION_V2_WS_METHODS)[keyof typeof ORCHESTRATION_V2_WS_METHODS];
+  }
 >;
-const isSplitWsRpc = (rpc: ServerWsRpc): rpc is SplitWsRpc =>
-  SPLIT_WS_RPC_PREFIXES.some((prefix) => rpc._tag.startsWith(`${prefix}.`));
-const isOtherWsRpc = (rpc: ServerWsRpc): rpc is Exclude<ServerWsRpc, SplitWsRpc> =>
-  !isSplitWsRpc(rpc);
-const serverWsRpcs = Array.from(CoreServerWsRpcGroup.requests.values());
-const SplitWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isSplitWsRpc));
-const OtherWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isOtherWsRpc));
+const orchestrationMethodSet = new Set<string>(Object.values(ORCHESTRATION_V2_WS_METHODS));
+const isOrchestrationRpc = (rpc: CoreRpc): rpc is OrchestrationRpc =>
+  orchestrationMethodSet.has(rpc._tag);
+const coreRpcs = Array.from(NonForkServerWsRpcGroup.requests.values());
+export const OrchestrationServerWsRpcGroup = RpcGroup.make(
+  ...coreRpcs.filter(isOrchestrationRpc),
+).annotateMerge(NonForkServerWsRpcGroup.annotations);
+export const CoreServerWsRpcGroup = RpcGroup.make(
+  ...coreRpcs.filter((rpc): rpc is Exclude<CoreRpc, OrchestrationRpc> => !isOrchestrationRpc(rpc)),
+).annotateMerge(NonForkServerWsRpcGroup.annotations);
 // Replaying each intervening event costs a shell refetch; past this gap a
 // single O(active-threads) snapshot is cheaper and bounded.
 const SHELL_RESUME_MAX_GAP = 1_000;
@@ -1378,6 +1389,8 @@ export const layerWsRpc = (
   Layer.effectContext(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
+      const qualifiedReader = yield* qualifiedAttachmentReader;
+      const downloadReader = yield* qualifiedNativeDownloadReader;
       const sql = yield* SqlClient.SqlClient;
       const threadManagement = yield* ThreadManagementService.ThreadManagementService;
       const intakeContext = yield* Effect.context<
@@ -1424,6 +1437,7 @@ export const layerWsRpc = (
       const commandOutputHub = yield* CommandOutputHub.CommandOutputHub;
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
+      const pendingRequestService = yield* PendingRequestService.PendingRequests;
       const secretRequests = yield* SecretRequests.SecretRequests;
       const guestShares = yield* GuestShareService.GuestShareService;
       const pullRequests = yield* PullRequestService.PullRequestService;
@@ -1432,6 +1446,8 @@ export const layerWsRpc = (
       const issueLinkHandlers = yield* makeIssueLinkRpcHandlers;
       const pullRequestSync = yield* PullRequestSyncReactor.PullRequestSyncReactor;
       const deviceService = yield* DeviceService.DeviceService;
+      const deviceViewers = yield* DeviceHubProxy.DeviceViewers;
+      const previewViewers = yield* ServerBrowserStream.PreviewViewers;
       const deviceHostContext =
         yield* Effect.context<Effect.Services<ReturnType<typeof remoteSshDeviceHosts>>>();
       const orchestrationEngine = yield* Orchestrator.OrchestratorV2;
@@ -1493,8 +1509,10 @@ export const layerWsRpc = (
       const databaseStorage = yield* DatabaseStorage.DatabaseStorage;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const secretResolver = yield* SecretResolver.SecretResolver;
+      const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
       const peerLinks = yield* PeerLinks.PeerLinks;
       const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
+      const peerAuthority = yield* PeerAuthority.PeerAuthority;
       const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
       const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
@@ -1524,6 +1542,11 @@ export const layerWsRpc = (
       const withPullRequestViewer = pullRequests.withRoutingCredential;
       const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
       const sessions = yield* SessionStore.SessionStore;
+      const checkPreviewClient = yield* EnvironmentAuth.nativeSessionAuthorization(
+        currentSession,
+        AuthPreviewOperateScope,
+      );
+      const authorizePreviewClient = () => Effect.runPromise(checkPreviewClient);
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
       const triage = yield* TriageService.TriageService;
       const hostResources = yield* HostResources.HostResources;
@@ -2709,6 +2732,23 @@ export const layerWsRpc = (
         [WS_METHODS.serverRunStorageCleanup]: () => storageCleanup.runNow,
         [WS_METHODS.serverGetStorageCleanupReport]: () => storageCleanup.reports,
         [WS_METHODS.serverGetDatabaseStorage]: () => databaseStorage.status,
+        ...pendingRequestClientHandlers(currentSession, pendingRequestService),
+        [WS_METHODS.remoteTaskView]: (input) =>
+          remoteDelegation.view(
+            input.parentThreadId,
+            input.taskId,
+            input.after,
+            input.textOffset,
+            input.resource,
+          ),
+        [WS_METHODS.remoteTaskStop]: (input) =>
+          remoteDelegation.requestStop(
+            input.parentThreadId,
+            input.taskId,
+            `client-stop:${input.clientRequestId}`,
+          ),
+        [WS_METHODS.peerGrantsList]: () => peerAuthority.grants,
+        [WS_METHODS.peerGrantsUpdate]: (input) => peerAuthority.setGrant(input),
         [WS_METHODS.peerLinksList]: (_input) =>
           peerLinks.list.pipe(Effect.map((links) => ({ links }))),
         [WS_METHODS.peerLinksLink]: (input) => peerLinks.link(input),
@@ -3069,6 +3109,8 @@ export const layerWsRpc = (
           Effect.fnUntraced(function* (input) {
             const path = yield* Path.Path;
             if (
+              input.resource._tag === "peer-attachment" ||
+              input.resource._tag === "native-browser-download" ||
               input.resource._tag === "attachment" ||
               input.resource._tag === "native-app-icon" ||
               input.resource._tag === "tool-output-image" ||
@@ -3078,7 +3120,12 @@ export const layerWsRpc = (
                 path.isAbsolute(input.resource.path) &&
                 !isNetworkPath(input.resource.path))
             ) {
-              return yield* issueAssetUrl({ resource: input.resource });
+              return yield* issueAssetUrl({
+                resource: input.resource,
+                session: currentSession,
+                qualifiedReader,
+                downloadReader,
+              });
             }
             if (input.resource._tag === "draft-workspace-file") {
               return yield* issueAssetUrl({
@@ -3244,9 +3291,12 @@ export const layerWsRpc = (
               (unsubscribe) => Effect.sync(unsubscribe),
             ),
           ),
-        [WS_METHODS.previewOpen]: (input) => previewManager.open(input),
-        [WS_METHODS.previewResize]: (input) => previewManager.resize(input),
-        [WS_METHODS.previewAdjust]: (input) => previewManager.adjust(input),
+        [WS_METHODS.previewOpen]: (input) =>
+          previewManager.open({ ...input, authorize: authorizePreviewClient }),
+        [WS_METHODS.previewNavigate]: (input) => previewManager.navigate(input),
+        [WS_METHODS.previewResize]: (input) => previewManager.resize(input, authorizePreviewClient),
+        [WS_METHODS.previewAdjust]: (input) => previewManager.adjust(input, authorizePreviewClient),
+        [WS_METHODS.previewRefresh]: (input) => previewManager.refresh(input),
         [WS_METHODS.previewClose]: (input) => previewManager.close(input),
         [WS_METHODS.previewList]: (input) => previewManager.list(input),
         [WS_METHODS.previewClearProfile]: (input) => serverBrowser.clearProfile(input.profileId),
@@ -3272,6 +3322,8 @@ export const layerWsRpc = (
           threadWorkspaceRoot(input.threadId).pipe(
             Effect.flatMap((workspaceRoot) => deviceService.open(input, { workspaceRoot })),
           ),
+        ...DeviceHubProxy.clientHandlers(currentSession, deviceViewers),
+        ...ServerBrowserStream.clientHandlers(currentSession, previewViewers),
         [WS_METHODS.deviceClose]: (input) => deviceService.close(input),
         [WS_METHODS.deviceShutdown]: (input) => deviceService.shutdown(input),
         [WS_METHODS.deviceDetail]: (input) => deviceService.detail(input),
@@ -3493,15 +3545,14 @@ export const layerWsRpc = (
             ),
           ),
       });
-      const splitHandlers: Pick<typeof handlers, SplitWsRpc["_tag"]> = handlers;
-      const otherHandlers: Pick<typeof handlers, Exclude<ServerWsRpc, SplitWsRpc>["_tag"]> =
+      const orchestrationHandlers: Pick<typeof handlers, OrchestrationRpc["_tag"]> = handlers;
+      const coreHandlers: Pick<typeof handlers, Exclude<CoreRpc, OrchestrationRpc>["_tag"]> =
         handlers;
       return Context.merge(
         Context.merge(
-          yield* SplitWsRpcGroup.toHandlers(splitHandlers),
-          yield* OtherWsRpcGroup.toHandlers(otherHandlers),
+          yield* CoreServerWsRpcGroup.toHandlers(coreHandlers),
+          yield* OrchestrationServerWsRpcGroup.toHandlers(orchestrationHandlers),
         ),
-        // Fork RPCs register as their own group (toolboxmd/chromeria#304).
         yield* ForkWsRpc.group.toHandlers(Struct.pick(handlers, ForkWsRpc.methods)),
       );
     }),
@@ -3525,6 +3576,9 @@ export const layer = Layer.unwrap(
     const issueService = yield* IssueService.IssueService;
     const issueLinks = yield* IssueLinks.IssueLinks;
     const peerLinks = yield* PeerLinks.PeerLinks;
+    const peerAuthority = yield* PeerAuthority.PeerAuthority;
+    const deviceViewers = yield* DeviceHubProxy.DeviceViewers;
+    const previewViewers = yield* ServerBrowserStream.PreviewViewers;
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
@@ -3616,6 +3670,9 @@ export const layer = Layer.unwrap(
               Layer.provide(Layer.succeed(IssueService.IssueService, issueService)),
               Layer.provide(Layer.succeed(IssueLinks.IssueLinks, issueLinks)),
               Layer.provide(Layer.succeed(PeerLinks.PeerLinks, peerLinks)),
+              Layer.provide(Layer.succeed(PeerAuthority.PeerAuthority, peerAuthority)),
+              Layer.provide(Layer.succeed(DeviceHubProxy.DeviceViewers, deviceViewers)),
+              Layer.provide(Layer.succeed(ServerBrowserStream.PreviewViewers, previewViewers)),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
                   Layer.provide(

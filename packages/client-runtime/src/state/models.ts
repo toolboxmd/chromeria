@@ -146,6 +146,7 @@ export interface EnvironmentThreadShell {
   readonly interactionMode: OrchestrationV2ThreadShell["interactionMode"];
   readonly branch: string | null;
   readonly worktreePath: string | null;
+  readonly delegatedFrom?: OrchestrationV2ThreadShell["delegatedFrom"];
   readonly lineage: OrchestrationV2ThreadShell["lineage"];
   readonly forkedFrom: OrchestrationV2ThreadShell["forkedFrom"];
   readonly linkOrigin: OrchestrationV2ThreadShell["linkOrigin"] | null;
@@ -256,6 +257,23 @@ export function scopeProject(
 
 export type PendingSubagentRequest = "approval" | "user_input";
 
+export function isThreadVisibleInNavigation(
+  thread: Pick<EnvironmentThreadShell, "lineage" | "delegatedFrom"> & {
+    readonly archivedAt:
+      | OrchestrationV2ThreadShell["archivedAt"]
+      | EnvironmentThreadShell["archivedAt"];
+  },
+  searchQuery = "",
+): boolean {
+  return (
+    thread.archivedAt === null &&
+    thread.lineage.relationshipToParent !== "subagent" &&
+    (thread.delegatedFrom === undefined ||
+      thread.lineage.relationshipToParent === "fork" ||
+      searchQuery.trim().length > 0)
+  );
+}
+
 export function presentThreadShell(
   environmentId: EnvironmentId,
   thread: OrchestrationV2ThreadShell,
@@ -297,6 +315,7 @@ export function presentThreadShell(
     pullRequests: threadPullRequestsOf(thread),
     linkedPullRequest: thread.linkedPullRequest ?? null,
     branchPullRequest: thread.branchPullRequest ?? null,
+    delegatedFrom: thread.delegatedFrom,
     lineage: thread.lineage,
     forkedFrom: thread.forkedFrom,
     linkOrigin: thread.linkOrigin ?? null,

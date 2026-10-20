@@ -1,4 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - opaque continuation IDs and page provenance use Node crypto.
+import { interactiveAuthority } from "../peer/PeerAuthorityRecord.ts";
+import { requestNamespace, requestGeneration } from "../mcp/requestIdentity.ts";
 import * as NodeCrypto from "node:crypto";
 import {
   DEFAULT_BROWSER_PROFILE_ID,
@@ -157,12 +159,16 @@ const make = Effect.gen(function* () {
         return yield* new SessionReadError({ reason: "forwarding" });
       const now = yield* Clock.currentTimeMillis;
       for (const [id, entry] of retained) if (entry.expiresAt <= now) remove(id);
+      const identity =
+        scope.client?.linked === true &&
+        interactiveAuthority(scope.authority)?.envelope.requestOwner !== undefined
+          ? ["peer", requestNamespace(scope), requestGeneration(scope)]
+          : ["credential", scope.requestNamespace, scope.thread.providerSessionId];
       const owner = [
         scope.environmentId,
-        scope.requestNamespace,
+        ...identity,
         scope.client?.sessionId ?? "",
         scope.thread.threadId,
-        scope.thread.providerSessionId,
         selection.profileId,
         selection.tabId,
       ]

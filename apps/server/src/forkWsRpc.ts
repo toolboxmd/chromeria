@@ -1,5 +1,7 @@
 import {
   IssueRpcs,
+  DeviceViewerClientRpcGroup,
+  PreviewViewerClientRpcGroup,
   FeatureMapRpcs,
   PromachosHomeRpcGroup,
   IssueLinksRpcGroup,
@@ -10,7 +12,13 @@ import * as RpcGroup from "effect/rpc/RpcGroup";
 import { RpcInstrumentation } from "./observability/RpcInstrumentation.ts";
 
 export const group = RpcGroup.make(...IssueRpcs, ...FeatureMapRpcs)
-  .merge(PromachosHomeRpcGroup, IssueLinksRpcGroup, SpectrumRpcGroup)
+  .merge(
+    PromachosHomeRpcGroup,
+    IssueLinksRpcGroup,
+    SpectrumRpcGroup,
+    DeviceViewerClientRpcGroup,
+    PreviewViewerClientRpcGroup,
+  )
   .middleware(RpcScopeAuthorization)
   .middleware(RpcInstrumentation);
 

@@ -1,3 +1,4 @@
+import { requestNamespace } from "../mcp/requestIdentity.ts";
 import { BareLaunchRequest } from "@t3tools/contracts";
 import * as McpRouting from "../mcp/McpRouting.ts";
 import {
@@ -127,7 +128,7 @@ export const layer = McpToolAccess.toLayer(SpectrumToolkit, {
             message: "The Spectrum caller was not found.",
           });
         const request = input.clientRequestId ?? String(yield* newCommandId());
-        const key = `spectrum:${encodeURIComponent(scope.requestNamespace)}:${encodeURIComponent(request)}`;
+        const key = `spectrum:${encodeURIComponent(requestNamespace(scope))}:${encodeURIComponent(request)}`;
         const state = yield* launch
           .register({
             commandId: CommandId.make(`${key}:register`),

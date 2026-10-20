@@ -11,7 +11,6 @@ import {
   PreviewTabId,
   ProviderInstanceId,
   ThreadId,
-  type PreviewAutomationError,
   type PreviewAutomationStatus,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -253,7 +252,7 @@ const fillPassword = (broker: BrokerService, tabId: PreviewTabId, locator = "#pw
     field: "password",
     locator,
   });
-const expectLogin = (error: PreviewAutomationError) =>
+const expectLogin = (error: unknown) =>
   expect(error).toMatchObject({ _tag: "PreviewCredentialError", reason: "loginInProgress" });
 const refusedRead = (broker: BrokerService, tabId: PreviewTabId) =>
   Effect.gen(function* () {
