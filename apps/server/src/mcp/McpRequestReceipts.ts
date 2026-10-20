@@ -37,6 +37,13 @@ export function canonicalRequest(value: unknown): string {
 export const requestDigest = (value: unknown) =>
   Hex.encode(sha256(new TextEncoder().encode(canonicalRequest(value))));
 
+export const requestInputDigest = (input: unknown) =>
+  requestDigest(
+    typeof input === "object" && input !== null && !Array.isArray(input)
+      ? Object.fromEntries(Object.entries(input).filter(([key]) => key !== "contextCapabilities"))
+      : input,
+  );
+
 export interface RequestIdentity {
   readonly id: string;
   readonly generation: string;
@@ -232,13 +239,7 @@ const make = Effect.gen(function* () {
         generation: requestGeneration(scope),
         // Capability transport metadata is authenticated independently. Its set
         // order or renewal cannot turn the same authorized intent into a conflict.
-        inputDigest: requestDigest(
-          typeof input === "object" && input !== null && !Array.isArray(input)
-            ? Object.fromEntries(
-                Object.entries(input).filter(([key]) => key !== "contextCapabilities"),
-              )
-            : input,
-        ),
+        inputDigest: requestInputDigest(input),
       };
       const existing = yield* sql`SELECT id FROM mcp_request_receipts WHERE id=${id}`;
       if (existing.length === 0 && (yield* legacyConflict(scope, tool, input, clientRequestId)))

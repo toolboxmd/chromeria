@@ -1,3 +1,7 @@
+import * as PeerLinkEvents from "../peer/PeerLinkEvents.ts";
+import * as RemoteSecretPersistence from "../secrets/remoteSecretPersistence.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as Option from "effect/Option";
 import {
   CommandId,
   MessageId,
@@ -25,6 +29,8 @@ export class DelegatedTaskQuestionReactor extends Context.Service<
 
 const make = Effect.gen(function* () {
   const engine = yield* Orchestrator.OrchestratorV2;
+  const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
+  const links = yield* Effect.serviceOption(PeerLinkEvents.PeerLinkEvents);
   const projections = yield* ProjectionStore.ProjectionStoreV2;
 
   const wakeParent = Effect.fnUntraced(function* (
@@ -37,6 +43,23 @@ const make = Effect.gen(function* () {
   // Runs for every domain event; most events return before any work is needed.
   const handle: DelegatedTaskQuestionReactor["Service"]["handle"] = Effect.fnUntraced(
     function* (event) {
+      if (
+        ((event.type === "run.updated" &&
+          !["preparing", "starting", "running"].includes(event.payload.status)) ||
+          event.type === "thread.archived" ||
+          (event.type === "turn-item.updated" &&
+            event.payload.type === "secret_request" &&
+            event.payload.secretStatus === "cancelled")) &&
+        Option.isSome(sql)
+      ) {
+        yield* RemoteSecretPersistence.reconcileObligations.pipe(
+          Effect.provideService(SqlClient.SqlClient, sql.value),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Remote secret retirement reconciliation remains pending", { cause }),
+          ),
+        );
+        if (Option.isSome(links)) yield* links.value.automationChanged;
+      }
       if (event.type === "run.updated") {
         if (!["completed", "failed", "waiting"].includes(event.payload.status)) return;
         const parent = yield* projections.getThreadRecords(event.threadId, ["subagents"]);

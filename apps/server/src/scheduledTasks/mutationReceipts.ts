@@ -21,7 +21,13 @@ import { requestDigest, type RequestIdentity } from "../mcp/McpRequestReceipts.t
 export class CurrentMutation extends Context.Reference<
   | {
       readonly request: RequestIdentity;
-      readonly consumesSecret: boolean;
+      readonly secret:
+        | { readonly type: "none" }
+        | { readonly type: "local-ref" }
+        | {
+            readonly type: "remote";
+            readonly handle: import("@t3tools/contracts").RemoteSecretHandle;
+          };
       readonly recheck: Effect.Effect<void, OrchestratorMcpFailure>;
     }
   | undefined
@@ -270,11 +276,12 @@ export const accept = <A, E, R>(
     const sql = yield* SqlClient.SqlClient;
     const { request } = mutation;
     const localFence = yield* captureResourceFence(taskId);
-    yield* mutation.recheck;
     const before = yield* read(request);
+    if (mutation.secret.type === "remote" && before?.stage === "confirmed") return yield* replay;
+    yield* mutation.recheck;
     if (before?.stage === "confirmed") return yield* replay;
     if (before !== undefined) return yield* unknown(request);
-    if (mutation.consumesSecret) {
+    if (mutation.secret.type === "local-ref") {
       const started =
         yield* sql`INSERT INTO scheduled_mutation_receipts (request_id,generation,input_digest,task_id,stage) VALUES (${request.id},${request.generation},${request.inputDigest},${taskId},'secret-started') ON CONFLICT DO NOTHING RETURNING request_id`.pipe(
           Effect.mapError(unavailable),
@@ -324,7 +331,7 @@ export const accept = <A, E, R>(
         }),
       )
       .pipe(Effect.catchIf(isSqlError, (error) => Effect.fail(unavailable(error))));
-    return yield* mutation.consumesSecret
+    return yield* mutation.secret.type === "local-ref"
       ? transaction.pipe(
           Effect.catch(() =>
             Effect.gen(function* () {

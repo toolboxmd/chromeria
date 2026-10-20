@@ -1,3 +1,4 @@
+import { RemoteSecretDestination } from "./remoteSecret.ts";
 import { ThreadTools, ThreadToolsRequest } from "./threadTools.ts";
 import { NativeInputEvidence, NativeExecutionSegment } from "./nativeExecution.ts";
 import { PeerTaskObservation, PeerTaskResult, PeerTaskSnapshot, PeerTaskStop } from "./peerTask.ts";
@@ -1806,6 +1807,7 @@ const OrchestrationV2SecretRequestFields = {
   delivery: Schema.optional(OrchestrationV2SecretRequestDelivery),
   /** Absent for a single-field request, which asks for `label` alone. */
   fields: Schema.optional(Schema.Array(SecretRequestField)),
+  destination: Schema.optional(RemoteSecretDestination),
   secretStatus: OrchestrationV2SecretRequestStatus,
 } as const;
 
@@ -3947,6 +3949,7 @@ const OrchestrationV2InternalCommand = Schema.Union([
     placeholder: Schema.optional(Schema.String),
     delivery: Schema.optional(OrchestrationV2SecretRequestDelivery),
     fields: Schema.optional(Schema.Array(SecretRequestField)),
+    destination: Schema.optional(RemoteSecretDestination),
     secretStatus: OrchestrationV2SecretRequestStatus,
   }),
   /**

@@ -1,3 +1,4 @@
+import * as RemoteSecretRelay from "../secrets/RemoteSecretRelay.ts";
 import { interactiveAuthority } from "../peer/PeerAuthorityRecord.ts";
 import { PeerDispatchAuthority } from "../peer/peerEffectAuthority.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -95,6 +96,17 @@ export const withContext = <A, E, R>(
   Effect.gen(function* () {
     let invocation = yield* Effect.serviceOption(Invocation.McpInvocationContext);
     const currentTool = yield* CurrentTool;
+    if (
+      currentTool?.name === "schedule_task" &&
+      Option.isSome(invocation) &&
+      isRemote(params, invocation.value)
+    ) {
+      const relay = yield* Effect.serviceOption(RemoteSecretRelay.RemoteSecretRelay);
+      if (Option.isSome(relay)) {
+        const receipt = yield* relay.value.recover(invocation.value, params);
+        if (Option.isSome(receipt)) return receipt.value as A;
+      }
+    }
     if (
       Option.isSome(invocation) &&
       invocation.value.thread !== undefined &&
@@ -273,6 +285,13 @@ const invokeRouted = <P, A, E, R>(
         code: "invalid_request",
         message: "Select the research host with webResearch.host instead of environmentId.",
       });
+    if (tool.name === "request_secret" && environmentId !== undefined) {
+      if (decoded.value.contextThreadId !== undefined)
+        return yield* denied(
+          "Remote secrets use the originating run, not a destination context thread.",
+        );
+      return yield* handle(params);
+    }
     if (tool.name === "delegate_task" && decoded.value.environmentId !== undefined) {
       const input = yield* decodeDelegate(params).pipe(Effect.mapError(unavailable));
       if (

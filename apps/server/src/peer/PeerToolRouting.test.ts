@@ -604,13 +604,6 @@ const cases = [
     context: true,
   },
   {
-    group: "secrets",
-    name: "request_secret",
-    args: { label: "A secret", reason: "Test", clientRequestId: "secret-1" },
-    operation: "secret-request",
-    context: true,
-  },
-  {
     group: "browser automation",
     name: "preview_press",
     args: { key: "Escape" },
@@ -981,6 +974,22 @@ it.effect("Spectrum refuses to use a caller belonging to another link", () =>
       expect(yield* Ref.get(f.seen)).not.toContainEqual(
         expect.objectContaining({ operation: "spectrum-start" }),
       );
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("remote secret routing rejects a destination context before either generic handler", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.link("full-access");
+      const result = yield* f.call(
+        "request_secret",
+        { label: "A secret", reason: "Test", clientRequestId: "secret-1" },
+        true,
+      );
+      expect(result.isError).toBe(true);
+      expect(yield* Ref.get(f.seen)).toEqual([]);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
