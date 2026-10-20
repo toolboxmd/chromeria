@@ -19,7 +19,7 @@ import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQ
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeHttp from "node:http";
 
-import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import * as ResourceWebSocketServer from "./http/ResourceWebSocketServer.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { EnvironmentHttpApi, type RepositoryIdentity } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -303,16 +303,21 @@ const layerRelayClient = Layer.unwrap(
 const layerHttpServer = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;
-    return NodeHttpServer.layer(() => guardHttpResponseWriteErrors(NodeHttp.createServer()), {
-      host: config.host ?? "127.0.0.1",
-      port: config.port,
-      gracefulShutdownTimeout: HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS,
-      // Context takeover stays enabled (ws default) so the compression
-      // window is shared across frames — that also makes small frames cheap
-      // to compress, so no size threshold is set (ws only honors
-      // `threshold` when context takeover is disabled).
-      websocket: { perMessageDeflate: true },
-    });
+    return ResourceWebSocketServer.layer(
+      () => guardHttpResponseWriteErrors(NodeHttp.createServer()),
+      {
+        host: config.host ?? "127.0.0.1",
+        port: config.port,
+        gracefulShutdownTimeout: HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS,
+        // Negotiate permessage-deflate with clients that offer it; clients
+        // that don't still get uncompressed frames on their connection.
+        // Context takeover stays enabled (ws default) so the compression
+        // window is shared across frames — that also makes small frames cheap
+        // to compress, so no size threshold is set (ws only honors
+        // `threshold` when context takeover is disabled).
+        websocket: { perMessageDeflate: true },
+      },
+    );
   }),
 );
 
@@ -713,6 +718,7 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.mergeAll(
     HttpApiBuilder.layer(EnvironmentHttpApi).pipe(
       Layer.provide(AuthHttp.layer),
+      Layer.provide(DeviceHubProxy.layerApi),
       Layer.provide(McpOAuthHttp.layer.pipe(Layer.provide(McpOAuth.layer))),
       Layer.provide(CloudHttp.layer),
       Layer.provide(OrchestrationHttp.layer),
@@ -744,6 +750,9 @@ const layerMakeRoutes = Layer.mergeAll(
   ),
   Layer.effectDiscard(PeerMcpClient.PeerMcpClient.pipe(Effect.flatMap((peers) => peers.start))),
 ).pipe(
+  Layer.provide(DeviceHubProxy.layerViewers),
+  Layer.provide(ServerBrowserStream.layerViewers),
+  // Guides read through the same pull request service as every other surface.
   Layer.provide(
     PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
   ),

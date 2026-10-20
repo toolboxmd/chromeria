@@ -1,7 +1,8 @@
 import { Schema } from "effect";
 
-import { ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { EnvironmentId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { PeerAttachmentReference } from "./peerAttachments.ts";
+import { PeerAttachmentAssetResource } from "./assets.ts";
 
 export const DevicePlatform = Schema.Literals(["ios", "android"]);
 export type DevicePlatform = typeof DevicePlatform.Type;
@@ -470,6 +471,40 @@ export const DeviceCommandTarget = closedDeviceCommand({
   toolSessionId: Schema.String.check(Schema.isPattern(/^[0-9a-f-]{36}$/)),
 });
 export type DeviceCommandTarget = typeof DeviceCommandTarget.Type;
+
+/** One exact device opening, qualified independently of the client's source connection. */
+export const DeviceViewerResource = closedDeviceCommand({
+  type: Schema.Literal("device"),
+  environmentId: EnvironmentId.check(Schema.isMaxLength(256)),
+  threadId: ThreadId.check(Schema.isMaxLength(256)),
+  hostId: DeviceHostId,
+  deviceId: DeviceId,
+  toolSessionId: Schema.String.check(Schema.isPattern(/^[0-9a-f-]{36}$/)),
+  platform: DevicePlatform,
+});
+export type DeviceViewerResource = typeof DeviceViewerResource.Type;
+
+export const DeviceViewerOpenInput = closedDeviceCommand({
+  viewerId: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[0-9a-f-]{36}$/))),
+  resource: DeviceViewerResource,
+  operation: Schema.Literals(["view", "control"]),
+});
+export type DeviceViewerOpenInput = typeof DeviceViewerOpenInput.Type;
+export const DeviceViewerCloseInput = closedDeviceCommand({
+  viewerId: Schema.String.check(Schema.isPattern(/^[0-9a-f-]{36}$/)),
+});
+export const DeviceViewerAccess = Schema.Struct({
+  viewerId: Schema.String.check(Schema.isPattern(/^[0-9a-f-]{36}$/)),
+  ticket: TrimmedNonEmptyString.check(Schema.isMaxLength(4096)),
+  expiresAt: Schema.String.check(Schema.isMaxLength(64)),
+  hubBasePath: Schema.Literal("/api/device-hub"),
+});
+export type DeviceViewerAccess = typeof DeviceViewerAccess.Type;
+/** Authenticated peer discovery; absence refuses before a viewer is admitted. */
+export const DeviceViewerProtocol = Schema.Struct({
+  version: Schema.Literal(1),
+  purpose: Schema.Literal("device-viewer"),
+});
 
 const DeviceElementRef = Schema.String.check(Schema.isPattern(/^@?e[0-9]{1,6}$/));
 const DeviceInputArtifact = closedDeviceCommand(PeerAttachmentReference.fields);
@@ -1114,6 +1149,9 @@ export const DeviceAtomicCommandResult = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("artifacts"),
     target: DeviceCommandTarget,
+    resources: Schema.optional(
+      Schema.Array(PeerAttachmentAssetResource).check(Schema.isMaxLength(32)),
+    ),
     artifacts: Schema.Array(PeerAttachmentReference).check(
       Schema.isMinLength(1),
       Schema.isMaxLength(32),
@@ -1156,6 +1194,7 @@ export const DeviceAtomicCommandResult = Schema.Union([
     type: Schema.Literal("artifact"),
     target: DeviceCommandTarget,
     artifact: PeerAttachmentReference,
+    resource: Schema.optional(PeerAttachmentAssetResource),
   }),
 ]);
 export type DeviceAtomicCommandResult = typeof DeviceAtomicCommandResult.Type;
@@ -1182,6 +1221,8 @@ export type DeviceCommandFamilySupport = typeof DeviceCommandFamilySupport.Type;
 
 export const DeviceCommandCatalog = Schema.Struct({
   protocol: Schema.Literal(1),
+  inputArtifacts: Schema.optional(Schema.Literal(1)),
+  targetPlatform: Schema.optional(DevicePlatform),
   hostId: DeviceHostId,
   agentDeviceVersion: Schema.String,
   deviceHubVersion: Schema.String,
@@ -1201,7 +1242,12 @@ export const DeviceToolOpenResult = Schema.Union([
     }),
     quickStart: Schema.String,
   }),
-  Schema.Struct({ device: DeviceSummary, target: DeviceCommandTarget, quickStart: Schema.String }),
+  Schema.Struct({
+    device: DeviceSummary,
+    target: DeviceCommandTarget,
+    quickStart: Schema.String,
+    resource: Schema.optional(DeviceViewerResource),
+  }),
 ]);
 export type DeviceToolOpenResult = typeof DeviceToolOpenResult.Type;
 

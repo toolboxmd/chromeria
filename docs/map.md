@@ -109,7 +109,7 @@ flowchart TD
     RTL --> RPR
     PAR --> RPR
     RBD["Remote browser and device control"]
-    %% RBD: #383 PR #421
+    %% RBD: #383 PR #421 PR #534
     PGR --> RBD
     PAR --> RBD
     DAA["Destination automations"]

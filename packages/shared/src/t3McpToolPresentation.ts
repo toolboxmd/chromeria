@@ -54,6 +54,8 @@ export type T3McpToolSummaryAction =
   | "environment-read"
   | "environment-links"
   | "environment-update"
+  | "attachment-inspect"
+  | "attachment-acquire"
   | "attachment-prepare"
   | "attachment-discard"
   | "attachment-send"
@@ -348,6 +350,14 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
   t3_project_update: tool(["Update", "Updating", "Updated", "a project"], "project-update"),
   t3_project_delete: tool(["Delete", "Deleting", "Deleted", "a project"], "project-delete"),
   t3_project_clone: tool(["Clone", "Cloning", "Cloned", "a repository"], "project-clone"),
+  t3_attachment_inspect: tool(
+    ["Inspect", "Inspecting", "Inspected", "an attachment upload"],
+    "attachment-inspect",
+  ),
+  t3_attachment_acquire: tool(
+    ["Acquire", "Acquiring", "Recorded acquisition of", "an attachment"],
+    "attachment-acquire",
+  ),
   t3_attachment_prepare_upload: tool(
     ["Prepare", "Preparing", "Prepared", "an attachment upload"],
     "attachment-prepare",

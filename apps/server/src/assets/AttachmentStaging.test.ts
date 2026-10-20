@@ -1,5 +1,5 @@
 import * as Fiber from "effect/Fiber";
-import { resolveAttachmentPath } from "../attachmentStore.ts";
+import { createAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
@@ -747,4 +747,170 @@ it.effect("S8: an unproved existing recording path is never accepted or overwrit
       ).toBe(null);
     }),
   ).pipe(Effect.provide(recordingClaimsLayer)),
+);
+
+it.effect(
+  "qualified native publications retain provenance and reject changed reference or bytes",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const staging = yield* Staging.AttachmentStaging;
+        const fs = yield* FileSystem.FileSystem;
+        const config = yield* Config.ServerConfig;
+        const attachment = { ...metadata, id: createAttachmentId(scope.thread!.threadId, "pdf")! };
+        const path = resolveAttachmentPath({ attachmentsDir: config.attachmentsDir, attachment })!;
+        yield* fs.makeDirectory(config.attachmentsDir, { recursive: true });
+        yield* fs.writeFile(path, bytes);
+        const reference = yield* staging.publishReference(scope, attachment, "device");
+        const resource = {
+          _tag: "peer-attachment" as const,
+          threadId: scope.thread!.threadId,
+          reference,
+        };
+        const observations: Array<readonly [string, string]> = [];
+        const authorize = (capability: "device" | "preview", threadId: ThreadId) =>
+          Effect.sync(() => {
+            observations.push([capability, threadId]);
+          });
+        expect(Array.from(yield* staging.readReference(resource, authorize))).toEqual([1, 2, 3, 4]);
+        expect(observations.length).toBeGreaterThanOrEqual(3);
+        expect(
+          observations.every(
+            ([capability, threadId]) => capability === "device" && threadId === "caller",
+          ),
+        ).toBe(true);
+        const rebuilt = Context.get(yield* Layer.build(Staging.layer), Staging.AttachmentStaging);
+        expect(Array.from(yield* rebuilt.readReference(resource, authorize))).toEqual([1, 2, 3, 4]);
+        for (const change of [
+          { environmentId: EnvironmentId.make("other") },
+          { owner: "0".repeat(64) },
+          { digest: "0".repeat(64) },
+          { name: "changed.pdf" },
+          { mimeType: "text/html" },
+          { sizeBytes: 3 },
+        ]) {
+          expect(
+            (yield* Effect.result(
+              staging.readReference(
+                { ...resource, reference: { ...reference, ...change } },
+                authorize,
+              ),
+            ))._tag,
+          ).toBe("Failure");
+        }
+        expect(
+          (yield* Effect.result(
+            staging.readReference({ ...resource, threadId: ThreadId.make("other") }, authorize),
+          ))._tag,
+        ).toBe("Failure");
+        // Same byte count is insufficient, and a later successful publication cannot relabel it.
+        yield* fs.writeFile(path, new Uint8Array([4, 3, 2, 1]));
+        expect((yield* Effect.result(staging.readReference(resource, authorize)))._tag).toBe(
+          "Failure",
+        );
+        expect((yield* staging.publishReference(scope, attachment, "device")).digest).toBe(
+          reference.digest,
+        );
+        expect((yield* Effect.result(staging.readReference(resource, authorize)))._tag).toBe(
+          "Failure",
+        );
+      }),
+    ).pipe(Effect.provide(layer)),
+);
+
+it.effect.each(["pending-partial", "final-partial", "accepted"] as const)(
+  "acquisition %s reconstruction preserves native acceptance without replacing bytes",
+  (stage) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const caller = yield* Invocation.requireThreadScope(scope, "Acquisition fixture");
+        const native = yield* Staging.AttachmentStaging;
+        const pending = yield* native.prepare(scope, metadata, "acquisition-copy", digest);
+        const attachment = {
+          ...metadata,
+          id: pending.attachmentId.replace(/^pending-/, "caller-"),
+        };
+        const config = yield* Config.ServerConfig;
+        const pendingPath = resolveAttachmentPath({
+          attachmentsDir: config.attachmentsDir,
+          attachment: { ...metadata, id: pending.attachmentId },
+        })!;
+        const finalPath = resolveAttachmentPath({
+          attachmentsDir: config.attachmentsDir,
+          attachment,
+        })!;
+        const fs = yield* FileSystem.FileSystem;
+        let finalWrites = 0;
+        const externalDisk = FileSystem.FileSystem.of({
+          ...fs,
+          writeFile: (path, data, options) =>
+            Effect.gen(function* () {
+              if (path === finalPath) finalWrites++;
+              if (
+                (stage === "pending-partial" && path === pendingPath) ||
+                (stage === "final-partial" && path === finalPath)
+              ) {
+                // Interrupt after an actual partial exclusive filesystem write.
+                yield* fs.writeFile(path, bytes.slice(0, 2), options);
+                return yield* Effect.interrupt;
+              }
+              yield* fs.writeFile(path, data, options);
+            }),
+        });
+        const build = Layer.build(
+          Staging.layer.pipe(
+            Layer.provide(Layer.succeed(FileSystem.FileSystem, externalDisk)),
+            Layer.fresh,
+          ),
+        );
+        const first = Context.get(yield* build, Staging.AttachmentStaging);
+        const source = {
+          environmentId: EnvironmentId.make("original-producer"),
+          attachmentId: "producer-file",
+          owner: digest,
+          digest,
+          name: metadata.name,
+          mimeType: metadata.mimeType,
+          sizeBytes: metadata.sizeBytes,
+        };
+        const lost = yield* first
+          .acquireReference(caller, source, bytes, "acquisition-copy", "device", Effect.void)
+          .pipe(Effect.andThen(Effect.interrupt), Effect.forkScoped);
+        expect((yield* Fiber.await(lost))._tag).toBe("Failure");
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql`SELECT * FROM attachment_staging ORDER BY id`;
+        const retainedPath = stage === "pending-partial" ? pendingPath : finalPath;
+        expect(Array.from(yield* fs.readFile(retainedPath))).toEqual(
+          stage === "accepted" ? [1, 2, 3, 4] : [1, 2],
+        );
+        if (stage !== "pending-partial") yield* fs.writeFile(finalPath, new Uint8Array([9, 8, 7]));
+        const rebuilt = Context.get(yield* build, Staging.AttachmentStaging);
+        const renewed = {
+          ...caller,
+          thread: { ...caller.thread, providerSessionId: "renewed-copy" },
+        };
+        const replay = yield* Effect.result(
+          rebuilt.acquireReference(
+            renewed,
+            source,
+            bytes,
+            "acquisition-copy",
+            "device",
+            Effect.void,
+          ),
+        );
+        if (stage === "accepted") {
+          expect(replay._tag).toBe("Success");
+          if (replay._tag === "Success") expect(replay.success.reference.digest).toBe(digest);
+        } else {
+          expect(replay._tag).toBe("Failure");
+          if (replay._tag === "Failure") expect(replay.failure.code).toBe("outcome_unknown");
+        }
+        expect(Array.from(yield* fs.readFile(retainedPath))).toEqual(
+          stage === "pending-partial" ? [1, 2] : [9, 8, 7],
+        );
+        expect(finalWrites).toBe(stage === "pending-partial" ? 0 : 1);
+        expect(yield* sql`SELECT * FROM attachment_staging ORDER BY id`).toEqual(rows);
+      }),
+    ).pipe(Effect.provide(recordingClaimsLayer)),
 );

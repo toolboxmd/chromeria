@@ -53,6 +53,11 @@ export default defineConfig({
     },
   },
   test: {
+    alias: {
+      "@t3tools/mobile-preview-stream": NodeURL.fileURLToPath(
+        new URL("./apps/mobile/src/features/browser/preview-stream.browser.ts", import.meta.url),
+      ),
+    },
     environment: "node",
     exclude: [
       "**/.repos/**",

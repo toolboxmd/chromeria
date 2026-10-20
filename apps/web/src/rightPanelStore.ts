@@ -3,14 +3,25 @@ import {
   scopedThreadKey,
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
-import { EnvironmentId, parseIssueUrl, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  parseIssueUrl,
+  ThreadId,
+  type ScopedThreadRef,
+  DeviceViewerResource,
+  PreviewViewerResource,
+} from "@t3tools/contracts";
 import { create } from "zustand";
+import * as Schema from "effect/Schema";
 import { createJSONStorage, persist } from "zustand/middleware";
 
 import { useClosedViewStore } from "./closedViewStore";
 import { resolveStorage } from "./lib/storage";
 import type { ThreadPanelPresentation } from "./rightPanelLayout";
 import type { ChatFileAttachment } from "./types";
+
+const isDeviceResource = Schema.is(DeviceViewerResource);
+const isPreviewResource = Schema.is(PreviewViewerResource);
 
 const RIGHT_PANEL_KINDS = [
   "diff",
@@ -27,14 +38,37 @@ const RIGHT_PANEL_KINDS = [
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
 export interface DeviceTabTarget {
+  resource?: DeviceViewerResource;
   hostId: string;
   deviceId: string;
   platform: "ios" | "android";
   name: string;
 }
 
+const deviceTabSurfaceId = (target: DeviceTabTarget) =>
+  `device:${
+    target.resource
+      ? encodeURIComponent(
+          JSON.stringify([
+            target.resource.environmentId,
+            target.resource.threadId,
+            target.resource.hostId,
+            target.resource.deviceId,
+            target.resource.toolSessionId,
+          ]),
+        )
+      : `${encodeURIComponent(target.hostId)}:${encodeURIComponent(target.deviceId)}`
+  }` as const;
+export const browserResourceSurfaceId = (resource: PreviewViewerResource) =>
+  `browser:${encodeURIComponent(JSON.stringify([resource.environmentId, resource.threadId, resource.tabId, resource.serverEpoch]))}` as const;
+
 export type RightPanelSurface =
-  | { id: `browser:${string}`; kind: "preview"; resourceId: string }
+  | {
+      id: `browser:${string}`;
+      kind: "preview";
+      resourceId: string;
+      resource?: PreviewViewerResource;
+    }
   | { id: "browser:new"; kind: "preview"; resourceId: null }
   | { id: "device" | `device:${string}`; kind: "device"; target?: DeviceTabTarget; title?: string }
   | {
@@ -136,7 +170,11 @@ interface RightPanelStoreState {
   ) => void;
   openDevice: (ref: ScopedThreadRef, target: DeviceTabTarget, automatic?: boolean) => void;
   renameDevice: (ref: ScopedThreadRef, surfaceId: string, title: string) => void;
-  openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
+  openBrowser: (
+    ref: ScopedThreadRef,
+    tabId: string | null,
+    resource?: PreviewViewerResource,
+  ) => void;
   openFile: (ref: ScopedThreadRef, relativePath: string, line?: number) => void;
   /**
    * Moves the folder browser in `surfaceId` to `relativePath` in place, so walking
@@ -474,6 +512,29 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                     // empty tab.
                     if (!(RIGHT_PANEL_KINDS as ReadonlyArray<string | undefined>).includes(kind))
                       return [];
+                    if (surface.kind === "device" && surface.target?.resource !== undefined) {
+                      const { resource } = surface.target;
+                      if (
+                        !isDeviceResource(resource) ||
+                        surface.id !== deviceTabSurfaceId(surface.target) ||
+                        resource.hostId !== surface.target.hostId ||
+                        resource.deviceId !== surface.target.deviceId ||
+                        resource.platform !== surface.target.platform
+                      )
+                        return [];
+                    }
+                    if (
+                      surface.kind === "preview" &&
+                      "resource" in surface &&
+                      surface.resource !== undefined
+                    ) {
+                      if (
+                        !isPreviewResource(surface.resource) ||
+                        surface.id !== browserResourceSurfaceId(surface.resource) ||
+                        surface.resource.tabId !== surface.resourceId
+                      )
+                        return [];
+                    }
                     if (surface.kind === "issue") {
                       if (
                         surface.id !== "issue" ||
@@ -655,8 +716,7 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
       openDevice: (ref, target, automatic = false) =>
         set((state) =>
           (automatic ? automaticUpdate : userAction)(state, scopedThreadKey(ref), (current) => {
-            const id =
-              `device:${encodeURIComponent(target.hostId)}:${encodeURIComponent(target.deviceId)}` as const;
+            const id = deviceTabSurfaceId(target);
             if (automatic && current.dismissedDeviceSurfaceIds?.includes(id)) return current;
             const surface: RightPanelSurface = { id, kind: "device", target };
             const existing = current.surfaces.find((entry) => entry.id === id);
@@ -686,10 +746,18 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             ),
           })),
         ),
-      openBrowser: (ref, tabId) =>
+      openBrowser: (ref, tabId, resource) =>
         set((state) =>
           userAction(state, scopedThreadKey(ref), (current) => {
-            const surface = browserSurface(tabId);
+            const surface: RightPanelSurface =
+              resource === undefined
+                ? browserSurface(tabId)
+                : {
+                    id: browserResourceSurfaceId(resource),
+                    kind: "preview",
+                    resourceId: resource.tabId,
+                    resource,
+                  };
             const withoutPlaceholder = tabId
               ? current.surfaces.filter((entry) => entry.id !== "browser:new")
               : current.surfaces;
@@ -1135,7 +1203,9 @@ useRightPanelStore.subscribe((next, previous) => {
     for (const surface of closedInOrder) {
       if (
         surface.kind === "terminal" ||
-        (surface.kind === "preview" && surface.resourceId !== null)
+        (surface.kind === "preview" &&
+          surface.resourceId !== null &&
+          !("resource" in surface && surface.resource !== undefined))
       )
         continue;
       useClosedViewStore.getState().remember({ kind: "panel-tab", threadRef, surface });

@@ -50,6 +50,7 @@ import { REUSABLE_DEV_SESSION_EXPIRES_AT, resolveReusableDevAuth } from "./Reusa
 import { verifyRequestDpopProof } from "./dpop.ts";
 import { DESKTOP_RENDERER_ORIGINS } from "../httpCors.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as AuthSessions from "../persistence/AuthSessions.ts";
 
 const DEFAULT_SESSION_SUBJECT = "cli-issued-session";
 export const INTERNAL_ADMINISTRATIVE_BOOTSTRAP_SUBJECT = "administrative-bootstrap";
@@ -639,7 +640,9 @@ export function toBootstrapExchangeError(
   });
 }
 
-const rejectMcpClientAudience = <S extends { readonly subject: string }>(session: S) =>
+export const rejectMcpClientAudience = <S extends { readonly subject: string }>(
+  session: S,
+): Effect.Effect<S, ServerAuthInvalidCredentialError> =>
   session.subject === MCP_CLIENT_SUBJECT
     ? Effect.fail(
         new ServerAuthInvalidCredentialError({
@@ -647,6 +650,32 @@ const rejectMcpClientAudience = <S extends { readonly subject: string }>(session
         }),
       ).pipe(Effect.tap(() => Effect.logWarning("Rejected an MCP client session outside /mcp.")))
     : Effect.succeed(session);
+
+/** Bind an internal, repeatable effect check to the native ingress's real session. */
+export const nativeSessionAuthorization = Effect.fn("EnvironmentAuth.nativeSessionAuthorization")(
+  function* (session: AuthenticatedSession, requiredScope: AuthEnvironmentScope) {
+    const sessions = yield* AuthSessions.AuthSessionRepository;
+    return Effect.gen(function* () {
+      const current = yield* sessions
+        .getById({ sessionId: session.sessionId })
+        .pipe(
+          Effect.mapError((cause) => new ServerAuthSessionCredentialValidationError({ cause })),
+        );
+      const now = yield* DateTime.now;
+      if (
+        Option.isNone(current) ||
+        current.value.revokedAt !== null ||
+        DateTime.isLessThanOrEqualTo(current.value.expiresAt, now) ||
+        !current.value.scopes.includes(requiredScope) ||
+        !session.scopes.includes(requiredScope)
+      )
+        return yield* new ServerAuthInvalidCredentialError({
+          diagnostic: "The original native client no longer permits this operation.",
+        });
+      yield* rejectMcpClientAudience(current.value);
+    }).pipe(Effect.asVoid);
+  },
+);
 
 const mapSessionVerificationErrors = <A, R>(
   effect: Effect.Effect<A, SessionStore.SessionCredentialError, R>,

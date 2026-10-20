@@ -13,6 +13,8 @@ import {
 import * as McpRouting from "./McpRouting.ts";
 import { checkOutsideGrant } from "./outsideGrant.ts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
 import * as Ref from "effect/Ref";
 import * as Struct from "effect/Struct";
 import type * as Layer from "effect/Layer";
@@ -172,6 +174,67 @@ export const actsAsCaller = <P, A, E, R>(
         Effect.flatMap(() => McpRouting.invoke(params, handle)),
       ),
     effect,
+  );
+
+/** Resource context need not run a provider when verified incoming authority owns the action. */
+export const actsOnResource = <P, A, E, R>(
+  capability: "preview" | "device",
+  handle: (params: P) => Effect.Effect<A, E, R>,
+  effect: "read" | "owned" | "external-unknown" = "owned",
+) =>
+  declare(
+    (params: P) =>
+      Effect.gen(function* () {
+        const scope = yield* requireThreadCaller;
+        yield* refuseReadOnlyClient;
+        if (scope.client?.linked === true && scope.authority !== undefined) {
+          const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+          if (Option.isNone(authority)) return yield* unavailable();
+          yield* authority.value.recheckInvocation(scope, capability, scope.thread.threadId);
+        } else yield* writingCaller;
+        return yield* McpRouting.invoke(params, handle);
+      }),
+    effect,
+  );
+
+/** Rechecks staged bytes without treating a verified destination context as a provider run. */
+export const recheckAttachmentStaging = Effect.gen(function* () {
+  const caller = yield* loadCaller();
+  const { scope } = caller;
+  if (
+    scope.client?.linked === true &&
+    scope.authority !== undefined &&
+    scope.thread !== undefined
+  ) {
+    if (caller.caller?.archivedAt !== null)
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "The attachment resource context is no longer available.",
+      });
+    const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+    if (Option.isNone(authority)) return yield* unavailable();
+    yield* authority.value.checkTarget(scope, { type: "thread", threadId: scope.thread.threadId });
+  } else {
+    yield* assertLiveCaller(caller);
+    if (scope.authority !== undefined && scope.thread !== undefined) {
+      const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+      if (Option.isNone(authority)) return yield* unavailable();
+      yield* authority.value.checkTarget(scope, {
+        type: "thread",
+        threadId: scope.thread.threadId,
+      });
+    }
+  }
+});
+
+/** Staging is generic attachment work; its eventual native consumer owns resource capability consent. */
+export const stagesAttachments = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
+  declare((params: P) =>
+    refuseReadOnlyClient.pipe(
+      Effect.andThen(readCaller()),
+      Effect.andThen(recheckAttachmentStaging),
+      Effect.andThen(McpRouting.invoke(params, handle)),
+    ),
   );
 
 /**

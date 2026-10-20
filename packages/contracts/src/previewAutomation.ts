@@ -1,4 +1,6 @@
 import { Schema } from "effect";
+import { PeerAttachmentReference } from "./peerAttachments.ts";
+import { NativeBrowserDownloadAssetResource } from "./assets.ts";
 
 import { EnvironmentId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
@@ -8,6 +10,7 @@ import {
   PreviewViewportPresetId,
   PreviewViewportSetting,
   PreviewViewportSize,
+  PreviewViewerResource,
 } from "./preview.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { BrowserProfileId } from "./browserProfile.ts";
@@ -87,6 +90,7 @@ export const PreviewAutomationProfile = Schema.Struct({
 export type PreviewAutomationProfile = typeof PreviewAutomationProfile.Type;
 
 export const PreviewAutomationStatus = Schema.Struct({
+  resource: Schema.optional(PreviewViewerResource),
   available: Schema.Boolean,
   visible: Schema.Boolean,
   tabId: Schema.NullOr(PreviewTabId),
@@ -120,9 +124,10 @@ export const PreviewAutomationStatus = Schema.Struct({
     Schema.Array(
       Schema.Struct({
         fileName: Schema.String,
-        path: Schema.String,
+        resource: Schema.optional(Schema.suspend(() => NativeBrowserDownloadAssetResource)),
+        path: Schema.optional(Schema.String),
         sizeBytes: Schema.Number,
-        url: Schema.String,
+        url: Schema.optional(Schema.String),
         completedAt: Schema.String,
       }),
     ),
@@ -136,6 +141,7 @@ export const PreviewAutomationStatus = Schema.Struct({
     Schema.Array(
       Schema.Struct({
         tabId: PreviewTabId,
+        resource: Schema.optional(PreviewViewerResource),
         url: Schema.NullOr(Schema.String),
         openerTabId: Schema.optional(PreviewTabId),
         owner: Schema.optional(PreviewAutomationTabOwner),
@@ -512,9 +518,23 @@ export type PreviewAutomationDragInput = typeof PreviewAutomationDragInput.Type;
 
 export const PreviewAutomationUploadInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
-  paths: Schema.Array(TrimmedNonEmptyString).check(Schema.isMaxLength(20)).annotate({
+  paths: Schema.optionalKey(
+    Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(4096))).check(
+      Schema.isMaxLength(20),
+    ),
+  ).annotate({
     description:
       "Absolute paths of files on the environment to give the page. An empty list cancels the open file picker.",
+  }),
+  artifacts: Schema.optionalKey(
+    Schema.Array(Schema.suspend(() => PeerAttachmentReference)).check(Schema.isMaxLength(20)),
+  ).annotate({
+    description:
+      "Qualified file references returned by t3_attachment_inspect, at most20files/100MiB total. Use instead of paths and supply the exact browser resource. An empty list clears a named input or cancels its picker.",
+  }),
+  resource: Schema.optionalKey(Schema.suspend(() => PreviewViewerResource)).annotate({
+    description:
+      "Exact qualified browser resource returned by preview_open or preview_status, required with artifacts. Retain its environment, thread, tab and server epoch unchanged.",
   }),
   selector: Schema.optional(LegacySelector).annotate({
     description: "Legacy CSS selector for an <input type=file>. Prefer locator.",
@@ -528,8 +548,20 @@ export const PreviewAutomationUploadInput = Schema.Struct({
   .check(
     Schema.makeFilter(
       (input) =>
-        !(input.selector !== undefined && input.locator !== undefined) ||
-        "Provide at most one of selector or locator.",
+        ((input.paths !== undefined) !== (input.artifacts !== undefined) &&
+          (input.artifacts === undefined
+            ? input.resource === undefined
+            : input.resource !== undefined &&
+              (input.tabId === undefined || input.tabId === input.resource.tabId) &&
+              new Set(
+                input.artifacts.map(
+                  (reference) => `${reference.environmentId}:${reference.attachmentId}`,
+                ),
+              ).size === input.artifacts.length &&
+              input.artifacts.reduce((total, reference) => total + reference.sizeBytes, 0) <=
+                100 * 1024 * 1024) &&
+          !(input.selector !== undefined && input.locator !== undefined)) ||
+        "Provide either local paths or qualified artifacts with their exact browser resource; at most20 files/100 MiB, unique references and one locator.",
     ),
   )
   .annotate({

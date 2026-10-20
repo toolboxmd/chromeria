@@ -4,7 +4,12 @@ import { EnvironmentId } from "@t3tools/contracts";
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vite-plus/test";
 
 const accessStore = {
-  value: { httpBase: "http://test", wsBase: "ws://test", query: {}, credentials: true },
+  value: {
+    httpBase: "http://test",
+    wsBase: "ws://test",
+    query: { hostId: "local" },
+    credentials: true,
+  },
   listeners: new Set<() => void>(),
   refresh() {
     accessStore.value = { ...accessStore.value };
@@ -17,6 +22,11 @@ const accessStore = {
 };
 vi.mock(import("~/state/device"), async (original) => ({
   ...(await original()),
+  useDeviceHubAccessState: () => ({
+    access: useSyncExternalStore(accessStore.subscribe, () => accessStore.value),
+    error: null,
+    refresh: accessStore.refresh,
+  }),
   useDeviceHubAccess: () => useSyncExternalStore(accessStore.subscribe, () => accessStore.value),
   refreshDeviceHubAccess: () => accessStore.refresh(),
 }));
@@ -143,7 +153,7 @@ async function setup(h264 = false) {
     }
   }
   vi.stubGlobal("fetch", (url: string, init: RequestInit) => {
-    if (url.endsWith("stream.avcc")) {
+    if (new URL(url).pathname.endsWith("stream.avcc")) {
       return Promise.resolve(
         new Response(
           new ReadableStream<Uint8Array>({

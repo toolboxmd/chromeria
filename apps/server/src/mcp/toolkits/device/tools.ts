@@ -11,6 +11,7 @@ import {
   DeviceCommandInput,
   DeviceCommandResult,
   DeviceCommandCatalog,
+  DeviceCommandTarget,
   DeviceHostId,
   closedDeviceCommand,
 } from "@t3tools/contracts";
@@ -101,7 +102,12 @@ const DeviceCloseTool = Tool.make("device_close", {
 const DeviceCommandsTool = Tool.make("device_commands", {
   description:
     "Discover app-owned typed command support and check the installed destination runtime without starting helpers or touching a device. An older peer without this tool cannot execute typed commands.",
-  parameters: McpRouting.parameters(Schema.Struct({ hostId: Schema.optional(DeviceHostId) })),
+  parameters: McpRouting.parameters(
+    Schema.Struct({
+      hostId: Schema.optional(DeviceHostId),
+      target: Schema.optional(DeviceCommandTarget),
+    }),
+  ),
   success: DeviceCommandCatalog,
   failure: DeviceToolFailure,
   dependencies,
