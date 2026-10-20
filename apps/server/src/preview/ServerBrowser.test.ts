@@ -36,6 +36,7 @@ import * as DesktopChannel from "./DesktopBrowserChannel.ts";
 import * as Manager from "./Manager.ts";
 import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
+import { settlementLayer, settleThread } from "./BrowserSettlement.testkit.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
 
 vi.mock("./ServerBrowserContexts.ts", () => ({
@@ -48,6 +49,7 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
     async contextFor(profileId: string, isolationKey?: string) {
       contextRequests.push({ profileId, isolated: isolationKey !== undefined });
       if (contextFailure) throw contextFailure;
+      contextStarted?.();
       await contextGate?.promise;
       const context = makeContext(this.onClose);
       contexts.push(context);
@@ -268,6 +270,7 @@ const contexts: ReturnType<typeof makeContext>[] = [];
 const encoderStreams: Array<{ frameRate: number | undefined; bitsPerSecond: number }> = [];
 const contextRequests: Array<{ profileId: string; isolated: boolean }> = [];
 let contextGate: PromiseWithResolvers<void> | null = null;
+let contextStarted: (() => void) | null = null;
 let pageCopy = "";
 let keyCopy = "";
 let focusedFrame: ReturnType<typeof makeFrame> | null = null;
@@ -309,6 +312,7 @@ const asSession = (providerSessionId: string) => ({
   thread: { ...testThread, providerSessionId },
 });
 const dependencies = Layer.mergeAll(
+  settlementLayer,
   Broker.layer,
   Layer.succeed(CredentialVault.CredentialVault, {
     uris: () => Effect.succeed(["example.test"]),
@@ -398,6 +402,7 @@ beforeEach(() => {
   encoderStreams.length = 0;
   contextRequests.length = 0;
   contextGate = null;
+  contextStarted = null;
   contextFailure = null;
   initialNavigation = null;
   vaultValue = null;
@@ -1291,6 +1296,105 @@ it.live("agents read a human's tab with no arguments and act on it only while no
       expect(retaken).toMatchObject({ reason: "humanControl" });
     }),
   ).pipe(Effect.provide(layer)),
+);
+
+it.live("settlement closes only the thread's unwatched agent tabs and permits reopening", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      const open = (targetScope = scope) =>
+        broker.invoke<PreviewAutomationStatus>({
+          scope: targetScope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false },
+        });
+      const second = yield* open();
+      const watched = yield* open();
+      yield* browser.attachViewer(viewerInput(watched.tabId!, false));
+      const controlled = yield* open();
+      const controller = yield* browser.attachViewer(viewerInput(controlled.tabId!, true));
+      yield* controller.input({ type: "takeControl" });
+      const human = yield* manager.open({ threadId: testThread.threadId, runtime: "server" });
+      yield* broker.invoke({ scope, tabId: human.tabId, operation: "status", input: {} });
+      const otherScope = {
+        ...scope,
+        thread: { ...testThread, threadId: ThreadId.make("other-thread") },
+      };
+      const other = yield* open(otherScope);
+      const events = yield* manager.subscribeEvents;
+      yield* settleThread(testThread.threadId);
+      const closed = new Set<string>();
+      while (closed.size < 2) {
+        const event = yield* PubSub.take(events);
+        if (event.type === "closed") closed.add(event.tabId);
+      }
+      expect(closed).toEqual(new Set([tabId, second.tabId]));
+      expect(contexts[0]!.page.close).toHaveBeenCalled();
+      expect(contexts[1]!.page.close).toHaveBeenCalled();
+      const status = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        tabId: watched.tabId!,
+        operation: "status",
+        input: {},
+      });
+      expect(status.tabs?.map((tab) => tab.tabId).toSorted()).toEqual(
+        [watched.tabId, controlled.tabId, human.tabId].toSorted(),
+      );
+      expect(
+        (yield* manager.list({ threadId: otherScope.thread.threadId })).sessions.map(
+          (tab) => tab.tabId,
+        ),
+      ).toEqual([other.tabId]);
+      const reopened = yield* open();
+      expect(reopened.tabId).not.toBe(tabId);
+      expect(
+        yield* broker.invoke({
+          scope,
+          tabId: reopened.tabId!,
+          operation: "evaluate",
+          input: { expression: "1" },
+        }),
+      ).toBe("evaluated");
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live(
+  "settlement also disposes agent tabs that were still opening, then allows a fresh open",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { broker, tabId } = yield* ready;
+        const manager = yield* Manager.PreviewManager;
+        const events = yield* manager.subscribeEvents;
+        contextGate = Promise.withResolvers<void>();
+        const entered = Promise.withResolvers<void>();
+        contextStarted = () => entered.resolve();
+        const open = broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false },
+        });
+        const opening = yield* open.pipe(Effect.exit, Effect.forkScoped);
+        let event = yield* PubSub.take(events);
+        while (event.type !== "opened") event = yield* PubSub.take(events);
+        const pendingId = event.tabId;
+        yield* Effect.promise(() => entered.promise);
+        yield* settleThread(testThread.threadId);
+        event = yield* PubSub.take(events);
+        while (event.type !== "closed" || event.tabId !== tabId) event = yield* PubSub.take(events);
+        contextGate.resolve();
+        contextGate = null;
+        expect((yield* Fiber.join(opening))._tag).toBe("Failure");
+        event = yield* PubSub.take(events);
+        while (event.type !== "closed" || event.tabId !== pendingId)
+          event = yield* PubSub.take(events);
+        expect(contexts[1]!.page.close).toHaveBeenCalled();
+        expect((yield* manager.list({ threadId: testThread.threadId })).sessions).toEqual([]);
+        expect((yield* open).available).toBe(true);
+      }),
+    ).pipe(Effect.provide(layer)),
 );
 
 it.live("a session's own tab stays its default while other sessions' tabs are listed", () =>
