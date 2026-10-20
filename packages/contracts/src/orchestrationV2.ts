@@ -3385,6 +3385,7 @@ const OrchestrationV2InternalCommand = Schema.Union([
    */
   Schema.Struct({
     type: Schema.Literal("delegated_task.group.request"),
+    purposeIntent: Schema.optional(PurposeIntent),
     ...OrchestrationV2CreationFields,
     commandId: CommandId,
     parentThreadId: ThreadId,

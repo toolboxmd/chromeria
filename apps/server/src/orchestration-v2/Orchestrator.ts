@@ -13158,6 +13158,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (
         command.type === "message.dispatch" ||
         command.type === "delegated_task.request" ||
+        command.type === "delegated_task.group.request" ||
         command.type === "delegated_task.remote.request"
       ) {
         const prior = storedEvents.find(({ event }) =>

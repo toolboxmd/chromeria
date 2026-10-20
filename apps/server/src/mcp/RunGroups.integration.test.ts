@@ -4,7 +4,8 @@ import {
   CommandId,
   EnvironmentId,
   MessageId,
-  type NodeId,
+  NodeId,
+  type OrchestrationV2ServerCommand,
   type OrchestrationV2ProviderCapabilities,
   type OrchestrationV2ProviderSession,
   type OrchestrationV2ProviderThread,
@@ -17,6 +18,7 @@ import {
   ProviderInstanceId,
   ProviderThreadId,
   ProviderTurnId,
+  type PurposeIntent,
   type ServerProvider,
   ThreadId,
   TurnItemId,
@@ -70,6 +72,15 @@ const codexColor = { instanceId: codex, model: codexModel };
 const claudeColor = { instanceId: claude, model: claudeModel };
 /** A Color whose provider this environment does not have, so it cannot start. */
 const ghostColor = { instanceId: ProviderInstanceId.make("ghost"), model: "ghost-1" };
+
+const referenceA = {
+  host: "github.com",
+  repository: "example/repo",
+  kind: "issue",
+  number: 11,
+} as const;
+const referenceB = { ...referenceA, number: 12 } as const;
+const parentIntent = { version: 1, intent: { type: "reference", reference: referenceA } } as const;
 
 const decodeTask = Schema.decodeUnknownEffect(OrchestratorMcpDelegateTaskResult);
 const decodeGroup = Schema.decodeUnknownEffect(OrchestratorMcpRunGroupResult);
@@ -347,6 +358,7 @@ const withParent = <A, E>(
     >;
     readonly drain: Effect.Effect<number, EffectWorker.OrchestrationEffectWorkerError>;
   }) => Effect.Effect<A, E, Orchestrator.OrchestratorV2>,
+  purposeIntent?: PurposeIntent,
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -452,6 +464,7 @@ const withParent = <A, E>(
           createdBy: "user",
           creationSource: "web",
           commandId: CommandId.make("command:run-group:start"),
+          ...(purposeIntent === undefined ? {} : { purposeIntent }),
           threadId: parentThreadId,
           messageId: MessageId.make("message:run-group:start"),
           text: "Keep the parent turn active.",
@@ -500,6 +513,367 @@ const subagent = (projection: OrchestrationV2ThreadProjection, id: NodeId) =>
   projection.subagents.find((task) => task.id === id);
 
 describe("Run groups", () => {
+  it.live.each([
+    {
+      name: "reference override",
+      intent: { version: 1, intent: { type: "reference", reference: referenceB } },
+      scope: { type: "single", reference: referenceB },
+      provenance: { type: "declared" },
+    },
+    {
+      name: "exact parent inheritance",
+      intent: { version: 1, intent: { type: "inherit" } },
+      scope: { type: "single", reference: referenceA },
+      provenance: { type: "parent_run", threadId: parentThreadId },
+    },
+    {
+      name: "deliberate unscoped",
+      intent: { version: 1, intent: { type: "unscoped" } },
+      scope: { type: "unscoped", reason: "deliberate" },
+      provenance: { type: "declared" },
+    },
+    {
+      name: "selection",
+      intent: { version: 1, intent: { type: "selection", expectedRevision: 2 } },
+      scope: { type: "single", reference: referenceB },
+      provenance: { type: "selection", revision: 2 },
+    },
+    {
+      name: "legacy omission",
+      intent: undefined,
+      scope: { type: "unscoped", reason: "legacy_no_intent" },
+      provenance: { type: "legacy" },
+    },
+  ] as const)(
+    "persists $name on every member and child run, as single delegation does",
+    (testCase) =>
+      withParent(
+        roastRun([codexColor, claudeColor], 2),
+        () => Effect.succeed<TurnOutcome>("hang"),
+        ({ orchestrator, invoke, drain }) =>
+          Effect.gen(function* () {
+            const active = (yield* orchestrator.getThreadProjection(parentThreadId)).runs[0]!;
+            expect(active.purpose).toEqual({
+              version: 1,
+              scope: { type: "single", reference: referenceA },
+              provenance: { type: "declared" },
+            });
+            yield* orchestrator.dispatch({
+              type: "thread.metadata.update",
+              commandId: CommandId.make("command:run-group:select-b"),
+              threadId: parentThreadId,
+              purposeSelection: {
+                expectedRevision: 1,
+                scope: { type: "single", reference: referenceB },
+              },
+            });
+            const args = {
+              task: "Check purpose admission.",
+              prismRole: "roast",
+              clientRequestId: "purpose-group",
+              ...(testCase.intent === undefined ? {} : { purposeIntent: testCase.intent }),
+            };
+            const started = yield* group(yield* invoke("delegate_task", args));
+            expect(started.tasks).toHaveLength(2);
+            const single = yield* decodeTask(
+              (yield* invoke("delegate_task", {
+                ...args,
+                clientRequestId: "purpose-single",
+                target: { providerInstanceId: codex, model: codexModel },
+              })).structuredContent,
+            ).pipe(Effect.orDie);
+            yield* drain;
+            const parent = yield* orchestrator.getThreadProjection(parentThreadId);
+            const admitted = [];
+            for (const task of [...started.tasks, single]) {
+              const member = subagent(parent, task.taskId)!;
+              const child = yield* waitForProjection(
+                orchestrator,
+                task.childThreadId!,
+                (projection) => projection.runs[0]?.status === "running",
+              );
+              expect(member.purpose).toMatchObject({
+                version: 1,
+                scope: testCase.scope,
+                provenance: testCase.provenance,
+              });
+              if (testCase.intent?.intent.type === "inherit")
+                expect(member.purpose?.provenance).toEqual({
+                  type: "parent_run",
+                  threadId: parentThreadId,
+                  runId: active.id,
+                });
+              expect(member.purposeIntent).toEqual(testCase.intent);
+              expect(child.runs).toHaveLength(1);
+              expect(child.runs[0]?.purpose).toEqual(member.purpose);
+              expect(child.thread.purposeSelection?.scope).toEqual(testCase.scope);
+              admitted.push({ taskId: task.taskId, run: child.runs[0], purpose: member.purpose });
+              if (testCase.intent === undefined)
+                expect(task.warnings?.join(" ")).toContain("Legacy caller omitted purpose intent");
+            }
+            // A changed chip must not re-resolve an already admitted selection or inheritance.
+            yield* orchestrator.dispatch({
+              type: "thread.metadata.update",
+              commandId: CommandId.make("command:run-group:select-a"),
+              threadId: parentThreadId,
+              purposeSelection: {
+                expectedRevision: 2,
+                scope: { type: "single", reference: referenceA },
+              },
+            });
+            const sequence = yield* orchestrator.getThreadEventSequence(parentThreadId);
+            const retry = yield* group(yield* invoke("delegate_task", args));
+            expect(retry.tasks.map((task) => task.taskId)).toEqual(
+              started.tasks.map((task) => task.taskId),
+            );
+            yield* drain;
+            expect(yield* orchestrator.getThreadEventSequence(parentThreadId)).toBe(sequence);
+            expect(
+              (yield* orchestrator.getThreadProjection(parentThreadId)).subagents,
+            ).toHaveLength(3);
+            for (const record of admitted) {
+              const child = yield* orchestrator.getThreadProjection(
+                [...started.tasks, single].find((task) => task.taskId === record.taskId)!
+                  .childThreadId!,
+              );
+              expect(child.runs).toEqual([record.run]);
+            }
+            expect(
+              (yield* orchestrator.getThreadProjection(parentThreadId)).runs[0]?.purpose,
+            ).toEqual(active.purpose);
+          }),
+        parentIntent,
+      ),
+  );
+
+  it.live("rejects changed purpose intent on group fast replay before effects", () =>
+    withParent(
+      roastRun([codexColor, claudeColor], 2),
+      () => Effect.succeed<TurnOutcome>("hang"),
+      ({ orchestrator, invoke, drain }) =>
+        Effect.gen(function* () {
+          const args = {
+            task: "Check retry.",
+            prismRole: "roast",
+            clientRequestId: "purpose-retry",
+            purposeIntent: parentIntent,
+          };
+          const started = yield* group(yield* invoke("delegate_task", args));
+          yield* drain;
+          const children = yield* Effect.forEach(started.tasks, (task) =>
+            waitForProjection(
+              orchestrator,
+              task.childThreadId!,
+              (projection) => projection.runs[0]?.status === "running",
+            ),
+          );
+          const parent = yield* orchestrator.getThreadProjection(parentThreadId);
+          const sequence = yield* orchestrator.getThreadEventSequence(parentThreadId);
+          for (const purposeIntent of [
+            undefined,
+            { version: 1, intent: { type: "reference", reference: referenceB } },
+            { version: 1, intent: { type: "inherit" } },
+            { version: 1, intent: { type: "unscoped" } },
+          ]) {
+            const refused = yield* invoke("delegate_task", { ...args, purposeIntent });
+            expect(declaredFailure(refused)).toMatchObject({ code: "orchestration_error" });
+            expect(declaredFailure(refused).message).toContain("different purpose intent");
+          }
+          yield* drain;
+          expect(yield* orchestrator.getThreadEventSequence(parentThreadId)).toBe(sequence);
+          expect((yield* orchestrator.getThreadProjection(parentThreadId)).subagents).toEqual(
+            parent.subagents,
+          );
+          for (const [index, task] of started.tasks.entries())
+            expect((yield* orchestrator.getThreadProjection(task.childThreadId!)).runs).toEqual(
+              children[index]!.runs,
+            );
+        }),
+      parentIntent,
+    ),
+  );
+
+  it.live(
+    "the native group receipt rejects changed intent and replays the first admitted identity",
+    () =>
+      withParent(
+        roastRun([codexColor, claudeColor], 2),
+        () => Effect.succeed<TurnOutcome>("hang"),
+        ({ orchestrator, drain }) =>
+          Effect.gen(function* () {
+            const parent = yield* orchestrator.getThreadProjection(parentThreadId);
+            const active = parent.runs[0]!;
+            const command: Extract<
+              OrchestrationV2ServerCommand,
+              { type: "delegated_task.group.request" }
+            > = {
+              type: "delegated_task.group.request",
+              createdBy: "agent",
+              creationSource: "mcp",
+              commandId: CommandId.make("command:run-group:native-purpose"),
+              parentThreadId,
+              parentRunId: active.id,
+              parentNodeId: active.rootNodeId!,
+              groupId: NodeId.make("run-group:native-purpose"),
+              task: "Check native receipt.",
+              members: [
+                { modelSelection: codexColor, runtimeMode: "full-access" },
+                { modelSelection: claudeColor, runtimeMode: "full-access" },
+              ],
+              interactionMode: "default",
+              completionWake: "always",
+              purposeIntent: parentIntent,
+            };
+            const first = yield* orchestrator.dispatch(command);
+            yield* drain;
+            const admitted = yield* orchestrator.getThreadProjection(parentThreadId);
+            expect(admitted.subagents).toHaveLength(2);
+            expect(
+              admitted.subagents.every(
+                (task) =>
+                  task.purpose?.scope.type === "single" &&
+                  task.purpose.scope.reference.number === 11,
+              ),
+            ).toBe(true);
+            const replay = yield* orchestrator.dispatch(command);
+            expect(replay.storedEvents).toEqual(first.storedEvents);
+            const changed = {
+              ...command,
+              purposeIntent: { version: 1, intent: { type: "unscoped" } },
+            } as const;
+            const refused = yield* orchestrator.dispatch(changed).pipe(Effect.flip);
+            expect(refused).toMatchObject({
+              _tag: "OrchestratorDispatchError",
+              cause: { _tag: "PurposeAdmissionError", reason: "intent_reused" },
+            });
+            yield* drain;
+            expect((yield* orchestrator.getThreadProjection(parentThreadId)).subagents).toEqual(
+              admitted.subagents,
+            );
+          }),
+        parentIntent,
+      ),
+  );
+
+  it.live.each([
+    { name: "legacy", intent: undefined },
+    { name: "deliberate", intent: { version: 1, intent: { type: "unscoped" } } },
+  ] as const)("inherits the exact $name unscoped parent run", ({ intent }) =>
+    withParent(
+      roastRun([codexColor, claudeColor], 2),
+      () => Effect.succeed<TurnOutcome>("hang"),
+      ({ orchestrator, invoke }) =>
+        Effect.gen(function* () {
+          const active = (yield* orchestrator.getThreadProjection(parentThreadId)).runs[0]!;
+          const started = yield* group(
+            yield* invoke("delegate_task", {
+              task: "Check unscoped inheritance.",
+              prismRole: "roast",
+              purposeIntent: { version: 1, intent: { type: "inherit" } },
+            }),
+          );
+          const parent = yield* orchestrator.getThreadProjection(parentThreadId);
+          for (const task of started.tasks) {
+            const member = subagent(parent, task.taskId)!;
+            expect(member.purpose).toEqual({
+              version: 1,
+              scope: {
+                type: "unscoped",
+                reason: intent === undefined ? "legacy_no_intent" : "deliberate",
+              },
+              provenance: { type: "parent_run", threadId: parentThreadId, runId: active.id },
+            });
+            expect(
+              (yield* orchestrator.getThreadProjection(task.childThreadId!)).runs[0]?.purpose,
+            ).toEqual(member.purpose);
+          }
+        }),
+      intent,
+    ),
+  );
+
+  it.live("rejects stale selection before admitting any group member or provider effect", () =>
+    Effect.gen(function* () {
+      const starts = yield* Ref.make(0);
+      yield* withParent(
+        roastRun([codexColor, claudeColor], 2),
+        () => Ref.update(starts, (n) => n + 1).pipe(Effect.as<TurnOutcome>("hang")),
+        ({ orchestrator, invoke, drain }) =>
+          Effect.gen(function* () {
+            const sequence = yield* orchestrator.getThreadEventSequence(parentThreadId);
+            const refused = yield* invoke("delegate_task", {
+              task: "Reject stale selection.",
+              prismRole: "roast",
+              purposeIntent: { version: 1, intent: { type: "selection", expectedRevision: 0 } },
+            });
+            expect(declaredFailure(refused)).toMatchObject({ code: "orchestration_error" });
+            yield* drain;
+            expect(
+              (yield* orchestrator.getThreadProjection(parentThreadId)).subagents,
+            ).toHaveLength(0);
+            expect(yield* orchestrator.getThreadEventSequence(parentThreadId)).toBe(sequence);
+            expect(yield* Ref.get(starts)).toBe(0);
+          }),
+        parentIntent,
+      );
+    }),
+  );
+
+  it.live(
+    "a later member admission failure discards the earlier purpose-bearing child and effects",
+    () =>
+      Effect.gen(function* () {
+        const starts = yield* Ref.make(0);
+        yield* withParent(
+          roastRun([codexColor, claudeColor], 2),
+          () => Ref.update(starts, (n) => n + 1).pipe(Effect.as<TurnOutcome>("hang")),
+          ({ orchestrator, drain }) =>
+            Effect.gen(function* () {
+              const active = (yield* orchestrator.getThreadProjection(parentThreadId)).runs[0]!;
+              const sequence = yield* orchestrator.getThreadEventSequence(parentThreadId);
+              const commandId = CommandId.make("command:run-group:late-admission-failure");
+              const refused = yield* orchestrator
+                .dispatch({
+                  type: "delegated_task.group.request",
+                  createdBy: "agent",
+                  creationSource: "mcp",
+                  commandId,
+                  parentThreadId,
+                  parentRunId: active.id,
+                  parentNodeId: active.rootNodeId!,
+                  groupId: NodeId.make("run-group:late-admission-failure"),
+                  task: "Reject all members.",
+                  members: [
+                    { modelSelection: codexColor, runtimeMode: "full-access" },
+                    { modelSelection: ghostColor, runtimeMode: "full-access" },
+                  ],
+                  interactionMode: "default",
+                  completionWake: "always",
+                  purposeIntent: parentIntent,
+                })
+                .pipe(Effect.flip);
+              expect(refused).toMatchObject({
+                _tag: "OrchestratorProviderAdapterError",
+                providerInstanceId: ghostColor.instanceId,
+              });
+              yield* drain;
+              expect(
+                (yield* orchestrator.getThreadProjection(parentThreadId)).subagents,
+              ).toHaveLength(0);
+              expect(yield* orchestrator.getThreadEventSequence(parentThreadId)).toBe(sequence);
+              const firstChild = ThreadId.make(
+                `thread:delegated-task:${encodeURIComponent(commandId + ":member:0")}`,
+              );
+              expect(
+                yield* orchestrator.getThreadProjection(firstChild).pipe(Effect.isFailure),
+              ).toBe(true);
+              expect(yield* Ref.get(starts)).toBe(0);
+            }),
+          parentIntent,
+        );
+      }),
+  );
+
   it.live("Run 2 Roast wakes the parent once with a failed and a cancelled member", () =>
     Effect.gen(function* () {
       const codexDone = yield* Deferred.make<void>();
