@@ -296,10 +296,7 @@ export const makePreviewBrowser = Effect.fn("PreviewBrowser.make")(function* (
         pending.unshift(...target.split("/"));
         continue;
       }
-      if (
-        !info.isDirectory() &&
-        !(info.isFile() && pending.every((next) => ["", "."].includes(next)))
-      ) {
+      if (!info.isDirectory() && !(info.isFile() && pending.length === 0)) {
         return false;
       }
       resolved = candidate;
