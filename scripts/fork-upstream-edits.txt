@@ -660,15 +660,3 @@ packages/shared/src/toolOutput.ts
 # Qualified viewer per-request screenshot admission (#383)
 packages/client-runtime/src/device/screenshot.ts
 packages/client-runtime/src/device/screenshot.test.ts
-
-# Destination-owned remote secret requests (#385).
-apps/server/src/mcp/McpRequestReceipts.ts
-apps/server/src/mcp/McpRouting.ts
-apps/server/src/peer/PeerAuthority.ts
-apps/server/src/peer/PeerAuthority.workflow.fixture.ts
-apps/server/src/peer/PeerForwarding.ts
-apps/server/src/peer/PeerLinks.ts
-apps/server/src/peer/PeerMcpClient.ts
-apps/server/src/peer/PeerToolRouting.test.ts
-apps/server/src/scheduledTasks/DestinationAutomationAuthority.ts
-apps/server/src/scheduledTasks/mutationReceipts.ts
