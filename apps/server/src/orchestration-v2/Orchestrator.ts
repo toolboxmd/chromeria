@@ -9197,6 +9197,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             return yield* invalid();
           for (const question of questions) {
             const answer = command.answers[question.id];
+            // Clients send "" for an unanswered optional question; like the
+            // message-response path, a blank optional answer selects nothing.
+            if (
+              question.required === false &&
+              (answer === undefined ||
+                (typeof answer === "string"
+                  ? answer.trim().length === 0
+                  : Array.isArray(answer) &&
+                    answer.every((value) => typeof value === "string" && value.trim() === "")))
+            )
+              continue;
             const values =
               typeof answer === "string"
                 ? [answer]

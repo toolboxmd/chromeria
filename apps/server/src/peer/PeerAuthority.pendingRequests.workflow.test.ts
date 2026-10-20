@@ -1685,6 +1685,117 @@ it.live(
 );
 
 it.live(
+  "pending584: a remote answer may leave an optional choice-only question blank",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(descriptorOf("p584-a", "A", { peerAuthority: 1 }), "disk", {
+          attachmentRequests: true,
+          productionKernel: true,
+        });
+        const b = yield* makeNode(descriptorOf("p584-b", "B", { peerAuthority: 1 }), "disk", {
+          attachmentRequests: true,
+          productionKernel: true,
+        });
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("p584-parent");
+        yield* seedParent(a, parent);
+        const child = yield* delegate(a, b, parent, "p584-child");
+        yield* activate(b, child.childId);
+        const seedOptional = (suffix: string) =>
+          Effect.gen(function* () {
+            const requestId = yield* seedPending369(b, child.childId, suffix);
+            const item = (yield* b.threads.getThreadRecords(child.childId, [
+              "turnItems",
+            ])).turnItems.find(
+              (entry) => entry.type === "user_input_request" && entry.requestId === requestId,
+            );
+            if (item?.type !== "user_input_request")
+              return yield* Effect.die("Missing optional question item");
+            yield* b.sink.write({
+              events: [
+                {
+                  id: EventId.make(`p584-shape-${suffix}`),
+                  type: "turn-item.updated",
+                  threadId: child.childId,
+                  occurredAt: yield* DateTime.now,
+                  payload: {
+                    ...item,
+                    questions: [
+                      {
+                        id: "color",
+                        header: "Color",
+                        question: "Color?",
+                        allowCustomAnswer: false,
+                        options: [{ label: "Blue", description: "Required choice" }],
+                      },
+                      {
+                        id: "size",
+                        header: "Size",
+                        question: "Size?",
+                        required: false,
+                        allowCustomAnswer: false,
+                        options: [{ label: "Small", description: "Optional choice" }],
+                      },
+                    ],
+                  },
+                },
+              ],
+            });
+            const args = { environmentId: b.environmentId, threadId: child.childId, requestId };
+            const read = yield* decodePending369Content(
+              (yield* nativeCall(a, parent, "t3_pending_request_read", args)).structuredContent,
+            );
+            return { args, revision: read.revision };
+          });
+        const status = (requestId: string) =>
+          b.threads
+            .getThreadRecords(child.childId, ["runtimeRequests"])
+            .pipe(
+              Effect.map(
+                (records) =>
+                  records.runtimeRequests.find((entry) => entry.id === requestId)?.status,
+              ),
+            );
+
+        const blank = yield* seedOptional("optional-blank");
+        for (const [index, answers] of [
+          { color: "", size: "" },
+          { color: "Blue", size: "Huge" },
+        ].entries()) {
+          const rejected = yield* nativeCall(a, parent, "t3_pending_request_respond", {
+            ...blank.args,
+            expectedRevision: blank.revision,
+            answers,
+            clientRequestId: `p584-invalid-${index}`,
+          });
+          expect(rejected.isError, json(rejected)).toBe(true);
+        }
+        expect(yield* status(blank.args.requestId)).toBe("pending");
+        const blankAnswer = yield* nativeCall(a, parent, "t3_pending_request_respond", {
+          ...blank.args,
+          expectedRevision: blank.revision,
+          answers: { color: "Blue", size: "" },
+          clientRequestId: "p584-blank",
+        });
+        expect(blankAnswer.isError, json(blankAnswer)).not.toBe(true);
+        expect(yield* status(blank.args.requestId)).toBe("resolved");
+
+        const omitted = yield* seedOptional("optional-omitted");
+        const omittedAnswer = yield* nativeCall(a, parent, "t3_pending_request_respond", {
+          ...omitted.args,
+          expectedRevision: omitted.revision,
+          answers: { color: "Blue" },
+          clientRequestId: "p584-omitted",
+        });
+        expect(omittedAnswer.isError, json(omittedAnswer)).not.toBe(true);
+        expect(yield* status(omitted.args.requestId)).toBe("resolved");
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  30000,
+);
+
+it.live(
   "review383-read-capture: readonly capture rechecks after external readiness",
   () =>
     Effect.scoped(
