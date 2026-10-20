@@ -18,12 +18,14 @@ import {
 } from "./providerPolicy.ts";
 import { UserInputQuestion } from "./providerRuntime.ts";
 import { PeerReturnPair } from "./peerAuthority.ts";
+import { ExecutionPurposeScope } from "./executionPurpose.ts";
 
 /** Qualified provenance never occupies a local child/transfer lookup field. */
 export const PeerTaskResult = Schema.Struct({
   environmentId: EnvironmentId,
   threadId: ThreadId,
   runId: RunId,
+  purposeScope: Schema.optional(ExecutionPurposeScope),
   eventId: EventId,
   sequence: NonNegativeInt,
   status: Schema.Literals(["completed", "failed", "cancelled", "interrupted"]),
