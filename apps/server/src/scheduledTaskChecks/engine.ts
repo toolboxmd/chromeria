@@ -1,3 +1,5 @@
+import { requestDigest } from "../mcp/McpRequestReceipts.ts";
+import * as AutomationAuthority from "../scheduledTasks/DestinationAutomationAuthority.ts";
 import { LEGACY_EXECUTION_PURPOSE, purposeScopeOfSavedIntent } from "@t3tools/contracts";
 import * as MutationReceipts from "../scheduledTasks/mutationReceipts.ts";
 import { readScheduledBare } from "../scheduledTasks/bareState.ts";
@@ -195,6 +197,23 @@ const ORPHANED_COMMAND =
 
 export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps) {
   const sql = yield* SqlClient.SqlClient;
+  yield* AutomationAuthority.ensureAutomationAuthoritySchema;
+  const claimRun = (taskId: ScheduledTaskId, run: CheckedRun) =>
+    Effect.gen(function* () {
+      const current = yield* AutomationAuthority.currentAutomationCertificate("schedule", taskId);
+      if (run.automationCertificateId === undefined) {
+        if (current !== undefined)
+          return yield* fail(
+            "The unfinished run predates this accepted automation definition and cannot borrow its authority.",
+          );
+        return;
+      }
+      const certificate = yield* AutomationAuthority.claimAutomationCertificate(
+        run.automationCertificateId,
+      );
+      if (certificate.binding.kind !== "schedule" || certificate.binding.resourceId !== taskId)
+        return yield* fail("The run belongs to another accepted automation definition.");
+    }).pipe(Effect.mapError((error) => fail(error.message)));
   const locks = new Map<string, Semaphore.Semaphore>();
   const locked = <A, E, R>(taskId: string, body: Effect.Effect<A, E, R>) =>
     Effect.suspend(() => {
@@ -252,14 +271,16 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
 
   /** Sends exactly the recorded send; a failure turns into a delayed retry. */
   const deliver = (taskId: ScheduledTaskId, state: CheckState, run: CheckedRun, send: RunSend) =>
-    deps.dispatch({ taskId, run, send }).pipe(
-      Effect.catch((error) =>
-        Clock.currentTimeMillis.pipe(
-          Effect.flatMap((now) => retry(state, run, error.message, now)),
-          Effect.andThen(Effect.fail(error)),
+    claimRun(taskId, run)
+      .pipe(Effect.andThen(deps.dispatch({ taskId, run, send })))
+      .pipe(
+        Effect.catch((error) =>
+          Clock.currentTimeMillis.pipe(
+            Effect.flatMap((now) => retry(state, run, error.message, now)),
+            Effect.andThen(Effect.fail(error)),
+          ),
         ),
-      ),
-    );
+      );
 
   /**
    * Records the next send with its whole payload before anything leaves the
@@ -312,6 +333,9 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
         kind,
         createdAt: iso(now),
         payload: {
+          ...(run.automationCertificateId === undefined
+            ? {}
+            : { automationCertificateId: run.automationCertificateId }),
           purposeSource: run.purpose ?? LEGACY_EXECUTION_PURPOSE,
           ...(bareAuthority === undefined ? {} : { bareReadGrant: bareAuthority.readGrant }),
           ...(task.bare === undefined ? {} : { bare: task.bare }),
@@ -406,6 +430,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
                 const state = yield* readCheckState(task.id);
                 const owned = state?.runs.find((entry) => entry.id === runId);
                 if (owned === undefined || owned.stage !== "running") return null;
+                yield* claimRun(task.id, owned);
                 return yield* deps.start({
                   command,
                   cwd,
@@ -641,7 +666,18 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
               }
               return skipDecision;
             }
-            const run = newRun(state, task, slot, input.manualRequestId);
+            const certificate = yield* AutomationAuthority.currentAutomationCertificate(
+              "schedule",
+              task.id,
+            ).pipe(Effect.mapError((error) => fail(error.message)));
+            if (certificate !== undefined)
+              yield* AutomationAuthority.claimAutomationCertificate(certificate.id).pipe(
+                Effect.mapError((error) => fail(error.message)),
+              );
+            const run: CheckedRun = {
+              ...newRun(state, task, slot, input.manualRequestId),
+              ...(certificate === undefined ? {} : { automationCertificateId: certificate.id }),
+            };
             const withRun: CheckState = { ...state, runs: [...state.runs, run] };
             if (state.kind === "command") {
               // Stored as running before anything is spawned: a restart never runs it twice.
@@ -672,6 +708,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
       const cwd =
         run.checkCwd ??
         (yield* deps.workspace({ projectId: task.projectId, threadId: run.threadId }));
+      yield* claimRun(task.id, run);
       const verdict = yield* deps
         .runCheck({
           command: version.command,
@@ -837,18 +874,24 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
    * Agent-tool writes: refuses webhook tasks, kind changes and a judged
    * thread's own task. Callers hold the task's lock (see `withTaskLock`).
    */
-  const saveUnlocked = (input: {
-    readonly taskId: ScheduledTaskId;
-    readonly projectId: ScheduledTask["projectId"];
-    readonly threadId: ThreadId | null;
-    readonly schedule: { readonly type: ScheduledTaskSchedule["type"] };
-    readonly fields: ScheduledTaskOutcomeCheckUpdate;
-    readonly actor: string;
-    readonly actorThreadId: ThreadId | null;
-  }) =>
+  const commitSaveUnlocked = (
+    input: {
+      readonly taskId: ScheduledTaskId;
+      readonly projectId: ScheduledTask["projectId"];
+      readonly threadId: ThreadId | null;
+      readonly schedule: { readonly type: ScheduledTaskSchedule["type"] };
+      readonly fields: ScheduledTaskOutcomeCheckUpdate;
+      readonly actor: string;
+      readonly actorThreadId: ThreadId | null;
+    },
+    expectedState: CheckState | null,
+    creationChecked: boolean,
+  ) =>
     Effect.gen(function* () {
       const { fields } = input;
       const state = yield* readCheckState(input.taskId);
+      if (requestDigest(state) !== requestDigest(expectedState))
+        return yield* fail("The check definition changed during live authorization.");
       yield* judgedGuard(state, input.actorThreadId);
       const checkFields =
         fields.checkCommand !== undefined ||
@@ -888,19 +931,8 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
           return yield* fail("This task has no outcome check to revert.");
         if (fields.checkCommand === undefined || fields.checkReason === undefined)
           return yield* fail("An outcome check needs both checkCommand and checkReason.");
-        const cwd = yield* deps.workspace({
-          projectId: input.projectId,
-          threadId: input.threadId,
-        });
-        const tested = yield* deps.runCheck({
-          command: fields.checkCommand,
-          cwd,
-          taskId: input.taskId,
-          runId: `${input.taskId}:creation`,
-          date: iso(now).slice(0, 10),
-        });
-        if (tested.passed)
-          return yield* fail("Outcome check already passes. Task creation refused.");
+        if (!creationChecked)
+          return yield* fail("The creation-time check has no matching live admission.");
         const stored = yield* writeCheckState(null, {
           version: 1,
           taskId: input.taskId,
@@ -964,6 +996,37 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
       });
     });
 
+  const prepareSave = (input: Parameters<typeof commitSaveUnlocked>[0]) =>
+    Effect.gen(function* () {
+      const state = yield* readCheckState(input.taskId);
+      yield* judgedGuard(state, input.actorThreadId);
+      let creationChecked = false;
+      const fields = input.fields;
+      if (
+        state === null &&
+        fields.command === undefined &&
+        input.schedule.type !== "webhook" &&
+        fields.revertCheckVersion === undefined &&
+        fields.checkCommand !== undefined &&
+        fields.checkReason !== undefined
+      ) {
+        const cwd = yield* deps.workspace({ projectId: input.projectId, threadId: input.threadId });
+        const tested = yield* deps.runCheck({
+          command: fields.checkCommand,
+          cwd,
+          taskId: input.taskId,
+          runId: `${input.taskId}:creation`,
+          date: iso(yield* Clock.currentTimeMillis).slice(0, 10),
+        });
+        if (tested.passed)
+          return yield* fail("Outcome check already passes. Task creation refused.");
+        creationChecked = true;
+      }
+      return commitSaveUnlocked(input, state, creationChecked);
+    });
+  const saveUnlocked = (input: Parameters<typeof commitSaveUnlocked>[0]) =>
+    prepareSave(input).pipe(Effect.flatMap((commit) => commit));
+
   const save = (input: Parameters<typeof saveUnlocked>[0]) =>
     locked(input.taskId, saveUnlocked(input));
 
@@ -1014,6 +1077,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
     drive,
     save,
     saveUnlocked,
+    prepareSave,
     withTaskLock,
     removeTask,
     drainCommands,

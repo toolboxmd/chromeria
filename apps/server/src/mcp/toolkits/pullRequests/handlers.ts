@@ -1,3 +1,4 @@
+import { interactiveAuthority } from "../../../peer/PeerAuthorityRecord.ts";
 import { CurrentRequest } from "../../McpRequestReceipts.ts";
 import {
   threadPullRequestsOf,
@@ -209,7 +210,8 @@ const make = Effect.gen(function* () {
   const negotiatedRequest = Effect.gen(function* () {
     const request = yield* CurrentRequest;
     const scope = yield* McpInvocationContext.McpInvocationContext;
-    return scope.client?.linked === true && scope.authority?.envelope.requestOwner === undefined
+    return scope.client?.linked === true &&
+      interactiveAuthority(scope.authority)?.envelope.requestOwner === undefined
       ? undefined
       : request;
   });

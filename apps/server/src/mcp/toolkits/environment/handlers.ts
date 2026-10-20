@@ -1,3 +1,4 @@
+import { interactiveAuthority } from "../../../peer/PeerAuthorityRecord.ts";
 import { OrchestratorMcpFailure, type ServerSettings } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { CurrentRequest, externalDispatch, externalReplay } from "../../McpRequestReceipts.ts";
@@ -68,7 +69,8 @@ export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
           const identity = yield* CurrentRequest;
           const negotiated =
             identity !== undefined &&
-            (scope.client?.linked !== true || scope.authority?.envelope.requestOwner !== undefined);
+            (scope.client?.linked !== true ||
+              interactiveAuthority(scope.authority)?.envelope.requestOwner !== undefined);
           if (!negotiated)
             return preferences(
               yield* settings.updateSettings(patch).pipe(Effect.mapError(unavailable)),

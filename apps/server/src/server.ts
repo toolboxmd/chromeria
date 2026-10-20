@@ -468,6 +468,7 @@ const layerServerEnvironment = ServerEnvironment.layer.pipe(Layer.provide(Server
 // Shared below runtime and MCP credential construction, so dispatch and recovery
 // enforce the same durable ceilings as authenticated transport intake.
 const layerPeerAuthority = PeerAuthority.layer.pipe(
+  Layer.provide(layerServerSettings),
   Layer.provideMerge(PeerLinks.layer),
   Layer.provideMerge(PeerLinkEvents.layer),
   Layer.provide(ProjectionStoreV2.layer),

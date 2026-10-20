@@ -741,24 +741,51 @@ it.effect(
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect.each(cases)("$group reaches the peer and refuses a narrower link", (test) =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const f = yield* fixture;
-      yield* f.link("full-access");
-      const result = yield* f.call(test.name, test.args, test.context);
-      expect(result.isError, JSON.stringify(result)).toBe(false);
-      expect(yield* Ref.get(f.seen)).toContainEqual(
-        expect.objectContaining({ operation: test.operation, environmentId: box.environmentId }),
-      );
-      const before = (yield* Ref.get(f.seen)).length;
-      yield* f.link("auto");
-      const refused = yield* f.call(test.name, test.args, test.context);
-      expect(refused.isError, JSON.stringify(refused)).toBe(true);
-      expect((yield* Ref.get(f.seen)).length).toBe(before);
-      expect((yield* Ref.get(f.b.bearers)).length).toBeGreaterThan(0);
-    }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+const automationCases = cases.filter(
+  (test) => test.name === "schedule_task" || test.name === "start_spectrum",
+);
+
+it.effect.each(automationCases)(
+  "$group refuses this old peer before its unverified service",
+  (test) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* fixture;
+        for (const access of ["full-access", "auto"] as const) {
+          yield* f.link(access);
+          const before = yield* Ref.get(f.seen);
+          const result = yield* f.call(test.name, test.args, test.context);
+          expect(result.isError, JSON.stringify(result)).toBe(true);
+          if (access === "full-access")
+            expect(JSON.stringify(result)).toContain(
+              "does not support destination automation authority v1",
+            );
+          expect(yield* Ref.get(f.seen)).toEqual(before);
+        }
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect.each(cases.filter((test) => !automationCases.includes(test)))(
+  "$group reaches the peer and refuses a narrower link",
+  (test) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* fixture;
+        yield* f.link("full-access");
+        const result = yield* f.call(test.name, test.args, test.context);
+        expect(result.isError, JSON.stringify(result)).toBe(false);
+        expect(yield* Ref.get(f.seen)).toContainEqual(
+          expect.objectContaining({ operation: test.operation, environmentId: box.environmentId }),
+        );
+        const before = (yield* Ref.get(f.seen)).length;
+        yield* f.link("auto");
+        const refused = yield* f.call(test.name, test.args, test.context);
+        expect(refused.isError, JSON.stringify(refused)).toBe(true);
+        expect((yield* Ref.get(f.seen)).length).toBe(before);
+        expect((yield* Ref.get(f.b.bearers)).length).toBeGreaterThan(0);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("remote reads return the destination's state", () =>

@@ -1,3 +1,8 @@
+import * as Automation from "./DestinationAutomationAuthority.ts";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
+import * as Invocation from "../mcp/McpInvocationContext.ts";
+import { PeerAcceptedAutomation } from "../peer/peerEffectAuthority.ts";
+import { requestDigest } from "../mcp/McpRequestReceipts.ts";
 import { SavedPurposeIntent, type ExecutionPurpose } from "@t3tools/contracts";
 import * as PurposeAdmission from "../orchestration-v2/ExecutionPurpose.ts";
 import * as MutationReceipts from "./mutationReceipts.ts";
@@ -153,9 +158,19 @@ const decodeTaskId = Schema.decodeUnknownOption(ScheduledTaskId);
 const decodePurposeIntentJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(SavedPurposeIntent),
 );
+const encodeAutomationStamp = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const encodePurposeIntentJson = Schema.encodeSync(Schema.fromJsonString(SavedPurposeIntent));
 const decodeScheduleJson = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(ScheduledTask.fields.schedule),
+  Schema.fromJsonString(
+    Schema.Union([
+      ScheduledTask.fields.schedule,
+      Schema.Struct({
+        type: Schema.Literal("destination-automation-v1"),
+        certificateId: Schema.String,
+        schedule: ScheduledTask.fields.schedule,
+      }),
+    ]),
+  ),
 );
 const decodeWorkspaceStrategyJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ScheduledTask.fields.workspaceStrategy),
@@ -322,7 +337,8 @@ function webhookEndpoint(
 
 const decodeRow = (row: ScheduledTaskRow, origin: WebhookOrigin | null = null) =>
   Effect.gen(function* () {
-    const schedule = yield* decodeScheduleJson(row.schedule_json);
+    const stored = yield* decodeScheduleJson(row.schedule_json);
+    const schedule = stored.type === "destination-automation-v1" ? stored.schedule : stored;
     const webhook = schedule.type === "webhook" ? webhookEndpoint(row, origin) : undefined;
     const workspaceStrategy = yield* decodeWorkspaceStrategyJson(row.workspace_strategy_json);
     const modelSelection = yield* decodeModelSelectionJson(row.model_selection_json);
@@ -411,6 +427,11 @@ export const layer = Layer.effect(
   ScheduledTaskService,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const automation = yield* Automation.DestinationAutomationAuthority;
+    const peerAuthority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+    const notifyAutomationChanges = Option.isSome(peerAuthority)
+      ? peerAuthority.value.notifyAutomationChanges
+      : Effect.void;
     const crypto = yield* Crypto.Crypto;
     yield* MutationReceipts.schema.pipe(Effect.orDie);
     const nativeReceipts = yield* Effect.serviceOption(CommandReceipts.CommandReceiptStoreV2);
@@ -756,6 +777,7 @@ export const layer = Layer.effect(
 
     const validateBinding = (
       task: Pick<ScheduledTask, "id" | "threadId" | "linkOrigin" | "bare">,
+      liveAcceptance = false,
     ) =>
       Effect.gen(function* () {
         if (task.bare !== undefined && task.threadId !== null) {
@@ -773,7 +795,18 @@ export const layer = Layer.effect(
             );
         }
 
-        if (task.linkOrigin !== undefined && task.threadId !== null) {
+        const accepted = yield* automation.current("schedule", task.id);
+        if (Option.isSome(accepted) && !liveAcceptance) {
+          yield* automation.claim(accepted.value.id);
+          if (task.threadId !== accepted.value.binding.threadId)
+            return yield* taskError("The accepted schedule binding changed.", { taskId: task.id });
+        }
+        if (
+          !liveAcceptance &&
+          Option.isNone(accepted) &&
+          task.linkOrigin !== undefined &&
+          task.threadId !== null
+        ) {
           const target = yield* threadManagement
             .getThreadShell(task.threadId)
             .pipe(
@@ -790,6 +823,57 @@ export const layer = Layer.effect(
       });
 
     const dispatchTask = (
+      active: ScheduledTask,
+      commandId: CommandId,
+      messageId: MessageId,
+      prompt: string,
+      decision: import("../scheduledTaskChecks/DispatchPolicy.ts").ScheduledTaskDispatchDecision,
+      stableThreadId?: ThreadId,
+      bareReadGrantOverride?: BareReadGrant,
+      acceptedAutomation?: { readonly certificateId: string | null },
+    ) =>
+      Effect.gen(function* () {
+        const acceptance = yield* automation.current("schedule", active.id);
+        if (acceptedAutomation?.certificateId === null && Option.isSome(acceptance))
+          return yield* taskError(
+            "An unstamped historical run cannot borrow a newer automation definition.",
+            { taskId: active.id },
+          );
+        const certificateId =
+          acceptedAutomation === undefined
+            ? Option.getOrUndefined(acceptance)?.id
+            : acceptedAutomation.certificateId;
+        if (certificateId !== null && certificateId !== undefined) {
+          if (Option.isNone(peerAuthority))
+            return yield* taskError("Native automation execution is unavailable.", {
+              taskId: active.id,
+            });
+          const execution = yield* peerAuthority.value.automationExecution(
+            certificateId,
+            commandId,
+          );
+          return yield* dispatchOwnedTask(
+            active,
+            commandId,
+            messageId,
+            prompt,
+            decision,
+            stableThreadId,
+            bareReadGrantOverride,
+          ).pipe(Effect.provideService(PeerAcceptedAutomation, execution.id));
+        }
+        return yield* dispatchOwnedTask(
+          active,
+          commandId,
+          messageId,
+          prompt,
+          decision,
+          stableThreadId,
+          bareReadGrantOverride,
+        );
+      });
+
+    const dispatchOwnedTask = (
       active: ScheduledTask,
       commandId: CommandId,
       messageId: MessageId,
@@ -946,6 +1030,20 @@ export const layer = Layer.effect(
           if (reason !== null) return yield* new WebhookDeliverySkipped({ reason });
         }
         yield* validateBinding(active);
+        if (trigger === "manual") {
+          const scope = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+          if (Option.isSome(scope) && scope.value.authority !== undefined) {
+            if (Option.isNone(peerAuthority))
+              return yield* taskError("Live manual-run admission is unavailable.", {
+                taskId: active.id,
+              });
+            yield* peerAuthority.value
+              .checkInteractiveRecord(scope.value.authority.id)
+              .pipe(
+                Effect.mapError((cause) => taskError(cause.message, { taskId: active.id, cause })),
+              );
+          }
+        }
         // Fork: decided before the task is marked running; a skip consumed the slot.
         const decision = yield* dispatchPolicy
           .decide({ task: active, trigger, startedAt })
@@ -1168,149 +1266,240 @@ export const layer = Layer.effect(
           ScheduledTaskId.make(
             input.commandId ? `scheduled-task:${input.commandId}` : `scheduled-task:${uuid}`,
           );
+        if (yield* MutationReceipts.InAcceptance)
+          return yield* taskError("Schedule capture must finish before native acceptance.", {
+            taskId: id,
+          });
+        const localFence = yield* MutationReceipts.captureResourceFence(id, input.threadId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
+        const extension = yield* MutationReceipts.DefinitionExtension;
+        const scope = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+        if (
+          Option.isNone(peerAuthority) &&
+          Option.isSome(scope) &&
+          scope.value.authority !== undefined
+        )
+          return yield* taskError("Destination automation authority is unavailable.", {
+            taskId: id,
+          });
+        const definition = {
+          ...input,
+          id,
+          commandId: undefined,
+          requireExisting: undefined,
+          extension: extension?.definition,
+        };
+        const nativeActionId = input.commandId ?? `scheduled-task:${uuid}`;
+        const binding: Automation.AutomationBinding = {
+          kind: "schedule",
+          resourceId: id,
+          projectId: input.projectId,
+          threadId: input.threadId ?? null,
+          definitionGeneration: mutation?.request.id ?? nativeActionId,
+          definitionDigest: requestDigest(definition),
+          incarnation: null,
+        };
+        const accepted = Option.isNone(peerAuthority)
+          ? undefined
+          : yield* peerAuthority.value.captureAutomation(
+              Option.getOrUndefined(scope),
+              binding,
+              mutation?.request ?? { nativeCommandId: nativeActionId },
+              {
+                runtimeMode: input.runtimeMode,
+                interactionMode: input.interactionMode,
+                resourceScope: "environment-resources",
+                onward: true,
+                capabilities: Option.isSome(scope)
+                  ? [...scope.value.capabilities]
+                  : ["orchestration", "worktree", "pull-requests", "preview", "device"],
+              },
+            );
+        const extensionCommit = extension === undefined ? undefined : yield* extension.prepare;
         return yield* MutationReceipts.accept(
           id,
-          Effect.gen(function* () {
-            // Look up by the *resolved* id so idempotent creates (commandId replays)
-            // keep their run history, and so real load failures propagate instead
-            // of silently resetting an existing row.
-            const existingTask = yield* findTask(id);
-            const bare = input.bare ?? existingTask?.bare;
-            const previousBare =
-              existingTask?.bare === undefined
-                ? undefined
-                : yield* readScheduledBare(id).pipe(
-                    Effect.provideService(SqlClient.SqlClient, sql),
-                    Effect.mapError((cause) =>
-                      taskError("Could not read bare schedule authority.", { taskId: id, cause }),
-                    ),
-                  );
-            const bareReadGrant =
-              bare === undefined
-                ? undefined
-                : ((input.bare === undefined ? previousBare?.readGrant : options?.bareReadGrant) ??
-                  previousBare?.readGrant ??
-                  (input.runtimeMode === "full-access"
-                    ? { type: "all" as const }
-                    : { type: "roots" as const, roots: [] }));
-            if (bare !== undefined)
-              yield* bareLaunch
-                .validate({
-                  request: bare,
-                  instanceId: input.modelSelection.instanceId,
-                  readGrant: bareReadGrant,
-                })
-                .pipe(Effect.mapError((cause) => taskError(cause.message, { cause })));
-            const linkOrigin = existingTask === null ? input.linkOrigin : existingTask.linkOrigin;
-            yield* validateBinding({
-              ...(bare === undefined ? {} : { bare }),
-              id,
-              threadId: input.threadId ?? null,
-              ...(linkOrigin === undefined ? {} : { linkOrigin }),
-            });
-            // Keep the existing next_run_at when the schedule itself is untouched:
-            // editing a title or prompt must not postpone (or resurrect) a due
-            // run — only schedule/enabled changes restart the clock.
-            const schedule: ScheduledTask["schedule"] =
-              input.schedule.type === "webhook"
-                ? {
-                    type: "webhook",
-                    signature:
-                      input.schedule.signature == null
-                        ? null
-                        : {
-                            header: input.schedule.signature.header.toLowerCase(),
-                            encoding: input.schedule.signature.encoding,
-                            prefix: input.schedule.signature.prefix,
-                          },
-                    maxDeliveryAgeMinutes: input.schedule.maxDeliveryAgeMinutes ?? null,
-                  }
-                : input.schedule;
-            const webhook =
-              input.schedule.type === "webhook"
-                ? yield* Effect.gen(function* () {
-                    const existing =
-                      existingTask === null ? null : yield* findWebhookCredentials(id);
-                    // Saving a webhook task keeps its URL; only rotate changes it.
-                    const token = existing?.token ?? (yield* newWebhookToken);
-                    const signature =
-                      input.schedule.type === "webhook" ? input.schedule.signature : null;
-                    // A secretRef is a value the user entered for an agent; this
-                    // save consumes it, so it cannot be used again. A replay of a
-                    // save that already used it keeps the secret that save stored.
-                    const replay =
-                      mutation === undefined &&
-                      input.commandId !== undefined &&
-                      existing?.secret != null;
-                    const fromRef =
-                      signature?.secretRef === undefined
-                        ? undefined
-                        : yield* secretRequests
-                            .consume({ ref: signature.secretRef, projectId: input.projectId })
-                            .pipe(
-                              Effect.catch((error) =>
-                                replay
-                                  ? Effect.succeed(undefined)
-                                  : Effect.fail(taskError(error.message, { taskId: id })),
-                              ),
-                            );
-                    // A ref, when given, is the only source: a plain secret sent
-                    // alongside it must not replace what a replayed save stored.
-                    const provided =
-                      signature?.secretRef === undefined ? signature?.secret : fromRef;
-                    const secret =
-                      signature == null ? null : (provided ?? existing?.secret ?? null);
-                    const secretChanged =
-                      signature == null || provided !== undefined || existing === null;
-                    if (signature != null && secret === null) {
-                      return yield* taskError("A webhook signature check needs a signing secret.", {
-                        taskId: id,
-                      });
-                    }
-                    return { token, secret, secretChanged };
+          sql.withTransaction(
+            Effect.gen(function* () {
+              // Look up by the *resolved* id so idempotent creates (commandId replays)
+              // keep their run history, and so real load failures propagate instead
+              // of silently resetting an existing row.
+              yield* localFence;
+              if (extensionCommit !== undefined) yield* extensionCommit;
+              const existingTask = yield* findTask(id);
+              const bare = input.bare ?? existingTask?.bare;
+              const previousBare =
+                existingTask?.bare === undefined
+                  ? undefined
+                  : yield* readScheduledBare(id).pipe(
+                      Effect.provideService(SqlClient.SqlClient, sql),
+                      Effect.mapError((cause) =>
+                        taskError("Could not read bare schedule authority.", { taskId: id, cause }),
+                      ),
+                    );
+              const bareReadGrant =
+                bare === undefined
+                  ? undefined
+                  : ((input.bare === undefined
+                      ? previousBare?.readGrant
+                      : options?.bareReadGrant) ??
+                    previousBare?.readGrant ??
+                    (input.runtimeMode === "full-access"
+                      ? { type: "all" as const }
+                      : { type: "roots" as const, roots: [] }));
+              if (bare !== undefined)
+                yield* bareLaunch
+                  .validate({
+                    request: bare,
+                    instanceId: input.modelSelection.instanceId,
+                    readGrant: bareReadGrant,
                   })
-                : { token: null, secret: null, secretChanged: true };
-            const scheduleUnchanged =
-              existingTask !== null &&
-              existingTask.enabled === input.enabled &&
-              isSameSchedule(existingTask.schedule, schedule);
-            const task: ScheduledTask = {
-              ...(bare === undefined ? {} : { bare }),
-              id,
-              title: input.title,
-              prompt: input.prompt,
-              enabled: input.enabled,
-              schedule,
-              purposeIntent: input.purposeIntent,
-              projectId: input.projectId,
-              threadId: input.threadId ?? null,
-              workspaceStrategy: input.workspaceStrategy,
-              modelSelection: input.modelSelection,
-              runtimeMode: input.runtimeMode,
-              interactionMode: input.interactionMode,
-              createdBy: existingTask?.createdBy ?? input.createdBy ?? "user",
-              creationSource: input.creationSource ?? "web",
-              // Origin belongs to creation, not editable forms or later caller metadata.
-              ...(linkOrigin === undefined ? {} : { linkOrigin }),
-              createdAt: existingTask?.createdAt ?? iso(now),
-              updatedAt: iso(now),
-              nextRunAt: scheduleUnchanged
-                ? existingTask.nextRunAt
-                : nextRunAt({ enabled: input.enabled, schedule }, now),
-              lastRunAt: existingTask?.lastRunAt ?? null,
-              lastRunStatus: existingTask?.lastRunStatus ?? "never",
-              lastRunError: existingTask?.lastRunError ?? null,
-              runCount: existingTask?.runCount ?? 0,
-            };
-            yield* saveTask(task, input.requireExisting === true, webhook, bareReadGrant);
-            yield* notifyChanged;
-            return { task: (yield* findTask(id)) ?? task };
-          }),
+                  .pipe(Effect.mapError((cause) => taskError(cause.message, { cause })));
+              const linkOrigin = existingTask === null ? input.linkOrigin : existingTask.linkOrigin;
+              yield* validateBinding(
+                {
+                  ...(bare === undefined ? {} : { bare }),
+                  id,
+                  threadId: input.threadId ?? null,
+                  ...(linkOrigin === undefined ? {} : { linkOrigin }),
+                },
+                accepted !== undefined,
+              );
+              // Keep the existing next_run_at when the schedule itself is untouched:
+              // editing a title or prompt must not postpone (or resurrect) a due
+              // run — only schedule/enabled changes restart the clock.
+              const schedule: ScheduledTask["schedule"] =
+                input.schedule.type === "webhook"
+                  ? {
+                      type: "webhook",
+                      signature:
+                        input.schedule.signature == null
+                          ? null
+                          : {
+                              header: input.schedule.signature.header.toLowerCase(),
+                              encoding: input.schedule.signature.encoding,
+                              prefix: input.schedule.signature.prefix,
+                            },
+                      maxDeliveryAgeMinutes: input.schedule.maxDeliveryAgeMinutes ?? null,
+                    }
+                  : input.schedule;
+              const webhook =
+                input.schedule.type === "webhook"
+                  ? yield* Effect.gen(function* () {
+                      const existing =
+                        existingTask === null ? null : yield* findWebhookCredentials(id);
+                      // Saving a webhook task keeps its URL; only rotate changes it.
+                      const token = existing?.token ?? (yield* newWebhookToken);
+                      const signature =
+                        input.schedule.type === "webhook" ? input.schedule.signature : null;
+                      // A secretRef is a value the user entered for an agent; this
+                      // save consumes it, so it cannot be used again. A replay of a
+                      // save that already used it keeps the secret that save stored.
+                      const replay =
+                        mutation === undefined &&
+                        input.commandId !== undefined &&
+                        existing?.secret != null;
+                      const fromRef =
+                        signature?.secretRef === undefined
+                          ? undefined
+                          : yield* secretRequests
+                              .consume({ ref: signature.secretRef, projectId: input.projectId })
+                              .pipe(
+                                Effect.catch((error) =>
+                                  replay
+                                    ? Effect.succeed(undefined)
+                                    : Effect.fail(taskError(error.message, { taskId: id })),
+                                ),
+                              );
+                      // A ref, when given, is the only source: a plain secret sent
+                      // alongside it must not replace what a replayed save stored.
+                      const provided =
+                        signature?.secretRef === undefined ? signature?.secret : fromRef;
+                      const secret =
+                        signature == null ? null : (provided ?? existing?.secret ?? null);
+                      const secretChanged =
+                        signature == null || provided !== undefined || existing === null;
+                      if (signature != null && secret === null) {
+                        return yield* taskError(
+                          "A webhook signature check needs a signing secret.",
+                          {
+                            taskId: id,
+                          },
+                        );
+                      }
+                      return { token, secret, secretChanged };
+                    })
+                  : { token: null, secret: null, secretChanged: true };
+              const scheduleUnchanged =
+                existingTask !== null &&
+                existingTask.enabled === input.enabled &&
+                isSameSchedule(existingTask.schedule, schedule);
+              const task: ScheduledTask = {
+                ...(bare === undefined ? {} : { bare }),
+                id,
+                title: input.title,
+                prompt: input.prompt,
+                enabled: input.enabled,
+                schedule,
+                purposeIntent: input.purposeIntent,
+                projectId: input.projectId,
+                threadId: input.threadId ?? null,
+                workspaceStrategy: input.workspaceStrategy,
+                modelSelection: input.modelSelection,
+                runtimeMode: input.runtimeMode,
+                interactionMode: input.interactionMode,
+                createdBy: existingTask?.createdBy ?? input.createdBy ?? "user",
+                creationSource: input.creationSource ?? "web",
+                // Origin belongs to creation, not editable forms or later caller metadata.
+                ...(linkOrigin === undefined ? {} : { linkOrigin }),
+                createdAt: existingTask?.createdAt ?? iso(now),
+                updatedAt: iso(now),
+                nextRunAt: scheduleUnchanged
+                  ? existingTask.nextRunAt
+                  : nextRunAt({ enabled: input.enabled, schedule }, now),
+                lastRunAt: existingTask?.lastRunAt ?? null,
+                lastRunStatus: existingTask?.lastRunStatus ?? "never",
+                lastRunError: existingTask?.lastRunError ?? null,
+                runCount: existingTask?.runCount ?? 0,
+              };
+              yield* saveTask(task, input.requireExisting === true, webhook, bareReadGrant);
+              if (accepted !== undefined) {
+                const incarnation = (yield* sql<{
+                  incarnation: string;
+                }>`SELECT incarnation FROM scheduled_task_request_incarnations WHERE task_id=${id}`)[0]
+                  ?.incarnation;
+                if (incarnation === undefined)
+                  return yield* taskError("The schedule incarnation is unavailable.", {
+                    taskId: id,
+                  });
+                yield* automation.accept(accepted, { ...binding, incarnation });
+                if (extension?.accepted !== undefined)
+                  yield* extension.accepted(accepted.certificate.id);
+                const stamp = yield* encodeAutomationStamp({
+                  type: "destination-automation-v1",
+                  certificateId: accepted.certificate.id,
+                  schedule: task.schedule,
+                }).pipe(
+                  Effect.mapError((cause) =>
+                    taskError("Could not encode the accepted schedule.", { taskId: id, cause }),
+                  ),
+                );
+                yield* sql`UPDATE scheduled_tasks SET schedule_json=${stamp} WHERE task_id=${id}`;
+              }
+              yield* notifyChanged;
+              return { task: (yield* findTask(id)) ?? task };
+            }),
+          ),
           loadTask(id).pipe(Effect.map((task) => ({ task }))),
-        ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+        ).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.tap(() => notifyAutomationChanges),
+        );
       }).pipe(
         Effect.catchTags({
           OrchestratorMcpFailure: (cause) => Effect.fail(taskError(cause.message, { cause })),
+          SqlError: (cause) =>
+            Effect.fail(taskError("Could not accept the schedule definition.", { cause })),
         }),
       );
 
@@ -1323,11 +1512,16 @@ export const layer = Layer.effect(
             "Choose an Issue, PR or deliberately unscoped purpose before enabling this legacy schedule.",
             { taskId: input.id },
           );
+        if (input.enabled && Option.isSome(yield* automation.current("schedule", input.id)))
+          return yield* upsert({ ...existing, enabled: true });
         const now = yield* localNow;
         const next = nextRunAt({ enabled: input.enabled, schedule: existing.schedule }, now);
         // RETURNING so a task deleted between the load and this UPDATE is a
         // visible not-found error, not a false success.
-        const updated = yield* sql<{ task_id: string }>`
+        const updated = yield* sql.withTransaction(
+          Effect.gen(function* () {
+            if (!input.enabled) yield* automation.disableLocal("schedule", input.id);
+            return yield* sql<{ task_id: string }>`
           UPDATE scheduled_tasks
           SET enabled = ${input.enabled ? 1 : 0},
               next_run_at = ${next},
@@ -1335,44 +1529,70 @@ export const layer = Layer.effect(
           WHERE task_id = ${input.id}
           RETURNING task_id
         `.pipe(
-          Effect.mapError((cause) =>
-            taskError("Could not update schedule task.", { taskId: input.id, cause }),
-          ),
+              Effect.mapError((cause) =>
+                taskError("Could not update schedule task.", { taskId: input.id, cause }),
+              ),
+            );
+          }),
         );
         if (updated.length === 0) {
           return yield* taskError("Schedule task not found.", { taskId: input.id });
         }
+        yield* notifyAutomationChanges;
         yield* notifyChanged;
         return {
           task: { ...existing, enabled: input.enabled, nextRunAt: next, updatedAt: iso(now) },
         };
-      });
+      }).pipe(
+        Effect.catchTags({
+          OrchestratorMcpFailure: (cause) => Effect.fail(taskError(cause.message, { cause })),
+          SqlError: (cause) =>
+            Effect.fail(
+              taskError("Could not atomically update schedule authority.", {
+                taskId: input.id,
+                cause,
+              }),
+            ),
+        }),
+      );
 
     const deleteTask: ScheduledTaskService["Service"]["delete"] = (input) =>
       MutationReceipts.accept(
         input.id,
-        deleteRow(input.id).pipe(
-          Effect.andThen(
-            Effect.all([
-              Ref.update(webhookRateWindows, (windows) => {
-                const next = new Map(windows);
-                next.delete(input.id);
-                return next;
-              }),
-              Ref.update(webhookPermits, (permits) => {
-                const next = new Map(permits);
-                next.delete(input.id);
-                return next;
-              }),
-            ]),
+        sql
+          .withTransaction(
+            automation.disableLocal("schedule", input.id).pipe(Effect.andThen(deleteRow(input.id))),
+          )
+          .pipe(
+            Effect.andThen(
+              Effect.all([
+                Ref.update(webhookRateWindows, (windows) => {
+                  const next = new Map(windows);
+                  next.delete(input.id);
+                  return next;
+                }),
+                Ref.update(webhookPermits, (permits) => {
+                  const next = new Map(permits);
+                  next.delete(input.id);
+                  return next;
+                }),
+              ]),
+            ),
+            Effect.andThen(notifyChanged),
+            Effect.as({ id: input.id }),
           ),
-          Effect.andThen(notifyChanged),
-          Effect.as({ id: input.id }),
-        ),
         Effect.succeed({ id: input.id }),
       ).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.tap(() => notifyAutomationChanges),
         Effect.catchTags({
+          SqlError: (cause) =>
+            Effect.fail(
+              taskError("Could not atomically delete schedule authority.", {
+                taskId: input.id,
+                cause,
+              }),
+            ),
           OrchestratorMcpFailure: (cause) => Effect.fail(taskError(cause.message, { cause })),
         }),
       );
@@ -1380,6 +1600,7 @@ export const layer = Layer.effect(
     const ManualSnapshot = Schema.Struct({
       task: ScheduledTask,
       bareReadGrant: Schema.optional(BareReadGrant),
+      automationCertificateId: Schema.optionalKey(Schema.String),
     });
     const encodeManualSnapshot = Schema.encodeEffect(Schema.fromJsonString(ManualSnapshot));
     const encodeManualReference = Schema.encodeEffect(
@@ -1483,8 +1704,12 @@ export const layer = Layer.effect(
                       Effect.provideService(SqlClient.SqlClient, sql),
                       Effect.mapError(manualUnavailable),
                     );
+              const acceptedAutomation = yield* automation.current("schedule", current.id);
               const snapshot = {
                 task: current,
+                ...(Option.isSome(acceptedAutomation)
+                  ? { automationCertificateId: acceptedAutomation.value.id }
+                  : {}),
                 ...(bareAuthority === undefined ? {} : { bareReadGrant: bareAuthority.readGrant }),
               };
               const decision = yield* dispatchPolicy
@@ -1535,7 +1760,6 @@ export const layer = Layer.effect(
         const snapshot = yield* decodeManualSnapshot(row.snapshot_json).pipe(
           Effect.mapError(manualUnavailable),
         );
-        yield* validateBinding(snapshot.task);
         yield* recheck;
         const commandId = CommandId.make(`scheduled-task:manual:${request.id}`);
         const messageId = MessageId.make(`scheduled-task-message:manual:${request.id}`);
@@ -1568,6 +1792,7 @@ export const layer = Layer.effect(
           );
         }
         if (native && !accepted) {
+          yield* validateBinding(snapshot.task);
           // A launch can allocate a workspace before its first native receipt.
           // Missing evidence in that window must never allocate a second workspace.
           if (row.stage === "dispatching" && snapshot.task.threadId === null) {
@@ -1597,6 +1822,7 @@ export const layer = Layer.effect(
             { _tag: "upstream" },
             threadId,
             snapshot.bareReadGrant,
+            { certificateId: snapshot.automationCertificateId ?? null },
           );
           accepted = yield* readAccepted;
           if (!accepted) return yield* manualUnknown(request);
@@ -2194,4 +2420,4 @@ export const layer = Layer.effect(
       triggerWebhook,
     });
   }),
-);
+).pipe(Layer.provide(Automation.layer));
