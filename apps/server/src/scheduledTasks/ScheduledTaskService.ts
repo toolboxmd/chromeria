@@ -1859,6 +1859,14 @@ export const layer = Layer.effect(
           }),
         )
         .pipe(Effect.mapError(manualUnavailable), Effect.andThen(notifyChanged));
+    const validateManualRun = (task: ScheduledTask) =>
+      Effect.gen(function* () {
+        if (!task.enabled && Option.isSome(yield* automation.current("schedule", task.id)))
+          return yield* taskError("This schedule is paused. Resume it before running it now.", {
+            taskId: task.id,
+          });
+      });
+
     const runManualNow = (input: ScheduledTaskRunNowInput, options: ManualOptions) =>
       Effect.gen(function* () {
         const request = options.request;
@@ -1908,6 +1916,9 @@ export const layer = Layer.effect(
                 (yield* Ref.get(activeRuns)).has(input.id)
               )
                 return yield* taskError("Schedule task is already running.", { taskId: input.id });
+              yield* validateManualRun(current).pipe(
+                Effect.mapError((error) => manualFailed(error.message)),
+              );
               yield* validateBinding(current);
               const startedAt = yield* localNow;
               const bareAuthority =
@@ -2160,6 +2171,13 @@ export const layer = Layer.effect(
             taskId: input.id,
           });
         }
+        yield* validateManualRun(task).pipe(
+          Effect.mapError((cause) =>
+            cause._tag === "ScheduledTaskError"
+              ? cause
+              : taskError("Could not validate schedule task.", { taskId: input.id, cause }),
+          ),
+        );
         return yield* runTask(task, "manual").pipe(
           Effect.mapError((cause) =>
             taskError("Could not run schedule task.", { taskId: input.id, cause }),
