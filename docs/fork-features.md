@@ -2534,6 +2534,24 @@ sources and reasons.
 }
 ```
 
+## menu-escape-focus
+
+```json
+{
+  "id": "menu-escape-focus",
+  "purpose": "Preserve Escape focus return when the pointer rests over a closing menu. Drop the BaseUI patch and exact version pin after upgrading to a release with equivalent late-hover-close protection, such as mui/base-ui#4893, and proving pointer-over Escape plus hover, submenu and outside-focus controls pass without the patch. Retain regression coverage until upstream provides equivalent tests.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/576"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/578"],
+  "newFiles": [
+    "apps/web/src/components/ui/menu.focus.browser.test.tsx",
+    "patches/@base-ui__react@1.5.0.patch"
+  ],
+  "upstreamFiles": ["apps/web/package.json"],
+  "sharedFiles": ["pnpm-lock.yaml", "pnpm-workspace.yaml"],
+  "keywords": ["onFloatingMouseLeave", "@base-ui/react", "menu-escape-focus"]
+}
+```
+
 ## preview-chrome-identity
 
 ```json

@@ -484,6 +484,9 @@ packages/shared/src/composerContextLegacy.ts
 # Launcher test fixture ownership (#157)
 apps/server/src/serviceLauncher.test.ts
 
+# Menu Escape focus and exact BaseUI patch version (#576).
+apps/web/package.json
+
 # Atomic ACP replay status publication before response-driven teardown (#244)
 apps/server/scripts/acp-replay-agent.ts
 
