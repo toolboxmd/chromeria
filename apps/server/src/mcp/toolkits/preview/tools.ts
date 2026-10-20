@@ -240,7 +240,7 @@ const PreviewUploadTool = browserTool(
 const PreviewFillCredentialTool = browserTool(
   Tool.make("preview_fill_credential", {
     description:
-      "Fill one login input in the tab selected by tabId, or this agent session's current tab when omitted, with a value from this environment's credential vault: the username, the password, or the current one-time code (totp) of a vault item. You never see the value; the result says only whether it was filled. The input's page must be https and one of the item's sites. The fill starts a login for the tab's whole browser profile, even when it fails: no tab in that profile, other agents' included, can be read (no snapshot, evaluate, recording, URL or title) until it ends, so keep logins short. Finish signing in with more fills, preview_click or preview_type with a locator, preview_press and preview_wait_for, then call preview_end_login, which closes every tab in the profile; open a new tab to continue, signed in through the profile's cookies. After a failed fill, end the login and retry in a new tab. Server browser tabs only, not desktop-hosted ones.",
+      "Fill one login input in the tab selected by tabId, or this agent session's current tab when omitted, with a value from this environment's credential vault: the username, the password, or the current one-time code (totp) of a vault item. You never see the value; the result says only whether it was filled. The input's page must be https and one of the item's sites. The fill starts a login for the tab's whole browser profile, even when it fails: no tab in that profile, other agents' included, can be read (no snapshot, evaluate, recording, URL or title) until it ends, so keep logins short. Finish signing in with more fills, preview_click or preview_type with a locator, preview_press and preview_wait_for, then call preview_end_login, which closes the profile's browser with every tab in it; open a new tab to continue, signed in through the profile's saved cookies. After a failed fill, end the login and retry in a new tab. Server browser tabs only, not desktop-hosted ones.",
     parameters: McpRouting.parameters(PreviewAutomationFillCredentialInput),
     success: Schema.Struct({
       ...PreviewAutomationFillCredentialResult.fields,
@@ -254,7 +254,7 @@ const PreviewFillCredentialTool = browserTool(
 const PreviewEndLoginTool = browserTool(
   Tool.make("preview_end_login", {
     description:
-      "End the login started by preview_fill_credential in the tab selected by tabId, or this agent session's current tab when omitted: closes every tab in that browser profile, including popups still opening. Then call preview_open for a new tab; the profile's cookies keep the session. Returns the closed tab ids, or none when the tab was not in a login.",
+      "End the login started by preview_fill_credential in the tab selected by tabId, or this agent session's current tab when omitted: closes that browser profile's browser, with every tab in it, including tabs still opening, and returns once it has closed. Then call preview_open for a new tab; the profile's saved cookies keep the session, except cookies the site set without an expiry. Returns the closed tab ids, or none when the tab was not in a login.",
     parameters: McpRouting.parameters(PreviewAutomationTabTargetInput),
     success: Schema.Struct({
       ...PreviewAutomationEndLoginResult.fields,

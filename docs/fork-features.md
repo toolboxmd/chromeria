@@ -2876,6 +2876,7 @@ sources and reasons.
     "apps/server/src/mcp/toolkits/preview/tools.ts",
     "apps/server/src/preview/ServerBrowser.test.ts",
     "apps/server/src/preview/ServerBrowser.ts",
+    "apps/server/src/preview/ServerBrowserContexts.ts",
     "apps/server/src/server.ts",
     "docs/map.md",
     "docs/user/browser-import.md",

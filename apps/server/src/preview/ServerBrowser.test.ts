@@ -55,6 +55,9 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
       desktopConnections.push({ endpoint, context });
       return { browser: { close: async () => {} }, page: context.page as unknown as Page };
     }
+    async closeContext(context: { close: () => Promise<void> }) {
+      await context.close();
+    }
     async close() {
       for (const context of contexts) await context.close();
     }

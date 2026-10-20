@@ -132,7 +132,8 @@ vi.spyOn(ServerBrowserContexts.prototype, "contextFor").mockImplementation(async
       if (url.pathname === "/signed")
         return route.fulfill({
           contentType: "text/html",
-          headers: { "set-cookie": "signed=yes; Secure; Path=/; SameSite=Lax" },
+          // A remembered sign-in: a cookie with an expiry outlives the context.
+          headers: { "set-cookie": "signed=yes; Secure; Path=/; SameSite=Lax; Max-Age=3600" },
           body: "<title>Account</title><h1>Signed in</h1>",
         });
       if (url.pathname === "/account")
@@ -569,22 +570,111 @@ describe.skipIf(!executable)("credential login in a real browser", () => {
           const popup = yield* popupOpened;
           yield* Effect.promise(() => entered.promise);
           const popupPage = context.pages().find((page) => page !== opener)!;
-          expect(yield* invoke(broker)<{ closed: Array<string> }>(tabId, "endLogin")).toEqual({
-            closed: [tabId],
-          });
-          const closed = Promise.withResolvers<void>();
-          popupPage.once("close", () => closed.resolve());
+          // End the login while the popup is still attaching, then let it finish.
+          const ending = yield* invoke(broker)<{ closed: Array<string> }>(tabId, "endLogin").pipe(
+            Effect.forkScoped,
+          );
           gate.resolve();
-          yield* Effect.promise(() => closed.promise);
+          expect(yield* Fiber.join(ending)).toEqual({ closed: [tabId] });
           expect(popupPage.isClosed()).toBe(true);
-          const read = yield* invoke(broker)<void>(popup, "evaluate", {
+          // The popup's page closed with its context. Its session, if read again, opens a
+          // blank tab in the profile's fresh context.
+          const read = yield* invoke(broker)<string>(popup, "evaluate", {
             expression: "location.href",
-          }).pipe(Effect.flip);
-          expect(read._tag).not.toBe("PreviewCredentialError");
+          }).pipe(Effect.result);
           expectNoSecret(read);
           // The profile is free again once nothing of the login is left.
           const fresh = yield* openTab(broker);
           expect(yield* invoke(broker)(fresh, "evaluate", { expression: "1" })).toBe(1);
+        }),
+      ),
+    60_000,
+  );
+
+  it.live(
+    "the login lasts until the profile's context has fully closed",
+    () =>
+      withBrowser(
+        Effect.gen(function* () {
+          const broker = yield* Broker.PreviewAutomationBroker;
+          const tabId = yield* openTab(broker);
+          const page = pageAt("/");
+          // The page answers any same-origin tab with its password input.
+          yield* invoke(broker)(tabId, "evaluate", {
+            expression:
+              "globalThis.channel = new BroadcastChannel('login'); channel.onmessage = () => channel.postMessage(document.getElementById('pw').value)",
+          });
+          yield* fillPassword(broker, tabId);
+          const context = page.context();
+          const close = context.close.bind(context);
+          const gate = Promise.withResolvers<void>();
+          const entered = Promise.withResolvers<void>();
+          vi.spyOn(context, "close").mockImplementation(async (options) => {
+            entered.resolve();
+            await gate.promise;
+            return close(options);
+          });
+          const ending = yield* invoke(broker)<{ closed: Array<string> }>(tabId, "endLogin").pipe(
+            Effect.forkScoped,
+          );
+          yield* Effect.promise(() => entered.promise);
+          // While the context closes, reading the tab is refused, as it is in a login or
+          // already gone, and a new tab of the profile waits for the close.
+          expect(page.isClosed()).toBe(false);
+          const during = yield* invoke(broker)<string>(tabId, "evaluate", {
+            expression: "document.getElementById('pw').value",
+          }).pipe(Effect.flip);
+          expect(["PreviewCredentialError", "PreviewAutomationTabNotFoundError"]).toContain(
+            during._tag,
+          );
+          expectNoSecret(during);
+          const opening = yield* openTab(broker).pipe(Effect.forkScoped);
+          gate.resolve();
+          expect(yield* Fiber.join(ending)).toEqual({ closed: [tabId] });
+          expect(page.isClosed()).toBe(true);
+          const fresh = yield* Fiber.join(opening);
+          const answer = yield* invoke(broker)<string>(fresh, "evaluate", {
+            expression:
+              "new Promise(resolve => { const channel = new BroadcastChannel('login'); channel.onmessage = e => resolve(e.data); channel.postMessage('ask'); setTimeout(() => resolve('no answer'), 500) })",
+          });
+          expect(answer).toBe("no answer");
+        }),
+      ),
+    60_000,
+  );
+
+  it.live(
+    "a tab still attaching when its profile's login ends does not open",
+    () =>
+      withBrowser(
+        Effect.gen(function* () {
+          const broker = yield* Broker.PreviewAutomationBroker;
+          const tabId = yield* openTab(broker);
+          const opener = pageAt("/");
+          yield* fillPassword(broker, tabId);
+          const context = opener.context();
+          const attach = context.newCDPSession.bind(context);
+          const gate = Promise.withResolvers<void>();
+          const entered = Promise.withResolvers<void>();
+          let held = false;
+          vi.spyOn(context, "newCDPSession").mockImplementation(async (target) => {
+            if (target !== opener && "mainFrame" in target && !held) {
+              held = true;
+              entered.resolve();
+              await gate.promise;
+            }
+            return attach(target);
+          });
+          // An ordinary new tab in the same profile, not a popup.
+          const opening = yield* openTab(broker).pipe(Effect.result, Effect.forkScoped);
+          yield* Effect.promise(() => entered.promise);
+          const pending = context.pages().find((page) => page !== opener)!;
+          expect(yield* invoke(broker)<{ closed: Array<string> }>(tabId, "endLogin")).toEqual({
+            closed: [tabId],
+          });
+          gate.resolve();
+          expect((yield* Fiber.join(opening))._tag).toBe("Failure");
+          expect(pending.isClosed()).toBe(true);
         }),
       ),
     60_000,

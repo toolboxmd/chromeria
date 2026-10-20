@@ -86,10 +86,11 @@ downloads, URLs or titles. That includes other agents' tabs in the same profile,
 and tabs opened meanwhile. Keep logins short. Chromeria shows these tabs as **Login in progress**.
 
 During a login the agent can still fill, click and type by locator, press keys and wait for an
-element, URL or text. It ends the login with `preview_end_login`, which closes every tab in the
-profile, then continues in a new tab that is signed in through the profile's cookies. Closing all
-of the profile's tabs yourself also ends it. A login in an incognito profile loses its session when
-its tabs close.
+element, URL or text. It ends the login with `preview_end_login`, which closes the profile's
+browser, with every tab in it, and waits until it has closed. The next tab opens the profile
+again, signed in through its saved cookies. Cookies a site sets without an expiry, which
+browsers keep only until they close, do not survive this, so such a site needs a new sign-in. A
+login in an incognito profile loses its session when it ends.
 
 You still see the page in the live view.
 

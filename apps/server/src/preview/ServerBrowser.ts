@@ -516,28 +516,23 @@ const make = Effect.gen(function* () {
   /**
    * Logins, one per server browser profile. A fill starts one, and while it lasts
    * nothing in any tab of the profile can be read and every tab created there starts
-   * in it. preview_end_login marks it ending and closes the profile's tabs; it lifts
-   * once the profile has no tabs and no popup still attaching. `loginEpoch` counts
-   * each change so results can be checked again as they leave.
+   * in it. It ends only when the profile's browser context has closed: through
+   * preview_end_login, which closes it and waits, or any other close. Pages and
+   * attachments are never counted; the next tab opens a fresh context from the same
+   * profile directory. `loginEpoch` counts each change so results can be checked
+   * again as they leave.
    */
-  const profileLogins = new Map<string, { ending: boolean }>();
-  // Popups between the browser reporting them and joining `tabs`, by profile.
-  const attaching = new Map<Page, string>();
+  const profileLogins = new Map<string, { ending: boolean; context: BrowserContext }>();
   let loginEpoch = 0;
   const inLogin = (tab: ServerTab) => profileLogins.has(tab.profileKey);
   const profileTabs = (profileKey: string) =>
     [...tabs.values()].filter((tab) => tab.profileKey === profileKey);
-  const liftIfDrained = (profileKey: string) => {
-    if (!profileLogins.has(profileKey) || profileTabs(profileKey).length > 0) return;
-    if ([...attaching.values()].includes(profileKey)) return;
-    profileLogins.delete(profileKey);
-    loginEpoch++;
-  };
-  const doneAttaching = (popup: Page) => {
-    const profileKey = attaching.get(popup);
-    if (profileKey === undefined) return;
-    attaching.delete(popup);
-    liftIfDrained(profileKey);
+  const endLoginsOf = (context: BrowserContext) => {
+    for (const [profileKey, login] of profileLogins)
+      if (login.context === context) {
+        profileLogins.delete(profileKey);
+        loginEpoch++;
+      }
   };
   const closedSessions = new Set<string>();
   let hostConnectionId: string | null = null;
@@ -571,6 +566,7 @@ const make = Effect.gen(function* () {
         }),
       ),
     onContextClose: (context) => {
+      endLoginsOf(context);
       const profileId = mirroredContexts.get(context);
       if (profileId !== undefined) runFork(PubSub.publish(mirrorResets, profileId));
       for (const tab of tabs.values()) {
@@ -742,7 +738,6 @@ const make = Effect.gen(function* () {
     const key = tabKey(tab.threadId, tab.tabId);
     if (tabs.get(key) !== tab) return;
     tabs.delete(key);
-    liftIfDrained(tab.profileKey);
     tab.closing = true;
     clearAbortedNavigation(tab);
     // A desktop page outlives the connection unless its session closed with it.
@@ -966,8 +961,9 @@ const make = Effect.gen(function* () {
     }
     page.on("close", () => dropTab(tab, true));
     page.on("crash", () => dropTab(tab, true));
-    // A tab finishing setup while its profile's login ends never opens.
-    if (profileLogins.get(tab.profileKey)?.ending) {
+    // A tab finishing setup while its profile's login ends, or after its context
+    // closed, never opens.
+    if (page.isClosed() || profileLogins.get(tab.profileKey)?.ending) {
       await control.close().catch(constVoid);
       await page.close().catch(constVoid);
       if (isolatedContext) await context.close().catch(constVoid);
@@ -1262,14 +1258,9 @@ const make = Effect.gen(function* () {
   };
 
   const adoptPopup = async (opener: ServerTab, popup: Page) => {
-    // Held from the moment the browser reports the popup until it is a tab, so its
-    // profile's login cannot lift underneath it.
-    attaching.set(popup, opener.profileKey);
-    popup.once("close", () => doneAttaching(popup));
     const agentId = opener.control.agentId;
     if (opener.closing || (agentId !== null && atTabLimit(agentId))) {
       await popup.close().catch(constVoid);
-      doneAttaching(popup);
       return;
     }
     // A popup in a profile with a login publishes no URL.
@@ -1301,7 +1292,6 @@ const make = Effect.gen(function* () {
       },
       async () => {
         await popup.close().catch(constVoid);
-        doneAttaching(popup);
       },
     );
   };
@@ -1312,11 +1302,7 @@ const make = Effect.gen(function* () {
     if (pending) return pending;
     const existing = tabs.get(key);
     if (existing) return Promise.resolve(existing);
-    const adoptedPage = adoptedPages.get(key)?.page;
     const opening = createTab(snapshot)
-      .finally(() => {
-        if (adoptedPage) doneAttaching(adoptedPage);
-      })
       .catch((cause: unknown) => {
         runFork(
           Effect.logWarning(
@@ -1982,17 +1968,18 @@ const make = Effect.gen(function* () {
           "A human controls a tab in this login.",
           "humanControl",
         );
-      // Ending drains the profile: its tabs close, and one still attaching closes as
-      // it finishes. The login lifts once nothing is left.
+      // The whole context closes, and the login lifts only once that close has
+      // finished: every page and every tab still attaching goes with it. Cookies
+      // with an expiry stay in the profile directory for the next context.
       login.ending = true;
       for (const member of members) {
         void member.control.close().catch(constVoid);
         await Effect.runPromise(
           manager.close({ threadId: member.threadId, tabId: member.tabId }).pipe(Effect.ignore),
         );
-        dropTab(member, false);
       }
-      liftIfDrained(tab.profileKey);
+      await contexts.closeContext(login.context);
+      endLoginsOf(login.context);
       return { closed: members.map((member) => member.tabId) };
     }
     // A click can be waiting for its dialog. Resolve it outside the serial queue,
@@ -2084,7 +2071,7 @@ const make = Effect.gen(function* () {
       );
     if (recordingIn(profileTabs(tab.profileKey))) throw recordingRunning();
     if (!profileLogins.has(tab.profileKey)) {
-      profileLogins.set(tab.profileKey, { ending: false });
+      profileLogins.set(tab.profileKey, { ending: false, context: tab.page.context() });
       loginEpoch++;
       // What every tab of the profile already showed is replaced at once.
       for (const member of profileTabs(tab.profileKey)) report(member, { _tag: "Idle" });
