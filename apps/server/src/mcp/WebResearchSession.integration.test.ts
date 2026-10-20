@@ -1,4 +1,14 @@
+import { WebResearchToolkit } from "./toolkits/webResearch/tools.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
+import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as Sqlite from "../persistence/Sqlite.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
+import * as RequestReceipts from "./McpRequestReceipts.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { NodeHttpServer } from "@effect/platform-node";
 import { expect, it } from "@effect/vitest";
@@ -26,12 +36,7 @@ import * as Config from "../config.ts";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
-import {
-  descriptorOf,
-  layerLinkingEnvironment,
-  linkTo,
-  servePeer,
-} from "../peer/PeerLinks.testkit.ts";
+import { descriptorOf, linkTo, servePeer } from "../peer/PeerLinks.testkit.ts";
 import * as Settings from "../serverSettings.ts";
 import * as PageCache from "../webResearch/PageCache.ts";
 import * as PublicHttp from "../webResearch/PublicHttp.ts";
@@ -481,35 +486,70 @@ it.effect("an unavailable controller fails without public fallback", () =>
   }).pipe(Effect.provide(NodeCrypto.layer)),
 );
 
+const modernPeerServices = (
+  environment: ReturnType<typeof descriptorOf>,
+  threadLayer: Layer.Layer<Threads.ThreadManagementService>,
+) =>
+  Effect.gen(function* () {
+    const threadContext = yield* Layer.build(threadLayer);
+    const threads = Context.get(threadContext, Threads.ThreadManagementService);
+    return yield* PeerForwarding.layer.pipe(
+      Layer.provideMerge(PeerMcpClient.layer),
+      Layer.provideMerge(PeerAuthority.layer),
+      Layer.provideMerge(PeerLinks.layer),
+      Layer.provideMerge(RequestReceipts.layer),
+      Layer.provideMerge(Sqlite.layerMemory),
+      Layer.provide(
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getThreadShell: (id) => threads.getThreadShell(id).pipe(Effect.orDie),
+        }),
+      ),
+      Layer.provideMerge(Layer.succeedContext(threadContext)),
+      Layer.provideMerge(ServerSecretStore.layer),
+      Layer.provide(FetchHttpClient.layer),
+      Layer.provide(
+        Layer.succeed(ServerEnvironment.ServerEnvironment, {
+          getEnvironmentId: Effect.succeed(environment.environmentId),
+          getDescriptor: Effect.succeed(environment),
+        }),
+      ),
+      Layer.provide(Settings.layerTest({ enableAgentBrowserAccess: true })),
+      Layer.provideMerge(Config.layerTest(process.cwd(), { prefix: "session446-authority-" })),
+      Layer.provideMerge(NodeServices.layer),
+      Layer.fresh,
+      Layer.build,
+    );
+  });
+
 it.effect(
   "a bestia caller reaches only the selected owner through authenticated loopback and preserves the destination fence",
   () =>
     Effect.gen(function* () {
-      const bestia = descriptorOf("public-bestia", "Bestia");
-      const owner = descriptorOf(local, "Profile owner");
+      const bestia = descriptorOf("public-bestia", "Bestia", { peerAuthority: 1 });
+      const owner = descriptorOf(local, "Profile owner", { peerAuthority: 1 });
       const ownerScope = scopeOf();
       const linkSession = yield* Ref.make("");
       const ownerRequests = yield* Queue.unbounded<string>();
-      const ownerCommon = yield* Layer.build(
-        Layer.mergeAll(Broker.layer, PageCache.layer).pipe(
-          Layer.provideMerge(Config.layerTest(process.cwd(), { prefix: "session446-owner-" })),
-          Layer.provideMerge(NodeServices.layer),
-        ),
-      );
-      const browser = yield* attachBrowser(
-        Context.get(ownerCommon, Broker.PreviewAutomationBroker),
-      );
       const ownerThreads = Layer.mock(Threads.ThreadManagementService)({
         getThreadShell: (id) =>
           Ref.get(linkSession).pipe(
             Effect.map((sessionId) => ({
               ...liveThreadShell(id, { runtimeMode: "auto" }),
-              ...(id === ownerScope.thread!.threadId
+              ...(id === ownerScope.thread!.threadId && sessionId.length > 0
                 ? { linkOrigin: { sessionId, label: "T3 Code · Bestia" } }
                 : {}),
             })),
           ),
       });
+      const ownerServices = yield* modernPeerServices(owner, ownerThreads);
+      const ownerCommon = yield* Layer.build(
+        Layer.mergeAll(Broker.layer, PageCache.layer).pipe(
+          Layer.provideMerge(Layer.succeedContext(ownerServices)),
+        ),
+      );
+      const browser = yield* attachBrowser(
+        Context.get(ownerCommon, Broker.PreviewAutomationBroker),
+      );
       const httpServer = yield* Layer.build(NodeHttpServer.layerTest);
       const peer = yield* servePeer(
         owner,
@@ -523,21 +563,40 @@ it.effect(
           Layer.provide(Layer.succeedContext(ownerCommon)),
         ),
         {
-          scopeForThread: (id) =>
-            Effect.succeed(id === ownerScope.thread!.threadId ? ownerScope : undefined),
+          authorityServices: ownerServices,
+          database: Layer.succeed(
+            SqlClient.SqlClient,
+            Context.get(ownerServices, SqlClient.SqlClient),
+          ),
+          secretStore: Context.get(ownerServices, ServerSecretStore.ServerSecretStore),
+          serverConfig: Context.get(ownerServices, Config.ServerConfig),
+          scopeForThread: () =>
+            Effect.die("Modern session reads must not borrow a provider credential"),
         },
       ).pipe(Effect.provide(httpServer));
       const sourceRequests = yield* Queue.unbounded<string>();
-      const linking = yield* Layer.build(layerLinkingEnvironment(bestia));
+      const linking = yield* modernPeerServices(bestia, liveThreadsLayer);
       const links = Context.get(linking, PeerLinks.PeerLinks);
       yield* linkTo(links, peer, "auto");
       const linked = yield* peer.linkedSessions;
       yield* Ref.set(linkSession, linked[0]!.sessionId);
+      const enrollment = yield* Context.get(linking, PeerForwarding.PeerForwarding)
+        .call(scopeOf(bestia.environmentId), WebResearchToolkit.tools.web_read, local, { url })
+        .pipe(Effect.flip);
+      expect(enrollment.code).toBe("research_host_unavailable");
+      const ownerAuthority = Context.get(ownerServices, PeerAuthority.PeerAuthority);
+      const grant = (yield* ownerAuthority.grants)[0];
+      if (grant === undefined)
+        return yield* Effect.die("Missing authenticated research peer grant");
+      yield* ownerAuthority.setGrant({
+        ...grant,
+        resourceScope: "created-work",
+        preview: true,
+      });
       const sourceContext = yield* Layer.build(
         McpHttpServer.layerWebResearchToolkit.pipe(
           Layer.provide(reader(sourceRequests)),
           Layer.provide(PageCache.layer),
-          Layer.provide(PeerForwarding.layer),
           Layer.provide(Settings.layerTest({ webResearch: { host: bestia.environmentId } })),
           Layer.provide(liveThreadsLayer),
           Layer.provide(Layer.succeedContext(linking)),
@@ -577,6 +636,32 @@ it.effect(
           }),
         ).sourceRung,
       ).toBe("session");
+      const continuation = {
+        cacheId: result.cacheId,
+        cacheEnvironmentId: local,
+        useSession: true,
+        session,
+        offset: result.nextOffset,
+      };
+      expect(
+        page(
+          yield* read(continuation, {
+            ...sourceScope,
+            requestNamespace: "replacement-source-credential",
+            thread: { ...sourceScope.thread, providerSessionId: "replacement-source-credential" },
+          }),
+        ).sourceRung,
+      ).toBe("session");
+      const beforeOtherCaller = browser.state.requests.length;
+      expect(
+        failure(
+          yield* read(continuation, {
+            ...sourceScope,
+            thread: { ...sourceScope.thread, threadId: ThreadId.make("another-source-thread") },
+          }),
+        ).code,
+      ).toBe("session_unavailable");
+      expect(browser.state.requests).toHaveLength(beforeOtherCaller);
       browser.state.httpStatus = 429;
       expect(failure(yield* read({ url, useSession: true, session })).code).toBe("session_warning");
       browser.state.httpStatus = 200;

@@ -1,3 +1,4 @@
+import { threadRequestNamespace } from "../mcp/requestIdentity.ts";
 import {
   toolAllowlistsEqual,
   toolPolicyModeRejection,
@@ -354,6 +355,7 @@ const make = Effect.gen(function* () {
             new OrchestratorMcpFailure({ code: "invalid_request", message: error.message }),
         ),
       );
+      const launchNamespace = threadRequestNamespace(hereId, scope.thread.threadId);
       const earlier = (yield* threads.getThreadRecords(scope.thread.threadId, ["subagents"]).pipe(
         Effect.mapError(
           () =>
@@ -364,7 +366,8 @@ const make = Effect.gen(function* () {
         ),
       )).subagents.find(
         (task) =>
-          task.remoteChild?.launch?.requestNamespace === scope.requestNamespace &&
+          (task.remoteChild?.launch?.requestNamespace === launchNamespace ||
+            task.remoteChild?.launch?.requestNamespace === scope.requestNamespace) &&
           task.remoteChild.launch.clientRequestId === `delegate:${scope.thread.threadId}:${key}`,
       )?.remoteChild?.launch;
       if (earlier !== undefined && !toolAllowlistsEqual(input.tools, earlier.tools))
@@ -401,7 +404,7 @@ const make = Effect.gen(function* () {
         lifecycleVersion: 1 as const,
         ...(input.bare === undefined ? {} : { bare: input.bare }),
         ...(safeTools === undefined ? {} : { tools: safeTools }),
-        requestNamespace: `thread:${hereId}:${scope.thread.threadId}`,
+        requestNamespace: launchNamespace,
         clientRequestId: `delegate:${scope.thread.threadId}:${key}`,
         linkIdentity: link.launchIdentity,
         capabilities: [...scope.capabilities],

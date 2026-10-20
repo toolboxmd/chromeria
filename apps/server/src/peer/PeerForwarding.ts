@@ -319,7 +319,8 @@ const make = Effect.gen(function* () {
         (toolName.startsWith("preview_") ||
           toolName.startsWith("t3_preview_") ||
           toolName === "t3_attachment_inspect" ||
-          toolName === "device_commands") &&
+          toolName === "device_commands" ||
+          (toolName === "web_read" && args.useSession === true)) &&
         Option.isSome(authority);
       if ((!readOnly && Option.isSome(requestOwner)) || stableReadIdentity) {
         if (peers.requireRequestProtocol === undefined) return yield* unavailable();
