@@ -279,7 +279,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/chromeria/issues/287",
     "https://github.com/toolboxmd/chromeria/issues/370",
     "https://github.com/toolboxmd/chromeria/issues/411",
-    "https://github.com/toolboxmd/chromeria/issues/380"
+    "https://github.com/toolboxmd/chromeria/issues/380",
+    "https://github.com/toolboxmd/chromeria/issues/589"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/9",
@@ -289,7 +290,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/chromeria/compare/main...fix/287-dev-runner-tailscale-serve",
     "https://github.com/toolboxmd/chromeria/pull/373",
     "https://github.com/toolboxmd/chromeria/pull/419",
-    "https://github.com/toolboxmd/chromeria/pull/391"
+    "https://github.com/toolboxmd/chromeria/pull/391",
+    "https://github.com/toolboxmd/chromeria/pull/591"
   ],
   "newFiles": [
     ".github/workflows/fork.yml",
@@ -331,6 +333,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",
     "packages/contracts/src/device.ts",
+    "packages/ssh/src/tunnel.test.ts",
     "packages/source-control-github/graphql.config.ts",
     "packages/source-control-github/src/server/GitHubPullRequestApi.test.ts",
     "packages/source-control-github/src/server/GitHubPullRequestApi.ts",
