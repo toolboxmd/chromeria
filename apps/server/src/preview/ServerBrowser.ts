@@ -83,6 +83,7 @@ import * as ServerConfig from "../config.ts";
 import { resolveRootCliCommand } from "../cli/invocation.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import {
   fillCredential,
   loginInProgress,
@@ -616,6 +617,7 @@ const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const host = { platform: yield* HostProcess.Platform, arch: yield* HostProcess.Architecture };
   const manager = yield* PreviewManager.PreviewManager;
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const environmentId = yield* environment.getEnvironmentId;
@@ -3319,6 +3321,25 @@ const make = Effect.gen(function* () {
     });
 
   yield* manager.serverEvents.pipe(Stream.runForEach(mirrorManagerEvent), Effect.forkScoped);
+  yield* orchestrator.streamDomainEvents.pipe(
+    Stream.runForEach((event) =>
+      Effect.sync(() => {
+        if (event.type !== "thread.settled") return;
+        for (const tab of tabs.values()) {
+          if (
+            tab.threadId === event.threadId &&
+            tab.control.agentId !== null &&
+            tab.control.controller === null &&
+            tab.viewers.size === 0 &&
+            // Quarantine ends only after the whole profile context closes.
+            !inLogin(tab)
+          )
+            dropTab(tab, true);
+        }
+      }),
+    ),
+    Effect.forkScoped,
+  );
   // Whoever runs the server learns the fix before anyone opens a tab.
   if (
     !PreviewBrowserHost.sandboxDisabled(yield* HostProcess.Environment) &&

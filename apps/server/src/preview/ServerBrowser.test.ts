@@ -30,6 +30,7 @@ import * as CredentialVault from "./CredentialVault.ts";
 import * as DesktopChannel from "./DesktopBrowserChannel.ts";
 import * as Manager from "./Manager.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
+import { settlementLayer, settleThread } from "./BrowserSettlement.testkit.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
 
 vi.mock("./ServerBrowserContexts.ts", () => ({
@@ -228,6 +229,7 @@ const asSession = (providerSessionId: string) => ({
   thread: { ...testThread, providerSessionId },
 });
 const dependencies = Layer.mergeAll(
+  settlementLayer,
   Broker.layer,
   Layer.succeed(CredentialVault.CredentialVault, {
     uris: () => Effect.succeed(["example.test"]),
@@ -1306,6 +1308,68 @@ it.live("control updates replace a stalled viewer backlog in the order they happ
       );
       expect(controls[0]).toBe("you");
       expect(controls.at(-1)).not.toBe("you");
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("settlement closes only the thread's unwatched agent tabs and permits reopening", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      const open = (targetScope = scope) =>
+        broker.invoke<PreviewAutomationStatus>({
+          scope: targetScope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false },
+        });
+      const second = yield* open();
+      const watched = yield* open();
+      yield* browser.attachViewer(viewerInput(watched.tabId!, false));
+      const controlled = yield* open();
+      const controller = yield* browser.attachViewer(viewerInput(controlled.tabId!, true));
+      yield* controller.input({ type: "takeControl" });
+      const human = yield* manager.open({ threadId: testThread.threadId, runtime: "server" });
+      yield* broker.invoke({ scope, tabId: human.tabId, operation: "status", input: {} });
+      const otherScope = {
+        ...scope,
+        thread: { ...testThread, threadId: ThreadId.make("other-thread") },
+      };
+      const other = yield* open(otherScope);
+      const events = yield* manager.subscribeEvents;
+      yield* settleThread(testThread.threadId);
+      const closed = new Set<string>();
+      while (closed.size < 2) {
+        const event = yield* PubSub.take(events);
+        if (event.type === "closed") closed.add(event.tabId);
+      }
+      expect(closed).toEqual(new Set([tabId, second.tabId]));
+      expect(contexts[0]!.page.close).toHaveBeenCalled();
+      expect(contexts[1]!.page.close).toHaveBeenCalled();
+      const status = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        tabId: watched.tabId!,
+        operation: "status",
+        input: {},
+      });
+      expect(status.tabs?.map((tab) => tab.tabId).toSorted()).toEqual(
+        [watched.tabId, controlled.tabId, human.tabId].toSorted(),
+      );
+      expect(
+        (yield* manager.list({ threadId: otherScope.thread.threadId })).sessions.map(
+          (tab) => tab.tabId,
+        ),
+      ).toEqual([other.tabId]);
+      const reopened = yield* open();
+      expect(reopened.tabId).not.toBe(tabId);
+      expect(
+        yield* broker.invoke({
+          scope,
+          tabId: reopened.tabId!,
+          operation: "evaluate",
+          input: { expression: "1" },
+        }),
+      ).toBe("evaluated");
     }),
   ).pipe(Effect.provide(layer)),
 );
