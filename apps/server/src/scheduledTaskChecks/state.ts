@@ -1,3 +1,4 @@
+import * as SchemaTransformation from "effect/SchemaTransformation";
 import { ExecutionPurpose } from "@t3tools/contracts";
 import { BareReadGrant } from "../orchestration-v2/bareReadGrant.ts";
 import { BareLaunchRequest } from "@t3tools/contracts";
@@ -48,6 +49,7 @@ export type CheckResult = typeof CheckResult.Type;
  * after a crash repeats it exactly even if the task or Prism's pick changed.
  */
 export const SendPayload = Schema.Struct({
+  automationCertificateId: Schema.optionalKey(Schema.String),
   purposeSource: Schema.optional(ExecutionPurpose),
   bareReadGrant: Schema.optional(BareReadGrant),
   bare: Schema.optional(BareLaunchRequest),
@@ -97,6 +99,7 @@ export const CommandResult = Schema.Struct({
 export type CommandResult = typeof CommandResult.Type;
 
 export const CheckedRun = Schema.Struct({
+  automationCertificateId: Schema.optionalKey(Schema.String),
   purpose: Schema.optional(ExecutionPurpose),
   manualRequestId: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/))),
   id: TrimmedNonEmptyString,
@@ -129,7 +132,8 @@ export type CheckedRun = typeof CheckedRun.Type;
  * A fork task's state, one row per upstream task id. `agent` tasks keep at
  * least one pinned check version; `command` tasks run `command` and have none.
  */
-export const CheckState = Schema.Struct({
+const CheckStateValue = Schema.Struct({
+  automationCertificateId: Schema.optionalKey(Schema.String),
   version: Schema.Literal(1),
   taskId: ScheduledTaskId,
   revision: NonNegativeInt,
@@ -144,6 +148,23 @@ export const CheckState = Schema.Struct({
   /** The command run that most recently passed; never cleared. */
   lastSuccessfulRunId: Schema.NullOr(TrimmedNonEmptyString),
 });
+const StampedCheckState = Schema.Struct({
+  version: Schema.Literal("destination-automation-v1"),
+  state: CheckStateValue,
+});
+export const CheckState = Schema.Union([CheckStateValue, StampedCheckState]).pipe(
+  Schema.decodeTo(
+    Schema.toType(CheckStateValue),
+    SchemaTransformation.transform({
+      decode: (value) => (value.version === "destination-automation-v1" ? value.state : value),
+      encode: (value) =>
+        value.automationCertificateId !== undefined ||
+        value.runs.some((run) => run.automationCertificateId !== undefined)
+          ? { version: "destination-automation-v1" as const, state: value }
+          : value,
+    }),
+  ),
+);
 export type CheckState = typeof CheckState.Type;
 
 /** Delays before the same thread is asked to continue after a failed check or run. */

@@ -1,11 +1,15 @@
 import { sha256 } from "@noble/hashes/sha2";
 import * as Hex from "effect/encoding/Hex";
-import type { OrchestrationV2DomainEvent, ThreadId } from "@t3tools/contracts";
+import type {
+  OrchestrationV2DomainEvent,
+  ThreadId,
+  OrchestratorMcpFailure,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-import { Authority, intersect } from "./PeerAuthorityRecord.ts";
+import { ExecutionRecord as Authority, conjunction } from "./PeerAuthorityRecord.ts";
 import type { PendingOrchestrationEffectV2 } from "../orchestration-v2/EffectOutbox.ts";
 
 /** Set only by authenticated tool intake. The event sink persists it with the accepted input. */
@@ -13,6 +17,56 @@ export const PeerDispatchAuthority = Context.Reference<string | undefined>(
   "t3/peer/PeerDispatchAuthority",
   { defaultValue: () => undefined },
 );
+
+/** A destination claim accompanies an incoming caller; neither replaces the other. */
+export const PeerAcceptedAutomation = Context.Reference<string | undefined>(
+  "t3/peer/PeerAcceptedAutomation",
+  { defaultValue: () => undefined },
+);
+
+export class NativeAuthorityValidation extends Context.Service<
+  NativeAuthorityValidation,
+  {
+    readonly preflight: (
+      ownerIds: ReadonlyArray<string>,
+      threadIds: ReadonlyArray<ThreadId>,
+    ) => Effect.Effect<
+      {
+        readonly births: ReadonlySet<string>;
+        readonly check: Effect.Effect<void, OrchestratorMcpFailure>;
+      },
+      OrchestratorMcpFailure
+    >;
+  }
+>()("t3/peer/peerEffectAuthority/NativeAuthorityValidation") {}
+
+export const nativeAuthorityOwners = (
+  explicit: ReadonlyArray<string>,
+  threadIds: ReadonlyArray<ThreadId>,
+  runIds: ReadonlyArray<string>,
+) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const births =
+      threadIds.length === 0
+        ? []
+        : yield* sql<{
+            record_id: string;
+          }>`SELECT record_id FROM peer_thread_authority WHERE ${sql.in("thread_id", threadIds)}`;
+    const runs =
+      runIds.length === 0
+        ? []
+        : yield* sql<{
+            record_id: string;
+          }>`SELECT record_id FROM peer_run_authority WHERE ${sql.in("run_id", runIds)}`;
+    return [
+      ...new Set([
+        ...explicit,
+        ...births.map((row) => row.record_id),
+        ...runs.map((row) => row.record_id),
+      ]),
+    ].sort();
+  });
 
 /** Initialized with the event sink so local-only services need no peer runtime. */
 export const initializePeerEffectAuthority = Effect.gen(function* () {
@@ -45,6 +99,7 @@ export const recordPeerEffectAuthority = (
 ) =>
   Effect.gen(function* () {
     const authority = yield* PeerDispatchAuthority;
+    const automation = yield* PeerAcceptedAutomation;
     const sql = yield* SqlClient.SqlClient;
     const read = (id: string) =>
       Effect.gen(function* () {
@@ -76,21 +131,65 @@ export const recordPeerEffectAuthority = (
         const recordIds: [string, ...Array<string>] = [head, ...tail];
         const context = { type: "run-inputs" as const, threadId, recordIds };
         const records = yield* Effect.forEach(recordIds, read);
-        const base = records[0]!;
+        const base = records[0];
+        if (base === undefined)
+          return yield* Effect.die(new Error("Empty accepted peer authority set"));
         const digest = sha256(new TextEncoder().encode(json(context)));
         const id = `context:${Hex.encode(digest)}`;
-        const record = {
-          ...base,
-          id,
-          context,
-          ceiling: records.reduce(
-            (ceiling, record) => intersect(ceiling, record.ceiling),
-            base.ceiling,
-          ),
-          envelope: { ...base.envelope, recordId: id, actionId: id, digest: id },
-        };
+        const record = conjunction(id, context, [base, ...records.slice(1)]);
         yield* sql`INSERT INTO peer_authority_records (id, record_json) VALUES (${id}, ${encodeRecord(record)}) ON CONFLICT DO NOTHING`;
         return id;
+      });
+    const birthOwner = (
+      id: string,
+      seen: ReadonlySet<string> = new Set(),
+    ): Effect.Effect<string, never> =>
+      Effect.gen(function* () {
+        if (seen.has(id) || seen.size >= 256)
+          return yield* Effect.die(new Error("Cyclic native birth owner"));
+        const visited = new Set([...seen, id]);
+        const record = yield* read(id).pipe(Effect.orDie);
+        if ("certificateId" in record) {
+          if (record.kind === "automation-birth") return id;
+          const birth = { ...record, kind: "automation-birth" as const, id: `birth:${record.id}` };
+          yield* sql`INSERT INTO peer_authority_records (id,record_json) VALUES (${birth.id},${encodeRecord(birth)}) ON CONFLICT DO NOTHING`.pipe(
+            Effect.orDie,
+          );
+          return birth.id;
+        }
+        const context = record.context;
+        if (context === undefined || context.type === "task-stop") return id;
+        const old =
+          context.type === "run-inputs"
+            ? context.recordIds
+            : context.type === "owned-thread"
+              ? [context.creationRecordId, context.runRecordId]
+              : [context.runRecordId];
+        const ids = yield* Effect.forEach(old, (key) => birthOwner(key, visited));
+        if (ids.every((key, index) => key === old[index])) return id;
+        const [first, ...rest] = yield* Effect.forEach(ids, (key) => read(key).pipe(Effect.orDie));
+        if (first === undefined)
+          return yield* Effect.die(new Error("Missing native birth contributor"));
+        const recordIds: [string, ...Array<string>] = [
+          first.id,
+          ...rest.map((record) => record.id),
+        ];
+        const birthContext =
+          context.type === "run-inputs"
+            ? { ...context, recordIds }
+            : context.type === "owned-thread"
+              ? { ...context, creationRecordId: recordIds[0], runRecordId: recordIds[1]! }
+              : { ...context, runRecordId: recordIds[0] };
+        const birth = conjunction(
+          `birth:${id}`,
+          birthContext,
+          [first, ...rest],
+          "resourceSessionId" in record ? record.resourceSessionId : undefined,
+        );
+        yield* sql`INSERT INTO peer_authority_records (id,record_json) VALUES (${birth.id},${encodeRecord(birth)}) ON CONFLICT DO NOTHING`.pipe(
+          Effect.orDie,
+        );
+        return birth.id;
       });
     const runOwner = (runId: string) =>
       sql<{
@@ -152,8 +251,11 @@ export const recordPeerEffectAuthority = (
       ),
     );
     for (const event of events) {
-      if (event.type === "thread.created" && authority !== undefined) {
-        yield* sql`INSERT INTO peer_thread_authority (thread_id, record_id) VALUES (${event.threadId}, ${authority}) ON CONFLICT DO NOTHING`;
+      if (event.type === "thread.created") {
+        const execution = yield* combine(event.threadId, authority, automation);
+        const owner = execution === undefined ? undefined : yield* birthOwner(execution);
+        if (owner !== undefined)
+          yield* sql`INSERT INTO peer_thread_authority (thread_id, record_id) VALUES (${event.threadId}, ${owner}) ON CONFLICT DO NOTHING`;
       }
       if (event.type !== "run.created") continue;
       const sourceRunId =
@@ -161,7 +263,10 @@ export const recordPeerEffectAuthority = (
       if (sourceRunId !== undefined) continuations.add(event.payload.id);
       // A continuation is owned by its source, including an unowned local
       // source. An unrelated caller cannot become the recovery's authority.
-      const owner = sourceRunId === undefined ? authority : yield* runOwner(sourceRunId);
+      const owner =
+        sourceRunId === undefined
+          ? yield* combine(event.threadId, authority, automation)
+          : yield* runOwner(sourceRunId);
       yield* attach(event.payload.id, event.threadId, owner);
       if (owner !== undefined)
         yield* sql`INSERT INTO peer_message_authority (message_id, record_id) VALUES (${event.payload.userMessageId}, ${owner}) ON CONFLICT DO NOTHING`;
@@ -181,7 +286,9 @@ export const recordPeerEffectAuthority = (
       // Promotion reattaches an existing input, not a new instruction from
       // the actor moving it. Its committed message owner is authoritative.
       const contributor =
-        continuations.has(runId) || promotedMessages.has(message.id) ? undefined : authority;
+        continuations.has(runId) || promotedMessages.has(message.id)
+          ? undefined
+          : yield* combine(event.threadId, authority, automation);
       const owner = yield* combine(event.threadId, saved[0]?.record_id, contributor);
       if (owner !== undefined)
         yield* sql`INSERT INTO peer_message_authority (message_id, record_id) VALUES (${message.id}, ${owner}) ON CONFLICT (message_id) DO UPDATE SET record_id = excluded.record_id`;
@@ -210,7 +317,11 @@ export const recordPeerEffectAuthority = (
         request.type === "provider-runtime.continue";
       const owner = executesInput
         ? acceptedRun
-        : yield* combine(effect.threadId, acceptedRun, authority);
+        : yield* combine(
+            effect.threadId,
+            acceptedRun,
+            yield* combine(effect.threadId, authority, automation),
+          );
       if (owner !== undefined) {
         yield* sql`INSERT INTO peer_effect_authority (effect_id, record_id) VALUES (${effect.id}, ${owner}) ON CONFLICT DO NOTHING`;
       }

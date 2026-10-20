@@ -1,5 +1,7 @@
 import { ThreadMcpToolkit } from "./toolkits/threadMcp/tools.ts";
 import * as ThreadMcpHandlers from "./toolkits/threadMcp/handlers.ts";
+
+import * as AutomationAuthority from "../scheduledTasks/DestinationAutomationAuthority.ts";
 import { PendingRequests } from "../childThreads/PendingRequestService.ts";
 import { PeerSavedPreviewAuthorizationRequest } from "@t3tools/contracts";
 import * as McpRouting from "./McpRouting.ts";
@@ -239,6 +241,8 @@ const peerAuthorityFailure = (error: unknown) =>
     { status: isPeerFailure(error) && error.code === "orchestration_error" ? 503 : 403 },
   );
 
+const decodeAutomationDisable = Schema.decodeUnknownEffect(AutomationAuthority.AutomationDisable);
+
 const makeMcpAuthMiddleware = Effect.gen(function* () {
   const registry = yield* McpSessionRegistry.McpSessionRegistry;
   const clients = yield* Effect.serviceOption(McpClientAuthenticator);
@@ -250,6 +254,22 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
       authorization?.startsWith("Bearer ") === true
         ? authorization.slice("Bearer ".length).trim()
         : "";
+    if (request.url.split("?")[0] === "/mcp/peer-control/automation-disable") {
+      if (request.method !== "POST" || Option.isNone(authority) || token.length === 0)
+        return HttpServerResponse.empty({ status: 403 });
+      const result = yield* Effect.gen(function* () {
+        const input = yield* decodeAutomationDisable(yield* request.json);
+        return yield* authority.value.receiveAutomationDisable(
+          input,
+          Hex.encode(sha256(new TextEncoder().encode(token))),
+        );
+      }).pipe(Effect.result);
+      return result._tag === "Failure"
+        ? HttpServerResponse.empty({ status: 403 })
+        : result.success === undefined
+          ? HttpServerResponse.empty({ status: 202 })
+          : HttpServerResponse.jsonUnsafe(result.success);
+    }
     const invocation =
       (yield* registry.resolve(token)) ??
       (Option.isSome(clients) && token.length > 0
@@ -294,7 +314,11 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
       const verified = yield* Effect.gen(function* () {
         if (peerHeader !== undefined) {
           const peer = yield* decodePeerSession(peerHeader);
-          yield* authority.value.enroll(limited, peer);
+          yield* authority.value.enroll(
+            limited,
+            peer,
+            Hex.encode(sha256(new TextEncoder().encode(token))),
+          );
         }
         if (envelopeHeader === undefined) return limited;
         const envelope = yield* decodePeerEnvelope(envelopeHeader);
@@ -1323,6 +1347,7 @@ const layerSavedPreviewAuthorization = Layer.unwrap(
           if (
             scope.client?.linked !== true ||
             scope.authority === undefined ||
+            !("envelope" in scope.authority) ||
             input.environmentId !== scope.environmentId ||
             input.generation !== scope.authority.peer.generation
           )
@@ -1420,6 +1445,20 @@ export const layerDeviceToolkit = Layer.mergeAll(
 const layerPeerControl = Layer.unwrap(
   Effect.gen(function* () {
     const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+    const automationSupport = HttpRouter.add(
+      "GET",
+      "/mcp/peer-control/automation",
+      Effect.succeed(
+        Option.isSome(authority)
+          ? HttpServerResponse.jsonUnsafe({ version: 1 })
+          : HttpServerResponse.empty({ status: 409 }),
+      ),
+    );
+    const automationDisable = HttpRouter.add(
+      "POST",
+      "/mcp/peer-control/automation-disable",
+      Effect.succeed(HttpServerResponse.empty({ status: 403 })),
+    );
     const post = HttpRouter.add(
       "POST",
       "/mcp/peer-control",
@@ -1515,7 +1554,15 @@ const layerPeerControl = Layer.unwrap(
           : HttpServerResponse.empty({ status: 409 }),
       ),
     );
-    return Layer.mergeAll(post, streaming, tasks, requestProtocol, pendingRequestProtocol);
+    return Layer.mergeAll(
+      automationSupport,
+      automationDisable,
+      post,
+      streaming,
+      tasks,
+      requestProtocol,
+      pendingRequestProtocol,
+    );
   }),
 );
 

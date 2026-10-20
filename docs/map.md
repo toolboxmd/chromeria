@@ -112,6 +112,11 @@ flowchart TD
     %% RBD: #383 PR #421
     PGR --> RBD
     PAR --> RBD
+    DAA["Destination automations"]
+    %% DAA: #384 PR #555
+    PGR --> DAA
+    PAR --> DAA
+    RPR --> DAA
     NR["Network routes"]
     %% NR: #292 #358 PR #498 PR #497
     EP["Execution purpose"]

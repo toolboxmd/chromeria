@@ -126,7 +126,10 @@ describe("Spectrum barriers", () => {
     expect(nextRound(makeState({ status: "retired" }))).toBeNull();
     expect(decodeState(encodeState(makeState())).moderator).toBe(1);
     expect(decodeState(encodeState(withWhite())).white?.threadId).toBe("white");
-    const { moderator: _moderator, ...neither } = encodeState(makeState());
+    const historical = encodeState(makeState());
+    if (historical.version === "destination-automation-v1")
+      throw new Error("Expected historical Spectrum encoding");
+    const { moderator: _moderator, ...neither } = historical;
     expect(() => decodeState(neither)).toThrow("White");
     expect(() => decodeState({ ...encodeState(makeState()), moderator: 2 })).toThrow("White");
     expect(() => decodeState({ ...encodeState(withWhite()), moderator: 1 })).toThrow("White");

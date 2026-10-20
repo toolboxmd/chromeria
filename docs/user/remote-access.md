@@ -262,6 +262,23 @@ persistent cache. Requested and final hosted URLs are checked here; TinyFish
 owns networking inside its service, whose DNS and subresource isolation remain
 unverified.
 
+## Automations on another environment
+
+Save a schedule, webhook or Spectrum while its contributors are reachable. The
+receiving environment can then run that accepted work while the source sleeps,
+within the saved permissions and their known expiry. Edits and Spectrum reopens
+require fresh authorization. Both environments must support this behavior;
+older peers refuse the save.
+
+Disable the automation on its receiving environment to stop new execution
+there immediately. Revoking or unlinking its source queues a disable that remains
+unconfirmed until the receiver durably acknowledges it. If the receiver cannot
+be reached, accepted local work can continue until that disable arrives or its
+known authorization expires. Relinking does not revive the old automation.
+Calling another environment still requires the original contributors online;
+local progress and returning its result are separate operations. Webhooks keep
+the receiving environment's URL.
+
 ## Browser on a remote environment
 
 Browser tabs belong to the environment, so you and your agents see the same

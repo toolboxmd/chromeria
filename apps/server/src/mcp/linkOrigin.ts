@@ -1,3 +1,4 @@
+import { interactiveAuthority } from "../peer/PeerAuthorityRecord.ts";
 import * as PeerAuthority from "../peer/PeerAuthority.ts";
 import * as Option from "effect/Option";
 import {
@@ -23,23 +24,24 @@ export const callerLinkOrigin = (
   caller: Pick<Caller, "scope"> & {
     readonly caller: Pick<OrchestrationV2ThreadShell, "linkOrigin"> | undefined;
   },
-): OrchestrationV2LinkOrigin | undefined =>
-  (caller.scope.authority?.resourceSessionId !== undefined
-    ? {
-        sessionId: caller.scope.authority.resourceSessionId,
-        label: caller.caller?.linkOrigin?.label ?? "linked environment",
-      }
-    : undefined) ??
-  (caller.scope.authority?.sessionId != null
-    ? {
-        sessionId: caller.scope.authority.sessionId,
-        label: caller.scope.authority.peer.environmentId,
-      }
-    : undefined) ??
-  caller.caller?.linkOrigin ??
-  (caller.scope.client?.linked === true
-    ? { sessionId: caller.scope.client.sessionId, label: caller.scope.client.label }
-    : undefined);
+): OrchestrationV2LinkOrigin | undefined => {
+  const record = caller.scope.authority;
+  const resourceSessionId =
+    record !== undefined && "resourceSessionId" in record ? record.resourceSessionId : undefined;
+  if (resourceSessionId !== undefined)
+    return {
+      sessionId: resourceSessionId,
+      label: caller.caller?.linkOrigin?.label ?? "linked environment",
+    };
+  const wire = interactiveAuthority(record);
+  if (wire?.sessionId != null) return { sessionId: wire.sessionId, label: wire.peer.environmentId };
+  return (
+    caller.caller?.linkOrigin ??
+    (caller.scope.client?.linked === true
+      ? { sessionId: caller.scope.client.sessionId, label: caller.scope.client.label }
+      : undefined)
+  );
+};
 
 /** Apply the link's resource scope to destination thread mutations. */
 export const assertSameLink = <T extends Pick<OrchestrationV2ThreadShell, "linkOrigin">>(
@@ -90,7 +92,8 @@ const directFullAccessPeer = (caller: Pick<Caller, "scope" | "caller">) => {
   return (
     caller.caller === undefined &&
     caller.scope.client?.linked === true &&
-    caller.scope.authority?.envelope.descendant !== true &&
+    (caller.scope.authority === undefined ||
+      interactiveAuthority(caller.scope.authority)?.envelope.descendant === false) &&
     ceiling.runtimeMode === "full-access" &&
     ceiling.interactionMode === "default"
   );
