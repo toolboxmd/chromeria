@@ -3834,6 +3834,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       // The message quotes its paths, which escapes Windows separators.
       assert.include(terminal.failure.message, JSON.stringify(cwd));
       assert.notInclude(terminal.failure.message, "repeated API errors");
+      assert.equal(terminal.failure.class, "provider_error");
+      assert.equal(terminal.failure.retryable, null);
     }).pipe(
       Effect.provide(
         Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
@@ -3934,7 +3936,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       assert.equal(terminal.status, "failed");
       if (terminal.status !== "failed") return;
       assert.include(terminal.failure.message, expected);
-      assert.equal(terminal.failure.class, recovered ? "provider_error" : "usage_limit");
+      assert.equal(terminal.failure.class, recovered ? "transport_error" : "usage_limit");
     }).pipe(
       Effect.provide(
         Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
@@ -3992,7 +3994,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const terminal = yield* Queue.take(harness.terminalReceipts);
       assert.equal(terminal.status, "failed");
       if (terminal.status !== "failed") return;
-      assert.equal(terminal.failure.class, expectedLimit ? "usage_limit" : "provider_error");
+      assert.equal(terminal.failure.class, expectedLimit ? "usage_limit" : "transport_error");
       assert.equal(
         terminal.failure.message,
         expectedLimit
@@ -5181,8 +5183,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.isNotEmpty(terminal.failure.message);
         assert.equal(
           terminal.failure.class,
-          terminalReason === "blocking_limit" ? "usage_limit" : "provider_error",
+          terminalReason === "blocking_limit"
+            ? "usage_limit"
+            : terminalReason === "api_error"
+              ? "transport_error"
+              : "provider_error",
         );
+        if (terminalReason === "api_error") assert.equal(terminal.failure.retryable, true);
         assert.isFalse(
           harness.events.some(
             (event) =>

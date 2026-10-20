@@ -3584,6 +3584,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         assert.lengthOf(retryItems, 2);
         assert.equal(retryItems[0]?.status, "running");
         assert.equal(retryItems[0]?.failure.code, "responseStreamDisconnected");
+        assert.equal(retryItems[0]?.failure.class, "transport_error");
+        assert.equal(retryItems[0]?.failure.retryable, true);
         assert.deepEqual(retryItems[0]?.retry, {
           attempt: 2,
           maxAttempts: 5,

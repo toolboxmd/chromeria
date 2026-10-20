@@ -4,6 +4,7 @@ import {
   latestRootProviderFailure,
 } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
 import * as SqlClient from "effect/sql/SqlClient";
 import { ForkCommitGuardRejected, type ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
 import { sameModelSelection } from "./recoveryPolicy.ts";
@@ -29,17 +30,27 @@ export function retryAdmission(
       );
       const latest = latestExecutedRun(projection.runs);
       const failure = latestRootProviderFailure(latest, projection.turnItems);
-      const row = yield* sql<{ source_run_id: string; original_run_id: string; state: string }>`
-      SELECT source_run_id, original_run_id, state FROM fork_prism_recovery WHERE thread_id=${command.threadId}`;
+      const row = yield* sql<{
+        source_run_id: string;
+        original_run_id: string;
+        state: string;
+        retry_at: number | null;
+        retry_message_id: string;
+      }>`
+      SELECT source_run_id, original_run_id, state, json_extract(payload_json,'$.retryAt') AS retry_at,
+      json_extract(payload_json,'$.retryMessageId') AS retry_message_id
+      FROM fork_prism_recovery WHERE thread_id=${command.threadId}`;
       const record = row[0];
       if (!record || !latest) return yield* reject();
       if (
         command.creationSource !== "server" ||
         command.createdBy !== "system" ||
-        command.messageId !== `prism-retry:${command.threadId}:${command.forkPrismOriginalRunId}` ||
+        command.messageId !== record.retry_message_id ||
         record.source_run_id !== command.forkPrismRetryOfRunId ||
         record.original_run_id !== command.forkPrismOriginalRunId ||
         record.state !== "retry_pending" ||
+        (record.retry_at !== null &&
+          record.retry_at > DateTime.toEpochMillis(yield* DateTime.now)) ||
         latest.id !== command.forkPrismRetryOfRunId ||
         latest.status !== "failed" ||
         failure?.retryable !== true ||

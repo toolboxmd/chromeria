@@ -119,6 +119,14 @@ describe("GrokAdapterV2 capabilities", () => {
     assert.equal(limit?.class, "usage_limit");
     assert.equal(limit?.code, String(xAiRateLimitedErrorCode));
     assert.equal(limit?.message, "Grok usage limit reached. Try again later.");
+    const network = flavor.promptFailure?.(
+      new EffectAcpErrors.AcpRequestError({
+        code: -32603,
+        errorMessage: "connect ECONNREFUSED api.x.ai",
+      }),
+    );
+    assert.equal(network?.class, "transport_error");
+    assert.equal(network?.retryable, true);
     assert.equal(
       flavor.promptFailure?.(
         new EffectAcpErrors.AcpRequestError({

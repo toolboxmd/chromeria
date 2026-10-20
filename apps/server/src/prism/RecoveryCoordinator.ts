@@ -64,7 +64,7 @@ const make = Effect.gen(function* () {
         ? recovery.autoResume
         : undefined;
     const record =
-      run !== null && projection.thread.creationSource === "mcp"
+      run !== null
         ? yield* store.reconcile({
             previous: null,
             run,
@@ -99,7 +99,7 @@ const make = Effect.gen(function* () {
   });
   const holdsResult = Effect.fn("RecoveryCoordinator.holdsResult")(function* (threadId: ThreadId) {
     const record = yield* store.get(threadId);
-    return record !== null && record.state !== "closed";
+    return record !== null && record.state !== "closed" && record.state !== "cancelled";
   });
   return RecoveryCoordinator.of({ observe, holdsResult });
 });
