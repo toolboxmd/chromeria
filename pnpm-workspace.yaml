@@ -396,6 +396,7 @@ patchedDependencies:
   "@muse-code/sdk@1.4.6": patches/@muse-code__sdk@1.4.6.patch
   app-builder-lib@26.16.1: patches/app-builder-lib@26.16.1.patch
   vitest@5.0.1: patches/vitest@5.0.1.patch
+  "@base-ui/react@1.5.0": patches/@base-ui__react@1.5.0.patch
 
 peerDependencyRules:
   allowAny:
