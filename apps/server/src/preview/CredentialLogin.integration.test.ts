@@ -607,11 +607,13 @@ describe.skipIf(!executable)("credential login in a real browser", () => {
             return attach(target);
           });
           const popupOpened = yield* nextOpened(tabId);
+          // The profile's reserved keep-alive page is open too; the popup is the new one.
+          const before = new Set(context.pages());
           // The popup's URL carries the filled password.
           yield* invoke(broker)(tabId, "click", { locator: "#popup" });
           const popup = yield* popupOpened;
           yield* Effect.promise(() => entered.promise);
-          const popupPage = context.pages().find((page) => page !== opener)!;
+          const popupPage = context.pages().find((page) => !before.has(page))!;
           // End the login while the popup is still attaching, then let it finish.
           const ending = yield* invoke(broker)<{ closed: Array<string> }>(tabId, "endLogin").pipe(
             Effect.forkScoped,
@@ -707,10 +709,12 @@ describe.skipIf(!executable)("credential login in a real browser", () => {
             }
             return attach(target);
           });
+          // The profile's reserved keep-alive page is open too; the tab is the new one.
+          const before = new Set(context.pages());
           // An ordinary new tab in the same profile, not a popup.
           const opening = yield* openTab(broker).pipe(Effect.result, Effect.forkScoped);
           yield* Effect.promise(() => entered.promise);
-          const pending = context.pages().find((page) => page !== opener)!;
+          const pending = context.pages().find((page) => !before.has(page))!;
           expect(yield* invoke(broker)<{ closed: Array<string> }>(tabId, "endLogin")).toEqual({
             closed: [tabId],
           });
