@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off - Effect has no lstat to compare unpacked trees.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -14,6 +15,12 @@ import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/http";
+import * as ChildProcess from "effect/process/ChildProcess";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+import * as NodeStreamPromises from "node:stream/promises";
 import * as NodeZlib from "node:zlib";
 
 import * as PreviewBrowser from "./PreviewBrowser.ts";
@@ -21,9 +28,9 @@ import * as PreviewBrowser from "./PreviewBrowser.ts";
 // POSIX modes cannot be checked on NTFS, so follow the host like the Antigravity suite.
 const hostPlatform: NodeJS.Platform =
   HostProcess.Platform.defaultValue() === "win32" ? "win32" : "linux";
-const executableName =
-  hostPlatform === "win32" ? "chrome-headless-shell.exe" : "chrome-headless-shell";
-const ROOT = "chrome-headless-shell-fixture/";
+const executableName = "Fixture.app/Contents/MacOS/Fixture";
+const ROOT = "chrome-fixture/";
+const LINK = 0o120777;
 
 const makeZip = (
   entries: ReadonlyArray<{ readonly name: string; readonly data?: string; readonly mode: number }>,
@@ -72,6 +79,14 @@ const browserArchive = makeZip([
   { name: `${ROOT}libEGL.so`, data: "library", mode: 0o100755 },
   { name: `${ROOT}locales/`, mode: 0o40755 },
   { name: `${ROOT}locales/en-US.pak`, data: "strings", mode: 0o100644 },
+  // The macOS framework layout: links listed before the files they point to.
+  { name: `${ROOT}Fixture.framework/Versions/Current`, data: "1", mode: LINK },
+  { name: `${ROOT}Fixture.framework/Libraries`, data: "Versions/Current/Libraries", mode: LINK },
+  {
+    name: `${ROOT}Fixture.framework/Versions/1/Libraries/libGLES.dylib`,
+    data: "gl",
+    mode: 0o100755,
+  },
 ]);
 
 const makeHarness = Effect.fn("test.makePreviewBrowser")(function* (
@@ -98,9 +113,10 @@ const makeHarness = Effect.fn("test.makePreviewBrowser")(function* (
       : {
           version: "1.2.3",
           platform: "fixture",
-          url: "https://storage.googleapis.com/chrome-headless-shell-fixture.zip",
+          url: "https://storage.googleapis.com/chrome-fixture.zip",
           bytes: archive.byteLength,
           sha256,
+          executable: executableName,
         },
     ...(options.wait === undefined ? {} : { wait: options.wait }),
   }).pipe(
@@ -119,7 +135,7 @@ const makeHarness = Effect.fn("test.makePreviewBrowser")(function* (
       ),
     ),
   );
-  const installRoot = path.join(baseDir, "tools", "chrome-headless-shell", "fixture");
+  const installRoot = path.join(baseDir, "tools", "chrome-for-testing", "fixture");
   return { browser, fs, path, baseDir, installRoot, requests };
 });
 
@@ -139,8 +155,16 @@ it.layer(NodeServices.layer)("PreviewBrowser", (it) => {
       const executable = yield* browser.executable;
 
       const version = path.join(installRoot, "1.2.3");
-      expect(executable).toBe(path.join(version, executableName));
+      expect(executable).toBe(path.join(version, ...executableName.split("/")));
       expect(yield* fs.readFileString(path.join(version, "locales", "en-US.pak"))).toBe("strings");
+      expect(
+        yield* fs.readFileString(
+          path.join(version, "Fixture.framework", "Libraries", "libGLES.dylib"),
+        ),
+      ).toBe("gl");
+      expect(
+        yield* fs.readLink(path.join(version, "Fixture.framework", "Versions", "Current")),
+      ).toBe("1");
       if (hostPlatform !== "win32") {
         const mode = (file: string) =>
           fs.stat(path.join(version, file)).pipe(Effect.map((info) => info.mode & 0o777));
@@ -180,25 +204,88 @@ it.layer(NodeServices.layer)("PreviewBrowser", (it) => {
   );
 
   it.effect.each([
-    { name: "a parent-directory entry", entry: `${ROOT}../escape` },
-    { name: "an absolute entry", entry: "/escape" },
-    { name: "an entry outside the top directory", entry: "escape" },
-  ])("rejects an archive with $name", (testCase) =>
+    {
+      name: "a parent-directory entry",
+      reader: true,
+      entries: [{ name: `${ROOT}../escape`, data: "x", mode: 0o100644 }],
+    },
+    {
+      name: "an absolute entry",
+      reader: true,
+      entries: [{ name: "/escape", data: "x", mode: 0o100644 }],
+    },
+    {
+      name: "an entry outside the top directory",
+      entries: [{ name: "escape", data: "x", mode: 0o100644 }],
+    },
+    { name: "an absolute link", entries: [{ name: `${ROOT}a`, data: "/etc", mode: LINK }] },
+    {
+      name: "a link escaping with ../",
+      entries: [{ name: `${ROOT}a`, data: "../escape", mode: LINK }],
+    },
+    {
+      name: "a chained link escape",
+      entries: [
+        { name: `${ROOT}a`, data: "b", mode: LINK },
+        { name: `${ROOT}b`, data: "../escape", mode: LINK },
+      ],
+    },
+    {
+      name: "a link escape through a linked ancestor",
+      entries: [
+        { name: `${ROOT}a`, data: ".", mode: LINK },
+        { name: `${ROOT}a/x`, data: "../escape", mode: LINK },
+      ],
+    },
+    {
+      name: "a file under a link",
+      entries: [
+        { name: `${ROOT}a`, data: "..", mode: LINK },
+        { name: `${ROOT}a/escape`, data: "x", mode: 0o100644 },
+      ],
+    },
+    {
+      name: "a link cycle",
+      entries: [
+        { name: `${ROOT}a`, data: "b", mode: LINK },
+        { name: `${ROOT}b`, data: "a", mode: LINK },
+      ],
+    },
+    {
+      name: "a file and a link with the same name",
+      entries: [
+        { name: `${ROOT}a`, data: "x", mode: 0o100644 },
+        { name: `${ROOT}a`, data: "../escape", mode: LINK },
+      ],
+    },
+    { name: "a dangling link", entries: [{ name: `${ROOT}a`, data: "missing", mode: LINK }] },
+    {
+      name: "an oversized link target",
+      entries: [{ name: `${ROOT}a`, data: "b/".repeat(513), mode: LINK }],
+    },
+  ])("rejects an archive with $name and writes nothing outside it", (testCase) =>
     Effect.gen(function* () {
       const { browser, fs, path, baseDir, installRoot } = yield* makeHarness({
         archive: makeZip([
           { name: `${ROOT}${executableName}`, data: "#!/bin/sh\n", mode: 0o100755 },
-          { name: testCase.entry, data: "escaped", mode: 0o100644 },
+          ...testCase.entries,
         ]),
       });
 
       const error = yield* browser.executable.pipe(Effect.flip);
 
-      expect(error._tag).toBe("PreviewBrowserInstallError");
+      expect(error).toMatchObject({
+        _tag: "PreviewBrowserInstallError",
+        // The zip reader refuses these names before extraction sees them.
+        detail:
+          "reader" in testCase
+            ? "The archive could not be read."
+            : "The archive contains an unexpected or unsafe entry.",
+      });
       expect(yield* fs.readDirectory(installRoot)).toEqual([]);
-      expect(yield* fs.exists(path.join(baseDir, "tools", "chrome-headless-shell", "escape"))).toBe(
-        false,
-      );
+      for (const directory of [baseDir, installRoot, path.dirname(installRoot)]) {
+        expect(yield* fs.exists(path.join(directory, "escape"))).toBe(false);
+      }
     }),
   );
 
@@ -250,6 +337,103 @@ it.layer(NodeServices.layer)("PreviewBrowser", (it) => {
   );
 });
 
+const describeTree = async (root: string) => {
+  const names = (await NodeFS.promises.readdir(root, { recursive: true })).toSorted();
+  return Promise.all(
+    names.map(async (name) => {
+      const file = NodePath.join(root, name);
+      const info = await NodeFS.promises.lstat(file);
+      const mode = info.mode & 0o777;
+      if (info.isSymbolicLink()) return [name, "link", await NodeFS.promises.readlink(file)];
+      if (info.isDirectory()) return [name, "directory", mode];
+      const hash = NodeCrypto.createHash("sha256");
+      await NodeStreamPromises.pipeline(NodeFS.createReadStream(file), hash);
+      return [name, "file", mode, hash.digest("hex")];
+    }),
+  );
+};
+
+// Set CHROMERIA_TEST_CFT_ARCHIVE to a downloaded chrome-mac-arm64.zip of the pinned
+// version to prove the real bundle unpacks with its links intact and still runs.
+it.live(
+  "installs the pinned mac-arm64 Chrome for Testing with a valid signature",
+  (ctx) =>
+    Effect.gen(function* () {
+      const archivePath = (yield* HostProcess.Environment).CHROMERIA_TEST_CFT_ARCHIVE;
+      if (!archivePath || HostProcess.Platform.defaultValue() !== "darwin") {
+        return ctx.skip("Set CHROMERIA_TEST_CFT_ARCHIVE to chrome-mac-arm64.zip on macOS.");
+      }
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-preview-browser-real-" });
+      const release = PreviewBrowser.previewBrowserRelease("darwin", "arm64")!;
+      const browser = yield* PreviewBrowser.makePreviewBrowser({
+        baseDir,
+        wait: "5 minutes",
+      }).pipe(
+        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provideService(HostProcess.Architecture, "arm64"),
+        Effect.provideService(
+          HttpClient.HttpClient,
+          HttpClient.make((request) =>
+            Effect.sync(() =>
+              Object.defineProperty(
+                HttpClientResponse.fromWeb(request, new Response(null)),
+                "stream",
+                { value: fs.stream(archivePath).pipe(Stream.orDie) },
+              ),
+            ),
+          ),
+        ),
+      );
+
+      const executable = yield* browser.executable;
+
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const app = path.join(
+        baseDir,
+        "tools",
+        "chrome-for-testing",
+        "mac-arm64",
+        release.version,
+        "Google Chrome for Testing.app",
+      );
+      expect(executable.startsWith(`${app}${path.sep}`)).toBe(true);
+      // Apple's own extractor is the reference: every path, type, mode, link
+      // target and file hash must match it.
+      const reference = path.join(baseDir, "reference");
+      yield* spawner.exitCode(
+        ChildProcess.make("ditto", ["-x", "-k", archivePath, reference], { stdin: "ignore" }),
+      );
+      const referenceApp = path.join(
+        reference,
+        "chrome-mac-arm64",
+        "Google Chrome for Testing.app",
+      );
+      const [ours, theirs] = yield* Effect.promise(() =>
+        Promise.all([describeTree(app), describeTree(referenceApp)]),
+      );
+      expect(ours.length).toBeGreaterThan(600);
+      expect(ours).toEqual(theirs);
+      // CfT is only ad-hoc linker-signed without sealed resources, so the bundle
+      // never passes codesign; unpacking must not change codesign's verdict.
+      const verify = (bundle: string) =>
+        spawner.exitCode(
+          ChildProcess.make("codesign", ["--verify", "--deep", "--strict", bundle], {
+            stdin: "ignore",
+            stderr: "ignore",
+          }),
+        );
+      expect(yield* verify(app)).toBe(yield* verify(referenceApp));
+      expect(
+        (yield* spawner.string(
+          ChildProcess.make(executable, ["--version"], { stdin: "ignore" }),
+        )).trim(),
+      ).toBe(`Google Chrome for Testing ${release.version}`);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  { timeout: 300_000 },
+);
+
 it("pins one Chrome for Testing build per host", () => {
   const hosts = [
     ["linux", "x64"],
@@ -276,9 +460,14 @@ it("pins one Chrome for Testing build per host", () => {
     undefined,
   ]);
   expect(PreviewBrowser.previewBrowserRelease("linux", "x64")).toMatchObject({
-    url: "https://storage.googleapis.com/chrome-for-testing-public/154.0.8037.92/linux64/chrome-headless-shell-linux64.zip",
-    bytes: 120_477_194,
+    url: "https://storage.googleapis.com/chrome-for-testing-public/154.0.8037.92/linux64/chrome-linux64.zip",
+    bytes: 196_202_491,
+    executable: "chrome",
   });
+  expect(PreviewBrowser.previewBrowserRelease("darwin", "arm64")?.executable).toBe(
+    "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+  );
+  expect(PreviewBrowser.previewBrowserRelease("win32", "x64")?.executable).toBe("chrome.exe");
 });
 
 it("tells the agent how far the install has come", () => {

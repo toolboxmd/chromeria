@@ -287,7 +287,7 @@ directly. Every other device, and the desktop app for other environments,
 streams them from the host. Agents keep using them while no device is
 connected, and `localhost` addresses reach servers on the host.
 
-The first tab downloads a headless Chrome, about 120 MB, into the T3 home. It
+The first tab downloads a headless Chrome, about 200 MB, into the T3 home. It
 is the same browser [HTML renders](html-renders.md) use, so a host downloads it
 only once. Some Linux hosts need [setup](#browser-host-setup) before it can
 start.

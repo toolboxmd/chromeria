@@ -3166,3 +3166,23 @@ sources and reasons.
   "keywords": ["remote_secret", "RemoteSecret", "secret385"]
 }
 ```
+
+## preview-chrome-for-testing
+
+```json
+{
+  "id": "preview-chrome-for-testing",
+  "purpose": "Run preview, research and HTML render browsers on pinned full Chrome for Testing instead of chrome-headless-shell, unpacked with checked symlinks so the macOS bundle installs. Drop when upstream installs full Chrome for Testing safely.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/572"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...agent/572-cft-agent-browser"],
+  "newFiles": [],
+  "upstreamFiles": [
+    "apps/server/src/preview/PreviewBrowser.test.ts",
+    "apps/server/src/preview/PreviewBrowser.ts",
+    "apps/server/src/preview/PreviewBrowserHost.ts",
+    "docs/user/html-renders.md"
+  ],
+  "sharedFiles": ["apps/server/src/cli/browser.ts", "docs/user/remote-access.md"],
+  "keywords": ["chrome-headless-shell", "chrome-for-testing", "PreviewBrowser", "symlink"]
+}
+```
