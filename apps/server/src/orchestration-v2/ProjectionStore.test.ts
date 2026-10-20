@@ -1213,6 +1213,41 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           pending(third),
           { ...localPending, taskId: localId },
         ]);
+        // A parent interrupt disposes the completion by stop without stopping the
+        // remote child, which keeps working; only a non-stop disposal drops it.
+        const firstWithResult = {
+          ...first,
+          status: "completed" as const,
+          result: "Original accepted result",
+          completedAt: at,
+        };
+        yield* apply({
+          id: EventId.make("event:remote369:first-disposed-by-stop"),
+          type: "subagent.updated",
+          threadId: parent,
+          occurredAt: at,
+          payload: {
+            ...firstWithResult,
+            completionDelivery: { state: "disposed", observedByRunId: null, disposedBy: "stop" },
+          },
+        });
+        yield* check([
+          pending(first, true),
+          pending(second),
+          pending(third),
+          { ...localPending, taskId: localId },
+        ]);
+        yield* apply({
+          id: EventId.make("event:remote369:first-disposed"),
+          type: "subagent.updated",
+          threadId: parent,
+          occurredAt: at,
+          payload: {
+            ...firstWithResult,
+            completionDelivery: { state: "disposed", observedByRunId: null },
+          },
+        });
+        yield* check([pending(second), pending(third), { ...localPending, taskId: localId }]);
       }),
   );
 

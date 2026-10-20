@@ -186,6 +186,9 @@ export const pendingDelegatedChildQuery = (
     AND json_extract(task.payload_json, '$.remoteChild.threadId') IS NOT NULL
     AND json_extract(task.payload_json, '$.remoteChild.snapshot.workState') IN ('working','waiting_for_children')
     AND json_extract(task.payload_json, '$.remoteChild.stop') IS NULL
-    AND json_extract(task.payload_json, '$.completionDelivery.state') IS NOT 'disposed'
+    AND (
+      json_extract(task.payload_json, '$.completionDelivery.state') IS NOT 'disposed'
+      OR json_extract(task.payload_json, '$.completionDelivery.disposedBy') = 'stop'
+    )
 
 `;
