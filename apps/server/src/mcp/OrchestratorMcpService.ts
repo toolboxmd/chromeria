@@ -2498,7 +2498,11 @@ const make = Effect.gen(function* () {
               ScheduleMutation.CurrentMutation,
               request === undefined
                 ? undefined
-                : { request, recheck: scheduleRecheck(scope, existing.id), consumesSecret: false },
+                : {
+                    request,
+                    recheck: scheduleRecheck(scope, existing.id),
+                    secret: { type: "none" },
+                  },
             ),
             Effect.mapError((error) =>
               failure("orchestration_error", `Could not update scheduled task: ${error.message}`),
