@@ -45,8 +45,7 @@ const make = Effect.gen(function* () {
             task.origin !== "app_owned" ||
             task.runId !== event.payload.id ||
             task.completionWake !== "settled_only" ||
-            task.completionDelivery?.state === "disposed" ||
-            ["completed", "failed", "cancelled", "interrupted"].includes(task.status)
+            task.completionDelivery?.state === "disposed"
           ) {
             continue;
           }
@@ -63,6 +62,9 @@ const make = Effect.gen(function* () {
                 task.id,
                 request.requestId,
               );
+            continue;
+          }
+          if (["completed", "failed", "cancelled", "interrupted"].includes(task.status)) {
             continue;
           }
           const child = yield* projections.getThreadRecords(task.childThreadId, [
