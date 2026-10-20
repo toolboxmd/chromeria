@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
-// @effect-diagnostics globalTimers:off globalFetch:off - This browser and WebView transport runs without an Effect runtime.
+// @effect-diagnostics globalTimers:off globalFetch:off globalDate:off - This browser and WebView transport runs without an Effect runtime.
 import { type DeviceHubAccess, withDeviceHubQuery } from "../device/hubAccess.ts";
 import {
   PreviewViewerResource,
@@ -208,9 +208,20 @@ export function createPreviewStreamClient(
   let stopped = false;
   let socket: WebSocket | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let expiryTimer: ReturnType<typeof setTimeout> | null = null;
   let failures = 0;
   let control: PreviewStreamControl | null = null;
   let fileChooser: string | null = null;
+
+  const stop = () => {
+    stopped = true;
+    if (retryTimer !== null) clearTimeout(retryTimer);
+    if (expiryTimer !== null) clearTimeout(expiryTimer);
+    const ws = socket;
+    socket = null;
+    control = null;
+    ws?.close();
+  };
 
   const connect = () => {
     if (stopped) return;
@@ -361,18 +372,18 @@ export function createPreviewStreamClient(
       if (opened) events.onConnectedChange(false);
       if (stopped) return;
       if (event.code === 4404) {
-        stopped = true;
+        stop();
         events.onGone?.();
         return;
       }
       if (event.code === PREVIEW_STREAM_HOST_SETUP_CLOSE_CODE) {
-        stopped = true;
+        stop();
         events.onHostSetup?.(decodeHostSetup(event.reason));
         return;
       }
       // Rejected upgrades surface as 1006 before open for both cookies and tickets.
       if (event.code === 1008 || event.code === 4401 || (!opened && event.code === 1006)) {
-        stopped = true;
+        stop();
         events.onUnauthorized();
         return;
       }
@@ -382,6 +393,22 @@ export function createPreviewStreamClient(
   };
 
   connect();
+  // Viewer claims bound the live relay, unlike tickets used only for an upgrade.
+  // Refresh through the surface owner, which also works across the mobile bridge.
+  if (
+    "viewerTicket" in target.access.query &&
+    target.access.expiresAt !== undefined &&
+    Number.isFinite(target.access.expiresAt)
+  ) {
+    expiryTimer = setTimeout(
+      () => {
+        stop();
+        events.onConnectedChange(false);
+        events.onUnauthorized();
+      },
+      Math.max(0, target.access.expiresAt - Date.now()),
+    );
+  }
 
   return {
     send: (input) => {
@@ -414,14 +441,7 @@ export function createPreviewStreamClient(
       socket.send(wire);
       return true;
     },
-    stop: () => {
-      stopped = true;
-      if (retryTimer !== null) clearTimeout(retryTimer);
-      const ws = socket;
-      socket = null;
-      control = null;
-      ws?.close();
-    },
+    stop,
   };
 }
 
