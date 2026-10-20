@@ -2650,7 +2650,7 @@ it.live(
           Layer.build,
         );
         const userMessages = sql`SELECT message_id FROM orchestration_v2_projection_messages WHERE role='user'`;
-        // The second recheck follows admission; the third follows the dispatch claim.
+        // The second recheck follows admission; the third precedes the dispatch claim.
         for (const refusingCall of [2, 3]) {
           const { task } = yield* node.scheduled.upsert({
             purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
@@ -2718,6 +2718,109 @@ it.live(
           expect(recovered.runCount).toBe(2);
           expect((yield* userMessages).length).toBe(messagesBefore + 1);
         }
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "manual584r4: a same-key dispatch to an existing thread survives a concurrent final recheck refusal",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const node = yield* makeNode(
+          descriptorOf("manual584r4", "Manual overlap", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const parent = ThreadId.make("manual584r4-parent");
+        yield* seedParent(node, parent);
+        const sql = Context.get(node.database, SqlClient.SqlClient);
+        const { task } = yield* node.scheduled.upsert({
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
+          commandId: CommandId.make("manual584r4-schedule"),
+          title: "Existing thread",
+          prompt: "Overlapping manual work",
+          enabled: true,
+          schedule: { type: "interval", everyMs: 60_000 },
+          projectId: node.project.id,
+          threadId: parent,
+          workspaceStrategy: { type: "root" },
+          modelSelection: selection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        });
+        const requestOwner = yield* RequestReceipts.layer.pipe(
+          Layer.provide(Layer.succeedContext(node.database)),
+          Layer.fresh,
+          Layer.build,
+        );
+        const identity = yield* Context.get(
+          requestOwner,
+          RequestReceipts.McpRequestReceipts,
+        ).identify(
+          caller(node, parent),
+          "run_scheduled_task_now",
+          { taskId: task.id },
+          "manual584r4",
+        );
+        const userMessages = sql`SELECT message_id FROM orchestration_v2_projection_messages WHERE role='user'`;
+        const messagesBefore = (yield* userMessages).length;
+        const refusal = new OrchestratorMcpFailure({
+          code: "parent_not_active",
+          message: "The calling thread is no longer active.",
+        });
+        const calls = yield* Ref.make(0);
+        const aHeld = yield* Deferred.make<void>();
+        const aRefuse = yield* Deferred.make<void>();
+        // A holds in its final live recheck, then is refused.
+        const a = yield* node.scheduled
+          .runNow(
+            { id: task.id },
+            {
+              request: identity,
+              recheck: Ref.updateAndGet(calls, (n) => n + 1).pipe(
+                Effect.flatMap((n) =>
+                  n < 3
+                    ? Effect.void
+                    : Deferred.succeed(aHeld, undefined).pipe(
+                        Effect.andThen(Deferred.await(aRefuse)),
+                        Effect.andThen(Effect.fail(refusal)),
+                      ),
+                ),
+              ),
+            },
+          )
+          .pipe(Effect.flip, Effect.forkScoped);
+        yield* Deferred.await(aHeld);
+        // B retries the same key and reaches the native send while A waits.
+        yield* Ref.set(node.holdManualSend, true);
+        const b = yield* node.scheduled
+          .runNow({ id: task.id }, { request: identity })
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(node.manualSendHeld);
+        yield* Deferred.succeed(aRefuse, undefined);
+        expect(yield* Fiber.join(a)).toMatchObject({ code: "parent_not_active" });
+        const state = sql<{
+          stage: string;
+          active_request_id: string | null;
+        }>`SELECT stage,active_request_id FROM scheduled_manual_requests JOIN scheduled_task_request_incarnations USING (task_id) WHERE request_id=${identity.id}`;
+        // B may still accept the command, so A records no terminal outcome.
+        expect(yield* state).toEqual([{ stage: "dispatching", active_request_id: identity.id }]);
+        yield* Deferred.succeed(node.releaseManualSend, undefined);
+        const accepted = yield* Fiber.join(b);
+        expect(accepted.manualReceipt).toMatchObject({
+          requestId: identity.clientRequestId,
+          stage: "native-accepted",
+        });
+        expect(yield* state).toEqual([{ stage: "dispatching", active_request_id: null }]);
+        const finished = (yield* node.scheduled.list()).tasks.find((t) => t.id === task.id)!;
+        expect(finished.lastRunStatus).toBe("succeeded");
+        expect(finished.runCount).toBe(1);
+        expect((yield* userMessages).length).toBe(messagesBefore + 1);
+        expect(
+          (yield* node.scheduled.runNow({ id: task.id }, { request: identity })).manualReceipt,
+        ).toEqual(accepted.manualReceipt);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
   30_000,

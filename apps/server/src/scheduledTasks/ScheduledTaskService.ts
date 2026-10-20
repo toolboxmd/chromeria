@@ -1812,13 +1812,12 @@ export const layer = Layer.effect(
         );
         // A typed refusal before this key claims dispatch never reached a
         // destination, so it is this key's outcome and releases the schedule.
-        const refuseBeforeDispatch =
-          (fromStage: "prepared" | "dispatching") => (refusal: OrchestratorMcpFailure) =>
-            failManual(request, input.id, row.incarnation, refusal.message, fromStage).pipe(
-              Effect.andThen(Effect.fail(refusal)),
-            );
+        const refuseBeforeDispatch = (refusal: OrchestratorMcpFailure) =>
+          failManual(request, input.id, row.incarnation, refusal.message, "prepared").pipe(
+            Effect.andThen(Effect.fail(refusal)),
+          );
         yield* row.stage === "prepared" && row.result_json === null
-          ? recheck.pipe(Effect.catch(refuseBeforeDispatch("prepared")))
+          ? recheck.pipe(Effect.catch(refuseBeforeDispatch))
           : recheck;
         const commandId = CommandId.make(`scheduled-task:manual:${request.id}`);
         const messageId = MessageId.make(`scheduled-task-message:manual:${request.id}`);
@@ -1867,15 +1866,17 @@ export const layer = Layer.effect(
             )
               return yield* manualUnknown(request);
           }
+          // The final live check precedes the claim: once dispatching, a same-key
+          // retry may already be sending, so a refusal is no longer this key's outcome.
+          yield* row.stage === "prepared"
+            ? recheck.pipe(Effect.catch(refuseBeforeDispatch))
+            : recheck;
           const claimed =
             yield* sql`UPDATE scheduled_manual_requests SET stage='dispatching' WHERE request_id=${request.id} AND stage='prepared' RETURNING request_id`.pipe(
               Effect.mapError(manualUnavailable),
             );
           if (row.stage === "prepared" && claimed.length === 0)
             return yield* manualUnknown(request);
-          yield* claimed.length > 0
-            ? recheck.pipe(Effect.catch(refuseBeforeDispatch("dispatching")))
-            : recheck;
           const dispatched = yield* Effect.exit(
             dispatchTask(
               snapshot.task,

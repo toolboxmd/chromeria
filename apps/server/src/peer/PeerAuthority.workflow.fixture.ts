@@ -1043,6 +1043,25 @@ export const makeNode = (
           ),
         ),
     });
+    const holdManualSend = yield* Ref.make(false);
+    const manualSendHeld = yield* Deferred.make<void>();
+    const releaseManualSend = yield* Deferred.make<void>();
+    const actualThreads = Context.get(runtime, Threads.ThreadManagementService);
+    // Holds a keyed manual send to an existing thread before native acceptance.
+    const scheduledThreads = Layer.succeed(Threads.ThreadManagementService, {
+      ...actualThreads,
+      sendToThread: (input) =>
+        Effect.gen(function* () {
+          if (
+            input.commandId.startsWith("scheduled-task:manual:") &&
+            (yield* Ref.get(holdManualSend))
+          ) {
+            yield* Deferred.succeed(manualSendHeld, undefined);
+            yield* Deferred.await(releaseManualSend);
+          }
+          return yield* actualThreads.sendToThread(input);
+        }),
+    });
     const secretConsumes = yield* Ref.make(0);
     const loseSecretConfirmation = yield* Ref.make(false);
     const nativeSecrets = SecretRequests.layer.pipe(
@@ -1105,6 +1124,7 @@ export const makeNode = (
       ),
       Layer.provide(scheduleSecrets),
       Layer.provide(scheduledLaunch),
+      Layer.provide(scheduledThreads),
       Layer.provide(Prism.layer.pipe(Layer.provide(settings), Layer.provide(layerLaunchCatalog))),
       Layer.provide(
         commandSpawner === undefined
@@ -2084,6 +2104,9 @@ export const makeNode = (
       scheduledChecks: Context.getOption(schedules, ScheduledChecks.ScheduledTaskChecks),
       holdManualLaunchReply,
       manualLaunchReplyHeld,
+      holdManualSend,
+      manualSendHeld,
+      releaseManualSend,
       loseWorktreeReply,
       stopConnections: connection.stop,
       reconnect: connect,
