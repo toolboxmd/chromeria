@@ -36,7 +36,13 @@ export const invalidateSessions = (sessionIds: ReadonlyArray<string>) =>
 
 export const reconcileObligations = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* schema;
+  const initialized = yield* sql<{
+    name: string;
+  }>`SELECT name FROM sqlite_master WHERE name='remote_secret_obligations'`;
+  if (initialized.length === 0) return;
+  const active =
+    yield* sql`SELECT 1 FROM remote_secret_obligations WHERE pending=0 AND ack_json IS NULL LIMIT 1`;
+  if (active.length === 0) return;
   const tables = yield* sql<{
     name: string;
   }>`SELECT name FROM sqlite_master WHERE name='orchestration_v2_projection_runs'`;

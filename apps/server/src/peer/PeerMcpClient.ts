@@ -546,6 +546,10 @@ const make = Effect.gen(function* () {
   const deliverSecretRetirements = Effect.gen(function* () {
     if (Option.isNone(secretSql) || Option.isNone(environment)) return false;
     const sql = secretSql.value;
+    const initialized = yield* sql<{
+      name: string;
+    }>`SELECT name FROM sqlite_master WHERE name='remote_secret_obligations'`;
+    if (initialized.length === 0) return false;
     yield* RemoteSecretPersistence.reconcileObligations.pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
     );
