@@ -891,6 +891,18 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
           assert.equal(task.remoteChild?.originalResult?.runId, "remote-original");
           assert.equal(task.remoteChild?.originalResult?.eventId, "remote-terminal-1");
           assert.equal(task.remoteChild?.latestResult?.text, `Result ${n}`);
+          assert.equal(
+            task.completionSource?.runId,
+            n === 1 ? "remote-original" : `remote-followup-${n}`,
+          );
+          assert.deepEqual(
+            task.completionSource?.purpose.scope,
+            n === 1 ? task.purpose?.scope : { type: "unscoped", reason: "unknown_cause" },
+          );
+          const delivery = (yield* orchestrator.getThreadProjection(parent.threadId)).runs.find(
+            (run) => run.id === parent.runId,
+          )?.delegatedCompletion?.delivery;
+          assert.deepEqual(delivery?.purposeCauses, [{ taskId, ...task.completionSource! }]);
           assert.equal(task.childThreadId, null);
           yield* orchestrator.dispatch({
             type: "delegated_task.completion-delivery.acknowledge",
@@ -1306,6 +1318,185 @@ it.effect(
           ),
           0,
         );
+      }).pipe(Effect.provide(runtime()));
+    }),
+);
+
+it.effect(
+  "remote follow-up cause and one delivery survive full SQLite runtime reconstruction",
+  () =>
+    Effect.gen(function* () {
+      const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "remote-purpose-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true })),
+      );
+      const runtime = () =>
+        layerForDatabase(diskDatabase(NodePath.join(directory, "state.sqlite")));
+      const scope = {
+        type: "single" as const,
+        reference: {
+          host: "github.com",
+          repository: "toolboxmd/chromeria",
+          kind: "issue" as const,
+          number: 379,
+        },
+      };
+      const snapshot = {
+        sequence: 10,
+        observedAt: "2026-10-20T12:00:00Z",
+        title: "Remote",
+        workState: "result_available" as const,
+        pendingChildren: 0,
+        queuedRuns: 0,
+        recoveryWaiting: false,
+        incomplete: false,
+        executionSettled: true,
+        pendingQuestions: 0,
+        requestCount: 0,
+        requests: [],
+      };
+      const r1 = RunId.make("persisted-purpose-r1");
+      const r2 = RunId.make("persisted-purpose-r2");
+      const state = yield* Effect.gen(function* () {
+        const engine = yield* Orchestrator.OrchestratorV2;
+        const parent = yield* seedLiveParent("persisted-remote-purpose");
+        yield* engine.dispatch({
+          type: "delegated_task.remote.request",
+          commandId: CommandId.make("persisted-purpose-create"),
+          parentThreadId: parent.threadId,
+          parentRunId: parent.runId,
+          parentNodeId: parent.rootNodeId,
+          task: "Persist completion cause",
+          driver,
+          modelSelection,
+          completionWake: "always",
+          remoteChild: { ...remoteChild, runId: r1 },
+        });
+        const taskId = (yield* engine.getThreadProjection(parent.threadId)).subagents[0]!.id;
+        const report = (runId: RunId, sequence: number) => ({
+          type: "delegated_task.remote.complete" as const,
+          commandId: CommandId.make(`persisted-purpose-complete-${runId}`),
+          parentThreadId: parent.threadId,
+          taskId,
+          status: "completed" as const,
+          result: runId,
+          observation: {
+            cursor: sequence,
+            snapshot: { ...snapshot, sequence },
+            result: {
+              environmentId: remoteChild.environmentId,
+              threadId: remoteChild.threadId,
+              runId,
+              eventId: EventId.make(`persisted-purpose-event-${runId}`),
+              sequence,
+              status: "completed" as const,
+              text: runId,
+              truncated: false,
+              purposeScope: scope,
+            },
+          },
+        });
+        yield* engine.dispatch(report(r1, 10));
+        const first = yield* engine.getThreadProjection(parent.threadId);
+        const oldDelivery = first.runs.find((run) => run.id === parent.runId)!.delegatedCompletion!
+          .delivery!;
+        yield* engine.dispatch({
+          type: "delegated_task.completion-delivery.acknowledge",
+          commandId: CommandId.make("persisted-purpose-ack-r1"),
+          parentThreadId: parent.threadId,
+          taskId,
+          observedByRunId: parent.runId,
+        });
+        const command = report(r2, 20);
+        yield* engine.dispatch(command);
+        const current = yield* engine.getThreadProjection(parent.threadId);
+        const task = current.subagents.find((task) => task.id === taskId)!;
+        const delivery = current.runs.find((run) => run.id === parent.runId)!.delegatedCompletion!
+          .delivery!;
+        assert.equal(task.completionSource?.runId, r2);
+        assert.deepEqual(task.completionSource?.purpose.scope, scope);
+        assert.deepEqual(delivery.purposeCauses, [{ taskId, ...task.completionSource! }]);
+        const stale = yield* engine
+          .dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("persisted-purpose-old-wake"),
+            threadId: parent.threadId,
+            messageId: oldDelivery.messageId,
+            text: "Old R1 wake",
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" },
+            createdBy: "agent",
+            creationSource: "server",
+            delegatedCompletion: {
+              parentRunId: parent.runId,
+              generation: oldDelivery.generation,
+              taskIds: [taskId],
+            },
+          })
+          .pipe(Effect.flip);
+        assert.equal(stale._tag, "OrchestratorDispatchError");
+        return { parent, taskId, command, task, delivery };
+      }).pipe(Effect.provide(runtime()));
+      yield* Effect.gen(function* () {
+        const engine = yield* Orchestrator.OrchestratorV2;
+        const offers = yield* Offers;
+        yield* engine.recoverDelegatedTasks;
+        yield* engine.recoverDelegatedTasks;
+        const before = yield* engine.getThreadEventSequence(state.parent.threadId);
+        yield* engine.dispatch(state.command);
+        yield* engine.dispatch({
+          ...state.command,
+          commandId: CommandId.make("persisted-purpose-replay-distinct"),
+        });
+        assert.equal(yield* engine.getThreadEventSequence(state.parent.threadId), before);
+        const current = yield* engine.getThreadProjection(state.parent.threadId);
+        const task = current.subagents.find((task) => task.id === state.taskId)!;
+        assert.deepEqual(task.completionSource, state.task.completionSource);
+        assert.deepEqual(task.remoteChild?.originalResult, state.task.remoteChild?.originalResult);
+        assert.equal(task.remoteChild?.runId, r1);
+        assert.equal(task.remoteChild?.latestResult?.runId, r2);
+        assert.equal(task.result, r1);
+        assert.deepEqual(
+          current.runs.find((run) => run.id === state.parent.runId)?.delegatedCompletion?.delivery,
+          state.delivery,
+        );
+        const wakes = yield* Ref.get(offers);
+        assert.isNotEmpty(wakes);
+        assert.deepEqual(
+          [...new Set(wakes.map((wake) => wake.delegatedCompletion?.messageId))],
+          [state.delivery.messageId],
+        );
+        const wake = {
+          type: "message.dispatch" as const,
+          commandId: CommandId.make("persisted-purpose-consume-r2"),
+          threadId: state.parent.threadId,
+          messageId: state.delivery.messageId,
+          text: "R2 wake",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" as const },
+          createdBy: "agent" as const,
+          creationSource: "server" as const,
+          delegatedCompletion: {
+            parentRunId: state.parent.runId,
+            generation: state.delivery.generation,
+            taskIds: [state.taskId],
+          },
+        };
+        yield* engine.dispatch(wake);
+        yield* engine.dispatch(wake);
+        yield* engine
+          .dispatch({ ...wake, commandId: CommandId.make("persisted-purpose-consume-r2-again") })
+          .pipe(Effect.flip);
+        const consumed = yield* engine.getThreadProjection(state.parent.threadId);
+        assert.lengthOf(
+          consumed.messages.filter((message) => message.id === state.delivery.messageId),
+          1,
+        );
+        const wakeRuns = consumed.runs.filter(
+          (run) => run.userMessageId === state.delivery.messageId,
+        );
+        assert.lengthOf(wakeRuns, 1);
+        assert.deepEqual(wakeRuns[0]?.purpose?.scope, scope);
       }).pipe(Effect.provide(runtime()));
     }),
 );

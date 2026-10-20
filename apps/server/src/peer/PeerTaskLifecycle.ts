@@ -1,6 +1,7 @@
 import * as Receipts from "../orchestration-v2/CommandReceiptStore.ts";
 import { PROCESS_BOUND_EFFECT_TYPES, EffectOutboxV2 } from "../orchestration-v2/EffectOutbox.ts";
 import {
+  executionPurposeOf,
   OrchestratorMcpFailure,
   type PeerTaskLifecycleRequest,
   type OrchestrationV2Run,
@@ -686,6 +687,7 @@ const make = Effect.gen(function* () {
                   environmentId: pair.childEnvironmentId,
                   threadId: pair.childThreadId,
                   runId: run.id,
+                  purposeScope: executionPurposeOf(run).scope,
                   eventId: EventId.make(stored.value.event.id),
                   sequence: row.sequence,
                   status: row.status,
