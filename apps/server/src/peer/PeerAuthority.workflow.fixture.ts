@@ -199,6 +199,7 @@ import * as GitHubCredentials from "@t3tools/source-control-github/server/GitHub
 import { PreviewControlsToolkit } from "../mcp/toolkits/previewControls/tools.ts";
 import * as PreviewControlHandlers from "../mcp/toolkits/previewControls/handlers.ts";
 import * as NativeBrowser from "../preview/ServerBrowser.ts";
+import * as CredentialVault from "../preview/CredentialVault.ts";
 import * as NativePreviewManager from "../preview/Manager.ts";
 import * as NativeDesktopChannel from "../preview/DesktopBrowserChannel.ts";
 import { makeExternalBrowserContext } from "../preview/testing/BrowserExternal.fixture.ts";
@@ -1043,6 +1044,7 @@ export const makeNode = (
     const secretConsumes = yield* Ref.make(0);
     const loseSecretConfirmation = yield* Ref.make(false);
     const nativeSecrets = SecretRequests.layer.pipe(
+      Layer.provide(nodeConfig),
       Layer.provide(
         Layer.succeed(Secrets.ServerSecretStore, Context.get(services, Secrets.ServerSecretStore)),
       ),
@@ -1185,6 +1187,12 @@ export const makeNode = (
     });
     const nativeBrowser = browserOwner
       ? yield* NativeBrowser.layer.pipe(
+          Layer.provide(
+            Layer.mock(CredentialVault.CredentialVault)({
+              uris: () => Effect.die("No real vault access in the peer authority fixture"),
+              read: () => Effect.die("No real vault access in the peer authority fixture"),
+            }),
+          ),
           Layer.provideMerge(NativePreviewManager.layer),
           Layer.provide(NativeDesktopChannel.layer),
           Layer.provide(Layer.succeed(BrowserBroker.PreviewAutomationBroker, browser)),

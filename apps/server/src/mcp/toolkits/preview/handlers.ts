@@ -447,7 +447,7 @@ const handlers = {
     (input) => invokeTargeted<object>("drag", input, input.timeoutMs),
     "external-unknown",
   ),
-  preview_fill_credential: McpToolAccess.actsAsCaller((input) =>
+  preview_fill_credential: McpToolAccess.actsOnResource("preview", (input) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
       // The audit line takes nothing from the page: only the matched vault host.
@@ -472,7 +472,7 @@ const handlers = {
       );
     }),
   ),
-  preview_end_login: McpToolAccess.actsAsCaller((input) =>
+  preview_end_login: McpToolAccess.actsOnResource("preview", (input) =>
     invokeTargeted<PreviewAutomationEndLoginResult>("endLogin", input ?? {}),
   ),
   preview_upload: McpToolAccess.actsOnResource(
