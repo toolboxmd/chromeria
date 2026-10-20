@@ -1,4 +1,5 @@
 import * as Context from "effect/Context";
+import { DeviceViewerOpenInput, DeviceViewerCloseInput, DeviceViewerAccess } from "./device.ts";
 import type * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 import * as HttpApi from "effect/http-api/HttpApi";
@@ -112,6 +113,8 @@ export const EnvironmentOperationForbiddenReason = Schema.Literals([
   "current_session_revoke_not_allowed",
   "unknown_person",
   "renewal_pending_approval",
+  "device_viewer_unavailable",
+  "device_viewer_unsupported",
 ]);
 export type EnvironmentOperationForbiddenReason = typeof EnvironmentOperationForbiddenReason.Type;
 
@@ -207,6 +210,10 @@ export class EnvironmentOperationForbiddenError extends Schema.TaggedError<Envir
   }
 
   override get message(): string {
+    if (this.reason === "device_viewer_unavailable")
+      return "This device opening is unavailable or is no longer permitted. Refresh it before reconnecting.";
+    if (this.reason === "device_viewer_unsupported")
+      return "The destination does not support resource-bound device viewing. Update that environment before opening a viewer.";
     return `The environment refused this operation (${this.reason}).`;
   }
 }
@@ -454,6 +461,24 @@ class EnvironmentMetadataHttpApi extends HttpApiGroup.make("metadata").add(
     success: ExecutionEnvironmentDescriptor,
   }),
 ) {}
+
+class EnvironmentDevicesHttpApi extends HttpApiGroup.make("devices")
+  .add(
+    HttpApiEndpoint.post("viewerOpen", "/api/device-hub/viewer/open", {
+      headers: OptionalBearerHeaders,
+      payload: DeviceViewerOpenInput,
+      success: DeviceViewerAccess,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentOperationForbiddenError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("viewerClose", "/api/device-hub/viewer/close", {
+      headers: OptionalBearerHeaders,
+      payload: DeviceViewerCloseInput,
+      success: Schema.Boolean,
+      error: EnvironmentScopedOperationErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
 
 class EnvironmentAuthHttpApi extends HttpApiGroup.make("auth")
   .add(
@@ -795,6 +820,7 @@ class EnvironmentWebhooksHttpApi extends HttpApiGroup.make("webhooks")
 export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)
+  .add(EnvironmentDevicesHttpApi)
   .add(EnvironmentMcpOAuthHttpApi)
   .add(EnvironmentOrchestrationHttpApi)
   .add(EnvironmentPullRequestsHttpApi)

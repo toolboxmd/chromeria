@@ -10,6 +10,7 @@ import {
   EnvironmentId,
   ProviderInstanceId,
   ThreadId,
+  EnvironmentId,
   AuthOrchestrationOperateScope,
   ORCHESTRATION_V2_WS_METHODS,
   AuthOrchestrationReadScope,
@@ -495,3 +496,66 @@ it.effect("denies manual cleanup before the handler without settings permission"
     expect(handled).toBe(false);
   }).pipe(Effect.scoped),
 );
+
+describe("device viewer RPC authorization", () => {
+  const tested = [WS_METHODS.deviceViewerOpen, WS_METHODS.deviceViewerClose] as const;
+  const group = WsRpcGroup.omit(
+    ...[...WsRpcGroup.requests.keys()].filter(
+      (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, (typeof tested)[number]> =>
+        !(tested as ReadonlyArray<string>).includes(tag),
+    ),
+  );
+  const resource = {
+    type: "device" as const,
+    environmentId: EnvironmentId.make("destination"),
+    threadId: ThreadId.make("destination-thread"),
+    hostId: "local",
+    deviceId: "emulator-5554",
+    platform: "android" as const,
+    toolSessionId: "343d5809-4cc6-4c3b-9ddb-329ae5fe9630",
+  };
+  it.effect("allows viewing without control and refuses control before admission", () =>
+    Effect.gen(function* () {
+      const admitted: string[] = [];
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            group.toLayerHandler(WS_METHODS.deviceViewerOpen, (input) =>
+              Effect.sync(() => {
+                admitted.push(input.operation);
+                return {
+                  viewerId: "b370bd03-1415-470c-b823-9175595402bd",
+                  ticket: "test-viewer-ticket",
+                  expiresAt: "2026-10-18T20:00:00.000Z",
+                  hubBasePath: "/api/device-hub" as const,
+                };
+              }),
+            ),
+            group.toLayerHandler(WS_METHODS.deviceViewerClose, () => Effect.succeed(true)),
+            RpcAuthorization.layer([AuthOrchestrationReadScope]),
+          ),
+        ),
+      );
+      expect(
+        (yield* client[WS_METHODS.deviceViewerOpen]({ resource, operation: "view" })).viewerId,
+      ).toBe("b370bd03-1415-470c-b823-9175595402bd");
+      expect(
+        yield* client[WS_METHODS.deviceViewerOpen]({ resource, operation: "control" }).pipe(
+          Effect.flip,
+        ),
+      ).toMatchObject({
+        _tag: "EnvironmentAuthorizationError",
+        requiredPermission: AuthOrchestrationOperateScope,
+      });
+      expect(admitted).toEqual(["view"]);
+      expect(
+        clientRpcRequiredScopes(WS_METHODS.deviceViewerOpen, { resource, operation: "control" }),
+      ).toEqual([AuthOrchestrationReadScope, AuthOrchestrationOperateScope]);
+      expect(
+        yield* client[WS_METHODS.deviceViewerClose]({
+          viewerId: "b370bd03-1415-470c-b823-9175595402bd",
+        }),
+      ).toBe(true);
+    }).pipe(Effect.scoped),
+  );
+});

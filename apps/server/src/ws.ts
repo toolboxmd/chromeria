@@ -1,3 +1,4 @@
+import { qualifiedAttachmentReader, qualifiedNativeDownloadReader } from "./assets/AssetAccess.ts";
 import { clientHandlers as pendingRequestClientHandlers } from "./childThreads/PendingRequestIngress.ts";
 import * as PendingRequestService from "./childThreads/PendingRequestService.ts";
 import * as RemoteDelegation from "./peer/RemoteDelegation.ts";
@@ -38,6 +39,7 @@ import {
   AuthAccessStreamError,
   type AuthAccessStreamEvent,
   AuthOrchestrationOperateScope,
+  AuthPreviewOperateScope,
   type AuthEnvironmentScope,
   type ScheduledTaskListResult,
   AuthSessionId,
@@ -198,6 +200,8 @@ import { withTerminalOutputWindow } from "./terminal/OutputProtocol.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as ServerBrowser from "./preview/ServerBrowser.ts";
 import * as DeviceService from "./device/DeviceService.ts";
+import * as DeviceHubProxy from "./device/DeviceHubProxy.ts";
+import * as ServerBrowserStream from "./preview/ServerBrowserStream.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
@@ -561,7 +565,7 @@ function projectFileFailureContext(
 const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 
 // Middleware added later wraps middleware added earlier, so instrumentation wraps authorization.
-const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
+export const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
 const NonForkServerWsRpcGroup = ServerWsRpcGroup.omit(...ForkWsRpc.methods);
 // Infer handler services per domain to stay within the compiler's instantiation budget.
 type CoreRpc = RpcGroup.Rpcs<typeof NonForkServerWsRpcGroup>;
@@ -575,10 +579,10 @@ const orchestrationMethodSet = new Set<string>(Object.values(ORCHESTRATION_V2_WS
 const isOrchestrationRpc = (rpc: CoreRpc): rpc is OrchestrationRpc =>
   orchestrationMethodSet.has(rpc._tag);
 const coreRpcs = Array.from(NonForkServerWsRpcGroup.requests.values());
-const OrchestrationServerWsRpcGroup = RpcGroup.make(
+export const OrchestrationServerWsRpcGroup = RpcGroup.make(
   ...coreRpcs.filter(isOrchestrationRpc),
 ).annotateMerge(NonForkServerWsRpcGroup.annotations);
-const CoreServerWsRpcGroup = RpcGroup.make(
+export const CoreServerWsRpcGroup = RpcGroup.make(
   ...coreRpcs.filter((rpc): rpc is Exclude<CoreRpc, OrchestrationRpc> => !isOrchestrationRpc(rpc)),
 ).annotateMerge(NonForkServerWsRpcGroup.annotations);
 const orchestrationMethods = Array.from(
@@ -1209,6 +1213,8 @@ const layerWsRpc = (
   Layer.unwrap(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
+      const qualifiedReader = yield* qualifiedAttachmentReader;
+      const downloadReader = yield* qualifiedNativeDownloadReader;
       const sql = yield* SqlClient.SqlClient;
       const threadManagement = yield* ThreadManagementService.ThreadManagementService;
       const intakeContext = yield* Effect.context<
@@ -1251,6 +1257,8 @@ const layerWsRpc = (
       const issueLinkHandlers = yield* makeIssueLinkRpcHandlers;
       const pullRequestSync = yield* PullRequestSyncReactor.PullRequestSyncReactor;
       const deviceService = yield* DeviceService.DeviceService;
+      const deviceViewers = yield* DeviceHubProxy.DeviceViewers;
+      const previewViewers = yield* ServerBrowserStream.PreviewViewers;
       const deviceHostContext =
         yield* Effect.context<Effect.Services<ReturnType<typeof remoteSshDeviceHosts>>>();
       const orchestrationEngine = yield* Orchestrator.OrchestratorV2;
@@ -1347,6 +1355,11 @@ const layerWsRpc = (
       const withPullRequestViewer = pullRequests.withRoutingCredential;
       const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
       const sessions = yield* SessionStore.SessionStore;
+      const checkPreviewClient = yield* EnvironmentAuth.nativeSessionAuthorization(
+        currentSession,
+        AuthPreviewOperateScope,
+      );
+      const authorizePreviewClient = () => Effect.runPromise(checkPreviewClient);
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
       const hostResources = yield* HostResources.HostResources;
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
@@ -2811,13 +2824,20 @@ const layerWsRpc = (
           Effect.gen(function* () {
             const path = yield* Path.Path;
             if (
+              input.resource._tag === "peer-attachment" ||
+              input.resource._tag === "native-browser-download" ||
               input.resource._tag === "attachment" ||
               input.resource._tag === "native-app-icon" ||
               input.resource._tag === "tool-output-image" ||
               input.resource._tag === "github-media" ||
               (input.resource._tag === "media-file" && path.isAbsolute(input.resource.path))
             ) {
-              return yield* issueAssetUrl({ resource: input.resource });
+              return yield* issueAssetUrl({
+                resource: input.resource,
+                session: currentSession,
+                qualifiedReader,
+                downloadReader,
+              });
             }
             if (input.resource._tag === "draft-workspace-file") {
               return yield* issueAssetUrl({
@@ -2998,10 +3018,11 @@ const layerWsRpc = (
               (unsubscribe) => Effect.sync(unsubscribe),
             ),
           ),
-        [WS_METHODS.previewOpen]: (input) => previewManager.open(input),
+        [WS_METHODS.previewOpen]: (input) =>
+          previewManager.open({ ...input, authorize: authorizePreviewClient }),
         [WS_METHODS.previewNavigate]: (input) => previewManager.navigate(input),
-        [WS_METHODS.previewResize]: (input) => previewManager.resize(input),
-        [WS_METHODS.previewAdjust]: (input) => previewManager.adjust(input),
+        [WS_METHODS.previewResize]: (input) => previewManager.resize(input, authorizePreviewClient),
+        [WS_METHODS.previewAdjust]: (input) => previewManager.adjust(input, authorizePreviewClient),
         [WS_METHODS.previewRefresh]: (input) => previewManager.refresh(input),
         [WS_METHODS.previewClose]: (input) => previewManager.close(input),
         [WS_METHODS.previewList]: (input) => previewManager.list(input),
@@ -3023,6 +3044,8 @@ const layerWsRpc = (
                     : deviceService.list,
               ),
         [WS_METHODS.deviceOpen]: (input) => deviceService.open(input),
+        ...DeviceHubProxy.clientHandlers(currentSession, deviceViewers),
+        ...ServerBrowserStream.clientHandlers(currentSession, previewViewers),
         [WS_METHODS.deviceClose]: (input) => deviceService.close(input),
         [WS_METHODS.deviceShutdown]: (input) => deviceService.shutdown(input),
         [WS_METHODS.deviceDetail]: (input) => deviceService.detail(input),
@@ -3244,6 +3267,8 @@ export const layer = Layer.unwrap(
     const issueLinks = yield* IssueLinks.IssueLinks;
     const peerLinks = yield* PeerLinks.PeerLinks;
     const peerAuthority = yield* PeerAuthority.PeerAuthority;
+    const deviceViewers = yield* DeviceHubProxy.DeviceViewers;
+    const previewViewers = yield* ServerBrowserStream.PreviewViewers;
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
@@ -3320,6 +3345,8 @@ export const layer = Layer.unwrap(
               Layer.provide(Layer.succeed(IssueLinks.IssueLinks, issueLinks)),
               Layer.provide(Layer.succeed(PeerLinks.PeerLinks, peerLinks)),
               Layer.provide(Layer.succeed(PeerAuthority.PeerAuthority, peerAuthority)),
+              Layer.provide(Layer.succeed(DeviceHubProxy.DeviceViewers, deviceViewers)),
+              Layer.provide(Layer.succeed(ServerBrowserStream.PreviewViewers, previewViewers)),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
                   Layer.provide(

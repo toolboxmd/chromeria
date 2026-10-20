@@ -3,10 +3,10 @@ import {
   createPreviewStreamClient,
   type PreviewStreamClient,
 } from "@t3tools/client-runtime/preview/server-browser-stream";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, PreviewViewerResource } from "@t3tools/contracts";
 import { useSyncExternalStore } from "react";
 
-import { readPreviewStreamAccess } from "~/state/previewStream";
+import { mountPreviewStreamAccess } from "~/state/previewStream";
 
 interface WebKitVideo {
   webkitSetPresentationMode?: (mode: string) => void;
@@ -31,8 +31,20 @@ const subscribe = (listener: () => void) => {
   return () => listeners.delete(listener);
 };
 
-export const serverPictureInPictureKey = (threadId: string, tabId: string) =>
-  JSON.stringify([threadId, tabId]);
+export const serverPictureInPictureKey = (
+  threadId: string,
+  tabId: string,
+  environmentId?: EnvironmentId,
+  resource?: PreviewViewerResource,
+) =>
+  JSON.stringify([
+    environmentId,
+    threadId,
+    tabId,
+    resource?.environmentId,
+    resource?.threadId,
+    resource?.serverEpoch,
+  ]);
 
 export function supportsServerPictureInPicture(): boolean {
   if (typeof document === "undefined") return false;
@@ -64,6 +76,7 @@ export async function openServerPictureInPicture(input: {
   readonly environmentId: EnvironmentId;
   readonly threadId: string;
   readonly tabId: string;
+  readonly resource?: PreviewViewerResource;
   readonly seed: HTMLCanvasElement | null;
 }): Promise<void> {
   closeServerPictureInPicture();
@@ -85,6 +98,7 @@ export async function openServerPictureInPicture(input: {
     "position:fixed;right:0;bottom:0;width:1px;height:1px;opacity:0;pointer-events:none";
   document.body.append(video);
 
+  const accessOwner = mountPreviewStreamAccess(input.environmentId, input.resource);
   const painter = createPreviewFramePainter(canvas);
   let client: PreviewStreamClient | null = null;
   let stopped = false;
@@ -94,7 +108,7 @@ export async function openServerPictureInPicture(input: {
     if (active === current) closeServerPictureInPicture();
   };
   const connect = async (refresh: boolean) => {
-    const access = await readPreviewStreamAccess(input.environmentId, refresh);
+    const access = await accessOwner.read(refresh);
     if (stopped) return;
     if (!access) {
       closeServerPictureInPicture();
@@ -105,6 +119,7 @@ export async function openServerPictureInPicture(input: {
         access,
         threadId: input.threadId,
         tabId: input.tabId,
+        ...(input.resource === undefined ? {} : { resource: input.resource }),
         maxWidth: 1280,
         maxHeight: 1280,
         interactive: false,
@@ -133,11 +148,17 @@ export async function openServerPictureInPicture(input: {
     if (video.webkitPresentationMode !== "picture-in-picture") onLeave();
   };
   const current: ActivePictureInPicture = {
-    key: serverPictureInPictureKey(input.threadId, input.tabId),
+    key: serverPictureInPictureKey(
+      input.threadId,
+      input.tabId,
+      input.environmentId,
+      input.resource,
+    ),
     stop: () => {
       stopped = true;
       if (retryTimer !== null) clearTimeout(retryTimer);
       client?.stop();
+      accessOwner.release();
       painter.stop();
       video.removeEventListener("leavepictureinpicture", onLeave);
       video.removeEventListener("webkitpresentationmodechanged", onPresentationMode);

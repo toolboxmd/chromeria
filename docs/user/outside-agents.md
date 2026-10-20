@@ -80,6 +80,26 @@ link. This does not let it interrupt the parent or use unrelated threads. A
 pending return receipt means the notice is stored for delivery; the parent has
 not acknowledged it yet.
 
+## Use a linked browser or device
+
+Keep your client connected to the source environment. Open a resource returned by
+its tools to view the linked environment without saving another connection.
+Closing the view releases that viewer; `t3_preview_close` or `device_close`
+closes the tool session. Reopening creates a new session, so use its new reference.
+Both environments must support remote viewers and permit the requested access.
+
+For devices, use `device_commands` to discover supported commands, then pass the
+qualified target from `device_open` to `device_execute`. Use snapshot references
+for clicks and literal text for fills. Follow the returned typed examples; a
+remote device does not require running a command on its host.
+
+Use `t3_attachment_inspect` to obtain a verified reference after an upload.
+Pass qualified file references to supported device commands or `preview_upload`;
+a file path on your computer is not a file on the linked computer. Use
+`t3_attachment_acquire` to bring a supported result into the source environment.
+Browser downloads larger than 50 MiB remain available through the authenticated
+viewer download, but cannot be acquired as agent attachments.
+
 ## Recover an interrupted call
 
 For tools that accept a request key, keep the same key when retrying the same

@@ -37,6 +37,88 @@ describe("AvccDemuxer", () => {
     expect(Array.from(chunks[1]!.payload)).toEqual([9, 9, 9]);
   });
 
+  it("preserves every split boundary, coalesced frames and payload ownership", () => {
+    const wire = new Uint8Array([
+      ...envelope(1, [1, 100, 0, 31]),
+      0,
+      0,
+      0,
+      0,
+      ...envelope(0x7f, [7]),
+      ...envelope(2, [11, 22, 33]),
+      ...envelope(3, [44]),
+      ...envelope(4, [55]),
+    ]);
+    for (let split = 0; split <= wire.length; split++) {
+      const demuxer = new AvccDemuxer();
+      const chunks = [
+        ...demuxer.push(wire.subarray(0, split)),
+        ...demuxer.push(wire.subarray(split)),
+      ];
+      expect(chunks.map(({ type, payload }) => [type, Array.from(payload)])).toEqual([
+        ["description", [1, 100, 0, 31]],
+        ["keyframe", [11, 22, 33]],
+        ["delta", [44]],
+        ["seed", [55]],
+      ]);
+      demuxer.push(new Uint8Array(envelope(2, [99, 88, 77])));
+      expect(Array.from(chunks[1]!.payload)).toEqual([11, 22, 33]);
+    }
+  });
+
+  it.each([0x04000001, 0xffffffff])(
+    "refuses oversized AVCC header %i before copying a continuing body",
+    (length) => {
+      const demuxer = new AvccDemuxer();
+      const bytes = new Uint8Array(17 * 1024 * 1024 + 5);
+      new DataView(bytes.buffer).setUint32(0, length, false);
+      bytes[4] = 2;
+      expect(demuxer.push(bytes.subarray(0, 3))).toEqual([]);
+      const allocations: number[] = [];
+      const Original = Uint8Array;
+      vi.stubGlobal(
+        "Uint8Array",
+        new Proxy(Original, {
+          construct(target, args, newTarget) {
+            if (typeof args[0] === "number") allocations.push(args[0]);
+            return Reflect.construct(target, args, newTarget);
+          },
+        }),
+      );
+      try {
+        expect(() => demuxer.push(bytes.subarray(3))).toThrow(RangeError);
+        expect(allocations.every((size) => size <= 64 * 1024)).toBe(true);
+        demuxer.reset();
+        expect(demuxer.push(new Original(envelope(2, [11, 22, 33])))).toEqual([
+          { type: "keyframe", payload: new Original([11, 22, 33]) },
+        ]);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
+  it("accepts a complete 64 MiB envelope and coalesced lawful envelopes exceeding that total", () => {
+    const maximum = new Uint8Array(64 * 1024 * 1024 + 4);
+    new DataView(maximum.buffer).setUint32(0, maximum.length - 4, false);
+    maximum[4] = 2;
+    maximum[maximum.length - 1] = 17;
+    const demuxer = new AvccDemuxer();
+    const [frame] = demuxer.push(maximum);
+    expect(frame!.payload.length).toBe(64 * 1024 * 1024 - 1);
+    expect(frame!.payload.at(-1)).toBe(17);
+    const size = 32 * 1024 * 1024 + 1;
+    const wire = new Uint8Array(2 * (size + 4));
+    for (const offset of [0, size + 4]) {
+      new DataView(wire.buffer).setUint32(offset, size, false);
+      wire[offset + 4] = 3;
+    }
+    expect(demuxer.push(wire).map((chunk) => [chunk.type, chunk.payload.length])).toEqual([
+      ["delta", size - 1],
+      ["delta", size - 1],
+    ]);
+  });
+
   it("derives the WebCodecs codec string from the avcC record", () => {
     expect(avcCodecString(new Uint8Array([1, 0x64, 0x00, 0x1f]))).toBe("avc1.64001f");
     expect(avcCodecString(new Uint8Array([1]))).toBe("avc1.42E01E");
@@ -49,7 +131,7 @@ describe("native device stream transport", () => {
     vi.unstubAllGlobals();
   });
 
-  function setup(platform: "ios" | "android") {
+  function setup(platform: "ios" | "android", canOperate?: boolean) {
     vi.useFakeTimers();
     vi.stubGlobal("VideoDecoder", vi.fn());
     vi.stubGlobal("EncodedVideoChunk", vi.fn());
@@ -94,6 +176,7 @@ describe("native device stream transport", () => {
           wsBase: "wss://environment.test/api/device-hub",
           credentials: false,
           query: { wsTicket: "stream-ticket", hostId: "ssh-host" },
+          ...(canOperate === undefined ? {} : { canOperate }),
         },
       },
       { getContext: () => null } as unknown as HTMLCanvasElement,
@@ -101,6 +184,29 @@ describe("native device stream transport", () => {
     );
     return { client, opened, waitForSocket, events, fetch };
   }
+
+  it("observes an iOS read-only view without starting an input helper", () => {
+    const { client, events, fetch } = setup("ios", false);
+    client.start();
+    expect(events.onMjpegFallback).toHaveBeenCalledTimes(1);
+    expect(events.onInputConnected).toHaveBeenCalledWith(false, "View only");
+    expect(fetch).not.toHaveBeenCalled();
+    client.sendTouch("begin", 0.2, 0.3);
+    client.pressButton("home");
+    client.stop();
+  });
+
+  it("receives Android view frames without sending input on the multiplexed socket", async () => {
+    const { client, opened, events } = setup("android", false);
+    client.start();
+    const socket = await opened;
+    socket.onopen?.();
+    expect(events.onInputConnected).toHaveBeenCalledWith(false, "View only");
+    client.sendTouch("begin", 0.2, 0.3);
+    client.pressButton("home");
+    expect(socket.send).not.toHaveBeenCalled();
+    client.stop();
+  });
 
   it("uses authenticated iOS MJPEG and forwards controls without a cross-origin video fetch", async () => {
     const { client, opened, events, fetch } = setup("ios");
@@ -488,6 +594,94 @@ describe("shared device stream readiness and recovery", () => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });
+
+  it.each(["oversized", "reader-failure"] as const)(
+    "leaves invalid AVCC feed and recovers (%s)",
+    async (failure) => {
+      const fixture = recoveryFixture("ios", false);
+      const streaming = Promise.withResolvers<void>();
+      const invalidAllowed = Promise.withResolvers<void>();
+      const observed = Promise.withResolvers<"refused" | "continued">();
+      const recovered = Promise.withResolvers<void>();
+      const closed = Promise.withResolvers<void>();
+      const signals: AbortSignal[] = [];
+      let feeds = 0;
+      let continuingBodyReads = 0;
+      vi.stubGlobal("createImageBitmap", async () => ({ width: 1, height: 1, close() {} }));
+      fixture.events.onStatus.mockImplementation((status: string, detail?: string) => {
+        if (status === "streaming") {
+          if (feeds === 1) streaming.resolve();
+          else recovered.resolve();
+        }
+        if (status === "connecting" && detail) observed.resolve("refused");
+      });
+      fixture.fetch.mockImplementation((url: string, init: RequestInit) => {
+        if (!url.includes("stream.avcc")) return Promise.resolve(new Response("prime"));
+        const feed = ++feeds;
+        const signal = init.signal!;
+        signals.push(signal);
+        let phase = 0;
+        return Promise.resolve(
+          new Response(
+            new ReadableStream<Uint8Array>(
+              {
+                start(controller) {
+                  signal.addEventListener(
+                    "abort",
+                    () => {
+                      controller.error(new Error("aborted"));
+                      closed.resolve();
+                    },
+                    { once: true },
+                  );
+                },
+                async pull(controller) {
+                  if (phase++ === 0) {
+                    controller.enqueue(new Uint8Array(envelope(4, [0])));
+                    return;
+                  }
+                  if (feed > 1) {
+                    await closed.promise;
+                    return;
+                  }
+                  await invalidAllowed.promise;
+                  if (phase === 2) {
+                    if (failure === "reader-failure") throw new Error("fixture reader failed");
+                    controller.enqueue(new Uint8Array([255, 255, 255, 255, 2]));
+                  } else if (continuingBodyReads++ < 17)
+                    controller.enqueue(new Uint8Array(1024 * 1024));
+                  else {
+                    observed.resolve("continued");
+                    await closed.promise;
+                  }
+                },
+              },
+              { highWaterMark: 0 },
+            ),
+            { status: 200 },
+          ),
+        );
+      });
+      try {
+        fixture.client.start();
+        await streaming.promise;
+        invalidAllowed.resolve();
+        expect(await observed.promise).toBe("refused");
+        expect(signals[0]!.aborted).toBe(true);
+        expect(continuingBodyReads).toBe(0);
+        await vi.advanceTimersByTimeAsync(1_000);
+        await recovered.promise;
+        expect(feeds).toBe(2);
+        expect(fixture.events.onStatus).toHaveBeenLastCalledWith("streaming", undefined);
+        expect(fixture.events.onUnauthorized).not.toHaveBeenCalled();
+        expect(fixture.events.onMjpegFallback).not.toHaveBeenCalled();
+      } finally {
+        fixture.client.stop();
+        invalidAllowed.resolve();
+        closed.resolve();
+      }
+    },
+  );
 
   it("waits for iOS input admission and respects native input loss and recovery", async () => {
     const { client, sockets, events } = recoveryFixture();
