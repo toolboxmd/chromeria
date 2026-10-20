@@ -4,7 +4,7 @@ import { externalReplay, requestDigest } from "../../McpRequestReceipts.ts";
 import { interactiveAuthority } from "../../../peer/PeerAuthorityRecord.ts";
 import { CurrentRequest } from "../../McpRequestReceipts.ts";
 import { loadCaller } from "../../threadAccess.ts";
-import { assertSameLink } from "../../linkOrigin.ts";
+import { assertSameLink, callerLinkOrigin } from "../../linkOrigin.ts";
 import * as Option from "effect/Option";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -141,6 +141,16 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
       ? { toolIcon: { _tag: "website" as const, pageUrl: page.url } }
       : {}),
   };
+});
+
+const authorizeVaultLogin = Effect.gen(function* () {
+  const caller = yield* loadCaller();
+  // Browser consent grants neither destination vault use nor profile-wide login effects.
+  if (callerLinkOrigin(caller) !== undefined)
+    return yield* new OrchestratorMcpFailure({
+      code: "capability_denied",
+      message: "Linked callers cannot use this environment's credential vault or end its logins.",
+    });
 });
 
 const invokeTargeted = <A extends object>(
@@ -447,33 +457,42 @@ const handlers = {
     (input) => invokeTargeted<object>("drag", input, input.timeoutMs),
     "external-unknown",
   ),
-  preview_fill_credential: McpToolAccess.actsOnResource("preview", (input) =>
-    Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
-      // The audit line takes nothing from the page: only the matched vault host.
-      const audit = (site: string | null, result: string) =>
-        recordCredentialFill({
-          environmentId: scope.environmentId,
-          threadId: scope.thread.threadId,
-          item: input.item,
-          field: input.field,
-          site,
-          result,
-        });
-      return yield* invokeTargeted<PreviewAutomationFillCredentialResult>(
-        "fillCredential",
-        input,
-        input.timeoutMs,
-      ).pipe(
-        Effect.tap((result) => audit(result.site, "filled")),
-        Effect.tapError((error) =>
-          audit(null, error._tag === "PreviewCredentialError" ? error.reason : error._tag),
-        ),
-      );
-    }),
+  preview_fill_credential: McpToolAccess.actsOnResource(
+    "preview",
+    (input) =>
+      Effect.gen(function* () {
+        yield* authorizeVaultLogin;
+        const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
+        // The audit line takes nothing from the page: only the matched vault host.
+        const audit = (site: string | null, result: string) =>
+          recordCredentialFill({
+            environmentId: scope.environmentId,
+            threadId: scope.thread.threadId,
+            item: input.item,
+            field: input.field,
+            site,
+            result,
+          });
+        return yield* invokeTargeted<PreviewAutomationFillCredentialResult>(
+          "fillCredential",
+          input,
+          input.timeoutMs,
+        ).pipe(
+          Effect.tap((result) => audit(result.site, "filled")),
+          Effect.tapError((error) =>
+            audit(null, error._tag === "PreviewCredentialError" ? error.reason : error._tag),
+          ),
+        );
+      }),
+    "external-unknown",
   ),
-  preview_end_login: McpToolAccess.actsOnResource("preview", (input) =>
-    invokeTargeted<PreviewAutomationEndLoginResult>("endLogin", input ?? {}),
+  preview_end_login: McpToolAccess.actsOnResource(
+    "preview",
+    (input) =>
+      authorizeVaultLogin.pipe(
+        Effect.andThen(invokeTargeted<PreviewAutomationEndLoginResult>("endLogin", input ?? {})),
+      ),
+    "external-unknown",
   ),
   preview_upload: McpToolAccess.actsOnResource(
     "preview",
