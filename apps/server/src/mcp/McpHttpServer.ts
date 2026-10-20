@@ -1,3 +1,10 @@
+import { RemoteSecretReceiptQuery } from "@t3tools/contracts";
+import {
+  RemoteSecretControl,
+  RemoteSecretRetirement,
+  RemoteSecretSupport,
+} from "@t3tools/contracts";
+import * as RemoteSecretRequests from "../secrets/RemoteSecretRequests.ts";
 import { ThreadMcpToolkit } from "./toolkits/threadMcp/tools.ts";
 import * as ThreadMcpHandlers from "./toolkits/threadMcp/handlers.ts";
 
@@ -248,12 +255,16 @@ const peerAuthorityFailure = (error: unknown) =>
     { status: isPeerFailure(error) && error.code === "orchestration_error" ? 503 : 403 },
   );
 
+const decodeSecretRetirement = Schema.decodeUnknownEffect(RemoteSecretRetirement);
+const decodeSecretControl = Schema.decodeUnknownEffect(RemoteSecretControl);
+const decodeSecretReceiptQuery = Schema.decodeUnknownEffect(RemoteSecretReceiptQuery);
 const decodeAutomationDisable = Schema.decodeUnknownEffect(AutomationAuthority.AutomationDisable);
 
 const makeMcpAuthMiddleware = Effect.gen(function* () {
   const registry = yield* McpSessionRegistry.McpSessionRegistry;
   const clients = yield* Effect.serviceOption(McpClientAuthenticator);
   const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+  const remoteSecrets = yield* Effect.serviceOption(RemoteSecretRequests.RemoteSecretRequests);
   return Effect.fn("McpHttpServer.authenticateRequest")(function* (httpEffect) {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const authorization = request.headers.authorization;
@@ -261,6 +272,20 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
       authorization?.startsWith("Bearer ") === true
         ? authorization.slice("Bearer ".length).trim()
         : "";
+    if (request.url.split("?")[0] === "/mcp/peer-control/secrets/retire") {
+      if (request.method !== "POST" || Option.isNone(remoteSecrets) || token.length === 0)
+        return HttpServerResponse.empty({ status: 403 });
+      const retired = yield* Effect.gen(function* () {
+        const input = yield* decodeSecretRetirement(yield* request.json);
+        return yield* remoteSecrets.value.retire(
+          input,
+          Hex.encode(sha256(new TextEncoder().encode(token))),
+        );
+      }).pipe(Effect.result);
+      return retired._tag === "Success"
+        ? HttpServerResponse.jsonUnsafe(retired.success)
+        : HttpServerResponse.empty({ status: 403 });
+    }
     if (request.url.split("?")[0] === "/mcp/peer-control/automation-disable") {
       if (request.method !== "POST" || Option.isNone(authority) || token.length === 0)
         return HttpServerResponse.empty({ status: 403 });
@@ -1578,6 +1603,55 @@ export const layerDeviceToolkit = Layer.mergeAll(
 const layerPeerControl = Layer.unwrap(
   Effect.gen(function* () {
     const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+    const secrets = yield* Effect.serviceOption(RemoteSecretRequests.RemoteSecretRequests);
+    const secretSupport = HttpRouter.add(
+      "GET",
+      "/mcp/peer-control/secrets",
+      Effect.succeed(
+        Option.isSome(secrets)
+          ? HttpServerResponse.jsonUnsafe({
+              version: 1,
+              families: ["schedule.webhook-signature"],
+              consumers: ["schedule_task"],
+            } satisfies typeof RemoteSecretSupport.Type)
+          : HttpServerResponse.empty({ status: 409 }),
+      ),
+    );
+    const secretControl = HttpRouter.add(
+      "POST",
+      "/mcp/peer-control/secrets",
+      Effect.gen(function* () {
+        if (Option.isNone(secrets)) return HttpServerResponse.empty({ status: 409 });
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const result = yield* secrets.value.control(
+          scope,
+          yield* decodeSecretControl(yield* request.json),
+        );
+        return HttpServerResponse.jsonUnsafe(result);
+      }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 403 })))),
+    );
+    const secretReceipt = HttpRouter.add(
+      "POST",
+      "/mcp/peer-control/secrets/receipt",
+      Effect.gen(function* () {
+        if (Option.isNone(secrets)) return HttpServerResponse.empty({ status: 409 });
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const receipt = yield* secrets.value.receipt(
+          scope,
+          yield* decodeSecretReceiptQuery(yield* request.json),
+        );
+        return Option.isSome(receipt)
+          ? HttpServerResponse.jsonUnsafe(receipt.value)
+          : HttpServerResponse.empty({ status: 204 });
+      }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 403 })))),
+    );
+    const secretRetirement = HttpRouter.add(
+      "POST",
+      "/mcp/peer-control/secrets/retire",
+      Effect.succeed(HttpServerResponse.empty({ status: 403 })),
+    );
     const automationSupport = HttpRouter.add(
       "GET",
       "/mcp/peer-control/automation",
@@ -1780,6 +1854,10 @@ const layerPeerControl = Layer.unwrap(
       ),
     );
     return Layer.mergeAll(
+      secretSupport,
+      secretControl,
+      secretRetirement,
+      secretReceipt,
       automationSupport,
       automationDisable,
       post,

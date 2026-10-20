@@ -1,3 +1,4 @@
+import * as SecretRequestIngress from "./secrets/SecretRequestIngress.ts";
 import { qualifiedAttachmentReader, qualifiedNativeDownloadReader } from "./assets/AssetAccess.ts";
 import { clientHandlers as pendingRequestClientHandlers } from "./childThreads/PendingRequestIngress.ts";
 import * as PendingRequestService from "./childThreads/PendingRequestService.ts";
@@ -2160,10 +2161,7 @@ const layerWsRpc = (
           Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(
             Effect.andThen(scheduledTasks.rotateWebhookToken(input)),
           ),
-        [WS_METHODS.secretsAnswerRequest]: (input) =>
-          Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
-            Effect.andThen(secretRequests.answer(input)),
-          ),
+        ...SecretRequestIngress.clientHandlers(currentSession, secretRequests),
         [WS_METHODS.scheduledTasksListWebhookDeliveries]: (input) =>
           Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(
             Effect.andThen(scheduledTasks.listWebhookDeliveries(input)),

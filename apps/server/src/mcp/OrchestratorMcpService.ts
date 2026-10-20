@@ -1,3 +1,5 @@
+import * as RemoteSecretRequests from "../secrets/RemoteSecretRequests.ts";
+import * as RemoteSecretRelay from "../secrets/RemoteSecretRelay.ts";
 import * as ThreadMcpConfig from "../orchestration-v2/ThreadMcpConfig.ts";
 import { toolPolicyRejection, toolAllowlistsEqual } from "@t3tools/provider-core/server/toolPolicy";
 
@@ -2309,6 +2311,19 @@ const make = Effect.gen(function* () {
           if (Option.isSome(prior)) return prior.value;
         }
 
+        const remoteHandle =
+          input.schedule?.type === "webhook" ? input.schedule.signature?.secretRequest : undefined;
+        const remoteSecrets = yield* Effect.serviceOption(
+          RemoteSecretRequests.RemoteSecretRequests,
+        );
+        if (
+          remoteHandle !== undefined &&
+          (request === undefined || Option.isNone(remoteSecrets) || scope.client?.linked !== true)
+        )
+          return yield* failure(
+            "invalid_request",
+            "A remote secret needs its keyed destination scheduler operation.",
+          );
         const callerCanBind =
           input.bare === undefined && parent !== undefined && parent.thread.projectId === projectId;
         const bindToCurrentThread =
@@ -2394,14 +2409,30 @@ const make = Effect.gen(function* () {
                 ? undefined
                 : {
                     request,
-                    recheck: scheduleRecheck(scope),
-                    consumesSecret:
-                      input.schedule?.type === "webhook" &&
-                      input.schedule.signature?.secretRef !== undefined,
+                    recheck: scheduleRecheck(scope).pipe(
+                      Effect.andThen(
+                        remoteHandle !== undefined && Option.isSome(remoteSecrets)
+                          ? remoteSecrets.value.reserve(scope, remoteHandle, projectId, request)
+                          : Effect.void,
+                      ),
+                    ),
+                    secret:
+                      remoteHandle !== undefined
+                        ? { type: "remote", handle: remoteHandle }
+                        : input.schedule?.type === "webhook" &&
+                            input.schedule.signature?.secretRef !== undefined
+                          ? { type: "local-ref" }
+                          : { type: "none" },
                   },
             ),
             Effect.mapError(scheduleError),
           );
+        if (remoteHandle !== undefined && Option.isSome(remoteSecrets))
+          yield* remoteSecrets.value
+            .finalize(remoteHandle)
+            .pipe(
+              Effect.catch(() => Effect.logWarning("Committed remote secret copy awaits cleanup.")),
+            );
         if (request !== undefined) {
           const accepted = yield* scheduleReceipt(request);
           if (Option.isNone(accepted))
@@ -2433,6 +2464,14 @@ const make = Effect.gen(function* () {
       }),
     updateScheduledTask: (scope, input) =>
       Effect.gen(function* () {
+        if (
+          input.schedule?.type === "webhook" &&
+          input.schedule.signature?.secretRequest !== undefined
+        )
+          return yield* failure(
+            "invalid_request",
+            "Remote secret v1 supports schedule_task creation only.",
+          );
         const { parent, limits } = yield* loadCaller(scope);
         const request = yield* scheduleRequest(scope);
         if (request !== undefined) {
@@ -2459,7 +2498,11 @@ const make = Effect.gen(function* () {
               ScheduleMutation.CurrentMutation,
               request === undefined
                 ? undefined
-                : { request, recheck: scheduleRecheck(scope, existing.id), consumesSecret: false },
+                : {
+                    request,
+                    recheck: scheduleRecheck(scope, existing.id),
+                    secret: { type: "none" },
+                  },
             ),
             Effect.mapError((error) =>
               failure("orchestration_error", `Could not update scheduled task: ${error.message}`),
@@ -2538,9 +2581,11 @@ const make = Effect.gen(function* () {
                 : {
                     request,
                     recheck: scheduleRecheck(scope, existing.id),
-                    consumesSecret:
+                    secret:
                       input.schedule?.type === "webhook" &&
-                      input.schedule.signature?.secretRef !== undefined,
+                      input.schedule.signature?.secretRef !== undefined
+                        ? { type: "local-ref" }
+                        : { type: "none" },
                   },
             ),
             Effect.mapError(scheduleError),
@@ -2577,7 +2622,11 @@ const make = Effect.gen(function* () {
               ScheduleMutation.CurrentMutation,
               request === undefined
                 ? undefined
-                : { request, recheck: scheduleRecheck(scope, existing.id), consumesSecret: false },
+                : {
+                    request,
+                    recheck: scheduleRecheck(scope, existing.id),
+                    secret: { type: "none" },
+                  },
             ),
             Effect.mapError(scheduleError),
           );
@@ -2594,6 +2643,11 @@ const make = Effect.gen(function* () {
       }),
     requestSecret: (scope, input) =>
       Effect.gen(function* () {
+        if (scope.client?.linked === true)
+          return yield* failure(
+            "capability_denied",
+            "Generic peer request_secret is unsupported; use remote secret v1.",
+          );
         const { scope: threadScope, parent } = yield* loadThreadCaller(scope, "request_secret");
         if (input.fields !== undefined && input.placeholder !== undefined) {
           return yield* failure(
@@ -2619,6 +2673,46 @@ const make = Effect.gen(function* () {
         const turnItemId = TurnItemId.make(
           `turn-item:secret-request:${stablePart(threadId)}:${stablePart(key)}`,
         );
+        const remote =
+          input.environmentId !== undefined && input.environmentId !== scope.environmentId;
+        const relay = yield* Effect.serviceOption(RemoteSecretRelay.RemoteSecretRelay);
+        if (
+          remote &&
+          (input.projectId === undefined ||
+            input.clientRequestId === undefined ||
+            (input.fields?.length ?? 1) !== 1)
+        )
+          return yield* failure(
+            "invalid_request",
+            "Remote webhook secrets need a destination project, stable request key and exactly one value. Broader fields are unsupported.",
+          );
+        if (remote && Option.isNone(relay))
+          return yield* failure("capability_denied", "Remote secret v1 is unavailable.");
+        const destination =
+          remote &&
+          Option.isSome(relay) &&
+          input.projectId !== undefined &&
+          input.environmentId !== undefined
+            ? yield* relay.value.create(
+                scope,
+                input.environmentId,
+                {
+                  type: "create",
+                  projectId: input.projectId,
+                  key,
+                  family: "schedule.webhook-signature",
+                  label: input.label,
+                  reason: input.reason,
+                  ...(input.fields?.[0] === undefined ? {} : { field: input.fields[0] }),
+                  ...(input.fields?.[0]?.placeholder === undefined &&
+                  input.placeholder === undefined
+                    ? {}
+                    : { placeholder: input.fields?.[0]?.placeholder ?? input.placeholder }),
+                },
+                turnItemId,
+                parent.thread,
+              )
+            : undefined;
         const record = (secretStatus: "pending" | "cancelled") =>
           threadManagement
             .dispatch({
@@ -2636,6 +2730,7 @@ const make = Effect.gen(function* () {
               reason: input.reason,
               ...(input.placeholder === undefined ? {} : { placeholder: input.placeholder }),
               ...(input.fields === undefined ? {} : { fields: input.fields }),
+              ...(destination === undefined ? {} : { destination }),
               secretStatus,
             })
             .pipe(
@@ -2646,15 +2741,39 @@ const make = Effect.gen(function* () {
                 ),
               ),
             );
-        yield* record("pending");
-        // Only this call can hand the agent its ref, so the card must not
-        // outlive it: a timeout, a failed wait or an aborted call closes it as
-        // cancelled.
-        const closeCard = record("cancelled").pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("Could not close a secret request card", { error: error.message }),
+        yield* record("pending").pipe(
+          Effect.tapError(() =>
+            destination !== undefined && Option.isSome(relay)
+              ? relay.value.retire(threadId, turnItemId)
+              : Effect.void,
           ),
         );
+        // Timeout reconciles a winning save; an aborted call has no remaining
+        // caller to receive the handle, even when the save already committed.
+        const closeCard = (reason: "timeout" | "aborted") =>
+          record("cancelled").pipe(
+            Effect.andThen(
+              Effect.gen(function* () {
+                if (destination === undefined || Option.isNone(relay)) return;
+                if (reason === "timeout") {
+                  const records = yield* threadManagement.getThreadRecords(
+                    threadId,
+                    ["turnItems"],
+                    {
+                      turnItemTypes: ["secret_request"],
+                      messageRoles: [],
+                    },
+                  );
+                  const item = records.turnItems.find((candidate) => candidate.id === turnItemId);
+                  if (item?.type === "secret_request" && item.secretStatus === "saved") return;
+                }
+                yield* relay.value.retire(threadId, turnItemId);
+              }),
+            ),
+            Effect.catch((error) =>
+              Effect.logWarning("Could not close a secret request card", { error: error.message }),
+            ),
+          );
 
         const answered = yield* Effect.gen(function* () {
           while (true) {
@@ -2680,7 +2799,7 @@ const make = Effect.gen(function* () {
               current === undefined ||
               ThreadManagementService.isTerminalRunStatus(current.status)
             ) {
-              yield* record("cancelled");
+              yield* closeCard("aborted");
               return "cancelled" as const;
             }
             yield* Effect.sleep(Duration.millis(SECRET_REQUEST_POLL_INTERVAL_MS));
@@ -2691,9 +2810,9 @@ const make = Effect.gen(function* () {
               Math.min(input.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS),
             ),
           ),
-          Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : closeCard)),
+          Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : closeCard("aborted"))),
         );
-        if (Option.isNone(answered)) yield* closeCard;
+        if (Option.isNone(answered)) yield* closeCard("timeout");
         const status = Option.isSome(answered)
           ? answered.value
           : yield* threadManagement
@@ -2714,6 +2833,8 @@ const make = Effect.gen(function* () {
         yield* Effect.annotateCurrentSpan({ "secret_request.status": status });
         yield* Metrics.increment(Metrics.secretRequestsTotal, { status });
         if (status !== "saved") return { status };
+        if (destination !== undefined && Option.isSome(relay))
+          return { status, secretRequest: yield* relay.value.handle(threadId, turnItemId) };
         // Saved means the files were written before the card said so; none
         // left means a storage fault, or the agent already used and deleted them.
         const saved = yield* secretRequests.saved({ threadId: threadId, turnItemId });

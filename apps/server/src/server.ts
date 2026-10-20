@@ -1,3 +1,5 @@
+import * as RemoteSecretRequests from "./secrets/RemoteSecretRequests.ts";
+import * as RemoteSecretRelay from "./secrets/RemoteSecretRelay.ts";
 import * as BrowserCookieMirror from "./preview/BrowserCookieMirror.ts";
 import * as CookieMirrorRoute from "./preview/CookieMirrorRoute.ts";
 import * as PendingRequestService from "./childThreads/PendingRequestService.ts";
@@ -1125,12 +1127,18 @@ const layerMakeServer = Layer.unwrap(
         ),
       ),
       Layer.provide(
-        McpRequestRuntime.layerForwarding.pipe(
-          Layer.provideMerge(PeerMcpClient.layer),
-          Layer.provideMerge(PeerNoticeDelivery.layer),
+        McpRequestRuntime.layerForwarding.pipe(Layer.provideMerge(PeerNoticeDelivery.layer)),
+      ),
+      Layer.provide(RemoteSecretRelay.layer.pipe(Layer.provide(layerPersistence))),
+      Layer.provideMerge(layerRuntimeServices),
+      Layer.provideMerge(
+        RemoteSecretRequests.layer.pipe(
+          Layer.provide(layerServerEnvironment),
+          Layer.provide(ServerSecretStore.layer),
+          Layer.provide(layerPersistence),
         ),
       ),
-      Layer.provideMerge(layerRuntimeServices),
+      Layer.provideMerge(PeerMcpClient.layer.pipe(Layer.provide(layerPersistence))),
       Layer.provideMerge(
         McpSessionRegistry.layer.pipe(
           Layer.provide(ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer))),

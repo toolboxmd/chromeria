@@ -1963,6 +1963,9 @@ export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthori
   { error: EnvironmentAuthorizationError },
 ) {}
 
+export const SecretRequestClientRpcGroup =
+  RpcGroup.make(WsSecretsAnswerRequestRpc).middleware(RpcScopeAuthorization);
+
 export const DeviceViewerClientRpcGroup = RpcGroup.make(
   WsDeviceViewerOpenRpc,
   WsDeviceViewerCloseRpc,
