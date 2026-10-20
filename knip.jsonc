@@ -24,6 +24,7 @@
         "mobile-native-client.ts",
         "setup-worktree.ts",
         "fork-features.mjs",
+        "browser-doc-check.mjs",
       ],
       // The `t3` npm package's files: copied into the package, never imported.
       "ignore": ["npm-launcher/**"],
