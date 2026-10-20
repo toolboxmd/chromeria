@@ -781,7 +781,7 @@ importers:
   apps/web:
     dependencies:
       '@base-ui/react':
-        specifier: ^1.4.1
+        specifier: 1.5.0
         version: 1.5.0(patch_hash=65a7d832d185ec724e44a831426fa4439f64794d5fd4050d467d4440bf2c9d2b)(@date-fns/tz@1.5.0)(@types/react@19.3.0)(date-fns@4.4.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       '@clerk/clerk-js':
         specifier: 6.39.1
