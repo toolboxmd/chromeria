@@ -1,6 +1,5 @@
 import { Toolbar } from "../../components/ui/Toolbar";
 import * as Dialog from "../../components/ui/Dialog";
-import { ExecutionPurposePicker } from "./ExecutionPurposePicker";
 import { savedPurposeIntentForScope, type ExecutionPurposeScope } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import * as Cause from "effect/Cause";
@@ -1679,15 +1678,6 @@ export function NewTaskDraftScreen(props: {
           paddingTop: 14,
         }}
       >
-        {selectedEnvironmentServerConfig?.environment.capabilities.executionPurposeVersions?.includes(
-          1,
-        ) === true ? (
-          <ExecutionPurposePicker
-            scope={purposeScope}
-            onChange={setPurposeScope}
-            disabled={isComposerInteractionLocked}
-          />
-        ) : null}
         {stripAttachments.length > 0 ? (
           <View className="px-[14px] pb-2.5">
             <ComposerAttachmentStrip
