@@ -289,13 +289,16 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/chromeria/pull/373",
     "https://github.com/toolboxmd/chromeria/pull/419",
     "https://github.com/toolboxmd/chromeria/pull/391",
-    "https://github.com/toolboxmd/chromeria/pull/591"
+    "https://github.com/toolboxmd/chromeria/pull/591",
+    "https://github.com/toolboxmd/chromeria/pull/603"
   ],
   "newFiles": [
     ".github/workflows/fork.yml",
     "docs/fork-features.md",
     "docs/fork.md",
     "scripts/fork-check.sh",
+    "scripts/browser-doc-check.mjs",
+    "scripts/browser-doc-check.test.ts",
     "scripts/fork-features.mjs",
     "scripts/fork-maintenance.test.ts",
     "scripts/fork-rebase.sh",

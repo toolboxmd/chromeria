@@ -28,6 +28,7 @@
         // These fixture scripts are injected into a browser page by path.
         "fixtures/*/*.js",
         "fork-features.mjs",
+        "browser-doc-check.mjs",
         "knip-schemas.ts",
         "mobile-behavior/run.ts",
         "mobile-native-client.ts",

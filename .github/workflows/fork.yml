@@ -2,6 +2,7 @@ name: Fork
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited]
   push:
     branches:
       - main
@@ -36,4 +37,6 @@ jobs:
           git rev-parse --verify refs/remotes/upstream/main
 
       - name: Check fork stack
-        run: bash scripts/fork-check.sh --upstream upstream
+        run: |
+          bash scripts/fork-check.sh --upstream upstream
+          node scripts/browser-doc-check.mjs --numbers

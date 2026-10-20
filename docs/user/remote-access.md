@@ -316,9 +316,11 @@ is the same browser [HTML renders](html-renders.md) use, so a host downloads it
 only once. Some Linux hosts need [setup](#browser-host-setup) before it can
 start.
 
-Agent tabs have separate storage and share a Chromium process. Take control before
-typing into an agent's tab, then release control when you want the agent to
-continue. Read-only connections can watch without changing the page.
+Agent tabs share sign-ins and one Chrome process per saved profile; incognito
+tabs share a process with separate cookie jars. See the [Browser guide](browser.md)
+for profiles, logins and tab limits. Take control before typing into an agent's
+tab, then release control when you want the agent to continue. Read-only
+connections can watch without changing the page.
 
 While you have control, the tab works with your device: text the page copies or
 cuts goes to your clipboard, a file picker on the page opens your device's
