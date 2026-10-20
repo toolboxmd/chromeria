@@ -18,6 +18,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as PubSub from "effect/PubSub";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/ai";
@@ -37,6 +38,7 @@ import * as DesktopChannel from "./DesktopBrowserChannel.ts";
 import * as Manager from "./Manager.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
+import { settlementLayer, settleThread } from "./BrowserSettlement.testkit.ts";
 import { ServerBrowserContexts } from "./ServerBrowserContexts.ts";
 
 const executable = testChromium;
@@ -173,6 +175,7 @@ const scope = {
 };
 
 const dependencies = Layer.mergeAll(
+  settlementLayer,
   Broker.layer,
   Manager.layer,
   Layer.succeed(CredentialVault.CredentialVault, {
@@ -296,6 +299,42 @@ const withBrowser = <A, E>(
   );
 
 describe.skipIf(!executable)("credential login in a real browser", () => {
+  it.live(
+    "settlement leaves an in-progress login quarantined until endLogin closes its context",
+    () =>
+      withBrowser(
+        Effect.gen(function* () {
+          const broker = yield* Broker.PreviewAutomationBroker;
+          const manager = yield* Manager.PreviewManager;
+          const tabId = yield* openTab(broker);
+          const loginPage = pageAt("/");
+          yield* fillPassword(broker, tabId);
+          const disposable = yield* broker.invoke<PreviewAutomationStatus>({
+            scope,
+            operation: "open",
+            input: { profileId: "incognito", reuseExistingTab: false, show: false },
+          });
+          const events = yield* manager.subscribeEvents;
+          yield* settleThread(scope.thread.threadId);
+          let event = yield* PubSub.take(events);
+          while (event.type !== "closed" || event.tabId !== disposable.tabId)
+            event = yield* PubSub.take(events);
+          expect(loginPage.isClosed()).toBe(false);
+          yield* refusedRead(broker, tabId);
+          const status = yield* invoke(broker)<PreviewAutomationStatus>(tabId, "status");
+          expect(status.loginInProgress).toBe(true);
+          expectNoSecret(status);
+          const ended = yield* invoke(broker)<{ closed: Array<string> }>(tabId, "endLogin");
+          expect(ended.closed).toContain(tabId);
+          expect(loginPage.isClosed()).toBe(true);
+          expect((yield* manager.list({ threadId: scope.thread.threadId })).sessions).toEqual([]);
+          const fresh = yield* openTab(broker, "https://login.example.test/account");
+          expect(yield* invoke(broker)(fresh, "evaluate", { expression: "1" })).toBe(1);
+        }),
+      ),
+    60_000,
+  );
+
   it.live(
     "a status read that began before a fill returns without the filled title",
     () =>

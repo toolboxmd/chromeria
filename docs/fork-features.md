@@ -3226,3 +3226,24 @@ sources and reasons.
   ]
 }
 ```
+
+## preview-tab-settlement
+
+```json
+{
+  "id": "preview-tab-settlement",
+  "purpose": "Close a settled thread's unwatched agent tabs through the existing browser cleanup path, preserving human tabs and profile login quarantine. Drop when upstream closes equivalent tabs on thread settlement.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/601"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...agent/601-close-tabs-on-settle"],
+  "newFiles": ["apps/server/src/preview/BrowserSettlement.testkit.ts"],
+  "upstreamFiles": [],
+  "sharedFiles": [
+    "apps/server/src/preview/ServerBrowser.ts",
+    "apps/server/src/preview/ServerBrowser.test.ts",
+    "apps/server/src/preview/CredentialLogin.integration.test.ts",
+    "apps/server/src/peer/PeerAuthority.workflow.fixture.ts",
+    "docs/map.md"
+  ],
+  "keywords": ["thread.settled", "preview-tab-settlement"]
+}
+```
