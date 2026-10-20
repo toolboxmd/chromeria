@@ -23,6 +23,30 @@ const input = {
 const storeLayer = Store.layer.pipe(Layer.provide(Persistence.layerMemory));
 
 describe("Prism persisted recovery", () => {
+  it.effect(
+    "transport retry waits sixty seconds across reloads, independently of usage-limit opt-out",
+    () =>
+      Effect.gen(function* () {
+        const store = yield* Store.RecoveryStore;
+        const failedAt = Date.parse("2026-10-08T10:01:00Z");
+        const transport = {
+          ...input,
+          autoResume: false,
+          failure: { ...input.failure, class: "transport_error" as const },
+        };
+        const armed = yield* store.reconcile(transport);
+        assert.strictEqual(retryCommand(armed, failedAt), null);
+        assert.strictEqual(retryCommand(armed, failedAt + 59_999), null);
+        const reloaded = yield* store.get(threadId);
+        const repeated = yield* store.reconcile(transport);
+        assert.deepStrictEqual(repeated, reloaded);
+        const command = retryCommand(reloaded!, failedAt + 60_000);
+        assert.strictEqual(command?.type, "message.dispatch");
+        assert.strictEqual(command?.commandId, "prism-retry:thread:recovery:run:original");
+        yield* store.started(reloaded!);
+        assert.strictEqual(retryCommand((yield* store.get(threadId))!, failedAt + 120_000), null);
+      }).pipe(Effect.provide(storeLayer)),
+  );
   it.effect("concurrent duplicate failure observers produce one stable retry identity", () =>
     Effect.gen(function* () {
       const store = yield* Store.RecoveryStore;
@@ -30,7 +54,9 @@ describe("Prism persisted recovery", () => {
         Array.from({ length: 8 }, () => store.reconcile(input)),
         { concurrency: "unbounded" },
       );
-      const ids = records.map((record) => String(retryCommand(record)?.commandId));
+      const ids = records.map((record) =>
+        String(retryCommand(record, Number.MAX_SAFE_INTEGER)?.commandId),
+      );
       assert.deepStrictEqual(new Set(ids), new Set(["prism-retry:thread:recovery:run:original"]));
       assert.strictEqual((yield* store.pending).length, 1);
       assert.strictEqual(records[0]?.originalRunId, run.id);
@@ -44,10 +70,16 @@ describe("Prism persisted recovery", () => {
         const armed = yield* store.reconcile(input);
         // The persisted row is all a fresh reactor needs after a lost dispatch response.
         const reloaded = yield* store.get(threadId);
-        assert.deepStrictEqual(retryCommand(reloaded!), retryCommand(armed));
+        assert.deepStrictEqual(
+          retryCommand(reloaded!, Number.MAX_SAFE_INTEGER),
+          retryCommand(armed, Number.MAX_SAFE_INTEGER),
+        );
         const repeated = yield* store.reconcile(input);
-        assert.deepStrictEqual(retryCommand(repeated), retryCommand(armed));
-        const command = retryCommand(armed);
+        assert.deepStrictEqual(
+          retryCommand(repeated, Number.MAX_SAFE_INTEGER),
+          retryCommand(armed, Number.MAX_SAFE_INTEGER),
+        );
+        const command = retryCommand(armed, Number.MAX_SAFE_INTEGER);
         assert.strictEqual(command?.type, "message.dispatch");
         if (command?.type === "message.dispatch") {
           assert.deepStrictEqual(command.modelSelection, run.modelSelection);
@@ -75,14 +107,25 @@ describe("Prism persisted recovery", () => {
       return Effect.gen(function* () {
         const armed = yield* inProcess(
           Effect.gen(function* () {
-            return yield* (yield* Store.RecoveryStore).reconcile(input);
+            return yield* (yield* Store.RecoveryStore).reconcile({
+              ...input,
+              failure: { ...input.failure, class: "transport_error" },
+            });
           }),
         );
         const reloaded = yield* inProcess(
           Effect.gen(function* () {
             const store = yield* Store.RecoveryStore;
             const record = yield* store.get(threadId);
-            assert.deepStrictEqual(retryCommand(record!), retryCommand(armed));
+            assert.strictEqual(retryCommand(record!, Date.parse("2026-10-08T10:01:59.999Z")), null);
+            assert.strictEqual(
+              retryCommand(record!, Date.parse("2026-10-08T10:02:00Z"))?.type,
+              "message.dispatch",
+            );
+            assert.deepStrictEqual(
+              retryCommand(record!, Number.MAX_SAFE_INTEGER),
+              retryCommand(armed, Number.MAX_SAFE_INTEGER),
+            );
             yield* store.started(record!);
             return record;
           }),
@@ -93,7 +136,7 @@ describe("Prism persisted recovery", () => {
             const record = yield* store.reconcile(input);
             assert.strictEqual(record.state, "retry_started");
             assert.strictEqual(record.originalRunId, reloaded?.originalRunId);
-            assert.strictEqual(retryCommand(record), null);
+            assert.strictEqual(retryCommand(record, Number.MAX_SAFE_INTEGER), null);
             const completed = yield* store.reconcile({
               ...input,
               run: {
@@ -161,7 +204,7 @@ describe("Prism persisted recovery", () => {
         const exhausted = yield* store.reconcile({ ...input, run: retryRun });
         assert.strictEqual(exhausted.originalRunId, run.id);
         assert.strictEqual(exhausted.state, "closed");
-        assert.strictEqual(retryCommand(exhausted), null);
+        assert.strictEqual(retryCommand(exhausted, Number.MAX_SAFE_INTEGER), null);
         yield* store.started(armed);
         assert.strictEqual((yield* store.get(threadId))?.state, "closed");
         assert.strictEqual((yield* store.pending).length, 0);

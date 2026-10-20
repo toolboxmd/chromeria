@@ -64,7 +64,7 @@ const make = Effect.gen(function* () {
         ? recovery.autoResume
         : undefined;
     const record =
-      run !== null && projection.thread.creationSource === "mcp"
+      run !== null
         ? yield* store.reconcile({
             previous: null,
             run,

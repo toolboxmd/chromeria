@@ -23,6 +23,8 @@ export const RecoveryRecord = Schema.Struct({
   retryUsed: Schema.Boolean,
   state: Schema.Literals(["retry_pending", "retry_started", "reset_wait", "closed"]),
   resetAt: Schema.NullOr(Schema.String),
+  // Separate from subscription resets: transport recovery ignores usage-limit preferences.
+  retryAt: Schema.optionalKey(Schema.Number),
 });
 export type RecoveryRecord = typeof RecoveryRecord.Type;
 
@@ -105,12 +107,20 @@ export function decideRecovery(input: {
     return { ...previous };
   }
   if (record.retryUsed || failure.retryable !== true) return record;
-  return { ...record, state: "retry_pending", retryUsed: true };
+  return {
+    ...record,
+    state: "retry_pending",
+    retryUsed: true,
+    ...(failure.class === "transport_error"
+      ? { retryAt: DateTime.toEpochMillis(run.completedAt ?? run.requestedAt) + 60_000 }
+      : {}),
+  };
 }
 
 /** Eligibility is rechecked under serialized dispatch, not trusted from this record. */
-export function retryCommand(record: RecoveryRecord): OrchestrationV2Command | null {
+export function retryCommand(record: RecoveryRecord, nowMs: number): OrchestrationV2Command | null {
   if (record.state !== "retry_pending") return null;
+  if (record.retryAt !== undefined && record.retryAt > nowMs) return null;
   return {
     type: "message.dispatch",
     commandId: CommandId.make(String(record.retryMessageId)),

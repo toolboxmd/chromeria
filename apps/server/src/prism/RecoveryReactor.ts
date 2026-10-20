@@ -1,5 +1,6 @@
 import { RunId, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
@@ -76,7 +77,7 @@ export const layer = Layer.effect(
           retirement.retired || !retirement.complete,
         );
         if (record === null) return;
-        const command = retryCommand(record);
+        const command = retryCommand(record, DateTime.toEpochMillis(yield* DateTime.now));
         // Source eligibility and ancestry are rechecked by the composed commit plans.
         if (command !== null) yield* threads.dispatch(command);
       }).pipe(

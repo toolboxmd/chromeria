@@ -164,6 +164,57 @@ const failure = {
   code: null,
   retryable: true,
 };
+it.effect("a user thread waits sixty seconds then retries its transport failure exactly once", () =>
+  Effect.gen(function* () {
+    const { orchestrator } = yield* setup;
+    const source = (yield* orchestrator.getThreadProjection(parentId)).runs[0]!;
+    const transport = { ...failure, class: "transport_error" as const };
+    yield* finish(source, transport);
+    const reactor = yield* Reactor.RecoveryReactor;
+    yield* reactor.sweep;
+    assert.lengthOf((yield* orchestrator.getThreadProjection(parentId)).runs, 1);
+    yield* TestClock.adjust(59_999);
+    yield* reactor.sweep;
+    assert.lengthOf((yield* orchestrator.getThreadProjection(parentId)).runs, 1);
+    yield* TestClock.adjust(1);
+    yield* reactor.sweep;
+    const retried = yield* orchestrator.getThreadProjection(parentId);
+    assert.lengthOf(retried.runs, 2);
+    assert.deepStrictEqual(retried.runs[1]!.modelSelection, selection);
+    assert.strictEqual(retried.runs[1]!.forkPrismContinuationSourceRunId, source.id);
+    yield* finish(retried.runs[1]!, transport);
+    yield* TestClock.adjust(60_000);
+    yield* reactor.sweep;
+    assert.lengthOf((yield* orchestrator.getThreadProjection(parentId)).runs, 2);
+    assert.strictEqual(
+      (yield* History.readRecoveryOutcome(retried.runs[1]!.id))?.status,
+      "decided",
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("Stop during the transport delay prevents the scheduled retry", () =>
+  Effect.gen(function* () {
+    const { orchestrator } = yield* setup;
+    const source = (yield* orchestrator.getThreadProjection(parentId)).runs[0]!;
+    yield* finish(source, { ...failure, class: "transport_error" });
+    const reactor = yield* Reactor.RecoveryReactor;
+    yield* reactor.sweep;
+    yield* orchestrator.dispatch({
+      type: "thread.stop",
+      commandId: CommandId.make("stop:waiting"),
+      threadId: parentId,
+    });
+    yield* TestClock.adjust(60_000);
+    yield* reactor.sweep;
+    assert.lengthOf((yield* orchestrator.getThreadProjection(parentId)).runs, 1);
+    assert.strictEqual(
+      yield* (yield* Coordinator.RecoveryCoordinator).holdsResult(parentId),
+      false,
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect(
   "actual delegated finalization holds the first failure and transfers only the exhausted retry",
   () =>

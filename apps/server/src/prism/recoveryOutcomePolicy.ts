@@ -67,7 +67,6 @@ export function recoveryOutcomeFor(input: {
       return noRetry("invalid_reset");
     return { ...identity, status: "pending", reason: "reset" };
   }
-  if (projection.thread.creationSource !== "mcp") return noRetry("non_mcp");
   if (failure.retryable !== true) return noRetry("non_retryable");
   if (record?.state === "retry_pending" || record?.state === "retry_started")
     return { ...identity, status: "pending", reason: "retry" };
