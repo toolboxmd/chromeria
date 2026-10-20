@@ -113,7 +113,7 @@ flowchart TD
     PGR --> RBD
     PAR --> RBD
     DAA["Destination automations"]
-    %% DAA: #384 PR #555
+    %% DAA: #384 PR #555 #586
     PGR --> DAA
     PAR --> DAA
     RPR --> DAA
