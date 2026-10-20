@@ -8367,21 +8367,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? {
             completionSource: {
               runId: observation.result.runId,
-              purpose: followUp
-                ? {
-                    version: 1 as const,
-                    scope: observation.result.purposeScope ?? {
-                      type: "unscoped" as const,
-                      reason: "unknown_cause" as const,
-                    },
-                    provenance: {
-                      type: "delegated_completion" as const,
-                      operationIds: [
-                        `remote:${observation.result.environmentId}:${observation.result.threadId}:${observation.result.runId}`,
-                      ],
-                    },
-                  }
-                : executionPurposeOf(task),
+              purpose: {
+                version: 1 as const,
+                // The first observation can skip rolled-back runs or recovery predecessors.
+                scope: observation.result.purposeScope ?? {
+                  type: "unscoped" as const,
+                  reason: "unknown_cause" as const,
+                },
+                provenance: {
+                  type: "delegated_completion" as const,
+                  operationIds: [
+                    `remote:${observation.result.environmentId}:${observation.result.threadId}:${observation.result.runId}`,
+                  ],
+                },
+              },
             },
           }
         : task.remoteChild?.runId === undefined || task.purpose === undefined

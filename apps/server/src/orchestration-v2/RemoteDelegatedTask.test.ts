@@ -895,10 +895,10 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
             task.completionSource?.runId,
             n === 1 ? "remote-original" : `remote-followup-${n}`,
           );
-          assert.deepEqual(
-            task.completionSource?.purpose.scope,
-            n === 1 ? task.purpose?.scope : { type: "unscoped", reason: "unknown_cause" },
-          );
+          assert.deepEqual(task.completionSource?.purpose.scope, {
+            type: "unscoped",
+            reason: "unknown_cause",
+          });
           const delivery = (yield* orchestrator.getThreadProjection(parent.threadId)).runs.find(
             (run) => run.id === parent.runId,
           )?.delegatedCompletion?.delivery;
