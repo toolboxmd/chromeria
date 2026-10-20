@@ -803,6 +803,9 @@ const make = Effect.gen(function* () {
 
   /** One observer per job, with bounded peer requests and durable replay on either restart. */
   const networkSlots = yield* Semaphore.make(8);
+  // Jobs with nothing left to do there still watch for later work on their
+  // own permits, so however many finish, they never hold back live work.
+  const settledSlots = yield* Semaphore.make(8);
   const activeFollowers = new Set<NodeId>();
   const acknowledgedCursors = new Map<NodeId, number>();
   const follow = (parentThreadId: ThreadId, taskId: NodeId): Effect.Effect<void> =>
@@ -841,19 +844,20 @@ const make = Effect.gen(function* () {
       );
     });
 
-  const lifecycle: NonNullable<PeerMcpClient.PeerMcpClient["Service"]["taskLifecycle"]> = (
-    environmentId,
-    generation,
-    input,
-  ) =>
-    peers.taskLifecycle === undefined
-      ? Effect.fail(
-          new OrchestratorMcpFailure({
-            code: "invalid_request",
-            message: "Delegated lifecycle v1 is unsupported by this transport.",
-          }),
-        )
-      : peers.taskLifecycle(environmentId, generation, input).pipe(networkSlots.withPermits(1));
+  const lifecycleIn =
+    (
+      slots: Semaphore.Semaphore,
+    ): NonNullable<PeerMcpClient.PeerMcpClient["Service"]["taskLifecycle"]> =>
+    (environmentId, generation, input) =>
+      peers.taskLifecycle === undefined
+        ? Effect.fail(
+            new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "Delegated lifecycle v1 is unsupported by this transport.",
+            }),
+          )
+        : peers.taskLifecycle(environmentId, generation, input).pipe(slots.withPermits(1));
+  const lifecycle = lifecycleIn(networkSlots);
   const pairFor = (parentThreadId: ThreadId, task: OrchestrationV2Subagent): PeerReturnPair => ({
     parentEnvironmentId: hereId,
     parentThreadId,
@@ -967,6 +971,15 @@ const make = Effect.gen(function* () {
         task.result !== null &&
         (task.completionDelivery?.state === "pending" ||
           task.completionDelivery?.state === "claimed");
+      const settledThere =
+        remote.stop?.state === "confirmed" ||
+        (remote.stop === undefined &&
+          task.result !== null &&
+          remote.snapshot?.workState === "result_available" &&
+          remote.snapshot.queuedRuns === 0 &&
+          remote.snapshot.pendingQuestions === 0 &&
+          !remote.snapshot.recoveryWaiting);
+      const watch = lifecycleIn(settledThere ? settledSlots : networkSlots);
       const stopObservation =
         remote.stop?.destinationCommandId === undefined
           ? {}
@@ -991,7 +1004,7 @@ const make = Effect.gen(function* () {
           Stream.runHead,
           Effect.as(undefined),
         );
-      const response = yield* lifecycle(remote.environmentId, launch.linkIdentity, {
+      const response = yield* watch(remote.environmentId, launch.linkIdentity, {
         pair: pairFor(parentThreadId, task),
         operation: backpressured
           ? {

@@ -817,6 +817,8 @@ export const makeNode = (
     const dropAckResponses = yield* Ref.make(0);
     const ackResponseLost = yield* Deferred.make<void>();
     const holdResultPage = yield* Ref.make(false);
+    /** Tasks whose waiting observations hang, as a destination with nothing new does. */
+    const quietWaits = yield* Ref.make<ReadonlySet<string>>(new Set());
     const resultPageStarted = yield* Deferred.make<void>();
     const releaseResultPage = yield* Deferred.make<void>();
     const faultablePeers = Layer.effect(
@@ -855,7 +857,16 @@ export const makeNode = (
           ...peers,
           call,
           taskLifecycle: (...args: Parameters<NonNullable<typeof peers.taskLifecycle>>) =>
-            peers.taskLifecycle!(...args).pipe(
+            Effect.gen(function* () {
+              const operation = args[2].operation;
+              if (
+                (operation.type === "observe" || operation.type === "snapshot") &&
+                operation.wait === true &&
+                (yield* Ref.get(quietWaits)).has(args[2].pair.taskId)
+              )
+                return yield* Effect.never;
+            }).pipe(
+              Effect.andThen(peers.taskLifecycle!(...args)),
               Effect.flatMap((result) =>
                 Effect.gen(function* () {
                   if (args[2].operation.type === "resultText" && (yield* Ref.get(holdResultPage))) {
@@ -2014,6 +2025,7 @@ export const makeNode = (
       dropAckResponses,
       ackResponseLost,
       holdResultPage,
+      quietWaits,
       resultPageStarted,
       releaseResultPage,
       reopenDatabase,

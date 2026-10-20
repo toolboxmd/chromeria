@@ -404,6 +404,78 @@ it.live(
 );
 
 it.live(
+  "lifecycle381: finished jobs watching there never hold back a live job's Stop",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* makeNode(descriptorOf("quiet-b", "B", { peerAuthority: 1 }));
+        const a = yield* makeNode(descriptorOf("quiet-a", "A", { peerAuthority: 1 }));
+        yield* linkTo(a.links, b, "full-access");
+        const parentId = ThreadId.make("quiet-parent");
+        yield* seedParent(a, parentId);
+        const delegate = (name: string) =>
+          nativeCall(a, parentId, "delegate_task", {
+            task: `Job ${name}`,
+            target: {
+              environmentId: b.environmentId,
+              projectId: b.project.id,
+              providerInstanceId: instanceId,
+              model: selection.model,
+            },
+            clientRequestId: `quiet-${name}`,
+          }).pipe(
+            Effect.flatMap((receipt) => decodeTaskReceipt(receipt.structuredContent)),
+            Effect.map(({ taskId }) => taskId),
+          );
+        const recorded = (
+          taskId: NodeId,
+          predicate: (task: import("@t3tools/contracts").OrchestrationV2Subagent) => boolean,
+        ) =>
+          a.orchestrator
+            .streamStoredEventsFrom({
+              threadId: parentId,
+              afterSequence: 0,
+              eventType: "subagent.updated",
+            })
+            .pipe(
+              Stream.filter(
+                (stored) =>
+                  stored.event.type === "subagent.updated" &&
+                  stored.event.payload.id === taskId &&
+                  predicate(stored.event.payload),
+              ),
+              Stream.runHead,
+              Effect.flatMap(Effect.fromOption),
+            );
+        // More finished jobs than there are peer request permits.
+        const finished: Array<NodeId> = [];
+        for (let n = 0; n < 9; n++) {
+          const taskId = yield* delegate(`finished-${n}`);
+          yield* finishLifecycleRun(b, yield* attachedChild(a, parentId, taskId), `finished-${n}`);
+          yield* recorded(
+            taskId,
+            (task) =>
+              task.result === `finished-${n}` &&
+              task.remoteChild?.snapshot?.workState === "result_available",
+          );
+          finished.push(taskId);
+        }
+        const liveId = yield* delegate("live");
+        yield* attachedChild(a, parentId, liveId);
+        // Each finished job's next wait finds nothing new there and holds on.
+        yield* Ref.set(a.quietWaits, new Set(finished));
+        yield* a.stopConnections;
+        const reconnected = yield* a.reconnect();
+        const resumed = Context.get(reconnected.services, RemoteDelegation.RemoteDelegation);
+        yield* resumed.start();
+        yield* resumed.requestStop(parentId, liveId, "quiet-live-stop", undefined);
+        yield* recorded(liveId, (task) => task.remoteChild?.stop?.state === "acknowledged");
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  30_000,
+);
+
+it.live(
   "lifecycle381: delayed first observation after conversation revert uses the completing purpose",
   () =>
     Effect.scoped(
