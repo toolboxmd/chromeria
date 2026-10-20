@@ -4,12 +4,43 @@ import { DeviceStandardToolkit as LegacyDeviceToolkit } from "../device/testing/
 import * as LegacyDeviceHandlers from "../device/testing/LegacyDeviceHandlers.fixture.ts";
 import * as Crypto from "effect/Crypto";
 import * as Hex from "effect/encoding/Hex";
-import { RemotePendingRequestResult } from "@t3tools/contracts";
+import {
+  RemotePendingRequestResult,
+  RuntimeRequestId,
+  ProviderThreadId,
+  PeerAttachmentUploadResult,
+  LOCAL_DEVICE_HOST_ID,
+  McpSavedSnapshotReceipt,
+  McpScheduledMutationReceipt,
+  SecretRequestError,
+  PeerAttachmentReference,
+  DeviceCommandTarget,
+  DeviceCommandResult,
+  ProviderTurnId,
+  CommandId,
+  OrchestratorMcpFailure,
+  EventId,
+  MessageId,
+  NodeId,
+  ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  RunId,
+  ThreadId,
+  type Project,
+  type OrchestrationV2LinkOrigin,
+  type ExecutionEnvironmentDescriptor,
+  TurnItemId,
+  EnvironmentHttpApi,
+  DeviceViewerAccess,
+  ORCHESTRATION_V2_WS_METHODS,
+  PreviewStreamInput,
+  WS_METHODS,
+} from "@t3tools/contracts";
 import * as PendingRequests from "../childThreads/PendingRequestService.ts";
-import { RuntimeRequestId, ProviderThreadId } from "@t3tools/contracts";
 import * as AttachmentStaging from "../assets/AttachmentStaging.ts";
+import { type McpThreadInvocationScope } from "../mcp/McpInvocationContext.ts";
 import * as Invocation from "../mcp/McpInvocationContext.ts";
-import { PeerAttachmentUploadResult } from "@t3tools/contracts";
 import * as Queue from "effect/Queue";
 import * as Path from "effect/Path";
 import * as NativeDevices from "../device/DeviceService.ts";
@@ -17,14 +48,8 @@ import * as DeviceHost from "../device/DeviceHost.ts";
 import { agentDeviceConfigPath } from "../device/AgentDeviceTarget.ts";
 import { AGENT_DEVICE_VERSION, DEVICE_HUB_VERSION } from "../device/DeviceToolchain.ts";
 import * as Net from "@t3tools/shared/Net";
-import { LOCAL_DEVICE_HOST_ID } from "@t3tools/contracts";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as PullRequestReviewGuideService from "../pullRequest/PullRequestReviewGuideService.ts";
-import {
-  McpSavedSnapshotReceipt,
-  McpScheduledMutationReceipt,
-  SecretRequestError,
-} from "@t3tools/contracts";
 import { IssuesToolkit } from "../mcp/toolkits/issues/tools.ts";
 import * as IssueHandlers from "../mcp/toolkits/issues/handlers.ts";
 import * as IssueLinks from "../issueLinks/IssueLinks.ts";
@@ -36,11 +61,6 @@ import * as VcsStatus from "../vcs/VcsStatusBroadcaster.ts";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as ScheduledChecks from "../scheduledTaskChecks/ScheduledTaskChecks.ts";
 import * as ProcessRunner from "../processRunner.ts";
-import {
-  PeerAttachmentReference,
-  DeviceCommandTarget,
-  DeviceCommandResult,
-} from "@t3tools/contracts";
 import * as SpectrumLaunch from "../spectrum/LaunchService.ts";
 import * as SpectrumMcp from "../spectrum/mcpToolkit.ts";
 import * as SpectrumStore from "../spectrum/store.ts";
@@ -52,6 +72,7 @@ import * as PreviewBrowser from "../preview/PreviewBrowser.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as ProjectEnrichment from "../project/ProjectEnrichmentService.ts";
 import * as ProjectFavicon from "../project/ProjectFaviconResolver.ts";
+import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as GitManager from "../git/GitManager.ts";
 import * as VcsRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
@@ -69,7 +90,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as PlatformError from "effect/PlatformError";
 import * as BrowserBroker from "../mcp/PreviewAutomationBroker.ts";
 import * as Instances from "../provider/ProviderInstanceRegistry.ts";
-import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import { type ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as Checkpoints from "../checkpointing/CheckpointStore.ts";
 import * as ProviderCatalog from "../provider/ProviderRegistry.ts";
@@ -79,7 +100,6 @@ import { RecoveryWaitState } from "./recoveryWait.ts";
 import * as RecoveryHistory from "../prism/RecoveryHistory.ts";
 import * as RecoverySignals from "./recoveryWaitSignals.ts";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
-import { ProviderTurnId } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Ref from "effect/Ref";
 import * as EffectWorker from "../orchestration-v2/EffectWorker.ts";
@@ -92,24 +112,8 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as HttpBody from "effect/http/HttpBody";
 import * as Schema from "effect/Schema";
-import { NodeHttpServer } from "@effect/platform-node";
+
 import { expect } from "@effect/vitest";
-import {
-  CommandId,
-  OrchestratorMcpFailure,
-  EventId,
-  MessageId,
-  NodeId,
-  ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  RunId,
-  ThreadId,
-  type Project,
-  type OrchestrationV2LinkOrigin,
-  type ExecutionEnvironmentDescriptor,
-  TurnItemId,
-} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -158,7 +162,57 @@ import * as Settings from "../serverSettings.ts";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as Git from "../vcs/GitVcsDriver.ts";
 import * as Repositories from "../sourceControl/SourceControlRepositoryService.ts";
-import type { McpThreadInvocationScope } from "../mcp/McpInvocationContext.ts";
+import * as Cause from "effect/Cause";
+
+// @effect-diagnostics nodeBuiltinImport:off
+// The external WebSocket fixture requires an actual Node HTTP server.
+import * as NodeHttp from "node:http";
+
+import * as ResourceWebSocketServer from "../http/ResourceWebSocketServer.ts";
+import { guardHttpResponseWriteErrors } from "../httpResponseErrorGuard.ts";
+
+import { NodeWS } from "@effect/platform-node/NodeSocket";
+import * as DeviceHubProxy from "../device/DeviceHubProxy.ts";
+import * as AuthHttp from "../auth/http.ts";
+
+import * as HttpApi from "effect/http-api/HttpApi";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
+
+import * as RpcAuthorization from "../auth/RpcAuthorization.ts";
+import * as HttpRouter from "effect/http/HttpRouter";
+import * as HttpServer from "effect/http/HttpServer";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
+import { RpcGroup, RpcServer, RpcSerialization } from "effect/rpc";
+import { CoreServerWsRpcGroup, OrchestrationServerWsRpcGroup, ServerWsRpcGroup } from "../ws.ts";
+import * as ForkWsRpc from "../forkWsRpc.ts";
+import { rpcInstrumentationLayer } from "../observability/RpcInstrumentation.ts";
+import * as CommandOutputHub from "../orchestration-v2/CommandOutputHub.ts";
+
+import * as AuthSessions from "../persistence/AuthSessions.ts";
+import * as ViewerSessions from "../auth/SessionStore.ts";
+import * as AssetAccess from "../assets/AssetAccess.ts";
+import * as NativeAppIconResolver from "../assets/NativeAppIconResolver.ts";
+import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
+import * as GitHubCredentials from "@t3tools/source-control-github/server/GitHubCredentials";
+
+import { PreviewControlsToolkit } from "../mcp/toolkits/previewControls/tools.ts";
+import * as PreviewControlHandlers from "../mcp/toolkits/previewControls/handlers.ts";
+import * as NativeBrowser from "../preview/ServerBrowser.ts";
+import * as NativePreviewManager from "../preview/Manager.ts";
+import * as NativeDesktopChannel from "../preview/DesktopBrowserChannel.ts";
+import { makeExternalBrowserContext } from "../preview/testing/BrowserExternal.fixture.ts";
+
+import * as NodeHttpPlatform from "@effect/platform-node/NodeHttpPlatform";
+import * as BrowserStream from "../preview/ServerBrowserStream.ts";
+
+// Keep production group access behind this fixture so native mocks initialize first.
+export const native383RpcGroups = {
+  CoreServerWsRpcGroup,
+  OrchestrationServerWsRpcGroup,
+  ServerWsRpcGroup,
+  ForkWsRpc,
+};
 
 export const instanceId = ProviderInstanceId.make("codex");
 
@@ -411,6 +465,10 @@ export const makeNode = (
     preferencesOwner = false,
     nativeOwners = false,
     deviceOwner = false,
+    viewerOwner = false,
+    browserOwner = false,
+    previewControlsOwner = false,
+    viewerSocketOwner = false,
     legacyDeviceDomain = false,
     legacyAutomationPeer = false,
     captureReplyTransform,
@@ -425,6 +483,10 @@ export const makeNode = (
     readonly preferencesOwner?: boolean;
     readonly nativeOwners?: boolean;
     readonly deviceOwner?: boolean;
+    readonly viewerOwner?: boolean;
+    readonly browserOwner?: boolean;
+    readonly previewControlsOwner?: boolean;
+    readonly viewerSocketOwner?: boolean;
     readonly legacyDeviceDomain?: boolean;
     readonly legacyAutomationPeer?: boolean;
     readonly captureReplyGate?: Effect.Effect<void>;
@@ -578,7 +640,22 @@ export const makeNode = (
           sql: Context.get(reopened, SqlClient.SqlClient),
         };
       });
-    const serverContext = yield* NodeHttpServer.layerTest.pipe(Layer.fresh, Layer.build);
+    const sourceHttp = HttpServer.layerTestClient.pipe(
+      Layer.provide(
+        FetchHttpClient.layer.pipe(
+          Layer.provide(Layer.succeed(FetchHttpClient.RequestInit)({ keepalive: false })),
+        ),
+      ),
+      Layer.provideMerge(
+        ResourceWebSocketServer.layer(() => guardHttpResponseWriteErrors(NodeHttp.createServer()), {
+          host: "127.0.0.1",
+          port: 0,
+          gracefulShutdownTimeout: 0,
+          websocket: { perMessageDeflate: true },
+        }),
+      ),
+    );
+    const serverContext = yield* sourceHttp.pipe(Layer.fresh, Layer.build);
     const registry = yield* McpSessionRegistry.__testing
       .make()
       .pipe(
@@ -639,6 +716,7 @@ export const makeNode = (
       Layer.provide(settings),
       Layer.provide(db),
     );
+    // Both kernels retain their full context; consumers require this shared native surface.
     const runtime: Context.Context<
       | EffectOutbox.EffectOutboxV2
       | EventSink.EventSinkV2
@@ -654,6 +732,7 @@ export const makeNode = (
           Adapters.layerFromAdapters([providerAdapter]),
           { databaseLayer: db, runEffectWorker: false },
         ).pipe(Layer.fresh, Layer.build);
+    const commandOutput = Context.getOption(runtime, CommandOutputHub.CommandOutputHub);
     if (productionKernel)
       yield* Effect.flatMap(ProjectStore.ProjectStoreV2, (projects) =>
         projects.apply({
@@ -1094,11 +1173,30 @@ export const makeNode = (
               Layer.provide(Layer.succeedContext(gitContext)),
             );
           });
-    const browser = yield* BrowserBroker.make;
+    const browser = yield* BrowserBroker.make.pipe(
+      Effect.provideService(
+        PeerAuthority.PeerAuthority,
+        Context.get(baseServices, PeerAuthority.PeerAuthority),
+      ),
+    );
     const previewBrowser = Layer.succeed(PreviewBrowser.PreviewBrowser, {
       installed: Effect.succeedNone,
       executable: Effect.die("This isolated fixture cannot launch a browser"),
     });
+    const nativeBrowser = browserOwner
+      ? yield* NativeBrowser.layer.pipe(
+          Layer.provideMerge(NativePreviewManager.layer),
+          Layer.provide(NativeDesktopChannel.layer),
+          Layer.provide(Layer.succeed(BrowserBroker.PreviewAutomationBroker, browser)),
+          Layer.provide(previewBrowser),
+          Layer.provide(nodeConfig),
+          Layer.provide(environment),
+          Layer.build,
+        )
+      : undefined;
+    const previewControls =
+      nativeBrowser ??
+      (previewControlsOwner ? yield* NativePreviewManager.layer.pipe(Layer.build) : undefined);
     const htmlLayer = HtmlRender.layer.pipe(
       Layer.provide(nodeConfig),
       Layer.provide(previewBrowser),
@@ -1124,6 +1222,46 @@ export const makeNode = (
     const deviceShutdownCalls = yield* Ref.make(0);
     const deviceHubPlatform = yield* Ref.make<"android" | "ios">("android");
     const deviceHubBooted = yield* Ref.make(true);
+    const deviceViewerRequests: string[] = [];
+    const deviceViewerCurrentHook = yield* Ref.make<Effect.Effect<void>>(Effect.void);
+    const deviceViewerFrame = Uint8Array.of(0, 0, 0, 4, 0, 1, 100, 0);
+    const deviceViewerInputs: string[] = [];
+    const deviceViewerHttpInputs: Array<{
+      path: string;
+      method: string;
+      contentType: string;
+      body: string;
+    }> = [];
+    const deviceViewerOutput: { bytes: string | Uint8Array } = {
+      bytes: json({ ok: true }),
+    };
+    let viewerHubOrigin = "http://device382.invalid";
+    if (viewerSocketOwner) {
+      const hub = yield* Effect.acquireRelease(
+        Effect.sync(() => new NodeWS.WebSocketServer({ port: 0 })),
+        (server) =>
+          Effect.promise(
+            () =>
+              new Promise<void>((resolve) => {
+                for (const client of server.clients) client.terminate();
+                server.close(() => resolve());
+              }),
+          ),
+      );
+      if (!hub.address())
+        yield* Effect.promise(() => new Promise<void>((resolve) => hub.once("listening", resolve)));
+      const address = hub.address();
+      if (typeof address !== "object" || address === null)
+        throw new Error("Missing external hub port");
+      viewerHubOrigin = `http://127.0.0.1:${address.port}`;
+      hub.on("connection", (socket) => {
+        socket.on("message", (data) => {
+          deviceViewerInputs.push(data.toString());
+          socket.send(deviceViewerOutput.bytes);
+        });
+      });
+    }
+
     const deviceOldVersion = yield* Ref.make(false);
     const deviceCapabilities = yield* Ref.make({
       device: { id: "fixture-device382", platform: "android", target: "mobile", kind: "emulator" },
@@ -1139,7 +1277,13 @@ export const makeNode = (
         "install",
       ],
     });
+    const continuousDeviceMedia = yield* Ref.make(false);
+    const deviceMediaChunks = yield* Queue.unbounded<Uint8Array>();
     let fixtureDevice: NativeDevices.DeviceService["Service"] | undefined;
+    let fixtureViewers: DeviceHubProxy.DeviceViewers["Service"] | undefined;
+    let fixtureBrowserViewers: BrowserStream.PreviewViewers["Service"] | undefined;
+    let fixtureBrowserViewerSessions: ViewerSessions.SessionStore["Service"] | undefined;
+    let fixtureViewerSessions: ViewerSessions.SessionStore["Service"] | undefined;
     const deviceLayer = deviceOwner
       ? yield* Effect.gen(function* () {
           const settingsService = Context.get(settingsContext, Settings.ServerSettingsService);
@@ -1274,9 +1418,10 @@ export const makeNode = (
                 };
               }),
           });
+          const currentHub = yield* Ref.make<DeviceHost.DeviceHostReady | null>(null);
           const ready: DeviceHost.DeviceHostReady = {
             nodePath: "/remote-host/node-must-never-execute",
-            hub: { origin: "http://device382.invalid" },
+            hub: { origin: viewerHubOrigin },
             helpers: { serveSimAxSettings: null, serveSimCli: null },
             run: () => Effect.succeed({ code: 0, stdout: "", stderr: "" }),
           };
@@ -1326,6 +1471,7 @@ export const makeNode = (
                     )
                     .pipe(Effect.orDie),
                 ),
+                Effect.tap(() => Ref.set(currentHub, ready)),
                 Effect.as(ready),
               ),
             ensureAgentReady: () =>
@@ -1340,12 +1486,56 @@ export const makeNode = (
                   },
                 }),
               ),
-            current: Effect.succeed(null),
+            current: Ref.get(currentHub).pipe(
+              Effect.tap(() => Ref.get(deviceViewerCurrentHook).pipe(Effect.flatten)),
+            ),
             stopAgent: Effect.void,
-            stop: Effect.void,
+            stop: Ref.set(currentHub, null),
           };
+          const actualHttp = yield* Effect.serviceOption(HttpClient.HttpClient);
           const hub = HttpClient.make((request) =>
             Effect.gen(function* () {
+              if (!request.url.startsWith(`${viewerHubOrigin}/`)) {
+                if (Option.isNone(actualHttp))
+                  return yield* Effect.die("Native HTTP transport is unavailable in this fixture.");
+                return yield* actualHttp.value.execute(request);
+              }
+              const nativePath = new URL(request.url).pathname;
+              if (
+                request.method !== "GET" &&
+                request.method !== "HEAD" &&
+                /\/api\/(fold|stream-mode|stream-settings)$/.test(nativePath)
+              ) {
+                if (request.headers["content-type"] !== "application/json")
+                  return HttpClientResponse.fromWeb(request, new Response(null, { status: 415 }));
+                const body =
+                  request.body._tag === "Stream"
+                    ? Buffer.concat(
+                        yield* request.body.stream.pipe(Stream.orDie, Stream.runCollect),
+                      )
+                    : request.body._tag === "Uint8Array"
+                      ? request.body.body
+                      : new Uint8Array();
+                deviceViewerHttpInputs.push({
+                  path: nativePath,
+                  method: request.method,
+                  contentType: request.headers["content-type"],
+                  body: new TextDecoder().decode(body),
+                });
+                return HttpClientResponse.fromWeb(request, Response.json({ ok: true }));
+              }
+              if (request.url.endsWith("/stream.avcc")) {
+                deviceViewerRequests.push(request.url);
+                return HttpClientResponse.fromWeb(
+                  request,
+                  new Response(
+                    (yield* Ref.get(continuousDeviceMedia))
+                      ? yield* Stream.toReadableStreamEffect(Stream.fromQueue(deviceMediaChunks))
+                      : deviceViewerFrame,
+                    { headers: { "content-type": "application/octet-stream" } },
+                  ),
+                );
+              }
               if (request.url.endsWith("/grid/api/start")) {
                 yield* assertStarted;
                 return HttpClientResponse.fromWeb(request, Response.json({ ok: true }));
@@ -1356,7 +1546,7 @@ export const makeNode = (
                 return HttpClientResponse.fromWeb(request, Response.json({ ok: true }));
               }
               if (request.url.includes("screenshot")) {
-                yield* assertStarted;
+                if ((yield* RequestReceipts.CurrentRequest) !== undefined) yield* assertStarted;
                 yield* Ref.update(deviceScreenshotCalls, (n) => n + 1);
                 return HttpClientResponse.fromWeb(
                   request,
@@ -1411,18 +1601,93 @@ export const makeNode = (
             Effect.provide(Layer.merge(nodeConfig, Net.layer)),
           );
           fixtureDevice = service;
-          return Layer.succeed(NativeDevices.DeviceService, fixtureDevice);
+          const deviceServiceLayer = Layer.succeed(NativeDevices.DeviceService, service);
+          if (!viewerOwner) return deviceServiceLayer;
+          return Layer.mergeAll(
+            HttpApiBuilder.layer(DeviceViewerTestApi).pipe(
+              Layer.provide(DeviceHubProxy.layerApi),
+              Layer.provide(AuthHttp.layerAuthenticatedAuth),
+            ),
+            DeviceHubProxy.layer,
+            Layer.effectDiscard(
+              Effect.gen(function* () {
+                fixtureViewers = yield* DeviceHubProxy.DeviceViewers;
+                fixtureViewerSessions = yield* ViewerSessions.SessionStore;
+              }),
+            ),
+          ).pipe(
+            Layer.provideMerge(DeviceHubProxy.layerViewers),
+            Layer.provideMerge(deviceServiceLayer),
+            Layer.provide(Layer.succeed(HttpClient.HttpClient, hub)),
+          );
         })
       : Layer.mock(NativeDevices.DeviceService)({});
 
+    const artifactResponseHook = yield* Ref.make<Effect.Effect<void, OrchestratorMcpFailure>>(
+      Effect.void,
+    );
+    const artifactRequestHook = yield* Ref.make<
+      (checkOnly: boolean) => Effect.Effect<void, OrchestratorMcpFailure>
+    >(() => Effect.void);
+    const previewUploadContentTypes: string[] = [];
+    const artifactResponseBoundary = HttpRouter.middleware(
+      (effect) =>
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          if (request.method === "POST" && request.url.startsWith("/api/preview-stream/upload?"))
+            previewUploadContentTypes.push(request.headers["content-type"] ?? "");
+          if (request.method === "POST" && request.url === "/mcp/peer-control/attachment")
+            yield* (yield* Ref.get(artifactRequestHook))(
+              request.headers["t3-attachment-check-only"] === "1",
+            ).pipe(Effect.interruptible);
+          const response = yield* effect;
+          if (
+            request.method === "POST" &&
+            request.url === "/mcp/peer-control/attachment" &&
+            response.status === 200
+          )
+            yield* yield* Ref.get(artifactResponseHook);
+          return response;
+        }),
+      { global: true },
+    );
+    const browserMediaLayer =
+      previewControls === undefined
+        ? Layer.empty
+        : Layer.mergeAll(
+            BrowserStream.routeLayer.pipe(Layer.provide(NodeHttpPlatform.layer)),
+            Layer.effectDiscard(
+              Effect.gen(function* () {
+                fixtureBrowserViewers = yield* BrowserStream.PreviewViewers;
+                fixtureBrowserViewerSessions = yield* ViewerSessions.SessionStore;
+              }),
+            ),
+          ).pipe(
+            Layer.provideMerge(BrowserStream.layerViewers),
+            Layer.provide(
+              nativeBrowser === undefined ? Layer.empty : Layer.succeedContext(nativeBrowser),
+            ),
+            Layer.provide(AuthSessions.layer.pipe(Layer.provide(db))),
+            Layer.provide(FetchHttpClient.layer),
+            Layer.provide(environment),
+          );
     const toolsFor = (
       scheduleServices: typeof schedules,
       requests: typeof requestContext = requestContext,
       nativeServices = services,
     ) =>
       Layer.mergeAll(
+        artifactResponseBoundary,
         McpHttpServer.layerProjectRegistration,
         McpHttpServer.layerOrchestratorToolkit,
+        ...(previewControls === undefined
+          ? []
+          : [
+              McpHttpServer.toolkitRegistration(
+                PreviewControlsToolkit,
+                PreviewControlHandlers.layer,
+              ).pipe(Layer.provide(Layer.succeedContext(previewControls))),
+            ]),
         ...(preferencesOwner ? [McpHttpServer.layerEnvironmentToolkit] : []),
         ...(deviceOwner
           ? [
@@ -1450,6 +1715,22 @@ export const makeNode = (
               McpHttpServer.layerPullRequestsToolkit,
               McpHttpServer.toolkitRegistration(AttachmentToolkit, AttachmentHandlers.layer),
               ServerHttp.layerAttachmentUploadRoute,
+              ServerHttp.layerAssetRoute.pipe(
+                HttpRouter.provideRequest(
+                  Layer.mergeAll(
+                    NodeHttpPlatform.layer,
+                    WorkspacePaths.layer,
+                    NativeAppIconResolver.layer.pipe(Layer.provide(nodeConfig)),
+                    Layer.succeedContext(runtime),
+                    // This fixture has no GitHub resource. Never access a real account.
+                    Layer.mock(GitHubCredentials.GitHubCredentials)({
+                      get: () =>
+                        Effect.die("No GitHub credential access in the native artifact fixture"),
+                    }),
+                  ),
+                ),
+                Layer.provide(environment),
+              ),
               McpHttpServer.layerPreviewToolkit,
               McpHttpServer.layerThreadToolkit,
               McpHttpServer.layerHtmlToolkit,
@@ -1458,11 +1739,19 @@ export const makeNode = (
             ]
           : []),
       ).pipe(
-        Layer.provide(Layer.mergeAll(spectrumLayer, htmlLayer, previewBrowser)),
+        Layer.provide(
+          Layer.mergeAll(
+            spectrumLayer,
+            htmlLayer,
+            previewBrowser,
+            nativeBrowser === undefined ? Layer.empty : Layer.succeedContext(nativeBrowser),
+          ),
+        ),
         Layer.provide(
           Layer.mergeAll(
             Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
             deviceLayer,
+            browserMediaLayer,
           ),
         ),
         Layer.provide(ThreadSearch.layer.pipe(Layer.provide(db))),
@@ -1520,8 +1809,88 @@ export const makeNode = (
       database: db,
       registry,
       secretStore: Context.get(services, Secrets.ServerSecretStore),
-      authorityServices: Context.mergeAll(lifecycleContext, lifecycle, pendingRequests),
+      authorityServices: Context.mergeAll(
+        lifecycleContext,
+        lifecycle,
+        pendingRequests,
+        nativeBrowser ?? Context.empty(),
+      ),
     }).pipe(Effect.provide(Layer.succeedContext(serverContext)));
+    let nativeViewerRpcUrl: string | undefined;
+    const nativeCommandOutputFinalized = yield* Queue.unbounded<ThreadId>();
+    if (previewControls !== undefined) {
+      const http = yield* sourceHttp.pipe(Layer.fresh, Layer.build);
+      const address = Context.get(http, HttpServer.HttpServer).address;
+      if (address._tag === "UnixPathAddress")
+        return yield* Effect.die("Expected native RPC fixture socket");
+      nativeViewerRpcUrl = `ws://127.0.0.1:${address.port}`;
+      const viewerHandlers = HttpRouter.use((router) =>
+        Effect.gen(function* () {
+          yield* router.add(
+            "GET",
+            "/ws",
+            Effect.gen(function* () {
+              const request = yield* HttpServerRequest.HttpServerRequest;
+              const session = yield* peer.auth.authenticateWebSocketUpgrade(request);
+              const { protocol, httpEffect } = yield* RpcServer.makeProtocolWithHttpEffectWebsocket;
+              yield* RpcServer.make(nativeOwnerRpcGroup, {
+                disableTracing: true,
+                disableFatalDefects: true,
+              }).pipe(
+                Effect.provideService(RpcServer.Protocol, protocol),
+                Effect.provide(
+                  Layer.mergeAll(
+                    nativeOwnerRpcGroup.toLayer({
+                      ...BrowserStream.clientHandlers(session, fixtureBrowserViewers!),
+                      [WS_METHODS.peerLinksList]: () =>
+                        Context.get(services, PeerLinks.PeerLinks).list.pipe(
+                          Effect.map((links) => ({ links })),
+                        ),
+                      [ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput]: (input) =>
+                        Stream.unwrap(
+                          Effect.annotateCurrentSpan({
+                            "orchestration_v2.thread_id": input.threadId,
+                          }).pipe(
+                            Effect.as(
+                              Option.getOrThrow(commandOutput)
+                                .subscribe(input)
+                                .pipe(
+                                  Stream.ensuring(
+                                    Queue.offer(nativeCommandOutputFinalized, input.threadId),
+                                  ),
+                                ),
+                            ),
+                          ),
+                        ),
+                    }),
+                    RpcAuthorization.layer(session.scopes),
+                    rpcInstrumentationLayer,
+                  ),
+                ),
+                Effect.forkScoped,
+              );
+              return yield* Effect.acquireUseRelease(
+                fixtureBrowserViewerSessions!.markConnected(session.sessionId),
+                () =>
+                  Effect.raceFirst(
+                    httpEffect,
+                    fixtureBrowserViewerSessions!
+                      .awaitInvalidation(session.sessionId)
+                      .pipe(Effect.as(HttpServerResponse.empty())),
+                  ),
+                () => fixtureBrowserViewerSessions!.markDisconnected(session.sessionId),
+              );
+            }),
+          );
+        }),
+      );
+      yield* HttpRouter.serve(viewerHandlers, { disableListenLog: true, disableLogger: true }).pipe(
+        Layer.provide(Layer.succeedContext(http)),
+        Layer.provide(RpcSerialization.layerJson),
+        Layer.fresh,
+        Layer.build,
+      );
+    }
     yield* Effect.addFinalizer(() =>
       Effect.forEach([...connectionScopes], (lifetime) => Scope.close(lifetime, Exit.void), {
         concurrency: "unbounded",
@@ -1543,7 +1912,7 @@ export const makeNode = (
               Layer.build,
             )
           : Context.empty();
-        const http = yield* NodeHttpServer.layerTest.pipe(Layer.fresh, Layer.build);
+        const http = yield* sourceHttp.pipe(Layer.fresh, Layer.build);
         const renewed = yield* McpSessionRegistry.__testing
           .make()
           .pipe(
@@ -1559,7 +1928,12 @@ export const makeNode = (
               RequestReceipts.McpRequestReceipts,
               AttachmentStaging.AttachmentStaging,
             )(services);
-        const currentAuthority = Context.mergeAll(lifecycleContext, lifecycle, pendingRequests);
+        const currentAuthority = Context.mergeAll(
+          lifecycleContext,
+          lifecycle,
+          pendingRequests,
+          nativeBrowser ?? Context.empty(),
+        );
         const authorityServices = durableRequests
           ? currentAuthority
           : Context.omit(
@@ -1615,7 +1989,30 @@ export const makeNode = (
       requestContext,
       config: Context.get(nodeConfigContext, Config.ServerConfig),
       browser,
+      nativeBrowser:
+        nativeBrowser === undefined
+          ? undefined
+          : Context.get(nativeBrowser, NativeBrowser.ServerBrowser),
+      nativePreviewManager:
+        nativeBrowser === undefined
+          ? undefined
+          : Context.get(nativeBrowser, NativePreviewManager.PreviewManager),
       fixtureDevice,
+      fixtureViewers,
+      nativeViewerRpcUrl,
+      nativeCommandOutputFinalized,
+      commandOutput: Option.getOrUndefined(commandOutput),
+      fixtureBrowserViewers,
+      fixtureBrowserViewerSessions,
+      fixtureViewerSessions,
+      deviceViewerRequests,
+      deviceViewerCurrentHook,
+      deviceViewerFrame,
+      continuousDeviceMedia,
+      deviceMediaChunks,
+      deviceViewerInputs,
+      deviceViewerHttpInputs,
+      deviceViewerOutput,
       deviceProcessCalls,
       deviceProcessHook,
       deviceSummaryHook,
@@ -1624,6 +2021,9 @@ export const makeNode = (
       deviceMediaPaths,
       deviceMediaOutside,
       deviceScreenshotCalls,
+      artifactResponseHook,
+      artifactRequestHook,
+      previewUploadContentTypes,
       deviceShutdownCalls,
       deviceHubPlatform,
       deviceHubBooted,
@@ -1634,6 +2034,24 @@ export const makeNode = (
       deviceAgentStarts,
       deviceConfigurations,
       loseDeviceConfiguration,
+      issueAssetUrl: (input: Parameters<typeof AssetAccess.issueAssetUrl>[0]) =>
+        AssetAccess.issueAssetUrl(input).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              WorkspacePaths.layer,
+              ProjectFaviconResolver.layer.pipe(
+                Layer.provide(Layer.mergeAll(WorkspacePaths.layer, T3ProjectFileLoader.layer)),
+              ),
+              AuthSessions.layer.pipe(Layer.provide(db)),
+              Layer.succeedContext(services),
+              Layer.succeedContext(runtime),
+              Layer.succeedContext(requestContext),
+              nativeBrowser === undefined ? Layer.empty : Layer.succeedContext(nativeBrowser),
+              nodeConfig,
+              environment,
+            ),
+          ),
+        ),
       fixtureSettings: Context.get(settingsContext, Settings.ServerSettingsService),
       settingsWrites,
       loseSettingsConfirmation,
@@ -1660,7 +2078,7 @@ export const makeNode = (
       forwarding: Context.get(services, PeerForwarding.PeerForwarding),
       remote: Context.get(services, RemoteDelegation.RemoteDelegation),
     };
-  });
+  }).pipe(Effect.provide(RepositoryIdentity.layer));
 
 export type Node = Effect.Success<ReturnType<typeof makeNode>>;
 
@@ -1825,6 +2243,14 @@ export const typed383Pair = (
   id: string,
   legacyDeviceDomain = false,
   sourcePreferencesOwner = false,
+  viewerOwner:
+    | boolean
+    | {
+        readonly source: boolean;
+        readonly destination: boolean;
+        readonly destinationSocket?: boolean;
+        readonly destinationBrowser?: boolean;
+      } = false,
 ) =>
   Effect.gen(function* () {
     const a = yield* makeNode(descriptorOf(`${id}-a`, "A", { peerAuthority: 1 }), "disk", {
@@ -1832,6 +2258,9 @@ export const typed383Pair = (
       attachmentRequests: true,
       preferencesOwner: sourcePreferencesOwner,
       deviceOwner: true,
+      viewerOwner: typeof viewerOwner === "boolean" ? viewerOwner : viewerOwner.source,
+      previewControlsOwner:
+        typeof viewerOwner !== "boolean" && viewerOwner.destinationBrowser === true,
     });
     yield* Effect.addFinalizer(() => assertTyped383SourceIdle(a));
     const b = yield* makeNode(descriptorOf(`${id}-b`, "B", { peerAuthority: 1 }), "disk", {
@@ -1840,6 +2269,9 @@ export const typed383Pair = (
       preferencesOwner: true,
       legacyDeviceDomain,
       deviceOwner: true,
+      viewerOwner: typeof viewerOwner === "boolean" ? viewerOwner : viewerOwner.destination,
+      viewerSocketOwner: typeof viewerOwner !== "boolean" && viewerOwner.destinationSocket === true,
+      browserOwner: typeof viewerOwner !== "boolean" && viewerOwner.destinationBrowser === true,
     });
     yield* linkTo(a.links, b, "full-access");
     const parent = ThreadId.make(`${id}-parent`);
@@ -2040,7 +2472,7 @@ export const caller = (node: Node, threadId: ThreadId): McpThreadInvocationScope
   capabilities: new Set(["orchestration"]),
 });
 
-const sendResult = Schema.decodeUnknownEffect(
+export const sendResult = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
     Schema.Struct({
       result: Schema.Struct({
@@ -2066,7 +2498,7 @@ export const decodeLaunchReceipt = Schema.decodeUnknownEffect(
   ProjectToolkit.tools.t3_thread_launch.successSchema,
 );
 
-const nativeRpcCall = (
+export const nativeRpcCall = (
   node: Node,
   threadId: ThreadId,
   tool: string,
@@ -2470,3 +2902,328 @@ export const decodePendingWsReply = Schema.decodeUnknownEffect(
     }),
   ),
 );
+
+class DeviceViewerTestApi extends HttpApi.make("environment").add(
+  EnvironmentHttpApi.groups.devices,
+) {}
+
+export const decodeDeviceViewerAccess = Schema.decodeUnknownEffect(DeviceViewerAccess);
+
+export const decodeProducerCounter = Schema.decodeUnknownEffect(
+  Schema.declare<(time: number) => unknown>(
+    (value): value is (time: number) => unknown => typeof value === "function",
+  ),
+);
+
+export const decodeProducerClickCount = Schema.decodeUnknownEffect(Schema.Int);
+
+export const decodeProducerInput = Schema.decodeUnknownEffect(PreviewStreamInput);
+
+export type NativeTestBrowserSender = (
+  target: {
+    threadId: string;
+    tabId: string;
+    maxWidth: number;
+    maxHeight: number;
+    access: {
+      httpBase: string;
+      wsBase: string;
+      query: Record<string, string>;
+      credentials: boolean;
+      canOperate?: boolean;
+    };
+  },
+  events: {
+    onFrame: (jpeg: ArrayBuffer) => void;
+    onViewport: (size: { width: number; height: number }) => void;
+    onControl: (control: {
+      controller: string;
+      generation: number;
+      dialog?: { message: string } | null;
+    }) => void;
+    onConnectedChange: (connected: boolean) => void;
+    onUnauthorized: () => void;
+    onInputRejected?: (message: string) => void;
+  },
+) => {
+  send: (input: PreviewStreamInput) => boolean;
+  stop: () => void;
+};
+
+const decodeBrowserSender = Schema.decodeUnknownSync(
+  Schema.Struct({
+    createPreviewStreamClient: Schema.declare<NativeTestBrowserSender>(
+      (value): value is NativeTestBrowserSender => typeof value === "function",
+    ),
+  }),
+);
+
+export const { createPreviewStreamClient } = decodeBrowserSender(
+  await import(
+    /* @vite-ignore */ new URL(
+      "../../../../packages/client-runtime/src/preview/serverBrowserStream.ts",
+      import.meta.url,
+    ).href
+  ),
+);
+
+export const browserExternalContexts: ReturnType<typeof makeExternalBrowserContext>[] = [];
+
+export const browserExternalBoundary = { beforeContextReturn: async () => {} };
+
+vi.mock("../preview/ServerBrowserContexts.ts", () => ({
+  presentAsChrome: async () => {},
+  ServerBrowserContexts: class {
+    private readonly options: {
+      onContextClose?: (context: import("playwright-core").BrowserContext) => void;
+    };
+    constructor(options: {
+      onContextClose?: (context: import("playwright-core").BrowserContext) => void;
+    }) {
+      this.options = options;
+    }
+    async contextFor() {
+      const context = makeExternalBrowserContext(this.options.onContextClose);
+      browserExternalContexts.push(context);
+      await browserExternalBoundary.beforeContextReturn();
+      return context;
+    }
+    async close() {}
+  },
+}));
+
+vi.mock("effect/Queue", { spy: true });
+
+const nativeOwnerRpcGroup = RpcGroup.make(
+  ...Array.from(CoreServerWsRpcGroup.requests.values()).filter(
+    (
+      rpc,
+    ): rpc is Extract<
+      RpcGroup.Rpcs<typeof CoreServerWsRpcGroup>,
+      { readonly _tag: typeof WS_METHODS.peerLinksList }
+    > => rpc._tag === WS_METHODS.peerLinksList,
+  ),
+  ...Array.from(OrchestrationServerWsRpcGroup.requests.values()).filter(
+    (
+      rpc,
+    ): rpc is Extract<
+      RpcGroup.Rpcs<typeof OrchestrationServerWsRpcGroup>,
+      { readonly _tag: typeof ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput }
+    > => rpc._tag === ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput,
+  ),
+  ...Array.from(ForkWsRpc.group.requests.values()).filter(
+    (
+      rpc,
+    ): rpc is Extract<
+      RpcGroup.Rpcs<typeof ForkWsRpc.group>,
+      { readonly _tag: typeof WS_METHODS.previewViewerOpen | typeof WS_METHODS.previewViewerClose }
+    > => rpc._tag === WS_METHODS.previewViewerOpen || rpc._tag === WS_METHODS.previewViewerClose,
+  ),
+);
+
+export const makeNativePromiseBridge = Effect.gen(function* () {
+  const jobs = yield* Queue.unbounded<Effect.Effect<void>>();
+  yield* Effect.forever(Queue.take(jobs).pipe(Effect.flatMap((job) => job))).pipe(
+    Effect.forkScoped,
+  );
+  return <A, E>(effect: Effect.Effect<A, E>) =>
+    new Promise<A>((resolve, reject) => {
+      const job = Effect.matchCauseEffect(effect, {
+        onFailure: (cause) => Effect.sync(() => reject(Cause.squash(cause))),
+        onSuccess: (value) => Effect.sync(() => resolve(value)),
+      });
+      if (!Queue.offerUnsafe(jobs, job)) reject(new Error("Native callback scope is closed"));
+    });
+});
+
+export const idleResource383Pair = (
+  id: string,
+  destinationInstance = ProviderInstanceId.make("idle-resource-destination-provider"),
+) =>
+  Effect.gen(function* () {
+    const a = yield* makeNode(descriptorOf(`${id}-a`, "A", { peerAuthority: 1 }), "disk", {
+      productionKernel: true,
+      attachmentRequests: true,
+      deviceOwner: true,
+      previewControlsOwner: true,
+    });
+    yield* Effect.addFinalizer(() => assertTyped383SourceIdle(a));
+    const b = yield* makeNode(descriptorOf(`${id}-b`, "B", { peerAuthority: 1 }), "disk", {
+      productionKernel: true,
+      attachmentRequests: true,
+      preferencesOwner: true,
+      browserOwner: true,
+      deviceOwner: true,
+      previewControlsOwner: true,
+    });
+    yield* linkTo(a.links, b, "full-access");
+    const parent = ThreadId.make(`${id}-source`);
+    const child = ThreadId.make(`${id}-existing-idle`);
+    yield* seedParent(a, parent);
+    yield* b.threads.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make(`${id}-create`),
+      threadId: child,
+      projectId: b.project.id,
+      title: "Existing idle resource context",
+      modelSelection: {
+        ...selection,
+        instanceId: destinationInstance,
+      },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const enrolled = yield* nativeCall(a, parent, "orchestrator_capabilities", {
+      environmentId: b.environmentId,
+    });
+    expect(enrolled.isError, json(enrolled)).not.toBe(true);
+    const grant = (yield* b.authority.grants)[0]!;
+    yield* b.authority.setGrant({
+      ...grant,
+      resourceScope: "environment-resources",
+      preview: true,
+      device: true,
+      onward: false,
+    });
+    const caps = new Set(["orchestration", "preview", "device"] as const);
+    const credential = yield* a.registry.issue({
+      threadId: parent,
+      providerInstanceId: instanceId,
+      capabilities: caps,
+    });
+    const route = { environmentId: b.environmentId, contextThreadId: child };
+    const call = (name: string, input: Record<string, unknown> = {}, token = credential) =>
+      nativeCall(a, parent, name, { ...route, ...input }, caps, token);
+    const assertIdle = Effect.gen(function* () {
+      expect((yield* b.threads.getThreadShell(child))?.activeRunId).toBeNull();
+      expect((yield* b.threads.getThreadShell(child))?.providerInstanceId).toBe(
+        destinationInstance,
+      );
+      expect(yield* b.registry.scopeForThread(child)).toBeUndefined();
+    });
+    yield* assertIdle;
+    return { a, b, parent, child, grant, caps, credential, route, call, assertIdle };
+  });
+
+export const backgroundRoster383 = (
+  node: Effect.Success<ReturnType<typeof makeNode>>,
+  threadId: ThreadId,
+  pending: boolean,
+  completeForeground = false,
+) =>
+  Effect.gen(function* () {
+    const projection = yield* node.orchestrator.getThreadProjection(threadId);
+    const providerThread = projection.providerThreads[0]!;
+    const now = yield* DateTime.now;
+    yield* node.sink.write({
+      events: [
+        {
+          id: EventId.make(
+            `background383-${pending}-${yield* Crypto.Crypto.pipe(Effect.flatMap((c) => c.randomUUIDv4()))}`,
+          ),
+          type: "provider-thread.updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            ...providerThread,
+            status: "idle",
+            updatedAt: now,
+            pendingBackgroundTasks: pending
+              ? [
+                  {
+                    taskId: "native-background",
+                    kind: "subagent",
+                    description: "Native background resource task",
+                  },
+                ]
+              : [],
+          },
+        },
+      ],
+    });
+    if (completeForeground) {
+      const run = projection.runs.at(-1)!;
+      yield* node.sink.write({
+        events: [
+          {
+            id: EventId.make(`background383-complete-${run.id}`),
+            type: "run.updated",
+            threadId,
+            runId: run.id,
+            occurredAt: now,
+            payload: { ...run, status: "completed", completedAt: now },
+          },
+        ],
+      });
+    }
+  });
+
+export const localBackground383 = (id: string) =>
+  Effect.gen(function* () {
+    const node = yield* makeNode(descriptorOf(id, "local", { peerAuthority: 1 }), "disk", {
+      productionKernel: true,
+      attachmentRequests: true,
+      preferencesOwner: true,
+      browserOwner: true,
+      deviceOwner: true,
+      previewControlsOwner: true,
+    });
+    const threadId = ThreadId.make(id);
+    yield* seedParent(node, threadId);
+    const caps = new Set(["orchestration", "preview", "device"] as const);
+    const credential = yield* node.registry.issue({
+      threadId,
+      providerInstanceId: instanceId,
+      capabilities: caps,
+    });
+    const call = (name: string, input: Record<string, unknown> = {}, token = credential) =>
+      nativeCall(node, threadId, name, input, caps, token);
+    return { node, threadId, caps, credential, call };
+  });
+
+export const stageInput383 = (
+  call: (name: string, input: Record<string, unknown>) => ReturnType<typeof nativeCall>,
+  origin: string,
+  name: string,
+  bytes: Uint8Array,
+  key: string,
+) =>
+  Effect.gen(function* () {
+    const upload = {
+      type: "file" as const,
+      name,
+      mimeType: name.endsWith(".apk") ? "application/vnd.android.package-archive" : "text/plain",
+      sizeBytes: bytes.length,
+    };
+    const prepared = yield* call("t3_attachment_prepare_upload", {
+      upload,
+      digest: yield* typed383Digest(bytes),
+      clientRequestId: key,
+    });
+    expect(prepared.isError, json(prepared)).not.toBe(true);
+    const issued = yield* decodeTyped383Upload(prepared.structuredContent);
+    const http = yield* HttpClient.HttpClient;
+    expect(
+      (yield* http.execute(
+        HttpClientRequest.post(`${origin}${issued.relativeUrl}`).pipe(
+          HttpClientRequest.setBody(HttpBody.uint8Array(bytes)),
+        ),
+      )).status,
+    ).toBe(204);
+    const inspected = yield* call("t3_attachment_inspect", {
+      source: { type: "upload", attachmentId: issued.attachmentId, upload },
+    });
+    expect(inspected.isError, json(inspected)).not.toBe(true);
+    return (yield* Schema.decodeUnknownEffect(
+      Schema.Struct({
+        inspection: Schema.Struct({
+          stage: Schema.Literal("staged"),
+          reference: PeerAttachmentReference,
+        }),
+      }),
+    )(inspected.structuredContent)).inspection.reference;
+  });

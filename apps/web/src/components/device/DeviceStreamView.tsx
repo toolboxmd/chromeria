@@ -1,9 +1,10 @@
-import type { DevicePlatform, EnvironmentId } from "@t3tools/contracts";
+import { captureDeviceScreenshot } from "@t3tools/client-runtime/device/screenshot";
+import type { DevicePlatform, EnvironmentId, DeviceViewerResource } from "@t3tools/contracts";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
-import { refreshDeviceHubAccess, useDeviceHubAccess } from "~/state/device";
+import { useDeviceHubAccessState } from "~/state/device";
 import { createCanvasFrameSink } from "@t3tools/client-runtime/device/frame";
 import { resolveDeviceShape } from "@t3tools/client-runtime/device/shape-profile";
 import { deviceKeyboard, deviceModel } from "./deviceModels";
@@ -72,10 +73,12 @@ export interface DeviceStreamHandle {
   readonly pressButton: (button: DeviceHardwareButton) => void;
   readonly rotate: () => void;
   readonly inputConnected: boolean;
+  readonly screenshot: (signal: AbortSignal) => Promise<Blob>;
 }
 
 export function DeviceStreamView(props: {
   readonly environmentId: EnvironmentId;
+  readonly resource?: DeviceViewerResource;
   readonly platform: DevicePlatform;
   readonly deviceId: string;
   readonly deviceName?: string;
@@ -114,7 +117,11 @@ export function DeviceStreamView(props: {
   const onInputCancel = useStableCallback((cancel: (() => void) | null) => {
     cancelPhoneInputRef.current = cancel;
   });
-  const access = useDeviceHubAccess(props.environmentId, props.hostId);
+  const {
+    access,
+    error: accessError,
+    refresh: refreshAccess,
+  } = useDeviceHubAccessState(props.environmentId, props.hostId, props.resource, props.visible);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const clientRef = useRef<DeviceStreamClient | null>(null);
   const [status, setStatus] = useState<DeviceStreamStatus>("connecting");
@@ -158,7 +165,7 @@ export function DeviceStreamView(props: {
           onScreen?.(next);
         },
         onUnauthorized: () => {
-          refreshDeviceHubAccess(props.environmentId);
+          refreshAccess();
         },
         onMjpegFallback: (url) => {
           setMjpegUrl(url);
@@ -171,6 +178,11 @@ export function DeviceStreamView(props: {
             pressButton: client.pressButton,
             rotate: client.rotate,
             inputConnected: connected,
+            screenshot: (signal) =>
+              captureDeviceScreenshot(
+                { access, platform: props.platform, deviceId: props.deviceId },
+                signal,
+              ),
           });
         },
       },
@@ -181,7 +193,16 @@ export function DeviceStreamView(props: {
     setMjpegUrl(null);
     setInputState({ connected: false });
     client.start();
-    onHandle?.({ pressButton: client.pressButton, rotate: client.rotate, inputConnected: false });
+    onHandle?.({
+      pressButton: client.pressButton,
+      rotate: client.rotate,
+      inputConnected: false,
+      screenshot: (signal) =>
+        captureDeviceScreenshot(
+          { access, platform: props.platform, deviceId: props.deviceId },
+          signal,
+        ),
+    });
     return () => {
       cancelPhoneInput();
       client.stop();
@@ -197,7 +218,7 @@ export function DeviceStreamView(props: {
     onPhoneUnavailable,
     onScreen,
     props.deviceId,
-    props.environmentId,
+    refreshAccess,
     props.platform,
     props.visible,
   ]);
@@ -514,7 +535,14 @@ export function DeviceStreamView(props: {
         {status === "streaming" && !inputState.connected ? (
           <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center p-2">
             <span className="rounded-md bg-background/85 px-2 py-1 text-xs text-muted-foreground">
-              Input disconnected{inputState.detail ? ` (${inputState.detail})` : ""}, reconnecting…
+              {access?.canOperate === false ? (
+                "View only"
+              ) : (
+                <>
+                  Input disconnected{inputState.detail ? ` (${inputState.detail})` : ""},
+                  reconnecting…
+                </>
+              )}
             </span>
           </div>
         ) : null}
@@ -531,16 +559,23 @@ export function DeviceStreamView(props: {
               name={props.deviceName ?? "Device"}
               description={props.deviceDescription ?? ""}
               stage="stream"
-              message={status === "error" ? (detail ?? "Stream failed.") : "Connecting video…"}
-              error={status === "error"}
+              message={
+                accessError ??
+                (status === "error" ? (detail ?? "Stream failed.") : "Connecting video…")
+              }
+              error={accessError !== null || status === "error"}
             >
-              {status === "error" ? (
+              {accessError !== null || status === "error" ? (
                 <Button
                   size="sm"
                   variant="outline"
                   onClick={() => {
                     // An expired ticket surfaces as unauthorized on restart and
                     // refreshes access through the effect; no need to mint one here.
+                    if (accessError !== null) {
+                      refreshAccess();
+                      return;
+                    }
                     clientRef.current?.stop();
                     setPhoneUnavailable(false);
                     clientRef.current?.start();

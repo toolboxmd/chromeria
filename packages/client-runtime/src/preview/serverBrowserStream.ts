@@ -1,10 +1,18 @@
+import * as Schema from "effect/Schema";
+import * as Option from "effect/Option";
 // @effect-diagnostics globalTimers:off globalFetch:off - This browser and WebView transport runs without an Effect runtime.
 import { type DeviceHubAccess, withDeviceHubQuery } from "../device/hubAccess.ts";
 import {
+  PreviewViewerResource,
   PREVIEW_STREAM_HOST_SETUP_CLOSE_CODE,
   type PreviewStreamHostSetup,
-  type PreviewViewportSetting,
+  PreviewStreamInput,
 } from "@t3tools/contracts";
+
+const decodeInput = Schema.decodeUnknownOption(PreviewStreamInput);
+const inputEncoder = new TextEncoder();
+
+const decodePopupResource = Schema.decodeUnknownOption(PreviewViewerResource);
 
 export const PREVIEW_STREAM_BASE_PATH = "/api/preview-stream";
 
@@ -49,54 +57,15 @@ const isPreviewStreamDialog = (value: unknown): value is PreviewStreamControl["d
     "defaultValue" in value &&
     typeof value.defaultValue === "string");
 
-/** Coordinates are page CSS px. */
-export type PreviewStreamInput =
-  | { readonly type: "takeControl" }
-  | { readonly type: "releaseControl" }
-  | { readonly type: "dialog"; readonly accept: boolean; readonly promptText?: string }
-  | { readonly type: "viewport"; readonly setting: PreviewViewportSetting }
-  | {
-      readonly type: "mouse";
-      readonly action: "move" | "down" | "up";
-      readonly x: number;
-      readonly y: number;
-      readonly button: PreviewStreamMouseButton;
-      /** Pressed buttons: left 1, right 2, middle 4. */
-      readonly buttons: number;
-      readonly clickCount: number;
-      readonly modifiers: number;
-    }
-  | {
-      readonly type: "wheel";
-      readonly x: number;
-      readonly y: number;
-      readonly deltaX: number;
-      readonly deltaY: number;
-      readonly modifiers: number;
-    }
-  | {
-      readonly type: "key";
-      readonly action: "down" | "up";
-      readonly key: string;
-      readonly code: string;
-      /** Windows virtual key code (DOM `keyCode`); Enter, Backspace, and arrows need it. */
-      readonly keyCode?: number;
-      /** Only for printable keys without Ctrl or Meta. */
-      readonly text?: string;
-      readonly modifiers: number;
-    }
-  | { readonly type: "text"; readonly text: string }
-  | { readonly type: "resize"; readonly width: number; readonly height: number }
-  | { readonly type: "navigate"; readonly url: string }
-  | { readonly type: "history"; readonly delta: -1 | 1 }
-  | { readonly type: "reload"; readonly ignoreCache?: boolean }
-  | { readonly type: "probe"; readonly x: number; readonly y: number };
+/** Client-to-server messages. Coordinates are page CSS px. */
+export type { PreviewStreamInput } from "@t3tools/contracts";
 
 export interface PreviewStreamDownload {
   readonly fileName: string;
   readonly sizeBytes: number;
   /** Authenticated with the stream's own access; cookie sessions must send credentials. */
   readonly url: string;
+  readonly resolveUrl?: () => Promise<string>;
 }
 
 export interface PreviewStreamFileChooser {
@@ -104,6 +73,7 @@ export interface PreviewStreamFileChooser {
   readonly accept: string;
   /** POST multipart `file` parts here; an empty form cancels the page's picker. */
   readonly uploadUrl: string;
+  readonly resolveUploadUrl?: () => Promise<string>;
   readonly credentials: boolean;
 }
 
@@ -120,13 +90,27 @@ const previewStreamUploadUrl = (
     target.access,
   );
 
+export async function resolvePreviewStreamFileUrl(
+  url: string,
+  access: DeviceHubAccess,
+): Promise<string> {
+  if (access.requestCurrentAccess === undefined) return url;
+  const current = await access.requestCurrentAccess();
+  const resolved = new URL(url);
+  resolved.searchParams.delete("viewerTicket");
+  for (const [key, value] of Object.entries(current.query)) resolved.searchParams.set(key, value);
+  return resolved.toString();
+}
+
 export async function uploadPreviewStreamFiles(
   chooser: PreviewStreamFileChooser,
   files: ReadonlyArray<Blob & { readonly name?: string }>,
 ): Promise<void> {
   const body = new FormData();
   for (const file of files) body.append("file", file, file.name ?? "file");
-  const response = await fetch(chooser.uploadUrl, {
+  const url =
+    chooser.resolveUploadUrl === undefined ? chooser.uploadUrl : await chooser.resolveUploadUrl();
+  const response = await fetch(url, {
     method: "POST",
     body,
     credentials: chooser.credentials ? "include" : "omit",
@@ -172,6 +156,7 @@ export const previewStreamModifiers = (event: {
   (event.shiftKey ? 8 : 0);
 
 export interface PreviewStreamTarget {
+  readonly resource?: PreviewViewerResource;
   readonly access: DeviceHubAccess;
   readonly threadId: string;
   readonly tabId: string;
@@ -190,11 +175,14 @@ export interface PreviewStreamEvents {
   readonly onControl?: (control: PreviewStreamControl) => void;
   readonly onClipboard?: (text: string) => void;
   readonly onDownload?: (download: PreviewStreamDownload) => void;
-  readonly onPopup?: (tabId: string) => void;
+  /** The page this viewer controls opened a new tab (a link or `window.open`). */
+  readonly onPopup?: (tabId: string, resource?: PreviewViewerResource) => void;
+  /** The page opened a file picker (`null` once answered or replaced). */
   readonly onFileChooser?: (chooser: PreviewStreamFileChooser | null) => void;
   readonly onConnectedChange: (connected: boolean) => void;
   /** The upgrade was refused; refresh access and start a new client. */
   readonly onUnauthorized: () => void;
+  readonly onInputRejected?: (message: string) => void;
   readonly onGone?: () => void;
   readonly onHostSetup?: (setup: PreviewStreamHostSetup) => void;
 }
@@ -284,6 +272,12 @@ export function createPreviewStreamClient(
           accept,
           uploadUrl: previewStreamUploadUrl(target, id),
           credentials: target.access.credentials,
+          ...(target.access.requestCurrentAccess === undefined
+            ? {}
+            : {
+                resolveUploadUrl: () =>
+                  resolvePreviewStreamFileUrl(previewStreamUploadUrl(target, id), target.access),
+              }),
         });
       } else if (type === "fileChooserClosed" && typeof id === "string") {
         if (fileChooser !== id) return;
@@ -298,7 +292,19 @@ export function createPreviewStreamClient(
       ) {
         events.onPointer?.({ phase, x, y, sequence });
       } else if (type === "popup" && typeof tabId === "string") {
-        events.onPopup?.(tabId);
+        const popup = decodePopupResource("resource" in message ? message.resource : undefined);
+        if (target.resource !== undefined) {
+          // A popup is a new qualified opening, never a guessed local tab.
+          if (
+            Option.isNone(popup) ||
+            popup.value.tabId !== tabId ||
+            popup.value.environmentId !== target.resource.environmentId ||
+            popup.value.threadId !== target.resource.threadId ||
+            popup.value.serverEpoch !== target.resource.serverEpoch
+          )
+            return;
+          events.onPopup?.(tabId, popup.value);
+        } else events.onPopup?.(tabId, Option.getOrUndefined(popup));
       } else if (type === "clipboard" && typeof text === "string") {
         events.onClipboard?.(text);
       } else if (
@@ -311,6 +317,12 @@ export function createPreviewStreamClient(
           fileName,
           sizeBytes,
           url: previewStreamDownloadUrl(target, id),
+          ...(target.access.requestCurrentAccess === undefined
+            ? {}
+            : {
+                resolveUrl: () =>
+                  resolvePreviewStreamFileUrl(previewStreamDownloadUrl(target, id), target.access),
+              }),
         });
       } else if (type === "viewport" && typeof width === "number" && typeof height === "number") {
         failures = 0;
@@ -374,9 +386,32 @@ export function createPreviewStreamClient(
   return {
     send: (input) => {
       if (socket?.readyState !== WebSocket.OPEN) return false;
-      if (!control?.canOperate) return false;
+      if (target.access.canOperate === false || !control?.canOperate) return false;
       if (input.type !== "takeControl" && control.controller !== "you") return false;
-      socket.send(JSON.stringify(input));
+      // Match native paste semantics before the qualified wire schema sees it.
+      let message = input.type === "text" ? { ...input, text: input.text.slice(0, 10_000) } : input;
+      let resizeNoop = false;
+      if (
+        input.type === "resize" &&
+        Number.isFinite(input.width) &&
+        Number.isFinite(input.height)
+      ) {
+        const width = Math.min(Math.round(input.width), 3840);
+        const height = Math.min(Math.round(input.height), 2160);
+        resizeNoop = width < 100 || height < 100;
+        message = { ...input, width: Math.max(width, 100), height: Math.max(height, 100) };
+      }
+      const wire = JSON.stringify(message);
+      if (
+        "viewerTicket" in target.access.query &&
+        (Option.isNone(decodeInput(message)) || inputEncoder.encode(wire).byteLength > 64 * 1024)
+      ) {
+        events.onInputRejected?.("Browser input is invalid or too large. Edit it and try again.");
+        return false;
+      }
+      // Native ignores too-small measured panels; keep their viewer connected.
+      if (resizeNoop) return true;
+      socket.send(wire);
       return true;
     },
     stop: () => {

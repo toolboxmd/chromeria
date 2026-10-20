@@ -11,6 +11,17 @@ import * as Predicate from "effect/Predicate";
 import {
   type EnvironmentId,
   DeviceCommandCatalog,
+  PreviewAutomationUploadInput,
+  PreviewAutomationStatus,
+  PreviewTabId,
+  DeviceCommandInput,
+  DeviceAtomicCommand,
+  PeerAttachmentInspectSource,
+  PeerAttachmentInspectResult,
+  PeerAttachmentReference,
+  ThreadId,
+  DeviceHostId,
+  DeviceCommandTarget,
   OrchestratorMcpFailure,
   type OrchestratorMcpEnvironmentLinksResult,
   OrchestratorMcpThreadInterruptInput,
@@ -46,6 +57,7 @@ import {
 } from "@t3tools/contracts";
 import * as AttachmentStaging from "../assets/AttachmentStaging.ts";
 import * as FileSystem from "effect/FileSystem";
+import * as Stream from "effect/Stream";
 import * as RequestReceipts from "../mcp/McpRequestReceipts.ts";
 
 /**
@@ -139,6 +151,7 @@ const uploadParameters = Schema.Struct({
   upload: AttachmentCreateUploadUrlInput,
   digest: Schema.optional(Schema.String),
   clientRequestId: Schema.optional(Schema.String),
+  contextThreadId: Schema.optional(ThreadId),
 });
 const make = Effect.gen(function* () {
   const peers = yield* PeerMcpClient.PeerMcpClient;
@@ -300,7 +313,15 @@ const make = Effect.gen(function* () {
       const callerRequestId =
         typeof args.clientRequestId === "string" ? args.clientRequestId : undefined;
       let requestProtocol: PeerRequestProtocol | undefined;
-      if (!readOnly && Option.isSome(requestOwner)) {
+      // Browser reads and actions name the same opening owner. Its verified
+      // identity exists independently of a mutation receipt or action id.
+      const stableReadIdentity =
+        (toolName.startsWith("preview_") ||
+          toolName.startsWith("t3_preview_") ||
+          toolName === "t3_attachment_inspect" ||
+          toolName === "device_commands") &&
+        Option.isSome(authority);
+      if ((!readOnly && Option.isSome(requestOwner)) || stableReadIdentity) {
         if (peers.requireRequestProtocol === undefined) return yield* unavailable();
         requestProtocol = yield* peers.requireRequestProtocol(
           environmentId,
@@ -436,6 +457,396 @@ const make = Effect.gen(function* () {
           authority: discoveryAuthority,
           expectedLinkIdentity,
         });
+      }
+      if (toolName === "device_execute" || toolName === "preview_upload") {
+        const intent =
+          toolName === "device_execute"
+            ? yield* Schema.decodeUnknownEffect(DeviceCommandInput)(args).pipe(
+                Effect.mapError(unavailable),
+              )
+            : undefined;
+        const preview =
+          toolName === "preview_upload"
+            ? yield* Schema.decodeUnknownEffect(PreviewAutomationUploadInput)(args).pipe(
+                Effect.mapError(unavailable),
+              )
+            : undefined;
+        if (preview?.paths !== undefined && preview.paths.length > 0)
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message:
+              "A linked browser requires qualified artifacts; source paths are never destination paths.",
+          });
+        if (
+          preview?.artifacts !== undefined &&
+          (preview.resource === undefined ||
+            preview.resource.environmentId !== environmentId ||
+            preview.resource.threadId !== args.contextThreadId ||
+            (preview.tabId !== undefined && preview.tabId !== preview.resource.tabId))
+        )
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "Qualified browser input requires its exact opened destination context.",
+          });
+        const steps =
+          intent === undefined
+            ? []
+            : intent.command.type === "batch"
+              ? intent.command.steps
+              : [intent.command];
+        const inputs =
+          preview?.artifacts ??
+          steps.flatMap((command) =>
+            command.type === "install" || command.type === "reinstall" ? [command.artifact] : [],
+          );
+        let previewCurrent: Effect.Effect<void, OrchestratorMcpFailure> | undefined;
+        if (preview?.artifacts !== undefined) {
+          if (
+            Option.isNone(authority) ||
+            expectedLinkIdentity === undefined ||
+            requestProtocol?.attachments !== true ||
+            preview.resource === undefined
+          )
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "This peer cannot negotiate qualified browser input before dispatch.",
+            });
+          const original = yield* McpInvocationContext.requireThreadScope(
+            scope,
+            "Qualified browser input",
+          );
+          const actualAuthority = authority.value;
+          const resource = preview.resource;
+          const generation = expectedLinkIdentity;
+          const context =
+            args.contextThreadId === undefined ? {} : { contextThreadId: args.contextThreadId };
+          previewCurrent = Effect.gen(function* () {
+            yield* actualAuthority.recheckInvocation(original, "preview", original.thread.threadId);
+            const support = yield* forward<PeerAttachmentInspectResult>(
+              scope,
+              "t3_attachment_inspect",
+              Schema.Struct({
+                source: PeerAttachmentInspectSource,
+                contextThreadId: Schema.optional(ThreadId),
+              }),
+              PeerAttachmentInspectResult,
+              environmentId,
+              { ...context, source: { type: "capabilities" } },
+              { expectedLinkIdentity: generation },
+              true,
+            );
+            if (support.type !== "capabilities" || support.previewInputArtifacts !== 1)
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "Qualified native browser input is unsupported by this peer.",
+              });
+            const status = yield* forward<PreviewAutomationStatus>(
+              scope,
+              "preview_status",
+              Schema.Struct({ tabId: PreviewTabId, contextThreadId: Schema.optional(ThreadId) }),
+              PreviewAutomationStatus,
+              environmentId,
+              { ...context, tabId: resource.tabId },
+              { expectedLinkIdentity: generation },
+              true,
+            );
+            if (
+              status.resource === undefined ||
+              RequestReceipts.requestDigest(status.resource) !==
+                RequestReceipts.requestDigest(resource) ||
+              status.control?.owner === "human" ||
+              (status.control?.owner === "agent" && !status.control.ownedByCaller)
+            )
+              return yield* new OrchestratorMcpFailure({
+                code: "capability_denied",
+                message: "The exact browser input opening or its control is no longer available.",
+              });
+          });
+          yield* previewCurrent;
+        }
+        if (inputs.some((reference) => reference.environmentId !== environmentId)) {
+          const staging = yield* Effect.serviceOption(AttachmentStaging.AttachmentStaging);
+          const fs = yield* Effect.serviceOption(FileSystem.FileSystem);
+          if (
+            Option.isNone(staging) ||
+            Option.isNone(fs) ||
+            Option.isNone(authority) ||
+            scope.thread === undefined ||
+            expectedLinkIdentity === undefined ||
+            requestProtocol?.attachments !== true ||
+            typeof args.clientRequestId !== "string"
+          )
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "Qualified input transfer is unsupported; no upload was accepted.",
+            });
+          const original = yield* McpInvocationContext.requireThreadScope(
+            scope,
+            "Qualified input transfer",
+          );
+          const generation = expectedLinkIdentity;
+          const destination = `peer:${environmentId}:${generation}`;
+          const consumer = `peer-request:${RequestReceipts.requestDigest([requestNamespace(scope), toolName, args.clientRequestId])}`;
+          const source = inputs.filter((reference) => reference.environmentId !== environmentId);
+          if (source.some((reference) => reference.environmentId !== scope.environmentId))
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "Stage an app artifact in its actual source environment before forwarding.",
+            });
+          const inspectParameters = Schema.Struct({
+            source: PeerAttachmentInspectSource,
+            contextThreadId: Schema.optional(ThreadId),
+          });
+          const catalogParameters = Schema.Struct({
+            hostId: DeviceHostId,
+            target: DeviceCommandTarget,
+            contextThreadId: Schema.optional(ThreadId),
+          });
+          const context =
+            args.contextThreadId === undefined ? {} : { contextThreadId: args.contextThreadId };
+          const current = Effect.gen(function* () {
+            yield* authority.value.recheckInvocation(
+              original,
+              preview === undefined ? "device" : "preview",
+              original.thread.threadId,
+            );
+            if (previewCurrent !== undefined) return yield* previewCurrent;
+            if (intent === undefined) return yield* unavailable();
+            const catalog = yield* forward<DeviceCommandCatalog>(
+              scope,
+              "device_commands",
+              catalogParameters,
+              DeviceCommandCatalog,
+              environmentId,
+              { ...context, hostId: intent.target.hostId, target: intent.target },
+              { expectedLinkIdentity: generation },
+              true,
+            );
+            if (
+              catalog.inputArtifacts !== 1 ||
+              catalog.targetPlatform === undefined ||
+              steps.some((command) => !catalog.commands.includes(command.type))
+            )
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "This peer cannot preflight typed app input on the exact opening.",
+              });
+            for (const reference of source) {
+              const extension = reference.name.slice(reference.name.lastIndexOf(".")).toLowerCase();
+              if (
+                !(catalog.targetPlatform === "android" ? [".apk", ".aab"] : [".zip"]).includes(
+                  extension,
+                )
+              )
+                return yield* new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message: "The app package is unsupported by this exact device platform.",
+                });
+            }
+          });
+          yield* authority.value.recheckInvocation(
+            original,
+            preview === undefined ? "device" : "preview",
+            original.thread.threadId,
+          );
+          const support = yield* forward<PeerAttachmentInspectResult>(
+            scope,
+            "t3_attachment_inspect",
+            inspectParameters,
+            PeerAttachmentInspectResult,
+            environmentId,
+            { ...context, source: { type: "capabilities" } },
+            { expectedLinkIdentity: generation },
+            true,
+          );
+          if (
+            support.type !== "capabilities" ||
+            support.version !== 1 ||
+            (preview !== undefined && support.previewInputArtifacts !== 1)
+          )
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "The peer cannot verify typed app input before transfer.",
+            });
+          const manifest = (reference: PeerAttachmentReference) => ({
+            type: "file" as const,
+            id: reference.attachmentId,
+            name: reference.name,
+            mimeType: reference.mimeType,
+            sizeBytes: reference.sizeBytes,
+          });
+          if (preview !== undefined) {
+            // Existing retained transfers need no new copy. A fresh mixed batch
+            // must prove every destination-owned input before reserving any source input.
+            const retained = yield* Effect.forEach(source, (reference) =>
+              staging.value.transferReference(scope, consumer, destination, manifest(reference)),
+            );
+            if (retained.some(Option.isNone))
+              for (const reference of inputs.filter(
+                (value) => value.environmentId === environmentId,
+              )) {
+                yield* current;
+                const inspected = yield* forward<PeerAttachmentInspectResult>(
+                  scope,
+                  "t3_attachment_inspect",
+                  inspectParameters,
+                  PeerAttachmentInspectResult,
+                  environmentId,
+                  {
+                    ...context,
+                    source: {
+                      type: "upload",
+                      attachmentId: reference.attachmentId,
+                      upload: {
+                        type: "file",
+                        name: reference.name,
+                        mimeType: reference.mimeType,
+                        sizeBytes: reference.sizeBytes,
+                      },
+                    },
+                  },
+                  { expectedLinkIdentity: generation },
+                  true,
+                );
+                if (
+                  inspected.type !== "upload" ||
+                  inspected.inspection.stage !== "staged" ||
+                  RequestReceipts.requestDigest(inspected.inspection.reference) !==
+                    RequestReceipts.requestDigest(reference)
+                )
+                  return yield* new OrchestratorMcpFailure({
+                    code: "invalid_request",
+                    message:
+                      "Every destination input must be verified before a new source transfer.",
+                  });
+              }
+          }
+          // The existing reservation persists exact original bytes. A confirmed
+          // transfer may later be consumed, so retry does not reclassify it as staged.
+          yield* current;
+          yield* staging.value.reserveTransfer(
+            scope,
+            consumer,
+            destination,
+            source.map(manifest),
+            source,
+          );
+          const transferred = new Map<string, PeerAttachmentReference>();
+          for (const reference of source) {
+            yield* current;
+            const attachment = manifest(reference);
+            const retained = yield* staging.value.transferReference(
+              scope,
+              consumer,
+              destination,
+              attachment,
+            );
+            if (Option.isSome(retained)) {
+              if (
+                retained.value.environmentId !== environmentId ||
+                retained.value.digest !== reference.digest
+              )
+                return yield* unavailable();
+              transferred.set(reference.attachmentId, retained.value);
+              continue;
+            }
+            const upload = {
+              type: "file" as const,
+              name: reference.name,
+              mimeType: reference.mimeType,
+              sizeBytes: reference.sizeBytes,
+            };
+            yield* current;
+            const prepared = yield* forward<PeerAttachmentUploadResult>(
+              scope,
+              "t3_attachment_prepare_upload",
+              uploadParameters,
+              PeerAttachmentUploadResult,
+              environmentId,
+              {
+                ...context,
+                upload,
+                digest: reference.digest,
+                clientRequestId: `${preview === undefined ? "device-input" : "preview-input"}:${RequestReceipts.requestDigest([consumer, reference.attachmentId])}`,
+              },
+              { expectedLinkIdentity: generation },
+            );
+            if (prepared.transferState?.stage !== "staged") {
+              if (prepared.transferState?.stage === "native-accepted")
+                return yield* new OrchestratorMcpFailure({
+                  code: "outcome_unknown",
+                  message:
+                    "The original destination input was consumed before its transfer reference was retained.",
+                  lastConfirmedStage: "native_binding_accepted",
+                });
+              const verified = yield* staging.value.verify(scope, attachment);
+              if (verified.digest !== reference.digest) return yield* unavailable();
+              yield* current;
+              yield* peers.uploadAttachment({
+                environmentId,
+                generation,
+                relativeUrl: prepared.relativeUrl,
+                bytes: fs.value
+                  .stream(verified.path, { chunkSize: 1024 * 1024 })
+                  .pipe(Stream.tap(() => current)),
+                sizeBytes: reference.sizeBytes,
+              });
+            }
+            yield* current;
+            const inspected = yield* forward<PeerAttachmentInspectResult>(
+              scope,
+              "t3_attachment_inspect",
+              inspectParameters,
+              PeerAttachmentInspectResult,
+              environmentId,
+              {
+                ...context,
+                source: { type: "upload", attachmentId: prepared.attachmentId, upload },
+              },
+              { expectedLinkIdentity: generation },
+              true,
+            );
+            if (inspected.type !== "upload" || inspected.inspection.stage !== "staged")
+              return yield* new OrchestratorMcpFailure({
+                code: "outcome_unknown",
+                message:
+                  "The original destination input is not verified unconsumed staging; no installation was retried.",
+                lastConfirmedStage: "native_binding_accepted",
+              });
+            const actual = inspected.inspection.reference;
+            if (actual.environmentId !== environmentId || actual.digest !== reference.digest)
+              return yield* unavailable();
+            yield* current;
+            yield* staging.value.transferReference(
+              scope,
+              consumer,
+              destination,
+              attachment,
+              actual,
+            );
+            transferred.set(reference.attachmentId, actual);
+          }
+          yield* current;
+          if (preview !== undefined) {
+            args.artifacts = inputs.map((reference) =>
+              reference.environmentId === scope.environmentId
+                ? (transferred.get(reference.attachmentId) ?? reference)
+                : reference,
+            );
+          } else if (intent !== undefined) {
+            const replace = (command: DeviceAtomicCommand): DeviceAtomicCommand =>
+              command.type === "install" || command.type === "reinstall"
+                ? {
+                    ...command,
+                    artifact: transferred.get(command.artifact.attachmentId) ?? command.artifact,
+                  }
+                : command;
+            args.command =
+              intent.command.type === "batch"
+                ? { ...intent.command, steps: intent.command.steps.map(replace) }
+                : replace(intent.command);
+          }
+        }
       }
       // Transfer explicitly source-owned bytes, never a source path or an unqualified foreign id.
       if (
@@ -590,7 +1001,7 @@ const make = Effect.gen(function* () {
               limits,
               options?.pair,
               readOnly,
-              !readOnly && Option.isSome(requestOwner),
+              (!readOnly && Option.isSome(requestOwner)) || stableReadIdentity,
             )
           : undefined;
       const result = yield* peers

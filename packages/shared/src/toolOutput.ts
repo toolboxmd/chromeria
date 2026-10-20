@@ -1,8 +1,14 @@
 import {
+  DeviceViewerResource,
+  PreviewViewerResource,
+  PeerAttachmentAssetResource,
+  NativeBrowserDownloadAssetResource,
   isProviderSendTurnSupportedImageMimeType,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@t3tools/contracts";
 import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
+import * as Option from "effect/Option";
 
 import {
   HTML_RENDER_TOOL_NAME,
@@ -14,11 +20,22 @@ import { resolveT3McpToolId } from "./t3McpToolPresentation.ts";
 
 const MAX_PARSED_BYTES = 16_384;
 const MAX_METADATA_BYTES = 8_192;
+const MAX_RESOURCE_METADATA_BYTES = 16_384;
 const MAX_ID_LENGTH = 256;
 const MAX_THREADS = 100;
+const MAX_RESOURCES = 32;
+const ToolResource = Schema.Union([
+  DeviceViewerResource,
+  PreviewViewerResource,
+  PeerAttachmentAssetResource,
+  NativeBrowserDownloadAssetResource,
+]);
+export type ToolResource = typeof ToolResource.Type;
+const decodeToolResource = Schema.decodeUnknownOption(ToolResource);
 const MAX_CONTENT_BLOCKS = 32;
 const MAX_ENVELOPE_DEPTH = 4;
 const MAX_ENVELOPE_NODES = 128;
+const MAX_RESOURCE_NODES = 128;
 const encoder = new TextEncoder();
 
 interface ResultReadBudget {
@@ -34,6 +51,7 @@ interface ResultEnvelope {
 
 interface CompactToolOutput {
   isError?: true;
+  resources?: ToolResource[];
   threadId?: string;
   messageId?: string;
   taskId?: string;
@@ -108,6 +126,76 @@ function boundedId(value: unknown): string | undefined {
   return Array.from(value).join("");
 }
 
+// Bound only the candidate metadata, never walk arbitrary response bodies. This
+// also bounds structured objects before a schema decoder sees their contents.
+function boundedResourceValue(
+  value: unknown,
+  budget: Pick<ResultReadBudget, "remainingBytes" | "remainingNodes">,
+  depth = 0,
+): boolean {
+  if (depth > MAX_ENVELOPE_DEPTH || --budget.remainingNodes < 0) return false;
+  if (typeof value === "string") {
+    if (value.length > budget.remainingBytes) return false;
+    budget.remainingBytes -= encoder.encode(value).byteLength;
+    return budget.remainingBytes >= 0;
+  }
+  if (typeof value === "number") return Number.isFinite(value);
+  if (value === null || typeof value === "boolean") return true;
+  if (!Predicate.isObject(value)) return false;
+  let count = 0;
+  for (const key in value) {
+    if (!Object.hasOwn(value, key)) continue;
+    if (
+      ++count > MAX_RESOURCES ||
+      !boundedResourceValue(key, budget, depth + 1) ||
+      !boundedResourceValue(value[key], budget, depth + 1)
+    )
+      return false;
+  }
+  return true;
+}
+
+function readResources(data: Record<PropertyKey, unknown>) {
+  const candidates: unknown[] = [];
+  if (data.resource !== undefined) candidates.push(data.resource);
+  if (data.resources !== undefined) {
+    if (!Array.isArray(data.resources) || data.resources.length > MAX_RESOURCES) return undefined;
+    candidates.push(...data.resources);
+  }
+  for (const key of ["tabs", "results", "downloads"] as const) {
+    const entries = data[key];
+    if (entries === undefined) continue;
+    if (!Array.isArray(entries) || entries.length > MAX_RESOURCES) return undefined;
+    for (const entry of entries) {
+      if (!Predicate.isObject(entry)) continue;
+      if (entry.resource !== undefined) candidates.push(entry.resource);
+      if (key === "results" && entry.resources !== undefined) {
+        if (!Array.isArray(entry.resources) || entry.resources.length > MAX_RESOURCES)
+          return undefined;
+        candidates.push(...entry.resources);
+      }
+    }
+  }
+  if (candidates.length === 0 || candidates.length > MAX_RESOURCES) return undefined;
+  const resources: ToolResource[] = [];
+  const seen = new Set<string>();
+  // Envelope parsing and candidate validation bound different work. Give each
+  // candidate its own node allowance, while sharing a byte ceiling across the
+  // at most MAX_RESOURCES candidates, including duplicates.
+  const budget = { remainingBytes: MAX_PARSED_BYTES, remainingNodes: MAX_RESOURCE_NODES };
+  for (const candidate of candidates) {
+    budget.remainingNodes = MAX_RESOURCE_NODES;
+    if (!boundedResourceValue(candidate, budget)) return undefined;
+    const decoded = decodeToolResource(candidate);
+    if (Option.isNone(decoded)) return undefined;
+    const identity = JSON.stringify(decoded.value);
+    if (!seen.has(identity)) resources.push(decoded.value);
+    seen.add(identity);
+  }
+  return resources;
+}
+
+/** Keeps bounded public identities and failure metadata, never private result bodies. */
 export function compactDynamicToolOutput(value: unknown): CompactToolOutput | undefined {
   const budget: ResultReadBudget = {
     remainingBytes: MAX_PARSED_BYTES,
@@ -118,6 +206,10 @@ export function compactDynamicToolOutput(value: unknown): CompactToolOutput | un
   const output: CompactToolOutput = result.failed ? { isError: true } : {};
   const data = budget.exceeded ? undefined : result.data;
   if (data !== undefined) {
+    if (!result.failed) {
+      const resources = readResources(data);
+      if (resources !== undefined) output.resources = resources;
+    }
     for (const key of ["threadId", "messageId", "taskId", "scheduledTaskId"] as const) {
       const id = boundedId(data[key]);
       if (id !== undefined) output[key] = id;
@@ -162,7 +254,9 @@ export function compactDynamicToolOutput(value: unknown): CompactToolOutput | un
       }
     }
   }
-  const oversized = () => encoder.encode(JSON.stringify(output)).byteLength > MAX_METADATA_BYTES;
+  const oversized = () =>
+    encoder.encode(JSON.stringify(output)).byteLength >
+    (output.resources === undefined ? MAX_METADATA_BYTES : MAX_RESOURCE_METADATA_BYTES);
   if (oversized()) {
     delete output.threads;
     delete output.threadId;
@@ -174,9 +268,22 @@ export function compactDynamicToolOutput(value: unknown): CompactToolOutput | un
     output[MCP_APP_OUTPUT_KEY] = rest;
   }
   if (oversized()) delete output[MCP_APP_OUTPUT_KEY];
+  if (oversized()) delete output.resources;
+  // Retained metadata is bounded even when a structured object bypassed JSON parsing.
+  if (oversized()) return result.failed ? { isError: true } : undefined;
   return Object.keys(output).length === 0 ? undefined : output;
 }
 
+/** Navigation metadata only; opening any resource still requires server admission. */
+export function resourcesFromToolItem(item: {
+  readonly output?: unknown;
+  readonly status?: string;
+}): ReadonlyArray<ToolResource> {
+  if (item.status === "failed" || item.status === "cancelled") return [];
+  return compactDynamicToolOutput(item.output)?.resources ?? [];
+}
+
+/** The page a completed `html_render` tool call published, if this item is one. */
 export function htmlRenderFromToolItem(item: {
   readonly toolName: string | null | undefined;
   readonly output?: unknown;

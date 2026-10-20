@@ -1,9 +1,16 @@
 import { ThreadMcpToolkit } from "./toolkits/threadMcp/tools.ts";
 import * as ThreadMcpHandlers from "./toolkits/threadMcp/handlers.ts";
 
+import { PreviewViewerOpenInput, PreviewViewerCloseInput } from "@t3tools/contracts";
+import * as ServerBrowser from "../preview/ServerBrowser.ts";
+import * as ServerBrowserStream from "../preview/ServerBrowserStream.ts";
+import { AuthSessionId } from "@t3tools/contracts";
+import { DeviceViewerCloseInput } from "@t3tools/contracts";
+import * as DeviceHubProxy from "../device/DeviceHubProxy.ts";
+import { DeviceViewerOpenInput } from "@t3tools/contracts";
 import * as AutomationAuthority from "../scheduledTasks/DestinationAutomationAuthority.ts";
 import { PendingRequests } from "../childThreads/PendingRequestService.ts";
-import { PeerSavedPreviewAuthorizationRequest } from "@t3tools/contracts";
+import { QualifiedAssetResource, PeerSavedPreviewAuthorizationRequest } from "@t3tools/contracts";
 import * as McpRouting from "./McpRouting.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -1384,7 +1391,69 @@ const layerSavedPreviewAuthorization = Layer.unwrap(
   }),
 );
 
+const decodePreviewViewerInput = Schema.decodeUnknownEffect(PreviewViewerOpenInput);
+const decodePreviewViewerClose = Schema.decodeUnknownEffect(PreviewViewerCloseInput);
+const layerPreviewViewerAuthorization = Layer.unwrap(
+  Effect.gen(function* () {
+    const viewers = yield* Effect.serviceOption(ServerBrowserStream.PreviewViewers);
+    const registry = yield* Effect.serviceOption(McpSessionRegistry.McpSessionRegistry);
+    const router = yield* Effect.serviceOption(HttpRouter.HttpRouter);
+    if (Option.isNone(viewers) || Option.isNone(registry) || Option.isNone(router))
+      return Layer.empty;
+    return Layer.mergeAll(
+      HttpRouter.add(
+        "GET",
+        "/mcp/peer-control/preview-viewer",
+        Effect.gen(function* () {
+          const scope = yield* McpInvocationContext.McpInvocationContext;
+          return scope.client?.linked === true
+            ? HttpServerResponse.jsonUnsafe({ version: 1, purpose: "preview-viewer" })
+            : HttpServerResponse.empty({ status: 403 });
+        }),
+      ),
+      HttpRouter.add(
+        "POST",
+        "/mcp/peer-control/preview-viewer",
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const scope = yield* McpInvocationContext.McpInvocationContext;
+          return yield* Effect.gen(function* () {
+            const input = yield* decodePreviewViewerInput(yield* request.json).pipe(
+              Effect.mapError(
+                () =>
+                  new OrchestratorMcpFailure({
+                    code: "invalid_request",
+                    message: "Invalid browser viewer resource.",
+                  }),
+              ),
+            );
+            return HttpServerResponse.jsonUnsafe(yield* viewers.value.accept(scope, input));
+          }).pipe(Effect.catch((error) => Effect.succeed(peerAuthorityFailure(error))));
+        }),
+      ),
+      HttpRouter.add(
+        "POST",
+        "/mcp/peer-control/preview-viewer/close",
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const scope = yield* McpInvocationContext.McpInvocationContext;
+          if (scope.client?.linked !== true) return HttpServerResponse.empty({ status: 403 });
+          const input = yield* decodePreviewViewerClose(yield* request.json);
+          return HttpServerResponse.jsonUnsafe(
+            yield* viewers.value.close(AuthSessionId.make(scope.client.sessionId), input.viewerId),
+          );
+        }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 400 })))),
+      ),
+    ).pipe(
+      Layer.provide(layerMcpAuthMiddleware),
+      Layer.provide(Layer.succeed(McpSessionRegistry.McpSessionRegistry, registry.value)),
+      Layer.provide(Layer.succeed(HttpRouter.HttpRouter, router.value)),
+    );
+  }),
+);
+
 export const layerPreviewToolkit = Layer.mergeAll(
+  layerPreviewViewerAuthorization,
   layerSavedPreviewAuthorization,
   layerPreviewStandardToolkitRegistration,
   layerPreviewSnapshotRegistration,
@@ -1437,7 +1506,71 @@ const layerDeviceScreenshotRegistration = imageToolRegistration(
   DeviceHandlers.layerScreenshot,
 );
 
+const decodeQualifiedAssetResource = Schema.decodeUnknownEffect(QualifiedAssetResource);
+const decodeDeviceViewerInput = Schema.decodeUnknownEffect(DeviceViewerOpenInput);
+const layerDeviceViewerAuthorization = Layer.unwrap(
+  Effect.gen(function* () {
+    const viewers = yield* Effect.serviceOption(DeviceHubProxy.DeviceViewers);
+    const registry = yield* Effect.serviceOption(McpSessionRegistry.McpSessionRegistry);
+    const router = yield* Effect.serviceOption(HttpRouter.HttpRouter);
+    if (Option.isNone(viewers) || Option.isNone(registry) || Option.isNone(router))
+      return Layer.empty;
+    return Layer.mergeAll(
+      HttpRouter.add(
+        "GET",
+        "/mcp/peer-control/device-viewer",
+        Effect.gen(function* () {
+          const scope = yield* McpInvocationContext.McpInvocationContext;
+          return scope.client?.linked === true
+            ? HttpServerResponse.jsonUnsafe({ version: 1, purpose: "device-viewer" })
+            : HttpServerResponse.empty({ status: 403 });
+        }),
+      ),
+      HttpRouter.add(
+        "POST",
+        "/mcp/peer-control/device-viewer",
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const scope = yield* McpInvocationContext.McpInvocationContext;
+          return yield* Effect.gen(function* () {
+            const input = yield* decodeDeviceViewerInput(yield* request.json).pipe(
+              Effect.mapError(
+                () =>
+                  new OrchestratorMcpFailure({
+                    code: "invalid_request",
+                    message: "Invalid device viewer resource.",
+                  }),
+              ),
+            );
+            return HttpServerResponse.jsonUnsafe(yield* viewers.value.accept(scope, input));
+          }).pipe(Effect.catch((error) => Effect.succeed(peerAuthorityFailure(error))));
+        }),
+      ),
+      HttpRouter.add(
+        "POST",
+        "/mcp/peer-control/device-viewer/close",
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const scope = yield* McpInvocationContext.McpInvocationContext;
+          if (scope.client?.linked !== true) return HttpServerResponse.empty({ status: 403 });
+          const input = yield* Schema.decodeUnknownEffect(DeviceViewerCloseInput)(
+            yield* request.json,
+          );
+          return HttpServerResponse.jsonUnsafe(
+            yield* viewers.value.close(AuthSessionId.make(scope.client.sessionId), input.viewerId),
+          );
+        }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 400 })))),
+      ),
+    ).pipe(
+      Layer.provide(layerMcpAuthMiddleware),
+      Layer.provide(Layer.succeed(McpSessionRegistry.McpSessionRegistry, registry.value)),
+      Layer.provide(Layer.succeed(HttpRouter.HttpRouter, router.value)),
+    );
+  }),
+);
+
 export const layerDeviceToolkit = Layer.mergeAll(
+  layerDeviceViewerAuthorization,
   layerDeviceStandardToolkitRegistration,
   layerDeviceScreenshotRegistration,
 );
@@ -1511,6 +1644,7 @@ const layerPeerControl = Layer.unwrap(
     const pendingRequests = yield* Effect.serviceOption(PendingRequests);
     const requests = yield* Effect.serviceOption(RequestReceipts.McpRequestReceipts);
     const attachments = yield* Effect.serviceOption(AttachmentStaging.AttachmentStaging);
+    const downloadBrowser = yield* Effect.serviceOption(ServerBrowser.ServerBrowser);
     if (Option.isNone(authority)) return Layer.merge(post, streaming);
     const pendingRequestProtocol = HttpRouter.add(
       "GET",
@@ -1554,6 +1688,97 @@ const layerPeerControl = Layer.unwrap(
           : HttpServerResponse.empty({ status: 409 }),
       ),
     );
+    const attachmentAccess = Layer.merge(
+      HttpRouter.add(
+        "GET",
+        "/mcp/peer-control/attachment",
+        Effect.gen(function* () {
+          const scope = yield* McpInvocationContext.McpInvocationContext;
+          return Option.isSome(attachments) && scope.client?.linked === true
+            ? HttpServerResponse.jsonUnsafe({
+                version: 1,
+                purpose: "attachment-read",
+                nativeBrowserDownloads:
+                  Option.isSome(downloadBrowser) &&
+                  downloadBrowser.value.inspectDownload !== undefined &&
+                  downloadBrowser.value.readDownloadBlock !== undefined
+                    ? 1
+                    : undefined,
+              })
+            : HttpServerResponse.empty({ status: 409 });
+        }),
+      ),
+      HttpRouter.add(
+        "POST",
+        "/mcp/peer-control/attachment",
+        Effect.gen(function* () {
+          if (Option.isNone(attachments)) return HttpServerResponse.empty({ status: 409 });
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const scope = yield* McpInvocationContext.McpInvocationContext;
+          if (
+            request.url !== "/mcp/peer-control/attachment" ||
+            (request.headers["t3-attachment-check-only"] !== undefined &&
+              request.headers["t3-attachment-check-only"] !== "1")
+          )
+            return HttpServerResponse.empty({ status: 400 });
+          const resource = yield* decodeQualifiedAssetResource(yield* request.json);
+          if (resource._tag === "native-browser-download") {
+            if (
+              Option.isNone(downloadBrowser) ||
+              downloadBrowser.value.inspectDownload === undefined ||
+              downloadBrowser.value.readDownloadBlock === undefined
+            )
+              return HttpServerResponse.empty({ status: 409 });
+            const authorize = authority.value.recheckAttachmentRead(scope, resource, "preview");
+            yield* downloadBrowser.value.inspectDownload(resource, authorize);
+            const headers = {
+              "cache-control": "no-store",
+              "t3-attachment-producer": "preview",
+              "t3-download-digest": resource.digest,
+              "t3-download-size": String(resource.sizeBytes),
+            };
+            if (request.headers["t3-attachment-check-only"] === "1")
+              return HttpServerResponse.empty({ status: 204, headers });
+            const offsetText = request.headers["t3-download-offset"];
+            if (offsetText === undefined || !/^(0|[1-9][0-9]{0,9})$/.test(offsetText))
+              return HttpServerResponse.empty({ status: 400 });
+            const bytes = yield* downloadBrowser.value.readDownloadBlock(
+              resource,
+              Number(offsetText),
+              authorize,
+            );
+            yield* authorize;
+            return HttpServerResponse.uint8Array(bytes, {
+              headers: {
+                ...headers,
+                "content-type": "application/octet-stream",
+                "x-content-type-options": "nosniff",
+                "t3-download-block-digest": Hex.encode(sha256(bytes)),
+              },
+            });
+          }
+          const authorize = (capability: "device" | "preview") =>
+            authority.value.recheckAttachmentRead(scope, resource, capability);
+          if (request.headers["t3-attachment-check-only"] === "1") {
+            const producer = yield* attachments.value.authorizeReference(resource, authorize);
+            return HttpServerResponse.empty({
+              status: 204,
+              headers: { "cache-control": "no-store", "t3-attachment-producer": producer },
+            });
+          }
+          const bytes = yield* attachments.value.readReference(resource, authorize);
+          const producer = yield* attachments.value.authorizeReference(resource, authorize);
+          return HttpServerResponse.uint8Array(bytes, {
+            headers: {
+              "t3-attachment-producer": producer,
+              "cache-control": "no-store",
+              "content-type": "application/octet-stream",
+              "x-content-type-options": "nosniff",
+            },
+          });
+        }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 403 })))),
+      ),
+    );
     return Layer.mergeAll(
       automationSupport,
       automationDisable,
@@ -1562,6 +1787,7 @@ const layerPeerControl = Layer.unwrap(
       tasks,
       requestProtocol,
       pendingRequestProtocol,
+      attachmentAccess,
     );
   }),
 );
