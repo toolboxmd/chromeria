@@ -6,6 +6,8 @@ import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.t
 import { ProviderInstanceId, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import * as Providers from "../provider/ProviderRegistry.ts";
 import * as Adapters from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import type * as Adapter from "@t3tools/provider-core/server/ProviderAdapter";
+import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodePath from "@effect/platform-node/NodePath";
@@ -278,6 +280,16 @@ export const linkTo = (
 /** Destination launch catalog, distinct from any source catalog. */
 export const layerLaunchCatalog = Layer.mergeAll(
   Layer.mock(Adapters.ProviderAdapterRegistryV2)({
+    get: (instanceId) =>
+      instanceId !== "codex"
+        ? Effect.fail(new Adapters.ProviderAdapterRegistryLookupError({ instanceId }))
+        : Effect.succeed({
+            instanceId,
+            driver: ProviderDriverKind.make("codex"),
+            getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+            planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
+            openSession: () => Effect.die("The isolated catalog never starts a provider process"),
+          } as Adapter.ProviderAdapterV2["Service"]),
     list: () => Effect.succeed([ProviderInstanceId.make("codex")]),
   }),
   Layer.mock(Providers.ProviderRegistry)({

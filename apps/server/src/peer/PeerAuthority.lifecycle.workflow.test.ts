@@ -1,3 +1,5 @@
+import type * as Adapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 vi.mock("effect/Queue", { spy: true });
 
 import * as AuthSessions from "../persistence/AuthSessions.ts";
@@ -28,7 +30,15 @@ import * as HttpBody from "effect/http/HttpBody";
 import * as Schema from "effect/Schema";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import { CommandId, EnvironmentId, EventId, MessageId, NodeId, ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  EnvironmentId,
+  EventId,
+  MessageId,
+  NodeId,
+  ThreadId,
+  PeerTaskObservation,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -49,6 +59,11 @@ import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
 import { OrchestratorToolkit } from "../mcp/toolkits/orchestrator/tools.ts";
 import {
   activate,
+  automationAdapter,
+  automationReply,
+  automationWorkspace,
+  awaitAutomationRunning,
+  finishAutomationRun,
   adapter,
   attachedChild,
   caller,
@@ -68,6 +83,8 @@ import {
   type Node,
 } from "./PeerAuthority.workflow.fixture.ts";
 
+const decodePeerTaskObservation = Schema.decodeUnknownEffect(PeerTaskObservation);
+
 it.live(
   "lifecycle381: registered original plus two continuations retain exact results and replay after source restart",
   () =>
@@ -78,7 +95,14 @@ it.live(
         yield* linkTo(a.links, b, "full-access");
         const parentId = ThreadId.make("lifecycle-parent");
         yield* seedParent(a, parentId);
+        const reference = (number: number) => ({
+          host: "github.com",
+          repository: "toolboxmd/chromeria",
+          kind: "issue" as const,
+          number,
+        });
         const receipt = yield* nativeCall(a, parentId, "delegate_task", {
+          purposeIntent: { version: 1, intent: { type: "reference", reference: reference(381) } },
           task: "First result and two follow-ups",
           target: {
             environmentId: b.environmentId,
@@ -132,6 +156,22 @@ it.live(
             Stream.runHead,
             Effect.flatMap(Effect.fromOption),
           );
+        const completion = (runId: string, number: number) =>
+          Effect.gen(function* () {
+            const records = yield* a.threads.getThreadRecords(parentId, ["subagents", "runs"]);
+            const task = records.subagents.find((task) => task.id === taskId)!;
+            expect(task.completionSource?.runId).toBe(runId);
+            expect(task.completionSource?.purpose.scope).toEqual({
+              type: "single",
+              reference: reference(number),
+            });
+            const delivery = records.runs
+              .flatMap((run) => run.delegatedCompletion?.delivery ?? [])
+              .find((delivery) => delivery.taskIds.includes(taskId));
+            expect(delivery?.purposeCauses).toEqual([{ taskId, ...task.completionSource }]);
+            return { task, delivery: delivery! };
+          });
+        const originalCompletion = yield* completion(original, 381);
         const first = yield* nativeCall(a, parentId, "task_status", { taskId });
         expect(first.structuredContent).toMatchObject({
           childThreadId: null,
@@ -143,12 +183,28 @@ it.live(
           environmentId: b.environmentId,
           threadId: childId,
           message: "Continue once",
+          purposeIntent: { version: 1, intent: { type: "reference", reference: reference(379) } },
           clientRequestId: "continue381-1",
         });
         expect(send1.isError, json(send1.content)).not.toBe(true);
         yield* Ref.set(a.dropAckResponses, 1);
         const second = yield* terminal("second381");
         yield* observed("second381");
+        const secondCompletion = yield* completion(second, 379);
+        expect(secondCompletion.task.purpose).toEqual(originalCompletion.task.purpose);
+        expect(secondCompletion.task.result).toBe("original381");
+        expect(secondCompletion.task.remoteChild?.runId).toBe(original);
+        expect(secondCompletion.task.remoteChild?.originalResult).toEqual(
+          originalCompletion.task.remoteChild?.originalResult,
+        );
+        expect(secondCompletion.task.completionSource?.purpose.provenance).toEqual({
+          type: "delegated_completion",
+          operationIds: [`remote:${b.environmentId}:${childId}:${second}`],
+        });
+        expect(secondCompletion.task.remoteChild?.latestResult?.purposeScope).toEqual({
+          type: "single",
+          reference: reference(379),
+        });
         const secondStatus = yield* nativeCall(a, parentId, "task_status", { taskId });
         expect(secondStatus.structuredContent).toMatchObject({
           summary: "original381",
@@ -159,6 +215,7 @@ it.live(
           environmentId: b.environmentId,
           threadId: childId,
           message: "Continue twice",
+          purposeIntent: { version: 1, intent: { type: "reference", reference: reference(379) } },
           clientRequestId: "continue381-2",
         });
         expect(send2.isError, json(send2.content)).not.toBe(true);
@@ -169,6 +226,18 @@ it.live(
         const resumed = Context.get(reconnected.services, RemoteDelegation.RemoteDelegation);
         yield* resumed.start();
         yield* observed("third381");
+        yield* completion(third, 379);
+        const sql = Context.get(a.database, SqlClient.SqlClient);
+        const deliveries = yield* sql<{
+          message_id: string;
+          run_id: string;
+        }>`SELECT DISTINCT json_extract(payload_json, '$.delegatedCompletion.delivery.messageId') AS message_id, json_extract(payload_json, '$.delegatedCompletion.delivery.purposeCauses[0].runId') AS run_id FROM orchestration_events WHERE stream_id=${parentId} AND event_type='run.updated' AND json_extract(payload_json, '$.delegatedCompletion.delivery.purposeCauses[0].taskId')=${taskId}`;
+        expect(deliveries.filter((row) => row.run_id === second)).toEqual([
+          { message_id: secondCompletion.delivery.messageId, run_id: second },
+        ]);
+        expect(deliveries.filter((row) => row.run_id === original)).toEqual([
+          { message_id: originalCompletion.delivery.messageId, run_id: original },
+        ]);
         const status = yield* nativeCall(a, parentId, "task_status", { taskId });
         expect(status.structuredContent).toMatchObject({
           childThreadId: null,
@@ -332,6 +401,358 @@ it.live(
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   30_000,
+);
+
+it.live(
+  "lifecycle381: delayed first observation after conversation revert uses the completing purpose",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const started: Array<Adapter.ProviderAdapterV2TurnInput> = [];
+        const opened: Array<Adapter.ProviderAdapterV2OpenSessionInput> = [];
+        const external = automationAdapter(started, opened, (turn, events) =>
+          automationReply(turn, events, `Actual result ${turn.runOrdinal}`),
+        );
+        const rolledBack: Array<Adapter.ProviderAdapterV2RollbackThreadInput> = [];
+        const providerAdapter: Adapter.ProviderAdapterV2["Service"] = {
+          ...external,
+          openSession: (input) =>
+            external.openSession(input).pipe(
+              Effect.map((session) => ({
+                ...session,
+                rollbackThread: (input) =>
+                  Effect.sync(() => {
+                    rolledBack.push(input);
+                    return {
+                      providerThread: input.providerThread,
+                      providerTurns: [],
+                      messages: [],
+                      runtimeRequests: [],
+                    };
+                  }),
+              })),
+            ),
+        };
+        const b = yield* makeNode(
+          descriptorOf("first-observed-b", "B", { peerAuthority: 1 }),
+          "disk",
+          {
+            productionKernel: true,
+            ownerWorkspace: yield* automationWorkspace,
+            providerAdapter,
+          },
+        );
+        const a = yield* makeNode(
+          descriptorOf("first-observed-a", "A", { peerAuthority: 1 }),
+          "disk",
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parentId = ThreadId.make("first-observed-parent");
+        yield* seedParent(a, parentId);
+        const scope = (number: number) => ({
+          type: "single" as const,
+          reference: {
+            host: "github.com",
+            repository: "toolboxmd/chromeria",
+            kind: "issue" as const,
+            number,
+          },
+        });
+        const launched = yield* nativeCall(a, parentId, "delegate_task", {
+          task: "Observe the actual completion purpose",
+          clientRequestId: "first-observed-delegate",
+          purposeIntent: {
+            version: 1,
+            intent: { type: "reference", reference: scope(381).reference },
+          },
+          target: {
+            environmentId: b.environmentId,
+            projectId: b.project.id,
+            providerInstanceId: instanceId,
+            model: selection.model,
+          },
+        });
+        expect(launched.isError, json(launched.content)).not.toBe(true);
+        const { taskId } = yield* decodeTaskReceipt(launched.structuredContent);
+        const childId = yield* attachedChild(a, parentId, taskId);
+        const before = (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
+          (task) => task.id === taskId,
+        )!;
+        expect(before.result).toBeNull();
+        expect(before.purpose?.scope).toEqual(scope(381));
+        yield* a.stopConnections;
+        // Restore native authorization transport without restarting result observation.
+        const connection = yield* a.reconnect();
+        yield* connection.peers.start;
+        yield* connection.peers.requireTaskLifecycle!(b.environmentId);
+        const firstRun = (yield* b.threads.getThreadRecords(childId, ["runs"])).runs[0]!;
+        yield* awaitAutomationRunning(b, childId);
+        yield* finishAutomationRun(b, childId, firstRun.id);
+        const first = yield* b.orchestrator.getThreadProjection(childId);
+        expect(started.map((turn) => turn.runId)).toContain(firstRun.id);
+        expect(first.runs.find((run) => run.id === firstRun.id)?.purpose?.scope).toEqual(
+          scope(381),
+        );
+        const checkpoint = first.checkpoints.find(
+          (checkpoint) => checkpoint.appRunOrdinal === null && checkpoint.ordinalWithinScope === 0,
+        )!;
+        expect(checkpoint.status).toBe("ready");
+        const rollbackId = CommandId.make("first-observed-conversation-revert");
+        yield* b.threads.dispatch({
+          type: "checkpoint.rollback",
+          commandId: rollbackId,
+          threadId: childId,
+          checkpointId: checkpoint.id,
+          scopeId: checkpoint.scopeId,
+          restoreFiles: false,
+        });
+        yield* Context.get(b.runtime, EffectWorker.OrchestrationEffectWorkerV2).drain();
+        const rollbackEffects = yield* Context.get(
+          b.runtime,
+          EffectOutbox.EffectOutboxV2,
+        ).listByCommandId(rollbackId);
+        expect(
+          rollbackEffects
+            .filter((effect) => effect.request.type === "provider-thread.rollback")
+            .map((effect) => effect.status),
+        ).toEqual(["succeeded"]);
+        expect(rolledBack).toHaveLength(1);
+        expect(rolledBack[0]?.target.type).toBe("thread_start");
+        expect(
+          (yield* b.threads.getThreadRecords(childId, ["runs"])).runs.find(
+            (run) => run.id === firstRun.id,
+          )?.status,
+        ).toBe("rolled_back");
+        yield* b.threads.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("first-observed-human-r2"),
+          threadId: childId,
+          messageId: MessageId.make("first-observed-human-r2-message"),
+          text: "New human work for Y after conversation revert",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+          purposeIntent: {
+            version: 1,
+            intent: { type: "reference", reference: scope(379).reference },
+          },
+        });
+        const secondRun = (yield* b.threads.getThreadRecords(childId, ["runs"])).runs.at(-1)!;
+        expect(secondRun.id).not.toBe(firstRun.id);
+        yield* awaitAutomationRunning(b, childId);
+        yield* finishAutomationRun(b, childId, secondRun.id);
+        expect(started.map((turn) => turn.runId)).toEqual([firstRun.id, secondRun.id]);
+        expect(
+          (yield* b.threads.getThreadRecords(childId, ["runs"])).runs.find(
+            (run) => run.id === secondRun.id,
+          ),
+        ).toMatchObject({ status: "completed", purpose: { scope: scope(379) } });
+        const result = yield* connection.peers.taskLifecycle!(
+          b.environmentId,
+          before.remoteChild!.launch!.linkIdentity,
+          {
+            pair: {
+              parentEnvironmentId: a.environmentId,
+              parentThreadId: parentId,
+              taskId,
+              childEnvironmentId: b.environmentId,
+              childThreadId: childId,
+              childRunId: null,
+            },
+            operation: { type: "observe", after: before.remoteChild!.cursor ?? 0, wait: false },
+          },
+        );
+        if (result.type !== "observation" || result.observation.result === undefined)
+          return yield* Effect.die("Expected actual B terminal observation after revert");
+        expect(result.observation.result).toMatchObject({
+          runId: secondRun.id,
+          purposeScope: scope(379),
+        });
+        expect(
+          (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
+            (task) => task.id === taskId,
+          )?.result,
+        ).toBeNull();
+        yield* a.orchestrator.dispatch({
+          type: "delegated_task.remote.complete",
+          commandId: CommandId.make("first-observed-complete-r2"),
+          parentThreadId: parentId,
+          taskId,
+          status: result.observation.result.status,
+          result: result.observation.result.text,
+          observation: result.observation,
+        });
+        const completed = yield* a.orchestrator.getThreadProjection(parentId);
+        const task = completed.subagents.find((task) => task.id === taskId)!;
+        expect(task.remoteChild?.latestResult?.runId).toBe(secondRun.id);
+        expect(task.purpose).toEqual(before.purpose);
+        expect(task.remoteChild?.launch).toEqual(before.remoteChild?.launch);
+        expect(task.remoteChild?.originalResult).toEqual({
+          runId: secondRun.id,
+          eventId: result.observation.result.eventId,
+          sequence: result.observation.result.sequence,
+          status: "completed",
+        });
+        expect(task.completionSource?.runId).toBe(secondRun.id);
+        expect(task.completionSource?.purpose.scope).toEqual(scope(379));
+        const ownerRun = completed.runs.find((run) => run.id === task.runId)!;
+        const delivery = ownerRun.delegatedCompletion!.delivery!;
+        expect(delivery.purposeCauses).toEqual([
+          { taskId, runId: secondRun.id, purpose: task.completionSource!.purpose },
+        ]);
+        yield* a.threads.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("first-observed-parent-wake"),
+          threadId: parentId,
+          messageId: delivery.messageId,
+          text: "R2 completion wake",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "agent",
+          creationSource: "server",
+          delegatedCompletion: {
+            parentRunId: ownerRun.id,
+            generation: delivery.generation,
+            taskIds: [taskId],
+          },
+        });
+        const wake = (yield* a.threads.getThreadRecords(parentId, ["runs"])).runs.find(
+          (run) => run.userMessageId === delivery.messageId,
+        )!;
+        expect(wake.purpose?.scope).toEqual(scope(379));
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("lifecycle381: a valid old-peer result has unknown follow-up purpose", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const b = yield* makeNode(descriptorOf("old-purpose-b", "B", { peerAuthority: 1 }));
+      const a = yield* makeNode(descriptorOf("old-purpose-a", "A", { peerAuthority: 1 }));
+      yield* linkTo(a.links, b, "full-access");
+      const parentId = ThreadId.make("old-purpose-parent");
+      yield* seedParent(a, parentId);
+      const launched = yield* nativeCall(a, parentId, "delegate_task", {
+        task: "Legacy purpose compatibility",
+        clientRequestId: "old-purpose-delegate",
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
+        target: {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          providerInstanceId: instanceId,
+          model: selection.model,
+        },
+      });
+      expect(launched.isError, json(launched.content)).not.toBe(true);
+      const { taskId } = yield* decodeTaskReceipt(launched.structuredContent);
+      const childId = yield* attachedChild(a, parentId, taskId);
+      const original = yield* finishLifecycleRun(b, childId, "old-purpose-original");
+      yield* a.orchestrator
+        .streamStoredEventsFrom({
+          threadId: parentId,
+          afterSequence: 0,
+          eventType: "subagent.updated",
+        })
+        .pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "subagent.updated" &&
+              stored.event.payload.id === taskId &&
+              stored.event.payload.result === "old-purpose-original",
+          ),
+          Stream.runHead,
+          Effect.flatMap(Effect.fromOption),
+        );
+      yield* nativeCall(a, parentId, "task_status", { taskId });
+      const first = (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
+        (task) => task.id === taskId,
+      )!;
+      // Reconstruct only the peer reader, leaving observation admission to the real source
+      // command owner. This prevents a current follower racing the old wire shape.
+      yield* a.stopConnections;
+      yield* b.threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("old-purpose-human-followup"),
+        threadId: childId,
+        messageId: MessageId.make("old-purpose-human-message"),
+        text: "Human follow-up for another outcome",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+        purposeIntent: {
+          version: 1,
+          intent: {
+            type: "reference",
+            reference: {
+              host: "github.com",
+              repository: "toolboxmd/chromeria",
+              kind: "issue",
+              number: 379,
+            },
+          },
+        },
+      });
+      const later = yield* finishLifecycleRun(b, childId, "old-purpose-later");
+      const connection = yield* a.reconnect();
+      const result = yield* connection.peers.taskLifecycle!(
+        b.environmentId,
+        first.remoteChild!.launch!.linkIdentity,
+        {
+          pair: {
+            parentEnvironmentId: a.environmentId,
+            parentThreadId: parentId,
+            taskId,
+            childEnvironmentId: b.environmentId,
+            childThreadId: childId,
+            childRunId: null,
+          },
+          operation: { type: "observe", after: first.remoteChild!.cursor!, wait: false },
+        },
+      );
+      if (result.type !== "observation" || result.observation.result === undefined)
+        return yield* Effect.die("Expected a valid destination result");
+      expect(result.observation.result.runId).toBe(later);
+      expect(result.observation.result.purposeScope).toMatchObject({
+        type: "single",
+        reference: { number: 379 },
+      });
+      const { purposeScope: _scope, ...oldResult } = result.observation.result;
+      const observation = yield* decodePeerTaskObservation({
+        ...result.observation,
+        result: oldResult,
+      });
+      yield* a.orchestrator.dispatch({
+        type: "delegated_task.remote.complete",
+        commandId: CommandId.make("old-purpose-completion"),
+        parentThreadId: parentId,
+        taskId,
+        status: oldResult.status,
+        result: oldResult.text,
+        observation,
+      });
+      const records = yield* a.threads.getThreadRecords(parentId, ["subagents", "runs"]);
+      const task = records.subagents.find((task) => task.id === taskId)!;
+      expect(task.completionSource?.runId).toBe(later);
+      expect(task.completionSource?.purpose.scope).toEqual({
+        type: "unscoped",
+        reason: "unknown_cause",
+      });
+      expect(task.purpose).toEqual(first.purpose);
+      expect(task.remoteChild?.runId).toBe(original);
+      expect(task.remoteChild?.originalResult).toEqual(first.remoteChild?.originalResult);
+      const delivery = records.runs
+        .flatMap((run) => run.delegatedCompletion?.delivery ?? [])
+        .find((delivery) => delivery.taskIds.includes(taskId));
+      expect(delivery?.purposeCauses).toEqual([{ taskId, ...task.completionSource }]);
+      const status = yield* nativeCall(a, parentId, "task_status", { taskId });
+      expect(status.structuredContent).toMatchObject({
+        latestTerminalRunId: later,
+        summary: "old-purpose-original",
+      });
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
 );
 
 it.live(
