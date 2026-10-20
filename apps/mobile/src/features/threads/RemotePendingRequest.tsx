@@ -167,6 +167,8 @@ export function RemotePendingRequest(props: {
                   <TextInput
                     accessibilityLabel={question.question}
                     placeholder="Your answer"
+                    multiline={question.initialAnswer !== undefined}
+                    submitBehavior={question.initialAnswer !== undefined ? "newline" : undefined}
                     value={String(answer ?? "")}
                     onChangeText={(value) =>
                       setAnswers((current) => ({ ...current, [question.id]: value }))

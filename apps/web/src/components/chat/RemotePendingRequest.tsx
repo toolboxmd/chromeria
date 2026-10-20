@@ -13,6 +13,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { randomUUID } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { Textarea } from "../ui/textarea";
 
 export function RemotePendingRequest(props: {
   environmentId: EnvironmentId;
@@ -169,7 +170,19 @@ export function RemotePendingRequest(props: {
                     );
                   })}
                 </div>
-                {question.allowCustomAnswer !== false ? (
+                {question.allowCustomAnswer === false ? null : question.initialAnswer !==
+                  undefined ? (
+                  // An editor prefill is literal multiline text, as in the local composer.
+                  <Textarea
+                    id={`${props.request.requestId}:${question.id}`}
+                    placeholder="Your answer"
+                    value={String(answer ?? "")}
+                    onChange={(event) =>
+                      setAnswers((current) => ({ ...current, [question.id]: event.target.value }))
+                    }
+                    disabled={busy || !mayRespond}
+                  />
+                ) : (
                   <Input
                     id={`${props.request.requestId}:${question.id}`}
                     placeholder="Your answer"
@@ -179,7 +192,7 @@ export function RemotePendingRequest(props: {
                     }
                     disabled={busy || !mayRespond}
                   />
-                ) : null}
+                )}
               </div>
             );
           })

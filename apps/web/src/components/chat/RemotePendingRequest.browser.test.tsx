@@ -26,6 +26,9 @@ vi.mock("../ui/button", () => ({
   Button: (props: ComponentProps<"button">) => <button {...props} />,
 }));
 vi.mock("../ui/input", () => ({ Input: (props: ComponentProps<"input">) => <input {...props} /> }));
+vi.mock("../ui/textarea", () => ({
+  Textarea: (props: ComponentProps<"textarea">) => <textarea {...props} />,
+}));
 vi.mock("../../lib/utils", () => ({ randomUUID: () => `action-${++state.nextKey}` }));
 import { RemotePendingRequest } from "./RemotePendingRequest";
 
@@ -166,6 +169,89 @@ it.each([false, true])(
     }
   },
 );
+
+it("edits and sends a multiline editor prefill unchanged", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const registry = AtomRegistry.make();
+  const calls: RemotePendingRequestInput[] = [];
+  const content = {
+    requestId: RuntimeRequestId.make("C-editor"),
+    kind: "user-input" as const,
+    revision: 3,
+    questions: [
+      {
+        id: "note",
+        header: "Note",
+        question: "Edit the note",
+        multiSelect: false,
+        options: [],
+        initialAnswer: "first line\nsecond line",
+      },
+    ],
+  };
+  const command = Object.assign(
+    createRuntimeCommand(Atom.runtime(Layer.empty), {
+      label: "isolated remote client RPC",
+      execute: (input: { environmentId: EnvironmentId; input: RemotePendingRequestInput }) =>
+        Effect.sync(() => {
+          calls.push(input.input);
+          return { sequence: 4 };
+        }),
+    }),
+    { permissionAtom: (_id: EnvironmentId) => Atom.make(true) },
+  );
+  Object.assign(state.remoteTasks, {
+    readRequest: () => Atom.make(AsyncResult.success(content)),
+    request: command,
+  });
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => {
+      root.render(
+        <RegistryContext.Provider value={registry}>
+          <RemotePendingRequest
+            environmentId={EnvironmentId.make("A-only-profile")}
+            task={{ id: NodeId.make("A-task"), threadId: ThreadId.make("A-parent") }}
+            request={{
+              environmentId: EnvironmentId.make("C-no-profile"),
+              threadId: ThreadId.make("C-child"),
+              requestId: content.requestId,
+              revision: 3,
+              kind: "user_input",
+              responseType: "live",
+              route: [],
+            }}
+            onResolved={() => {}}
+          />
+        </RegistryContext.Provider>,
+      );
+    });
+    const field = container.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+      '[id="C-editor:note"]',
+    )!;
+    expect(field.value).toBe("first line\nsecond line");
+    const setValue = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(field), "value")!.set!;
+    await act(async () => {
+      setValue.call(field, `${field.value}\nthird line`);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const send = [...container.querySelectorAll("button")].find(
+      (node) => node.textContent === "Send answer",
+    )!;
+    await act(async () => send.click());
+    expect(calls[0]?.operation).toMatchObject({
+      type: "respond",
+      answers: { note: "first line\nsecond line\nthird line" },
+    });
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    registry.dispose();
+    vi.unstubAllGlobals();
+  }
+});
 
 vi.mock("../ui/dialog", () => ({
   Dialog: ({ children }: { children: import("react").ReactNode }) => children,

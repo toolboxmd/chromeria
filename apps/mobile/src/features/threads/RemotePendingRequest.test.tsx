@@ -52,7 +52,31 @@ vi.mock("react-native", () => ({
       {children}
     </button>
   ),
-  TextInput: () => <input />,
+  // A single-line native field has no newlines, as a DOM input drops them.
+  TextInput: ({
+    multiline,
+    submitBehavior,
+    accessibilityLabel,
+    value,
+    onChangeText,
+  }: {
+    multiline?: boolean;
+    submitBehavior?: string;
+    accessibilityLabel?: string;
+    value?: string;
+    onChangeText?: (value: string) => void;
+  }) => {
+    const props = {
+      "aria-label": accessibilityLabel,
+      value,
+      onChange: (event: { target: { value: string } }) => onChangeText?.(event.target.value),
+    };
+    return multiline && submitBehavior === "newline" ? (
+      <textarea {...props} />
+    ) : (
+      <input {...props} />
+    );
+  },
   ScrollView: ({ children }: { children?: import("react").ReactNode }) => <div>{children}</div>,
 }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => `action-${++state.nextKey}` }));
@@ -195,6 +219,87 @@ it.each([false, true])(
     }
   },
 );
+
+it("edits and sends a multiline editor prefill unchanged", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const registry = AtomRegistry.make();
+  const calls: RemotePendingRequestInput[] = [];
+  const content = {
+    requestId: RuntimeRequestId.make("C-editor"),
+    kind: "user-input" as const,
+    revision: 3,
+    questions: [
+      {
+        id: "note",
+        header: "Note",
+        question: "Edit the note",
+        multiSelect: false,
+        options: [],
+        initialAnswer: "first line\nsecond line",
+      },
+    ],
+  };
+  const command = Object.assign(
+    createRuntimeCommand(Atom.runtime(Layer.empty), {
+      label: "isolated remote client RPC",
+      execute: (input: { environmentId: EnvironmentId; input: RemotePendingRequestInput }) =>
+        Effect.sync(() => {
+          calls.push(input.input);
+          return { sequence: 4 };
+        }),
+    }),
+    { permissionAtom: (_id: EnvironmentId) => Atom.make(true) },
+  );
+  const remote = { readRequest: () => Atom.make(AsyncResult.success(content)), request: command };
+  state.getRemote = () => remote;
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => {
+      root.render(
+        <RegistryContext.Provider value={registry}>
+          <RemotePendingRequest
+            environmentId={EnvironmentId.make("A-only-profile")}
+            task={{ id: NodeId.make("A-task"), threadId: ThreadId.make("A-parent") }}
+            request={{
+              environmentId: EnvironmentId.make("C-no-profile"),
+              threadId: ThreadId.make("C-child"),
+              requestId: content.requestId,
+              revision: 3,
+              kind: "user_input",
+              responseType: "live",
+              route: [],
+            }}
+            onResolved={() => {}}
+          />
+        </RegistryContext.Provider>,
+      );
+    });
+    const field = container.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+      '[aria-label="Edit the note"]',
+    )!;
+    expect(field.value).toBe("first line\nsecond line");
+    const setValue = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(field), "value")!.set!;
+    await act(async () => {
+      setValue.call(field, `${field.value}\nthird line`);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const send = [...container.querySelectorAll("button")].find(
+      (node) => node.textContent === "Send answer",
+    )!;
+    await act(async () => send.click());
+    expect(calls[0]?.operation).toMatchObject({
+      type: "respond",
+      answers: { note: "first line\nsecond line\nthird line" },
+    });
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    registry.dispose();
+    vi.unstubAllGlobals();
+  }
+});
 
 vi.mock("../../components/ui/Sheet", () => ({
   Sheet: ({
