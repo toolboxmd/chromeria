@@ -19,6 +19,7 @@ import {
   PreviewAutomationTargetNotEditableError,
   PreviewAutomationTimeoutError,
   PreviewAutomationUnsupportedClientError,
+  PreviewCredentialError,
   PreviewTabId,
   type PreviewAutomationError,
   type PreviewAutomationOperation,
@@ -168,6 +169,7 @@ const hostAssignmentKey = (scope: McpInvocationContext.McpThreadInvocationScope)
 
 const isPreviewTabId = Schema.is(PreviewTabId);
 const decodeControlReason = Schema.decodeUnknownOption(PreviewAutomationControlReason);
+const decodeCredentialError = Schema.decodeUnknownOption(PreviewCredentialError);
 
 const readResultTabId = (result: unknown): PreviewTabId | null | undefined => {
   if (typeof result !== "object" || result === null || !("tabId" in result)) return undefined;
@@ -329,6 +331,14 @@ const classifyResponseError = (
         ...remoteDiagnostics,
         ...(maximumBytes === undefined ? {} : { maximumBytes }),
       });
+    }
+    case "PreviewCredentialError": {
+      const credential = decodeCredentialError({
+        ...(typeof error.detail === "object" && error.detail !== null ? error.detail : {}),
+        _tag: error._tag,
+      });
+      if (Option.isSome(credential)) return credential.value;
+      return new PreviewAutomationExecutionError({ ...context, ...remoteDiagnostics });
     }
     case "PreviewAutomationUnavailableError":
       return new PreviewAutomationRemoteUnavailableError({

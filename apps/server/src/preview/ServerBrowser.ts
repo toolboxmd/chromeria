@@ -22,6 +22,7 @@ import {
   type PreviewAutomationConsoleEntry,
   type PreviewAutomationDragInput,
   type PreviewAutomationEvaluateInput,
+  type PreviewAutomationFillCredentialInput,
   type PreviewAutomationHoverInput,
   type PreviewAutomationNavigateInput,
   type PreviewAutomationNetworkEntry,
@@ -80,6 +81,13 @@ import * as ServerConfig from "../config.ts";
 import { resolveRootCliCommand } from "../cli/invocation.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
+import {
+  fillCredential,
+  loginInProgress,
+  LOGIN_OPERATIONS,
+  serverBrowserOnly,
+} from "./CredentialFill.ts";
+import { CredentialVault } from "./CredentialVault.ts";
 import * as DesktopBrowserChannel from "./DesktopBrowserChannel.ts";
 import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
 import * as PreviewManager from "./Manager.ts";
@@ -300,6 +308,12 @@ interface ServerTab {
   agentOperating: boolean;
   fileChooserIntercepted: boolean;
   readonly onFileChooser: (chooser: FileChooser) => void;
+  /**
+   * The browser profile whose storage the tab shares: a server profile id, its own
+   * context for an isolated tab and its popups, or a desktop tab of its own. A login
+   * covers a whole profile.
+   */
+  readonly profileKey: string;
 
   readonly isolatedContext: boolean;
 
@@ -349,6 +363,24 @@ const READ_OPERATIONS: ReadonlySet<PreviewAutomationRequest["operation"]> = new 
   "status",
   "snapshot",
   "waitFor",
+]);
+
+// Results that are a tab's status, taken again when a login began meanwhile.
+const STATUS_RESULTS: ReadonlySet<PreviewAutomationRequest["operation"]> = new Set([
+  "status",
+  "open",
+  "navigate",
+  "dialog",
+]);
+// Results that carry no page content whenever they finish.
+const CONTENT_FREE_RESULTS: ReadonlySet<PreviewAutomationRequest["operation"]> = new Set([
+  "click",
+  "press",
+  "type",
+  "waitFor",
+  "fillCredential",
+  "endLogin",
+  "close",
 ]);
 
 const AGENT_TAB_LIMIT = 8;
@@ -466,6 +498,7 @@ const make = Effect.gen(function* () {
   const previewBrowser = yield* PreviewBrowser.PreviewBrowser;
   const desktopChannel = yield* DesktopBrowserChannel.DesktopBrowserChannel;
   const agentTurns = yield* (yield* PreviewAgentActivity.PreviewAgentActivity).changes;
+  const vault = yield* CredentialVault;
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
   const launchServices = yield* Effect.context<ChildProcessSpawner.ChildProcessSpawner>();
@@ -475,7 +508,32 @@ const make = Effect.gen(function* () {
   const pendingTabs = new Map<string, Promise<ServerTab>>();
 
   const closedPendingTabs = new Set<string>();
-  const adoptedPages = new Map<string, { readonly page: Page; readonly openerTabId: string }>();
+  const adoptedPages = new Map<
+    string,
+    { readonly page: Page; readonly openerTabId: string; readonly profileKey: string }
+  >();
+
+  /**
+   * Logins, one per server browser profile. A fill starts one, and while it lasts
+   * nothing in any tab of the profile can be read and every tab created there starts
+   * in it. It ends only when the profile's browser context has closed: through
+   * preview_end_login, which closes it and waits, or any other close. Pages and
+   * attachments are never counted; the next tab opens a fresh context from the same
+   * profile directory. `loginEpoch` counts each change so results can be checked
+   * again as they leave.
+   */
+  const profileLogins = new Map<string, { ending: boolean; context: BrowserContext }>();
+  let loginEpoch = 0;
+  const inLogin = (tab: ServerTab) => profileLogins.has(tab.profileKey);
+  const profileTabs = (profileKey: string) =>
+    [...tabs.values()].filter((tab) => tab.profileKey === profileKey);
+  const endLoginsOf = (context: BrowserContext) => {
+    for (const [profileKey, login] of profileLogins)
+      if (login.context === context) {
+        profileLogins.delete(profileKey);
+        loginEpoch++;
+      }
+  };
   const closedSessions = new Set<string>();
   let hostConnectionId: string | null = null;
   let viewerResizeOrder = 0;
@@ -508,6 +566,7 @@ const make = Effect.gen(function* () {
         }),
       ),
     onContextClose: (context) => {
+      endLoginsOf(context);
       const profileId = mirroredContexts.get(context);
       if (profileId !== undefined) runFork(PubSub.publish(mirrorResets, profileId));
       for (const tab of tabs.values()) {
@@ -564,7 +623,11 @@ const make = Effect.gen(function* () {
     broadcastControl(tab);
   };
 
-  const report = (tab: ServerTab, navStatus: PreviewNavStatus) => {
+  const report = (tab: ServerTab, status: PreviewNavStatus) => {
+    // Session state reaches every client; a login page's URL or title can hold a value.
+    const navStatus: PreviewNavStatus = inLogin(tab)
+      ? { _tag: "Success", url: "about:blank", title: "Login in progress" }
+      : status;
     void tab.cdp
       .send("Page.getNavigationHistory")
       .catch(() => null)
@@ -791,6 +854,13 @@ const make = Effect.gen(function* () {
       agentOperating: false,
       fileChooserIntercepted: false,
       onFileChooser: (chooser) => void offerFileChooser(tab, chooser),
+      profileKey:
+        adopted?.profileKey ??
+        (desktop
+          ? `desktop:${tabKey(snapshot.threadId, snapshot.tabId)}`
+          : isolatedContext
+            ? `isolated:${tabKey(snapshot.threadId, snapshot.tabId)}`
+            : `profile:${snapshot.profileId ?? DEFAULT_BROWSER_PROFILE_ID}`),
       isolatedContext,
       desktop: desktop === null ? null : { close: desktop.close },
       profileId: snapshot.profileId,
@@ -915,7 +985,20 @@ const make = Effect.gen(function* () {
     }
     page.on("close", () => dropTab(tab, true));
     page.on("crash", () => dropTab(tab, true));
+    // A tab finishing setup while its profile's login ends, or after its context
+    // closed, never opens.
+    if (page.isClosed() || profileLogins.get(tab.profileKey)?.ending) {
+      await control.close().catch(constVoid);
+      await page.close().catch(constVoid);
+      if (isolatedContext) await context.close().catch(constVoid);
+      await Effect.runPromise(
+        manager.close({ threadId: tab.threadId, tabId: tab.tabId }).pipe(Effect.ignore),
+      );
+      throw new ServerBrowserTabNotFoundError({ threadId: tab.threadId, tabId: tab.tabId });
+    }
     tabs.set(key, tab);
+    // Joining a login: what its session showed before is replaced at once.
+    if (inLogin(tab)) report(tab, { _tag: "Idle" });
     reportLiveTabs();
     // Existing desktop and popup PDFs can start loading before interception attaches.
     if (
@@ -1214,7 +1297,8 @@ const make = Effect.gen(function* () {
       await popup.close().catch(constVoid);
       return;
     }
-    const url = popup.url();
+    // A popup in a profile with a login publishes no URL.
+    const url = profileLogins.has(opener.profileKey) ? "" : popup.url();
 
     const controller = [...opener.viewers].find(
       (viewer) => viewer.id === opener.control.controller,
@@ -1232,6 +1316,7 @@ const make = Effect.gen(function* () {
           adoptedPages.set(tabKey(snapshot.threadId, snapshot.tabId), {
             page: popup,
             openerTabId: opener.tabId,
+            profileKey: opener.profileKey,
           }),
       }),
     ).then(
@@ -1442,6 +1527,7 @@ const make = Effect.gen(function* () {
           ownedByCaller: candidate.control.agentId === agentSessionId,
           visible: candidate.viewers.size > 0,
           ...(candidate.profileId === undefined ? {} : { profileId: candidate.profileId }),
+          ...(inLogin(candidate) ? { url: null, loginInProgress: true } : {}),
         })),
       ...profileStatus(),
       downloads: tab.downloads.map(({ fileName, path, sizeBytes, url, completedAt }) => ({
@@ -1452,6 +1538,15 @@ const make = Effect.gen(function* () {
         completedAt,
       })),
     };
+    if (inLogin(tab))
+      return {
+        ...status,
+        url: null,
+        dialog: status.dialog === null ? null : { type: "", message: "", defaultValue: "" },
+        fileChooser: null,
+        downloads: [],
+        loginInProgress: true,
+      };
     if (status.url === null || tab.dialog) return status;
     return { ...status, title: (await tab.page.title().catch(() => "")) || null };
   };
@@ -1839,6 +1934,7 @@ const make = Effect.gen(function* () {
               }),
             ),
           ));
+        if (existing && inLogin(existing)) throw loginInProgress();
         if (existing?.dialog)
           throw new BrowserControlInterrupted(
             "A browser dialog is pending. Read preview_status and use preview_dialog first.",
@@ -1927,7 +2023,31 @@ const make = Effect.gen(function* () {
       dropTab(tab, false);
       return {};
     }
-    // Resolve dialogs outside the queue, with ownership checked, to unblock waiting clicks.
+    if (request.operation === "endLogin") {
+      const login = profileLogins.get(tab.profileKey);
+      if (login === undefined) return { closed: [] };
+      const members = profileTabs(tab.profileKey);
+      if (members.some((member) => member.control.controller !== null))
+        throw new BrowserControlInterrupted(
+          "A human controls a tab in this login.",
+          "humanControl",
+        );
+      // The whole context closes, and the login lifts only once that close has
+      // finished: every page and every tab still attaching goes with it. Cookies
+      // with an expiry stay in the profile directory for the next context.
+      login.ending = true;
+      for (const member of members) {
+        void member.control.close().catch(constVoid);
+        await Effect.runPromise(
+          manager.close({ threadId: member.threadId, tabId: member.tabId }).pipe(Effect.ignore),
+        );
+      }
+      await contexts.closeContext(login.context);
+      endLoginsOf(login.context);
+      return { closed: members.map((member) => member.tabId) };
+    }
+    // A click can be waiting for its dialog. Resolve it outside the serial queue,
+    // with the same owner check, so the operation can finish and control can drain.
     if (request.operation === "dialog") {
       if (tab.control.controller !== null)
         throw new BrowserControlInterrupted("A human controls this tab.", "humanControl");
@@ -1973,7 +2093,77 @@ const make = Effect.gen(function* () {
     );
   };
 
-  const executeTabOperation = async (tab: ServerTab, request: PreviewAutomationRequest) => {
+  // Operations running inside a tab's queue. A fill waits for its profile's before it
+  // types, so nothing that began before the login can see the value.
+  const running = new Map<ServerTab, Set<Promise<unknown>>>();
+
+  const executeTabOperation = (tab: ServerTab, request: PreviewAutomationRequest) => {
+    // Checked inside the tab's queue, so it holds for what this operation does.
+    if (inLogin(tab) && !LOGIN_OPERATIONS.has(request.operation)) throw loginInProgress();
+    if (
+      inLogin(tab) &&
+      request.operation === "click" &&
+      (request.input as PreviewAutomationClickInput).locator === undefined &&
+      (request.input as PreviewAutomationClickInput).selector === undefined
+    )
+      throw loginInProgress();
+    const operation = runTabOperation(tab, request).catch((cause: unknown) => {
+      // Playwright's errors can quote the page; a login tab reports only what failed.
+      if (!inLogin(tab) || cause instanceof BrowserControlInterrupted) throw cause;
+      const error = ServerBrowserPage.toOperationError(cause);
+      if (error.tag === "PreviewCredentialError") throw error;
+      throw new ServerBrowserPage.ServerBrowserOperationError(
+        error.tag,
+        `Preview automation ${request.operation} failed in a login tab.`,
+      );
+    });
+    if (request.operation !== "fillCredential") {
+      const set = running.get(tab) ?? new Set();
+      running.set(tab, set);
+      set.add(operation);
+      void operation.finally(() => set.delete(operation)).catch(constVoid);
+    }
+    return operation;
+  };
+
+  /**
+   * Starts a login on the tab's whole server browser profile as the fill starts,
+   * before the vault is read, or joins the one it has. Nothing lifts it but
+   * preview_end_login or the profile's tabs closing, not even a failed fill.
+   */
+  const fillInLogin = async (tab: ServerTab, input: PreviewAutomationFillCredentialInput) => {
+    if (tab.desktop) throw serverBrowserOnly();
+    if (profileLogins.get(tab.profileKey)?.ending) throw loginInProgress();
+    const recordingIn = (members: ReadonlyArray<ServerTab>) =>
+      members.some((member) => member.recording || member.recordingStart);
+    const recordingRunning = () =>
+      new ServerBrowserPage.ServerBrowserOperationError(
+        "PreviewAutomationExecutionError",
+        "A recording is running in this browser profile. Stop it before filling a credential.",
+      );
+    if (recordingIn(profileTabs(tab.profileKey))) throw recordingRunning();
+    if (!profileLogins.has(tab.profileKey)) {
+      profileLogins.set(tab.profileKey, { ending: false, context: tab.page.context() });
+      loginEpoch++;
+      // What every tab of the profile already showed is replaced at once.
+      for (const member of profileTabs(tab.profileKey)) report(member, { _tag: "Idle" });
+    }
+    return recordAction(tab, "fillCredential", () =>
+      fillCredential({
+        tabId: tab.tabId,
+        vault,
+        request: input,
+        locate: (locator) => ServerBrowserPage.targetLocator(tab.page, { locator })!,
+        beforeTyping: async () => {
+          const members = profileTabs(tab.profileKey);
+          await Promise.allSettled(members.flatMap((member) => [...(running.get(member) ?? [])]));
+          if (recordingIn(members)) throw recordingRunning();
+        },
+      }),
+    );
+  };
+
+  const runTabOperation = async (tab: ServerTab, request: PreviewAutomationRequest) => {
     const input = request.input;
     switch (request.operation) {
       case "readPage": {
@@ -2091,6 +2281,8 @@ const make = Effect.gen(function* () {
         return recordAction(tab, "scroll", () =>
           ServerBrowserPage.scroll(tab.page, input as PreviewAutomationScrollInput),
         );
+      case "fillCredential":
+        return fillInLogin(tab, input as PreviewAutomationFillCredentialInput);
       case "evaluate":
         return ServerBrowserPage.evaluate(
           tab.cdp,
@@ -2106,10 +2298,42 @@ const make = Effect.gen(function* () {
     }
   };
 
+  /**
+   * Checks a result once more as it leaves: a read that began before a fill, such
+   * as status, which runs outside the tab's queue, cannot return what the fill put
+   * in the page. Status-shaped results are taken again; other reads of a tab now in
+   * a login are refused.
+   */
+  const checkedOperation = async (request: PreviewAutomationRequest, deadlineMs: number) => {
+    let epoch = loginEpoch;
+    let result = await runOperation(request, deadlineMs);
+    while (epoch !== loginEpoch) {
+      epoch = loginEpoch;
+      if (STATUS_RESULTS.has(request.operation)) {
+        const tabId =
+          typeof result === "object" && result !== null && "tabId" in result
+            ? (result.tabId as string | null)
+            : null;
+        result = await statusWithTitle(
+          tabId === null ? undefined : tabs.get(tabKey(request.threadId, tabId)),
+          request.agentSessionId,
+        );
+        continue;
+      }
+      if (CONTENT_FREE_RESULTS.has(request.operation)) break;
+      const target =
+        request.tabId === undefined
+          ? latestThreadTab(request.threadId, request.agentSessionId)
+          : tabs.get(tabKey(request.threadId, request.tabId));
+      if (target && inLogin(target)) throw loginInProgress();
+    }
+    return result;
+  };
+
   const handleRequest = (connectionId: string, request: PreviewAutomationRequest) =>
     Effect.tryPromise({
       try: () =>
-        runOperation(request, performance.now() + request.timeoutMs).finally(() =>
+        checkedOperation(request, performance.now() + request.timeoutMs).finally(() =>
           markUsed(request),
         ),
       catch: ServerBrowserPage.toOperationError,
@@ -2144,6 +2368,7 @@ const make = Effect.gen(function* () {
       }
       const key = tabKey(event.threadId, event.tabId);
       const tab = tabs.get(key);
+      // A closed session is a closed page; a detached desktop page is not.
       if (event.type === "closed" && !tab && pendingTabs.has(key)) closedPendingTabs.add(key);
       if (!tab) return;
       if (event.type === "closed") {

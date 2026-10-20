@@ -1,6 +1,7 @@
 import { SpectrumSettings, DEFAULT_SPECTRUM_SETTINGS } from "./spectrumSettings.ts";
 import { WebResearchSettings, WebResearchSettingsPatch } from "./webResearch.ts";
 import { forkOpaqueSettingsFields } from "./forkSettings.ts";
+import { CredentialVaultSettings, DEFAULT_CREDENTIAL_VAULT_SETTINGS } from "./previewCredential.ts";
 import { PrismProjectRoleKits, PrismRoleKits, PrismRoleKitsPatch } from "./prism.ts";
 import { EasDeviceHostConfigs, SimlockDeviceHostConfigs, SshDeviceHostConfigs } from "./device.ts";
 import {
@@ -1365,6 +1366,10 @@ export const ServerSettings = Schema.Struct({
 
   usageModelAliases: Schema.Record(TrimmedNonEmptyString, TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+  // Edited in settings.json only; preview_fill_credential reads it.
+  credentialVault: CredentialVaultSettings.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_CREDENTIAL_VAULT_SETTINGS)),
   ),
 });
 export type ServerSettings = typeof ServerSettings.Type;

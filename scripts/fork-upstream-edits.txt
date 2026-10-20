@@ -566,3 +566,8 @@ apps/desktop/src/preview/BrowserImport/ChromiumKeys.test.ts
 apps/desktop/vite.config.ts
 apps/desktop/src/preview/BrowserImport/ChromiumKeys.module.test.ts
 apps/desktop/scripts/main-process-bundle.test.mjs
+
+# Vault credential fill in server browser tabs (#557)
+apps/server/src/mcp/PreviewAutomationBroker.ts
+apps/server/src/mcp/toolkits/preview/handlers.ts
+apps/server/src/preview/ServerBrowserPage.ts

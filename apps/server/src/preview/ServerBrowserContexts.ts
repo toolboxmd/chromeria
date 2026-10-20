@@ -228,6 +228,26 @@ export class ServerBrowserContexts {
     return { browser, page };
   }
 
+  /**
+   * Closes one context and waits until it has; a request for its profile meanwhile
+   * waits too, then opens a fresh context from the same directory.
+   */
+  async closeContext(context: BrowserContext) {
+    for (const [key, pending] of this.contexts) {
+      if ((await pending.catch(() => undefined)) !== context) continue;
+      if (this.contexts.get(key) === pending) this.contexts.delete(key);
+      const closing = context.close();
+      this.clearing.set(key, closing);
+      try {
+        await closing;
+      } finally {
+        if (this.clearing.get(key) === closing) this.clearing.delete(key);
+      }
+      return;
+    }
+    await context.close();
+  }
+
   async clearProfile(profileId: string) {
     if (profileId === INCOGNITO_BROWSER_PROFILE_ID) return;
     const key = JSON.stringify([profileId, null]);

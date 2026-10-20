@@ -9,6 +9,7 @@ import { it } from "@effect/vitest";
 import {
   type BrowserRecordingFrameRate,
   EnvironmentId,
+  PreviewCredentialError,
   PreviewTabId,
   ProviderInstanceId,
   ThreadId,
@@ -30,6 +31,7 @@ import { beforeEach, expect, vi } from "vite-plus/test";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as Broker from "../mcp/PreviewAutomationBroker.ts";
+import * as CredentialVault from "./CredentialVault.ts";
 import * as DesktopChannel from "./DesktopBrowserChannel.ts";
 import * as Manager from "./Manager.ts";
 import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
@@ -58,6 +60,9 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
       const context = makeContext();
       desktopConnections.push({ endpoint, context });
       return { browser: { close: async () => {} }, page: context.page as unknown as Page };
+    }
+    async closeContext(context: { close: () => Promise<void> }) {
+      await context.close();
     }
     async close() {
       for (const context of contexts) await context.close();
@@ -268,6 +273,11 @@ let keyCopy = "";
 let focusedFrame: ReturnType<typeof makeFrame> | null = null;
 let contextFailure: Error | null = null;
 let initialNavigation: (() => Promise<void>) | null = null;
+let vaultValue: string | null = null;
+const vaultReads: { gate: Promise<void> | null; started: (() => void) | null } = {
+  gate: null,
+  started: null,
+};
 let desktopRendersNext = false;
 const desktopDetaches = new NodeEvents.EventEmitter();
 const desktopTabs = new Set<string>();
@@ -300,6 +310,20 @@ const asSession = (providerSessionId: string) => ({
 });
 const dependencies = Layer.mergeAll(
   Broker.layer,
+  Layer.succeed(CredentialVault.CredentialVault, {
+    uris: () => Effect.succeed(["example.test"]),
+    read: () =>
+      Effect.promise(async () => {
+        vaultReads.started?.();
+        await vaultReads.gate;
+      }).pipe(
+        Effect.flatMap(() =>
+          vaultValue === null
+            ? Effect.fail(new PreviewCredentialError({ reason: "vaultNotConfigured" }))
+            : Effect.succeed(vaultValue),
+        ),
+      ),
+  }),
   Manager.layer,
   Layer.succeed(ServerEnvironment.ServerEnvironment, {
     getEnvironmentId: Effect.succeed(scope.environmentId),
@@ -376,6 +400,9 @@ beforeEach(() => {
   contextGate = null;
   contextFailure = null;
   initialNavigation = null;
+  vaultValue = null;
+  vaultReads.gate = null;
+  vaultReads.started = null;
   pageCopy = "";
   keyCopy = "";
   focusedFrame = null;
@@ -1432,4 +1459,275 @@ it.live("opens mirrored profiles after a server restart with no desktop connecte
       }).pipe(Effect.provide(Layer.fresh(ServerBrowser.layer))),
     );
   }).pipe(Effect.scoped, Effect.provide(dependencies)),
+);
+
+const SENTINEL = "sentinel-Pass+&=#?% 42";
+const expectNoSentinel = (value: unknown) => {
+  const text = JSON.stringify(value);
+  for (const form of [
+    SENTINEL,
+    encodeURIComponent(SENTINEL),
+    JSON.stringify(SENTINEL).slice(1, -1),
+  ])
+    expect(text).not.toContain(form);
+};
+
+/** A fake login input that takes the vault value, and a locator that clicks and waits. */
+const fakeLoginInput = (page: ReturnType<typeof makeContext>["page"]) => {
+  let value = "";
+  const frame = { url: () => "https://login.example.test/", isDetached: () => false };
+  const handle = {
+    evaluate: async () => ({ tag: "input", type: "password" }),
+    isEditable: async () => true,
+    ownerFrame: async () => frame,
+    fill: async (next: string) => {
+      value = next;
+    },
+    inputValue: async () => value,
+    dispose: async () => {},
+  };
+  const locator = {
+    elementHandle: async () => handle,
+    scrollIntoViewIfNeeded: async () => {},
+    boundingBox: async () => ({ x: 0, y: 0, width: 10, height: 10 }),
+    click: vi.fn(async () => {}),
+    count: async () => 1,
+  };
+  page.locator.mockImplementation(() => locator as never);
+  Object.assign(page, { keyboard: { press: vi.fn(async () => {}) } });
+  return { value: () => value, locator };
+};
+
+const openPopup = (opener: ReturnType<typeof makeContext>["page"], openerTabId: string) =>
+  Effect.gen(function* () {
+    const manager = yield* Manager.PreviewManager;
+    const events = yield* manager.subscribeEvents;
+    const popup = makeContext();
+    opener.emit("popup", popup.page);
+    let event = yield* PubSub.take(events);
+    while (event.type !== "opened" || event.tabId === openerTabId)
+      event = yield* PubSub.take(events);
+    const tabId = PreviewTabId.make(event.tabId);
+    // Looking the tab up waits until it exists and listens for its own popups.
+    const broker = yield* Broker.PreviewAutomationBroker;
+    yield* broker
+      .invoke({ scope, tabId, operation: "evaluate", input: { expression: "1" } })
+      .pipe(Effect.ignore);
+    return { popup, tabId };
+  });
+
+const fillPassword = (broker: Broker.PreviewAutomationBroker["Service"], tabId: PreviewTabId) =>
+  broker.invoke({
+    scope,
+    tabId,
+    operation: "fillCredential",
+    input: { item: "Example", field: "password", locator: "#pw" },
+  });
+
+const READS = [
+  { operation: "snapshot", input: {} },
+  { operation: "evaluate", input: { expression: "document.body.innerText" } },
+  { operation: "recordingStart", input: {} },
+  { operation: "navigate", input: { url: "https://login.example.test/next" } },
+  { operation: "hover", input: { locator: "#pw" } },
+  { operation: "scroll", input: { deltaY: 10 } },
+  { operation: "select", input: { locator: "#pw", values: [] } },
+  { operation: "drag", input: { source: "#pw", target: "#pw" } },
+  { operation: "upload", input: { paths: [] } },
+  { operation: "resize", input: { mode: "fill" } },
+  { operation: "setColorScheme", input: { colorScheme: "dark" } },
+  { operation: "click", input: { x: 1, y: 1 } },
+  { operation: "readPage", input: { url: "https://login.example.test/", profileId: "default" } },
+] as const;
+
+const expectReadsRefused = (
+  broker: Broker.PreviewAutomationBroker["Service"],
+  tabId: PreviewTabId,
+) =>
+  Effect.forEach(READS, ({ operation, input }) =>
+    broker.invoke<void>({ scope, tabId, operation, input }).pipe(
+      Effect.flip,
+      Effect.map((error) => {
+        expect(error, operation).toMatchObject({
+          _tag: "PreviewCredentialError",
+          reason: "loginInProgress",
+        });
+        return error;
+      }),
+    ),
+  );
+
+it.effect("a fill puts its tab in a login: every read refused, actions content-free", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      vaultValue = SENTINEL;
+      const input = fakeLoginInput(contexts[0]!.page);
+      const filled = yield* fillPassword(broker, tabId);
+      expect(filled).toEqual({
+        filled: true,
+        item: "Example",
+        field: "password",
+        site: "example.test",
+        tabId,
+      });
+      expect(input.value()).toBe(SENTINEL);
+
+      // The page now shows the value in its URL and title, as a GET login destination would.
+      const events = yield* manager.subscribeEvents;
+      const page = contexts[0]!.page;
+      page.title.mockResolvedValue(`Welcome ${SENTINEL}`);
+      yield* Effect.promise(() =>
+        page.goto(`https://login.example.test/session?pw=${encodeURIComponent(SENTINEL)}`),
+      );
+      let event = yield* PubSub.take(events);
+      while (event.type !== "navigated") event = yield* PubSub.take(events);
+      expect(event.snapshot.navStatus).toEqual({
+        _tag: "Success",
+        url: "about:blank",
+        title: "Login in progress",
+      });
+
+      const refusals = yield* expectReadsRefused(broker, tabId);
+      const status = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        tabId,
+        operation: "status",
+        input: {},
+      });
+      expect(status).toMatchObject({ url: null, title: null, loginInProgress: true });
+      expect(status.tabs).toEqual([
+        expect.objectContaining({ tabId, url: null, loginInProgress: true }),
+      ]);
+
+      // Allowed: more fills, and actions by locator that return no page content.
+      const actions = [
+        yield* broker.invoke({ scope, tabId, operation: "click", input: { locator: "#go" } }),
+        yield* broker.invoke({ scope, tabId, operation: "press", input: { key: "Enter" } }),
+        yield* broker.invoke({ scope, tabId, operation: "waitFor", input: { locator: "#go" } }),
+        yield* fillPassword(broker, tabId),
+      ];
+      expect(input.locator.click).toHaveBeenCalled();
+      expectNoSentinel([
+        refusals,
+        status,
+        actions,
+        (yield* manager.list({ threadId: scope.thread.threadId })).sessions,
+      ]);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("a login holds every related tab until preview_end_login closes them", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      vaultValue = SENTINEL;
+      fakeLoginInput(contexts[0]!.page);
+      // A opened B and B opened C before the fill. Popups opened after it join through
+      // their shared browser context, which CredentialLogin.integration.test.ts covers.
+      const b = yield* openPopup(contexts[0]!.page, tabId);
+      const c = yield* openPopup(b.popup.page, b.tabId);
+      yield* fillPassword(broker, tabId);
+      for (const target of [b.tabId, c.tabId]) yield* expectReadsRefused(broker, target);
+
+      // Closing B, the tab between A and C, leaves C in the login.
+      const events = yield* manager.subscribeEvents;
+      yield* Effect.promise(() => b.popup.page.close());
+      let event = yield* PubSub.take(events);
+      while (event.type !== "closed" || event.tabId !== b.tabId) event = yield* PubSub.take(events);
+      yield* expectReadsRefused(broker, c.tabId);
+
+      const ended = yield* broker.invoke<{ closed: Array<string> }>({
+        scope,
+        tabId: c.tabId,
+        operation: "endLogin",
+        input: {},
+      });
+      expect([...ended.closed].toSorted()).toEqual([tabId, c.tabId].toSorted());
+      expect((yield* manager.list({ threadId: scope.thread.threadId })).sessions).toEqual([]);
+
+      // A fresh tab is not in the login and reads normally.
+      const opened = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        operation: "open",
+        input: { reuseExistingTab: false, show: false },
+      });
+      const fresh = PreviewTabId.make(opened.tabId!);
+      expect(opened.loginInProgress).toBeUndefined();
+      expect(
+        yield* broker.invoke({
+          scope,
+          tabId: fresh,
+          operation: "evaluate",
+          input: { expression: "1" },
+        }),
+      ).toBe("evaluated");
+      expect(
+        (yield* broker.invoke<PreviewAutomationSnapshot>({
+          scope,
+          tabId: fresh,
+          operation: "snapshot",
+          input: {},
+        })).screenshot.data,
+      ).toBe("ZnJhbWU=");
+      expect(
+        yield* broker.invoke<{ closed: Array<string> }>({
+          scope,
+          tabId: fresh,
+          operation: "endLogin",
+          input: {},
+        }),
+      ).toEqual({ closed: [] });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("a recording cannot start in a related tab once a fill has begun", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      vaultValue = SENTINEL;
+      fakeLoginInput(contexts[0]!.page);
+      const popup = yield* openPopup(contexts[0]!.page, tabId);
+      const gate = Promise.withResolvers<void>();
+      const started = Promise.withResolvers<void>();
+      vaultReads.gate = gate.promise;
+      vaultReads.started = started.resolve;
+      const fill = yield* fillPassword(broker, tabId).pipe(Effect.forkScoped);
+      yield* Effect.promise(() => started.promise);
+      // The vault has not answered yet, and the group is already in the login.
+      const racing = yield* broker
+        .invoke<void>({ scope, tabId: popup.tabId, operation: "recordingStart", input: {} })
+        .pipe(Effect.flip);
+      expect(racing).toMatchObject({ _tag: "PreviewCredentialError", reason: "loginInProgress" });
+      gate.resolve();
+      yield* Fiber.join(fill);
+      yield* expectReadsRefused(broker, popup.tabId);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("a fill refused before typing still leaves the tab in its login", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      fakeLoginInput(contexts[0]!.page);
+      const refused = yield* broker
+        .invoke<void>({
+          scope,
+          tabId,
+          operation: "fillCredential",
+          input: { item: "Example", field: "password", locator: "#pw" },
+        })
+        .pipe(Effect.flip);
+      expect(refused).toMatchObject({
+        _tag: "PreviewCredentialError",
+        reason: "vaultNotConfigured",
+      });
+      yield* expectReadsRefused(broker, tabId);
+    }),
+  ).pipe(Effect.provide(layer)),
 );

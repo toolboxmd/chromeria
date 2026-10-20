@@ -221,6 +221,12 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     "browser",
     "browser",
   ),
+  preview_fill_credential: tool(
+    ["Fill", "Filling", "Filled", "a vault credential in the preview browser"],
+    "browser",
+    "browser",
+  ),
+  preview_end_login: tool(["End", "Ending", "Ended", "a browser login"], "browser", "browser"),
   preview_upload: tool(
     ["Upload", "Uploading", "Uploaded", "files to the preview browser"],
     "browser",

@@ -11,6 +11,7 @@ import {
 } from "./preview.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { BrowserProfileId } from "./browserProfile.ts";
+import { PreviewCredentialError } from "./previewCredential.ts";
 
 const BoundedUrl = Schema.String.check(Schema.isTrimmed())
   .check(Schema.isNonEmpty())
@@ -52,6 +53,8 @@ export const PREVIEW_AUTOMATION_SERVER_OPERATIONS = [
   "select",
   "drag",
   "readPage",
+  "fillCredential",
+  "endLogin",
 ] as const;
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_SERVER_OPERATIONS);
 export type PreviewAutomationOperation = typeof PreviewAutomationOperation.Type;
@@ -100,6 +103,8 @@ export const PreviewAutomationStatus = Schema.Struct({
   fileChooser: Schema.optional(
     Schema.NullOr(Schema.Struct({ multiple: Schema.Boolean, accept: Schema.String })),
   ),
+  /** A login after preview_fill_credential: URL, title and page content are withheld. */
+  loginInProgress: Schema.optional(Schema.Boolean),
   downloads: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -122,6 +127,7 @@ export const PreviewAutomationStatus = Schema.Struct({
         ownedByCaller: Schema.optional(Schema.Boolean),
         visible: Schema.optional(Schema.Boolean),
         profileId: Schema.optional(BrowserProfileId),
+        loginInProgress: Schema.optional(Schema.Boolean),
       }),
     ),
   ),
@@ -996,6 +1002,7 @@ export const PreviewAutomationError = Schema.Union([
   PreviewAutomationRequestQueueClosedError,
   PreviewAutomationRemoteUnavailableError,
   PreviewAutomationMalformedResponseError,
+  PreviewCredentialError,
 ]);
 export type PreviewAutomationError = typeof PreviewAutomationError.Type;
 
