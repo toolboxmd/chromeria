@@ -8,6 +8,13 @@ import {
 } from "./orchestrationInstructions.ts";
 
 describe("T3 orchestration provider instructions", () => {
+  it("delegates assigned role-shaped tasks while keeping quick lookups inline", () => {
+    assert.include(
+      T3_CODE_ORCHESTRATION_INSTRUCTIONS,
+      "When the user assigns research, design, review, judging, roasting or browser/desktop driving as a task, delegate it with `delegate_task` and the matching `prismRole`; quick lookups needed mid-task stay inline.",
+    );
+  });
+
   it("distinguishes delegated subagents from ordinary top-level threads", () => {
     assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "Use `delegate_task`");
     assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "ordinary top-level T3 conversations");
