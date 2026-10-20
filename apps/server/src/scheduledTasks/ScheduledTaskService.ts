@@ -1646,6 +1646,34 @@ export const layer = Layer.effect(
       sql<ManualRow>`SELECT * FROM scheduled_manual_requests WHERE request_id=${request.id}`.pipe(
         Effect.mapError(manualUnavailable),
       );
+    const manualFailed = (message: string) =>
+      new OrchestratorMcpFailure({
+        code: "orchestration_error",
+        message: `The manual run was refused before it started: ${message}`,
+      });
+    const failManual = (
+      request: RequestIdentity,
+      taskId: ScheduledTaskId,
+      incarnation: string,
+      message: string,
+    ) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const claimed =
+              yield* sql`UPDATE scheduled_manual_requests SET stage='failed',result_json=${message} WHERE request_id=${request.id} AND result_json IS NULL RETURNING request_id`;
+            if (claimed.length === 0) return;
+            const active = (yield* sql<{
+              active_request_id: string | null;
+            }>`SELECT active_request_id FROM scheduled_task_request_incarnations WHERE task_id=${taskId} AND incarnation=${incarnation}`)[0];
+            if (active?.active_request_id !== request.id) return;
+            const completedAt = yield* localNow;
+            const current = yield* loadTask(taskId);
+            yield* sql`UPDATE scheduled_tasks SET run_count=run_count+1,last_run_status='failed',last_run_error=${message},updated_at=${iso(completedAt)},next_run_at=${nextRunAt(current, completedAt)} WHERE task_id=${taskId}`;
+            yield* sql`UPDATE scheduled_task_request_incarnations SET active_request_id=NULL WHERE task_id=${taskId} AND active_request_id=${request.id}`;
+          }),
+        )
+        .pipe(Effect.mapError(manualUnavailable), Effect.andThen(notifyChanged));
     const runManualNow = (input: ScheduledTaskRunNowInput, options: ManualOptions) =>
       Effect.gen(function* () {
         const request = options.request;
@@ -1783,6 +1811,7 @@ export const layer = Layer.effect(
             return yield* manualUnknown(request);
           return true;
         });
+        if (row.stage === "failed") return yield* manualFailed(row.result_json ?? "");
         const native = row.stage !== "admitted" && row.stage !== "skipped";
         let accepted = native ? yield* readAccepted : false;
         if (row.result_json !== null) {
@@ -1814,18 +1843,44 @@ export const layer = Layer.effect(
           if (row.stage === "prepared" && claimed.length === 0)
             return yield* manualUnknown(request);
           yield* recheck;
-          yield* dispatchTask(
-            snapshot.task,
-            commandId,
-            messageId,
-            snapshot.task.prompt,
-            { _tag: "upstream" },
-            threadId,
-            snapshot.bareReadGrant,
-            { certificateId: snapshot.automationCertificateId ?? null },
+          const dispatched = yield* Effect.exit(
+            dispatchTask(
+              snapshot.task,
+              commandId,
+              messageId,
+              snapshot.task.prompt,
+              { _tag: "upstream" },
+              threadId,
+              snapshot.bareReadGrant,
+              { certificateId: snapshot.automationCertificateId ?? null },
+            ),
           );
+          const failure: Cause.Cause<unknown> | undefined =
+            dispatched._tag === "Failure"
+              ? dispatched.cause
+              : dispatched.value._tag === "Failure"
+                ? dispatched.value.cause
+                : undefined;
           accepted = yield* readAccepted;
-          if (!accepted) return yield* manualUnknown(request);
+          if (!accepted) {
+            // A typed refusal with no native receipt never admitted anything:
+            // record it as this key's outcome so the schedule is not left running.
+            // Interruptions and defects stay unknown.
+            const refused =
+              failure !== undefined &&
+              !Cause.hasInterrupts(failure) &&
+              !Cause.hasDies(failure) &&
+              (snapshot.task.threadId !== null ||
+                Option.isNone(
+                  yield* nativeReceipts.value
+                    .getByCommandId(commandId)
+                    .pipe(Effect.mapError(manualUnavailable)),
+                ));
+            if (!refused) return yield* manualUnknown(request);
+            const message = errorMessage(Cause.squash(failure));
+            yield* failManual(request, input.id, row.incarnation, message);
+            return yield* manualFailed(message);
+          }
         } else if (decision?._tag === "fork") {
           // Exact policy admission is durable. A retry observes it without
           // repeating a possibly external command; the policy owns its recovery.

@@ -2566,6 +2566,72 @@ it.live(
 );
 
 it.live(
+  "manual584: a keyed manual run refused before admission fails terminally and frees the schedule",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const node = yield* makeNode(
+          descriptorOf("manual584", "Manual refusal", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const parent = ThreadId.make("manual584-parent");
+        yield* seedParent(node, parent);
+        const { task } = yield* node.scheduled.upsert({
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
+          commandId: CommandId.make("manual584-schedule"),
+          title: "Refused launch",
+          prompt: "Launch on a disabled provider",
+          enabled: true,
+          schedule: { type: "interval", everyMs: 60_000 },
+          projectId: node.project.id,
+          threadId: null,
+          workspaceStrategy: { type: "root" },
+          modelSelection: selection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        });
+        const setProviderEnabled = (enabled: boolean) =>
+          node.fixtureSettings.updateSettings({
+            projectSettingsOverrides: {
+              [node.project.id]: { providerInstances: { [selection.instanceId]: { enabled } } },
+            },
+          });
+        yield* setProviderEnabled(false);
+        const input = { taskId: task.id, clientRequestId: "manual584-refused" };
+        const refused = yield* nativeCall(node, parent, "run_scheduled_task_now", input);
+        expect(refused.isError, json(refused)).toBe(true);
+        expect(json(refused)).not.toContain("outcome_unknown");
+        expect(json(refused)).toContain("is disabled for project");
+        const failed = (yield* node.scheduled.list()).tasks.find((t) => t.id === task.id)!;
+        expect(failed.lastRunStatus).toBe("failed");
+        expect(failed.runCount).toBe(1);
+
+        yield* setProviderEnabled(true);
+        const replay = yield* nativeCall(node, parent, "run_scheduled_task_now", input);
+        expect(replay.content).toEqual(refused.content);
+        const sql = Context.get(node.database, SqlClient.SqlClient);
+        expect(
+          yield* sql`SELECT message_id FROM orchestration_v2_projection_messages WHERE role='user'`,
+        ).toHaveLength(1);
+        const retried = yield* nativeCall(node, parent, "run_scheduled_task_now", {
+          ...input,
+          clientRequestId: "manual584-new-key",
+        });
+        expect(retried.isError, json(retried)).not.toBe(true);
+        expect((yield* decodeManualRun(retried.structuredContent)).manualReceipt).toMatchObject({
+          requestId: "manual584-new-key",
+          stage: "native-accepted",
+        });
+        const recovered = (yield* node.scheduled.list()).tasks.find((t) => t.id === task.id)!;
+        expect(recovered.lastRunStatus).toBe("succeeded");
+        expect(recovered.runCount).toBe(2);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
   "preferences382: negotiated peer result retains its bounded variant and original grant checks",
   () =>
     Effect.scoped(
