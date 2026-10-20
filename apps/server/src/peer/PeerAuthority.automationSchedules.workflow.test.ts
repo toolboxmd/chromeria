@@ -64,7 +64,7 @@ import {
   traceAutomationValidation,
 } from "./PeerAuthority.workflow.fixture.ts";
 
-it.live.each(["client", "mcp"] as const)(
+it.live.each(["client", "mcp", "unkeyed-mcp"] as const)(
   "paused certificate schedule refuses %s manual runs with resume guidance",
   (entry) =>
     Effect.scoped(
@@ -101,6 +101,9 @@ it.live.each(["client", "mcp"] as const)(
         yield* b.scheduled.setEnabled({ id, enabled: false });
         const paused = (yield* b.scheduled.list()).tasks.find((task) => task.id === id);
         const sql = Context.get(b.database, SqlClient.SqlClient);
+        const localParent = ThreadId.make("paused586-local-parent");
+        if (entry === "unkeyed-mcp") yield* seedParent(b, localParent);
+        const effectsBefore = yield* sql`SELECT 1 FROM orchestration_v2_effect_outbox`;
         expect(
           yield* sql`SELECT 1 FROM fork_automation_certificates WHERE disabled=1`,
         ).toHaveLength(1);
@@ -108,16 +111,21 @@ it.live.each(["client", "mcp"] as const)(
           const error = yield* b.scheduled.runNow({ id }).pipe(Effect.flip);
           expect(error.message).toMatch(/paused.*resume/i);
         } else {
-          const refused = yield* nativeCall(a, parent, "run_scheduled_task_now", {
-            environmentId: b.environmentId,
-            taskId: id,
-            clientRequestId: "paused586-run",
-          });
+          const refused = yield* nativeCall(
+            entry === "mcp" ? a : b,
+            entry === "mcp" ? parent : localParent,
+            "run_scheduled_task_now",
+            {
+              ...(entry === "mcp" ? { environmentId: b.environmentId } : {}),
+              taskId: id,
+              ...(entry === "mcp" ? { clientRequestId: "paused586-run" } : {}),
+            },
+          );
           expect(refused.isError, json(refused)).toBe(true);
           expect(json(refused)).toMatch(/paused.*resume/i);
         }
         expect((yield* b.scheduled.list()).tasks.find((task) => task.id === id)).toEqual(paused);
-        expect(yield* sql`SELECT 1 FROM orchestration_v2_effect_outbox`).toHaveLength(0);
+        expect(yield* sql`SELECT 1 FROM orchestration_v2_effect_outbox`).toEqual(effectsBefore);
         expect(yield* sql`SELECT 1 FROM scheduled_manual_requests`).toHaveLength(0);
         expect(
           yield* sql`SELECT 1 FROM fork_automation_certificates WHERE disabled=1`,
