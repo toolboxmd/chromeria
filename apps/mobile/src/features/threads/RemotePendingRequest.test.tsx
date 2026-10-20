@@ -301,6 +301,130 @@ it("edits and sends a multiline editor prefill unchanged", async () => {
   }
 });
 
+it.each([
+  { name: "cleared required prefill", initialAnswer: "Draft", edit: "", complete: false },
+  {
+    name: "whitespace-only required prefill",
+    initialAnswer: "Draft",
+    edit: " \n ",
+    complete: false,
+  },
+  { name: "untouched optional question", required: false, complete: true },
+  { name: "add to initial selection", initialAnswer: "Blue", toggle: "Green", complete: true },
+  { name: "remove initial selection", initialAnswer: "Blue", toggle: "Blue", complete: false },
+])("handles $name using the effective answer", async (scenario) => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const registry = AtomRegistry.make();
+  const calls: RemotePendingRequestInput[] = [];
+  const content = {
+    requestId: RuntimeRequestId.make("C-initial"),
+    kind: "user-input" as const,
+    revision: 3,
+    questions: [
+      {
+        id: "answer",
+        header: "Answer",
+        question: "Your choice?",
+        required: scenario.required,
+        initialAnswer: scenario.initialAnswer,
+        multiSelect: scenario.toggle !== undefined,
+        allowCustomAnswer: scenario.toggle === undefined,
+        options: scenario.toggle ? [{ label: "Blue" }, { label: "Green" }] : [],
+      },
+    ],
+  };
+  const query = Atom.make(AsyncResult.success(content));
+  const mayRespond = Atom.make(true);
+  const command = Object.assign(
+    createRuntimeCommand(Atom.runtime(Layer.empty), {
+      label: "isolated remote client RPC",
+      execute: (input: { environmentId: EnvironmentId; input: RemotePendingRequestInput }) =>
+        Effect.sync(() => {
+          calls.push(input.input);
+          return { sequence: 4 };
+        }),
+    }),
+    { permissionAtom: (_id: EnvironmentId) => mayRespond },
+  );
+  const remote = { readRequest: () => query, request: command };
+  state.getRemote = () => remote;
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const button = (label: string) =>
+    [...container.querySelectorAll("button")].find((node) => node.textContent === label)!;
+  try {
+    await act(async () => {
+      root.render(
+        <RegistryContext.Provider value={registry}>
+          <RemotePendingRequest
+            environmentId={EnvironmentId.make("A-only-profile")}
+            task={{ id: NodeId.make("A-task"), threadId: ThreadId.make("A-parent") }}
+            request={{
+              environmentId: EnvironmentId.make("C-no-profile"),
+              threadId: ThreadId.make("C-child"),
+              requestId: content.requestId,
+              revision: 3,
+              kind: "user_input",
+              responseType: "live",
+              route: [],
+            }}
+            onResolved={() => {}}
+          />
+        </RegistryContext.Provider>,
+      );
+    });
+    expect(button("Send answer").disabled).toBe(false);
+    if (scenario.edit !== undefined) {
+      const field = container.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+        "input, textarea",
+      )!;
+      expect(field.value).toBe("Draft");
+      const setValue = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(field), "value")!.set!;
+      await act(async () => {
+        setValue.call(field, scenario.edit);
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      expect(field.value).toBe(scenario.edit);
+    }
+    if (scenario.toggle) {
+      expect(button("Blue").getAttribute("aria-pressed")).toBe("true");
+      await act(async () => button(scenario.toggle!).click());
+      expect(button("Blue").getAttribute("aria-pressed")).toBe(
+        scenario.toggle === "Blue" ? "false" : "true",
+      );
+      expect(button("Green").getAttribute("aria-pressed")).toBe(
+        scenario.toggle === "Green" ? "true" : "false",
+      );
+    }
+    expect(button("Send answer").disabled).toBe(!scenario.complete);
+    await act(async () => button("Send answer").click());
+    if (scenario.complete) {
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.operation).toMatchObject({
+        type: "respond",
+        answers: { answer: scenario.toggle ? ["Blue", "Green"] : "" },
+      });
+    } else {
+      expect(calls).toEqual([]);
+      if (scenario.toggle) {
+        await act(async () => button("Green").click());
+        expect(button("Send answer").disabled).toBe(false);
+        await act(async () => button("Send answer").click());
+        expect(calls[0]?.operation).toMatchObject({
+          type: "respond",
+          answers: { answer: ["Green"] },
+        });
+      }
+    }
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    registry.dispose();
+    vi.unstubAllGlobals();
+  }
+});
+
 vi.mock("../../components/ui/Sheet", () => ({
   Sheet: ({
     title,
