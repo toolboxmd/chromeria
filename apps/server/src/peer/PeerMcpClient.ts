@@ -1,3 +1,4 @@
+import * as AutomationAuthority from "../scheduledTasks/DestinationAutomationAuthority.ts";
 import {
   PeerSavedPreviewAuthorizationRequest,
   PeerSavedPreviewAuthorizationResult,
@@ -17,9 +18,12 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import * as Queue from "effect/Queue";
+import * as PubSub from "effect/PubSub";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as Schedule from "effect/Schedule";
@@ -45,6 +49,13 @@ const decodeSavedPreviewSupport = Schema.decodeUnknownEffect(
 );
 const decodeSavedPreviewResult = Schema.decodeUnknownEffect(
   Schema.fromJsonString(PeerSavedPreviewAuthorizationResult),
+);
+
+const decodeAutomationDisableAck = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(AutomationAuthority.AutomationDisableAck),
+);
+const decodeAutomationSupport = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Struct({ version: Schema.Literal(1) })),
 );
 
 const PROTOCOL_VERSION = "2025-06-18";
@@ -80,6 +91,7 @@ export class PeerMcpClient extends Context.Service<
       readonly sizeBytes: number;
     }) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly start: Effect.Effect<void, never, Scope.Scope>;
+    readonly drainAutomationDisables?: Effect.Effect<void, OrchestratorMcpFailure>;
     readonly requirePendingRequests?: (
       environmentId: EnvironmentId,
       generation?: string,
@@ -245,7 +257,11 @@ const make = Effect.gen(function* () {
       const key = `${resolved.link.environmentId}:${resolved.link.launchIdentity}`;
       if (Option.isNone(authority) || channels.has(key)) return;
       channels.add(key);
-      const peerHeader = { environmentId: self, generation: resolved.link.launchIdentity };
+      const peerHeader = {
+        environmentId: self,
+        generation: resolved.link.launchIdentity,
+        automationVersion: 1,
+      };
       const handleFrame = (
         current: PeerLinks.ResolvedPeerLink,
         frame: (typeof PeerAuthority.ExchangeResult.Type)["frames"][number],
@@ -399,12 +415,90 @@ const make = Effect.gen(function* () {
         Effect.forkIn(lifetime),
       );
     });
+  const deliverAutomationDisableBatch = Effect.gen(function* () {
+    if (Option.isNone(authority)) return false;
+    const batch = yield* authority.value.pendingAutomationDisables;
+    yield* Effect.forEach(
+      batch,
+      (pending) =>
+        Effect.gen(function* () {
+          if (links.resolveAutomationRecovery === undefined)
+            return yield* new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: "The original disable-only recovery resolver is unavailable.",
+            });
+          const resolved = yield* links
+            .resolveAutomationRecovery(pending.environmentId, pending.generation)
+            .pipe(Effect.mapError(fromLinkError));
+          const response = yield* httpClient.execute(
+            HttpClientRequest.post(`${resolved.url}/mcp/peer-control/automation-disable`).pipe(
+              HttpClientRequest.setHeaders({ authorization: `Bearer ${resolved.token}` }),
+              HttpClientRequest.setBody(
+                HttpBody.text(
+                  json({ version: 1, dependency: pending.dependency }),
+                  "application/json",
+                ),
+              ),
+            ),
+          );
+          if (response.status !== 200) return;
+          const acknowledgement = yield* decodeAutomationDisableAck(yield* response.text);
+          if (json(acknowledgement.dependency) !== json(pending.dependency))
+            return yield* new OrchestratorMcpFailure({
+              code: "capability_denied",
+              message:
+                "The automation acknowledgement does not match its exact original dependency.",
+            });
+          yield* authority.value.acknowledgeAutomationDisable(
+            acknowledgement,
+            pending.environmentId,
+            pending.generation,
+          );
+        }).pipe(Effect.timeout("10 seconds"), Effect.ignoreCause({ log: true })),
+      { concurrency: 4, discard: true },
+    );
+    return batch.length !== 0;
+  });
+  const drainAutomationDisables = deliverAutomationDisableBatch.pipe(Effect.asVoid);
+  const disableWakeups = yield* Queue.sliding<void>(1);
+  const recoverAutomationDisables = Queue.take(disableWakeups).pipe(
+    Effect.andThen(
+      Effect.forever(
+        Effect.gen(function* () {
+          if (yield* deliverAutomationDisableBatch) {
+            yield* Effect.sleep("2 seconds");
+            return;
+          }
+          const deadline = Option.isSome(authority)
+            ? yield* authority.value.nextAutomationDisableDeadline
+            : null;
+          if (deadline === null) yield* Queue.take(disableWakeups);
+          else
+            yield* Effect.raceFirst(
+              Queue.take(disableWakeups),
+              Effect.sleep(Math.max(0, deadline - (yield* Clock.currentTimeMillis))),
+            );
+        }).pipe(
+          Effect.catch(() =>
+            Effect.logWarning("Pending automation disable recovery is unavailable; retrying.").pipe(
+              Effect.andThen(Effect.sleep("2 seconds")),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+
   const reconnect = (id: EnvironmentId) =>
     Effect.gen(function* () {
       if (Option.isNone(environment) || Option.isNone(authority)) return;
       const resolved = yield* links.resolve(id).pipe(Effect.mapError(fromLinkError));
       const self = yield* environment.value.getEnvironmentId;
-      const peerHeader = { environmentId: self, generation: resolved.link.launchIdentity };
+      const peerHeader = {
+        environmentId: self,
+        generation: resolved.link.launchIdentity,
+        automationVersion: 1,
+      };
       yield* openSession(resolved.url, resolved.token, {
         [PeerAuthority.LINK_HEADER]: json(peerHeader),
       });
@@ -414,6 +508,16 @@ const make = Effect.gen(function* () {
     ? Effect.void
     : forkParked(
         Effect.gen(function* () {
+          if (Option.isSome(changes)) {
+            const automationChanges = yield* changes.value.subscribeAutomationChanges;
+            yield* Effect.forever(
+              PubSub.take(automationChanges).pipe(
+                Effect.andThen(Queue.offer(disableWakeups, undefined)),
+              ),
+            ).pipe(Effect.forkIn(lifetime));
+          }
+          yield* Queue.offer(disableWakeups, undefined);
+          yield* recoverAutomationDisables.pipe(Effect.forkIn(lifetime));
           const stored = yield* links.list;
           const updates = Option.isSome(changes) ? changes.value.changes : Stream.empty;
           yield* Stream.merge(
@@ -421,17 +525,19 @@ const make = Effect.gen(function* () {
             updates,
           ).pipe(
             Stream.runForEach((id) =>
-              reconnect(id).pipe(
-                Effect.retry({
-                  schedule: Schedule.spaced("2 seconds"),
-                  while: (error) =>
-                    error._tag === "HttpClientError" ||
-                    (error._tag === "OrchestratorMcpFailure" &&
-                      error.code === "orchestration_error"),
-                }),
-                Effect.ignoreCause({ log: true }),
-                Effect.forkIn(lifetime),
-              ),
+              Queue.offer(disableWakeups, undefined)
+                .pipe(Effect.andThen(reconnect(id)))
+                .pipe(
+                  Effect.retry({
+                    schedule: Schedule.spaced("2 seconds"),
+                    while: (error) =>
+                      error._tag === "HttpClientError" ||
+                      (error._tag === "OrchestratorMcpFailure" &&
+                        error.code === "orchestration_error"),
+                  }),
+                  Effect.ignoreCause({ log: true }),
+                  Effect.forkIn(lifetime),
+                ),
             ),
           );
         }).pipe(Effect.ignoreCause({ log: true })),
@@ -455,6 +561,7 @@ const make = Effect.gen(function* () {
       const peerHeader = {
         environmentId: input.authority?.environmentId,
         generation: resolved.link.launchIdentity,
+        automationVersion: 1,
       };
       const limitHeader: Record<string, string> = {
         [McpInvocationContext.MODE_LIMIT_HEADER]: `${input.limits.runtimeMode}/${input.limits.interactionMode}`,
@@ -464,6 +571,31 @@ const make = Effect.gen(function* () {
               [PeerAuthority.LINK_HEADER]: json(peerHeader),
             }),
       };
+      if (["schedule_task", "update_scheduled_task", "start_spectrum"].includes(input.tool)) {
+        const support = yield* httpClient.execute(
+          HttpClientRequest.get(`${resolved.url}/mcp/peer-control/automation`).pipe(
+            HttpClientRequest.setHeaders({
+              authorization: `Bearer ${resolved.token}`,
+              ...limitHeader,
+            }),
+          ),
+        );
+        if (support.status !== 200)
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message:
+              "The destination does not support destination automation authority v1; no definition was accepted.",
+          });
+        yield* decodeAutomationSupport(yield* support.text).pipe(
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "capability_denied",
+                message: "The destination automation authority protocol is unsupported.",
+              }),
+          ),
+        );
+      }
       const sessionKey = `${input.environmentId} ${resolved.url} ${resolved.link.launchIdentity} ${input.authority === undefined ? "legacy" : "authority-v1"}`;
       const callOnce = (sessionId: string) =>
         post(
@@ -910,6 +1042,7 @@ const make = Effect.gen(function* () {
   return PeerMcpClient.of({
     call,
     start,
+    drainAutomationDisables,
     requirePendingRequests: (environmentId, generation) =>
       lifecycleRequest(environmentId, generation, undefined, true).pipe(
         Effect.flatMap(decodeLifecycleVersion),

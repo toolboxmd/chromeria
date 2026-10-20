@@ -26,7 +26,20 @@ export class CurrentMutation extends Context.Reference<
     }
   | undefined
 >("t3/scheduledTasks/CurrentMutation", { defaultValue: () => undefined }) {}
-class InAcceptance extends Context.Reference<boolean>("t3/scheduledTasks/InAcceptance", {
+export class DefinitionExtension extends Context.Reference<
+  | {
+      readonly definition: unknown;
+      readonly prepare: Effect.Effect<
+        Effect.Effect<void, import("@t3tools/contracts").ScheduledTaskError>,
+        import("@t3tools/contracts").ScheduledTaskError
+      >;
+      readonly accepted?: (
+        certificateId: string,
+      ) => Effect.Effect<void, import("@t3tools/contracts").ScheduledTaskError>;
+    }
+  | undefined
+>("t3/scheduledTasks/DefinitionExtension", { defaultValue: () => undefined }) {}
+export class InAcceptance extends Context.Reference<boolean>("t3/scheduledTasks/InAcceptance", {
   defaultValue: () => false,
 }) {}
 const unavailable = (_cause: unknown) =>
@@ -189,16 +202,52 @@ export const acceptance = (request: RequestIdentity) =>
  * validation must finish outside SQLite so its reverse mailbox can commit.
  * This guard is one admission's value, not an offline authority cache.
  */
-export const captureResourceFence = (taskId: ScheduledTaskId) =>
+export const captureResourceFence = (taskId: ScheduledTaskId, targetThreadId?: string | null) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const readBinding = () =>
       sql`SELECT t.task_id,t.project_id,t.thread_id,t.model_selection_json,t.runtime_mode,t.interaction_mode,t.bare_json,t.link_origin_json,i.incarnation,b.runtime_mode AS bound_runtime_mode,b.interaction_mode AS bound_interaction_mode,b.deleted_at AS bound_deleted_at FROM scheduled_tasks t LEFT JOIN scheduled_task_request_incarnations i ON i.task_id=t.task_id LEFT JOIN orchestration_v2_projection_threads b ON b.thread_id=t.thread_id WHERE t.task_id=${taskId}`.pipe(
         Effect.mapError(unavailable),
       );
-    const expected = requestDigest(yield* readBinding());
+    const readOwners = () =>
+      Effect.gen(function* () {
+        const binding = yield* readBinding();
+        const threadIds = [
+          ...new Set([
+            ...(targetThreadId == null ? [] : [targetThreadId]),
+            ...binding.flatMap((row) => (typeof row.thread_id === "string" ? [row.thread_id] : [])),
+          ]),
+        ];
+        const tables = new Set(
+          (yield* sql<{ name: string }>`SELECT name FROM sqlite_master WHERE type='table'`).map(
+            (row) => row.name,
+          ),
+        );
+        const checks = tables.has("fork_scheduled_task_checks")
+          ? yield* sql`SELECT * FROM fork_scheduled_task_checks WHERE task_id=${taskId}`
+          : [];
+        const automation = tables.has("fork_automation_bindings")
+          ? yield* sql`SELECT b.certificate_id,c.disabled,c.revoked FROM fork_automation_bindings b JOIN fork_automation_certificates c ON c.id=b.certificate_id WHERE b.kind='schedule' AND b.resource_id=${taskId}`
+          : [];
+        const births =
+          threadIds.length !== 0 && tables.has("peer_thread_authority")
+            ? yield* sql`SELECT * FROM peer_thread_authority WHERE ${sql.in("thread_id", threadIds)} ORDER BY thread_id`
+            : [];
+        // Provider head and output updates do not change admission; ownership, active-run
+        // membership, modes and resource identity do.
+        const runs =
+          threadIds.length !== 0 && tables.has("peer_run_authority")
+            ? yield* sql`SELECT r.run_id,CASE WHEN r.status IN ('preparing','starting','running') THEN 1 ELSE 0 END AS active,a.record_id FROM orchestration_v2_projection_runs r LEFT JOIN peer_run_authority a ON a.run_id=r.run_id WHERE ${sql.in("r.thread_id", threadIds)} ORDER BY r.run_id`
+            : [];
+        const targets =
+          threadIds.length === 0
+            ? []
+            : yield* sql`SELECT thread_id,project_id,runtime_mode,interaction_mode,deleted_at,json_extract(payload_json,'$.archivedAt') AS archived_at,json_extract(payload_json,'$.linkOrigin') AS link_origin,json_extract(payload_json,'$.lineage') AS lineage,json_extract(payload_json,'$.bare') AS bare,json_extract(payload_json,'$.modelSelection') AS model_selection,json_extract(payload_json,'$.createdAt') AS created_at FROM orchestration_v2_projection_threads WHERE ${sql.in("thread_id", threadIds)} ORDER BY thread_id`;
+        return { binding, checks, automation, births, runs, targets };
+      }).pipe(Effect.mapError(unavailable));
+    const expected = requestDigest(yield* readOwners());
     return Effect.gen(function* () {
-      if (requestDigest(yield* readBinding()) !== expected)
+      if (requestDigest(yield* readOwners()) !== expected)
         return yield* new OrchestratorMcpFailure({
           code: "capability_denied",
           message: "The schedule binding changed during authorization; no mutation was accepted.",

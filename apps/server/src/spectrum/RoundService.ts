@@ -1,3 +1,5 @@
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
+import { PeerDispatchAuthority } from "../peer/peerEffectAuthority.ts";
 import { CommandId, type OrchestrationV2Command, ThreadId } from "@t3tools/contracts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Context from "effect/Context";
@@ -35,6 +37,7 @@ export class SpectrumRoundService extends Context.Service<
 >()("t3/spectrum/RoundService/SpectrumRoundService") {}
 
 const make = Effect.gen(function* () {
+  const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
   const locks = yield* KeyedLock.make<ThreadId>();
   const sql = yield* SqlClient.SqlClient;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -144,8 +147,25 @@ const make = Effect.gen(function* () {
           threadId,
           cause: "Round command is absent from durable state",
         });
+      const committed =
+        (yield* sql`SELECT 1 FROM orchestration_command_receipts WHERE command_id=${pending.commandId} AND aggregate_kind='thread' AND aggregate_id=${pending.threadId} AND command_type='message.dispatch' AND status='accepted'`.pipe(
+          Effect.mapError((cause) => new SpectrumRoundError({ threadId, cause })),
+        )).length === 1;
+      if (!committed && current.automationCertificateId !== undefined && Option.isNone(authority))
+        return yield* new SpectrumRoundError({
+          threadId,
+          cause: "Native automation execution is unavailable",
+        });
+      const owner =
+        committed || current.automationCertificateId === undefined || Option.isNone(authority)
+          ? undefined
+          : yield* authority.value.automationExecution(
+              current.automationCertificateId,
+              pending.commandId,
+            );
       // Fiber-local admission is rebuilt on every replay. No captured scope survives a restart.
       const outcome = yield* threads.dispatch(pending).pipe(
+        Effect.provideService(PeerDispatchAuthority, owner?.id),
         Effect.provideService(ForkDispatchPlans, [
           spectrumLaunchAdmission(threadId, current.generation, pending),
         ]),

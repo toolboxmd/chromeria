@@ -1,3 +1,7 @@
+import {
+  ensureAutomationAuthoritySchema,
+  invalidateAutomationLink,
+} from "../scheduledTasks/DestinationAutomationAuthority.ts";
 import * as PeerLinkEvents from "./PeerLinkEvents.ts";
 import {
   AuthMcpClientAccess,
@@ -75,6 +79,10 @@ export class PeerLinks extends Context.Service<
       environmentId: EnvironmentId,
     ) => Effect.Effect<ResolvedPeerLink, PeerLinkError>;
     /** Records the outcome of a call, so listing shows whether the peer answered last time. */
+    readonly resolveAutomationRecovery?: (
+      environmentId: EnvironmentId,
+      generation: string,
+    ) => Effect.Effect<ResolvedPeerLink, PeerLinkError>;
     readonly recordOutcome: (
       environmentId: EnvironmentId,
       outcome: { readonly error: string | null },
@@ -167,6 +175,42 @@ const make = Effect.gen(function* () {
       .digest("SHA-256", new TextEncoder().encode(secretName))
       .pipe(Effect.map(Hex.encode), Effect.orDie);
 
+  yield* ensureAutomationAuthoritySchema.pipe(Effect.catch(failStorage));
+  yield* sql`CREATE TABLE IF NOT EXISTS fork_automation_retired_links (generation TEXT PRIMARY KEY,environment_id TEXT NOT NULL,secret_name TEXT NOT NULL,label TEXT NOT NULL,urls_json TEXT NOT NULL,access TEXT NOT NULL,linked_at TEXT NOT NULL,expires_at TEXT NOT NULL,last_reached_at TEXT,last_error TEXT,paired_primary_origin TEXT)`.pipe(
+    Effect.catch(failStorage),
+  );
+  if (
+    !(yield* sql<{ name: string }>`PRAGMA table_info(fork_automation_retired_links)`).some(
+      (column) => column.name === "paired_primary_origin",
+    )
+  )
+    yield* sql`ALTER TABLE fork_automation_retired_links ADD COLUMN paired_primary_origin TEXT`.pipe(
+      Effect.catch(failStorage),
+    );
+  // Route knowledge outlives ordinary links only while an original disable
+  // remains unacknowledged. It never retains a replacement's bearer or alternates.
+  const rememberRecoveryPrimary = (environmentId: string, primary: string) =>
+    sql`UPDATE fork_automation_retired_links SET paired_primary_origin=${primary}
+        WHERE environment_id=${environmentId} AND EXISTS (
+          SELECT 1 FROM fork_automation_obligations
+          WHERE next_environment_id=${environmentId}
+            AND next_generation=fork_automation_retired_links.generation AND ack_json IS NULL
+        )`;
+  const retireAutomationLink = (row: PeerLinkRow) =>
+    Effect.gen(function* () {
+      const generation = yield* launchIdentity(row.secret_name);
+      yield* invalidateAutomationLink(row.environment_id, generation).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      const obligations =
+        yield* sql`SELECT 1 FROM fork_automation_obligations WHERE next_environment_id=${row.environment_id} AND next_generation=${generation} AND ack_json IS NULL LIMIT 1`;
+      const retained = obligations.length !== 0;
+      if (retained)
+        yield* sql`INSERT INTO fork_automation_retired_links ${sql.insert({ generation, ...row })} ON CONFLICT DO NOTHING`;
+      const primary = (yield* decodeUrls(row.urls_json))[0];
+      if (primary !== undefined) yield* rememberRecoveryPrimary(row.environment_id, primary);
+      return retained;
+    });
   const clientFor = (origin: string) =>
     HttpApiClient.make(EnvironmentHttpApi, { baseUrl: origin }).pipe(
       Effect.provideService(HttpClient.HttpClient, httpClient),
@@ -370,7 +414,13 @@ const make = Effect.gen(function* () {
         .pipe(Effect.catch(failStorage));
       const urlsJson = yield* encodeUrls(origins).pipe(Effect.catch(failStorage));
       const previous = yield* readRow(peer.environmentId);
-      yield* sql`
+      const retainPrevious = yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const retain = Option.isSome(previous)
+              ? yield* retireAutomationLink(previous.value)
+              : false;
+            yield* sql`
         INSERT INTO peer_environment_links (
           environment_id, secret_name, label, urls_json, access, linked_at, expires_at,
           last_reached_at, last_error
@@ -388,10 +438,15 @@ const make = Effect.gen(function* () {
           expires_at = excluded.expires_at,
           last_reached_at = excluded.last_reached_at,
           last_error = NULL
-      `.pipe(Effect.catch(failStorage));
+      `;
+            yield* rememberRecoveryPrimary(linked.environmentId, primary);
+            return retain;
+          }),
+        )
+        .pipe(Effect.catch(failStorage));
       // Linking again replaces the old token. A racing link may leave its own
       // behind; it is unused either way.
-      if (Option.isSome(previous) && previous.value.secret_name !== secretName) {
+      if (Option.isSome(previous) && previous.value.secret_name !== secretName && !retainPrevious) {
         yield* secrets.remove(previous.value.secret_name).pipe(Effect.ignore);
       }
       if (Option.isSome(changes)) yield* changes.value.changed(linked.environmentId);
@@ -435,15 +490,21 @@ const make = Effect.gen(function* () {
 
   const unlink: PeerLinks["Service"]["unlink"] = (environmentId) =>
     Effect.gen(function* () {
-      const deleted = yield* sql<{ secret_name: string }>`
-        DELETE FROM peer_environment_links WHERE environment_id = ${environmentId}
-        RETURNING secret_name
-      `.pipe(Effect.catch(failStorage));
-      for (const row of deleted) {
-        yield* secrets.remove(row.secret_name).pipe(Effect.catch(failStorage));
-      }
+      const retired = yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const row = yield* readRow(environmentId);
+            if (Option.isNone(row)) return undefined;
+            const retained = yield* retireAutomationLink(row.value);
+            yield* sql`DELETE FROM peer_environment_links WHERE environment_id=${environmentId}`;
+            return { secretName: row.value.secret_name, retained };
+          }),
+        )
+        .pipe(Effect.catch(failStorage));
+      if (retired !== undefined && !retired.retained)
+        yield* secrets.remove(retired.secretName).pipe(Effect.catch(failStorage));
       if (Option.isSome(changes)) yield* changes.value.changed(environmentId);
-      return deleted.length > 0;
+      return retired !== undefined;
     });
 
   const resolve: PeerLinks["Service"]["resolve"] = (environmentId) =>
@@ -487,6 +548,77 @@ const make = Effect.gen(function* () {
       return { link, url: url.value, token: new TextDecoder().decode(stored.value) };
     });
 
+  const resolveAutomationRecovery = (environmentId: EnvironmentId, generation: string) =>
+    Effect.gen(function* () {
+      const ordinary = yield* readRow(environmentId);
+      const current =
+        Option.isSome(ordinary) &&
+        (yield* launchIdentity(ordinary.value.secret_name)) === generation
+          ? ordinary.value
+          : undefined;
+      const row =
+        current ??
+        (yield* sql<PeerLinkRow>`SELECT environment_id,secret_name,label,urls_json,access,linked_at,expires_at,last_reached_at,last_error FROM fork_automation_retired_links WHERE environment_id=${environmentId} AND generation=${generation}`.pipe(
+          Effect.catch(failStorage),
+        ))[0];
+      if (row === undefined)
+        return yield* new PeerLinkError({
+          reason: "unknown_link",
+          message: "The original automation recovery identity is unavailable.",
+        });
+      const obligations =
+        yield* sql`SELECT 1 FROM fork_automation_obligations WHERE next_environment_id=${environmentId} AND next_generation=${generation} AND ack_json IS NULL LIMIT 1`.pipe(
+          Effect.catch(failStorage),
+        );
+      if (obligations.length === 0) {
+        yield* sql`UPDATE fork_automation_retired_links SET paired_primary_origin=NULL WHERE environment_id=${environmentId} AND generation=${generation}`.pipe(
+          Effect.catch(failStorage),
+        );
+        return yield* new PeerLinkError({
+          reason: "unknown_link",
+          message: "No original automation disable dependency is registered.",
+        });
+      }
+      const link = yield* toLink(row);
+      const stored = yield* secrets.get(row.secret_name).pipe(Effect.catch(failStorage));
+      if (Option.isNone(stored))
+        return yield* new PeerLinkError({
+          reason: "unknown_link",
+          message: "The protected automation recovery identity is unavailable.",
+        });
+      // Only the primary origin completed OAuth pairing. A replacement's
+      // alternate URLs and an unpaired descriptor are not continuity evidence.
+      const pairedOrigins = Option.isSome(ordinary)
+        ? yield* decodeUrls(ordinary.value.urls_json).pipe(Effect.catch(failStorage))
+        : [];
+      const retainedPrimary = (yield* sql<{
+        origin: string | null;
+      }>`SELECT paired_primary_origin AS origin FROM fork_automation_retired_links WHERE environment_id=${environmentId} AND generation=${generation}`.pipe(
+        Effect.catch(failStorage),
+      ))[0]?.origin;
+      const url = yield* Effect.findFirst(
+        [
+          ...new Set([
+            ...pairedOrigins.slice(0, 1),
+            ...(retainedPrimary == null ? [] : [retainedPrimary]),
+            ...link.urls,
+          ]),
+        ],
+        (candidate) =>
+          describe(candidate).pipe(
+            Effect.map(
+              (found) => Option.isSome(found) && found.value.environmentId === environmentId,
+            ),
+          ),
+      );
+      if (Option.isNone(url))
+        return yield* new PeerLinkError({
+          reason: "unreachable",
+          message: "The original automation disable destination is unreachable.",
+        });
+      return { link, url: url.value, token: new TextDecoder().decode(stored.value) };
+    });
+
   const recordOutcome: PeerLinks["Service"]["recordOutcome"] = (environmentId, outcome) =>
     DateTime.now.pipe(
       Effect.flatMap((now) =>
@@ -505,7 +637,15 @@ const make = Effect.gen(function* () {
       Effect.ignoreCause({ log: true }),
     );
 
-  return PeerLinks.of({ link, list, get, unlink, resolve, recordOutcome });
+  return PeerLinks.of({
+    link,
+    list,
+    get,
+    unlink,
+    resolve,
+    resolveAutomationRecovery,
+    recordOutcome,
+  });
 });
 
 export const layer = Layer.effect(PeerLinks, make);
