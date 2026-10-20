@@ -71,7 +71,7 @@ it.live.each(["device", "preview"] as const)(
               return {
                 viewerId: input.viewerId,
                 ticket: "current-file-admission",
-                expiresAt: "2036-04-07T00:06:00.000Z",
+                expiresAt: "2036-04-07T00:04:00.000Z",
                 ...(kind === "device"
                   ? { hubBasePath: "/api/device-hub" }
                   : { streamBasePath: "/api/preview-stream" }),
@@ -228,6 +228,8 @@ it.live.each(["device", "preview"] as const)(
           expect(access.requestCurrentAccess).toBeDefined();
           const current = yield* Effect.promise(() => access.requestCurrentAccess!());
           expect(current.viewer!.id).toBe(access.viewer!.id);
+          expect(current.viewer!.expiresAt).toBe("2036-04-07T00:04:00.000Z");
+          expect(current.expiresAt).toBe(Date.parse("2036-04-07T00:04:00.000Z"));
           expect(current.query).toEqual({ viewerTicket: "current-file-admission" });
           expect(requests.at(-1)).toEqual({
             method: "renew",

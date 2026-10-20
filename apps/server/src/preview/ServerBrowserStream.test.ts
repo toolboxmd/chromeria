@@ -7,6 +7,10 @@ import {
   AuthOrchestrationReadScope,
   AuthPreviewOperateScope,
   AuthSessionId,
+  EnvironmentId,
+  ThreadId,
+  type PeerAuthorityEnvelope,
+  type PreviewViewerOpenInput,
   PREVIEW_STREAM_HOST_SETUP_CLOSE_CODE,
   PreviewStreamHostSetup,
   type AuthEnvironmentScope,
@@ -25,9 +29,14 @@ import { HttpRouter, HttpServer } from "effect/http";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
-import { routeLayer } from "./ServerBrowserStream.ts";
+import { PreviewViewers, layerViewers, routeLayer } from "./ServerBrowserStream.ts";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
+import * as SessionStore from "../auth/SessionStore.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
+import * as PeerLinks from "../peer/PeerLinks.ts";
+import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 
 const platformLayer = NodeHttpPlatform.layer.pipe(Layer.provideMerge(NodeServices.layer));
 
@@ -90,6 +99,125 @@ const mutations = [
   { type: "dialog", accept: true },
   { type: "viewport", setting: { _tag: "fill" } },
 ];
+
+it.effect.each([
+  { destinationExpiry: "2036-04-07T00:04:00.000Z", expected: "2036-04-07T00:04:00.000Z" },
+  { destinationExpiry: "2036-04-07T00:06:00.000Z", expected: "2036-04-07T00:05:00.000Z" },
+])(
+  "caps remote viewer renewal at the earlier ticket expiry (%s)",
+  ({ destinationExpiry, expected }) =>
+    Effect.gen(function* () {
+      const sourceExpiry = DateTime.makeUnsafe("2036-04-07T00:05:00.000Z");
+      const destination = EnvironmentId.make("destination");
+      const envelope: PeerAuthorityEnvelope = {
+        version: 1,
+        environmentId: destination,
+        generation: "generation",
+        recordId: "record",
+        actionId: "action",
+        digest: "digest",
+        route: [destination],
+        descendant: false,
+      };
+      const input: PreviewViewerOpenInput = {
+        resource: {
+          type: "preview",
+          environmentId: destination,
+          threadId: ThreadId.make("thread"),
+          tabId: "tab",
+          serverEpoch: "epoch",
+        },
+        operation: "view",
+      };
+      const requests: PreviewViewerOpenInput[] = [];
+      const services = yield* Layer.build(
+        layerViewers.pipe(
+          Layer.provide(makeAuth([AuthOrchestrationReadScope]).layer),
+          Layer.provide(
+            Layer.mock(ServerEnvironment.ServerEnvironment, {
+              getEnvironmentId: Effect.succeed(EnvironmentId.make("source")),
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(SessionStore.SessionStore, {
+              cookieName: "stream-test",
+              legacyCookieName: undefined,
+              issueViewerToken: ({ viewerId }) =>
+                Effect.succeed({
+                  viewerId: viewerId ?? "00000000-0000-0000-0000-000000000001",
+                  token: viewerId === undefined ? "source-open" : "source-renewed",
+                  expiresAt: sourceExpiry,
+                }),
+              awaitViewerInvalidation: () => Effect.never,
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(PeerAuthority.PeerAuthority, {
+              preparePreviewViewer: () => Effect.succeed(envelope),
+              checkRecord: () => Effect.void,
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(PeerLinks.PeerLinks, {
+              get: () =>
+                Effect.succeedSome({
+                  environmentId: destination,
+                  label: "destination",
+                  urls: ["https://destination.test"],
+                  access: "full-access",
+                  linkedAt: sourceExpiry,
+                  expiresAt: sourceExpiry,
+                  lastReachedAt: null,
+                  lastError: null,
+                  launchIdentity: "generation",
+                }),
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(PeerMcpClient.PeerMcpClient, {
+              openPreviewViewer: ({ request }) =>
+                Effect.sync(() => {
+                  requests.push(request);
+                  return {
+                    origin: "https://destination.test",
+                    access: {
+                      viewerId: "00000000-0000-0000-0000-000000000002",
+                      ticket: "destination-ticket",
+                      expiresAt:
+                        request.viewerId === undefined
+                          ? "2036-04-07T00:03:00.000Z"
+                          : destinationExpiry,
+                      streamBasePath: "/api/preview-stream" as const,
+                    },
+                  };
+                }),
+              closePreviewViewer: () => Effect.succeed(true),
+            }),
+          ),
+        ),
+      );
+      const viewers = Context.get(services, PreviewViewers);
+      const session: EnvironmentAuth.AuthenticatedSession = {
+        sessionId: AuthSessionId.make("stream-test"),
+        subject: "stream-test",
+        method: "bearer-access-token",
+        scopes: [AuthOrchestrationReadScope],
+      };
+      const opened = yield* viewers.open(session, input);
+      expect(opened.expiresAt).toBe("2036-04-07T00:03:00.000Z");
+      const renewed = yield* viewers.open(session, { ...input, viewerId: opened.viewerId });
+      expect(renewed).toEqual({
+        viewerId: opened.viewerId,
+        ticket: "source-renewed",
+        expiresAt: expected,
+        streamBasePath: "/api/preview-stream",
+      });
+      expect(requests).toEqual([
+        input,
+        { ...input, viewerId: "00000000-0000-0000-0000-000000000002" },
+      ]);
+    }).pipe(Effect.scoped),
+);
 
 it.live.each([
   { hasOperateScope: false, interactive: true },
