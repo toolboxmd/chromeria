@@ -262,6 +262,29 @@ it.each([
     complete: false,
   },
   { name: "untouched optional question", required: false, complete: true },
+  {
+    name: "cleared custom selection",
+    initialAnswer: "Draft",
+    edit: "",
+    toggle: "Blue",
+    toggleTwice: true,
+    complete: false,
+  },
+  {
+    name: "whitespace custom selection",
+    initialAnswer: "Draft",
+    edit: " \n ",
+    toggle: "Blue",
+    toggleTwice: true,
+    complete: false,
+  },
+  {
+    name: "offered empty initial selection",
+    initialAnswer: "",
+    toggle: "Green",
+    offeredEmpty: true,
+    complete: true,
+  },
   { name: "add to initial selection", initialAnswer: "Blue", toggle: "Green", complete: true },
   { name: "remove initial selection", initialAnswer: "Blue", toggle: "Blue", complete: false },
 ])("handles $name using the effective answer", async (scenario) => {
@@ -280,8 +303,10 @@ it.each([
         required: scenario.required,
         initialAnswer: scenario.initialAnswer,
         multiSelect: scenario.toggle !== undefined,
-        allowCustomAnswer: scenario.toggle === undefined,
-        options: scenario.toggle ? [{ label: "Blue" }, { label: "Green" }] : [],
+        allowCustomAnswer: scenario.toggle === undefined || scenario.edit !== undefined,
+        options: scenario.toggle
+          ? [{ label: "Blue", value: scenario.offeredEmpty ? "" : undefined }, { label: "Green" }]
+          : [],
       },
     ],
   };
@@ -340,8 +365,14 @@ it.each([
       expect(field.value).toBe(scenario.edit);
     }
     if (scenario.toggle) {
-      expect(button("Blue").getAttribute("aria-pressed")).toBe("true");
+      expect(button("Blue").getAttribute("aria-pressed")).toBe(
+        scenario.edit === undefined ? "true" : "false",
+      );
       await act(async () => button(scenario.toggle!).click());
+      if (scenario.toggleTwice) {
+        expect(button("Blue").getAttribute("aria-pressed")).toBe("true");
+        await act(async () => button(scenario.toggle!).click());
+      }
       expect(button("Blue").getAttribute("aria-pressed")).toBe(
         scenario.toggle === "Blue" ? "false" : "true",
       );
@@ -355,7 +386,7 @@ it.each([
       expect(calls).toHaveLength(1);
       expect(calls[0]?.operation).toMatchObject({
         type: "respond",
-        answers: { answer: scenario.toggle ? ["Blue", "Green"] : "" },
+        answers: { answer: scenario.toggle ? [scenario.offeredEmpty ? "" : "Blue", "Green"] : "" },
       });
     } else {
       expect(calls).toEqual([]);

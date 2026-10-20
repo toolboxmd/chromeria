@@ -142,7 +142,11 @@ export function RemotePendingRequest(props: {
                               ? previous.filter(
                                   (entry): entry is string => typeof entry === "string",
                                 )
-                              : typeof previous === "string"
+                              : typeof previous === "string" &&
+                                  (previous.trim().length > 0 ||
+                                    question.options.some(
+                                      (option) => (option.value ?? option.label) === previous,
+                                    ))
                                 ? [previous]
                                 : [];
                             return {
