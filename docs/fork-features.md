@@ -1318,7 +1318,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/mcp/RunGroups.integration.test.ts",
     "apps/server/src/orchestration-v2/RunGroups.ts"
   ],
-  "upstreamFiles": [],
+  "upstreamFiles": ["apps/server/src/testUtils/shardWeights.json"],
   "sharedFiles": [
     "apps/server/src/mcp/OrchestratorMcpService.ts",
     "apps/server/src/mcp/toolkits/orchestrator/handlers.ts",

@@ -516,6 +516,7 @@ apps/desktop/src/preview/Manager.ts
 apps/desktop/src/preview/Manager.test.ts
 
 # Execution purpose admission (#377)
+apps/server/src/testUtils/shardWeights.json
 apps/mobile/src/features/threads/McpAppWebView.tsx
 apps/mobile/src/features/threads/NewTaskDraftScreen.tsx
 apps/mobile/src/features/threads/ThreadDetailScreen.tsx
