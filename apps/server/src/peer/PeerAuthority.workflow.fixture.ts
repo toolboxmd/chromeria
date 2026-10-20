@@ -474,6 +474,7 @@ export const makeNode = (
     legacyAutomationPeer = false,
     captureReplyTransform,
     captureReplyGate,
+    htmlImageReadGate,
     commandSpawner,
     ownerWorkspace,
     providerAdapter = adapter,
@@ -491,6 +492,7 @@ export const makeNode = (
     readonly legacyDeviceDomain?: boolean;
     readonly legacyAutomationPeer?: boolean;
     readonly captureReplyGate?: Effect.Effect<void>;
+    readonly htmlImageReadGate?: Effect.Effect<void>;
     readonly captureReplyTransform?: (
       graph: AutomationAuthority.AcceptedGraph,
     ) => AutomationAuthority.AcceptedGraph;
@@ -1206,6 +1208,15 @@ export const makeNode = (
       nativeBrowser ??
       (previewControlsOwner ? yield* NativePreviewManager.layer.pipe(Layer.build) : undefined);
     const htmlLayer = HtmlRender.layer.pipe(
+      Layer.provide(
+        Layer.succeed(FileSystem.FileSystem, {
+          ...actualFs,
+          stream: (path, options) =>
+            htmlImageReadGate === undefined
+              ? actualFs.stream(path, options)
+              : Stream.unwrap(htmlImageReadGate.pipe(Effect.as(actualFs.stream(path, options)))),
+        }),
+      ),
       Layer.provide(nodeConfig),
       Layer.provide(previewBrowser),
     );

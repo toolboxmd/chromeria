@@ -41,16 +41,21 @@ const handlers = {
       };
     }),
   ),
-  // The page is stored in the calling thread, so it needs that thread's live run.
-  html_render: McpToolAccess.actsAsCaller(
+  // Linked HTML prepares destination resources; the originating live thread owns publication.
+  html_render: McpToolAccess.actsOnResource(
+    "thread-resource",
     (input) =>
       Effect.gen(function* () {
         const scope = yield* McpInvocationContext.McpInvocationContext;
         const { thread } = yield* McpInvocationContext.requireThreadScope(scope, "html_render");
         const htmlRender = yield* HtmlRender.HtmlRender;
         if (scope.client?.linked === true) {
+          const preparedHtml = yield* htmlRender
+            .prepare(input.html)
+            .pipe(Effect.mapError(toFailure));
+          yield* McpToolAccess.recheckResource("thread-resource");
           return {
-            preparedHtml: yield* htmlRender.prepare(input.html).pipe(Effect.mapError(toFailure)),
+            preparedHtml,
             title: input.title,
             height: input.height,
           };

@@ -39,6 +39,7 @@ import {
 } from "./PeerAuthority.workflow.fixture.ts";
 import { WsRpcGroup } from "@t3tools/contracts";
 import * as Tracer from "effect/Tracer";
+import { HtmlRenderToolkit } from "../mcp/toolkits/html/tools.ts";
 import * as AttachmentStaging from "../assets/AttachmentStaging.ts";
 import * as Path from "effect/Path";
 import { agentDeviceConfigPath } from "../device/AgentDeviceTarget.ts";
@@ -1957,44 +1958,99 @@ it.live(
   30_000,
 );
 
+const idleHtml382 = (id: string, htmlImageReadGate?: Effect.Effect<void>) =>
+  Effect.gen(function* () {
+    const a = yield* makeNode(
+      descriptorOf(`${id}-source`, "Source", { peerAuthority: 1 }),
+      "disk",
+      { productionKernel: true, attachmentRequests: true },
+    );
+    const b = yield* makeNode(
+      descriptorOf(`${id}-destination`, "Destination", { peerAuthority: 1 }),
+      "disk",
+      {
+        productionKernel: true,
+        attachmentRequests: true,
+        ...(htmlImageReadGate === undefined ? {} : { htmlImageReadGate }),
+      },
+    );
+    yield* linkTo(a.links, b, "full-access");
+    const parent = ThreadId.make(`${id}-parent`);
+    yield* seedParent(a, parent);
+    const child = ThreadId.make(`${id}-existing-idle`);
+    yield* b.threads.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make(`${id}-existing-create`),
+      threadId: child,
+      projectId: b.project.id,
+      title: "Existing idle HTML context",
+      modelSelection: {
+        ...selection,
+        instanceId: ProviderInstanceId.make("html382-other-provider"),
+      },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const capabilities = new Set(["orchestration"] as const);
+    const credential = yield* a.registry.issue({
+      threadId: parent,
+      providerInstanceId: instanceId,
+      capabilities,
+    });
+    const enrolled = yield* nativeCall(
+      a,
+      parent,
+      "orchestrator_capabilities",
+      {
+        environmentId: b.environmentId,
+      },
+      capabilities,
+      credential,
+    );
+    expect(enrolled.isError, json(enrolled)).not.toBe(true);
+    const grant = (yield* b.authority.grants)[0]!;
+    yield* b.authority.setGrant({ ...grant, resourceScope: "environment-resources" });
+    const fs = yield* FileSystem.FileSystem;
+    const image = `${b.config.attachmentsDir}/B-owned.svg`;
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"><text>B resource 382</text></svg>';
+    yield* fs.writeFileString(image, svg);
+    expect((yield* b.threads.getThreadShell(child))?.activeRunId).toBeNull();
+    expect((yield* b.threads.getThreadShell(child))?.providerInstanceId).toBe(
+      ProviderInstanceId.make("html382-other-provider"),
+    );
+    expect(yield* b.registry.scopeForThread(child)).toBeUndefined();
+    const call = (input: Record<string, unknown>, token = credential) =>
+      nativeCall(
+        a,
+        parent,
+        "html_render",
+        { environmentId: b.environmentId, contextThreadId: child, ...input },
+        capabilities,
+        token,
+      );
+    return { a, b, parent, child, capabilities, credential, grant, fs, image, svg, call };
+  });
+
 it.live(
   "html382: registered peer HTML publication keeps its accepted artifact after replay and later edits",
   () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const a = yield* makeNode(
-          descriptorOf("html382-source", "Source", { peerAuthority: 1 }),
-          "disk",
-          { productionKernel: true, attachmentRequests: true },
-        );
-        const b = yield* makeNode(
-          descriptorOf("html382-destination", "Destination", { peerAuthority: 1 }),
-          "disk",
-          { productionKernel: true, attachmentRequests: true },
-        );
-        yield* linkTo(a.links, b, "full-access");
-        const parent = ThreadId.make("html382-parent");
-        yield* seedParent(a, parent);
-        const launch = yield* nativeCall(a, parent, "t3_thread_launch", {
-          environmentId: b.environmentId,
-          projectId: b.project.id,
-          title: "HTML target",
-          message: "Wait",
-          modelSelection: selection,
-          clientRequestId: "html382-target",
-        });
-        expect(launch.isError, json(launch)).not.toBe(true);
-        const child = (yield* decodeLaunchReceipt(launch.structuredContent)).threadId;
-        yield* activate(b, child);
+        const { a, b, parent, child, capabilities, credential, fs, image, svg } =
+          yield* idleHtml382("html382");
         const input = {
           environmentId: b.environmentId,
           contextThreadId: child,
-          html: "<!doctype html><html><body>Isolated HTML 382</body></html>",
+          html: `<!doctype html><html><body>Isolated HTML 382<img src="${image}"></body></html>`,
           title: "Stable page",
           height: 420,
           clientRequestId: "html382-once",
         };
-        const first = yield* nativeCall(a, parent, "html_render", input);
+        const first = yield* nativeCall(a, parent, "html_render", input, capabilities, credential);
         expect(first.isError, json(first)).not.toBe(true);
         const result = yield* Schema.decodeUnknownEffect(
           Schema.Struct({ htmlRender: Schema.Struct({ attachmentId: Schema.String }) }),
@@ -2004,10 +2060,16 @@ it.live(
           attachmentId: result.htmlRender.attachmentId,
         });
         expect(path).not.toBeNull();
-        const fs = yield* FileSystem.FileSystem;
         expect(yield* fs.readFileString(path!)).toContain("Isolated HTML 382");
+        expect(yield* fs.readFileString(path!)).toContain(
+          "data:image/svg+xml;base64," + Buffer.from(svg).toString("base64"),
+        );
+        expect(yield* fs.readDirectory(b.config.attachmentsDir)).toEqual(["B-owned.svg"]);
+        expect(result.htmlRender.attachmentId).toContain(parent);
+        expect((yield* b.threads.getThreadShell(child))?.activeRunId).toBeNull();
+        expect(yield* b.registry.scopeForThread(child)).toBeUndefined();
         yield* fs.writeFileString(path!, "Later independent page edit 382");
-        const replay = yield* nativeCall(a, parent, "html_render", input);
+        const replay = yield* nativeCall(a, parent, "html_render", input, capabilities, credential);
         expect(replay.isError, json(replay)).not.toBe(true);
         expect(replay.structuredContent).toEqual(first.structuredContent);
         expect(yield* fs.readFileString(path!)).toBe("Later independent page edit 382");
@@ -2022,6 +2084,284 @@ it.live(
         expect(rows).toHaveLength(1);
         expect(json(rows)).not.toContain(input.html);
         expect(json(rows)).toContain(result.htmlRender.attachmentId);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "html382: local live, plan and matching background callers retain publication while ended callers refuse",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const node = yield* makeNode(
+          descriptorOf("html382-local", "Local", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const parent = ThreadId.make("html382-local-parent");
+        yield* seedParent(node, parent);
+        const credential = yield* node.registry.issue({
+          threadId: parent,
+          providerInstanceId: instanceId,
+          capabilities: new Set(["orchestration"] as const),
+        });
+        const call = (key: string) =>
+          nativeCall(
+            node,
+            parent,
+            "html_render",
+            { html: "<p>Local HTML</p>", title: "Local", height: 300, clientRequestId: key },
+            undefined,
+            credential,
+          );
+        expect((yield* call("html382-local-live")).isError).not.toBe(true);
+        yield* node.threads.dispatch({
+          type: "thread.interaction-mode.set",
+          commandId: CommandId.make("html382-local-plan"),
+          threadId: parent,
+          interactionMode: "plan",
+        });
+        expect((yield* call("html382-local-plan")).isError).not.toBe(true);
+        yield* backgroundRoster383(node, parent, true, true);
+        expect((yield* node.threads.getThreadShell(parent))?.activeRunId).toBeNull();
+        expect((yield* call("html382-local-background")).isError).not.toBe(true);
+        yield* backgroundRoster383(node, parent, false);
+        const fs = yield* FileSystem.FileSystem;
+        const before = yield* fs.readDirectory(node.config.attachmentsDir);
+        expect(before).toHaveLength(3);
+        expect(json(yield* call("html382-local-ended"))).toContain("parent_not_active");
+        expect(yield* fs.readDirectory(node.config.attachmentsDir)).toEqual(before);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "html382: current source identity, resource scope, archive, modes, deletion and link remain authoritative",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, child, capabilities, grant, fs, call } =
+          yield* idleHtml382("html382-denials");
+        const input = { html: "<p>Authorized HTML</p>", title: "HTML", height: 300 };
+        let sequence = 0;
+        const render = (token?: Parameters<typeof call>[1], extra: Record<string, unknown> = {}) =>
+          call({ ...input, clientRequestId: `html382-denial-${sequence++}`, ...extra }, token);
+        const assertNoPages = Effect.gen(function* () {
+          expect(yield* fs.readDirectory(a.config.attachmentsDir)).toEqual([]);
+          expect(yield* fs.readDirectory(b.config.attachmentsDir)).toEqual(["B-owned.svg"]);
+        });
+        const wrong = yield* a.registry.issue({
+          threadId: parent,
+          providerInstanceId: ProviderInstanceId.make("html382-wrong-provider"),
+          capabilities,
+        });
+        expect(json(yield* render(wrong))).toContain("parent_not_active");
+        yield* b.authority.setGrant({ ...grant, resourceScope: "created-work" });
+        expect(json(yield* render())).toContain("capability_denied");
+        yield* b.authority.setGrant({ ...grant, resourceScope: "environment-resources" });
+        yield* b.threads.dispatch({
+          type: "thread.archive",
+          commandId: CommandId.make("html382-archive"),
+          threadId: child,
+        });
+        expect(json(yield* render())).toContain("capability_denied");
+        yield* b.threads.dispatch({
+          type: "thread.unarchive",
+          commandId: CommandId.make("html382-unarchive"),
+          threadId: child,
+        });
+        yield* a.threads.dispatch({
+          type: "thread.interaction-mode.set",
+          commandId: CommandId.make("html382-plan"),
+          threadId: parent,
+          interactionMode: "plan",
+        });
+        expect((yield* render()).isError).toBe(true);
+        yield* a.threads.dispatch({
+          type: "thread.interaction-mode.set",
+          commandId: CommandId.make("html382-default"),
+          threadId: parent,
+          interactionMode: "default",
+        });
+        yield* a.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("html382-narrow"),
+          threadId: parent,
+          runtimeMode: "auto",
+        });
+        expect((yield* render()).isError).toBe(true);
+        yield* a.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("html382-full"),
+          threadId: parent,
+          runtimeMode: "full-access",
+        });
+        expect(
+          (yield* render(undefined, { contextThreadId: ThreadId.make("html382-absent") })).isError,
+        ).toBe(true);
+        yield* a.threads.dispatch({
+          type: "thread.stop",
+          commandId: CommandId.make("html382-stop"),
+          threadId: parent,
+        });
+        expect(json(yield* render())).toContain("parent_not_active");
+        yield* assertNoPages;
+        yield* a.threads.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("html382-resume"),
+          threadId: parent,
+          messageId: MessageId.make("html382-resume-message"),
+          text: "Fixture resumption",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* activate(a, parent);
+        const allowed = yield* render();
+        expect(allowed.isError, json(allowed)).not.toBe(true);
+        const before = yield* fs.readDirectory(a.config.attachmentsDir);
+        yield* b.threads.dispatch({
+          type: "thread.delete",
+          commandId: CommandId.make("html382-delete"),
+          threadId: child,
+        });
+        expect((yield* render()).isError).toBe(true);
+        expect(yield* fs.readDirectory(a.config.attachmentsDir)).toEqual(before);
+        // Revoke with a valid existing context so a missing target cannot mask session refusal.
+        const revoked = yield* idleHtml382("html382-revoked");
+        yield* revoked.b.auth.revokeSession(revoked.grant.sessionId);
+        expect(
+          (yield* revoked.call({ ...input, clientRequestId: "html382-revoked" })).isError,
+        ).toBe(true);
+        expect(yield* fs.readDirectory(revoked.a.config.attachmentsDir)).toEqual([]);
+        expect(yield* fs.readDirectory(revoked.b.config.attachmentsDir)).toEqual(["B-owned.svg"]);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live.each(["source-ended", "grant-narrowed", "grant-revoked"] as const)(
+  "html382: %s while real destination preparation waits refuses prepared data and publication",
+  (change) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const fs = yield* FileSystem.FileSystem;
+        const pair = yield* idleHtml382(
+          `html382-held-${change}`,
+          Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
+        );
+        const { a, b, parent, child, credential, grant, image } = pair;
+        const original = (yield* a.registry.resolve(
+          credential.config.authorizationHeader.slice(7),
+        ))!;
+        const input = {
+          environmentId: b.environmentId,
+          contextThreadId: child,
+          html: `<img src="${image}">`,
+          title: "Held page",
+          height: 300,
+          clientRequestId: "html382-held",
+        };
+        // Forward through the actual public destination registration. Observing this
+        // result independently distinguishes B's recheck from A's publication check.
+        const preparing = yield* a.forwarding
+          .call(original, HtmlRenderToolkit.tools.html_render, b.environmentId, input)
+          .pipe(Effect.exit, Effect.forkScoped);
+        yield* Effect.raceFirst(
+          Deferred.await(entered),
+          Fiber.join(preparing).pipe(Effect.flatMap((result) => Effect.die(json(result)))),
+        );
+        if (change === "source-ended")
+          yield* a.threads.dispatch({
+            type: "thread.stop",
+            commandId: CommandId.make("html382-held-stop"),
+            threadId: parent,
+          });
+        else if (change === "grant-narrowed")
+          yield* b.authority.setGrant({ ...grant, resourceScope: "created-work" });
+        else yield* b.auth.revokeSession(grant.sessionId);
+        yield* Deferred.succeed(release, undefined);
+        expect(Exit.isFailure(yield* Fiber.join(preparing))).toBe(true);
+        expect(yield* fs.readDirectory(a.config.attachmentsDir)).toEqual([]);
+        expect(yield* fs.readDirectory(b.config.attachmentsDir)).toEqual(["B-owned.svg"]);
+        expect((yield* b.threads.getThreadShell(child))?.activeRunId).toBeNull();
+        expect(yield* b.registry.scopeForThread(child)).toBeUndefined();
+        const sql = Context.get(a.database, SqlClient.SqlClient);
+        expect(yield* sql`SELECT id FROM mcp_request_receipts WHERE state='completed'`).toEqual([]);
+        // The same real credential was resolved above; no destination credential was issued.
+        expect(original.thread.providerInstanceId).toBe(instanceId);
+        expect(original.capabilities.has("preview")).toBe(false);
+        expect(original.capabilities.has("device")).toBe(false);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "html382: source ending after a successful remote preparation cannot publish",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const bridge = yield* makeNativePromiseBridge;
+        const preparedReplies: string[] = [];
+        let destination = "";
+        const actualFetch = yield* FetchHttpClient.Fetch;
+        const observedFetch: typeof globalThis.fetch = async (input, init) => {
+          const response = await actualFetch(input, init);
+          const body =
+            typeof init?.body === "string"
+              ? init.body
+              : init?.body instanceof Uint8Array
+                ? new TextDecoder().decode(init.body)
+                : "";
+          if (String(input) === `${destination}/mcp` && body.includes('"name":"html_render"')) {
+            const text = await response.clone().text();
+            preparedReplies.push(text);
+            await bridge(
+              Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
+            );
+          }
+          return response;
+        };
+        yield* Effect.gen(function* () {
+          const { a, b, parent, child, fs, image, call } =
+            yield* idleHtml382("html382-source-return");
+          destination = b.url;
+          const rendering = yield* call({
+            html: `<img src="${image}">`,
+            title: "Held response",
+            height: 300,
+            clientRequestId: "html382-source-return",
+          }).pipe(Effect.forkScoped);
+          yield* Deferred.await(entered);
+          expect(preparedReplies).toHaveLength(1);
+          expect(preparedReplies[0]).toContain("preparedHtml");
+          expect(preparedReplies[0]).toContain("data:image/svg+xml;base64,");
+          yield* a.threads.dispatch({
+            type: "thread.stop",
+            commandId: CommandId.make("html382-return-stop"),
+            threadId: parent,
+          });
+          yield* Deferred.succeed(release, undefined);
+          const refused = yield* Fiber.join(rendering);
+          expect(refused.isError, json(refused)).toBe(true);
+          expect(json(refused)).toContain("capability_denied");
+          expect(yield* fs.readDirectory(a.config.attachmentsDir)).toEqual([]);
+          expect(yield* fs.readDirectory(b.config.attachmentsDir)).toEqual(["B-owned.svg"]);
+          expect((yield* b.threads.getThreadShell(child))?.activeRunId).toBeNull();
+          expect(yield* b.registry.scopeForThread(child)).toBeUndefined();
+          const sql = Context.get(a.database, SqlClient.SqlClient);
+          expect(yield* sql`SELECT id FROM mcp_request_receipts WHERE state='completed'`).toEqual(
+            [],
+          );
+        }).pipe(Effect.provideService(FetchHttpClient.Fetch, observedFetch));
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
   30_000,
