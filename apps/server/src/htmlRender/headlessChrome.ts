@@ -524,6 +524,9 @@ const launchBrowser = Effect.fnUntraced(function* (input: {
       Ignored,
       sessionId,
     );
+    // Full Chrome's new headless leaves a page it never focused unfocused, so
+    // :focus-visible and focus events would differ from a visible tab.
+    yield* send("Emulation.setFocusEmulationEnabled", { enabled: true }, Ignored, sessionId);
 
     const load = Effect.fnUntraced(function* (body: Uint8Array, urlFragment: string) {
       const loaded = yield* Deferred.make<void, BrowserFailure>();
