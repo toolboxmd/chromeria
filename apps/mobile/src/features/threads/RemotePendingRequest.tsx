@@ -50,7 +50,6 @@ export function RemotePendingRequest(props: {
       const answer = answers[question.id] ?? question.initialAnswer;
       return (
         question.required === false ||
-        question.initialAnswer !== undefined ||
         (typeof answer === "string" &&
           (answer.trim().length > 0 ||
             question.options.some((option) => (option.value ?? option.label) === answer))) ||
@@ -138,12 +137,18 @@ export function RemotePendingRequest(props: {
                         disabled={busy || !mayRespond}
                         onPress={() =>
                           setAnswers((current) => {
-                            const previous = current[question.id];
+                            const previous = current[question.id] ?? question.initialAnswer;
                             const selected = Array.isArray(previous)
                               ? previous.filter(
                                   (entry): entry is string => typeof entry === "string",
                                 )
-                              : [];
+                              : typeof previous === "string" &&
+                                  (previous.trim().length > 0 ||
+                                    question.options.some(
+                                      (option) => (option.value ?? option.label) === previous,
+                                    ))
+                                ? [previous]
+                                : [];
                             return {
                               ...current,
                               [question.id]: question.multiSelect
