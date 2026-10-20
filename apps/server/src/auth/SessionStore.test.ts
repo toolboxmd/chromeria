@@ -128,6 +128,44 @@ const layerFailingSessionLookupCredential = Layer.effect(
 );
 
 it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
+  it.effect(
+    "admits a fresh preview viewer after the expired socket releases its last transport",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionStore.SessionStore;
+        const owner = yield* sessions.issue({ subject: "reconnecting-viewer" });
+        const input = {
+          sessionId: owner.sessionId,
+          resource: {
+            type: "preview" as const,
+            environmentId: EnvironmentId.make("B"),
+            threadId: ThreadId.make("context"),
+            tabId: "tab",
+            serverEpoch: "epoch",
+          },
+          operation: "control" as const,
+          generation: "generation",
+        };
+        const old = yield* sessions.issueViewerToken(input);
+        const socketScope = yield* Scope.make();
+        yield* sessions
+          .admitViewerToken(old.token)
+          .pipe(Effect.provideService(Scope.Scope, socketScope));
+        yield* TestClock.adjust("65 seconds");
+        yield* Scope.close(socketScope, Exit.void);
+        expect(
+          (yield* sessions
+            .issueViewerToken({ ...input, viewerId: old.viewerId })
+            .pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        const fresh = yield* sessions.issueViewerToken(input);
+        expect(fresh.viewerId).not.toBe(old.viewerId);
+        const admitted = yield* sessions.admitViewerToken(fresh.token);
+        yield* admitted.recheck;
+        expect(admitted.viewerId).toBe(fresh.viewerId);
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(layerSessionStore(), TestClock.layer()))),
+  );
+
   it.effect.each(["device", "preview"] as const)(
     "admitted %s transport outlives admission but not scope or session retirement",
     (kind) =>
