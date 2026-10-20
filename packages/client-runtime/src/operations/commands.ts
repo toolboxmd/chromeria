@@ -839,6 +839,7 @@ export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThrea
         run.status === "running" ||
         run.status === "waiting",
     )?.id;
+    runId ??= projection.thread.transportRecovery?.runId;
     if (runId === undefined) {
       const latestRun = projection.runs.at(-1);
       if (

@@ -3777,10 +3777,16 @@ function providerFailureFromResult(
       });
     }
   }
+  const transportError =
+    failureHint === undefined &&
+    message.terminal_reason === "api_error" &&
+    (message.subtype !== "success" || message.api_error_status == null);
   const failureClass =
     (message.subtype === "success" && message.api_error_status === 429) || usageLimited
       ? "usage_limit"
-      : "provider_error";
+      : transportError
+        ? "transport_error"
+        : "provider_error";
   const listedError = resultUserFacingError(message);
   const apiErrorMessage =
     message.subtype === "success" &&
@@ -3798,6 +3804,7 @@ function providerFailureFromResult(
       message: listedError ?? structuredError ?? message.errors.join("\n"),
       code: message.subtype,
       class: failureClass,
+      ...(transportError ? { retryable: true } : {}),
     });
   }
   if (!message.is_error && structuredError === undefined) {
@@ -3811,7 +3818,7 @@ function providerFailureFromResult(
         ? (message.terminal_reason ?? "sdk_result_error")
         : `api_error_${apiErrorStatus}`,
     class: failureClass,
-    retryable: apiErrorStatus === 429 || apiErrorStatus === 529 ? true : null,
+    retryable: transportError || apiErrorStatus === 429 || apiErrorStatus === 529 ? true : null,
   });
 }
 

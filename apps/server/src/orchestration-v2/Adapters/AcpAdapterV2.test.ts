@@ -101,6 +101,73 @@ import {
 const DEFAULT_GROK_SETTINGS = Schema.decodeSync(GrokSettings)({});
 const DROID_SETTINGS = Schema.decodeSync(AcpRegistrySettings)({ agentId: "factory-droid" });
 
+it.live.each(["ENOTFOUND", "ECONNREFUSED", "Internal error"])(
+  "shared ACP adapter used by Antigravity classifies %s",
+  (diagnostic) =>
+    Effect.gen(function* () {
+      const instanceId = ProviderInstanceId.make("antigravity-network");
+      const threadId = ThreadId.make("antigravity-network");
+      const adapter = yield* makeAcpAdapterV2({
+        instanceId,
+        selfInvocation: yield* resolveSelfInvocation(),
+        flavor: {
+          driver: ProviderDriverKind.make("antigravity"),
+          capabilities: AcpProviderCapabilitiesV2,
+          makeRuntime: makeMockRuntime({
+            childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
+            mockAgentPath: yield* (yield* Path.Path).fromFileUrl(
+              new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+            ),
+            wrapRuntime: (runtime) => ({
+              ...runtime,
+              prompt: () =>
+                Effect.fail(
+                  new EffectAcpErrors.AcpRequestError({ code: -32603, errorMessage: diagnostic }),
+                ),
+            }),
+          }),
+        },
+      });
+      const policy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: process.cwd(),
+      });
+      const modelSelection = { instanceId, model: "default" };
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("antigravity-network"),
+        modelSelection,
+        runtimePolicy: policy,
+      });
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy: policy,
+      });
+      yield* runtime.startTurn(
+        makeTurnInput({
+          threadId,
+          providerThread,
+          instanceId,
+          runtimePolicy: policy,
+          now: yield* DateTime.now,
+        }),
+      );
+      const events = yield* runtime.events.pipe(
+        Stream.takeUntil((event) => event.type === "turn.terminal"),
+        Stream.runCollect,
+      );
+      const terminal = events.find((event) => event.type === "turn.terminal");
+      assert.equal(terminal?.status, "failed");
+      assert.equal(
+        terminal?.failure?.class,
+        diagnostic === "Internal error" ? "provider_error" : "transport_error",
+      );
+      assert.equal(terminal?.failure?.retryable, diagnostic === "Internal error" ? null : true);
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+);
+
 const layerHost = TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer));
 
 const layerTest = Layer.mergeAll(

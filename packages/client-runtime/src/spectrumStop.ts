@@ -49,5 +49,7 @@ export function threadStopInput(
   interruptibleRunId: RunId | null,
 ): InterruptThreadTurnInput | null {
   if (isForkSpectrumRunning(shell)) return { threadId: shell.id, forkSpectrumRunning: true };
+  if (interruptibleRunId === null && shell.source.transportRecovery != null)
+    return { threadId: shell.id, runId: shell.source.transportRecovery.runId };
   return interruptibleRunId === null ? null : { threadId: shell.id, runId: interruptibleRunId };
 }

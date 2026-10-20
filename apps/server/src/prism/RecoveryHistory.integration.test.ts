@@ -117,7 +117,7 @@ const prepareRetry = Effect.gen(function* () {
     status: "pending",
     reason: "retry",
   });
-  const command = retryCommand(record);
+  const command = retryCommand(record, Number.MAX_SAFE_INTEGER);
   if (command?.type !== "message.dispatch") throw new Error("fixture");
   const successor = {
     ...run,
@@ -558,44 +558,44 @@ describe("Prism exact-source recovery history", () => {
       }).pipe(Effect.provide(dependencies)),
   );
 
-  it.effect(
-    "the committed non-MCP failure event produces a conclusion without a controller or clock tick",
-    () =>
-      Effect.gen(function* () {
-        const commands = yield* Queue.unbounded<OrchestrationV2ServerCommand>();
-        const observed = yield* Deferred.make<void>();
-        yield* Effect.gen(function* () {
-          yield* persist(
-            "seed:non-mcp",
-            recoveryEvents(run).map((item) =>
-              item.type === "thread.created"
-                ? { ...item, payload: { ...item.payload, creationSource: "web" as const } }
-                : item,
-            ),
-          );
-          yield* persist("failure:committed", [
-            { ...event(run, "failure:committed"), type: "run.updated" },
-          ]);
-          yield* Deferred.await(observed);
-          assert.deepStrictEqual(yield* History.readRecoveryOutcome(run.id), {
-            sourceRunId: run.id,
-            threadId: run.threadId,
-            status: "decided",
-            outcome: "not_retryable",
-            reason: "non_mcp",
-          });
-          assert.strictEqual(yield* (yield* Store.RecoveryStore).get(run.threadId), null);
-          assert.strictEqual(yield* Queue.size(commands), 0);
-        }).pipe(
-          Effect.provide(
-            Reactor.layer.pipe(
-              Layer.provide(
-                external(commands, Deferred.succeed(observed, undefined).pipe(Effect.asVoid)),
-              ),
-            ),
+  it.effect("the committed web failure event receives the same recovery as an MCP failure", () =>
+    Effect.gen(function* () {
+      const commands = yield* Queue.unbounded<OrchestrationV2ServerCommand>();
+      const observed = yield* Deferred.make<void>();
+      yield* Effect.gen(function* () {
+        yield* persist(
+          "seed:non-mcp",
+          recoveryEvents(run).map((item) =>
+            item.type === "thread.created"
+              ? { ...item, payload: { ...item.payload, creationSource: "web" as const } }
+              : item,
           ),
         );
-      }).pipe(Effect.provide(dependencies)),
+        yield* persist("failure:committed", [
+          { ...event(run, "failure:committed"), type: "run.updated" },
+        ]);
+        yield* Deferred.await(observed);
+        assert.deepStrictEqual(yield* History.readRecoveryOutcome(run.id), {
+          sourceRunId: run.id,
+          threadId: run.threadId,
+          status: "pending",
+          reason: "retry",
+        });
+        assert.strictEqual(
+          (yield* (yield* Store.RecoveryStore).get(run.threadId))?.state,
+          "retry_pending",
+        );
+        assert.strictEqual(yield* Queue.size(commands), 1);
+      }).pipe(
+        Effect.provide(
+          Reactor.layer.pipe(
+            Layer.provide(
+              external(commands, Deferred.succeed(observed, undefined).pipe(Effect.asVoid)),
+            ),
+          ),
+        ),
+      );
+    }).pipe(Effect.provide(dependencies)),
   );
 
   it.effect("an archived failed run receives an automatic abandoned fact", () =>

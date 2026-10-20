@@ -12,6 +12,8 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
+  NodeId,
+  RuntimeRequestId,
   type OrchestrationV2ProviderFailure,
   type OrchestrationV2Run,
 } from "@t3tools/contracts";
@@ -164,6 +166,255 @@ const failure = {
   code: null,
   retryable: true,
 };
+it.effect(
+  "user transport recovery backs off indefinitely, publishes waits and resets after success",
+  () =>
+    Effect.gen(function* () {
+      const { orchestrator } = yield* setup;
+      let source = (yield* orchestrator.getThreadProjection(parentId)).runs[0]!;
+      const transport = { ...failure, class: "transport_error" as const };
+      const reactor = yield* Reactor.RecoveryReactor;
+      const projections = yield* Projection.ProjectionStoreV2;
+      let count = 1;
+      for (const minutes of [1, 2, 5, 15, 30, 30, 30]) {
+        yield* finish(source, transport);
+        yield* reactor.sweep;
+        const waiting = yield* orchestrator.getThreadProjection(parentId);
+        const now = DateTime.toEpochMillis(yield* DateTime.now);
+        assert.deepStrictEqual(waiting.thread.transportRecovery, {
+          runId: source.id,
+          retryAt: now + minutes * 60_000,
+        });
+        assert.deepStrictEqual(
+          (yield* projections.getShellSnapshot()).threads.find((t) => t.id === parentId)
+            ?.transportRecovery,
+          waiting.thread.transportRecovery,
+        );
+        yield* TestClock.adjust(minutes * 60_000 - 1);
+        yield* reactor.sweep;
+        assert.lengthOf((yield* orchestrator.getThreadProjection(parentId)).runs, count);
+        yield* TestClock.adjust(1);
+        yield* reactor.sweep;
+        const retried = yield* orchestrator.getThreadProjection(parentId);
+        assert.lengthOf(retried.runs, ++count);
+        const next = retried.runs.at(-1)!;
+        assert.deepStrictEqual(next.modelSelection, selection);
+        assert.strictEqual(next.forkPrismContinuationSourceRunId, source.id);
+        source = next;
+        // Observe an active continuation before its failure, as the live event stream does.
+        yield* reactor.sweep;
+        assert.strictEqual(
+          (yield* orchestrator.getThreadProjection(parentId)).thread.transportRecovery,
+          null,
+        );
+      }
+      yield* finish(source, null);
+      yield* reactor.sweep;
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("after-success"),
+        threadId: parentId,
+        messageId: MessageId.make("after-success"),
+        text: "Next task",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const fresh = (yield* orchestrator.getThreadProjection(parentId)).runs.at(-1)!;
+      yield* finish(fresh, transport);
+      yield* reactor.sweep;
+      assert.strictEqual(
+        (yield* orchestrator.getThreadProjection(parentId)).thread.transportRecovery?.retryAt,
+        DateTime.toEpochMillis(yield* DateTime.now) + 60_000,
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("Stop during the transport delay prevents the scheduled retry", () =>
+  Effect.gen(function* () {
+    const { orchestrator } = yield* setup;
+    const source = (yield* orchestrator.getThreadProjection(parentId)).runs[0]!;
+    yield* finish(source, { ...failure, class: "transport_error" });
+    const reactor = yield* Reactor.RecoveryReactor;
+    yield* reactor.sweep;
+    yield* orchestrator.dispatch({
+      type: "run.interrupt",
+      commandId: CommandId.make("stop:waiting"),
+      threadId: parentId,
+      runId: source.id,
+      holdQueue: true,
+    });
+    yield* TestClock.adjust(60_000);
+    yield* reactor.sweep;
+    assert.lengthOf((yield* orchestrator.getThreadProjection(parentId)).runs, 1);
+    assert.strictEqual(
+      yield* (yield* Coordinator.RecoveryCoordinator).holdsResult(parentId),
+      false,
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a user takeover stays cancelled when a stale active retry is reconciled", () =>
+  Effect.gen(function* () {
+    const { orchestrator } = yield* setup;
+    const source = (yield* orchestrator.getThreadProjection(parentId)).runs[0]!;
+    const transport = { ...failure, class: "transport_error" as const };
+    const reactor = yield* Reactor.RecoveryReactor;
+    const coordinator = yield* Coordinator.RecoveryCoordinator;
+    yield* finish(source, transport);
+    yield* reactor.sweep;
+    yield* TestClock.adjust(60_000);
+    yield* reactor.sweep;
+    const stale = yield* orchestrator.getThreadProjection(parentId);
+    const retry = stale.runs.at(-1)!;
+    yield* coordinator.observe(stale, false);
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("takeover:active"),
+      threadId: parentId,
+      messageId: MessageId.make("takeover:active"),
+      text: "Take over",
+      attachments: [],
+      dispatchMode: { type: "queue_after_active" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    yield* coordinator.observe(stale, false);
+    assert.strictEqual(yield* coordinator.holdsResult(parentId), false);
+    yield* finish(retry, transport);
+    yield* reactor.sweep;
+    yield* TestClock.adjust(3_600_000);
+    yield* reactor.sweep;
+    assert.lengthOf(
+      (yield* orchestrator.getThreadProjection(parentId)).runs.filter(
+        (r) => r.forkPrismContinuationSourceRunId === retry.id,
+      ),
+      0,
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each(["admitted", "observed", "wait-cleared"] as const)(
+  "Stop for a waiting source reaches its admitted retry (%s)",
+  (stage) =>
+    Effect.gen(function* () {
+      const { orchestrator } = yield* setup;
+      const source = (yield* orchestrator.getThreadProjection(parentId)).runs[0]!;
+      const transport = { ...failure, class: "transport_error" as const };
+      const reactor = yield* Reactor.RecoveryReactor;
+      yield* finish(source, transport);
+      yield* reactor.sweep;
+      yield* TestClock.adjust(60_000);
+      yield* reactor.sweep;
+      const admitted = yield* orchestrator.getThreadProjection(parentId);
+      const retry = admitted.runs.at(-1)!;
+      if (stage !== "admitted")
+        yield* (yield* Coordinator.RecoveryCoordinator).observe(admitted, false);
+      if (stage === "wait-cleared") {
+        yield* reactor.sweep;
+        assert.isNull((yield* orchestrator.getThreadProjection(parentId)).thread.transportRecovery);
+      }
+      yield* orchestrator.dispatch({
+        type: "run.interrupt",
+        commandId: CommandId.make("stop:deadline"),
+        threadId: parentId,
+        runId: source.id,
+        holdQueue: true,
+      });
+      assert.strictEqual(
+        (yield* orchestrator.getThreadProjection(parentId)).runs.find((r) => r.id === retry.id)
+          ?.status,
+        "interrupted",
+      );
+      yield* reactor.sweep;
+      assert.strictEqual(
+        yield* (yield* Coordinator.RecoveryCoordinator).holdsResult(parentId),
+        false,
+      );
+      yield* TestClock.adjust(3_600_000);
+      yield* reactor.sweep;
+      assert.lengthOf(
+        (yield* orchestrator.getThreadProjection(parentId)).runs.filter(
+          (r) => r.forkPrismContinuationSourceRunId === retry.id,
+        ),
+        0,
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each(["message", "archive", "delete", "settle", "request", "model"] as const)(
+  "%s cancels a waiting transport retry",
+  (action) =>
+    Effect.gen(function* () {
+      const { orchestrator } = yield* setup;
+      const source = (yield* orchestrator.getThreadProjection(parentId)).runs[0]!;
+      yield* finish(source, { ...failure, class: "transport_error" });
+      const reactor = yield* Reactor.RecoveryReactor;
+      yield* reactor.sweep;
+      const projections = yield* Projection.ProjectionStoreV2;
+      const thread = (yield* orchestrator.getThreadProjection(parentId)).thread;
+      const now = yield* DateTime.now;
+      if (action === "message") {
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("takeover"),
+          messageId: MessageId.make("takeover"),
+          threadId: parentId,
+          text: "Do something else",
+          attachments: [],
+          createdBy: "user",
+          creationSource: "web",
+          dispatchMode: { type: "queue_after_active" },
+        });
+      } else if (action === "request") {
+        yield* projections.apply({
+          id: EventId.make("block:request"),
+          type: "runtime-request.updated",
+          threadId: parentId,
+          occurredAt: now,
+          payload: {
+            id: RuntimeRequestId.make("block:request"),
+            nodeId: NodeId.make("block:node"),
+            providerTurnId: null,
+            nativeRequestRef: null,
+            kind: "user_input",
+            status: "pending",
+            responseCapability: { type: "message" },
+            createdAt: now,
+            resolvedAt: null,
+          },
+        });
+      } else {
+        yield* projections.apply({
+          id: EventId.make(`block:${action}`),
+          type: "thread.metadata-updated",
+          threadId: parentId,
+          occurredAt: now,
+          payload: {
+            ...thread,
+            ...(action === "archive" ? { archivedAt: now } : {}),
+            ...(action === "delete" ? { deletedAt: now } : {}),
+            ...(action === "settle" ? { settledOverride: "settled" } : {}),
+            ...(action === "model" ? { modelSelection: { ...selection, model: "changed" } } : {}),
+          },
+        });
+      }
+      yield* TestClock.adjust(3_600_000);
+      yield* reactor.sweep;
+      const result = yield* orchestrator.getThreadProjection(parentId);
+      assert.lengthOf(
+        result.runs.filter((r) => r.forkPrismContinuationSourceRunId !== undefined),
+        0,
+      );
+      assert.strictEqual(
+        yield* (yield* Coordinator.RecoveryCoordinator).holdsResult(parentId),
+        false,
+      );
+      if (action !== "delete") assert.isNull(result.thread.transportRecovery);
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect(
   "actual delegated finalization holds the first failure and transfers only the exhausted retry",
   () =>
@@ -512,7 +763,7 @@ it.effect(
       assert.strictEqual(yield* hooks.holdsFinalization(childId, run.id), false);
       assert.deepStrictEqual(
         yield* sql`SELECT state FROM fork_prism_recovery WHERE thread_id=${childId}`,
-        [{ state: "closed" }],
+        [{ state: "cancelled" }],
       );
       yield* (yield* Reactor.RecoveryReactor).sweep;
       assert.lengthOf((yield* orchestrator.getThreadProjection(childId)).runs, 1);

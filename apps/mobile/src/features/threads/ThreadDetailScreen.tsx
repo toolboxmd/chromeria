@@ -8,6 +8,8 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult, Atom } from "effect/reactivity";
 import * as Dialog from "../../components/ui/Dialog";
+import { AppText as Text } from "../../components/ui/AppText";
+import { Button as RetryStopButton } from "../../components/ui/Button";
 import { ThreadExecutionPurposeControl } from "./ThreadExecutionPurposeControl";
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entities";
@@ -1445,6 +1447,24 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
                     threadRef={props.selectedThreadDetailRef}
                     canOperateThread={props.canOperateThread}
                   />
+                  {props.selectedThread.transportRecovery?.runId ===
+                    props.selectedThread.latestRun?.runId &&
+                  props.selectedThread.transportRecovery &&
+                  props.selectedThread.runtime?.status === "failed" &&
+                  !props.selectedThread.archivedAt &&
+                  !props.selectedThread.deletedAt &&
+                  props.selectedThread.settledOverride !== "settled" ? (
+                    <View className="mx-3 mb-2 rounded-xl border border-warning-foreground/25 bg-screen p-3">
+                      <Text accessibilityRole="alert" className="text-sm text-warning-foreground">
+                        {`Waiting to retry the connection. Next retry ${new Date(props.selectedThread.transportRecovery.retryAt).toLocaleString()}. Send a message or press Stop to cancel.`}
+                      </Text>
+                      <RetryStopButton
+                        label="Stop retrying"
+                        disabled={!props.canOperateThread}
+                        onPress={props.onStopThread}
+                      />
+                    </View>
+                  ) : null}
                   {props.feedbackSubmissions.map((submission) => (
                     <ComposerFeedback
                       key={submission.id}
