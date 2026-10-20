@@ -10578,3 +10578,46 @@ it("native383-rpc-groups: production partitions preserve the complete public met
     }
   }
 });
+
+const decodeVault379Open = Schema.decodeUnknownEffect(
+  Schema.Struct({ resource: PreviewViewerResource }),
+);
+
+it.live(
+  "vault379: preview-granted authority-v1 peers cannot start or end destination vault logins",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { b, child, call, assertIdle } = yield* idleResource383Pair("vault379-linked");
+        const opened = yield* call("preview_open", {
+          url: "https://example.test/login",
+          profileId: "default",
+          show: false,
+          clientRequestId: "vault379-open",
+        });
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { resource } = yield* decodeVault379Open(opened.structuredContent);
+        const before = yield* b.nativePreviewManager!.list({ threadId: child });
+        const ended = yield* call("preview_end_login", {
+          tabId: resource.tabId,
+          clientRequestId: "vault379-end",
+        });
+        const filled = yield* call("preview_fill_credential", {
+          tabId: resource.tabId,
+          item: "synthetic-item",
+          field: "password",
+          locator: "#password",
+          clientRequestId: "vault379-fill",
+        });
+        expect(json(ended)).toContain("capability_denied");
+        expect(json(filled)).toContain("capability_denied");
+        expect(yield* b.nativePreviewManager!.list({ threadId: child })).toEqual(before);
+        const status = yield* call("preview_status", { tabId: resource.tabId });
+        expect(status.isError, json(status)).not.toBe(true);
+        expect(json(status)).not.toContain('"loginInProgress":true');
+        expect(json(status)).toContain("https://example.test/login");
+        yield* assertIdle;
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  60_000,
+);
