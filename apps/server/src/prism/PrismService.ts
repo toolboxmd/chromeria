@@ -114,6 +114,7 @@ function effortOption(driver: string) {
   switch (driver) {
     case "codex":
     case "grok":
+    case "muse":
       return "reasoningEffort";
     case "opencode":
       return "variant";
