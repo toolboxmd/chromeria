@@ -16,6 +16,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/ai";
 import {
@@ -51,6 +52,15 @@ const expectNoSentinel = (value: unknown) => {
     expect(text).not.toContain(encodeURIComponent(sentinel));
   }
 };
+const decodeCredentialFailureContent = Schema.decodeUnknownEffect(
+  Schema.Tuple([
+    Schema.Struct({
+      type: Schema.Literal("text"),
+      text: Schema.fromJsonString(Schema.Struct({ message: Schema.String })),
+    }),
+  ]),
+  { onExcessProperty: "error" },
+);
 
 describe("matchingItemHost", () => {
   const table: ReadonlyArray<[string, ReadonlyArray<string>, boolean]> = [
@@ -437,12 +447,13 @@ describe("fillCredential in a real browser", () => {
           itemUris = ["shopify.com"];
           const mismatch = yield* call({ item: "Example", field: "username", locator: "#user" });
           expect(mismatch.isError).toBe(true);
-          expect(mismatch.content).toEqual([
-            {
-              type: "text",
-              text: new PreviewCredentialError({ reason: "originMismatch" }).message,
-            },
-          ]);
+          expect(mismatch.structuredContent).toBeUndefined();
+          const [failure] = yield* decodeCredentialFailureContent(mismatch.content);
+          expect(failure.text).toEqual({
+            message: new PreviewCredentialError({ reason: "originMismatch" }).message,
+          });
+          expect(vaultCalls).toEqual(["uris:Example", "password:Example", "uris:Example"]);
+          expect(yield* Effect.promise(() => page.inputValue("#user"))).toBe("");
           expectNoSentinel([filled, mismatch]);
 
           const config = yield* ServerConfig.ServerConfig;
