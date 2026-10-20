@@ -1,3 +1,5 @@
+import * as RemoteSecretRequests from "../secrets/RemoteSecretRequests.ts";
+import * as RemoteSecretRelay from "../secrets/RemoteSecretRelay.ts";
 import { vi } from "vite-plus/test";
 import * as PeerLinkEvents from "./PeerLinkEvents.ts";
 import { DeviceStandardToolkit as LegacyDeviceToolkit } from "../device/testing/LegacyDeviceTools.fixture.ts";
@@ -463,6 +465,7 @@ export const makeNode = (
   {
     productionKernel = false,
     attachmentRequests = false,
+    remoteSecrets = false,
     preferencesOwner = false,
     nativeOwners = false,
     deviceOwner = false,
@@ -482,6 +485,7 @@ export const makeNode = (
   }: {
     readonly productionKernel?: boolean;
     readonly attachmentRequests?: boolean;
+    readonly remoteSecrets?: boolean;
     readonly preferencesOwner?: boolean;
     readonly nativeOwners?: boolean;
     readonly deviceOwner?: boolean;
@@ -628,6 +632,7 @@ export const makeNode = (
         const reopened = yield* reopenDatabase;
         const infrastructure = yield* automationInfrastructure(reopened).pipe(Layer.build);
         const client = yield* PeerMcpClient.layer.pipe(
+          Layer.provide(Layer.succeedContext(reopened)),
           Layer.provide(Layer.succeedContext(infrastructure)),
           Layer.provide(environment),
           Layer.provide(httpLayer),
@@ -801,14 +806,15 @@ export const makeNode = (
       Layer.fresh,
       Layer.build,
     );
-    const requestContext = attachmentRequests
-      ? yield* RequestRuntime.layer.pipe(
-          Layer.provide(db),
-          Layer.provide(nodeConfig),
-          Layer.provide(Layer.succeedContext(baseServices)),
-          Layer.build,
-        )
-      : Context.empty();
+    const requestContext =
+      attachmentRequests || remoteSecrets
+        ? yield* RequestRuntime.layer.pipe(
+            Layer.provide(db),
+            Layer.provide(nodeConfig),
+            Layer.provide(Layer.succeedContext(baseServices)),
+            Layer.build,
+          )
+        : Context.empty();
     const holdLaunchReply = yield* Ref.make(false);
     const dropLaunchResponses = yield* Ref.make(0);
     const dropCommittedToolReply = yield* Ref.make<string | undefined>(undefined);
@@ -978,6 +984,64 @@ export const makeNode = (
       });
     const connection = yield* connect();
     const services = connection.services;
+    const remoteSecretFault = yield* Ref.make<"after-save" | "hold-save" | "cleanup" | undefined>(
+      undefined,
+    );
+    const secretPublished = yield* Deferred.make<void>();
+    const releaseSecretPublication = yield* Deferred.make<void>();
+    const actualSecretStore = Context.get(services, Secrets.ServerSecretStore);
+    const faultSecretStore = Layer.succeed(Secrets.ServerSecretStore, {
+      ...actualSecretStore,
+      create: (name, bytes) =>
+        actualSecretStore.create(name, bytes).pipe(
+          Effect.andThen(
+            Effect.gen(function* () {
+              if (
+                name.startsWith("secret-remote-") &&
+                (yield* Ref.get(remoteSecretFault)) === "hold-save"
+              ) {
+                yield* Deferred.succeed(secretPublished, undefined);
+                yield* Deferred.await(releaseSecretPublication);
+              }
+              if (
+                name.startsWith("secret-remote-") &&
+                (yield* Ref.get(remoteSecretFault)) === "after-save"
+              ) {
+                yield* Ref.set(remoteSecretFault, undefined);
+                return yield* new Secrets.SecretStorePersistError({
+                  resource: "isolated remote publication",
+                  cause: new Error("Fixture interruption after protected publication"),
+                });
+              }
+            }),
+          ),
+        ),
+      remove: (name) =>
+        Effect.gen(function* () {
+          if (
+            name.startsWith("secret-remote-") &&
+            (yield* Ref.get(remoteSecretFault)) === "cleanup"
+          ) {
+            return yield* new Secrets.SecretStoreRemoveError({
+              resource: "isolated redundant copy",
+              cause: new Error("Fixture interruption after outer commit"),
+            });
+          }
+          return yield* actualSecretStore.remove(name);
+        }),
+    });
+    const secretOwners = remoteSecrets
+      ? yield* Layer.mergeAll(RemoteSecretRequests.layer, RemoteSecretRelay.layer).pipe(
+          Layer.provide(faultSecretStore),
+          Layer.provide(Layer.succeedContext(services)),
+          Layer.provide(Layer.succeedContext(baseServices)),
+          Layer.provide(Layer.succeedContext(runtime)),
+          Layer.provide(db),
+          Layer.provide(environment),
+          Layer.provide(nodeConfig),
+          Layer.build,
+        )
+      : Context.empty();
     const handoffGitManager = GitManager.layer.pipe(
       Layer.provide(actualGit),
       Layer.provide(
@@ -1091,6 +1155,7 @@ export const makeNode = (
               Layer.fresh,
             ),
       ),
+      Layer.provide(Layer.succeedContext(secretOwners)),
       Layer.provide(Layer.succeedContext(baseServices)),
       Layer.provide(
         Layer.succeed(
@@ -1779,7 +1844,12 @@ export const makeNode = (
         Layer.provide(nodeConfig),
         Layer.provide(Layer.succeedContext(baseServices)),
         Layer.provide(Layer.succeedContext(scheduleServices)),
-        Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
+        Layer.provide(
+          Layer.mergeAll(
+            remoteSecrets ? nativeSecrets : Layer.mock(SecretRequests.SecretRequests)({}),
+            Layer.succeedContext(secretOwners),
+          ),
+        ),
         Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
         Layer.provide(Layer.succeedContext(launches)),
         Layer.provide(Layer.succeedContext(runtime)),
@@ -1832,6 +1902,7 @@ export const makeNode = (
         lifecycleContext,
         lifecycle,
         pendingRequests,
+        secretOwners,
         nativeBrowser ?? Context.empty(),
       ),
     }).pipe(Effect.provide(Layer.succeedContext(serverContext)));
@@ -1952,6 +2023,7 @@ export const makeNode = (
           lifecycle,
           pendingRequests,
           nativeBrowser ?? Context.empty(),
+          secretOwners,
         );
         const authorityServices = durableRequests
           ? currentAuthority
@@ -2002,10 +2074,25 @@ export const makeNode = (
       environmentId: descriptor.environmentId,
       project,
       database,
+      databasePath: Context.get(databaseConfig, Config.ServerConfig).dbPath,
       lifecycleRecovery,
       signals,
       runtime,
       requestContext,
+      secretOwners,
+      remoteSecretFault,
+      secretPublished,
+      releaseSecretPublication,
+      rebuildSecretOwner: RemoteSecretRequests.layer.pipe(
+        Layer.provide(faultSecretStore),
+        Layer.provide(Layer.succeedContext(baseServices)),
+        Layer.provide(db),
+        Layer.provide(environment),
+        Layer.provide(nodeConfig),
+        Layer.fresh,
+        Layer.build,
+      ),
+      nativeSecrets: remoteSecrets ? yield* nativeSecrets.pipe(Layer.build) : Context.empty(),
       config: Context.get(nodeConfigContext, Config.ServerConfig),
       browser,
       nativeBrowser:

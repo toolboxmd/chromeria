@@ -90,3 +90,5 @@ export * from "./peerAttachments.ts";
 
 export * from "./peerTask.ts";
 export * from "./mcpRequest.ts";
+
+export * from "./remoteSecret.ts";

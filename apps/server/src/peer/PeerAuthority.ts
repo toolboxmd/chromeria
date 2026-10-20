@@ -1,3 +1,9 @@
+import * as RemoteSecretPersistence from "../secrets/remoteSecretPersistence.ts";
+import {
+  RemoteSecretOrigin,
+  type RemoteSecretControl,
+  remoteSecretIntent,
+} from "@t3tools/contracts";
 import { rejectMcpClientAudience } from "../auth/EnvironmentAuth.ts";
 import type {
   DeviceViewerOpenInput,
@@ -141,6 +147,7 @@ const Frame = Schema.Struct({
   id: Schema.String,
   body: Schema.Union([
     Validation,
+    Schema.Struct({ type: Schema.Literal("secret-origin"), envelope: PeerAuthorityEnvelope }),
     AutomationCapture,
     LegacyAutomationCapture,
     ReturnNotice,
@@ -176,6 +183,7 @@ export const ExchangeResult = Schema.Struct({ frames: Schema.Array(Frame), curso
 export type Exchange = typeof Exchange.Type;
 const ReturnReceipt = OrchestratorMcpThreadSendResult;
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeSecretOrigin = Schema.decodeUnknownEffect(RemoteSecretOrigin);
 const decodeAcceptedGraph = Schema.decodeUnknownEffect(Automation.AcceptedGraph);
 const decodeLegacyAttestation = Schema.decodeUnknownEffect(LegacyAutomationAttestation);
 const decodeAuthority = Schema.decodeUnknownEffect(Schema.fromJsonString(ExecutionRecord));
@@ -203,6 +211,16 @@ const unavailable = () =>
 export class PeerAuthority extends Context.Service<
   PeerAuthority,
   {
+    readonly secretOrigin: (
+      recordId: string,
+    ) => Effect.Effect<RemoteSecretOrigin, OrchestratorMcpFailure>;
+    readonly secretClient: (recordId: string) => Effect.Effect<void, OrchestratorMcpFailure>;
+    readonly prepareSecretAnswer: (
+      sessionId: AuthSessionId,
+      peer: EnvironmentId,
+      generation: string,
+      input: RemoteSecretControl,
+    ) => Effect.Effect<PeerAuthorityEnvelope, OrchestratorMcpFailure>;
     readonly nativePreflight: NativeAuthorityValidation["Service"]["preflight"];
     readonly notifyAutomationChanges: Effect.Effect<void>;
     readonly nextAutomationDisableDeadline: Effect.Effect<number | null, OrchestratorMcpFailure>;
@@ -2855,6 +2873,28 @@ const make = Effect.gen(function* () {
           );
         return yield* mergeGraphs([graph, { records: [], legacy: [], dependencies: [dependency] }]);
       }
+      if (frame.body.type === "secret-origin") {
+        const record = yield* readInteractive(frame.body.envelope.recordId);
+        if (
+          record.sessionId !== null ||
+          record.peer.environmentId !== peer ||
+          record.peer.generation !== generation ||
+          json(record.envelope) !== json(frame.body.envelope)
+        )
+          return yield* denied("The secret request belongs to another action or link.");
+        yield* validate(record, undefined, undefined, "interactive");
+        if (
+          record.localThreadId === null ||
+          record.originRunId === null ||
+          record.envelope.requestOwner === undefined
+        )
+          return yield* denied("The secret request needs its original live run.");
+        return {
+          threadId: record.localThreadId,
+          runId: record.originRunId,
+          ...record.envelope.requestOwner,
+        };
+      }
       if (frame.body.type === "request-actor") {
         const record = yield* readInteractive(frame.body.envelope.recordId);
         if (
@@ -3429,7 +3469,22 @@ const make = Effect.gen(function* () {
     recheckPreviewViewer: recheckViewer,
     nativePreflight,
     notifyAutomationChanges: wakeDisables,
-    nextAutomationDisableDeadline: automation.nextDisableDeadline,
+    nextAutomationDisableDeadline: Effect.gen(function* () {
+      const automationDeadline = yield* automation.nextDisableDeadline;
+      yield* RemoteSecretPersistence.schema.pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.mapError(unavailable),
+      );
+      const [secret] = yield* sql<{
+        deadline: number | null;
+      }>`SELECT min(min(r.expires_at,coalesce(round(unixepoch(p.expires_at,'subsec')*1000),r.expires_at))) AS deadline FROM remote_secret_obligations r LEFT JOIN peer_environment_links p ON p.environment_id=r.environment_id WHERE r.pending=0 AND r.ack_json IS NULL`.pipe(
+        Effect.mapError(unavailable),
+      );
+      const deadlines = [automationDeadline, secret?.deadline ?? null].filter(
+        (value): value is number => value !== null,
+      );
+      return deadlines.length === 0 ? null : Math.min(...deadlines);
+    }),
     pendingAutomationDisables: automation.pending,
     acknowledgeAutomationDisable: (acknowledgement, peer, generation) =>
       automation
@@ -3546,6 +3601,65 @@ const make = Effect.gen(function* () {
     prepare,
     accept,
     checkPayload,
+    secretOrigin: (recordId) =>
+      Effect.gen(function* () {
+        const record = yield* readInteractive(recordId);
+        if (record.sessionId !== null)
+          return yield* decodeSecretOrigin(
+            yield* ask(record.sessionId, {
+              id: `secret-origin:${record.id}:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+              body: { type: "secret-origin", envelope: record.envelope },
+            }),
+          ).pipe(Effect.mapError(unavailable));
+        yield* validate(record, undefined, undefined, "interactive");
+        if (
+          record.localThreadId === null ||
+          record.originRunId === null ||
+          record.envelope.requestOwner === undefined
+        )
+          return yield* denied("The secret request needs its original live run.");
+        return {
+          threadId: record.localThreadId,
+          runId: record.originRunId,
+          ...record.envelope.requestOwner,
+        };
+      }),
+    secretClient: (recordId) =>
+      Effect.gen(function* () {
+        const actor = yield* actorForRecord(yield* readInteractive(recordId));
+        if (actor.type !== "client")
+          return yield* denied("Only an authenticated human client can answer a secret request.");
+      }),
+    prepareSecretAnswer: (sessionId, peer, generation, input) =>
+      Effect.gen(function* () {
+        yield* requireClient(sessionId, false);
+        const client = yield* authSessions
+          .getById({ sessionId })
+          .pipe(Effect.mapError(unavailable));
+        if (Option.isNone(client))
+          return yield* denied("The original human client is unavailable.");
+        yield* rejectMcpClientAudience(client.value).pipe(
+          Effect.mapError(() => denied("An MCP agent cannot claim a human secret answer.")),
+        );
+        return yield* prepare(
+          {
+            environmentId: here,
+            thread: undefined,
+            issuedAt: yield* Clock.currentTimeMillis,
+            requestNamespace: `client:${here}:${sessionId}`,
+            client: { sessionId, label: "Secret request client", access: "full-access" },
+            capabilities: new Set(["orchestration"]),
+          },
+          peer,
+          generation,
+          "remote_secret",
+          remoteSecretIntent(input),
+          { runtimeMode: "full-access", interactionMode: "default" },
+          undefined,
+          false,
+          true,
+        ).pipe(Effect.provideService(PendingClientSession, { sessionId, readOnly: false }));
+      }),
     bind,
     forThread: (threadId) =>
       Effect.gen(function* () {

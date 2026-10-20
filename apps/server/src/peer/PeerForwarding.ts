@@ -1,3 +1,6 @@
+import { OrchestratorMcpScheduleTaskInput, RemoteSecretReceiptQuery } from "@t3tools/contracts";
+import * as RemoteSecretPersistence from "../secrets/remoteSecretPersistence.ts";
+import * as SqlClient from "effect/sql/SqlClient";
 import {
   isPromachosThread,
   OrchestratorMcpCapabilitiesResult,
@@ -153,8 +156,13 @@ const uploadParameters = Schema.Struct({
   clientRequestId: Schema.optional(Schema.String),
   contextThreadId: Schema.optional(ThreadId),
 });
+const decodeSecretReceiptQuery = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(RemoteSecretReceiptQuery),
+);
+const decodeSecretSchedule = Schema.decodeUnknownEffect(OrchestratorMcpScheduleTaskInput);
 const make = Effect.gen(function* () {
   const peers = yield* PeerMcpClient.PeerMcpClient;
+  const secretSql = yield* Effect.serviceOption(SqlClient.SqlClient);
   const links = yield* PeerLinks.PeerLinks;
   const crypto = yield* Crypto.Crypto;
   const threads = yield* ThreadManagement.ThreadManagementService;
@@ -227,6 +235,12 @@ const make = Effect.gen(function* () {
     readOnly = false,
   ): Effect.Effect<A, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
+      if (toolName === "request_secret")
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message:
+            "Remote secrets require the dedicated negotiated owner; generic forwarding is unsupported.",
+        });
       if (toolName === "t3_pending_request_respond" || toolName === "t3_pending_request_dismiss") {
         if (peers.requirePendingRequests === undefined)
           return yield* new OrchestratorMcpFailure({
@@ -991,7 +1005,7 @@ const make = Effect.gen(function* () {
           code: "capability_denied",
           message: "The destination grant changed before dispatch.",
         });
-      const envelope =
+      let envelope =
         Option.isSome(authority) && Option.isSome(link)
           ? yield* authority.value.prepare(
               scope,
@@ -1005,6 +1019,85 @@ const make = Effect.gen(function* () {
               (!readOnly && Option.isSome(requestOwner)) || stableReadIdentity,
             )
           : undefined;
+      if (toolName === "schedule_task") {
+        const parsed = yield* decodeSecretSchedule(args).pipe(Effect.mapError(unavailable));
+        const handle =
+          parsed.schedule?.type === "webhook"
+            ? parsed.schedule.signature?.secretRequest
+            : undefined;
+        if (handle !== undefined) {
+          if (
+            handle.environmentId !== environmentId ||
+            parsed.projectId === undefined ||
+            typeof args.clientRequestId !== "string" ||
+            envelope?.requestOwner === undefined ||
+            Option.isNone(link) ||
+            callerRequestId === undefined ||
+            peers.remoteSecret === undefined
+          )
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "Remote secret consumption needs its exact keyed destination and project.",
+            });
+          yield* peers.remoteSecret(environmentId, link.value.launchIdentity);
+          const operation = {
+            id: RequestReceipts.requestDigest([
+              envelope.requestOwner.namespace,
+              toolName,
+              args.clientRequestId,
+            ]),
+            clientRequestId: args.clientRequestId,
+            generation: envelope.requestOwner.generation,
+            inputDigest: RequestReceipts.requestDigest(
+              Object.fromEntries(
+                Object.entries(args).filter(([key]) => key !== "contextCapabilities"),
+              ),
+            ),
+          };
+          const query = {
+            handle,
+            projectId: parsed.projectId,
+            envelope,
+            request: operation,
+          } satisfies RemoteSecretReceiptQuery;
+          if (Option.isNone(secretSql)) return yield* unavailable();
+          const sql = secretSql.value;
+          yield* RemoteSecretPersistence.schema.pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.mapError(unavailable),
+          );
+          yield* sql`INSERT INTO remote_secret_consumers(operation_id,namespace,client_key,input_digest,generation,environment_id,query_json) VALUES (${operation.id},${requestNamespace(scope)},${callerRequestId},${RequestReceipts.requestInputDigest(encoded)},${link.value.launchIdentity},${environmentId},${RequestReceipts.canonicalRequest(query)}) ON CONFLICT DO NOTHING`.pipe(
+            Effect.mapError(unavailable),
+          );
+          const [retained] = yield* sql<{
+            input_digest: string;
+            generation: string;
+            query_json: string;
+          }>`SELECT input_digest,generation,query_json FROM remote_secret_consumers WHERE namespace=${requestNamespace(scope)} AND client_key=${callerRequestId}`.pipe(
+            Effect.mapError(unavailable),
+          );
+          if (
+            retained === undefined ||
+            retained.input_digest !== RequestReceipts.requestInputDigest(encoded) ||
+            retained.generation !== link.value.launchIdentity ||
+            Option.isNone(authority)
+          )
+            return yield* new OrchestratorMcpFailure({
+              code: "capability_denied",
+              message: "The consumer is bound to its original intent and grant generation.",
+            });
+          const original = yield* decodeSecretReceiptQuery(retained.query_json).pipe(
+            Effect.mapError(unavailable),
+          );
+          if (
+            RequestReceipts.canonicalRequest(original.request) !==
+            RequestReceipts.canonicalRequest(operation)
+          )
+            return yield* unavailable();
+          yield* authority.value.checkInteractiveRecord(original.envelope.recordId);
+          envelope = original.envelope;
+        }
+      }
       const result = yield* peers
         .call({
           environmentId,

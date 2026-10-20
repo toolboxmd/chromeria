@@ -237,6 +237,7 @@
   "src/peer/PeerAuthority.lifecycle.workflow.test.ts": 122.3,
   "src/peer/PeerAuthority.pendingRequests.workflow.test.ts": 41.4,
   "src/peer/PeerAuthority.typedEffects.workflow.test.ts": 46.4,
+  "src/peer/PeerAuthority.remoteSecrets.workflow.test.ts": 21.2,
   "src/peer/PeerAuthority.workflow.test.ts": 156.1,
   "src/persistence/Errors.test.ts": 0.2,
   "src/persistence/Migrations.test.ts": 0.5,

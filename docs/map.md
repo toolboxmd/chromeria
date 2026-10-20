@@ -117,6 +117,10 @@ flowchart TD
     PGR --> DAA
     PAR --> DAA
     RPR --> DAA
+    DSR["Destination secret requests"]
+    %% DSR: #385
+    RPR --> DSR
+    DAA --> DSR
     NR["Network routes"]
     %% NR: #292 #358 PR #498 PR #497
     EP["Execution purpose"]
