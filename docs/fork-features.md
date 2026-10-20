@@ -2837,3 +2837,42 @@ sources and reasons.
   "keywords": ["until-revoked", "mcp-refresh", "AuthMcpGrantLimits"]
 }
 ```
+
+## preview-credential-fill
+
+```json
+{
+  "id": "preview-credential-fill",
+  "purpose": "preview_fill_credential fills a login input in a server browser tab from the environment's rbw vault (credentialVault server setting) after an https and item-origin check, and returns only the outcome. The fill puts the tab's opener group in a login: every read is refused and session state shows Login in progress, until preview_end_login closes those tabs. Each attempt appends a value-free audit line. Drop when upstream fills credentials without exposing them to agents.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/557"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/561"],
+  "newFiles": [
+    "apps/server/src/preview/CredentialAudit.ts",
+    "apps/server/src/preview/CredentialFill.test.ts",
+    "apps/server/src/preview/CredentialFill.ts",
+    "apps/server/src/preview/CredentialLogin.integration.test.ts",
+    "apps/server/src/preview/CredentialVault.test.ts",
+    "apps/server/src/preview/CredentialVault.ts",
+    "packages/contracts/src/previewCredential.ts"
+  ],
+  "upstreamFiles": [
+    "apps/server/src/mcp/PreviewAutomationBroker.ts",
+    "apps/server/src/mcp/toolkits/preview/handlers.ts",
+    "apps/server/src/preview/ServerBrowserPage.ts"
+  ],
+  "sharedFiles": [
+    "apps/server/src/mcp/toolkits/preview/tools.ts",
+    "apps/server/src/preview/ServerBrowser.test.ts",
+    "apps/server/src/preview/ServerBrowser.ts",
+    "apps/server/src/preview/ServerBrowserContexts.ts",
+    "apps/server/src/server.ts",
+    "docs/map.md",
+    "docs/user/browser-import.md",
+    "packages/contracts/src/index.ts",
+    "packages/contracts/src/previewAutomation.ts",
+    "packages/contracts/src/settings.ts",
+    "packages/shared/src/t3McpToolPresentation.ts"
+  ],
+  "keywords": ["preview_fill_credential", "fillCredential", "credentialVault", "rbw"]
+}
+```
