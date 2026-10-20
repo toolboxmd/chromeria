@@ -1,5 +1,6 @@
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import * as HtmlRender from "../../../htmlRender/HtmlRender.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -13,11 +14,15 @@ const INVALID_PAGE_ERRORS = new Set([
   "HtmlRenderViewportHeightError",
 ]);
 
+// Every HTML render error message is built on the server and tells the agent what to do next.
+const isMcpFailure = Schema.is(OrchestratorMcpFailure);
 const toFailure = (error: { readonly _tag: string; readonly message: string }) =>
-  new OrchestratorMcpFailure({
-    code: INVALID_PAGE_ERRORS.has(error._tag) ? "invalid_request" : "orchestration_error",
-    message: error.message,
-  });
+  isMcpFailure(error)
+    ? error
+    : new OrchestratorMcpFailure({
+        code: INVALID_PAGE_ERRORS.has(error._tag) ? "invalid_request" : "orchestration_error",
+        message: error.message,
+      });
 
 const handlers = {
   // Local-file access limits this host browser to T3-launched agents.
@@ -36,27 +41,35 @@ const handlers = {
       };
     }),
   ),
-  html_render: McpToolAccess.actsAsCaller((input) =>
-    Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.McpInvocationContext;
-      const { thread } = yield* McpInvocationContext.requireThreadScope(scope, "html_render");
-      const htmlRender = yield* HtmlRender.HtmlRender;
-      if (scope.client?.linked === true) {
+  // Linked HTML prepares destination resources; the originating live thread owns publication.
+  html_render: McpToolAccess.actsOnResource(
+    "thread-resource",
+    (input) =>
+      Effect.gen(function* () {
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const { thread } = yield* McpInvocationContext.requireThreadScope(scope, "html_render");
+        const htmlRender = yield* HtmlRender.HtmlRender;
+        if (scope.client?.linked === true) {
+          const preparedHtml = yield* htmlRender
+            .prepare(input.html)
+            .pipe(Effect.mapError(toFailure));
+          yield* McpToolAccess.recheckResource("thread-resource");
+          return {
+            preparedHtml,
+            title: input.title,
+            height: input.height,
+          };
+        }
+        const reference = yield* htmlRender
+          .publish({ threadId: thread.threadId, ...input })
+          .pipe(Effect.mapError(toFailure));
         return {
-          preparedHtml: yield* htmlRender.prepare(input.html).pipe(Effect.mapError(toFailure)),
-          title: input.title,
-          height: input.height,
+          htmlRender: reference,
+          message:
+            "Shown to the reader above your reply. Don't mention or describe the page; reply with only what it doesn't already say.",
         };
-      }
-      const reference = yield* htmlRender
-        .publish({ threadId: thread.threadId, ...input })
-        .pipe(Effect.mapError(toFailure));
-      return {
-        htmlRender: reference,
-        message:
-          "Shown to the reader above your reply. Don't mention or describe the page; reply with only what it doesn't already say.",
-      };
-    }),
+      }),
+    "external-unknown",
   ),
 } satisfies McpToolAccess.Handlers<typeof HtmlToolkit.tools>;
 

@@ -1,3 +1,4 @@
+import { PeerGrantSettings } from "./PeerGrantSettings";
 import { SessionPermissions } from "./SessionPermissions";
 import { ChevronRightIcon, EllipsisIcon } from "lucide-react";
 import { useAtomValue } from "@effect/atom-react";
@@ -936,6 +937,9 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
         <div className={ITEM_ROW_CLASSNAME}>
           <p className="text-xs text-destructive">{desktopAccessManagementError}</p>
         </div>
+      ) : null}
+      {primaryEnvironment?.serverConfig?.environment.capabilities.peerAuthority === 1 ? (
+        <PeerGrantSettings environmentId={primaryEnvironment.environmentId} />
       ) : null}
       <PairingClientsList
         endpointUrl={desktopServerExposureState?.endpointUrl}

@@ -1,4 +1,5 @@
 import { toolPolicyRejection, ToolPolicyError } from "@t3tools/provider-core/server/toolPolicy";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import {
   BareLaunchError,
@@ -317,6 +318,7 @@ export const layerWithOptions = (
       const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
       const fileSystem = yield* FileSystem.FileSystem;
       const mcpSessionRegistry = yield* McpSessionRegistry.McpSessionRegistry;
+      const peerAuthority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
       const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
       /** Unreadable settings must preserve explicit browser-access opt-outs. */
       const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
@@ -431,9 +433,26 @@ export const layerWithOptions = (
           : mcpPrepareLock.withLock(
               threadId,
               Effect.gen(function* () {
-                // Live providers build MCP clients once; reuse credentials across workspace handoffs.
-                const { browser: browserToolsAvailable, device: deviceToolsAvailable } =
-                  yield* agentAccessSettings(threadId);
+                // Reuse a still-valid credential for this thread instead of
+                // rotating: long-lived provider processes (codex app-server)
+                // build their MCP client once per conversation and keep using
+                // the credential it started with, so a thread that detaches and
+                // re-attaches across a workspace handoff must come back to the
+                // same token or the process's tool calls fail auth.
+                const accessSettings = yield* agentAccessSettings(threadId);
+                const frozenAuthority = Option.isSome(peerAuthority)
+                  ? yield* peerAuthority.value.forThread(threadId).pipe(Effect.orDie)
+                  : undefined;
+                const frozenCeiling =
+                  frozenAuthority?.ceiling ??
+                  (Option.isSome(peerAuthority)
+                    ? yield* peerAuthority.value.legacyCeiling(threadId).pipe(Effect.orDie)
+                    : undefined);
+                const browserToolsAvailable =
+                  accessSettings.browser &&
+                  (frozenCeiling?.capabilities.includes("preview") ?? true);
+                const deviceToolsAvailable =
+                  accessSettings.device && (frozenCeiling?.capabilities.includes("device") ?? true);
                 const capabilities = new Set<
                   import("../mcp/McpInvocationContext.ts").McpCapability
                 >(["orchestration", "worktree", "pull-requests"]);
@@ -443,6 +462,11 @@ export const layerWithOptions = (
                   Effect.map((thread) => thread.lineage.relationshipToParent === "subagent"),
                   Effect.orElseSucceed(() => false),
                 );
+                if (frozenCeiling !== undefined) {
+                  for (const capability of capabilities)
+                    if (!frozenCeiling.capabilities.includes(capability))
+                      capabilities.delete(capability);
+                }
                 const existing = yield* mcpSessions.read(threadId);
                 if (existing !== undefined) {
                   // Reserve before async validation so release cannot revoke between validation and reservation.
@@ -462,11 +486,16 @@ export const layerWithOptions = (
                     resolved !== undefined &&
                     resolved.thread.threadId === threadId &&
                     resolved.thread.providerInstanceId === providerInstanceId &&
-                    resolved.capabilities.has("preview") === browserToolsAvailable &&
-                    resolved.capabilities.has("device") === deviceToolsAvailable &&
+                    resolved.capabilities.size === capabilities.size &&
+                    [...capabilities].every((capability) => resolved.capabilities.has(capability)) &&
                     // A credential issued while the lineage read failed is replaced once it works.
                     (resolved.thread.subagent === true) === subagent
                   ) {
+                    yield* mcpSessions.set({
+                      ...existing,
+                      browserToolsAvailable: resolved.capabilities.has("preview"),
+                      capabilities: resolved.capabilities,
+                    });
                     return { mcpCredentialId: existing.providerSessionId, issued: false };
                   }
                   dropMcpCredentialReservation(threadId, existing.providerSessionId);
@@ -478,6 +507,7 @@ export const layerWithOptions = (
                   browserToolsAvailable,
                   capabilities,
                   subagent,
+                  ...(frozenAuthority === undefined ? {} : { authority: frozenAuthority }),
                 });
                 yield* mcpSessions.set(credential.config);
                 reserveMcpCredential(threadId, credential.config.providerSessionId);

@@ -296,6 +296,14 @@ Threads belonging to a harness's native subagents can't take direct messages;
 message their parent instead. App-owned delegated child threads accept
 follow-ups. When a child needs an approval or an answer, its parent asks for it.
 
+For a task delegated to a linked environment, open the task from its original
+conversation to read and answer its questions or approvals. Web, desktop and
+mobile use your original connection; you do not need to save a separate
+connection to the destination. Both environments must remain reachable. If a
+request changed or a response was not confirmed, refresh it before changing your
+answer. Questions whose provider callback is no longer available explain that
+limitation instead of accepting an answer.
+
 Expand a tool call in the conversation to see its full command and output.
 Summaries shorten shell wrappers and can still describe the latest call after it
 finishes; the call's own result shows its status.

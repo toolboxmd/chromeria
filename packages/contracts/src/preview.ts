@@ -1,5 +1,11 @@
 import { Schema } from "effect";
-import { NonNegativeInt, PositiveInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  EnvironmentId,
+  NonNegativeInt,
+  PositiveInt,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 import { BROWSER_PROFILE_MAX_COUNT, BrowserProfile, BrowserProfileId } from "./browserProfile.ts";
 
 export const PREVIEW_URL_MAX_LENGTH = 2_048;
@@ -14,6 +20,58 @@ const Title = Schema.String.check(Schema.isMaxLength(512));
 
 export const PreviewTabId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
 export type PreviewTabId = typeof PreviewTabId.Type;
+
+/** Server epoch plus tab identity fence viewers from a later process or opening. */
+const closedViewerInput = <F extends Schema.Struct.Fields>(fields: F) =>
+  Schema.StructWithRest(Schema.Struct(fields), [Schema.Record(Schema.String, Schema.Unknown)])
+    .check(
+      Schema.makeFilter(
+        (value) =>
+          Object.keys(value).every((key) => Object.hasOwn(fields, key)) ||
+          "Unknown preview viewer option.",
+      ),
+    )
+    .pipe(Schema.decodeTo(Schema.Struct(fields)));
+export const PreviewViewerResource = closedViewerInput({
+  type: Schema.Literal("preview"),
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  tabId: PreviewTabId,
+  serverEpoch: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+});
+export type PreviewViewerResource = typeof PreviewViewerResource.Type;
+export const PreviewViewerOpenInput = closedViewerInput({
+  viewerId: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[0-9a-f-]{36}$/))),
+  resource: PreviewViewerResource,
+  operation: Schema.Literals(["view", "control"]),
+});
+export type PreviewViewerOpenInput = typeof PreviewViewerOpenInput.Type;
+export const PreviewViewerCloseInput = closedViewerInput({
+  viewerId: Schema.String.check(Schema.isPattern(/^[0-9a-f-]{36}$/)),
+});
+export const PreviewViewerAccess = Schema.Struct({
+  viewerId: Schema.String.check(Schema.isPattern(/^[0-9a-f-]{36}$/)),
+  ticket: TrimmedNonEmptyString.check(Schema.isMaxLength(4096)),
+  expiresAt: Schema.String.check(Schema.isMaxLength(64)),
+  streamBasePath: Schema.Literal("/api/preview-stream"),
+});
+export type PreviewViewerAccess = typeof PreviewViewerAccess.Type;
+export const PreviewViewerProtocol = Schema.Struct({
+  version: Schema.Literal(1),
+  purpose: Schema.Literal("preview-viewer"),
+});
+export class PreviewViewerUnavailableError extends Schema.TaggedError<PreviewViewerUnavailableError>()(
+  "PreviewViewerUnavailableError",
+  { reason: Schema.Literals(["unsupported", "denied", "unavailable"]) },
+) {
+  override get message() {
+    return this.reason === "unsupported"
+      ? "This environment does not support resource-bound browser viewing."
+      : this.reason === "denied"
+        ? "This browser viewer is no longer permitted."
+        : "This exact browser opening is unavailable.";
+  }
+}
 
 export const PREVIEW_VIEWPORT_MIN_DIMENSION = 240;
 export const PREVIEW_VIEWPORT_MAX_DIMENSION = 3840;
@@ -404,3 +462,72 @@ export const PreviewError = Schema.Union([
   PreviewControlRequiredError,
 ]);
 export type PreviewError = typeof PreviewError.Type;
+
+const PreviewInputCoordinate = Schema.Number.check(
+  Schema.isFinite(),
+  Schema.isBetween({ minimum: -100_000, maximum: 100_000 }),
+);
+const PreviewInputModifiers = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 15 }));
+/** Exact existing browser viewer protocol, also used at resource relay ingress. */
+export const PreviewStreamInput = Schema.Union([
+  closedViewerInput({ type: Schema.Literal("takeControl") }),
+  closedViewerInput({ type: Schema.Literal("releaseControl") }),
+  closedViewerInput({
+    type: Schema.Literal("dialog"),
+    accept: Schema.Boolean,
+    promptText: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(16_384))),
+  }),
+  closedViewerInput({ type: Schema.Literal("viewport"), setting: PreviewViewportSetting }),
+  closedViewerInput({
+    type: Schema.Literal("mouse"),
+    action: Schema.Literals(["move", "down", "up"]),
+    x: PreviewInputCoordinate,
+    y: PreviewInputCoordinate,
+    button: Schema.Literals(["none", "left", "middle", "right"]),
+    buttons: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 31 })),
+    // CDP uses an integer count, including fourth and later rapid clicks.
+    clickCount: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 2_147_483_647 })),
+    modifiers: PreviewInputModifiers,
+  }),
+  closedViewerInput({
+    type: Schema.Literal("wheel"),
+    x: PreviewInputCoordinate,
+    y: PreviewInputCoordinate,
+    // Coalesced wheel displacement is not a page coordinate.
+    deltaX: Schema.Number.check(Schema.isFinite()),
+    deltaY: Schema.Number.check(Schema.isFinite()),
+    modifiers: PreviewInputModifiers,
+  }),
+  closedViewerInput({
+    type: Schema.Literal("key"),
+    action: Schema.Literals(["down", "up"]),
+    key: Schema.String.check(Schema.isMaxLength(256)),
+    code: Schema.String.check(Schema.isMaxLength(256)),
+    keyCode: Schema.optionalKey(
+      Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 65_535 })),
+    ),
+    text: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(16_384))),
+    modifiers: PreviewInputModifiers,
+  }),
+  closedViewerInput({
+    type: Schema.Literal("text"),
+    text: Schema.String.check(Schema.isMaxLength(10_000)),
+  }),
+  closedViewerInput({
+    type: Schema.Literal("resize"),
+    width: Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 3840 })),
+    height: Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 2160 })),
+  }),
+  closedViewerInput({ type: Schema.Literal("navigate"), url: Url }),
+  closedViewerInput({ type: Schema.Literal("history"), delta: Schema.Literals([-1, 1]) }),
+  closedViewerInput({
+    type: Schema.Literal("reload"),
+    ignoreCache: Schema.optionalKey(Schema.Boolean),
+  }),
+  closedViewerInput({
+    type: Schema.Literal("probe"),
+    x: PreviewInputCoordinate,
+    y: PreviewInputCoordinate,
+  }),
+]);
+export type PreviewStreamInput = typeof PreviewStreamInput.Type;

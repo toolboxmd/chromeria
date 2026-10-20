@@ -7,6 +7,7 @@ import * as McpRouting from "../../McpRouting.ts";
 import {
   McpCapabilityUnavailableError,
   OrchestratorMcpEnvironmentTarget,
+  McpConfirmedOperation,
   OrchestratorMcpFailure,
   PositiveInt,
   PullRequestReviewGuide,
@@ -194,6 +195,7 @@ export class PullRequestGuideFailedError extends Schema.TaggedError<PullRequestG
 export const PullRequestToolError = Schema.Union([
   OrchestratorMcpFailure,
   McpCapabilityUnavailableError,
+  McpConfirmedOperation,
   PullRequestUrlInvalidError,
   PullRequestTargetIncompleteError,
   PullRequestHostRequiredError,
@@ -280,14 +282,14 @@ export type ListThreadPullRequestsResult = typeof ListThreadPullRequestsResult.T
 
 const LinkPullRequestTool = Tool.make("link_pull_request", {
   description:
-    "Link a PR to this thread. T3 shows its status and settles the thread on merge. Optional `purposeDelivery` records the exact Issue or PR outcome this PR delivers, including work before the PR existed; it never changes execution ownership, and omitting it records navigation only. Relinking succeeds and can add a delivery declaration.",
+    "Link a PR to this thread. T3 shows its status and settles the thread on merge. Optional `purposeDelivery` records the exact Issue or PR outcome this PR delivers, including work before the PR existed; it never changes execution ownership, and omitting it records navigation only. Negotiated keyed calls return a historical confirmed-operation receipt; `list_thread_pull_requests` reads current links. Unkeyed relinking succeeds and can add a delivery declaration.",
   parameters: McpRouting.parameters(
     Schema.Struct({
       ...PullRequestTargetInput.fields,
       purposeDelivery: Schema.optional(PurposeDeliveryIntent),
     }),
   ),
-  success: LinkPullRequestResult,
+  success: Schema.Union([LinkPullRequestResult, McpConfirmedOperation]),
   failure: PullRequestToolError,
   dependencies,
 })
@@ -299,9 +301,9 @@ const LinkPullRequestTool = Tool.make("link_pull_request", {
 
 const UnlinkPullRequestTool = Tool.make("unlink_pull_request", {
   description:
-    "Remove a PR link from this thread. Succeeds with `wasLinked=false` when it was not linked.",
-  parameters: PullRequestTargetInput,
-  success: UnlinkPullRequestResult,
+    "Remove a PR link from this thread. Unkeyed calls succeed with `wasLinked=false` when it was not linked. Negotiated keyed calls return a historical confirmed-operation receipt; `list_thread_pull_requests` reads current links.",
+  parameters: McpRouting.parameters(PullRequestTargetInput),
+  success: Schema.Union([UnlinkPullRequestResult, McpConfirmedOperation]),
   failure: PullRequestToolError,
   dependencies,
 })

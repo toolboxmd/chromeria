@@ -1,4 +1,6 @@
 import { ThreadToolsRequest } from "./threadTools.ts";
+import { McpScheduledMutationReceipt } from "./mcpRequest.ts";
+import { PeerTaskResult, PeerTaskSnapshot, PeerTaskStop } from "./peerTask.ts";
 import { BareLaunchRequest, BareSupport } from "./bareLaunch.ts";
 import {
   ExecutionPurpose,
@@ -231,6 +233,15 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
   purpose: Schema.optional(ExecutionPurpose),
   latestTerminalPurpose: Schema.optional(ExecutionPurpose),
   warnings: Schema.optional(Schema.Array(Schema.String)),
+  remoteObservation: Schema.optional(
+    Schema.Struct({
+      availability: Schema.Literals(["current", "stale", "unsupported"]),
+      snapshot: Schema.optional(PeerTaskSnapshot),
+      originalRunId: Schema.optional(RunId),
+      latestResult: Schema.optional(PeerTaskResult),
+      stop: Schema.optional(PeerTaskStop),
+    }),
+  ),
   taskId: NodeId,
   /** Null for a task that runs in a linked environment; see `remoteChild`. */
   childThreadId: Schema.NullOr(ThreadId),
@@ -262,9 +273,13 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
   options: Schema.optional(Schema.Array(ProviderOptionSelection)),
   summary: Schema.NullOr(Schema.String),
   resultContextTransferId: Schema.NullOr(ContextTransferId),
+  hasPendingApproval: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "An eligible descendant approval ends mode=wait. Read the qualified request before answering; the task keeps its permission mode.",
+  }),
   hasPendingQuestion: Schema.Boolean.annotate({
     description:
-      "A question blocks the child and ends a wait. Answer via `t3_pending_request` on `childThreadId`, or the user does.",
+      "A question blocks the child and ends a wait. Local work: `t3_pending_request_*` on `childThreadId`. Remote work: the source parent threadId with the qualified requestTarget/requestRoute from remoteObservation. Read the current request before answering, or the user does.",
   }),
   pendingApproval: Schema.NullOr(
     Schema.Struct({ requestId: RuntimeRequestId, kind: ProviderRequestKind, runId: RunId }),
@@ -317,6 +332,7 @@ export const OrchestratorMcpTaskCancelInput = Schema.Struct({
 export type OrchestratorMcpTaskCancelInput = typeof OrchestratorMcpTaskCancelInput.Type;
 
 export const OrchestratorMcpTaskCancelResult = Schema.Struct({
+  stopState: Schema.optional(PeerTaskStop.fields.state),
   taskId: NodeId,
   status: Schema.Literals(["cancel_requested", "completed", "failed", "cancelled", "interrupted"]),
 });
@@ -617,7 +633,18 @@ export const OrchestratorMcpThreadSendResult = Schema.Union([
     threadId: ThreadId,
     link: Schema.optional(Schema.String),
     messageId: MessageId,
+    runId: Schema.Null,
+    taskId: NodeId,
+    status: Schema.Literal("queued"),
+    /** Persisted on the child's environment; parent intake has not acknowledged it yet. */
+    delivery: Schema.Literal("pending"),
+  }),
+  Schema.Struct({
+    threadId: ThreadId,
+    messageId: MessageId,
     runId: RunId,
+    purpose: Schema.optional(ExecutionPurpose),
+    warnings: Schema.optional(Schema.Array(Schema.String)),
     taskId: Schema.optional(NodeId),
     status: OrchestrationV2RunStatus,
     delivery: Schema.Literals(["started", "queued", "steered", "restarted"]),
@@ -751,6 +778,8 @@ export type OrchestratorMcpEnvironmentLinksResult =
 
 export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   executionPurposeVersions: Schema.optional(Schema.Array(Schema.Literal(1))),
+  peerAttachments: Schema.optional(Schema.Literal(1)),
+  peerRequests: Schema.optional(Schema.Literal(1)),
   bareLaunch: Schema.optional(Schema.Boolean),
   toolAllowlist: Schema.optional(Schema.Boolean),
   /** The calling thread, or null when the caller is not a T3 thread. */
@@ -825,7 +854,10 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
 });
 export type OrchestratorMcpScheduledTask = typeof OrchestratorMcpScheduledTask.Type;
 
-export const OrchestratorMcpScheduleTaskResult = OrchestratorMcpScheduledTask;
+export const OrchestratorMcpScheduleTaskResult = Schema.Union([
+  OrchestratorMcpScheduledTask,
+  McpScheduledMutationReceipt,
+]);
 export type OrchestratorMcpScheduleTaskResult = typeof OrchestratorMcpScheduleTaskResult.Type;
 
 export const OrchestratorMcpListScheduledTasksInput = Schema.Struct({
@@ -995,10 +1027,13 @@ export const OrchestratorMcpDeleteScheduledTaskInput = Schema.Struct({
 export type OrchestratorMcpDeleteScheduledTaskInput =
   typeof OrchestratorMcpDeleteScheduledTaskInput.Type;
 
-export const OrchestratorMcpDeleteScheduledTaskResult = Schema.Struct({
-  scheduledTaskId: ScheduledTaskId,
-  deleted: Schema.Boolean,
-});
+export const OrchestratorMcpDeleteScheduledTaskResult = Schema.Union([
+  Schema.Struct({
+    scheduledTaskId: ScheduledTaskId,
+    deleted: Schema.Boolean,
+  }),
+  McpScheduledMutationReceipt,
+]);
 export type OrchestratorMcpDeleteScheduledTaskResult =
   typeof OrchestratorMcpDeleteScheduledTaskResult.Type;
 
@@ -1007,6 +1042,7 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
   {
     code: Schema.Literals([
       "capability_denied",
+      "outcome_unknown",
       "parent_not_active",
       "provider_unavailable",
       "research_host_unavailable",
@@ -1030,5 +1066,9 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "target_required",
     ]),
     message: Schema.String,
+    requestId: Schema.optional(Schema.String),
+    lastConfirmedStage: Schema.optional(
+      Schema.Literals(["dispatch_started", "native_binding_accepted"]),
+    ),
   },
 ) {}

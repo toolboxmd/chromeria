@@ -97,12 +97,22 @@ export function resolveSubagentRowPresentation(
   >,
   canOpenRemote = false,
 ): SubagentRowPresentation {
-  const live = isActiveSubagentStatus(subagent.status);
+  const status =
+    subagent.remoteChild?.snapshot !== undefined &&
+    subagent.remoteChild.snapshot.workState !== "result_available"
+      ? "running"
+      : (subagent.remoteChild?.latestResult?.status ?? subagent.status);
+  const live = isActiveSubagentStatus(status);
   return {
     title: rowTitle(subagent),
     detail: subagentDetailPreview(subagent),
-    statusLabel: rowStatusLabel(subagent.status),
-    tone: rowTone(subagent.status),
+    statusLabel:
+      subagent.remoteChild?.availability === "stale"
+        ? "Last known state"
+        : subagent.remoteChild?.stop && !live
+          ? `Stop ${subagent.remoteChild.stop.state}`
+          : rowStatusLabel(status),
+    tone: rowTone(status),
     live,
     canOpenThread: subagentChildTarget(subagent) !== null,
     runsOn: subagent.remoteChild?.label ?? null,

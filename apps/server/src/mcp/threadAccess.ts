@@ -16,6 +16,8 @@ import type { OrchestratorV2Error } from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
+import { CurrentRequest, CommandIndex } from "./McpRequestReceipts.ts";
+import * as Ref from "effect/Ref";
 
 /**
  * Threads an agent starts over MCP are `mcp:<uuid>`, and agents often paste the
@@ -90,7 +92,7 @@ export const loadCaller = Effect.fn("mcp.loadCaller")(function* () {
       scope,
       threads,
       caller: undefined,
-      limits: McpInvocationContext.clientModeCeiling(scope.client),
+      limits: scope.authority?.ceiling ?? McpInvocationContext.clientModeCeiling(scope.client),
     } satisfies Caller;
   }
   const caller = yield* threads
@@ -108,7 +110,10 @@ export const loadCaller = Effect.fn("mcp.loadCaller")(function* () {
     scope,
     threads,
     caller,
-    limits: { runtimeMode: caller.runtimeMode, interactionMode: caller.interactionMode },
+    limits: McpInvocationContext.intersectModes(
+      { runtimeMode: caller.runtimeMode, interactionMode: caller.interactionMode },
+      scope.authority?.ceiling ?? scope.legacyPeerCeiling,
+    ),
   } satisfies Caller;
 });
 
@@ -207,6 +212,12 @@ export const readThread = Effect.fn("mcp.readThread")(function* <
 });
 
 export const newCommandId = Effect.fn("mcp.newCommandId")(function* () {
+  const identity = yield* CurrentRequest;
+  const counter = yield* CommandIndex;
+  if (identity !== undefined && counter !== undefined)
+    return CommandId.make(
+      `mcp:request:${identity.id}:${yield* Ref.getAndUpdate(counter, (index) => index + 1)}`,
+    );
   const crypto = yield* Crypto.Crypto;
   return CommandId.make(`mcp:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`);
 });

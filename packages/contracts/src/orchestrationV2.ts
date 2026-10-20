@@ -1,5 +1,7 @@
 import { ThreadTools, ThreadToolsRequest } from "./threadTools.ts";
 import { NativeInputEvidence, NativeExecutionSegment } from "./nativeExecution.ts";
+import { PeerTaskObservation, PeerTaskResult, PeerTaskSnapshot, PeerTaskStop } from "./peerTask.ts";
+import { PeerCeiling } from "./peerAuthority.ts";
 import { BareLaunchRequest, ThreadBare, BareReceipt } from "./bareLaunch.ts";
 import { PrismLane, StoredPrismRole } from "./prism.ts";
 import {
@@ -978,12 +980,16 @@ export type OrchestrationV2SubagentWorkflow = typeof OrchestrationV2SubagentWork
 
 /** Durable launch inputs and the original retry identity. No credentials. */
 export const OrchestrationV2RemoteTaskLaunch = Schema.Struct({
+  /** Set by the source only after this destination negotiated lifecycle support. */
+  lifecycleVersion: Schema.optional(Schema.Literal(1)),
   bare: Schema.optional(BareLaunchRequest),
   tools: Schema.optional(ThreadTools),
   requestNamespace: Schema.String,
   clientRequestId: Schema.String,
   /** Nonsecret grant-generation identity; relinking must not create a replacement child. */
   linkIdentity: Schema.String,
+  /** Accepted origin ceiling; absent legacy launches retain orchestration only. */
+  capabilities: Schema.optional(PeerCeiling.fields.capabilities),
   projectId: ProjectId,
   title: Schema.String,
   modelSelection: Schema.optional(ModelSelection),
@@ -1002,6 +1008,19 @@ export type OrchestrationV2RemoteTaskLaunch = typeof OrchestrationV2RemoteTaskLa
  * as there. Such a task has no `childThreadId`.
  */
 export const OrchestrationV2RemoteTaskChild = Schema.Struct({
+  cursor: Schema.optional(NonNegativeInt),
+  snapshot: Schema.optional(PeerTaskSnapshot),
+  originalResult: Schema.optional(
+    Schema.Struct({
+      runId: RunId,
+      eventId: PeerTaskResult.fields.eventId,
+      sequence: PeerTaskResult.fields.sequence,
+      status: PeerTaskResult.fields.status,
+    }),
+  ),
+  latestResult: Schema.optional(PeerTaskResult),
+  availability: Schema.optional(Schema.Literals(["current", "stale", "unsupported"])),
+  stop: Schema.optional(PeerTaskStop),
   environmentId: EnvironmentId,
   /** Unset until the accepted launch is attached to the durable source task. */
   threadId: Schema.optional(ThreadId),
@@ -2303,6 +2322,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   pendingRuntimeRequest: Schema.NullOr(OrchestrationV2PendingRuntimeRequestSummary),
   /** Guest messages waiting for the owner to send or dismiss. Absent from older servers. */
   pendingGuestMessageCount: Schema.optional(NonNegativeInt),
+  remotePendingRequest: Schema.optional(Schema.NullOr(Schema.Literals(["approval", "user_input"]))),
   latestVisibleMessage: Schema.NullOr(OrchestrationV2LatestVisibleMessageSummary),
   latestUserMessageAt: Schema.NullOr(Schema.DateTimeUtc),
   /** Excludes wakes and agent messages that advance latestUserMessageAt through the user role. */
@@ -3525,6 +3545,7 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     requestId: RuntimeRequestId,
+    expectedRevision: Schema.optional(NonNegativeInt),
     decision: Schema.optional(ProviderApprovalDecision),
     feedback: Schema.optional(Schema.String),
     answers: Schema.optional(ProviderUserInputAnswers),
@@ -3536,6 +3557,7 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     requestId: RuntimeRequestId,
+    expectedRevision: Schema.optional(NonNegativeInt),
   }),
   Schema.Struct({
     type: Schema.Literal("checkpoint.rollback"),
@@ -3753,6 +3775,7 @@ const OrchestrationV2InternalCommand = Schema.Union([
    */
   Schema.Struct({
     type: Schema.Literal("delegated_task.remote.complete"),
+    observation: Schema.optional(PeerTaskObservation),
     commandId: CommandId,
     parentThreadId: ThreadId,
     taskId: NodeId,
@@ -3779,6 +3802,22 @@ const OrchestrationV2InternalCommand = Schema.Union([
     parentThreadId: ThreadId,
     taskId: NodeId,
   }),
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.remote.observe"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    observation: Schema.optional(PeerTaskObservation),
+    availability: Schema.optional(Schema.Literals(["current", "stale", "unsupported"])),
+    stop: Schema.optional(PeerTaskStop),
+    stopResult: Schema.optional(
+      Schema.Struct({
+        status: Schema.Literals(["cancelled", "interrupted"]),
+        result: Schema.String,
+      }),
+    ),
+  }),
+  /** Records that the provider rollback `requestId` failed for good. */
   Schema.Struct({
     type: Schema.Literal("checkpoint.rollback.fail"),
     commandId: CommandId,

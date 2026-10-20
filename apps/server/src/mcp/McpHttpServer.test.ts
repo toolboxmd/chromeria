@@ -1,3 +1,9 @@
+import * as Option from "effect/Option";
+import { McpSavedSnapshotReceipt } from "@t3tools/contracts";
+import * as PlatformError from "effect/PlatformError";
+import * as Ref from "effect/Ref";
+import * as Context from "effect/Context";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -25,6 +31,8 @@ import { HttpBody, HttpClient, HttpClientRequest, HttpRouter } from "effect/http
 
 import * as ProjectService from "../project/ProjectService.ts";
 import * as PullRequestReviewGuideService from "../pullRequest/PullRequestReviewGuideService.ts";
+import * as RequestReceipts from "./McpRequestReceipts.ts";
+import * as Sqlite from "../persistence/Sqlite.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
@@ -67,13 +75,22 @@ const client = McpSchema.McpServerClient.of({
   },
   getClient: Effect.die("unused"),
 });
-const layerTest = McpHttpServer.layerPreviewToolkit.pipe(
-  Layer.provideMerge(McpServer.McpServer.layer),
-  Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
-  Layer.provideMerge(PreviewAutomationBroker.layer),
-  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-http-server-test-" })),
-  Layer.provideMerge(NodeServices.layer),
-);
+const layerSnapshotTest = (
+  fileSystem: Layer.Layer<FileSystem.FileSystem> | Layer.Layer<never> = Layer.empty,
+) =>
+  McpHttpServer.layerPreviewToolkit.pipe(
+    Layer.provideMerge(McpServer.McpServer.layer),
+    Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
+    Layer.provideMerge(PreviewAutomationBroker.layer),
+    Layer.provideMerge(RequestReceipts.layer.pipe(Layer.provideMerge(Sqlite.layerMemory))),
+    Layer.provideMerge(
+      ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-http-server-test-" }),
+    ),
+    Layer.provideMerge(fileSystem),
+    Layer.provideMerge(NodeServices.layer),
+  );
+const layerTest = layerSnapshotTest();
+const decodeSavedSnapshotReceipt = Schema.decodeUnknownEffect(McpSavedSnapshotReceipt);
 const layerPullRequestsTest = McpHttpServer.layerPullRequestsToolkit.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
@@ -446,6 +463,114 @@ it.effect(
   },
 );
 
+it.effect(
+  "png382: keyed manual saves retain bounded acceptance and never repeat an uncertain filesystem write",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const actual = yield* FileSystem.FileSystem;
+        const writes = yield* Ref.make(0);
+        const loseConfirmation = yield* Ref.make(false);
+        const fileSystem = {
+          ...actual,
+          writeFile: (
+            path: string,
+            bytes: Uint8Array,
+            options?: Parameters<typeof actual.writeFile>[2],
+          ) =>
+            actual.writeFile(path, bytes, options).pipe(
+              Effect.tap(() =>
+                Effect.gen(function* () {
+                  if (!path.includes("browser-screenshot-")) return;
+                  yield* Ref.update(writes, (n) => n + 1);
+                  if (yield* Ref.getAndSet(loseConfirmation, false))
+                    return yield* PlatformError.systemError({
+                      _tag: "Unknown",
+                      module: "FileSystem",
+                      method: "writeFile",
+                      description: "Isolated saved PNG confirmation loss after the real write",
+                    });
+                }),
+              ),
+            ),
+        };
+        yield* Effect.gen(function* () {
+          yield* serveSnapshots("png382-client", snapshotResult);
+          const input = { save: true, includeImage: true, clientRequestId: "png382-confirmed" };
+          const first = yield* callSnapshot(input);
+          expect(first.isError).toBe(false);
+          const receipt = yield* decodeSavedSnapshotReceipt(first.structuredContent);
+          expect(receipt).toMatchObject({
+            type: "confirmed-operation",
+            stage: "confirmed",
+            artifact: {
+              environmentId: invocation.environmentId,
+              mimeType: "image/png",
+              sizeBytes: 3,
+            },
+          });
+          expect(receipt.artifact.digest).toBe(
+            "8f8cbb7dcf46e0bc7d53265749a6c17d116093a6ba95e442764060c76fd4a86c",
+          );
+          expect(first.content.some((item) => item.type === "image")).toBe(true);
+          const sql = yield* SqlClient.SqlClient;
+          const rows = yield* sql`SELECT * FROM mcp_request_receipts`;
+          expect(JSON.stringify(rows)).not.toContain(snapshotResult.url);
+          expect(JSON.stringify(rows)).not.toContain(snapshotResult.visibleText);
+          const rebuilt = Context.get(
+            yield* Layer.build(RequestReceipts.layer),
+            RequestReceipts.McpRequestReceipts,
+          );
+          const original = (yield* sql<{
+            id: string;
+            generation: string;
+            input_digest: string;
+          }>`SELECT * FROM mcp_request_receipts WHERE id=${receipt.operationId}`)[0]!;
+          expect(
+            yield* rebuilt.replay({
+              id: original.id,
+              generation: original.generation,
+              inputDigest: original.input_digest,
+              clientRequestId: input.clientRequestId,
+            }),
+          ).toEqual(Option.some(receipt));
+          expect((yield* callSnapshot(input)).structuredContent).toEqual(receipt);
+          expect(yield* Ref.get(writes)).toBe(1);
+          yield* actual.writeFileString(
+            receipt.artifact.screenshotPath,
+            "Later independent file edit",
+          );
+          const afterLater = yield* callSnapshot(input);
+          expect(afterLater.structuredContent).toEqual(receipt);
+          expect(afterLater.content.some((item) => item.type === "image")).toBe(false);
+          expect(yield* actual.readFileString(receipt.artifact.screenshotPath)).toBe(
+            "Later independent file edit",
+          );
+          expect(yield* Ref.get(writes)).toBe(1);
+          expect((yield* callSnapshot({ ...input, includeImage: false })).isError).toBe(true);
+          expect(yield* Ref.get(writes)).toBe(1);
+          yield* Ref.set(loseConfirmation, true);
+          const failed = yield* callSnapshot({ save: true, clientRequestId: "png382-uncertain" });
+          expect(failed.isError).toBe(true);
+          expect(failed.structuredContent).toMatchObject({
+            code: "outcome_unknown",
+            requestId: "png382-uncertain",
+            lastConfirmedStage: "dispatch_started",
+          });
+          expect(yield* Ref.get(writes)).toBe(2);
+          const again = yield* callSnapshot({ save: true, clientRequestId: "png382-uncertain" });
+          expect(again.structuredContent).toEqual(failed.structuredContent);
+          expect(yield* Ref.get(writes)).toBe(2);
+          const inspect = yield* callSnapshot({});
+          expect(inspect.isError).toBe(false);
+          expect(inspect.structuredContent).not.toHaveProperty("type");
+        }).pipe(
+          Effect.provide(layerSnapshotTest(Layer.succeed(FileSystem.FileSystem, fileSystem))),
+        );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
 it.effect.each(["limit", "runLimit", "maxCharsPerItem"])(
   "still rejects a t3_thread_read %s below its minimum",
   (field) => {
@@ -499,7 +624,12 @@ it.effect(
         );
       expect(denied.isError).toBe(true);
       expect(denied.content).toEqual([
-        { type: "text", text: "MCP credential does not grant the pull-requests capability." },
+        {
+          type: "text",
+          text: JSON.stringify({
+            message: "MCP credential does not grant the pull-requests capability.",
+          }),
+        },
       ]);
     }).pipe(Effect.provide(layerPullRequestsTest)),
 );
@@ -1243,3 +1373,25 @@ it("honors the Promachos thread header from a peer link only", () => {
     McpHttpServer.withPromachosThread(scope(true), {})?.client?.promachosThreadId,
   ).toBeUndefined();
 });
+it.effect("reviewer382-r2: confirmed PNG receipt survives renderer disconnection", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const input = { save: true, includeImage: true, clientRequestId: "reviewer382-r2-png" };
+      const receipt = yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* serveSnapshots("reviewer382-r2-renderer", snapshotResult);
+          const first = yield* callSnapshot(input);
+          expect(first.isError).toBe(false);
+          return yield* decodeSavedSnapshotReceipt(first.structuredContent);
+        }),
+      );
+      const fs = yield* FileSystem.FileSystem;
+      expect(Array.from(yield* fs.readFile(receipt.artifact.screenshotPath))).toEqual([
+        112, 110, 103,
+      ]);
+      const replay = yield* callSnapshot(input);
+      expect(replay.isError, JSON.stringify(replay)).toBe(false);
+      expect(replay.structuredContent).toEqual(receipt);
+    }),
+  ).pipe(Effect.provide(layerTest)),
+);

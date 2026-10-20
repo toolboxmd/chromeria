@@ -1,5 +1,7 @@
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import { executionPurposeOf, executionPurposeWarnings } from "@t3tools/contracts";
+import * as AttachmentStaging from "../../../assets/AttachmentStaging.ts";
+import { CurrentRequest } from "../../McpRequestReceipts.ts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as Prism from "../../../prism/PrismService.ts";
 import { ProviderAdapterRegistryV2 } from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -22,6 +24,7 @@ import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
+import * as PeerAuthority from "../../../peer/PeerAuthority.ts";
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
@@ -107,12 +110,26 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               );
         const threadId = ThreadId.make(commandId);
         const messageId = MessageId.make(commandId);
+        if (scope.authority !== undefined) {
+          const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+          if (Option.isNone(authority)) return yield* unavailable();
+          yield* authority.value.bind(
+            scope.authority,
+            threadId,
+            scope.client?.linked === true ? true : undefined,
+          );
+        }
         const attachments = input.attachments ?? [];
-        if (attachments.some((attachment) => !Claims.attachmentIsPendingUpload(attachment)))
-          return yield* new OrchestratorMcpFailure({
-            code: "invalid_request",
-            message: "A new thread accepts only pending attachment uploads.",
-          });
+        for (const attachment of attachments) {
+          if (Claims.attachmentIsPendingUpload(attachment)) continue;
+          const staging = yield* Effect.serviceOption(AttachmentStaging.AttachmentStaging);
+          if (Option.isNone(staging))
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "A new thread accepts only ready app-owned attachment uploads.",
+            });
+          yield* staging.value.verify(scope, attachment);
+        }
         if (
           input.scratch === true &&
           (input.projectId !== undefined || input.workspaceStrategy !== undefined)
@@ -388,48 +405,60 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
       return result.value;
     }),
   ),
-  t3_project_create: McpToolAccess.writesEnvironment(({ workspaceRoot, ...input }) =>
-    Effect.gen(function* () {
-      const projects = yield* Project.ProjectService;
-      if (workspaceRoot === undefined) {
-        // Only updates record model defaults; reject defaults that creation would silently drop.
-        if (
-          input.scripts !== undefined ||
-          input.createWorkspaceRootIfMissing !== undefined ||
-          input.defaultModelSelection !== undefined
-        )
-          return yield* new OrchestratorMcpFailure({
-            code: "invalid_request",
-            message:
-              "A project started from its title takes only a title; set scripts or defaultModelSelection afterwards with t3_project_update.",
-          });
-        const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
-        const created = yield* folders
-          .createNamedProject({ name: input.title })
-          .pipe(
-            Effect.mapError(
-              (error) =>
-                new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
-            ),
-          );
-        const project = yield* projects
-          .getById(created.projectId)
-          .pipe(
-            Effect.mapError(unavailable),
-            Effect.flatMap(
-              Option.match({ onNone: () => Effect.fail(unavailable()), onSome: Effect.succeed }),
-            ),
-          );
-        return {
-          ...project,
-          ...(created.commitError === undefined ? {} : { commitError: created.commitError }),
-        };
-      }
-      const commandId = yield* newCommandId();
-      return yield* projects
-        .create({ ...input, workspaceRoot, commandId, projectId: ProjectId.make(commandId) })
-        .pipe(Effect.mapError(projectFailure));
-    }),
+  t3_project_create: McpToolAccess.writesEnvironment(
+    ({ workspaceRoot, clientRequestId: _key, ...input }, check) =>
+      Effect.gen(function* () {
+        const projects = yield* Project.ProjectService;
+        if (workspaceRoot === undefined) {
+          // Project creation records no model default (only an update does), so
+          // reject what this mode would otherwise drop silently.
+          if (
+            input.scripts !== undefined ||
+            input.createWorkspaceRootIfMissing !== undefined ||
+            input.defaultModelSelection !== undefined
+          )
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message:
+                "A project started from its title takes only a title; set scripts or defaultModelSelection afterwards with t3_project_update.",
+            });
+          const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+          const request = yield* CurrentRequest;
+          const context = yield* Effect.context<Effect.Services<typeof check>>();
+          const created = yield* folders
+            .createNamedProject({
+              name: input.title,
+              ...(request === undefined ? {} : { request }),
+              recheck: check.pipe(Effect.provideContext(context), Effect.asVoid),
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                error._tag === "OrchestratorMcpFailure"
+                  ? error
+                  : new OrchestratorMcpFailure({
+                      code: "orchestration_error",
+                      message: error.message,
+                    }),
+              ),
+            );
+          const project = yield* projects
+            .getById(created.projectId)
+            .pipe(
+              Effect.mapError(unavailable),
+              Effect.flatMap(
+                Option.match({ onNone: () => Effect.fail(unavailable()), onSome: Effect.succeed }),
+              ),
+            );
+          return {
+            ...project,
+            ...(created.commitError === undefined ? {} : { commitError: created.commitError }),
+          };
+        }
+        const commandId = yield* newCommandId();
+        return yield* projects
+          .create({ ...input, workspaceRoot, commandId, projectId: ProjectId.make(commandId) })
+          .pipe(Effect.mapError(projectFailure));
+      }),
   ),
   t3_project_update: McpToolAccess.writesEnvironment((input) =>
     Effect.gen(function* () {
@@ -447,18 +476,24 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         .pipe(Effect.mapError(projectFailure));
     }),
   ),
-  t3_project_clone: McpToolAccess.writesEnvironment((input) =>
-    Effect.gen(function* () {
-      const repositories = yield* Repositories.SourceControlRepositoryService;
-      return yield* repositories.cloneRepository(input).pipe(
-        Effect.mapError(
-          (error) =>
-            new OrchestratorMcpFailure({
-              code: "orchestration_error",
-              message: error.detail,
-            }),
-        ),
-      );
-    }),
+  t3_project_clone: McpToolAccess.writesEnvironment(
+    (input) =>
+      Effect.gen(function* () {
+        const repositories = yield* Repositories.SourceControlRepositoryService;
+        // cloneRepository owns preparation too, including parent-directory
+        // creation. It must run after the durable attempt, once per action.
+        return yield* externalDispatch(repositories.cloneRepository(input)).pipe(
+          Effect.mapError((error) =>
+            error._tag === "OrchestratorMcpFailure"
+              ? error
+              : new OrchestratorMcpFailure({
+                  code: "orchestration_error",
+                  message: error.detail,
+                }),
+          ),
+        );
+      }),
+    "external-unknown",
   ),
 });
+import { externalDispatch } from "../../McpRequestReceipts.ts";

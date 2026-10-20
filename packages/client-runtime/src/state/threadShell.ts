@@ -11,7 +11,11 @@ import * as Schema from "effect/Schema";
 import { Atom } from "effect/reactivity";
 
 import type { EnvironmentThreadShell, PendingSubagentRequest } from "./models.ts";
-import { presentThreadShell, threadRuntimeIsActive } from "./models.ts";
+import {
+  isThreadVisibleInNavigation,
+  presentThreadShell,
+  threadRuntimeIsActive,
+} from "./models.ts";
 import { type EnvironmentCatalogState, enabledEnvironmentIds } from "./connections.ts";
 import {
   arrayElementsEqual,
@@ -62,6 +66,7 @@ export function isShownUnderParent(
 /** Provider-native
     subagents ask on their parent, so they are skipped. */
 function subagentRequest(thread: OrchestrationV2ThreadShell): PendingSubagentRequest | null {
+  if (thread.remotePendingRequest != null) return thread.remotePendingRequest;
   const kind = thread.pendingRuntimeRequest?.kind;
   if (
     kind === undefined ||

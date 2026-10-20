@@ -1,5 +1,11 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { type EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  RunId,
+  ThreadId,
+  type DeviceViewerResource,
+  type PreviewViewerResource,
+} from "@t3tools/contracts";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { useClosedViewStore } from "./closedViewStore";
@@ -1300,4 +1306,88 @@ describe("rightPanelStore", () => {
     expect(surfaceIds()).toEqual(["browser:tab-a", "terminal:term-1", "diff", "browser:tab-b"]);
     expect(store.getUserActionRevision(refA)).toBe(revision);
   });
+});
+
+it("keeps qualified resource openings in the source panel without cross-environment collisions", () => {
+  const resource: DeviceViewerResource = {
+    type: "device",
+    environmentId: "B" as EnvironmentId,
+    threadId: ThreadId.make("b-thread"),
+    hostId: "local",
+    deviceId: "same-id",
+    platform: "ios",
+    toolSessionId: "11111111-1111-4111-8111-111111111111",
+  };
+  const target = {
+    hostId: "local",
+    deviceId: "same-id",
+    platform: "ios" as const,
+    name: "Device",
+    resource,
+  };
+  const store = useRightPanelStore.getState();
+  store.openDevice(refA, target);
+  const oldId = selectThreadRightPanelState(
+    useRightPanelStore.getState().byThreadKey,
+    refA,
+  ).activeSurfaceId!;
+  store.openDevice(refA, {
+    ...target,
+    resource: { ...resource, toolSessionId: "22222222-2222-4222-8222-222222222222" },
+  });
+  const newId = selectThreadRightPanelState(
+    useRightPanelStore.getState().byThreadKey,
+    refA,
+  ).activeSurfaceId!;
+  expect(newId).not.toBe(oldId);
+  store.closeSurface(refA, oldId);
+  const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+  expect(state.surfaces.map((surface) => surface.id)).toEqual([newId]);
+  expect(Object.keys(useRightPanelStore.getState().byThreadKey)).toEqual(["env-1:thread-A"]);
+  const browser: PreviewViewerResource = {
+    type: "preview",
+    environmentId: resource.environmentId,
+    threadId: resource.threadId,
+    tabId: "same-tab",
+    serverEpoch: "epoch-1",
+  };
+  store.openBrowser(refA, browser.tabId, browser);
+  store.openBrowser(refA, browser.tabId, { ...browser, environmentId: "C" as EnvironmentId });
+  const next = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+  expect(next.surfaces.filter((surface) => surface.kind === "preview")).toHaveLength(2);
+  const restored = migratePersistedRightPanelState({
+    byThreadKey: useRightPanelStore.getState().byThreadKey,
+  });
+  expect(restored.byThreadKey["env-1:thread-A"]?.surfaces).toEqual(next.surfaces);
+});
+
+it("does not restore malformed qualified resources as legacy local tabs", () => {
+  const restored = migratePersistedRightPanelState({
+    byThreadKey: {
+      "env-1:thread-A": {
+        isOpen: true,
+        activeSurfaceId: "device:bad",
+        surfaces: [
+          {
+            id: "device:bad",
+            kind: "device",
+            target: {
+              hostId: "local",
+              deviceId: "same-id",
+              platform: "ios",
+              name: "Device",
+              resource: { type: "device", toolSessionId: "guessed" },
+            },
+          },
+          {
+            id: "browser:bad",
+            kind: "preview",
+            resourceId: "same-tab",
+            resource: { type: "preview", tabId: "same-tab", ticket: "private" },
+          },
+        ],
+      },
+    },
+  });
+  expect(restored.byThreadKey["env-1:thread-A"]?.surfaces ?? []).toEqual([]);
 });

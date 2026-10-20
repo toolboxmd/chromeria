@@ -1,3 +1,4 @@
+import { CurrentRequest, CommandIndex } from "../mcp/McpRequestReceipts.ts";
 import {
   toolPolicyModeRejection,
   toolPolicyRejection,
@@ -1537,6 +1538,23 @@ const make = Effect.gen(function* () {
         reason:
           "MCP configuration requires an idle restricted thread with unchanged configuration.",
       });
+    const identity = yield* CurrentRequest;
+    const counter = yield* CommandIndex;
+    const commandId = CommandId.make(
+      identity !== undefined && counter !== undefined
+        ? `mcp:request:${identity.id}:${yield* Ref.getAndUpdate(counter, (index) => index + 1)}`
+        : `mcp-config:${yield* randomUuidV4}`,
+    );
+    const receipt = yield* receipts.getByCommandId(commandId).pipe(Effect.mapError(failed));
+    if (Option.isSome(receipt)) {
+      if (
+        receipt.value.status !== "accepted" ||
+        receipt.value.commandType !== "thread.metadata.update" ||
+        receipt.value.threadId !== input.threadId
+      )
+        return yield* failed();
+      return { sequence: receipt.value.resultSequence };
+    }
     const { thread } = yield* threads
       .getThreadRecords(input.threadId, [])
       .pipe(Effect.mapError(failed));
@@ -1551,7 +1569,7 @@ const make = Effect.gen(function* () {
     const result = yield* threads
       .dispatch({
         type: "thread.metadata.update",
-        commandId: CommandId.make(`mcp-config:${yield* randomUuidV4}`),
+        commandId,
         threadId: thread.id,
         mcpConfigUpdate: {
           expectedConfigId: thread.tools.mcpConfigId ?? null,

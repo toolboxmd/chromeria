@@ -1,3 +1,5 @@
+import { DeviceViewerOpenInput } from "./device.ts";
+import { PreviewViewerOpenInput } from "./preview.ts";
 import { PROMACHOS_HOME_WS_METHODS } from "./promachosHome.ts";
 import * as Schema from "effect/Schema";
 import { GitPreparePullRequestThreadInput, GitRunStackedActionInput } from "./git.ts";
@@ -6,6 +8,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthPreviewOperateScope,
+  AuthAccessWriteScope,
   AuthSettingsWriteScope,
   AuthSourceControlWriteScope,
   AuthTerminalOperateScope,
@@ -21,6 +24,13 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.previewClose]: AuthPreviewOperateScope,
   // Stopping a server signals its processes, as closing a terminal does.
   [WS_METHODS.previewStopLocalServer]: AuthTerminalOperateScope,
+  [WS_METHODS.deviceViewerOpen]: AuthOrchestrationReadScope,
+  [WS_METHODS.deviceViewerClose]: AuthOrchestrationReadScope,
+  [WS_METHODS.previewViewerOpen]: AuthOrchestrationReadScope,
+  [WS_METHODS.previewViewerClose]: AuthOrchestrationReadScope,
+  [WS_METHODS.remoteTaskRequest]: AuthOrchestrationOperateScope,
+  [WS_METHODS.remoteTaskStop]: AuthOrchestrationOperateScope,
+  [WS_METHODS.peerGrantsUpdate]: AuthAccessWriteScope,
   [WS_METHODS.serverRunStorageCleanup]: AuthSettingsWriteScope,
   [WS_METHODS.serverCheckOtlpEndpoint]: AuthSettingsWriteScope,
   [PROMACHOS_HOME_WS_METHODS.create]: AuthOrchestrationOperateScope,
@@ -85,6 +95,18 @@ export function clientRpcRequiredScopes(
   method: string,
   input: unknown,
 ): readonly AuthEnvironmentScope[] {
+  if (
+    method === WS_METHODS.previewViewerOpen &&
+    Schema.is(PreviewViewerOpenInput)(input) &&
+    input.operation === "control"
+  )
+    return [AuthOrchestrationReadScope, AuthPreviewOperateScope];
+  if (
+    method === WS_METHODS.deviceViewerOpen &&
+    Schema.is(DeviceViewerOpenInput)(input) &&
+    input.operation === "control"
+  )
+    return [AuthOrchestrationReadScope, AuthOrchestrationOperateScope];
   if (method === WS_METHODS.gitPreparePullRequestThread && input !== undefined) {
     const payload = decodePrepareThread(input);
     if (payload.mode === "worktree" && payload.threadId !== undefined)

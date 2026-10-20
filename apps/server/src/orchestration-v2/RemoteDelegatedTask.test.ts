@@ -1,3 +1,9 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Reconstructed SQLite runtimes prove notice receipt persistence.
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as ThreadManagement from "./ThreadManagementService.ts";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
@@ -10,6 +16,9 @@ import {
   ProviderInstanceId,
   ProviderThreadId,
   RunId,
+  RuntimeRequestId,
+  type OrchestrationV2DomainEvent,
+  type PeerTaskSnapshot,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -20,6 +29,7 @@ import * as Ref from "effect/Ref";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EventSink from "./EventSink.ts";
+import * as QuestionReactor from "./DelegatedTaskQuestionReactor.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -53,29 +63,34 @@ const layerOffers = Layer.effect(
   Ref.make<ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>>([]),
 );
 const layerDatabase = SqlitePersistence.layerMemory;
-const layerTest = Layer.mergeAll(
-  layerDatabase,
-  ProjectionStore.layer.pipe(Layer.provide(layerDatabase)),
-  ProviderReplayHarness.layerWithRegistry(
-    { name: "remote-delegated-task" },
-    ProviderAdapterRegistry.layerFromAdapters([adapter]),
-    { databaseLayer: layerDatabase, runEffectWorker: false },
-  ),
-).pipe(
-  Layer.provide(
-    Layer.effect(
-      ProviderContinuationRequests.ProviderContinuationRequests,
-      Offers.pipe(
-        Effect.map((offers) => ({
-          offer: (request: ProviderContinuationRequests.ProviderContinuationRequest) =>
-            Ref.update(offers, (seen) => [...seen, request]),
-          take: Effect.never,
-        })),
+const diskDatabase = (filename: string) =>
+  SqlitePersistence.layerFromPath(filename).pipe(Layer.provide(NodeServices.layer));
+const layerForDatabase = (databaseLayer: typeof layerDatabase | ReturnType<typeof diskDatabase>) =>
+  Layer.mergeAll(
+    databaseLayer,
+    ProjectionStore.layer.pipe(Layer.provide(databaseLayer)),
+    ProviderReplayHarness.layerWithRegistry(
+      { name: "remote-delegated-task" },
+      ProviderAdapterRegistry.layerFromAdapters([adapter]),
+      { databaseLayer, runEffectWorker: false },
+    ),
+  ).pipe(
+    Layer.provide(
+      Layer.effect(
+        ProviderContinuationRequests.ProviderContinuationRequests,
+        Offers.pipe(
+          Effect.map((offers) => ({
+            offer: (request: ProviderContinuationRequests.ProviderContinuationRequest) =>
+              Ref.update(offers, (seen) => [...seen, request]),
+            take: Effect.never,
+          })),
+        ),
       ),
     ),
-  ),
-  Layer.provideMerge(layerOffers),
-);
+    Layer.provideMerge(layerOffers),
+  );
+
+const layerTest = layerForDatabase(layerDatabase);
 
 /** A parent thread whose run is live, as when its agent calls delegate_task. */
 const seedLiveParent = (name: string) =>
@@ -194,6 +209,774 @@ const remoteChild = {
 };
 
 it.layer(layerTest)("a delegated task in a linked environment", (it) => {
+  it.effect.each(
+    (["user_input", "command"] as const).flatMap((kind) =>
+      (["completed", "failed", "waiting"] as const).flatMap((status) =>
+        (["eligible", "disposed", "stop"] as const).map((policy) => ({ kind, status, policy })),
+      ),
+    ),
+  )(
+    "terminal-original $kind catches up after parent $status (policy=$policy)",
+    ({ kind, status, policy }) =>
+      Effect.gen(function* () {
+        const engine = yield* Orchestrator.OrchestratorV2;
+        const reactor = yield* QuestionReactor.DelegatedTaskQuestionReactor;
+        const sink = yield* EventSink.EventSinkV2;
+        const name = `terminal-followup:${kind}:${status}:${policy}`;
+        const parent = yield* seedLiveParent(name);
+        yield* engine.dispatch({
+          type: "delegated_task.remote.request",
+          commandId: CommandId.make(`${name}:create`),
+          parentThreadId: parent.threadId,
+          parentRunId: parent.runId,
+          parentNodeId: parent.rootNodeId,
+          task: "Original task and same-job follow-up",
+          driver,
+          modelSelection,
+          completionWake: "settled_only",
+          remoteChild: {
+            ...remoteChild,
+            launch: {
+              lifecycleVersion: 1,
+              requestNamespace: "recorded-source",
+              clientRequestId: name,
+              linkIdentity: "recorded-generation",
+              projectId: ProjectId.make("remote-project"),
+              title: "Remote job",
+              delegatedFrom: {
+                environmentId: EnvironmentId.make("source-environment"),
+                threadId: parent.threadId,
+                title: "Source parent",
+              },
+            },
+          },
+        });
+        const taskId = (yield* engine.getThreadProjection(parent.threadId)).subagents[0]!.id;
+        const originalResult = {
+          environmentId: remoteChild.environmentId,
+          threadId: remoteChild.threadId,
+          runId: RunId.make(`${name}:remote-original`),
+          eventId: EventId.make(`${name}:terminal-original`),
+          sequence: 10,
+          status: "completed" as const,
+          text: "Original immutable result",
+          truncated: false,
+        };
+        const snapshot = {
+          sequence: 10,
+          observedAt: "2026-10-20T10:00:00Z",
+          title: "Remote job",
+          workState: "result_available" as const,
+          pendingChildren: 0,
+          queuedRuns: 0,
+          recoveryWaiting: false,
+          incomplete: false,
+          executionSettled: true,
+          pendingQuestions: 0,
+          requestCount: 0,
+          requests: [],
+        };
+        yield* engine.dispatch({
+          type: "delegated_task.remote.complete",
+          commandId: CommandId.make(`${name}:complete`),
+          parentThreadId: parent.threadId,
+          taskId,
+          status: "completed",
+          result: originalResult.text,
+          observation: { cursor: 10, snapshot, result: originalResult },
+        });
+        yield* engine.dispatch({
+          type: "delegated_task.completion-delivery.acknowledge",
+          commandId: CommandId.make(`${name}:ack`),
+          parentThreadId: parent.threadId,
+          taskId,
+          observedByRunId: parent.runId,
+        });
+        const original = yield* engine.getThreadProjection(parent.threadId);
+        assert.equal(original.runs.find((run) => run.id === parent.runId)!.status, "running");
+        assert.equal(original.subagents[0]!.status, "completed");
+        assert.equal(original.subagents[0]!.completionDelivery?.state, "acknowledged");
+        assert.deepEqual(original.subagents[0]!.remoteChild?.originalResult, {
+          runId: originalResult.runId,
+          eventId: originalResult.eventId,
+          sequence: originalResult.sequence,
+          status: originalResult.status,
+        });
+        assert.equal(original.subagents[0]!.completionWake, "settled_only");
+        const requestId = RuntimeRequestId.make(`${name}:later-request`);
+        const detail =
+          kind === "user_input"
+            ? "Which follow-up color? Blue or Red"
+            : "Approve follow-up npm run build";
+        yield* engine.dispatch({
+          type: "delegated_task.remote.observe",
+          commandId: CommandId.make(`${name}:observe`),
+          parentThreadId: parent.threadId,
+          taskId,
+          availability: "current",
+          observation: {
+            cursor: 10,
+            snapshot: {
+              ...snapshot,
+              sequence: 20,
+              workState: "working",
+              executionSettled: false,
+              pendingQuestions: kind === "user_input" ? 1 : 0,
+              requestCount: 1,
+              requests: [
+                {
+                  environmentId: remoteChild.environmentId,
+                  threadId: remoteChild.threadId,
+                  requestId,
+                  revision: 20,
+                  kind,
+                  responseType: "live",
+                  detail,
+                },
+              ],
+            },
+          },
+        });
+        const noticeRows = () =>
+          engine
+            .getThreadProjection(parent.threadId)
+            .pipe(
+              Effect.map((projection) =>
+                projection.messages.filter(
+                  (message) =>
+                    message.notification?.outcome === "updated" && message.text.includes(requestId),
+                ),
+              ),
+            );
+        const before = (yield* noticeRows()).length;
+        assert.equal(before, 0);
+        if (policy === "disposed")
+          yield* engine.dispatch({
+            type: "delegated_task.completion-delivery.dispose",
+            commandId: CommandId.make(`${name}:dispose`),
+            parentThreadId: parent.threadId,
+            taskId,
+          });
+        if (policy === "stop") {
+          const threads = yield* ThreadManagement.ThreadManagementService;
+          yield* threads.stopDelegatedTasks({
+            threadId: parent.threadId,
+            commandId: CommandId.make(`${name}:stop`),
+          });
+          assert.equal(
+            (yield* engine.getThreadProjection(parent.threadId)).subagents[0]!.remoteChild?.stop
+              ?.state,
+            "pending",
+          );
+        }
+        const projection = yield* engine.getThreadProjection(parent.threadId);
+        const run = projection.runs.find((run) => run.id === parent.runId)!;
+        const now = yield* DateTime.now;
+        const event = {
+          type: "run.updated",
+          id: EventId.make(`${name}:parent-ended`),
+          threadId: parent.threadId,
+          occurredAt: now,
+          payload: { ...run, status, completedAt: status === "waiting" ? null : now },
+        } satisfies OrchestrationV2DomainEvent;
+        yield* sink.write({ events: [event] });
+        yield* reactor.handle(event);
+        const afterEnd = (yield* noticeRows()).length;
+        yield* reactor.handle(event);
+        const afterRepeat = (yield* noticeRows()).length;
+        yield* engine.recoverDelegatedTasks;
+        const afterRecovery = (yield* noticeRows()).length;
+        yield* engine.recoverDelegatedTasks;
+        const notices = yield* noticeRows();
+        const final = yield* engine.getThreadProjection(parent.threadId);
+        const task = final.subagents.find((task) => task.id === taskId)!;
+        assert.equal(task.status, "completed");
+        assert.equal(task.result, originalResult.text);
+        assert.deepEqual(
+          task.remoteChild?.originalResult,
+          original.subagents[0]!.remoteChild?.originalResult,
+        );
+        assert.deepEqual(
+          task.remoteChild?.latestResult,
+          original.subagents[0]!.remoteChild?.latestResult,
+        );
+        assert.equal(task.childThreadId, null);
+        assert.equal(yield* engine.getThreadShell(remoteChild.threadId), null);
+        if (policy !== "eligible") assert.equal(task.completionDelivery?.state, "disposed");
+        const counts = [before, afterEnd, afterRepeat, afterRecovery, notices.length];
+        if (notices[0] !== undefined) {
+          assert.include(notices[0].text, detail);
+          assert.include(notices[0].text, remoteChild.threadId);
+          assert.include(notices[0].text, "requestTarget");
+          assert.notProperty(notices[0].notification!.source, "childThreadId");
+        }
+        assert.deepEqual(counts, policy === "eligible" ? [0, 1, 1, 1, 1] : [0, 0, 0, 0, 0]);
+      }).pipe(Effect.provide(QuestionReactor.layer)),
+  );
+
+  it.effect.each(["user_input", "command"] as const)(
+    "wait-mode remote %s wakes when the parent run ends without a new peer observation",
+    (kind) =>
+      Effect.gen(function* () {
+        const engine = yield* Orchestrator.OrchestratorV2;
+        const reactor = yield* QuestionReactor.DelegatedTaskQuestionReactor;
+        const sink = yield* EventSink.EventSinkV2;
+        for (const status of ["completed", "failed", "waiting"] as const) {
+          const parent = yield* seedLiveParent(`wait-notice:${kind}:${status}`);
+          yield* engine.dispatch({
+            type: "delegated_task.remote.request",
+            commandId: CommandId.make(`wait:create:${kind}:${status}`),
+            parentThreadId: parent.threadId,
+            parentRunId: parent.runId,
+            parentNodeId: parent.rootNodeId,
+            task: "Wait for remote work",
+            driver,
+            modelSelection,
+            remoteChild,
+            completionWake: "settled_only",
+          });
+          const taskId = (yield* engine.getThreadProjection(parent.threadId)).subagents[0]!.id;
+          const requestId = RuntimeRequestId.make(`wait-request:${kind}:${status}`);
+          yield* engine.dispatch({
+            type: "delegated_task.remote.observe",
+            commandId: CommandId.make(`wait:observe:${kind}:${status}`),
+            parentThreadId: parent.threadId,
+            taskId,
+            availability: "current",
+            observation: {
+              cursor: 0,
+              snapshot: {
+                sequence: 10,
+                observedAt: "2026-10-19T10:00:00Z",
+                title: "Waiting remote worker",
+                workState: "working",
+                pendingChildren: 0,
+                queuedRuns: 0,
+                recoveryWaiting: false,
+                incomplete: false,
+                executionSettled: false,
+                pendingQuestions: kind === "user_input" ? 1 : 0,
+                requestCount: 1,
+                requests: [
+                  {
+                    environmentId: remoteChild.environmentId,
+                    threadId: remoteChild.threadId,
+                    requestId,
+                    revision: 10,
+                    kind,
+                    responseType: "live",
+                  },
+                ],
+              },
+            },
+          });
+          const before = yield* engine.getThreadProjection(parent.threadId);
+          assert.lengthOf(
+            before.messages.filter((message) => message.text.includes(requestId)),
+            0,
+          );
+          const run = before.runs.find((run) => run.id === parent.runId)!;
+          const now = yield* DateTime.now;
+          const event = {
+            type: "run.updated",
+            id: EventId.make(`wait:parent-ended:${kind}:${status}`),
+            threadId: parent.threadId,
+            occurredAt: now,
+            payload: { ...run, status, completedAt: status === "waiting" ? null : now },
+          } satisfies OrchestrationV2DomainEvent;
+          yield* sink.write({ events: [event] });
+          yield* reactor.handle(event);
+          const notices = (yield* engine.getThreadProjection(parent.threadId)).messages.filter(
+            (message) => message.text.includes(requestId),
+          );
+          assert.lengthOf(notices, 1);
+          yield* reactor.handle(event);
+          assert.lengthOf(
+            (yield* engine.getThreadProjection(parent.threadId)).messages.filter((message) =>
+              message.text.includes(requestId),
+            ),
+            1,
+          );
+        }
+      }).pipe(Effect.provide(QuestionReactor.layer)),
+  );
+
+  it.effect(
+    "committed remote pending requests wake once per identity and clear when answered",
+    () =>
+      Effect.gen(function* () {
+        const engine = yield* Orchestrator.OrchestratorV2;
+        const parent = yield* seedLiveParent("remote-request-notice");
+        yield* engine.dispatch({
+          type: "delegated_task.remote.request",
+          commandId: CommandId.make("notice:create"),
+          parentThreadId: parent.threadId,
+          parentRunId: parent.runId,
+          parentNodeId: parent.rootNodeId,
+          task: "Build the remote task",
+          title: "Remote builder",
+          driver,
+          modelSelection,
+          remoteChild,
+          completionWake: "always",
+        });
+        const taskId = (yield* engine.getThreadProjection(parent.threadId)).subagents[0]!.id;
+        const request = {
+          environmentId: remoteChild.environmentId,
+          threadId: remoteChild.threadId,
+          requestId: RuntimeRequestId.make("choose-build"),
+          revision: 10,
+          kind: "user_input",
+          responseType: "message",
+        };
+        const observe = (
+          sequence: number,
+          requests: PeerTaskSnapshot["requests"] = [request],
+          incomplete = false,
+        ) =>
+          engine.dispatch({
+            type: "delegated_task.remote.observe",
+            commandId: CommandId.make(`notice:observe:${sequence}`),
+            parentThreadId: parent.threadId,
+            taskId,
+            availability: "current",
+            observation: {
+              cursor: 0,
+              snapshot: {
+                sequence,
+                observedAt: "2026-10-19T10:00:00Z",
+                title: "Remote builder",
+                workState: "working",
+                pendingChildren: 0,
+                queuedRuns: 0,
+                recoveryWaiting: false,
+                incomplete,
+                executionSettled: false,
+                pendingQuestions: requests.filter((request) => request.kind === "user_input")
+                  .length,
+                requestCount: requests.length,
+                requests,
+              },
+            },
+          });
+        yield* observe(8, [request], true);
+        yield* engine.recoverDelegatedTasks;
+        assert.lengthOf(
+          (yield* engine.getThreadProjection(parent.threadId)).messages.filter(
+            (message) => message.notification?.outcome === "updated",
+          ),
+          0,
+        );
+        yield* observe(9, [{ ...request, detail: "Which actual Pi color? Blue or Red" }]);
+        yield* observe(10);
+        const noticed = yield* engine.getThreadProjection(parent.threadId);
+        const notices = noticed.messages.filter(
+          (message) => message.notification?.outcome === "updated",
+        );
+        assert.lengthOf(notices, 1);
+        assert.include(notices[0]!.text, "Remote builder");
+        assert.include(notices[0]!.text, "Which actual Pi color?");
+        assert.include(notices[0]!.text, "choose-build");
+        assert.include(notices[0]!.text, "requestTarget");
+        assert.notProperty(notices[0]!.notification!.source, "childThreadId");
+        assert.equal(noticed.subagents[0]!.childThreadId, null);
+        assert.equal(yield* engine.getThreadShell(remoteChild.threadId), null);
+        yield* observe(11, [{ ...request, revision: 11 }]);
+        yield* engine.recoverDelegatedTasks;
+        yield* engine.recoverDelegatedTasks;
+        assert.lengthOf(
+          (yield* engine.getThreadProjection(parent.threadId)).messages.filter(
+            (message) => message.notification?.outcome === "updated",
+          ),
+          1,
+        );
+        yield* observe(12, []);
+        assert.lengthOf(
+          (yield* engine.getThreadProjection(parent.threadId)).runs.filter(
+            (run) => run.status === "queued" && run.userMessageId === notices[0]!.id,
+          ),
+          0,
+        );
+        yield* observe(13, [
+          {
+            ...request,
+            requestId: RuntimeRequestId.make("approve-build"),
+            kind: "command",
+            responseType: "live",
+          },
+        ]);
+        const approvals = (yield* engine.getThreadProjection(parent.threadId)).messages.filter(
+          (message) => message.text.includes("approve-build"),
+        );
+        assert.lengthOf(approvals, 1);
+        assert.include(approvals[0]!.text, "approval");
+        const legacy = {
+          ...request,
+          requestId: RuntimeRequestId.make("legacy-request"),
+          revision: 20,
+        };
+        const legacyKey = `${taskId}:${legacy.environmentId}:${legacy.threadId}:${legacy.requestId}:19`;
+        const legacyMessageId = MessageId.make(`message:remote-delegated-question:${legacyKey}`);
+        yield* engine.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`server:remote-delegated-question:${legacyKey}`),
+          threadId: parent.threadId,
+          messageId: legacyMessageId,
+          text: "Legacy notice",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "agent",
+          creationSource: "server",
+        });
+        yield* observe(14, [legacy]);
+        const migrated = yield* engine.getThreadProjection(parent.threadId);
+        assert.lengthOf(migrated.messages, approvals.length + notices.length + 1);
+        assert.lengthOf(
+          migrated.runs.filter(
+            (run) => run.status === "queued" && run.userMessageId === legacyMessageId,
+          ),
+          1,
+        );
+        yield* engine.dispatch({
+          type: "delegated_task.remote.observe",
+          commandId: CommandId.make("notice:stale"),
+          parentThreadId: parent.threadId,
+          taskId,
+          availability: "stale",
+        });
+        assert.lengthOf(
+          (yield* engine.getThreadProjection(parent.threadId)).runs.filter(
+            (run) => run.status === "queued" && run.userMessageId === legacyMessageId,
+          ),
+          1,
+        );
+        const relatedRequest = { ...request, requestId: RuntimeRequestId.make("prefix:other") };
+        yield* observe(16, [relatedRequest]);
+        const prefixRequest = { ...request, requestId: RuntimeRequestId.make("prefix") };
+        yield* observe(17, [prefixRequest]);
+        const prefixId = MessageId.make(
+          `message:remote-delegated-question:${taskId}:${prefixRequest.environmentId}:${prefixRequest.threadId}:${prefixRequest.requestId}`,
+        );
+        assert.lengthOf(
+          (yield* engine.getThreadProjection(parent.threadId)).messages.filter(
+            (message) => message.id === prefixId,
+          ),
+          1,
+        );
+        yield* observe(18, []);
+        assert.lengthOf(
+          (yield* engine.getThreadProjection(parent.threadId)).runs.filter(
+            (run) => run.status === "queued" && run.userMessageId === legacyMessageId,
+          ),
+          0,
+        );
+      }),
+  );
+  it.effect(
+    "retains completed remote jobs for observation and records parent Stop after first result",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const parent = yield* seedLiveParent("continued-remote");
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.request",
+          commandId: CommandId.make("command:remote-delegate:continued"),
+          parentThreadId: parent.threadId,
+          parentRunId: parent.runId,
+          parentNodeId: parent.rootNodeId,
+          task: "Continue this same job after its first result.",
+          driver: ProviderDriverKind.make("codex"),
+          modelSelection,
+          remoteChild: {
+            ...remoteChild,
+            launch: {
+              lifecycleVersion: 1,
+              requestNamespace: "recorded-source",
+              clientRequestId: "continued-job",
+              linkIdentity: "recorded-generation",
+              projectId: ProjectId.make("remote-project"),
+              title: "Remote job",
+              delegatedFrom: {
+                environmentId: EnvironmentId.make("source-environment"),
+                threadId: parent.threadId,
+                title: "Source parent",
+              },
+            },
+          },
+          completionWake: "always",
+        });
+        const task = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents[0]!;
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.complete",
+          commandId: CommandId.make("command:remote-first-result"),
+          parentThreadId: parent.threadId,
+          taskId: task.id,
+          status: "completed",
+          result: "Original immutable result",
+          stoppedThere: "ran-out",
+        });
+        const recoverable = yield* projections.getOpenRemoteDelegatedTasks;
+        assert.includeDeepMembers(
+          [...recoverable],
+          [{ parentThreadId: parent.threadId, taskId: task.id }],
+        );
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        yield* threads.stopDelegatedTasks({
+          threadId: parent.threadId,
+          commandId: CommandId.make("parent-stop-after-original"),
+        });
+        const stopped = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents.find(
+          (candidate) => candidate.id === task.id,
+        )!;
+        assert.equal(stopped.result, "Original immutable result");
+        assert.equal(stopped.remoteChild?.stop?.state, "pending");
+        assert.equal(stopped.completionDelivery?.state, "disposed");
+      }),
+  );
+  it.effect(
+    "records cancellation and wake disposal with the Stop obligation before a first late result",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const parent = yield* seedLiveParent("atomic-stop");
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.request",
+          commandId: CommandId.make("atomic-stop-create"),
+          parentThreadId: parent.threadId,
+          parentRunId: parent.runId,
+          parentNodeId: parent.rootNodeId,
+          task: "Cancel atomically",
+          driver,
+          modelSelection,
+          remoteChild,
+          completionWake: "always",
+        });
+        const taskId = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents[0]!.id;
+        const offers = yield* Offers;
+        yield* Ref.set(offers, []);
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.observe",
+          commandId: CommandId.make("atomic-stop-intent"),
+          parentThreadId: parent.threadId,
+          taskId,
+          stop: { requestId: "atomic-stop-request", state: "pending" },
+          stopResult: { status: "interrupted", result: "Stopped with parent" },
+        });
+        const stopped = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents.find(
+          (task) => task.id === taskId,
+        )!;
+        assert.equal(stopped.result, "Stopped with parent");
+        assert.equal(stopped.status, "interrupted");
+        assert.equal(stopped.completionDelivery?.state, "disposed");
+        assert.equal(stopped.remoteChild?.stop?.state, "pending");
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.complete",
+          commandId: CommandId.make("atomic-stop-late-result"),
+          parentThreadId: parent.threadId,
+          taskId,
+          status: "completed",
+          result: "Late actual reply",
+          observation: {
+            cursor: 10,
+            snapshot: {
+              sequence: 10,
+              observedAt: "2026-10-17T20:00:00Z",
+              title: "Remote",
+              workState: "result_available",
+              pendingChildren: 0,
+              queuedRuns: 0,
+              recoveryWaiting: false,
+              incomplete: false,
+              executionSettled: true,
+              pendingQuestions: 0,
+              requestCount: 0,
+              requests: [],
+            },
+            result: {
+              environmentId: remoteChild.environmentId,
+              threadId: remoteChild.threadId,
+              runId: RunId.make("atomic-late-run"),
+              eventId: EventId.make("atomic-late-event"),
+              sequence: 10,
+              status: "completed",
+              text: "Late actual reply",
+              truncated: false,
+            },
+          },
+        });
+        const late = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents.find(
+          (task) => task.id === taskId,
+        )!;
+        assert.equal(late.result, "Stopped with parent");
+        assert.equal(late.status, "interrupted");
+        assert.equal(late.remoteChild?.latestResult?.text, "Late actual reply");
+        assert.equal((yield* Ref.get(offers)).length, 0);
+      }),
+  );
+  it.effect(
+    "delivers each real remote result once, preserves original provenance and rejects stale replay",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const parent = yield* seedLiveParent("ordered-remote");
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.request",
+          commandId: CommandId.make("ordered-create"),
+          parentThreadId: parent.threadId,
+          parentRunId: parent.runId,
+          parentNodeId: parent.rootNodeId,
+          task: "Three results",
+          driver,
+          modelSelection,
+          remoteChild: { ...remoteChild, runId: RunId.make("remote-launched-before-recovery") },
+          completionWake: "always",
+        });
+        const taskId = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents[0]!.id;
+        const offers = yield* Offers;
+        yield* Ref.set(offers, []);
+        const snapshot = (sequence: number) => ({
+          sequence,
+          observedAt: "2026-10-17T20:00:00Z",
+          title: "Remote job",
+          workState: "result_available" as const,
+          pendingChildren: 0,
+          queuedRuns: 0,
+          recoveryWaiting: false,
+          incomplete: false,
+          executionSettled: true,
+          pendingQuestions: 0,
+          requestCount: 0,
+          requests: [],
+        });
+        const report = (n: number, attempt = "main") =>
+          orchestrator.dispatch({
+            type: "delegated_task.remote.complete",
+            commandId: CommandId.make(`ordered-result-${n}:${attempt}`),
+            parentThreadId: parent.threadId,
+            taskId,
+            status: n === 3 ? "failed" : "completed",
+            result: `Result ${n}`,
+            observation: {
+              cursor: n * 10,
+              snapshot: snapshot(n * 10),
+              result: {
+                environmentId: remoteChild.environmentId,
+                threadId: remoteChild.threadId,
+                runId: RunId.make(n === 1 ? "remote-original" : `remote-followup-${n}`),
+                eventId: EventId.make(`remote-terminal-${n}`),
+                sequence: n * 10,
+                status: n === 3 ? "failed" : "completed",
+                text: `Result ${n}`,
+                truncated: false,
+              },
+            },
+          });
+        for (const n of [1, 2, 3]) {
+          yield* report(n);
+          if (n === 1) {
+            yield* report(2, "before-acknowledgement");
+            const blocked = (yield* orchestrator.getThreadProjection(
+              parent.threadId,
+            )).subagents.find((task) => task.id === taskId)!;
+            assert.equal(blocked.remoteChild?.cursor, 10);
+            assert.equal(blocked.remoteChild?.latestResult?.runId, "remote-original");
+            assert.equal((yield* Ref.get(offers)).length, 1);
+          }
+          const task = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents.find(
+            (task) => task.id === taskId,
+          )!;
+          assert.equal(task.result, "Result 1");
+          assert.equal(task.remoteChild?.runId, "remote-launched-before-recovery");
+          assert.equal(task.remoteChild?.originalResult?.runId, "remote-original");
+          assert.equal(task.remoteChild?.originalResult?.eventId, "remote-terminal-1");
+          assert.equal(task.remoteChild?.latestResult?.text, `Result ${n}`);
+          assert.equal(
+            task.completionSource?.runId,
+            n === 1 ? "remote-original" : `remote-followup-${n}`,
+          );
+          assert.deepEqual(task.completionSource?.purpose.scope, {
+            type: "unscoped",
+            reason: "unknown_cause",
+          });
+          const delivery = (yield* orchestrator.getThreadProjection(parent.threadId)).runs.find(
+            (run) => run.id === parent.runId,
+          )?.delegatedCompletion?.delivery;
+          assert.deepEqual(delivery?.purposeCauses, [{ taskId, ...task.completionSource! }]);
+          assert.equal(task.childThreadId, null);
+          yield* orchestrator.dispatch({
+            type: "delegated_task.completion-delivery.acknowledge",
+            commandId: CommandId.make(`ordered-ack-${n}`),
+            parentThreadId: parent.threadId,
+            taskId,
+            observedByRunId: parent.runId,
+          });
+        }
+        assert.equal((yield* Ref.get(offers)).length, 3);
+        const beforeReplay = yield* orchestrator.getThreadEventSequence(parent.threadId);
+        yield* report(2, "stale-distinct-command");
+        yield* report(2);
+        assert.equal(yield* orchestrator.getThreadEventSequence(parent.threadId), beforeReplay);
+        assert.equal((yield* Ref.get(offers)).length, 3);
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.observe",
+          commandId: CommandId.make("monitor-only-update"),
+          parentThreadId: parent.threadId,
+          taskId,
+          observation: {
+            cursor: 40,
+            snapshot: { ...snapshot(40), workState: "working", queuedRuns: 1 },
+          },
+          availability: "current",
+        });
+        const monitor = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents.find(
+          (task) => task.id === taskId,
+        )!;
+        assert.equal(monitor.remoteChild?.latestResult?.runId, "remote-followup-3");
+        assert.equal(monitor.result, "Result 1");
+        assert.equal((yield* Ref.get(offers)).length, 3);
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.observe",
+          commandId: CommandId.make("stop-after-result"),
+          parentThreadId: parent.threadId,
+          taskId,
+          stop: { requestId: "stop-generation", state: "pending" },
+        });
+        // A later real result remains observable but cannot resurrect a stopped parent.
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.complete",
+          commandId: CommandId.make("late-after-stop"),
+          parentThreadId: parent.threadId,
+          taskId,
+          status: "completed",
+          result: "Late result",
+          observation: {
+            cursor: 50,
+            snapshot: snapshot(50),
+            result: {
+              environmentId: remoteChild.environmentId,
+              threadId: remoteChild.threadId,
+              runId: RunId.make("late-run"),
+              eventId: EventId.make("late-event"),
+              sequence: 50,
+              status: "completed",
+              text: "Late result",
+              truncated: false,
+            },
+          },
+        });
+        const late = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents.find(
+          (task) => task.id === taskId,
+        )!;
+        assert.equal(late.result, "Result 1");
+        assert.equal(late.remoteChild?.latestResult?.text, "Late result");
+        assert.equal(late.remoteChild?.stop?.state, "pending");
+        assert.equal(late.completionDelivery?.state, "disposed");
+        assert.equal((yield* Ref.get(offers)).length, 3);
+        assert.equal(yield* orchestrator.getThreadShell(remoteChild.threadId), null);
+      }),
+  );
+
   it.effect("is recorded on its parent without a child thread here, once", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -383,9 +1166,9 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
           stoppedThere: "ran-out",
         });
       yield* complete("All 412 tests pass on the box.");
-      // A second report is refused, so the first result stands.
-      const late = yield* complete("A late, different answer.").pipe(Effect.flip);
-      assert.equal(late._tag, "OrchestratorDispatchError");
+      // A duplicate terminal report is a no-op and cannot replace the first result.
+      const late = yield* complete("A late, different answer.");
+      assert.deepEqual(late.storedEvents, []);
 
       const projection = yield* orchestrator.getThreadProjection(parent.threadId);
       const task = projection.subagents.find((candidate) => candidate.id === taskId);
@@ -393,7 +1176,7 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
       assert.equal(task?.result, "All 412 tests pass on the box.");
       // The live parent run claimed it, so task_status acknowledges it as for a local child.
       assert.equal(task?.completionDelivery?.state, "claimed");
-      // Nothing is left for the follower to pick up after a restart.
+      // This imported record has no generation-bound lifecycle contract.
       assert.deepEqual(yield* openFor, []);
       const item = projection.turnItems.find(
         (candidate) => candidate.type === "subagent" && candidate.subagentId === taskId,
@@ -521,3 +1304,317 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
       }),
   );
 });
+
+it.effect(
+  "remote request receipts survive reconstructed source runtimes and recovery closes answered notices",
+  () =>
+    Effect.gen(function* () {
+      const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "remote-notice-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true })),
+      );
+      const runtime = () =>
+        layerForDatabase(diskDatabase(NodePath.join(directory, "state.sqlite")));
+      const snapshot = {
+        sequence: 10,
+        observedAt: "2026-10-19T10:00:00Z",
+        title: "Persisted builder",
+        workState: "working" as const,
+        pendingChildren: 0,
+        queuedRuns: 0,
+        recoveryWaiting: false,
+        incomplete: false,
+        executionSettled: false,
+        pendingQuestions: 1,
+        requestCount: 1,
+        requests: [
+          {
+            environmentId: remoteChild.environmentId,
+            threadId: remoteChild.threadId,
+            requestId: RuntimeRequestId.make("persisted-question"),
+            revision: 10,
+            kind: "user_input",
+            responseType: "message",
+            detail: "Which build target?",
+          },
+        ],
+      };
+      const { parent, taskId } = yield* Effect.gen(function* () {
+        const engine = yield* Orchestrator.OrchestratorV2;
+        const parent = yield* seedLiveParent("persisted-remote-notice");
+        yield* engine.dispatch({
+          type: "delegated_task.remote.request",
+          commandId: CommandId.make("persisted:create"),
+          parentThreadId: parent.threadId,
+          parentRunId: parent.runId,
+          parentNodeId: parent.rootNodeId,
+          task: "Build",
+          title: "Persisted builder",
+          driver,
+          modelSelection,
+          remoteChild,
+          completionWake: "always",
+        });
+        const taskId = (yield* engine.getThreadProjection(parent.threadId)).subagents[0]!.id;
+        yield* engine.dispatch({
+          type: "delegated_task.remote.observe",
+          commandId: CommandId.make("persisted:observe"),
+          parentThreadId: parent.threadId,
+          taskId,
+          observation: { cursor: 0, snapshot },
+          availability: "current",
+        });
+        const notices = (yield* engine.getThreadProjection(parent.threadId)).messages.filter(
+          (message) => message.text.includes("persisted-question"),
+        );
+        assert.lengthOf(notices, 1);
+        assert.include(notices[0]!.text, "Which build target?");
+        return { parent, taskId };
+      }).pipe(Effect.provide(runtime()));
+      yield* Effect.gen(function* () {
+        const engine = yield* Orchestrator.OrchestratorV2;
+        yield* engine.recoverDelegatedTasks;
+        yield* engine.recoverDelegatedTasks;
+        yield* engine.dispatch({
+          type: "delegated_task.remote.observe",
+          commandId: CommandId.make("persisted:new-revision"),
+          parentThreadId: parent.threadId,
+          taskId,
+          availability: "current",
+          observation: {
+            cursor: 0,
+            snapshot: {
+              ...snapshot,
+              sequence: 11,
+              requests: [{ ...snapshot.requests[0]!, revision: 11 }],
+            },
+          },
+        });
+        const current = yield* engine.getThreadProjection(parent.threadId);
+        assert.lengthOf(
+          current.messages.filter((message) => message.text.includes("persisted-question")),
+          1,
+        );
+        // Model a process ending after accepting the resolved observation and before reconciliation.
+        const sink = yield* EventSink.EventSinkV2;
+        const now = yield* DateTime.now;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("persisted:resolved-snapshot"),
+              type: "subagent.updated",
+              threadId: parent.threadId,
+              occurredAt: now,
+              payload: {
+                ...current.subagents[0]!,
+                remoteChild: {
+                  ...current.subagents[0]!.remoteChild!,
+                  snapshot: {
+                    ...snapshot,
+                    sequence: 12,
+                    requests: [],
+                    requestCount: 0,
+                    pendingQuestions: 0,
+                  },
+                },
+              },
+            },
+          ],
+        });
+      }).pipe(Effect.provide(runtime()));
+      yield* Effect.gen(function* () {
+        const engine = yield* Orchestrator.OrchestratorV2;
+        yield* engine.recoverDelegatedTasks;
+        const current = yield* engine.getThreadProjection(parent.threadId);
+        const notices = current.messages.filter((message) =>
+          message.text.includes("persisted-question"),
+        );
+        assert.lengthOf(notices, 1);
+        assert.lengthOf(
+          current.runs.filter(
+            (run) => run.status === "queued" && run.userMessageId === notices[0]!.id,
+          ),
+          0,
+        );
+      }).pipe(Effect.provide(runtime()));
+    }),
+);
+
+it.effect(
+  "remote follow-up cause and one delivery survive full SQLite runtime reconstruction",
+  () =>
+    Effect.gen(function* () {
+      const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "remote-purpose-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true })),
+      );
+      const runtime = () =>
+        layerForDatabase(diskDatabase(NodePath.join(directory, "state.sqlite")));
+      const scope = {
+        type: "single" as const,
+        reference: {
+          host: "github.com",
+          repository: "toolboxmd/chromeria",
+          kind: "issue" as const,
+          number: 379,
+        },
+      };
+      const snapshot = {
+        sequence: 10,
+        observedAt: "2026-10-20T12:00:00Z",
+        title: "Remote",
+        workState: "result_available" as const,
+        pendingChildren: 0,
+        queuedRuns: 0,
+        recoveryWaiting: false,
+        incomplete: false,
+        executionSettled: true,
+        pendingQuestions: 0,
+        requestCount: 0,
+        requests: [],
+      };
+      const r1 = RunId.make("persisted-purpose-r1");
+      const r2 = RunId.make("persisted-purpose-r2");
+      const state = yield* Effect.gen(function* () {
+        const engine = yield* Orchestrator.OrchestratorV2;
+        const parent = yield* seedLiveParent("persisted-remote-purpose");
+        yield* engine.dispatch({
+          type: "delegated_task.remote.request",
+          commandId: CommandId.make("persisted-purpose-create"),
+          parentThreadId: parent.threadId,
+          parentRunId: parent.runId,
+          parentNodeId: parent.rootNodeId,
+          task: "Persist completion cause",
+          driver,
+          modelSelection,
+          completionWake: "always",
+          remoteChild: { ...remoteChild, runId: r1 },
+        });
+        const taskId = (yield* engine.getThreadProjection(parent.threadId)).subagents[0]!.id;
+        const report = (runId: RunId, sequence: number) => ({
+          type: "delegated_task.remote.complete" as const,
+          commandId: CommandId.make(`persisted-purpose-complete-${runId}`),
+          parentThreadId: parent.threadId,
+          taskId,
+          status: "completed" as const,
+          result: runId,
+          observation: {
+            cursor: sequence,
+            snapshot: { ...snapshot, sequence },
+            result: {
+              environmentId: remoteChild.environmentId,
+              threadId: remoteChild.threadId,
+              runId,
+              eventId: EventId.make(`persisted-purpose-event-${runId}`),
+              sequence,
+              status: "completed" as const,
+              text: runId,
+              truncated: false,
+              purposeScope: scope,
+            },
+          },
+        });
+        yield* engine.dispatch(report(r1, 10));
+        const first = yield* engine.getThreadProjection(parent.threadId);
+        const oldDelivery = first.runs.find((run) => run.id === parent.runId)!.delegatedCompletion!
+          .delivery!;
+        yield* engine.dispatch({
+          type: "delegated_task.completion-delivery.acknowledge",
+          commandId: CommandId.make("persisted-purpose-ack-r1"),
+          parentThreadId: parent.threadId,
+          taskId,
+          observedByRunId: parent.runId,
+        });
+        const command = report(r2, 20);
+        yield* engine.dispatch(command);
+        const current = yield* engine.getThreadProjection(parent.threadId);
+        const task = current.subagents.find((task) => task.id === taskId)!;
+        const delivery = current.runs.find((run) => run.id === parent.runId)!.delegatedCompletion!
+          .delivery!;
+        assert.equal(task.completionSource?.runId, r2);
+        assert.deepEqual(task.completionSource?.purpose.scope, scope);
+        assert.deepEqual(delivery.purposeCauses, [{ taskId, ...task.completionSource! }]);
+        const stale = yield* engine
+          .dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("persisted-purpose-old-wake"),
+            threadId: parent.threadId,
+            messageId: oldDelivery.messageId,
+            text: "Old R1 wake",
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" },
+            createdBy: "agent",
+            creationSource: "server",
+            delegatedCompletion: {
+              parentRunId: parent.runId,
+              generation: oldDelivery.generation,
+              taskIds: [taskId],
+            },
+          })
+          .pipe(Effect.flip);
+        assert.equal(stale._tag, "OrchestratorDispatchError");
+        return { parent, taskId, command, task, delivery };
+      }).pipe(Effect.provide(runtime()));
+      yield* Effect.gen(function* () {
+        const engine = yield* Orchestrator.OrchestratorV2;
+        const offers = yield* Offers;
+        yield* engine.recoverDelegatedTasks;
+        yield* engine.recoverDelegatedTasks;
+        const before = yield* engine.getThreadEventSequence(state.parent.threadId);
+        yield* engine.dispatch(state.command);
+        yield* engine.dispatch({
+          ...state.command,
+          commandId: CommandId.make("persisted-purpose-replay-distinct"),
+        });
+        assert.equal(yield* engine.getThreadEventSequence(state.parent.threadId), before);
+        const current = yield* engine.getThreadProjection(state.parent.threadId);
+        const task = current.subagents.find((task) => task.id === state.taskId)!;
+        assert.deepEqual(task.completionSource, state.task.completionSource);
+        assert.deepEqual(task.remoteChild?.originalResult, state.task.remoteChild?.originalResult);
+        assert.equal(task.remoteChild?.runId, r1);
+        assert.equal(task.remoteChild?.latestResult?.runId, r2);
+        assert.equal(task.result, r1);
+        assert.deepEqual(
+          current.runs.find((run) => run.id === state.parent.runId)?.delegatedCompletion?.delivery,
+          state.delivery,
+        );
+        const wakes = yield* Ref.get(offers);
+        assert.isNotEmpty(wakes);
+        assert.deepEqual(
+          [...new Set(wakes.map((wake) => wake.delegatedCompletion?.messageId))],
+          [state.delivery.messageId],
+        );
+        const wake = {
+          type: "message.dispatch" as const,
+          commandId: CommandId.make("persisted-purpose-consume-r2"),
+          threadId: state.parent.threadId,
+          messageId: state.delivery.messageId,
+          text: "R2 wake",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" as const },
+          createdBy: "agent" as const,
+          creationSource: "server" as const,
+          delegatedCompletion: {
+            parentRunId: state.parent.runId,
+            generation: state.delivery.generation,
+            taskIds: [state.taskId],
+          },
+        };
+        yield* engine.dispatch(wake);
+        yield* engine.dispatch(wake);
+        yield* engine
+          .dispatch({ ...wake, commandId: CommandId.make("persisted-purpose-consume-r2-again") })
+          .pipe(Effect.flip);
+        const consumed = yield* engine.getThreadProjection(state.parent.threadId);
+        assert.lengthOf(
+          consumed.messages.filter((message) => message.id === state.delivery.messageId),
+          1,
+        );
+        const wakeRuns = consumed.runs.filter(
+          (run) => run.userMessageId === state.delivery.messageId,
+        );
+        assert.lengthOf(wakeRuns, 1);
+        assert.deepEqual(wakeRuns[0]?.purpose?.scope, scope);
+      }).pipe(Effect.provide(runtime()));
+    }),
+);

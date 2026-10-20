@@ -286,6 +286,23 @@ persistent cache. Requested and final hosted URLs are checked here; TinyFish
 owns networking inside its service, whose DNS and subresource isolation remain
 unverified.
 
+## Automations on another environment
+
+Save a schedule, webhook or Spectrum while its contributors are reachable. The
+receiving environment can then run that accepted work while the source sleeps,
+within the saved permissions and their known expiry. Edits and Spectrum reopens
+require fresh authorization. Both environments must support this behavior;
+older peers refuse the save.
+
+Disable the automation on its receiving environment to stop new execution
+there immediately. Revoking or unlinking its source queues a disable that remains
+unconfirmed until the receiver durably acknowledges it. If the receiver cannot
+be reached, accepted local work can continue until that disable arrives or its
+known authorization expires. Relinking does not revive the old automation.
+Calling another environment still requires the original contributors online;
+local progress and returning its result are separate operations. Webhooks keep
+the receiving environment's URL.
+
 ## Browser on a remote environment
 
 Browser tabs belong to the environment, so you and your agents see the same
@@ -527,3 +544,23 @@ history, and saved connections are kept, and you keep working through pairing, T
 
 Switch **Local environment** back on in the same place to restart with your previous local
 settings.
+
+## Continue delegated work on another environment
+
+A new remote delegated task keeps its first result. Later messages to the same task's
+thread continue that job, and each completed run becomes its latest result.
+The parent can also see queued work, pending children, questions, and recovery.
+Both environments must support delegated lifecycle observation before a new
+remote task can start.
+
+Open the remote task from the thread's agent relationships to inspect its work
+through the parent environment. This works on web, desktop, and mobile without
+saving a separate client connection to the destination. Refresh to retry a stale
+observation or page through the messages. Older jobs keep their original direct
+connection navigation and first-result observation.
+
+**Stop remote work** records a request to stop the destination thread and its
+nested work. Pending or unconfirmed means the destination has not confirmed the
+request. Acknowledged means it accepted Stop; confirmed means its execution has
+settled. The first result stays available. A later Stop request applies to work
+started since the earlier Stop, subject to the current link and permissions.

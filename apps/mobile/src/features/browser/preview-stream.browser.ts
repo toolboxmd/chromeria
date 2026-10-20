@@ -165,6 +165,7 @@ export function start(configuration: PreviewStreamConfiguration) {
         access: configuration.access,
         threadId: configuration.threadId,
         tabId: configuration.tabId,
+        ...(configuration.resource === undefined ? {} : { resource: configuration.resource }),
         maxWidth: cap.width,
         maxHeight: cap.height,
         interactive,
@@ -173,6 +174,9 @@ export function start(configuration: PreviewStreamConfiguration) {
         onFrame: (jpeg) => painter.paint(jpeg),
         onPointer: showAgentCursor,
         onClipboard: (text) => post({ type: "clipboard", text }),
+        onInputRejected: (message) => post({ type: "inputRejected", message }),
+        onPopup: (tabId, resource) =>
+          post({ type: "popup", tabId, ...(resource === undefined ? {} : { resource }) }),
         onDownload: (download) => post({ type: "download", ...download }),
         onFileChooser: (chooser) => post({ type: "fileChooser", chooser }),
         onViewport: (page) => {

@@ -1,3 +1,4 @@
+import { isThreadVisibleInNavigation } from "@t3tools/client-runtime/state/models";
 import type { OlderSettledScope } from "@t3tools/client-runtime/state/threads";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useMemo, useSyncExternalStore } from "react";
@@ -33,7 +34,10 @@ type LayoutInput = Parameters<typeof buildThreadListV2Items>[0];
  * the React Compiler cached none of it and every render of the screen re-rendered every row.
  */
 export function useThreadListV2(input: {
+  /** Candidates for the list; navigation visibility and search decide which are shown. */
   readonly threads: LayoutInput["threads"];
+  /** The threads navigation tracks: inbox returns and move availability read these. */
+  readonly navigationThreads: LayoutInput["threads"];
   /** Scratch projects group their threads in the No project shelf. */
   readonly projects: LayoutInput["projects"];
   readonly pendingTasks: ReadonlyArray<PendingNewTask>;
@@ -58,29 +62,29 @@ export function useThreadListV2(input: {
   readonly settledShelfExpanded: boolean;
   readonly selectedThreadKey: string | null;
 }) {
-  const { threads, workingShelfEnabled } = input;
+  const { threads, navigationThreads, workingShelfEnabled } = input;
   // A thread can stop working when the threads change, or when its exit grace expires.
   const inboxVersion = useSyncExternalStore(
     threadListInboxReturns.subscribe,
     threadListInboxReturns.getSnapshot,
   );
   const inbox = useMemo(
-    () => threadListInboxReturns.observe(workingShelfEnabled ? threads : null),
+    () => threadListInboxReturns.observe(workingShelfEnabled ? navigationThreads : null),
     // oxlint-disable-next-line react/memo-dependencies -- the version signals an expired grace
-    [threads, workingShelfEnabled, inboxVersion],
+    [navigationThreads, workingShelfEnabled, inboxVersion],
   );
   // Up/down menu availability for every card, computed once per section per
   // rebuild (see computeThreadMoveAvailability): per-thread planner calls made
   // list construction quadratic, and this list rebuilds on every minute tick.
   const sectionAvailability = (section: "pinned" | "active") =>
     computeThreadMoveAvailability({
-      allThreads: threads,
+      allThreads: navigationThreads,
       section,
       pendingOrder: input.pendingOrder,
       reorderableEnvironmentIds:
         section === "pinned" ? input.pinReorderEnvironmentIds : input.activeReorderEnvironmentIds,
       ordered: getThreadListV2OrderedSection({
-        threads,
+        threads: navigationThreads,
         section,
         projects: input.projects,
         pendingOrder: input.pendingOrder,
@@ -105,7 +109,7 @@ export function useThreadListV2(input: {
   const layout = buildThreadListV2Items({
     pendingOrder: input.pendingOrder,
     projects: input.projects,
-    threads: threads.filter((thread) => thread.archivedAt === null),
+    threads: threads.filter((thread) => isThreadVisibleInNavigation(thread, input.searchQuery)),
     environmentId: input.environmentId,
     projectRefs: input.projectRefs,
     searchQuery: input.searchQuery,

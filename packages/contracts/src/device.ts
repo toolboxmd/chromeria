@@ -2,7 +2,9 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
-import { ThreadId, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
+import { EnvironmentId, ThreadId, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
+import { PeerAttachmentReference } from "./peerAttachments.ts";
+import { PeerAttachmentAssetResource } from "./assets.ts";
 
 export const DevicePlatform = Schema.Literals(["ios", "android"]);
 export type DevicePlatform = typeof DevicePlatform.Type;
@@ -243,6 +245,8 @@ export const DeviceSession = Schema.Struct({
   deviceId: DeviceId,
   platform: DevicePlatform,
   openedAt: Schema.String,
+  /** Generation of this exact opening, independent of clock resolution. */
+  toolSessionId: Schema.optional(Schema.String),
 });
 export type DeviceSession = typeof DeviceSession.Type;
 
@@ -650,15 +654,802 @@ export const DeviceToolOpenInput = Schema.Struct({
 });
 export type DeviceToolOpenInput = typeof DeviceToolOpenInput.Type;
 
-export const DeviceToolOpenResult = Schema.Struct({
-  device: DeviceSummary,
-  agentDevice: Schema.Struct({
-    command: Schema.String,
-    targetArgs: Schema.Array(Schema.String),
-    session: Schema.String,
-  }),
-  quickStart: Schema.String,
+/** Keep unknown keys until the closed-command check can reject them. Normal struct decoding strips them. */
+export const closedDeviceCommand = <F extends Schema.Struct.Fields>(fields: F) =>
+  Schema.StructWithRest(Schema.Struct(fields), [Schema.Record(Schema.String, Schema.Unknown)])
+    .check(
+      Schema.makeFilter(
+        (value) =>
+          Object.keys(value).every((key) => Object.hasOwn(fields, key)) ||
+          "Unknown device command option.",
+      ),
+    )
+    .pipe(Schema.decodeTo(Schema.Struct(fields)));
+
+export const DeviceCommandTarget = closedDeviceCommand({
+  hostId: DeviceHostId,
+  deviceId: DeviceId,
+  toolSessionId: Schema.String.check(Schema.isPattern(/^[0-9a-f-]{36}$/)),
 });
+export type DeviceCommandTarget = typeof DeviceCommandTarget.Type;
+
+/** One exact device opening, qualified independently of the client's source connection. */
+export const DeviceViewerResource = closedDeviceCommand({
+  type: Schema.Literal("device"),
+  environmentId: EnvironmentId.check(Schema.isMaxLength(256)),
+  threadId: ThreadId.check(Schema.isMaxLength(256)),
+  hostId: DeviceHostId,
+  deviceId: DeviceId,
+  toolSessionId: Schema.String.check(Schema.isPattern(/^[0-9a-f-]{36}$/)),
+  platform: DevicePlatform,
+});
+export type DeviceViewerResource = typeof DeviceViewerResource.Type;
+
+export const DeviceViewerOpenInput = closedDeviceCommand({
+  viewerId: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[0-9a-f-]{36}$/))),
+  resource: DeviceViewerResource,
+  operation: Schema.Literals(["view", "control"]),
+});
+export type DeviceViewerOpenInput = typeof DeviceViewerOpenInput.Type;
+export const DeviceViewerCloseInput = closedDeviceCommand({
+  viewerId: Schema.String.check(Schema.isPattern(/^[0-9a-f-]{36}$/)),
+});
+export const DeviceViewerAccess = Schema.Struct({
+  viewerId: Schema.String.check(Schema.isPattern(/^[0-9a-f-]{36}$/)),
+  ticket: TrimmedNonEmptyString.check(Schema.isMaxLength(4096)),
+  expiresAt: Schema.String.check(Schema.isMaxLength(64)),
+  hubBasePath: Schema.Literal("/api/device-hub"),
+});
+export type DeviceViewerAccess = typeof DeviceViewerAccess.Type;
+/** Authenticated peer discovery; absence refuses before a viewer is admitted. */
+export const DeviceViewerProtocol = Schema.Struct({
+  version: Schema.Literal(1),
+  purpose: Schema.Literal("device-viewer"),
+});
+
+const DeviceElementRef = Schema.String.check(Schema.isPattern(/^@?e[0-9]{1,6}$/));
+const DeviceInputArtifact = closedDeviceCommand(PeerAttachmentReference.fields);
+const DeviceCommandText = Schema.String.check(Schema.isMaxLength(16_384));
+const DeviceCommandTimeout = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 60_000 }));
+const DeviceCommandCoordinate = Schema.Number.check(
+  Schema.isFinite(),
+  Schema.isBetween({ minimum: 0, maximum: 100_000 }),
+);
+const DeviceAppId = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(256),
+  Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/),
+);
+const DeviceJsonPayload = Schema.String.check(
+  Schema.isMaxLength(16_384),
+  Schema.makeFilter((text) => {
+    try {
+      const value: unknown = JSON.parse(text);
+      return value !== null && typeof value === "object" && !Array.isArray(value);
+    } catch {
+      return false;
+    }
+  }),
+);
+const DeviceCommandDuration = Schema.Int.check(Schema.isBetween({ minimum: 16, maximum: 10_000 }));
+const DeviceCommandVector = closedDeviceCommand({
+  x: Schema.Number.check(
+    Schema.isFinite(),
+    Schema.isBetween({ minimum: -100_000, maximum: 100_000 }),
+  ),
+  y: Schema.Number.check(
+    Schema.isFinite(),
+    Schema.isBetween({ minimum: -100_000, maximum: 100_000 }),
+  ),
+});
+const DeviceCommandPoint = closedDeviceCommand({
+  x: DeviceCommandCoordinate,
+  y: DeviceCommandCoordinate,
+});
+
+const DeviceCommandElement = Schema.Union([
+  closedDeviceCommand({
+    kind: Schema.Literal("selector"),
+    selector: DeviceCommandText.check(Schema.isMinLength(1)),
+  }),
+  closedDeviceCommand({ kind: Schema.Literal("point"), point: DeviceCommandPoint }),
+]);
+
+/** Caller intent only. Launchers, daemon credentials and runtime session flags are private. */
+export const DeviceAtomicCommand = Schema.Union([
+  closedDeviceCommand({
+    type: Schema.Literal("open"),
+    app: TrimmedNonEmptyString.check(
+      Schema.isMaxLength(256),
+      Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/),
+    ),
+    url: Schema.optional(
+      Schema.String.check(
+        Schema.isMaxLength(8_192),
+        Schema.isPattern(/^[a-zA-Z][a-zA-Z0-9+.-]*:[^\s\u0000-\u001f\u007f]+$/),
+      ),
+    ),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("snapshot"),
+    interactiveOnly: Schema.optional(Schema.Boolean),
+    depth: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 64 }))),
+    customActions: Schema.optional(Schema.Boolean),
+    observeOnly: Schema.optional(Schema.Boolean),
+    forceFull: Schema.optional(Schema.Boolean),
+    timeoutMs: Schema.optional(DeviceCommandTimeout),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("click"),
+    ref: DeviceElementRef,
+    timeoutMs: Schema.optional(DeviceCommandTimeout),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("fill"),
+    ref: DeviceElementRef,
+    text: DeviceCommandText,
+    timeoutMs: Schema.optional(DeviceCommandTimeout),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literals(["click", "press"]),
+    element: DeviceCommandElement,
+    timeoutMs: Schema.optional(DeviceCommandTimeout),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("fill"),
+    element: DeviceCommandElement,
+    text: DeviceCommandText,
+    timeoutMs: Schema.optional(DeviceCommandTimeout),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("longpress"),
+    element: DeviceCommandElement,
+    durationMs: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10_000 })),
+  }),
+  closedDeviceCommand({ type: Schema.Literal("screenshot") }),
+  closedDeviceCommand({ type: Schema.Literal("close") }),
+  closedDeviceCommand({ type: Schema.Literal("capabilities") }),
+  closedDeviceCommand({
+    type: Schema.Literal("press"),
+    ref: DeviceElementRef,
+    timeoutMs: Schema.optional(DeviceCommandTimeout),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("longpress"),
+    ref: DeviceElementRef,
+    durationMs: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10_000 })),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("focus"),
+    x: DeviceCommandCoordinate,
+    y: DeviceCommandCoordinate,
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("type"),
+    text: DeviceCommandText,
+    delayMs: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1_000 }))),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("swipe"),
+    from: DeviceCommandPoint,
+    to: DeviceCommandPoint,
+    count: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 20 }))),
+    pauseMs: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1_000 }))),
+    pattern: Schema.optional(Schema.Literals(["one-way", "ping-pong"])),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("scroll"),
+    direction: Schema.Literals(["up", "down", "left", "right", "top", "bottom"]),
+    amount: Schema.optional(
+      Schema.Number.check(Schema.isFinite(), Schema.isBetween({ minimum: 0.1, maximum: 20 })),
+    ),
+    pixels: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100_000 }))),
+    durationMs: Schema.optional(
+      Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 10_000 })),
+    ),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("back"),
+    mode: Schema.optional(Schema.Literals(["in-app", "system"])),
+  }),
+  closedDeviceCommand({ type: Schema.Literal("home") }),
+  closedDeviceCommand({
+    type: Schema.Literal("orientation"),
+    orientation: Schema.Literals([
+      "portrait",
+      "portrait-upside-down",
+      "landscape-left",
+      "landscape-right",
+    ]),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("fold"),
+    pose: Schema.Literals(["closed", "half-open", "open"]),
+  }),
+  closedDeviceCommand({ type: Schema.Literal("app-switcher") }),
+  closedDeviceCommand({ type: Schema.Literal("action-button") }),
+  closedDeviceCommand({
+    type: Schema.Literal("react-native"),
+    action: Schema.Literal("dismiss-overlay"),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("clipboard"),
+    action: Schema.Literal("write"),
+    text: DeviceCommandText,
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("keyboard"),
+    action: Schema.Literals(["dismiss", "enter", "return"]),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("alert"),
+    action: Schema.Literals(["accept", "dismiss"]),
+    timeoutMs: Schema.optional(DeviceCommandTimeout),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("wait"),
+    kind: Schema.Literal("duration"),
+    durationMs: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 30_000 })),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("wait"),
+    kind: Schema.Literal("ref"),
+    ref: DeviceElementRef,
+    timeoutMs: Schema.optional(DeviceCommandTimeout),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("prepare"),
+    action: Schema.Literal("ios-runner"),
+    timeoutMs: Schema.optional(DeviceCommandTimeout),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("wait"),
+    kind: Schema.Literal("selector"),
+    selector: DeviceCommandText.check(Schema.isMinLength(1)),
+    timeoutMs: Schema.optional(DeviceCommandTimeout),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("record"),
+    action: Schema.Literal("start"),
+    recordingScope: Schema.optional(Schema.Literals(["app", "device", "system"])),
+    fps: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 120 }))),
+    quality: Schema.optional(Schema.Literals(["medium", "high"])),
+    hideTouches: Schema.optional(Schema.Boolean),
+  }),
+  closedDeviceCommand({ type: Schema.Literal("record"), action: Schema.Literal("stop") }),
+  closedDeviceCommand({
+    type: Schema.Literal("trace"),
+    action: Schema.Literals(["start", "stop"]),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("get"),
+    format: Schema.Literals(["text", "attrs"]),
+    ref: DeviceElementRef,
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("is"),
+    predicate: Schema.Literals([
+      "visible",
+      "hidden",
+      "exists",
+      "absent",
+      "editable",
+      "selected",
+      "focused",
+    ]),
+    selector: DeviceCommandText.check(Schema.isMinLength(1)),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("is"),
+    predicate: Schema.Literal("text"),
+    selector: DeviceCommandText.check(Schema.isMinLength(1)),
+    value: DeviceCommandText,
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("find"),
+    query: DeviceCommandText.check(Schema.isMinLength(1)),
+    locator: Schema.optional(Schema.Literals(["any", "text", "label", "value", "role", "id"])),
+    action: Schema.Literals(["click", "focus", "exists", "list", "getText", "getAttrs"]),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("find"),
+    query: DeviceCommandText.check(Schema.isMinLength(1)),
+    locator: Schema.optional(Schema.Literals(["any", "text", "label", "value", "role", "id"])),
+    action: Schema.Literals(["fill", "type"]),
+    value: DeviceCommandText,
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("find"),
+    query: DeviceCommandText.check(Schema.isMinLength(1)),
+    locator: Schema.optional(Schema.Literals(["any", "text", "label", "value", "role", "id"])),
+    action: Schema.Literal("wait"),
+    timeoutMs: Schema.optional(DeviceCommandTimeout),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("gesture"),
+    kind: Schema.Literal("pan"),
+    origin: DeviceCommandPoint,
+    delta: DeviceCommandVector,
+    durationMs: Schema.optional(DeviceCommandDuration),
+    pointerCount: Schema.optional(Schema.Literals([1, 2])),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("gesture"),
+    kind: Schema.Literal("fling"),
+    direction: Schema.Literals(["up", "down", "left", "right"]),
+    origin: DeviceCommandPoint,
+    distance: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 100_000 }))),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("gesture"),
+    kind: Schema.Literal("swipe"),
+    preset: Schema.Literals(["left", "right", "left-edge", "right-edge"]),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("gesture"),
+    kind: Schema.Literal("pinch"),
+    scale: Schema.Number.check(
+      Schema.isFinite(),
+      Schema.isBetween({ minimum: 0.01, maximum: 100 }),
+    ),
+    origin: Schema.optional(DeviceCommandPoint),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("gesture"),
+    kind: Schema.Literal("rotate"),
+    degrees: Schema.Number.check(
+      Schema.isFinite(),
+      Schema.isBetween({ minimum: -3600, maximum: 3600 }),
+    ),
+    origin: Schema.optional(DeviceCommandPoint),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("gesture"),
+    kind: Schema.Literal("transform"),
+    origin: DeviceCommandPoint,
+    delta: DeviceCommandVector,
+    scale: Schema.Number.check(
+      Schema.isFinite(),
+      Schema.isBetween({ minimum: 0.01, maximum: 100 }),
+    ),
+    degrees: Schema.Number.check(
+      Schema.isFinite(),
+      Schema.isBetween({ minimum: -3600, maximum: 3600 }),
+    ),
+    durationMs: Schema.optional(DeviceCommandDuration),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("gesture"),
+    kind: Schema.Literal("drag"),
+    source: DeviceElementRef,
+    destination: DeviceElementRef,
+    sourceHoldMs: Schema.optional(
+      Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10_000 })),
+    ),
+    moveMs: Schema.optional(DeviceCommandDuration),
+    destinationHoldMs: Schema.optional(
+      Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 10_000 })),
+    ),
+  }).check(
+    Schema.makeFilter(
+      (command) =>
+        (command.sourceHoldMs ?? 800) +
+          (command.moveMs ?? 500) +
+          (command.destinationHoldMs ?? 0) <=
+        10_000,
+    ),
+  ),
+  closedDeviceCommand({
+    type: Schema.Literal("install"),
+    artifact: DeviceInputArtifact,
+    app: Schema.optional(
+      TrimmedNonEmptyString.check(
+        Schema.isMaxLength(256),
+        Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/),
+      ),
+    ),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("reinstall"),
+    artifact: DeviceInputArtifact,
+    app: TrimmedNonEmptyString.check(
+      Schema.isMaxLength(256),
+      Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/),
+    ),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("push"),
+    app: DeviceAppId,
+    payloadJson: DeviceJsonPayload,
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("trigger-app-event"),
+    event: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+    payloadJson: Schema.optional(DeviceJsonPayload),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("settings"),
+    setting: Schema.Literals(["wifi", "airplane", "animations"]),
+    state: Schema.Literals(["on", "off"]),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("settings"),
+    setting: Schema.Literal("appearance"),
+    state: Schema.Literals(["light", "dark", "toggle"]),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("settings"),
+    setting: Schema.Literal("text-size"),
+    state: Schema.optional(
+      Schema.Literals([
+        "extra-small",
+        "small",
+        "medium",
+        "large",
+        "extra-large",
+        "extra-extra-large",
+        "extra-extra-extra-large",
+        "accessibility-medium",
+        "accessibility-large",
+        "accessibility-extra-large",
+        "accessibility-extra-extra-large",
+        "accessibility-extra-extra-extra-large",
+      ]),
+    ),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("settings"),
+    setting: Schema.Literal("location"),
+    state: Schema.Literals(["on", "off"]),
+    app: Schema.optional(DeviceAppId),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("settings"),
+    setting: Schema.Literal("location"),
+    state: Schema.Literal("set"),
+    latitude: Schema.Number.check(
+      Schema.isFinite(),
+      Schema.isBetween({ minimum: -90, maximum: 90 }),
+    ),
+    longitude: Schema.Number.check(
+      Schema.isFinite(),
+      Schema.isBetween({ minimum: -180, maximum: 180 }),
+    ),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("settings"),
+    setting: Schema.Literal("permission"),
+    state: Schema.Literals(["grant", "deny", "reset"]),
+    permission: Schema.Literals([
+      "all",
+      "camera",
+      "microphone",
+      "photos",
+      "contacts",
+      "contacts-limited",
+      "notifications",
+      "calendar",
+      "location",
+      "location-always",
+      "media-library",
+      "motion",
+      "reminders",
+      "siri",
+    ]),
+    app: Schema.optional(DeviceAppId),
+    mode: Schema.optional(Schema.Literals(["full", "limited"])),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("settings"),
+    setting: Schema.Literal("clear-app-state"),
+    app: DeviceAppId,
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("settings"),
+    setting: Schema.Literals(["faceid", "touchid"]),
+    state: Schema.Literals(["match", "nonmatch", "enroll", "unenroll"]),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("settings"),
+    setting: Schema.Literal("fingerprint"),
+    state: Schema.Literals(["match", "nonmatch"]),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("apps"),
+    appsFilter: Schema.optional(Schema.Literals(["user-installed", "all"])),
+  }),
+  closedDeviceCommand({ type: Schema.Literal("appstate") }),
+  closedDeviceCommand({ type: Schema.Literal("keyboard"), action: Schema.Literal("status") }),
+  closedDeviceCommand({ type: Schema.Literal("clipboard"), action: Schema.Literal("read") }),
+  closedDeviceCommand({
+    type: Schema.Literal("alert"),
+    action: Schema.Literals(["get", "wait"]),
+    timeoutMs: Schema.optional(DeviceCommandTimeout),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("events"),
+    limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 200 }))),
+    cursor: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("network"),
+    action: Schema.Literals(["dump", "log"]),
+    limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 200 }))),
+    include: Schema.optional(Schema.Literals(["summary", "headers", "body", "all"])),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("logs"),
+    action: Schema.Literals(["start", "stop", "doctor", "clear"]),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("logs"),
+    action: Schema.Literal("mark"),
+    message: DeviceCommandText,
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("diff"),
+    kind: Schema.Literal("snapshot"),
+    interactiveOnly: Schema.optional(Schema.Boolean),
+    depth: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 64 }))),
+  }),
+  closedDeviceCommand({
+    type: Schema.Literal("doctor"),
+    targetApp: Schema.optional(Schema.String.check(Schema.isMaxLength(256))),
+  }),
+  closedDeviceCommand({ type: Schema.Literal("perf"), area: Schema.Literal("frames") }),
+  closedDeviceCommand({
+    type: Schema.Literal("perf"),
+    area: Schema.Literal("memory"),
+    action: Schema.Literal("sample"),
+  }),
+]);
+export type DeviceAtomicCommand = typeof DeviceAtomicCommand.Type;
+export const DeviceCommand = Schema.Union([
+  DeviceAtomicCommand,
+  closedDeviceCommand({
+    type: Schema.Literal("batch"),
+    steps: Schema.Array(DeviceAtomicCommand).check(Schema.isMinLength(1), Schema.isMaxLength(32)),
+  }),
+]);
+export type DeviceCommand = typeof DeviceCommand.Type;
+
+export const DeviceCommandInput = Schema.Struct({
+  target: DeviceCommandTarget,
+  command: DeviceCommand,
+});
+export type DeviceCommandInput = typeof DeviceCommandInput.Type;
+
+export const DeviceCommandNode = Schema.Struct({
+  ref: DeviceElementRef,
+  index: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 100_000 })),
+  role: Schema.optional(Schema.String.check(Schema.isMaxLength(256))),
+  label: Schema.optional(DeviceCommandText),
+  value: Schema.optional(DeviceCommandText),
+  enabled: Schema.optional(Schema.Boolean),
+  selected: Schema.optional(Schema.Boolean),
+  checked: Schema.optional(Schema.Boolean),
+  focused: Schema.optional(Schema.Boolean),
+  rect: Schema.optional(
+    Schema.Struct({
+      x: Schema.Number.check(
+        Schema.isFinite(),
+        Schema.isBetween({ minimum: -100_000, maximum: 100_000 }),
+      ),
+      y: Schema.Number.check(
+        Schema.isFinite(),
+        Schema.isBetween({ minimum: -100_000, maximum: 100_000 }),
+      ),
+      width: DeviceCommandCoordinate,
+      height: DeviceCommandCoordinate,
+    }),
+  ),
+  kind: Schema.optional(Schema.String.check(Schema.isMaxLength(256))),
+  type: Schema.optional(Schema.String.check(Schema.isMaxLength(256))),
+  identifier: Schema.optional(DeviceCommandText),
+  contentDescription: Schema.optional(DeviceCommandText),
+  placeholder: Schema.optional(DeviceCommandText),
+  depth: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1_000 }))),
+  editable: Schema.optional(Schema.Boolean),
+  password: Schema.optional(Schema.Boolean),
+  visibleToUser: Schema.optional(Schema.Boolean),
+  hittable: Schema.optional(Schema.Boolean),
+  inheritsLabel: Schema.optional(Schema.Literal(true)),
+  inheritsIdentifier: Schema.optional(Schema.Literal(true)),
+  actions: Schema.optional(Schema.Array(DeviceCommandText).check(Schema.isMaxLength(128))),
+  parentIndex: Schema.optional(Schema.Int),
+});
+const DeviceSnapshotMeasure = Schema.Number.check(
+  Schema.isFinite(),
+  Schema.isBetween({ minimum: -100_000, maximum: 100_000 }),
+);
+const DeviceSnapshotRect = Schema.Struct({
+  x: DeviceSnapshotMeasure,
+  y: DeviceSnapshotMeasure,
+  width: DeviceCommandCoordinate,
+  height: DeviceCommandCoordinate,
+});
+const DeviceSnapshotCount = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 100_000 }));
+/** Bounded facts the pinned snapshot producer publishes, including incomplete or occluding captures. */
+export const DeviceCommandSnapshot = Schema.Struct({
+  nodes: Schema.Array(DeviceCommandNode).check(Schema.isMaxLength(2_000)),
+  truncated: Schema.optional(Schema.Boolean),
+  comparisonSafe: Schema.optional(Schema.Boolean),
+  systemSurfaceOnly: Schema.optional(Schema.Boolean),
+  iosSystemSurfaceBundleId: Schema.optional(Schema.String.check(Schema.isMaxLength(256))),
+  backend: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
+  producer: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
+  viewport: Schema.optional(
+    Schema.Struct({ width: DeviceCommandCoordinate, height: DeviceCommandCoordinate }),
+  ),
+  keyboard: Schema.optional(
+    Schema.Union([
+      Schema.Struct({ kind: Schema.Literal("visible"), frame: DeviceSnapshotRect }),
+      Schema.Struct({ kind: Schema.Literal("absent") }),
+      Schema.Struct({ kind: Schema.Literal("unmeasurable"), reason: DeviceCommandText }),
+    ]),
+  ),
+  targetActivation: Schema.optional(
+    Schema.Struct({
+      reason: Schema.Literals([
+        "bundle_changed",
+        "stale_target",
+        "missing_after_wait",
+        "interaction_foreground_guard",
+      ]),
+      priorState: Schema.Literals([
+        "unknown",
+        "notRunning",
+        "runningBackgroundSuspended",
+        "runningBackground",
+      ]),
+      otherActiveApplicationPid: Schema.optional(DeviceSnapshotCount),
+    }),
+  ),
+  postGestureOutcome: Schema.optional(
+    Schema.Struct({ kind: Schema.Literals(["unsettled", "no-effect"]) }),
+  ),
+  snapshotQuality: Schema.optional(
+    Schema.Struct({
+      state: Schema.Literals(["healthy", "recovered", "sparse"]),
+      backend: Schema.Literals(["tree", "queries", "private-ax", "android-helper"]),
+      reason: Schema.optional(DeviceCommandText),
+      reasonCode: Schema.optional(
+        Schema.Literals([
+          "ax-rejected",
+          "sparse-tree",
+          "budget",
+          "no-nodes",
+          "capture-failed",
+          "presentation-failed",
+          "deferred",
+          "requested-backend",
+        ]),
+      ),
+      effectiveDepth: Schema.optional(DeviceSnapshotCount),
+      collapsedLeafIndexes: Schema.optional(
+        Schema.Array(DeviceSnapshotCount).check(Schema.isMaxLength(2_000)),
+      ),
+      customActions: Schema.optional(
+        Schema.Struct({
+          read: DeviceSnapshotCount,
+          candidates: DeviceSnapshotCount,
+          truncated: DeviceSnapshotCount,
+          blocked: Schema.Boolean,
+        }),
+      ),
+      timing: Schema.optional(
+        Schema.Struct({
+          acquisitionMs: DeviceCommandCoordinate,
+          presentationMs: DeviceCommandCoordinate,
+        }),
+      ),
+    }),
+  ),
+});
+
+export const DeviceAtomicCommandResult = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("artifacts"),
+    target: DeviceCommandTarget,
+    resources: Schema.optional(
+      Schema.Array(PeerAttachmentAssetResource).check(Schema.isMaxLength(32)),
+    ),
+    artifacts: Schema.Array(PeerAttachmentReference).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(32),
+    ),
+    recording: Schema.optional(
+      Schema.Struct({
+        durationMs: Schema.optional(
+          Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0)),
+        ),
+        capturedDurationMs: Schema.optional(
+          Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0)),
+        ),
+        recorder: Schema.optional(Schema.Literals(["confirmed", "unconfirmed", "lost"])),
+        nativePathDisposition: Schema.optional(
+          Schema.Literals(["pending", "retirable", "retired"]),
+        ),
+      }),
+    ),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("capabilities"),
+    target: DeviceCommandTarget,
+    commands: Schema.Array(Schema.String.check(Schema.isMaxLength(64))).check(
+      Schema.isMaxLength(128),
+    ),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("snapshot"),
+    target: DeviceCommandTarget,
+    ...DeviceCommandSnapshot.fields,
+    truncated: Schema.Boolean,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("action"),
+    target: DeviceCommandTarget,
+    status: Schema.Literal("dispatched"),
+  }),
+  Schema.Struct({ type: Schema.Literal("closed"), target: DeviceCommandTarget }),
+  Schema.Struct({
+    type: Schema.Literal("artifact"),
+    target: DeviceCommandTarget,
+    artifact: PeerAttachmentReference,
+    resource: Schema.optional(PeerAttachmentAssetResource),
+  }),
+]);
+export type DeviceAtomicCommandResult = typeof DeviceAtomicCommandResult.Type;
+export const DeviceCommandResult = Schema.Union([
+  DeviceAtomicCommandResult,
+  Schema.Struct({
+    type: Schema.Literal("batch"),
+    target: DeviceCommandTarget,
+    results: Schema.Array(DeviceAtomicCommandResult).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(32),
+    ),
+  }),
+]);
+export type DeviceCommandResult = typeof DeviceCommandResult.Type;
+
+export const DeviceCommandFamilySupport = Schema.Struct({
+  name: Schema.String.check(Schema.isMaxLength(64)),
+  interface: Schema.Literals(["structured", "cli-only"]),
+  status: Schema.Literals(["typed", "native-owner", "unsupported-target", "prerequisite"]),
+  reason: Schema.String.check(Schema.isMaxLength(1_024)),
+});
+export type DeviceCommandFamilySupport = typeof DeviceCommandFamilySupport.Type;
+
+export const DeviceCommandCatalog = Schema.Struct({
+  protocol: Schema.Literal(1),
+  inputArtifacts: Schema.optional(Schema.Literal(1)),
+  targetPlatform: Schema.optional(DevicePlatform),
+  hostId: DeviceHostId,
+  agentDeviceVersion: Schema.String,
+  deviceHubVersion: Schema.String,
+  commands: Schema.Array(Schema.String.check(Schema.isMaxLength(64))),
+  families: Schema.Array(DeviceCommandFamilySupport).check(Schema.isMaxLength(128)),
+});
+export type DeviceCommandCatalog = typeof DeviceCommandCatalog.Type;
+
+export const DeviceToolOpenResult = Schema.Union([
+  Schema.Struct({
+    device: DeviceSummary,
+    /** Ready-to-run agent-device invocation pinned to this device. */
+    agentDevice: Schema.Struct({
+      command: Schema.String,
+      /** Flags that pin every command to this device, e.g. `--udid <id>`. */
+      targetArgs: Schema.Array(Schema.String),
+    }),
+    quickStart: Schema.String,
+  }),
+  Schema.Struct({
+    device: DeviceSummary,
+    target: DeviceCommandTarget,
+    quickStart: Schema.String,
+    resource: Schema.optional(DeviceViewerResource),
+  }),
+]);
 export type DeviceToolOpenResult = typeof DeviceToolOpenResult.Type;
 
 export const DeviceToolTargetInput = Schema.Struct({

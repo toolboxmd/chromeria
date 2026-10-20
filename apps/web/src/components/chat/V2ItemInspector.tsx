@@ -1,5 +1,11 @@
 import type { ToolCallDiffTarget } from "../../diffPanelStore";
-import type { EnvironmentId, OrchestrationV2ProjectedTurnItem } from "@t3tools/contracts";
+import { useSubagentOpen } from "./useSubagentOpen";
+import type {
+  EnvironmentId,
+  OrchestrationV2ProjectedTurnItem,
+  RunId,
+  ThreadId,
+} from "@t3tools/contracts";
 import {
   toolCallLines,
   turnItemDetailRevision,
@@ -19,7 +25,6 @@ import { useRenderedAppearance } from "../../hooks/useTheme";
 import { cn } from "../../lib/utils";
 import { resolveDiffThemeName } from "../../lib/diffRendering";
 import { getSyntaxHighlighterPromise } from "../../lib/syntaxHighlighting";
-import { useServerConfigs } from "../../state/entities";
 import { useTurnItemDetail } from "../../state/queries";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import { Button } from "../ui/button";
@@ -246,24 +251,20 @@ function SubagentOpenButton(props: {
     (thread) =>
       thread?.projection.subagents.find((agent) => agent.id === props.item.subagentId) ?? null,
   );
-  const serverConfigs = useServerConfigs();
-  // The live record outranks the projected item: a remote launch attaches
-  // its thread there after the item was first projected.
-  const target = agent === null ? subagentChildTarget(props.item) : subagentChildTarget(agent);
-  if (
-    target === null ||
-    (target.environmentId !== null && !serverConfigs.has(target.environmentId))
-  ) {
-    return null;
-  }
+  const navigation = useSubagentOpen(
+    scopeThreadRef(props.environmentId, props.parentThreadId),
+    agent,
+    props.onOpenThread,
+    subagentChildTarget(props.item),
+  );
+  if (!navigation.canOpen) return null;
   return (
-    <Button
-      size="xs"
-      variant="outline"
-      onClick={() => props.onOpenThread(target.threadId, target.environmentId ?? undefined)}
-    >
-      Open subagent thread
-    </Button>
+    <>
+      {navigation.viewer}
+      <Button size="xs" variant="outline" onClick={navigation.open}>
+        Open subagent thread
+      </Button>
+    </>
   );
 }
 

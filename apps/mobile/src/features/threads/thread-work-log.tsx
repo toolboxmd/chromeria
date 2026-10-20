@@ -1,4 +1,7 @@
 import { Button } from "../../components/ui/Button";
+import { hasSourceRemoteTaskView } from "@t3tools/client-runtime/state/remote-tasks";
+import { RemoteTaskViewer } from "./RemoteTaskViewer";
+import { SubagentStatusDot } from "./SubagentStatusDot";
 import { ThreadSubagentGroup } from "./thread-subagent-group";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import {
@@ -887,21 +890,19 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
   );
   const serverConfigs = useServerConfigs();
   // A remote delegated task's notification names only the task, so resolve
-  // its thread through the parent's live subagent record. The selector
-  // returns a primitive key so rows re-render only when the target changes.
+  // its work through the parent's live record, including negotiated source viewing.
   const notifiedTaskId =
     row.projectedItem.item.type === "notification"
       ? notificationSubagentId(row.projectedItem.item.source)
       : undefined;
-  const notifiedRemoteTargetKey = useAtomValue(
+  const [viewRemote, setViewRemote] = useState(false);
+  const notifiedAgent = useAtomValue(
     environmentThreadDetails.threadAtom(
       scopeThreadRef(props.environmentId, row.projectedItem.item.threadId),
     ),
     (thread) => {
       if (notifiedTaskId === undefined) return null;
-      const agent = thread?.projection.subagents.find((agent) => agent.id === notifiedTaskId);
-      const target = agent === undefined ? null : subagentChildTarget(agent);
-      return target === null ? null : `${target.environmentId ?? ""}\u001f${target.threadId}`;
+      return thread?.projection.subagents.find((agent) => agent.id === notifiedTaskId) ?? null;
     },
   );
   const failureItem = row.projectedItem.item;
@@ -982,19 +983,18 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
     row.projectedItem.item.type === "notification"
       ? notificationChildThreadId(row.projectedItem.item.source)
       : undefined;
-  const [remoteEnvironmentId = "", remoteThreadId = ""] =
-    notifiedRemoteTargetKey?.split("\u001f") ?? [];
+  const sourceView = hasSourceRemoteTaskView(notifiedAgent ?? undefined);
+  const remoteTarget = notifiedAgent === null ? null : subagentChildTarget(notifiedAgent);
   const notifiedTarget =
     notifiedSubagentThreadId !== undefined
       ? { threadId: notifiedSubagentThreadId, environmentId: props.environmentId }
-      : remoteThreadId !== "" &&
-          (remoteEnvironmentId === "" || serverConfigs.has(remoteEnvironmentId as EnvironmentId))
+      : remoteTarget !== null &&
+          (sourceView ||
+            remoteTarget.environmentId === null ||
+            serverConfigs.has(remoteTarget.environmentId))
         ? {
-            threadId: remoteThreadId as ThreadId,
-            environmentId:
-              remoteEnvironmentId === ""
-                ? props.environmentId
-                : (remoteEnvironmentId as EnvironmentId),
+            threadId: remoteTarget.threadId,
+            environmentId: remoteTarget.environmentId ?? props.environmentId,
           }
         : null;
   const canExpand = row.canExpand && notifiedTarget === null;
@@ -1081,6 +1081,10 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
         }
         accessibilityState={canExpand ? { expanded } : undefined}
         onPress={() => {
+          if (sourceView) {
+            setViewRemote(true);
+            return;
+          }
           if (notifiedTarget !== null) {
             openLinkedThread({
               environmentId: String(notifiedTarget.environmentId),
@@ -1301,6 +1305,13 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
             </>
           ) : null}
         </Animated.View>
+      ) : null}
+      {viewRemote && sourceView && notifiedAgent !== null ? (
+        <RemoteTaskViewer
+          environmentId={props.environmentId}
+          task={notifiedAgent}
+          onClose={() => setViewRemote(false)}
+        />
       ) : null}
     </Animated.View>
   );

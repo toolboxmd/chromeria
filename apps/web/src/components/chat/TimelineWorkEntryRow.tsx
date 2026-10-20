@@ -1,4 +1,6 @@
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
+import { resourcesFromToolItem, type ToolResource } from "@t3tools/shared/toolOutput";
+import { useRightPanelStore } from "../../rightPanelStore";
 import { WorkLogDetails, WorkLogRow } from "./WorkLog";
 import {
   getQuestionAnswerPreview,
@@ -9,6 +11,7 @@ import {
 import {
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   type EnvironmentId,
+  type ScopedThreadRef,
   ThreadId,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -37,7 +40,7 @@ import ChatMarkdown from "../ChatMarkdown";
 import { ChatMarkdownAssetImage } from "./ChatMarkdownMedia";
 import { ChevronRightIcon, CircleAlertIcon, XIcon, RotateCcwIcon } from "lucide-react";
 import { Button, InlineButton } from "../ui/button";
-import { useAssetUrls } from "../../assets/assetUrls";
+import { useAssetUrlRefresh, useAssetUrls } from "../../assets/assetUrls";
 import { useThreadShell } from "../../state/entities";
 import {
   threadReadLabelPrefix,
@@ -164,7 +167,27 @@ export const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: WorkEn
     (childThreadId === undefined && subagentId === undefined) ||
     (item.outcome === "updated" && Boolean(item.detail?.trim()))
   ) {
-    return <WorkEntryLogRow {...props} />;
+    const tool = item ?? props.workEntry.structuredPayload;
+    const resources =
+      tool?.type === "dynamic_tool" && tool.status === "completed"
+        ? resourcesFromToolItem(tool)
+        : [];
+    return (
+      <>
+        <WorkEntryLogRow {...props} />
+        {ctx.threadRef && resources.length > 0 ? (
+          <div className="flex flex-wrap gap-2 px-7 py-1">
+            {resources.map((resource) => (
+              <ToolResourceLink
+                key={JSON.stringify(resource)}
+                resource={resource}
+                threadRef={ctx.threadRef!}
+              />
+            ))}
+          </div>
+        ) : null}
+      </>
+    );
   }
   return (
     <SubagentNotificationLink
@@ -179,6 +202,87 @@ export const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: WorkEn
     />
   );
 });
+
+function ToolResourceLink({
+  resource,
+  threadRef,
+}: {
+  resource: ToolResource;
+  threadRef: ScopedThreadRef;
+}) {
+  if ("_tag" in resource)
+    return <QualifiedArtifactLink resource={resource} threadRef={threadRef} />;
+  return (
+    <Button
+      size="xs"
+      variant="outline"
+      onClick={() => {
+        const panels = useRightPanelStore.getState();
+        if (resource.type === "device")
+          panels.openDevice(threadRef, {
+            hostId: resource.hostId,
+            deviceId: resource.deviceId,
+            platform: resource.platform,
+            name: "Device",
+            resource,
+          });
+        else panels.openBrowser(threadRef, resource.tabId, resource);
+      }}
+    >
+      {resource.type === "device" ? "View device" : "View browser"}
+    </Button>
+  );
+}
+function QualifiedArtifactLink({
+  resource,
+  threadRef,
+}: {
+  resource: Extract<ToolResource, { _tag: string }>;
+  threadRef: ScopedThreadRef;
+}) {
+  const reference = resource._tag === "peer-attachment" ? resource.reference : resource;
+  const refresh = useAssetUrlRefresh(threadRef.environmentId, resource);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <span>
+      <Button
+        variant="outline"
+        size="xs"
+        disabled={pending}
+        onClick={() => {
+          const view = window.open("about:blank", "_blank");
+          if (view) view.opener = null;
+          setPending(true);
+          setError(null);
+          void refresh()
+            .then((url) => {
+              if (url === null) throw new Error("The file is unavailable.");
+              if (view) view.location.replace(url);
+              else {
+                const link = document.createElement("a");
+                link.href = url;
+                link.download = reference.name;
+                link.click();
+              }
+            })
+            .catch((cause: unknown) => {
+              view?.close();
+              setError(cause instanceof Error ? cause.message : "The file is unavailable.");
+            })
+            .finally(() => setPending(false));
+        }}
+      >
+        {pending ? "Opening…" : `Open ${reference.name}`}
+      </Button>
+      {error ? (
+        <span role="alert" className="ps-2 text-xs text-destructive">
+          {error}
+        </span>
+      ) : null}
+    </span>
+  );
+}
 
 function WorkEntryLogRow(props: WorkEntryRowProps) {
   const { workEntry, workspaceRoot, displayLabel } = props;

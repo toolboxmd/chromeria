@@ -12,6 +12,7 @@ import {
   type AuthEnvironmentScope,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -25,6 +26,8 @@ import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
 import { routeLayer } from "./ServerBrowserStream.ts";
+import * as AuthSessions from "../persistence/AuthSessions.ts";
+import * as Sqlite from "../persistence/Sqlite.ts";
 
 const platformLayer = NodeHttpPlatform.layer.pipe(Layer.provideMerge(NodeServices.layer));
 
@@ -33,7 +36,7 @@ const makeAuth = (
   error?: EnvironmentAuth.ServerAuthCredentialError,
 ) => {
   const requests: string[] = [];
-  const layer = Layer.mock(EnvironmentAuth.EnvironmentAuth, {
+  const ingress = Layer.mock(EnvironmentAuth.EnvironmentAuth, {
     authenticateWebSocketUpgrade: (request) => {
       requests.push(request.originalUrl);
       return error
@@ -46,6 +49,29 @@ const makeAuth = (
           });
     },
   });
+  const nativeSession = Layer.effectDiscard(
+    Effect.gen(function* () {
+      const repository = yield* AuthSessions.AuthSessionRepository;
+      const now = yield* DateTime.now;
+      yield* repository.create({
+        sessionId: AuthSessionId.make("stream-test"),
+        subject: "stream-test",
+        scopes,
+        method: "bearer-access-token",
+        client: {
+          label: null,
+          ipAddress: null,
+          userAgent: null,
+          deviceType: "unknown",
+          os: null,
+          browser: null,
+        },
+        issuedAt: now,
+        expiresAt: DateTime.add(now, { hours: 1 }),
+      });
+    }),
+  ).pipe(Layer.provideMerge(AuthSessions.layer.pipe(Layer.provide(Sqlite.layerMemory))));
+  const layer = Layer.merge(ingress, nativeSession);
   return { layer, requests };
 };
 
@@ -65,7 +91,7 @@ const mutations = [
   { type: "viewport", setting: { _tag: "fill" } },
 ];
 
-it.effect.each([
+it.live.each([
   { hasOperateScope: false, interactive: true },
   { hasOperateScope: true, interactive: true },
   { hasOperateScope: true, interactive: false },
@@ -100,6 +126,7 @@ it.effect.each([
           return {
             output,
             input: (message) => Effect.sync(() => void inputs.push(message)),
+            enqueueInput: (message) => Effect.sync(() => void inputs.push(message)),
           };
         }),
     });
@@ -124,6 +151,10 @@ it.effect.each([
     const viewports: unknown[] = [];
     const frames: Uint8Array[] = [];
     socket.addEventListener("error", () => received.reject(new Error("stream failed")));
+    socket.addEventListener("close", (event) => {
+      received.reject(new Error(`stream closed before frame: ${event.code} ${event.reason}`));
+      acked.reject(new Error(`stream closed before ack: ${event.code} ${event.reason}`));
+    });
     socket.addEventListener("message", (event) => {
       if (typeof event.data === "string") {
         viewports.push(JSON.parse(event.data));
@@ -135,13 +166,15 @@ it.effect.each([
       socket.send(JSON.stringify({ type: "ack" }));
       received.resolve();
     });
-    yield* Effect.promise(() => received.promise);
-    // The socket ack follows every mutation, providing a barrier without sleeps.
-    yield* Effect.promise(() => acked.promise);
+    // The ack follows every mutation on the socket, so this is also a barrier
+    // proving all preceding inputs were processed, without a timing sleep.
+    yield* Effect.promise(() => Promise.all([received.promise, acked.promise]));
     expect(frames).toEqual([frame]);
     expect(viewports).toEqual([{ type: "viewport", width: 1280, height: 800 }]);
     expect(inputs).toEqual(canOperate ? [...mutations, null] : []);
-    expect(attachments).toEqual([
+    expect(
+      attachments.map(({ authorize: _authorize, resourceViewerId: _viewerId, ...input }) => input),
+    ).toEqual([
       {
         threadId: "thread",
         tabId: "tab",
@@ -227,7 +260,7 @@ it.effect("sends replies ahead of stale frames and only the newest frame after a
   }).pipe(Effect.scoped),
 );
 
-it.effect.each([
+it.live.each([
   { scopes: [], error: undefined, status: 403 },
   { scopes: [AuthOrchestrationOperateScope], error: undefined, status: 403 },
   { scopes: [], error: new EnvironmentAuth.ServerAuthMissingCredentialError({}), status: 401 },
@@ -272,7 +305,7 @@ it.effect.each([
   }).pipe(Effect.scoped),
 );
 
-it.effect("serves a tab's download only to an authorized session", () =>
+it.live("serves a tab's download only to an authorized session", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = `${yield* fs.makeTempDirectoryScoped({ prefix: "t3-download-" })}/file`;
@@ -325,7 +358,7 @@ it.effect("serves a tab's download only to an authorized session", () =>
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-it.effect("passes uploaded files to the page's open picker and needs operate scope", () =>
+it.live("passes uploaded files to the page's open picker and needs operate scope", () =>
   Effect.gen(function* () {
     const answers: Array<{ chooserId: string; files: Array<{ name: string; text: string }> }> = [];
     const browser = ServerBrowser.ServerBrowser.of({
@@ -383,7 +416,7 @@ it.effect("passes uploaded files to the page's open picker and needs operate sco
 
 const decodeHostSetup = Schema.decodeUnknownEffect(Schema.fromJsonString(PreviewStreamHostSetup));
 
-it.effect.each([
+it.live.each([
   {
     error: new PreviewBrowserHost.PreviewBrowserSandboxError({
       setupCommand: "sudo t3 browser setup",

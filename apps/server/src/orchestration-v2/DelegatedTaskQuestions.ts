@@ -7,6 +7,7 @@ import {
   type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
 import { reportLabel } from "@t3tools/provider-core/server/notification";
+import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
@@ -109,5 +110,110 @@ export const reconcileDelegatedTaskQuestion = Effect.fnUntraced(function* <E>(
         runId: run.id,
       });
     }
+  }
+});
+
+/** Called under the parent dispatch lock, including recovery. Foreign children remain qualified. */
+export const reconcileRemoteDelegatedTaskQuestions = Effect.fnUntraced(function* <E>(
+  task: OrchestrationV2Subagent,
+  dispatch: (command: OrchestrationV2ServerCommand) => Effect.Effect<unknown, E>,
+) {
+  const remote = task.remoteChild;
+  if (remote?.snapshot === undefined) return;
+  const projections = yield* ProjectionStoreV2;
+  const parent = yield* projections.getThreadRecords(task.threadId, ["runs", "messages"]);
+  const eligible =
+    task.completionDelivery?.state !== "disposed" &&
+    remote.stop === undefined &&
+    parent.thread.archivedAt === null &&
+    parent.thread.deletedAt === null;
+  const pending = new Set<string>();
+  // Complete legacy snapshots may omit detail; incomplete assembly must not consume a receipt.
+  for (const request of remote.snapshot.requests) {
+    if (
+      !eligible ||
+      remote.availability !== "current" ||
+      (remote.snapshot.incomplete && request.detail === undefined) ||
+      request.kind === "auth_refresh" ||
+      request.kind === "dynamic_tool_call" ||
+      (request.kind !== "user_input" && request.responseType !== "live")
+    )
+      continue;
+    if (
+      task.completionWake === "settled_only" &&
+      request.responseType === "live" &&
+      parent.runs.some(
+        (run) => run.id === task.runId && ["preparing", "starting", "running"].includes(run.status),
+      )
+    )
+      continue;
+    // Revision changes describe the same request, not another reason to wake the parent.
+    const key = `${task.id}:${request.environmentId}:${request.threadId}:${request.requestId}`;
+    const messageId = MessageId.make(`message:remote-delegated-question:${key}`);
+    pending.add(messageId);
+    // Older builds used revision-qualified identities. Preserve their accepted delivery.
+    const prior = parent.messages.filter(
+      (message) =>
+        message.id.startsWith(`${messageId}:`) &&
+        /^\d+$/.test(message.id.slice(messageId.length + 1)),
+    );
+    for (const message of prior) pending.add(message.id);
+    if (prior.length > 0) continue;
+    const receipts = yield* CommandReceiptStoreV2;
+    let commandId = CommandId.make(`server:remote-delegated-question:${key}`);
+    let attempt = 0;
+    for (;;) {
+      const receipt = yield* receipts.getByCommandId(commandId);
+      if (Option.isNone(receipt) || receipt.value.status === "accepted") break;
+      commandId = CommandId.make(`server:remote-delegated-question-retry:${++attempt}:${key}`);
+    }
+    const encode = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+    const targetText = yield* encode({
+      environmentId: request.environmentId,
+      threadId: request.threadId,
+    }).pipe(Effect.orDie);
+    const routeText = yield* encode([
+      { environmentId: remote.environmentId, threadId: remote.threadId },
+      ...(request.route ?? []),
+    ]).pipe(Effect.orDie);
+    yield* dispatch({
+      type: "message.dispatch",
+      commandId,
+      threadId: task.threadId,
+      messageId,
+      text: `Delegated task "${reportLabel(task.title?.trim() || task.prompt) ?? task.id}" (${task.id}), child ${request.threadId}, has a pending ${request.kind === "user_input" ? "question" : "approval"} in ${remote.label}.${request.detail === undefined ? "" : ` Request: ${request.detail}`} Use t3_pending_request_read with threadId ${task.threadId}, requestId ${request.requestId}, requestTarget ${targetText}, requestRoute ${routeText}. Answer with t3_pending_request_respond using the same qualified target and route, expectedRevision from the read, and one stable clientRequestId for that answer. It may already have been answered or dismissed.`,
+      notification: {
+        source: { kind: "delegated_task", taskIds: [task.id] },
+        outcome: "updated",
+        summary:
+          request.kind === "user_input"
+            ? "Remote delegated task has a question"
+            : "Remote delegated task needs approval",
+      },
+      attachments: [],
+      dispatchMode: { type: "queue_after_active" },
+      createdBy: "agent",
+      creationSource: "server",
+    });
+  }
+  const priorIds = new Set(
+    parent.messages
+      .filter((message) => message.id.startsWith(`message:remote-delegated-question:${task.id}:`))
+      .map((message) => message.id),
+  );
+  for (const run of parent.runs) {
+    if (
+      run.status !== "queued" ||
+      !priorIds.has(run.userMessageId) ||
+      pending.has(run.userMessageId) ||
+      (eligible && (remote.availability !== "current" || remote.snapshot.incomplete))
+    )
+      continue;
+    yield* dispatch({
+      type: "queued-run.cancel",
+      commandId: CommandId.make(`server:remote-question-dismiss:${run.id}`),
+      threadId: task.threadId,
+      runId: run.id,
+    });
   }
 });

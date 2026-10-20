@@ -1,3 +1,7 @@
+import { interactiveAuthority } from "../peer/PeerAuthorityRecord.ts";
+import { PeerDispatchAuthority } from "../peer/peerEffectAuthority.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   EnvironmentId,
   OrchestratorMcpFailure,
@@ -16,8 +20,11 @@ import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as Invocation from "./McpInvocationContext.ts";
 import * as Registry from "./McpSessionRegistry.ts";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
 import { assertSameLink } from "./linkOrigin.ts";
 import { assertTargetWithinLimits, unavailable } from "./threadAccess.ts";
+import * as RequestReceipts from "./McpRequestReceipts.ts";
+import * as Ref from "effect/Ref";
 
 /** Destination-owned resources are addressed in that environment, never copied implicitly. */
 export const fields = {
@@ -27,7 +34,7 @@ export const fields = {
   }),
   contextThreadId: Schema.optional(ThreadId).annotate({
     description:
-      "For a tool acting as its caller, select a live thread on the linked environment. It must belong to this link and run within its access. Panels belong to that destination thread; rendered HTML is displayed in this thread.",
+      "For a tool acting as its caller, select a destination thread within this link’s resource scope and permissions. Panels belong to that destination thread; rendered HTML is displayed in this thread.",
   }),
   contextCapabilities: Schema.optional(
     Schema.Array(
@@ -39,11 +46,28 @@ export const fields = {
 };
 
 export const parameters = <F extends Schema.Struct.Fields>(schema: Schema.Struct<F>) =>
-  Schema.Struct({ ...schema.fields, ...fields });
+  Schema.Struct({
+    // Retain existing field order for legacy authority digests, then add defaults.
+    ...schema.fields,
+    clientRequestId: Schema.optional(
+      Schema.String.check(Schema.isMaxLength(512)).annotate({
+        description:
+          "With negotiated durable requests, reuse this key for the same intended operation across credential renewal or restart. Changed semantic input conflicts. An outcome_unknown must not be retried under a fresh key without inspecting its destination.",
+      }),
+    ),
+    ...schema.fields,
+    ...fields,
+  });
 
 export class CurrentTool extends Context.Reference<Tool.Any | undefined>("t3/mcp/CurrentTool", {
   defaultValue: () => undefined,
 }) {}
+export class CurrentEffect extends Context.Reference<"read" | "owned" | "external-unknown">(
+  "t3/mcp/CurrentEffect",
+  {
+    defaultValue: () => "read",
+  },
+) {}
 
 const decodePreparedDocument = Schema.decodeUnknownEffect(HtmlRender.PreparedDocument);
 const decodeDelegate = Schema.decodeUnknownEffect(OrchestratorMcpDelegateTaskInput);
@@ -69,31 +93,126 @@ export const withContext = <A, E, R>(
   here: Effect.Effect<A, E, R>,
 ): Effect.Effect<A, E | OrchestratorMcpFailure, R> =>
   Effect.gen(function* () {
+    let invocation = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+    const currentTool = yield* CurrentTool;
+    if (
+      Option.isSome(invocation) &&
+      invocation.value.thread !== undefined &&
+      invocation.value.client === undefined &&
+      currentTool !== undefined
+    ) {
+      const owner = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+      if (Option.isSome(owner)) {
+        const scope = invocation.value;
+        const threadId = invocation.value.thread.threadId;
+        const current =
+          currentTool.name === "t3_thread_send" && isRemote(params, scope)
+            ? yield* owner.value.forThread(threadId)
+            : yield* owner.value.checkThread(threadId);
+        const legacy =
+          current === undefined ? yield* owner.value.legacyCeiling(threadId) : undefined;
+        const { authority: _oldAuthority, legacyPeerCeiling: _oldLegacy, ...credential } = scope;
+        const ceiling = current?.ceiling ?? legacy;
+        invocation = Option.some({
+          ...credential,
+          ...(current === undefined ? {} : { authority: current }),
+          ...(legacy === undefined ? {} : { legacyPeerCeiling: legacy }),
+          capabilities:
+            ceiling === undefined
+              ? scope.capabilities
+              : new Set(
+                  [...scope.capabilities].filter((capability) =>
+                    ceiling.capabilities.includes(capability),
+                  ),
+                ),
+        });
+      } else if (
+        invocation.value.authority !== undefined ||
+        invocation.value.legacyPeerCeiling !== undefined
+      )
+        return yield* unavailable();
+    }
+    const execution = Option.isSome(invocation)
+      ? here.pipe(
+          Effect.provideService(PeerDispatchAuthority, invocation.value.authority?.id),
+          Effect.provideService(Invocation.McpInvocationContext, invocation.value),
+        )
+      : here;
+    if (
+      Option.isSome(invocation) &&
+      invocation.value.client?.linked === true &&
+      invocation.value.authority !== undefined &&
+      currentTool !== undefined
+    ) {
+      const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+      if (Option.isNone(authority)) return yield* unavailable();
+      const wire = interactiveAuthority(invocation.value.authority);
+      if (wire === undefined)
+        return yield* denied("A linked call requires its original interactive authority.");
+      yield* authority.value.checkPayload(wire, currentTool.name, params);
+    }
     const decoded = target(params);
-    if (Option.isNone(decoded) || decoded.value.contextThreadId === undefined) return yield* here;
-    const scopeOption = yield* Effect.serviceOption(Invocation.McpInvocationContext);
-    if (Option.isNone(scopeOption)) return yield* here;
+    if (Option.isNone(decoded) || decoded.value.contextThreadId === undefined)
+      return yield* execution;
+    const scopeOption = invocation;
+    if (Option.isNone(scopeOption)) return yield* execution;
     const scope = scopeOption.value;
-    if (isRemote(params, scope)) return yield* here;
+    if (isRemote(params, scope)) return yield* execution;
     if (scope.thread !== undefined) {
       if (scope.thread.threadId !== decoded.value.contextThreadId)
         return yield* denied("A local thread credential cannot select another calling thread.");
-      return yield* here;
+      return yield* execution;
     }
     if (scope.client?.linked !== true)
       return yield* denied("A destination thread context requires an authenticated peer link.");
     const registry = yield* Effect.serviceOption(Registry.McpSessionRegistry);
     const threads = yield* Effect.serviceOption(ThreadManagement.ThreadManagementService);
-    if (Option.isNone(registry) || Option.isNone(threads)) return yield* unavailable();
+    if (Option.isNone(threads)) return yield* unavailable();
     const shell = yield* threads.value
       .getThreadShell(decoded.value.contextThreadId)
       .pipe(Effect.mapError(unavailable));
     if (shell === null || shell.deletedAt !== null)
       return yield* denied("The destination thread was not found.");
-    if (shell.linkOrigin?.sessionId !== scope.client.sessionId)
-      return yield* denied("A destination context must belong to the calling peer link.");
     yield* assertSameLink({ scope, caller: undefined }, shell);
-    yield* assertTargetWithinLimits(Invocation.clientModeCeiling(scope.client), shell);
+    yield* assertTargetWithinLimits(
+      Invocation.intersectModes(
+        Invocation.clientModeCeiling(scope.client),
+        scope.authority?.ceiling,
+      ),
+      shell,
+    );
+    if (scope.authority !== undefined) {
+      // Negotiated peers use durable authority, never another run's token.
+      const capabilities = new Set(scope.authority.ceiling.capabilities);
+      const settings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
+      if (Option.isSome(settings)) {
+        const current = yield* settings.value.getSettings.pipe(
+          Effect.mapError(() => denied("Destination agent access settings are unavailable.")),
+        );
+        const effective = resolveProjectSettings(current, shell.projectId).settings;
+        if (!effective.enableAgentBrowserAccess) capabilities.delete("preview");
+        if (!effective.enableAgentDeviceAccess) capabilities.delete("device");
+      }
+      const bound: Invocation.McpInvocationScope = {
+        ...scope,
+        thread: {
+          threadId: shell.id,
+          providerSessionId: `peer:${scope.authority.id}`,
+          providerInstanceId: shell.providerInstanceId,
+        },
+        capabilities,
+      };
+      return yield* here.pipe(
+        Effect.provideService(PeerDispatchAuthority, scope.authority.id),
+        Effect.provideService(Invocation.McpInvocationContext, bound),
+      );
+    }
+    const modern = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+    if (Option.isSome(modern))
+      return yield* denied(
+        "The peer must negotiate authority v1 and explicit capability consent before selecting a destination context.",
+      );
+    if (Option.isNone(registry)) return yield* unavailable();
     const credential = yield* registry.value.scopeForThread(shell.id);
     if (credential === undefined)
       return yield* denied("The destination thread has no live MCP credential.");
@@ -126,7 +245,7 @@ const capabilityFor = (name: string): Invocation.McpCapability | undefined =>
             : "orchestration";
 
 /** Called only after the declaration's access check and before its local handler. */
-export const invoke = <P, A, E, R>(
+const invokeRouted = <P, A, E, R>(
   params: P,
   handle: (params: P) => Effect.Effect<A, E, R>,
 ): Effect.Effect<A, E | OrchestratorMcpFailure, R> =>
@@ -197,7 +316,11 @@ export const invoke = <P, A, E, R>(
           title: document.title,
           height: document.height,
         })
-        .pipe(Effect.mapError(unavailable));
+        .pipe(
+          Effect.mapError((error) =>
+            error._tag === "OrchestratorMcpFailure" ? error : unavailable(),
+          ),
+        );
       return {
         htmlRender: reference,
         message:
@@ -206,4 +329,72 @@ export const invoke = <P, A, E, R>(
     }
     // PeerForwarding decodes the paired toolkit's success schema before returning.
     return result as A;
+  });
+
+/** Identity spans routing and destination-owned execution, including source HTML publication. */
+export const invoke = <P, A, E, R>(
+  params: P,
+  handle: (params: P) => Effect.Effect<A, E, R>,
+): Effect.Effect<A, E | OrchestratorMcpFailure, R> =>
+  Effect.gen(function* () {
+    const tool = yield* CurrentTool;
+    const effect = yield* CurrentEffect;
+    const scope = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+    const receipts = yield* Effect.serviceOption(RequestReceipts.McpRequestReceipts);
+    const run = invokeRouted(params, handle).pipe(
+      Effect.provideService(
+        RequestReceipts.CurrentOperation,
+        tool !== undefined &&
+          effect === "external-unknown" &&
+          (Option.isSome(receipts) ||
+            (Option.isSome(scope) &&
+              interactiveAuthority(scope.value.authority)?.envelope.requestOwner !== undefined)) &&
+          typeof params === "object" &&
+          params !== null &&
+          "clientRequestId" in params &&
+          typeof params.clientRequestId === "string" &&
+          (Option.isNone(scope) ||
+            scope.value.client?.linked !== true ||
+            interactiveAuthority(scope.value.authority)?.envelope.requestOwner !== undefined)
+          ? { tool: tool.name, input: params }
+          : undefined,
+      ),
+    );
+    if (
+      tool !== undefined &&
+      effect !== "read" &&
+      Option.isSome(scope) &&
+      Option.isNone(receipts) &&
+      typeof params === "object" &&
+      params !== null &&
+      "clientRequestId" in params &&
+      typeof params.clientRequestId === "string" &&
+      interactiveAuthority(scope.value.authority)?.envelope.requestOwner !== undefined
+    )
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "Durable keyed requests are unavailable in this environment.",
+      });
+    if (
+      tool === undefined ||
+      effect === "read" ||
+      Option.isNone(scope) ||
+      Option.isNone(receipts) ||
+      typeof params !== "object" ||
+      params === null ||
+      !("clientRequestId" in params) ||
+      typeof params.clientRequestId !== "string"
+    )
+      return yield* run;
+    const identity = yield* receipts.value.identify(
+      scope.value,
+      tool.name,
+      params,
+      params.clientRequestId,
+    );
+    const index = yield* Ref.make(0);
+    return yield* run.pipe(
+      Effect.provideService(RequestReceipts.CurrentRequest, identity),
+      Effect.provideService(RequestReceipts.CommandIndex, index),
+    );
   });

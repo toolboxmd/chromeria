@@ -1,3 +1,4 @@
+import { requestNamespace } from "./requestIdentity.ts";
 import {
   CommandId,
   OrchestratorMcpFailure,
@@ -50,7 +51,7 @@ function commandId(input: {
     [
       "command",
       "mcp",
-      stablePart(input.scope.requestNamespace),
+      stablePart(requestNamespace(input.scope)),
       "thread-update",
       stablePart(input.threadId),
       stablePart(input.action),

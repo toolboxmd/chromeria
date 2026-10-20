@@ -1,4 +1,9 @@
 import * as DocumentText from "../provider/DocumentText.ts";
+import { McpSchema, McpServer } from "effect/ai";
+import * as McpHttpServer from "../mcp/McpHttpServer.ts";
+import * as RequestReceipts from "../mcp/McpRequestReceipts.ts";
+import { ThreadMcpToolkit } from "../mcp/toolkits/threadMcp/tools.ts";
+import * as ThreadMcpHandlers from "../mcp/toolkits/threadMcp/handlers.ts";
 import * as ThreadMcpConfig from "./ThreadMcpConfig.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as BareLaunch from "./BareLaunch.ts";
@@ -2936,7 +2941,7 @@ it.effect(
           providerSessionId: "scheduled-agent",
         },
       };
-      const context = { scope: childScope, caller: shell };
+      const context = { scope: childScope, caller: shell, limits: shell };
       assert.strictEqual(
         (yield* assertSameLink(context, { linkOrigin: undefined }).pipe(Effect.flip)).code,
         "capability_denied",
@@ -3352,3 +3357,99 @@ it.effect.each([
     ).toHaveLength(0);
   }).pipe(Effect.provide(h.layer));
 });
+
+it.effect(
+  "configure379: registered keyed replay preserves a later private configuration and original receipt",
+  () => {
+    const h = makeHarness({
+      adapters: [{ ...adapter, driver: ProviderDriverKind.make("claudeAgent") }],
+    });
+    const services = h.layer.pipe(
+      Layer.provideMerge(RequestReceipts.layer.pipe(Layer.provide(h.layer))),
+    );
+    const registered = McpHttpServer.toolkitRegistration(
+      ThreadMcpToolkit,
+      ThreadMcpHandlers.layer,
+    ).pipe(Layer.provideMerge(McpServer.McpServer.layer), Layer.provideMerge(services));
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const server = yield* McpServer.McpServer;
+        const launched = yield* launches.launch({
+          ...launchInput({ command: "configure379-launch", thread: "configure379-thread" }),
+          tools: { allow: ["mcp:outreach:read_venue"] },
+        });
+        const scope: Invocation.McpInvocationScope = {
+          environmentId: EnvironmentId.make("configure379"),
+          requestNamespace: "configure379-client",
+          issuedAt: 0,
+          capabilities: new Set(["orchestration"]),
+          thread: undefined,
+          client: {
+            sessionId: "configure379-client",
+            label: "Test",
+            access: "full-access",
+            linked: false,
+          },
+        };
+        const client = McpSchema.McpServerClient.of({
+          clientId: 1,
+          protocolVersion: "2025-06-18",
+          clientCapabilities: {},
+          clientInfo: { name: "configure379", version: "1" },
+          initializePayload: {
+            protocolVersion: "2025-06-18",
+            capabilities: {},
+            clientInfo: { name: "configure379", version: "1" },
+          },
+          getClient: Effect.die("unused"),
+        });
+        const servers = (label: string) => ({
+          outreach: {
+            type: "http" as const,
+            url: `https://${label}.example.test/mcp`,
+            headers: { Authorization: `synthetic-private-${label}` },
+          },
+        });
+        const call = (key: string, label: string) =>
+          server
+            .callTool({
+              name: "t3_thread_mcp_configure",
+              arguments: {
+                threadId: launched.threadId,
+                servers: servers(label),
+                clientRequestId: key,
+              },
+            })
+            .pipe(
+              Effect.provideService(Invocation.McpInvocationContext, scope),
+              Effect.provideService(McpSchema.McpServerClient, client),
+            );
+        const first = yield* call("K", "a");
+        expect(first.isError, JSON.stringify(first)).not.toBe(true);
+        const configA = (yield* threads.getThreadRecords(launched.threadId, [])).thread.tools
+          ?.mcpConfigId;
+        const second = yield* call("L", "b");
+        expect(second.isError, JSON.stringify(second)).not.toBe(true);
+        const configB = (yield* threads.getThreadRecords(launched.threadId, [])).thread.tools
+          ?.mcpConfigId;
+        expect(configB).not.toBe(configA);
+        const replay = yield* call("K", "a");
+        expect(replay.isError, JSON.stringify(replay)).not.toBe(true);
+        expect(replay.structuredContent).toEqual(first.structuredContent);
+        expect(
+          (yield* threads.getThreadRecords(launched.threadId, [])).thread.tools?.mcpConfigId,
+        ).toBe(configB);
+        const sql = yield* SqlClient.SqlClient;
+        const receipts = yield* sql`SELECT * FROM mcp_request_receipts`;
+        expect(JSON.stringify(receipts)).not.toContain("synthetic-private");
+        expect(JSON.stringify(receipts)).not.toContain("example.test");
+        expect(JSON.stringify(yield* call("K", "changed"))).toContain("invalid_request");
+        expect(
+          (yield* threads.getThreadRecords(launched.threadId, [])).thread.tools?.mcpConfigId,
+        ).toBe(configB);
+      }),
+    ).pipe(Effect.provide(registered));
+  },
+);

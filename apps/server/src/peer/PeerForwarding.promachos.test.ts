@@ -59,7 +59,12 @@ it.effect.each([
       Layer.provide(
         Layer.mergeAll(
           NodeCrypto.layer,
-          Layer.succeed(PeerMcpClient.PeerMcpClient, { call }),
+          Layer.succeed(PeerMcpClient.PeerMcpClient, {
+            call,
+            requirePendingRequests: () => Effect.void,
+            uploadAttachment: () => Effect.die("No attachment transfer in this focused fixture"),
+            start: Effect.void,
+          }),
           Layer.mock(PeerLinks.PeerLinks)({}),
           Layer.mock(ThreadManagement.ThreadManagementService)({
             getThreadShell: () =>

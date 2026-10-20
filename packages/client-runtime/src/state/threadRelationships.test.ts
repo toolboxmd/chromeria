@@ -218,6 +218,33 @@ describe("thread relationships", () => {
     expect(threadRelationshipRowStatus(graph, row)).toBe("running");
   });
 
+  it("shows later destination work without a saved destination shell and preserves the original result", () => {
+    const parent = ThreadId.make("source-parent");
+    const child = ThreadId.make("destination-child");
+    const environment = EnvironmentId.make("destination-without-connection");
+    const task = {
+      childThreadId: null,
+      remoteChild: {
+        environmentId: environment,
+        threadId: child,
+        label: "B",
+        snapshot: { workState: "waiting_for_children" },
+        stop: { requestId: "earlier-stop", state: "confirmed" },
+      },
+      status: "completed",
+      result: "immutable original",
+    };
+    const graph = deriveThreadRelationshipGraph({
+      threads: [{ id: parent, status: "completed", lineage: { parentThreadId: null } }] as never,
+      projection: { thread: { id: parent }, subagents: [task], contextTransfers: [] } as never,
+    });
+    const row = immediateThreadRelationships(graph, parent)[0]!;
+    expect(row.environmentId).toBe(environment);
+    expect(threadRelationshipRowStatus(graph, row)).toBe("running");
+    expect(getThreadRelationshipNode(graph, child)).toBeUndefined();
+    expect(task.result).toBe("immutable original");
+  });
+
   it.each([
     ["running", "running"],
     ["rolled_back", "interrupted"],

@@ -18,6 +18,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthSourceControlWriteScope,
   type EnvironmentId,
+  type OrchestrationV2Subagent,
   type ScopedThreadRef,
   type ThreadId,
   ProviderInteractionMode,
@@ -56,6 +57,7 @@ import {
   useServerConfigs,
   waitForThreadShell,
 } from "../../state/entities";
+import { useSubagentOpen } from "./useSubagentOpen";
 import { environmentShell } from "../../state/shell";
 import { ThreadStatusLine } from "./ThreadStatusLine";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
@@ -64,6 +66,7 @@ import { readEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { backgroundWorkNowItem, childInputNowItem, goalNowItem } from "./ThreadActivityBanners";
+import { remoteInputBannerItem, remoteInputTask } from "./ThreadActivityBanners";
 import type { useLocalDispatchState } from "./useLocalDispatchState";
 const RELATED_THREAD_SHELL_WAIT_MS = 1_000;
 
@@ -72,6 +75,7 @@ type LocalDispatchState = ReturnType<typeof useLocalDispatchState>;
 
 interface ThreadLifecycleInput {
   readonly environmentId: EnvironmentId;
+  readonly serverSubagents: ReadonlyArray<OrchestrationV2Subagent> | undefined;
   readonly routeThreadKey: string;
   readonly currentRouteThreadKeyRef: { readonly current: string | null };
   readonly canOperateThread: boolean;
@@ -444,13 +448,30 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
   // Disabled environments drop out of the server configs, so their children cannot open.
   const reachableEnvironments = useServerConfigs();
   const childThreadInputs = useChildThreadInputs(activeThreadRef);
-  const childInputNow = childInputNowItem({
-    childThreadInputs,
-    parentAwaitingUser: Boolean(
-      activePendingApproval || activePendingUserInput || activeThreadShell?.hasPendingUserInput,
-    ),
-    onOpenThread: onOpenRelatedThreadStable,
-  });
+  const parentAwaitingUser = Boolean(
+    activePendingApproval || activePendingUserInput || activeThreadShell?.hasPendingUserInput,
+  );
+  const pendingRemoteInputTask = remoteInputTask(input.serverSubagents);
+  const remoteInputOpen = useSubagentOpen(
+    activeThreadRef,
+    pendingRemoteInputTask,
+    onOpenRelatedThreadStable,
+  );
+  // A local child's question comes first; a remote task's request shows when there is none.
+  const childInputNow =
+    childInputNowItem({
+      childThreadInputs,
+      parentAwaitingUser,
+      onOpenThread: onOpenRelatedThreadStable,
+    }) ??
+    (childThreadInputs.length === 0
+      ? remoteInputBannerItem({
+          task: pendingRemoteInputTask,
+          parentAwaitingUser,
+          viewer: remoteInputOpen.viewer,
+          onOpen: remoteInputOpen.open,
+        })
+      : null);
 
   const sendStandaloneCommand = async (text: string, failureMessage: string) => {
     if (!activeThread || !clientSettingsHydrated || sendInFlightRef.current) return;
@@ -534,6 +555,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
         onStop: handleStopBackgroundWorkStable,
         onOpenThread: onOpenRelatedThreadStable,
         reachableEnvironments,
+        parentRef: activeThreadRef,
       })
     : null;
   // The relative times read the clock; nowMinute re-renders them on the minute.

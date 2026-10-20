@@ -24,6 +24,7 @@ const fixture = (
   fail = false,
   authError?: EnvironmentAuth.ServerAuthCredentialError | EnvironmentAuth.ServerAuthInternalError,
   upstream?: DeviceHost.DeviceHostReady["upstream"],
+  upstreamResponse?: Response,
 ) => {
   let finalized = 0;
   const requests: string[] = [];
@@ -38,7 +39,7 @@ const fixture = (
       if (fail) return yield* Effect.die(new Error("upstream failed"));
       return HttpClientResponse.fromWeb(
         request,
-        new Response("frame", { headers: { "set-cookie": "upstream=1" } }),
+        upstreamResponse ?? new Response("frame", { headers: { "set-cookie": "upstream=1" } }),
       );
     }),
   );
@@ -72,7 +73,7 @@ const fixture = (
     { disableLogger: true },
   );
   disposers.push(dispose);
-  return { handler, requests, headers, finalized: () => finalized };
+  return { handler, requests, headers, upstreamHeaders: headers, finalized: () => finalized };
 };
 
 describe("device hub proxy", () => {
@@ -102,9 +103,9 @@ describe("device hub proxy", () => {
   it("requires operate scope for stream tuning", async () => {
     const readOnly = fixture([AuthOrchestrationReadScope]);
     const path = "http://t3.test/api/device-hub/vendor/serve-emu/api/stream-settings";
-    expect((await readOnly.handler(new Request(path, { method: "POST" }))).status).toBe(403);
+    expect((await readOnly.handler(new Request(path, { method: "PATCH" }))).status).toBe(403);
     const operator = fixture([AuthOrchestrationOperateScope]);
-    const response = await operator.handler(new Request(path, { method: "POST" }));
+    const response = await operator.handler(new Request(path, { method: "PATCH" }));
     expect(response.status).toBe(200);
     await response.text();
   });
@@ -229,6 +230,97 @@ it.each([
   expect(response.status).toBe(status);
   expect(await response.text()).not.toContain("private credential diagnostic");
   expect(requests).toEqual([]);
+});
+
+it.each([
+  "/vendor/serve-emu/api/screenshot?device=one&device=two",
+  "/vendor/serve-emu/api/fold?device=one&serial=two",
+  "/vendor/serve-sim/helper/one/stream.avcc?device=two",
+  "/vendor/serve-sim/helper/one/stream.avcc?url=http://elsewhere.test",
+  "/vendor/serve-emu/api/devices?token=private-daemon-token",
+  "/api/devices?hostId=one&hostId=two",
+  "/api/devices?wsTicket=one&wsTicket=two",
+])("refuses ambiguous or undeclared hub query before upstream acquisition: %s", async (path) => {
+  const { handler, requests } = fixture([AuthOrchestrationReadScope]);
+  const response = await handler(new Request(`http://t3.test/api/device-hub${path}`));
+  expect(response.status).toBe(400);
+  expect(requests).toEqual([]);
+});
+
+
+it.each(["DELETE", "PUT", "PATCH"])(
+  "refuses unsupported hub mutation method %s",
+  async (method) => {
+    const { handler, requests } = fixture([AuthOrchestrationOperateScope]);
+    const response = await handler(
+      new Request("http://t3.test/api/device-hub/vendor/serve-emu/api/fold?device=one", { method }),
+    );
+    expect(response.status).toBe(405);
+    expect(requests).toEqual([]);
+  },
+);
+
+it("does not disclose or follow a hub redirect", async () => {
+  const { handler, requests } = fixture(
+    [AuthOrchestrationReadScope],
+    false,
+    undefined,
+    undefined,
+    new Response(null, {
+      status: 302,
+      headers: { location: "http://private-daemon.test/token", "set-cookie": "daemon=private" },
+    }),
+  );
+  const response = await handler(new Request("http://t3.test/api/device-hub/api/devices"));
+  expect(response.status).toBe(502);
+  expect(response.headers.get("location")).toBeNull();
+  expect(response.headers.get("set-cookie")).toBeNull();
+  expect(await response.text()).not.toContain("private");
+  expect(requests).toEqual(["http://hub.test/api/devices"]);
+});
+
+it("keeps an HTTPS relay's forwarded protocol out of a loopback hub mutation", async () => {
+  const { handler, upstreamHeaders } = fixture([AuthOrchestrationOperateScope]);
+  const response = await handler(
+    new Request(
+      "https://relay.test/api/device-hub/vendor/serve-emu/api/fold?device=emulator-5554",
+      {
+        method: "POST",
+        headers: { origin: "https://relay.test", "x-forwarded-proto": "https" },
+        body: '{"posture":"opened"}',
+      },
+    ),
+  );
+  expect(response.status).toBe(200);
+  await response.text();
+  expect(upstreamHeaders).toHaveLength(1);
+  expect(upstreamHeaders[0]?.origin).toBe("http://hub.test");
+  expect(upstreamHeaders[0]).not.toHaveProperty("x-forwarded-proto");
+});
+
+it.each([
+  ["PUT", "stream-mode", '{"mode":"scrcpy"}'],
+  ["PATCH", "stream-settings", '{"h264Fps":30}'],
+])("preserves pinned hub %s %s JSON requests", async (method, operation, body) => {
+  const operator = fixture([AuthOrchestrationOperateScope]);
+  const response = await operator.handler(
+    new Request(
+      `http://t3.test/api/device-hub/vendor/serve-emu/api/${operation}?device=emulator-5554`,
+      { method, headers: { "content-type": "application/json" }, body },
+    ),
+  );
+  expect(response.status).toBe(200);
+  expect(operator.upstreamHeaders[0]?.["content-type"]).toBe("application/json");
+  await response.text();
+  const reader = fixture([AuthOrchestrationReadScope]);
+  const denied = await reader.handler(
+    new Request(
+      `http://t3.test/api/device-hub/vendor/serve-emu/api/${operation}?device=emulator-5554`,
+      { method, headers: { "content-type": "application/json" }, body },
+    ),
+  );
+  expect(denied.status).toBe(403);
+  expect(reader.requests).toEqual([]);
 });
 
 it("rejects unsupported Duo routes", async () => {

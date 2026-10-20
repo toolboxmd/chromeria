@@ -96,6 +96,11 @@ export default defineConfig({
     },
   },
   test: {
+    alias: {
+      "@t3tools/mobile-preview-stream": NodeURL.fileURLToPath(
+        new URL("./apps/mobile/src/features/browser/preview-stream.browser.ts", import.meta.url),
+      ),
+    },
     environment: "node",
     // Fixture subprocesses must not inherit the outer task runner’s cache policy.
     env: { VP_REMOTE_CACHE: "off", VP_REMOTE_CACHE_URL: "" },

@@ -32,6 +32,32 @@ const makeRegistry = (now: () => number, httpServer = fakeHttpServer) =>
       Effect.provide(NodeServices.layer),
     );
 
+it.effect(
+  "keeps the same request namespace across credential renewal and registry reconstruction",
+  () =>
+    Effect.gen(function* () {
+      const request = {
+        threadId: ThreadId.make("durable-request-thread"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+      };
+      const first = yield* makeRegistry(() => 1_000);
+      const namespace = (registry: typeof first) =>
+        Effect.gen(function* () {
+          const issued = yield* registry.issue(request);
+          const scope = yield* registry.resolve(issued.config.authorizationHeader.slice(7));
+          return { namespace: scope?.requestNamespace, session: scope?.thread.providerSessionId };
+        });
+      const original = yield* namespace(first);
+      const renewed = yield* namespace(first);
+      const rebuilt = yield* namespace(yield* makeRegistry(() => 2_000));
+      expect(renewed.session).not.toBe(original.session);
+      expect(rebuilt.session).not.toBe(original.session);
+      expect(renewed.namespace).toBe(original.namespace);
+      expect(rebuilt.namespace).toBe(original.namespace);
+      expect(original.namespace).toBe("thread:environment-1:durable-request-thread");
+    }),
+);
+
 it.effect("stores only a token hash, resolves the bearer token, and revokes by thread", () =>
   Effect.gen(function* () {
     let timestamp = 1_000;

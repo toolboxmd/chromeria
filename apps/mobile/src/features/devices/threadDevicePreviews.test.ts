@@ -92,3 +92,12 @@ describe("thread device previews", () => {
     expect(selectedThreadDevicePreview([], selectedKey)).toBeNull();
   });
 });
+
+it("separates a reopened tool session from the previous local selection", () => {
+  const first = { ...state.sessions[0]!, toolSessionId: "11111111-1111-4111-8111-111111111111" };
+  const reopened = { ...first, toolSessionId: "22222222-2222-4222-8222-222222222222" };
+  const before = threadDevicePreviews({ ...state, sessions: [first] }, threadId)[0]!;
+  const after = threadDevicePreviews({ ...state, sessions: [reopened] }, threadId)[0]!;
+  expect(before.key).not.toBe(after.key);
+  expect(selectedThreadDevicePreview([after], before.key)?.session).toEqual(reopened);
+});

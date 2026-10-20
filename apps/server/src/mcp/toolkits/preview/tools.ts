@@ -1,3 +1,5 @@
+import { McpSavedSnapshotReceipt } from "@t3tools/contracts";
+import * as McpRouting from "../../McpRouting.ts";
 import {
   OrchestratorMcpFailure,
   ToolActivityIcon,
@@ -11,6 +13,7 @@ import {
   PreviewAutomationNavigateInput,
   PreviewAutomationOpenInput,
   PreviewAutomationRecordingArtifact,
+  PeerAttachmentReference,
   PreviewAutomationRecordingStatus,
   PreviewAutomationResizeInput,
   PreviewAutomationResizeResult,
@@ -151,10 +154,82 @@ export const PreviewSnapshotTool = safeBrowserTool(
         }),
       ),
     }),
-    success: PreviewAutomationSnapshot,
+    success: Schema.Union([PreviewAutomationSnapshot, McpSavedSnapshotReceipt]),
     failure: PreviewToolFailure,
     dependencies,
   }).annotate(Tool.Title, "Inspect browser page"),
+);
+
+const PreviewClickTool = browserTool(
+  Tool.make("preview_click", {
+    description: "Click exactly one target. Prefer a Playwright locator. `x` and `y` go together." + COMPUTER_USE_HINT,
+    parameters: McpRouting.parameters(PreviewAutomationClickInput),
+    success: PreviewActionResult,
+    failure: PreviewToolFailure,
+    dependencies,
+  }).annotate(Tool.Title, "Click preview page"),
+);
+
+const PreviewTypeTool = browserTool(
+  Tool.make("preview_type", {
+    description: "Type literal text into one input. `clear=true` replaces the current text." + COMPUTER_USE_HINT,
+    parameters: McpRouting.parameters(PreviewAutomationTypeInput),
+    success: PreviewActionResult,
+    failure: PreviewToolFailure,
+    dependencies,
+  }).annotate(Tool.Title, "Type into preview page"),
+);
+
+const PreviewHoverTool = safeBrowserTool(
+  Tool.make("preview_hover", {
+    description: "Hover one target to show menus or tooltips." + COMPUTER_USE_HINT,
+    parameters: McpRouting.parameters(PreviewAutomationHoverInput),
+    success: PreviewActionResult,
+    failure: PreviewToolFailure,
+    dependencies,
+  }).annotate(Tool.Title, "Hover preview page"),
+);
+
+const PreviewSelectTool = browserTool(
+  Tool.make("preview_select", {
+    description:
+      "Pick options in one native <select>, by value or label. For a custom dropdown, click it open, then click the option." + COMPUTER_USE_HINT,
+    parameters: McpRouting.parameters(PreviewAutomationSelectInput),
+    success: Schema.Struct({
+      ...PreviewAutomationSelectResult.fields,
+      ...presentationFields,
+    }),
+    failure: PreviewToolFailure,
+    dependencies,
+  }).annotate(Tool.Title, "Select preview option"),
+);
+
+const PreviewDragTool = browserTool(
+  Tool.make("preview_drag", {
+    description: "Drag one element onto another." + COMPUTER_USE_HINT,
+    parameters: McpRouting.parameters(PreviewAutomationDragInput),
+    success: PreviewActionResult,
+    failure: PreviewToolFailure,
+    dependencies,
+  }).annotate(Tool.Title, "Drag in preview page"),
+);
+
+const PreviewUploadTool = browserTool(
+  Tool.make("preview_upload", {
+    description:
+      "Give files to the page. After a click opens a file picker, `preview_status` reports it. Local callers pass absolute `paths`; a linked browser takes `artifacts` from `t3_attachment_inspect` with the exact `resource` from `preview_open` or `preview_status`. One of the two, at most 20 files/100 MiB. An empty list cancels the picker or clears a named input. Or pass a locator for an <input type=file>." + COMPUTER_USE_HINT,
+    // Routing rebuilds the struct, so the upload input's cross-field filter is checked again here.
+    parameters: McpRouting.parameters(PreviewAutomationUploadInput).check(
+      Schema.makeFilter(
+        (value) =>
+          Schema.is(PreviewAutomationUploadInput)(value) ||
+          "Provide either local paths or qualified artifacts for their exact browser resource, within 20 files/100 MiB.",
+      ),
+    ),
+    success: PreviewActionResult,
+    failure: PreviewToolFailure,
+    dependencies,
+  }).annotate(Tool.Title, "Upload files to preview page"),
 );
 
 const PreviewFillCredentialTool = browserTool(
@@ -244,9 +319,19 @@ const PreviewRecordingStartTool = safeBrowserTool(
 const PreviewRecordingStopTool = safeBrowserTool(
   Tool.make("preview_recording_stop", {
     description:
-      "Stop recording the chosen tab. Returns a local path to the recording file (max 50 MiB)." + COMPUTER_USE_HINT,
-    parameters: PreviewAutomationTabTargetInput,
-    success: Schema.Struct({ ...PreviewAutomationRecordingArtifact.fields, ...presentationFields }),
+      "Stop recording the chosen tab. Returns a local path to the recording file (max 50 MiB). Negotiated peer calls return an environment-qualified resource instead; send it by its `attachmentId`, never as a source path. An unconfirmed durable publication reports `outcome_unknown` and is not repeated." + COMPUTER_USE_HINT,
+    parameters: McpRouting.parameters(PreviewAutomationTabTargetInput),
+    success: Schema.Union([
+      Schema.Struct({ ...PreviewAutomationRecordingArtifact.fields, ...presentationFields }),
+      Schema.Struct({
+        resource: PeerAttachmentReference,
+        tabId: PreviewAutomationRecordingArtifact.fields.tabId,
+        mimeType: Schema.String,
+        sizeBytes: Schema.Int,
+        createdAt: Schema.String,
+        ...presentationFields,
+      }),
+    ]),
     failure: PreviewToolFailure,
     dependencies: [...dependencies, FileSystem.FileSystem, ServerConfig.ServerConfig],
   }).annotate(Tool.Title, "Stop browser recording"),

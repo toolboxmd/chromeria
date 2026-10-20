@@ -196,7 +196,10 @@ export function deriveThreadRelationshipGraph(input: {
           child?.activityRunStatus ??
           (child?.latestRunId != null && !isOrchestrationV2WorkActive(subagent.status)
             ? child.status
-            : subagent.status),
+            : subagent.remoteChild?.snapshot !== undefined &&
+                subagent.remoteChild.snapshot.workState !== "result_available"
+              ? "running"
+              : (subagent.remoteChild?.latestResult?.status ?? subagent.status)),
         targetEnvironmentId: target.environmentId,
       });
     }

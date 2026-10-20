@@ -1,3 +1,7 @@
+import * as Invocation from "../mcp/McpInvocationContext.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import { loadCaller, assertLiveCaller } from "../mcp/threadAccess.ts";
+import { CurrentRequest } from "../mcp/McpRequestReceipts.ts";
 import type { AssetResource } from "@t3tools/contracts";
 import {
   AssetAttachmentNotFoundError,
@@ -15,6 +19,11 @@ import {
   AssetWorkspaceRootNormalizationError,
   SOURCE_CONTROL_MEDIA_ASSET,
   ThreadId,
+  PeerAttachmentAssetResource,
+  NativeBrowserDownloadAssetResource,
+  type QualifiedAssetResource,
+  AuthSessionId,
+  OrchestratorMcpFailure,
   ToolActivityNativeAppReference,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -56,6 +65,14 @@ import {
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { parseAttachmentFileExtension, resolveAttachmentPathById } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
+import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import * as AuthSessions from "../persistence/AuthSessions.ts";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
+import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
+import * as PeerLinks from "../peer/PeerLinks.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ServerBrowser from "../preview/ServerBrowser.ts";
+import * as AttachmentStaging from "./AttachmentStaging.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
@@ -108,6 +125,22 @@ const PREVIEW_ASSET_EXTENSIONS = new Set([
 ]);
 
 const AssetClaimsSchema = Schema.Union([
+  Schema.Struct({
+    version: Schema.Literal(1),
+    kind: Schema.Literal("native-browser-download"),
+    resource: NativeBrowserDownloadAssetResource,
+    sessionId: AuthSessionId,
+    generation: Schema.String,
+    expiresAt: Schema.Number,
+  }),
+  Schema.Struct({
+    version: Schema.Literal(1),
+    kind: Schema.Literal("peer-attachment"),
+    resource: PeerAttachmentAssetResource,
+    sessionId: AuthSessionId,
+    generation: Schema.String,
+    expiresAt: Schema.Number,
+  }),
   Schema.Struct({
     version: Schema.Literal(1),
     kind: Schema.Literal("workspace-file"),
@@ -184,6 +217,18 @@ const decodeAssetClaims = Schema.decodeUnknownOption(AssetClaimsJson);
 const encodeAssetClaims = Schema.encodeSync(AssetClaimsJson);
 
 export type ResolvedAsset =
+  | {
+      readonly kind: "native-browser-download";
+      readonly resource: NativeBrowserDownloadAssetResource;
+      readonly sessionId: AuthSessionId;
+      readonly generation: string;
+    }
+  | {
+      readonly kind: "peer-attachment";
+      readonly resource: PeerAttachmentAssetResource;
+      readonly sessionId: AuthSessionId;
+      readonly generation: string;
+    }
   | {
       readonly kind: "file";
       readonly path: string;
@@ -528,8 +573,376 @@ const finalizeWorkspaceFileAsset = Effect.fn("AssetAccess.finalizeWorkspaceFileA
   },
 );
 
+/** Acquisition is an MCP mutation with its original actor, never a native viewer ticket. */
+export const acquireAttachment = Effect.fn("AssetAccess.acquireAttachment")(function* (
+  resource: QualifiedAssetResource,
+  key: string,
+) {
+  if (
+    resource._tag === "native-browser-download" &&
+    (resource.sizeBytes < 1 || resource.sizeBytes > 50 * 1024 * 1024)
+  )
+    return yield* new OrchestratorMcpFailure({
+      code: "invalid_request",
+      message:
+        "Source attachment acquisition supports 1 byte through 50 MiB. Fetch this native download through the authenticated source client instead.",
+    });
+  const original = yield* Invocation.McpInvocationContext;
+  const scope = yield* Invocation.requireThreadScope(original, "Attachment acquisition");
+  const request = yield* CurrentRequest;
+  const refused = () =>
+    new OrchestratorMcpFailure({
+      code: "capability_denied",
+      message: "The attachment is unavailable to its original acquisition caller.",
+    });
+  if (request === undefined) return yield* refused();
+  const threads = yield* ThreadManagement.ThreadManagementService;
+  const staging = yield* Effect.serviceOption(AttachmentStaging.AttachmentStaging);
+  const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+  const peers = yield* Effect.serviceOption(PeerMcpClient.PeerMcpClient);
+  const links = yield* Effect.serviceOption(PeerLinks.PeerLinks);
+  if (Option.isNone(staging) || Option.isNone(authority)) return yield* refused();
+  const live = loadCaller().pipe(
+    Effect.tap(assertLiveCaller),
+    Effect.provideService(Invocation.McpInvocationContext, scope),
+    Effect.provideService(ThreadManagement.ThreadManagementService, threads),
+  );
+  const caller = yield* live;
+  const current = live.pipe(Effect.asVoid);
+  let admitted: {
+    bytes: Uint8Array;
+    producer: "device" | "preview";
+    authorize: Effect.Effect<void, OrchestratorMcpFailure>;
+  };
+  if (resource._tag === "native-browser-download") {
+    let access: {
+      authorize: Effect.Effect<void, OrchestratorMcpFailure>;
+      readBlock: (offset: number) => Effect.Effect<Uint8Array, OrchestratorMcpFailure>;
+    };
+    if (resource.resource.environmentId === scope.environmentId) {
+      const browser = yield* Effect.serviceOption(ServerBrowser.ServerBrowser);
+      if (
+        Option.isNone(browser) ||
+        browser.value.inspectDownload === undefined ||
+        browser.value.readDownloadBlock === undefined
+      )
+        return yield* refused();
+      const authorize = current.pipe(
+        Effect.andThen(
+          authority.value.recheckInvocation(scope, "preview", resource.resource.threadId),
+        ),
+        Effect.asVoid,
+      );
+      const read = browser.value.readDownloadBlock;
+      access = {
+        authorize: browser.value.inspectDownload(resource, authorize),
+        readBlock: (offset) => read(resource, offset, authorize),
+      };
+    } else {
+      if (
+        Option.isNone(peers) ||
+        peers.value.readNativeBrowserDownload === undefined ||
+        Option.isNone(links)
+      )
+        return yield* refused();
+      const link = yield* links.value
+        .get(resource.resource.environmentId)
+        .pipe(Effect.mapError(refused));
+      if (Option.isNone(link)) return yield* refused();
+      const envelope = yield* authority.value.prepare(
+        scope,
+        resource.resource.environmentId,
+        link.value.launchIdentity,
+        "attachment_acquire",
+        resource,
+        caller.limits,
+        undefined,
+        true,
+        true,
+      );
+      const authorize = current.pipe(
+        Effect.andThen(authority.value.checkRecord(envelope.recordId)),
+      );
+      access = yield* peers.value.readNativeBrowserDownload({
+        resource,
+        authority: envelope,
+        authorize,
+      });
+    }
+    const bytes = new Uint8Array(resource.sizeBytes);
+    yield* nativeDownloadStream(access, resource.sizeBytes).pipe(
+      Stream.runFold(
+        () => 0,
+        (offset, chunk) => {
+          bytes.set(chunk, offset);
+          return offset + chunk.byteLength;
+        },
+      ),
+    );
+    if (
+      (yield* (yield* Crypto.Crypto)
+        .digest("SHA-256", bytes)
+        .pipe(Effect.map(Hex.encode), Effect.mapError(refused))) !== resource.digest
+    )
+      return yield* refused();
+    admitted = { bytes, producer: "preview", authorize: access.authorize };
+  } else if (resource.reference.environmentId === scope.environmentId) {
+    const authorize = (capability: "device" | "preview") =>
+      current.pipe(
+        Effect.andThen(authority.value.recheckInvocation(scope, capability, resource.threadId)),
+        Effect.asVoid,
+      );
+    const producer = yield* staging.value.authorizeReference(resource, authorize);
+    const bytes = yield* staging.value.readReference(resource, authorize);
+    admitted = {
+      bytes,
+      producer,
+      authorize: staging.value.authorizeReference(resource, authorize).pipe(Effect.asVoid),
+    };
+  } else {
+    if (Option.isNone(peers) || peers.value.readAttachment === undefined || Option.isNone(links))
+      return yield* refused();
+    const link = yield* links.value
+      .get(resource.reference.environmentId)
+      .pipe(Effect.mapError(refused));
+    if (Option.isNone(link)) return yield* refused();
+    const envelope = yield* authority.value.prepare(
+      scope,
+      resource.reference.environmentId,
+      link.value.launchIdentity,
+      "attachment_acquire",
+      resource,
+      caller.limits,
+      undefined,
+      true,
+      true,
+    );
+    const authorize = current.pipe(Effect.andThen(authority.value.checkRecord(envelope.recordId)));
+    admitted = yield* peers.value.readAttachment({ resource, authority: envelope, authorize });
+  }
+  const authorize = admitted.authorize.pipe(
+    Effect.andThen(current),
+    Effect.andThen(
+      authority.value.recheckInvocation(scope, admitted.producer, scope.thread.threadId),
+    ),
+    Effect.asVoid,
+  );
+  yield* authorize;
+  const acquired = yield* staging.value.acquireReference(
+    scope,
+    resource._tag === "peer-attachment" ? resource.reference : resource,
+    admitted.bytes,
+    `acquire:${key}`,
+    admitted.producer,
+    authorize,
+  );
+  yield* authorize;
+  return {
+    acceptance: "native-accepted" as const,
+    resource: {
+      _tag: "peer-attachment" as const,
+      threadId: scope.thread.threadId,
+      reference: acquired.reference,
+    },
+    attachment: acquired.attachment,
+    path: acquired.path,
+  };
+});
+
+/** Bounded native download blocks remain at the browser owner, not the attachment store. */
+export const qualifiedNativeDownloadReader = Effect.gen(function* () {
+  const sessions = yield* Effect.serviceOption(AuthSessions.AuthSessionRepository);
+  const environment = yield* Effect.serviceOption(ServerEnvironment.ServerEnvironment);
+  const browser = yield* Effect.serviceOption(ServerBrowser.ServerBrowser);
+  const links = yield* Effect.serviceOption(PeerLinks.PeerLinks);
+  const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+  const peers = yield* Effect.serviceOption(PeerMcpClient.PeerMcpClient);
+  return Effect.fn("AssetAccess.readQualifiedNativeDownload")(function* (
+    session: EnvironmentAuth.AuthenticatedSession,
+    resource: NativeBrowserDownloadAssetResource,
+    expectedGeneration?: string,
+  ) {
+    const refused = () =>
+      new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "The native browser download is unavailable to its current source reader.",
+      });
+    if (Option.isNone(sessions) || Option.isNone(environment)) return yield* refused();
+    const current = (yield* EnvironmentAuth.nativeSessionAuthorization(
+      session,
+      "orchestration:read",
+    ).pipe(
+      Effect.provideService(AuthSessions.AuthSessionRepository, sessions.value),
+      Effect.mapError(refused),
+    )).pipe(Effect.mapError(refused));
+    yield* current;
+    const here = yield* environment.value.getEnvironmentId;
+    if (resource.resource.environmentId === here) {
+      if (
+        (expectedGeneration !== undefined && expectedGeneration !== "local") ||
+        Option.isNone(browser) ||
+        browser.value.inspectDownload === undefined ||
+        browser.value.readDownloadBlock === undefined
+      )
+        return yield* refused();
+      const authorize = browser.value.inspectDownload(resource, current);
+      yield* authorize;
+      const read = browser.value.readDownloadBlock;
+      return {
+        generation: "local",
+        authorize,
+        readBlock: (offset: number) => read(resource, offset, current),
+      };
+    }
+    if (
+      Option.isNone(links) ||
+      Option.isNone(authority) ||
+      Option.isNone(peers) ||
+      peers.value.readNativeBrowserDownload === undefined
+    )
+      return yield* refused();
+    const link = yield* links.value
+      .get(resource.resource.environmentId)
+      .pipe(Effect.mapError(refused));
+    if (
+      Option.isNone(link) ||
+      (expectedGeneration !== undefined && link.value.launchIdentity !== expectedGeneration)
+    )
+      return yield* refused();
+    const envelope = yield* authority.value.prepareAttachmentRead(
+      session.sessionId,
+      resource.resource.environmentId,
+      link.value.launchIdentity,
+      resource,
+    );
+    const recheck = current.pipe(Effect.andThen(authority.value.checkRecord(envelope.recordId)));
+    const admitted = yield* peers.value.readNativeBrowserDownload({
+      resource,
+      authority: envelope,
+      authorize: recheck,
+    });
+    return { ...admitted, generation: link.value.launchIdentity };
+  });
+});
+
+/** One upstream block per downstream pull; no read-ahead or whole-file allocation. */
+export const nativeDownloadStream = (
+  admitted: {
+    readonly authorize: Effect.Effect<void, OrchestratorMcpFailure>;
+    readonly readBlock: (offset: number) => Effect.Effect<Uint8Array, OrchestratorMcpFailure>;
+  },
+  sizeBytes: number,
+  offset = 0,
+  length = sizeBytes,
+) =>
+  Stream.unfold(offset, (position) =>
+    Effect.gen(function* () {
+      if (position >= offset + length) return undefined;
+      yield* admitted.authorize;
+      const blockOffset =
+        Math.floor(position / ServerBrowser.DOWNLOAD_BLOCK_BYTES) *
+        ServerBrowser.DOWNLOAD_BLOCK_BYTES;
+      const block = yield* admitted.readBlock(blockOffset);
+      if (
+        block.byteLength !== Math.min(ServerBrowser.DOWNLOAD_BLOCK_BYTES, sizeBytes - blockOffset)
+      )
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "The native download block has an invalid byte count.",
+        });
+      yield* admitted.authorize;
+      const end = Math.min(offset + length, blockOffset + block.byteLength);
+      return [block.subarray(position - blockOffset, end - blockOffset), end] as const;
+    }),
+  );
+
+export const qualifiedAttachmentReader = Effect.gen(function* () {
+  const sessions = yield* Effect.serviceOption(AuthSessions.AuthSessionRepository);
+  const environment = yield* Effect.serviceOption(ServerEnvironment.ServerEnvironment);
+  const staging = yield* Effect.serviceOption(AttachmentStaging.AttachmentStaging);
+  const links = yield* Effect.serviceOption(PeerLinks.PeerLinks);
+  const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+  const peers = yield* Effect.serviceOption(PeerMcpClient.PeerMcpClient);
+  return Effect.fn("AssetAccess.readQualifiedAttachment")(function* (
+    session: EnvironmentAuth.AuthenticatedSession,
+    resource: PeerAttachmentAssetResource,
+    expectedGeneration?: string,
+  ) {
+    const refused = () =>
+      new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "The qualified attachment is unavailable to its current reader.",
+      });
+    if (Option.isNone(sessions))
+      return yield* new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message: "Qualified attachment native session storage is unavailable.",
+      });
+    if (Option.isNone(environment))
+      return yield* new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message: "Qualified attachment environment identity is unavailable.",
+      });
+    const authorize = yield* EnvironmentAuth.nativeSessionAuthorization(
+      session,
+      "orchestration:read",
+    ).pipe(
+      Effect.provideService(AuthSessions.AuthSessionRepository, sessions.value),
+      Effect.mapError(refused),
+    );
+    const current = authorize.pipe(Effect.mapError(refused));
+    yield* current;
+    const here = yield* environment.value.getEnvironmentId;
+    if (resource.reference.environmentId === here) {
+      if (expectedGeneration !== undefined && expectedGeneration !== "local")
+        return yield* refused();
+      if (Option.isNone(staging)) return yield* refused();
+      const bytes = yield* staging.value.readReference(resource, () => current);
+      return {
+        bytes,
+        generation: "local",
+        authorize: staging.value.authorizeReference(resource, () => current).pipe(Effect.asVoid),
+      };
+    }
+    if (
+      Option.isNone(links) ||
+      Option.isNone(authority) ||
+      Option.isNone(peers) ||
+      peers.value.readAttachment === undefined
+    )
+      return yield* new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message: "Qualified attachment transport owners are unavailable.",
+      });
+    const link = yield* links.value
+      .get(resource.reference.environmentId)
+      .pipe(Effect.mapError(refused));
+    if (
+      Option.isNone(link) ||
+      (expectedGeneration !== undefined && expectedGeneration !== link.value.launchIdentity)
+    )
+      return yield* refused();
+    const envelope = yield* authority.value.prepareAttachmentRead(
+      session.sessionId,
+      resource.reference.environmentId,
+      link.value.launchIdentity,
+      resource,
+    );
+    const recheck = current.pipe(Effect.andThen(authority.value.checkRecord(envelope.recordId)));
+    const admitted = yield* peers.value.readAttachment({
+      resource,
+      authority: envelope,
+      authorize: recheck,
+    });
+    return { ...admitted, generation: link.value.launchIdentity };
+  });
+});
+
 export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (input: {
   readonly resource: AssetResource;
+  readonly session?: EnvironmentAuth.AuthenticatedSession;
+  readonly qualifiedReader?: Effect.Success<typeof qualifiedAttachmentReader>;
+  readonly downloadReader?: Effect.Success<typeof qualifiedNativeDownloadReader>;
   readonly workspaceRoot?: string;
   readonly projectFaviconPath?: string;
   /** Where a cloned project's checkout stands, while the clone tracker still knows it. */
@@ -546,6 +959,45 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
   let fileRevision: string | undefined;
 
   switch (input.resource._tag) {
+    case "native-browser-download": {
+      if (input.session === undefined)
+        return yield* new AssetAttachmentNotFoundError({ resource: input.resource });
+      const reader = input.downloadReader ?? (yield* qualifiedNativeDownloadReader);
+      const admitted = yield* reader(input.session, input.resource).pipe(
+        Effect.mapError(() => new AssetAttachmentNotFoundError({ resource: input.resource })),
+      );
+      yield* admitted.authorize.pipe(
+        Effect.mapError(() => new AssetAttachmentNotFoundError({ resource: input.resource })),
+      );
+      claims = {
+        version: 1,
+        kind: "native-browser-download",
+        resource: input.resource,
+        sessionId: input.session.sessionId,
+        generation: admitted.generation,
+        expiresAt,
+      };
+      fileName = "artifact";
+      break;
+    }
+    case "peer-attachment": {
+      if (input.session === undefined)
+        return yield* new AssetAttachmentNotFoundError({ resource: input.resource });
+      const reader = input.qualifiedReader ?? (yield* qualifiedAttachmentReader);
+      const admitted = yield* reader(input.session, input.resource).pipe(
+        Effect.mapError(() => new AssetAttachmentNotFoundError({ resource: input.resource })),
+      );
+      claims = {
+        version: 1,
+        kind: "peer-attachment",
+        resource: input.resource,
+        sessionId: input.session.sessionId,
+        generation: admitted.generation,
+        expiresAt,
+      };
+      fileName = "artifact";
+      break;
+    }
     case "media-file": {
       let requestedPath = expandHomePath(input.resource.path, yield* HostProcess.HomeDirectory);
       if (!path.isAbsolute(requestedPath)) {
@@ -892,6 +1344,24 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
   const claims = decodeClaims(encodedPayload);
   if (!claims || claims.expiresAt <= (yield* Clock.currentTimeMillis)) return null;
 
+  if (claims.kind === "native-browser-download") {
+    if (relativePath !== "artifact") return null;
+    return {
+      kind: claims.kind,
+      resource: claims.resource,
+      sessionId: claims.sessionId,
+      generation: claims.generation,
+    } satisfies ResolvedAsset;
+  }
+  if (claims.kind === "peer-attachment") {
+    if (relativePath !== "artifact") return null;
+    return {
+      kind: claims.kind,
+      resource: claims.resource,
+      sessionId: claims.sessionId,
+      generation: claims.generation,
+    } satisfies ResolvedAsset;
+  }
   if (claims.kind === "attachment") {
     const config = yield* ServerConfig.ServerConfig;
     const attachmentPath = resolveAttachmentPathById({

@@ -1,6 +1,9 @@
+import type * as Scope from "effect/Scope";
 import {
   AuthSessionId,
   AuthMcpGrantLimits,
+  DeviceViewerResource,
+  PreviewViewerResource,
   AuthStandardClientScopes,
   AuthEnvironmentScopes,
   type AuthClientMetadata,
@@ -13,6 +16,7 @@ import {
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -377,6 +381,33 @@ export const SessionCredentialError = Schema.Union([
 ]);
 export type SessionCredentialError = typeof SessionCredentialError.Type;
 
+const ViewerResource = Schema.Union([DeviceViewerResource, PreviewViewerResource]);
+export type ViewerResource = typeof ViewerResource.Type;
+export type ViewerOperation = "view" | "control";
+type AuthenticatedViewer = {
+  readonly session: VerifiedSession;
+  readonly viewerId: string;
+  readonly expiresAt: DateTime.DateTime;
+  readonly resource: ViewerResource;
+  readonly operation: ViewerOperation;
+  readonly generation: string;
+};
+
+const ViewerClaims = Schema.Struct({
+  v: Schema.Literal(1),
+  kind: Schema.Literal("viewer"),
+  sid: AuthSessionId,
+  viewerId: Schema.String.check(Schema.isPattern(/^[0-9a-f-]{36}$/)),
+  resource: ViewerResource,
+  operation: Schema.Literals(["view", "control"]),
+  generation: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
+  exp: Schema.Number,
+});
+const viewerClaimsJson = Schema.fromJsonString(ViewerClaims);
+const decodeViewerClaims = Schema.decodeUnknownEffect(viewerClaimsJson);
+const encodeViewerClaims = Schema.encodeEffect(viewerClaimsJson);
+const encodeViewerResource = Schema.encodeSync(Schema.fromJsonString(ViewerResource));
+
 export class SessionStore extends Context.Service<
   SessionStore,
   {
@@ -440,6 +471,50 @@ export class SessionStore extends Context.Service<
       | SessionCredentialInternalError
     >;
 
+    /** Resource owners authorize first. This credential authenticates only that exact viewer. */
+    readonly issueViewerToken: (input: {
+      readonly viewerId?: string;
+      readonly sessionId: AuthSessionId;
+      readonly resource: ViewerResource;
+      readonly operation: ViewerOperation;
+      readonly generation: string;
+    }) => Effect.Effect<
+      {
+        readonly token: string;
+        readonly viewerId: string;
+        readonly expiresAt: DateTime.DateTime;
+      },
+      SessionCredentialError
+    >;
+    readonly closeViewer: (sessionId: AuthSessionId, viewerId: string) => Effect.Effect<boolean>;
+    readonly awaitViewerInvalidation: (
+      viewerId: string,
+    ) => Effect.Effect<void, SessionCredentialVerificationError>;
+    readonly authenticateViewerToken: (
+      token: string,
+    ) => Effect.Effect<AuthenticatedViewer, SessionCredentialError>;
+    /** Admission expires quickly; an admitted transport keeps its current session until scope release. */
+    readonly admitViewerToken: (
+      token: string,
+    ) => Effect.Effect<
+      AuthenticatedViewer & { readonly recheck: Effect.Effect<void, SessionCredentialError> },
+      SessionCredentialError,
+      Scope.Scope
+    >;
+    /** Never accepted by ordinary HTTP or websocket session authentication. */
+    readonly verifyViewerToken: (input: {
+      readonly token: string;
+      readonly resource: ViewerResource;
+      readonly operation: ViewerOperation;
+      readonly generation: string;
+    }) => Effect.Effect<
+      {
+        readonly session: VerifiedSession;
+        readonly viewerId: string;
+        readonly expiresAt: DateTime.DateTime;
+      },
+      SessionCredentialError
+    >;
     readonly issueWebSocketToken: (
       sessionId: AuthSessionId,
       input?: {
@@ -745,12 +820,16 @@ const make = Effect.gen(function* () {
           .pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ cause }))),
       );
       const issuedAt = yield* DateTime.now;
-      const expiresAt =
+      // Beyond year 9999 ISO strings acquire a leading '+', which sorts before
+      // ordinary dates in persisted active-session and revocation predicates.
+      const expiresAt = DateTime.min(
         input?.expiresAt === undefined
           ? DateTime.add(issuedAt, {
               milliseconds: Duration.toMillis(input?.ttl ?? DEFAULT_SESSION_TTL),
             })
-          : DateTime.toUtc(input.expiresAt);
+          : DateTime.toUtc(input.expiresAt),
+        REUSABLE_DEV_SESSION_EXPIRES_AT,
+      );
       const claims: SessionClaims = {
         v: 1,
         kind: "session",
@@ -1196,6 +1275,235 @@ const make = Effect.gen(function* () {
     } satisfies VerifiedWebSocketTicket;
   });
 
+  const viewers = new Map<
+    string,
+    {
+      readonly sessionId: AuthSessionId;
+      readonly expiresAt: DateTime.DateTime;
+      readonly closed: Deferred.Deferred<void>;
+      readonly active: Set<symbol>;
+      readonly resource: ViewerResource;
+      readonly operation: ViewerOperation;
+      readonly generation: string;
+    }
+  >();
+  const closeViewer: SessionStore["Service"]["closeViewer"] = (sessionId, viewerId) =>
+    Effect.gen(function* () {
+      const viewer = viewers.get(viewerId);
+      if (!viewer || viewer.sessionId !== sessionId) return false;
+      viewers.delete(viewerId);
+      yield* Deferred.succeed(viewer.closed, undefined);
+      return true;
+    });
+  const awaitViewerInvalidation: SessionStore["Service"]["awaitViewerInvalidation"] = (viewerId) =>
+    Effect.gen(function* () {
+      const viewer = viewers.get(viewerId);
+      if (!viewer) return;
+      const now = yield* DateTime.now;
+      const admissionExpired = Effect.sleep(
+        Duration.millis(Math.max(0, viewer.expiresAt.epochMilliseconds - now.epochMilliseconds)),
+      ).pipe(
+        Effect.andThen(
+          Effect.suspend(() =>
+            viewer.active.size === 0 ? Effect.void : Deferred.await(viewer.closed),
+          ),
+        ),
+      );
+      yield* Effect.raceFirst(
+        awaitInvalidation(viewer.sessionId),
+        Effect.raceFirst(Deferred.await(viewer.closed), admissionExpired),
+      );
+    });
+  const viewerSession = (sessionId: AuthSessionId, token: string) =>
+    Effect.gen(function* () {
+      const row = yield* authSessions
+        .getById({ sessionId })
+        .pipe(
+          Effect.mapError((cause) => new SessionCredentialVerificationError({ sessionId, cause })),
+        );
+      if (Option.isNone(row)) return yield* new UnknownSessionTokenError({ sessionId });
+      if (row.value.revokedAt !== null)
+        return yield* new SessionTokenRevokedError({ sessionId, revokedAt: row.value.revokedAt });
+      const observedAt = yield* DateTime.now;
+      if (row.value.expiresAt.epochMilliseconds <= observedAt.epochMilliseconds)
+        return yield* new SessionTokenExpiredError({
+          sessionId,
+          expiresAt: row.value.expiresAt,
+          observedAt,
+        });
+      return {
+        sessionId,
+        token,
+        method: row.value.method,
+        client: toClientMetadata(row.value.client),
+        expiresAt: row.value.expiresAt,
+        subject: row.value.subject,
+        scopes: row.value.scopes,
+      } satisfies VerifiedSession;
+    });
+  const issueViewerToken: SessionStore["Service"]["issueViewerToken"] = Effect.fn(
+    "SessionStore.issueViewerToken",
+  )(function* (input) {
+    const session = yield* viewerSession(input.sessionId, "");
+    const existing = input.viewerId === undefined ? undefined : viewers.get(input.viewerId);
+    if (
+      input.viewerId !== undefined &&
+      (existing === undefined ||
+        existing.sessionId !== input.sessionId ||
+        existing.active.size === 0 ||
+        encodeViewerResource(existing.resource) !== encodeViewerResource(input.resource) ||
+        existing.operation !== input.operation ||
+        existing.generation !== input.generation)
+    )
+      return yield* new SessionCredentialIssueError({
+        sessionId: input.sessionId,
+        cause: "The exact active viewer is unavailable.",
+      });
+    const now = yield* DateTime.now;
+    for (const [id, viewer] of viewers) {
+      if (viewer.active.size === 0 && viewer.expiresAt.epochMilliseconds <= now.epochMilliseconds)
+        yield* closeViewer(viewer.sessionId, id);
+    }
+    if (existing === undefined && viewers.size >= 256)
+      return yield* new SessionCredentialIssueError({ cause: "Too many active viewers." });
+    const expiresAt = DateTime.min(DateTime.add(now, { seconds: 60 }), session.expiresAt);
+    const viewerId =
+      input.viewerId ??
+      (yield* crypto
+        .randomUUIDv4()
+        .pipe(
+          Effect.mapError(
+            (cause) => new SessionCredentialIssueError({ sessionId: input.sessionId, cause }),
+          ),
+        ));
+    const payload = yield* encodeViewerClaims({
+      v: 1,
+      kind: "viewer",
+      sid: input.sessionId,
+      viewerId,
+      resource: input.resource,
+      operation: input.operation,
+      generation: input.generation,
+      exp: expiresAt.epochMilliseconds,
+    }).pipe(
+      Effect.map(base64UrlEncode),
+      Effect.mapError(
+        (cause) => new SessionCredentialIssueError({ sessionId: input.sessionId, cause }),
+      ),
+    );
+    if (existing !== undefined) yield* viewerSession(input.sessionId, "");
+    if (
+      existing !== undefined &&
+      (viewers.get(viewerId) !== existing || existing.active.size === 0)
+    )
+      return yield* new SessionCredentialIssueError({
+        sessionId: input.sessionId,
+        cause: "The active viewer ended during renewal.",
+      });
+    // Renewed admission must not extend an abandoned viewer beyond its original lifetime.
+    if (existing === undefined)
+      viewers.set(viewerId, {
+        sessionId: input.sessionId,
+        expiresAt,
+        closed: yield* Deferred.make<void>(),
+        active: new Set(),
+        resource: input.resource,
+        operation: input.operation,
+        generation: input.generation,
+      });
+    return { token: `${payload}.${signPayload(payload, signingSecret)}`, viewerId, expiresAt };
+  });
+  const authenticateViewerToken: SessionStore["Service"]["authenticateViewerToken"] = Effect.fn(
+    "SessionStore.authenticateViewerToken",
+  )(function* (token) {
+    const [payload, signature, extra] = token.split(".");
+    if (!payload || !signature || extra !== undefined)
+      return yield* new MalformedWebSocketTokenError({});
+    if (!timingSafeEqualBase64Url(signature, signPayload(payload, signingSecret)))
+      return yield* new InvalidWebSocketTokenSignatureError({});
+    const claims = yield* decodeViewerClaims(base64UrlDecodeUtf8(payload)).pipe(
+      Effect.mapError((cause) => new InvalidWebSocketTokenPayloadError({ cause })),
+    );
+    const now = yield* DateTime.now;
+    const expiresAt = DateTime.makeUnsafe(claims.exp);
+    if (expiresAt.epochMilliseconds <= now.epochMilliseconds)
+      return yield* new WebSocketTokenExpiredError({
+        sessionId: claims.sid,
+        expiresAt,
+        observedAt: now,
+      });
+    const active = viewers.get(claims.viewerId);
+    if (active?.sessionId !== claims.sid)
+      return yield* new UnknownWebSocketSessionError({ sessionId: claims.sid });
+    const session = yield* viewerSession(claims.sid, token);
+    const admittedAt = yield* DateTime.now;
+    if (expiresAt.epochMilliseconds <= admittedAt.epochMilliseconds)
+      return yield* new WebSocketTokenExpiredError({
+        sessionId: claims.sid,
+        expiresAt,
+        observedAt: admittedAt,
+      });
+    if (
+      viewers.get(claims.viewerId) !== active ||
+      Deferred.isDoneUnsafe(active.closed) ||
+      (active.active.size === 0 &&
+        active.expiresAt.epochMilliseconds <= admittedAt.epochMilliseconds)
+    )
+      return yield* new UnknownWebSocketSessionError({ sessionId: claims.sid });
+    return {
+      session,
+      viewerId: claims.viewerId,
+      expiresAt,
+      resource: claims.resource,
+      operation: claims.operation,
+      generation: claims.generation,
+    };
+  });
+  const admitViewerToken: SessionStore["Service"]["admitViewerToken"] = (token) =>
+    Effect.acquireRelease(
+      Effect.gen(function* () {
+        const viewer = yield* authenticateViewerToken(token);
+        const retained = viewers.get(viewer.viewerId);
+        if (retained === undefined)
+          return yield* new UnknownWebSocketSessionError({ sessionId: viewer.session.sessionId });
+        const transport = Symbol();
+        retained.active.add(transport);
+        const recheck = Effect.gen(function* () {
+          if (viewers.get(viewer.viewerId) !== retained || !retained.active.has(transport))
+            return yield* new UnknownWebSocketSessionError({ sessionId: retained.sessionId });
+          yield* viewerSession(retained.sessionId, token);
+          if (viewers.get(viewer.viewerId) !== retained || !retained.active.has(transport))
+            return yield* new UnknownWebSocketSessionError({ sessionId: retained.sessionId });
+        });
+        return { viewer: { ...viewer, recheck }, retained, transport };
+      }),
+      ({ retained, transport }) =>
+        Effect.gen(function* () {
+          retained.active.delete(transport);
+          const now = yield* DateTime.now;
+          if (
+            retained.active.size === 0 &&
+            retained.expiresAt.epochMilliseconds <= now.epochMilliseconds
+          ) {
+            yield* Deferred.succeed(retained.closed, undefined);
+          }
+        }),
+    ).pipe(Effect.map(({ viewer }) => viewer));
+  const verifyViewerToken: SessionStore["Service"]["verifyViewerToken"] = Effect.fn(
+    "SessionStore.verifyViewerToken",
+  )(function* (input) {
+    const viewer = yield* authenticateViewerToken(input.token);
+    if (
+      encodeViewerResource(viewer.resource) !== encodeViewerResource(input.resource) ||
+      viewer.generation !== input.generation ||
+      (input.operation === "control" && viewer.operation !== "control")
+    )
+      return yield* new InvalidWebSocketTokenPayloadError({
+        cause: "Viewer resource or operation mismatch.",
+      });
+    return viewer;
+  });
+
   const listActive: SessionStore["Service"]["listActive"] = Effect.fn("SessionStore.listActive")(
     function* () {
       const now = yield* DateTime.now;
@@ -1393,6 +1701,12 @@ const make = Effect.gen(function* () {
     issueMcpOAuthTokens,
     refreshMcpOAuthToken,
     verify,
+    issueViewerToken,
+    verifyViewerToken,
+    authenticateViewerToken,
+    admitViewerToken,
+    closeViewer,
+    awaitViewerInvalidation,
     issueWebSocketToken,
     verifyWebSocketToken,
     listActive,

@@ -1,4 +1,4 @@
-import type { DevicePlatform, EnvironmentId } from "@t3tools/contracts";
+import type { DevicePlatform, EnvironmentId, DeviceViewerResource } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useId, useRef, useState, type ReactNode } from "react";
@@ -78,10 +78,12 @@ export interface DeviceStreamHandle {
   readonly pressButton: (button: DeviceHardwareButton) => void;
   readonly rotate: () => void;
   readonly inputConnected: boolean;
+  readonly screenshot: (signal: AbortSignal) => Promise<Blob>;
 }
 
 export function DeviceStreamView(props: {
   readonly environmentId: EnvironmentId;
+  readonly resource?: DeviceViewerResource;
   readonly platform: DevicePlatform;
   readonly deviceId: string;
   readonly deviceName?: string;
@@ -453,7 +455,14 @@ export function DeviceStreamView(props: {
         {status === "streaming" && !inputState.connected ? (
           <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center p-2">
             <span className="rounded-md bg-background/85 px-2 py-1 text-xs text-muted-foreground">
-              Input disconnected{inputState.detail ? ` (${inputState.detail})` : ""}, reconnecting…
+              {access?.canOperate === false ? (
+                "View only"
+              ) : (
+                <>
+                  Input disconnected{inputState.detail ? ` (${inputState.detail})` : ""},
+                  reconnecting…
+                </>
+              )}
             </span>
           </div>
         ) : null}
@@ -471,10 +480,13 @@ export function DeviceStreamView(props: {
               name={props.deviceName ?? "Device"}
               description={props.deviceDescription ?? ""}
               stage="stream"
-              message={status === "error" ? (detail ?? "Stream failed.") : "Connecting video…"}
-              error={status === "error"}
+              message={
+                accessError ??
+                (status === "error" ? (detail ?? "Stream failed.") : "Connecting video…")
+              }
+              error={accessError !== null || status === "error"}
             >
-              {status === "error" ? (
+              {accessError !== null || status === "error" ? (
                 <Button
                   size="sm"
                   variant="outline"

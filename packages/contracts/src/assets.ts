@@ -6,6 +6,8 @@ import {
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES,
 } from "./chatAttachment.ts";
+import { PeerAttachmentReference } from "./peerAttachments.ts";
+import { PreviewViewerResource } from "./preview.ts";
 import { ProjectFaviconPath } from "./project.ts";
 import { ToolActivityNativeAppReference } from "./providerRuntime.ts";
 
@@ -16,6 +18,45 @@ const ASSET_PATH_MAX_LENGTH = 1024;
  * it first, and servers and clients of different releases must keep understanding each other.
  */
 export const SOURCE_CONTROL_MEDIA_ASSET = "github-media" as const;
+export const PeerAttachmentAssetResource = Schema.TaggedStruct("peer-attachment", {
+  threadId: ThreadId,
+  reference: Schema.suspend(() => PeerAttachmentReference),
+  disposition: Schema.optionalKey(Schema.Literals(["inline", "attachment"])),
+});
+export type PeerAttachmentAssetResource = typeof PeerAttachmentAssetResource.Type;
+
+/** Native browser lifetime, not a staging publication or bearer permission. */
+const downloadFields = {
+  _tag: Schema.Literal("native-browser-download"),
+  resource: PreviewViewerResource,
+  downloadId: Schema.String.check(Schema.isPattern(/^[0-9a-f-]{36}$/)),
+  name: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(255),
+    Schema.isPattern(/^[^\x00-\x1f\x7f/\\]+$/),
+  ),
+  mimeType: Schema.Literal("application/octet-stream"),
+  sizeBytes: NonNegativeInt.check(Schema.isLessThanOrEqualTo(1024 * 1024 * 1024)),
+  digest: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)),
+};
+export const NativeBrowserDownloadAssetResource = Schema.StructWithRest(
+  Schema.Struct(downloadFields),
+  [Schema.Record(Schema.String, Schema.Unknown)],
+)
+  .check(
+    Schema.makeFilter(
+      (value) =>
+        Object.keys(value).every((key) => Object.hasOwn(downloadFields, key)) ||
+        "Unknown browser download option.",
+    ),
+  )
+  .pipe(Schema.decodeTo(Schema.Struct(downloadFields)));
+export type NativeBrowserDownloadAssetResource = typeof NativeBrowserDownloadAssetResource.Type;
+
+export const QualifiedAssetResource = Schema.Union([
+  PeerAttachmentAssetResource,
+  NativeBrowserDownloadAssetResource,
+]);
+export type QualifiedAssetResource = typeof QualifiedAssetResource.Type;
 
 export const AssetResource = Schema.Union([
   Schema.TaggedStruct("workspace-file", {
@@ -39,6 +80,10 @@ export const AssetResource = Schema.Union([
     disposition: Schema.optionalKey(Schema.Literals(["inline", "attachment"])),
     renderIntent: Schema.optionalKey(Schema.Literal("mcp-app")),
   }),
+  PeerAttachmentAssetResource,
+  NativeBrowserDownloadAssetResource,
+  // An image a tool returned inline, such as a device screenshot, by its order
+  // in the stored output. The timeline never carries these bytes.
   Schema.TaggedStruct("tool-output-image", {
     threadId: ThreadId,
     itemId: TurnItemId,

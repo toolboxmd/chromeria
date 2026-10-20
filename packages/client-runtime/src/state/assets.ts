@@ -15,6 +15,8 @@ import {
 } from "@t3tools/shared/projectFavicon";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as SubscriptionRef from "effect/SubscriptionRef";
+import * as HttpClient from "effect/http/HttpClient";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -25,6 +27,8 @@ import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import { request } from "../rpc/client.ts";
 import type { ProjectFaviconCache, ProjectFaviconTarget } from "../projectFaviconCache.ts";
 import { createEnvironmentQueryAtomFamily } from "./runtime.ts";
+import { resolveDeviceHubAccess, withDeviceHubQuery } from "./deviceHubAccess.ts";
+import { ConnectionTransientError } from "../connection/model.ts";
 
 const ASSET_URL_REFRESH_INTERVAL_MS = 30 * 60_000;
 const ASSET_URL_STALE_TIME_MS = 5 * 60_000;
@@ -138,9 +142,43 @@ export function createAssetEnvironmentAtoms<R, E>(
 ) {
   const execute = Effect.fn("assets.createUrl")(function* (input: AssetCreateUrlInput) {
     const result = yield* request(WS_METHODS.assetsCreateUrl, input).pipe(Effect.result);
-    if (Result.isSuccess(result)) return result.success;
-    const error = result.failure;
     const resource = input.resource;
+    if (Result.isSuccess(result)) {
+      if (resource._tag !== "peer-attachment" && resource._tag !== "native-browser-download")
+        return result.success;
+      const unavailable = () =>
+        new ConnectionTransientError({
+          reason: "transport",
+          detail: "Source attachment access is unavailable on this connection.",
+        });
+      const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+      const prepared = yield* SubscriptionRef.get(supervisor.prepared);
+      if (Option.isNone(prepared)) return yield* unavailable();
+      const url = yield* Effect.try({
+        try: () => new URL(result.success.relativeUrl, prepared.value.httpBaseUrl),
+        catch: unavailable,
+      });
+      if (
+        url.origin !== new URL(prepared.value.httpBaseUrl).origin ||
+        !url.pathname.startsWith("/api/assets/") ||
+        url.search !== "" ||
+        url.hash !== ""
+      )
+        return yield* unavailable();
+      if (prepared.value.httpAuthorization === null) return result.success;
+      const http = yield* Effect.serviceOption(HttpClient.HttpClient);
+      if (Option.isNone(http)) return yield* unavailable();
+      const access = yield* resolveDeviceHubAccess({
+        prepared: prepared.value,
+        hubBasePath: "/api/assets",
+      }).pipe(Effect.provideService(HttpClient.HttpClient, http.value));
+      return {
+        ...result.success,
+        relativeUrl: withDeviceHubQuery(url.pathname, access),
+        expiresAt: Math.min(result.success.expiresAt, access.expiresAt ?? result.success.expiresAt),
+      };
+    }
+    const error = result.failure;
     const local = localMediaEnvironment
       ? (yield* AtomRegistry.AtomRegistry).get(localMediaEnvironment)
       : null;
@@ -165,7 +203,7 @@ export function createAssetEnvironmentAtoms<R, E>(
       .pipe(Effect.catchCause((cause) => Effect.failCause(Cause.map(cause, () => error))));
     return { ...asset, relativeUrl: new URL(asset.relativeUrl, local.httpBaseUrl).href };
   });
-  const createUrl = createEnvironmentQueryAtomFamily(runtime, {
+  const createLocalUrl = createEnvironmentQueryAtomFamily(runtime, {
     label: "environment-data:assets:create-url",
     execute,
     staleTimeMs: ASSET_URL_STALE_TIME_MS,
@@ -174,6 +212,19 @@ export function createAssetEnvironmentAtoms<R, E>(
     refreshTrigger: ({ input }) =>
       input.resource._tag === "media-file" ? localMediaEnvironment : undefined,
   });
+  // Qualified URLs also carry the current source connection's media identity.
+  // A fresh entry/reopen never reuses a credential left in the local asset cache.
+  const createQualifiedUrl = createEnvironmentQueryAtomFamily(runtime, {
+    label: "environment-data:assets:qualified-url",
+    execute,
+    staleTimeMs: 0,
+    idleTtlMs: 0,
+  });
+  const createUrl: typeof createLocalUrl = (target) =>
+    target.input.resource._tag === "peer-attachment" ||
+    target.input.resource._tag === "native-browser-download"
+      ? createQualifiedUrl(target)
+      : createLocalUrl(target);
   const createUrlsFamily = Atom.family((key: string) => {
     const [environmentId, resources] = parseAssetCollectionKey(key);
     return Atom.make((get) =>

@@ -1,3 +1,4 @@
+import { useSubagentOpen } from "./useSubagentOpen";
 import { ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { AgentElapsed } from "./AgentElapsed";
 import { projectedSubagentsToRuntime } from "@t3tools/client-runtime/state/subagentRuntime";
@@ -376,30 +377,31 @@ export function NotificationSubagentOpenButton(props: {
   readonly subagentId: NodeId;
   readonly onOpenThread: (threadId: ThreadId, environmentId?: EnvironmentId) => void;
   readonly onKeyDown?: KeyboardEventHandler<HTMLButtonElement> | undefined;
+  readonly label?: string | undefined;
+  readonly fallback?:
+    | { readonly threadId: ThreadId; readonly environmentId: EnvironmentId | null }
+    | undefined;
 }) {
   const agent = useAtomValue(
     environmentThreadDetails.threadAtom(props.parentRef),
     (thread) => thread?.projection.subagents.find((agent) => agent.id === props.subagentId) ?? null,
   );
-  const serverConfigs = useServerConfigs();
-  const target = agent === null ? null : subagentChildTarget(agent);
-  if (
-    target === null ||
-    (target.environmentId !== null && !serverConfigs.has(target.environmentId))
-  ) {
-    return null;
-  }
+  const navigation = useSubagentOpen(props.parentRef, agent, props.onOpenThread, props.fallback);
+  if (!navigation.canOpen) return props.label === undefined ? null : <>{props.label}</>;
   return (
-    <InlineButton
-      aria-label="Open subagent thread"
-      onClick={(event) => {
-        event.stopPropagation();
-        props.onOpenThread(target.threadId, target.environmentId ?? undefined);
-      }}
-      onKeyDown={props.onKeyDown}
-    >
-      Open subagent
-    </InlineButton>
+    <>
+      {navigation.viewer}
+      <InlineButton
+        aria-label="Open subagent thread"
+        onClick={(event) => {
+          event.stopPropagation();
+          navigation.open();
+        }}
+        onKeyDown={props.onKeyDown}
+      >
+        {props.label ?? "Open subagent"}
+      </InlineButton>
+    </>
   );
 }
 
@@ -436,13 +438,15 @@ function SubagentTimelineLink(props: {
   const targetThreadId = agent === null ? props.threadId : (liveTarget?.threadId ?? null);
   const childEnvironmentId =
     liveTarget !== null ? (liveTarget.environmentId ?? undefined) : props.childEnvironmentId;
-  // A child on a machine this client is not connected to has nowhere to
-  // open: render the card without a link, like the Lineage panel does.
-  const serverConfigs = useServerConfigs();
-  const threadId =
-    childEnvironmentId !== undefined && !serverConfigs.has(childEnvironmentId)
+  const navigation = useSubagentOpen(
+    props.parentRef,
+    agent,
+    props.onOpenThread,
+    targetThreadId === null
       ? null
-      : targetThreadId;
+      : { threadId: targetThreadId, environmentId: childEnvironmentId ?? null },
+  );
+  const threadId = navigation.canOpen ? targetThreadId : null;
   const liveStatus = agent?.status ?? props.status;
   const status = props.event ? props.event.status : liveStatus;
   const statusLabel = props.event?.label ?? subagentStatusVisual(liveStatus).label;
@@ -512,49 +516,54 @@ function SubagentTimelineLink(props: {
   const className =
     "group/subagent flex w-full min-w-0 items-center gap-2.5 rounded-md px-2 py-1.5 text-left";
   return (
-    <Tooltip>
-      <TooltipTrigger
-        delay={200}
-        render={
-          open === null ? (
-            <div data-v2-item-type="subagent" aria-description={statusLabel} className={className}>
-              {content}
-            </div>
-          ) : (
-            <button
-              type="button"
-              data-v2-item-type="subagent"
-              aria-label={`Open ${props.title}`}
-              aria-description={statusLabel}
-              onClick={() =>
-                childEnvironmentId === undefined
-                  ? props.onOpenThread(threadId)
-                  : props.onOpenThread(threadId, childEnvironmentId)
-              }
-              className={cn(
-                className,
-                "cursor-pointer transition-colors hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
-              )}
-            >
-              {content}
-            </button>
-          )
-        }
-      />
-      <ThreadHoverCardPopup>
-        <SubagentTimelineTooltip
-          {...props}
-          threadId={targetThreadId}
-          childEnvironmentId={childEnvironmentId}
-          elapsed={agent ? <AgentElapsed agent={projectedSubagentsToRuntime([agent])[0]!} /> : null}
-          model={agent?.model ?? null}
-          modelSelection={agent?.modelSelection}
-          status={liveStatus}
-          result={agent?.result ?? props.result}
-          progress={agent?.progress ?? props.progress}
+    <>
+      {navigation.viewer}
+      <Tooltip>
+        <TooltipTrigger
+          delay={200}
+          render={
+            threadId === null ? (
+              <div
+                data-v2-item-type="subagent"
+                aria-description={statusLabel}
+                className={className}
+              >
+                {content}
+              </div>
+            ) : (
+              <button
+                type="button"
+                data-v2-item-type="subagent"
+                aria-label={`Open ${props.title}`}
+                aria-description={statusLabel}
+                onClick={navigation.open}
+                className={cn(
+                  className,
+                  "cursor-pointer transition-colors hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
+                )}
+              >
+                {content}
+              </button>
+            )
+          }
         />
-      </ThreadHoverCardPopup>
-    </Tooltip>
+        <ThreadHoverCardPopup>
+          <SubagentTimelineTooltip
+            {...props}
+            threadId={targetThreadId}
+            childEnvironmentId={childEnvironmentId}
+            elapsed={
+              agent ? <AgentElapsed agent={projectedSubagentsToRuntime([agent])[0]!} /> : null
+            }
+            model={agent?.model ?? null}
+            modelSelection={agent?.modelSelection}
+            status={liveStatus}
+            result={agent?.result ?? props.result}
+            progress={agent?.progress ?? props.progress}
+          />
+        </ThreadHoverCardPopup>
+      </Tooltip>
+    </>
   );
 }
 

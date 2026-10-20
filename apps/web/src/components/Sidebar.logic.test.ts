@@ -239,6 +239,86 @@ describe("archiveSelectedThreadEntries", () => {
 });
 
 describe("sidebar thread lineage helpers", () => {
+  it("hides remote children by default but searches destination shells without the parent", () => {
+    const environmentId = EnvironmentId.make("destination");
+    const projectId = ProjectId.make("project");
+    const raw = makeThreadFixture({ environmentId, projectId, title: "Remote audit" }).source;
+    const child = presentThreadShell(environmentId, {
+      ...raw,
+      delegatedFrom: {
+        environmentId: EnvironmentId.make("offline-parent"),
+        threadId: ThreadId.make("parent"),
+        title: "Parent",
+      },
+    });
+    const ordinary = makeThreadFixture({ environmentId, projectId, id: ThreadId.make("ordinary") });
+    const otherEnvironment = { ...child, environmentId: EnvironmentId.make("other-destination") };
+    const localChild = {
+      ...child,
+      id: ThreadId.make("local-child"),
+      delegatedFrom: undefined,
+      lineage: { ...child.lineage, relationshipToParent: "subagent" as const },
+    };
+    const archived = {
+      ...child,
+      id: ThreadId.make("archived"),
+      archivedAt: "2026-01-02T00:00:00.000Z",
+    };
+    expect(isSidebarSubagentThread(child)).toBe(true);
+    const all = [child, ordinary, otherEnvironment, localChild, archived];
+    const scope = new Set([`${environmentId}:${projectId}`]);
+    expect(filterSidebarV2VisibleThreads(all, scope)).toEqual([ordinary]);
+    const searchable = filterSidebarV2VisibleThreads(all, scope, "Remote audit");
+    expect(searchSidebarThreads(searchable, "Remote audit")).toEqual([child]);
+    expect(
+      searchSidebarThreads(
+        filterSidebarV2VisibleThreads(all, scope, "contents"),
+        "contents",
+        new Set([threadSearchMatchKey({ environmentId, threadId: child.id })]),
+      ),
+    ).toEqual([child]);
+    expect(filterSidebarV2VisibleThreads(all, scope, "  ")).toEqual([ordinary]);
+    expect(all).toHaveLength(5);
+  });
+
+
+  it("keeps inherited-provenance user forks in normal navigation and offline search", () => {
+    const environmentId = EnvironmentId.make("destination");
+    const raw = makeThreadFixture({ environmentId, title: "Remote child" }).source;
+    const child = presentThreadShell(environmentId, {
+      ...raw,
+      delegatedFrom: {
+        environmentId: EnvironmentId.make("offline-parent"),
+        threadId: ThreadId.make("parent"),
+        title: "Parent",
+      },
+    });
+    const fork = presentThreadShell(environmentId, {
+      ...child.source,
+      id: ThreadId.make("user-fork"),
+      title: "User fork",
+      lineage: {
+        parentThreadId: child.id,
+        relationshipToParent: "fork",
+        rootThreadId: child.lineage.rootThreadId,
+      },
+      forkedFrom: { type: "run", threadId: child.id, runId: RunId.make("source-run") },
+    });
+    const archivedFork = {
+      ...fork,
+      id: ThreadId.make("archived-fork"),
+      archivedAt: "2026-01-02T00:00:00.000Z",
+    };
+    const all = [child, fork, archivedFork];
+    expect(filterSidebarV2VisibleThreads(all, null)).toEqual([fork]);
+    expect(isSidebarSubagentThread(fork)).toBe(false);
+    expect(fork.delegatedFrom).toBe(child.delegatedFrom);
+    const searchable = filterSidebarV2VisibleThreads(all, null, "User fork");
+    expect(searchSidebarThreads(searchable, "User fork")).toEqual([fork]);
+    expect(searchable.filter(isSidebarSubagentThread)).toEqual([child]);
+    expect(searchSidebarThreads(searchable, "Remote child")).toEqual([child]);
+    expect(filterSidebarV2VisibleThreads(all, null, " ")).toEqual([fork]);
+  });
   it("maps an open subagent to its nearest visible ancestor's sidebar row", () => {
     const environmentId = EnvironmentId.make("environment-row");
     const otherEnvironmentId = EnvironmentId.make("environment-other");

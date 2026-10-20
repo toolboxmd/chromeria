@@ -120,6 +120,7 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
       for (const [questionId, attachments] of Object.entries(incomingByQuestionId)) {
         const claimed = yield* AttachmentClaims.claimPendingAttachments({
           threadId: command.threadId,
+          commandId: command.commandId,
           attachments,
         });
         claimedPaths.push(...claimed.claimedPaths);
@@ -181,6 +182,7 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
     return yield* threads.dispatch(command);
   const claimed = yield* AttachmentClaims.claimPendingAttachments({
     threadId: command.threadId,
+    commandId: command.commandId,
     attachments: command.attachments ?? [],
   });
   return yield* threads
@@ -244,6 +246,7 @@ export const launchThread = Effect.fn("ThreadMessageIntake.launchThread")(functi
   }
   const claimed = yield* AttachmentClaims.claimPendingAttachments({
     threadId: input.threadId,
+    commandId: `${input.commandId}:initial-message`,
     attachments: input.initialMessage.attachments,
   });
   return yield* launches
