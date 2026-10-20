@@ -266,6 +266,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
           });
           return {
             promachos: kit("promachos"),
+            "computer-use": kit("computer-use"),
             planner: kit("planner"),
             researcher: { ...kit("researcher"), run: 2 },
             designer: { ...kit("designer"), run: 2 },
@@ -2216,7 +2217,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
             string,
             Record<string, unknown>
           >,
-        ).map(([role, { run: _run, ...kit }]) => [role, kit]),
+        )
+          .filter(([role]) => role !== "computer-use")
+          .map(([role, { run: _run, ...kit }]) => [role, kit]),
       );
       const tuned = ProjectId.make("project-tuned");
       const untouched = ProjectId.make("project-untouched");

@@ -51,3 +51,10 @@ it("preview_open accepts a target while preserving open input constraints", () =
   expect(() => decode({ target: { ...target, port: 0 } })).toThrow();
   expect(() => decode({ target, tabId: "tab-1", reuseExistingTab: false })).toThrow();
 });
+
+it("guides every preview tool to delegate driving beyond a quick check", () => {
+  for (const tool of Object.values(PreviewToolkit.tools)) {
+    expect(tool.description).toContain('prismRole: "computer-use"');
+    expect(tool.description).toContain("beyond a quick check");
+  }
+});

@@ -36,22 +36,31 @@ describe("Prism role kits", () => {
     });
     expect(updated.autoResumeLimitedThreads).toBe(false);
   });
-  it("defaults every role to no preferred models", () => {
-    for (const kit of Object.values(DEFAULT_PRISM_ROLE_KITS)) {
+  it("keeps other roles without preferred models", () => {
+    for (const [role, kit] of Object.entries(DEFAULT_PRISM_ROLE_KITS)) {
+      if (role === "computer-use") continue;
       if ("models" in kit) expect(kit.models).toEqual([]);
     }
     expect(DEFAULT_PRISM_ROLE_KITS.promachos.models).toEqual([]);
     expect(DEFAULT_PRISM_ROLE_KITS.worker.lanes).toEqual({ easy: [], medium: [], hard: [] });
-    expect(Object.keys(DEFAULT_PRISM_ROLE_KITS).toSorted()).toEqual([
-      "designer",
-      "judge",
-      "planner",
-      "promachos",
-      "researcher",
-      "reviewer",
-      "roast",
-      "worker",
-    ]);
+  });
+
+  it("defaults computer use to Claude Haiku in new and older saved settings", () => {
+    const models = [{ instanceId: "claudeAgent", model: "claude-haiku-5-5" }];
+    expect(DEFAULT_PRISM_ROLE_KITS["computer-use"].models).toEqual(models);
+    const old = decodeServerSettings({ prismRoles: { planner: { instructions: "Lead." } } });
+    expect(old.prismRoles["computer-use"].models).toEqual(models);
+    expect(decodeProjectOverrides({ prismRoles: { planner: { models: [] } } }).prismRoles).toEqual({
+      planner: { models: [] },
+    });
+    expect(
+      decodeServerSettings({ prismRoles: { "computer-use": { models: [] } } }).prismRoles[
+        "computer-use"
+      ].models,
+    ).toEqual([]);
+    expect(decodeKitsPatch({ "computer-use": { models: [] } })).toEqual({
+      "computer-use": { models: [] },
+    });
   });
 
   it("preserves the Promachos preference order and effort through saved settings", () => {
@@ -153,12 +162,13 @@ describe("Prism role kits", () => {
     expect(() => decodeRole("dispatcher")).toThrow();
   });
 
-  it("accept the seven delegated roles and reject Promachos and unknown names with the list", () => {
+  it("accept the delegated roles and reject Promachos and unknown names with the list", () => {
     for (const prismRole of [
       "planner",
       "researcher",
       "designer",
       "worker",
+      "computer-use",
       "roast",
       "reviewer",
       "judge",
@@ -171,7 +181,7 @@ describe("Prism role kits", () => {
       );
     }
     expect(PRISM_DELEGATE_ROLE_ERROR).toBe(
-      "prismRole must be one of: planner, researcher, designer, worker, roast, reviewer, judge.",
+      "prismRole must be one of: planner, researcher, designer, worker, computer-use, roast, reviewer, judge.",
     );
   });
 

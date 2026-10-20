@@ -51,7 +51,11 @@ describe("Prism project override writes", () => {
   const legacyEntry = {
     defaultAutoPull: true,
     prismRoles: {
-      ...DEFAULT_SERVER_SETTINGS.prismRoles,
+      ...Object.fromEntries(
+        Object.entries(DEFAULT_SERVER_SETTINGS.prismRoles).filter(
+          ([role]) => role !== "computer-use",
+        ),
+      ),
       worker: {
         ...DEFAULT_SERVER_SETTINGS.prismRoles.worker,
         lanes: { easy: [], medium: [grok], hard: [] },
@@ -71,6 +75,30 @@ describe("Prism project override writes", () => {
     expect(kits.reviewer.models).toEqual([sol]);
     expect(kits.worker.lanes).toEqual({ easy: [], medium: [grok], hard: [sol] });
     expect(next.prismRoleOverridesPartial).toBe(true);
+    const changed = applyServerSettingsPatch(next, {
+      prismRoles: { "computer-use": { models: [sol] } },
+    });
+    expect(
+      resolveProjectSettings(changed, projectId).settings.prismRoles["computer-use"].models,
+    ).toEqual([sol]);
+  });
+
+  it("keeps an explicitly supplied Haiku list even in an undeclared write", () => {
+    const models = [
+      { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-haiku-5-5" },
+    ];
+    const next = applyServerSettingsPatch(migrated, {
+      projectSettingsOverrides: { [projectId]: { prismRoles: { "computer-use": { models } } } },
+    });
+    expect(next.projectSettingsOverrides[projectId]?.prismRoles).toEqual({
+      "computer-use": { models },
+    });
+    const changed = applyServerSettingsPatch(next, {
+      prismRoles: { "computer-use": { models: [sol] } },
+    });
+    expect(
+      resolveProjectSettings(changed, projectId).settings.prismRoles["computer-use"].models,
+    ).toEqual(models);
   });
 
   it("keeps a Run the project set and inherits the environment's otherwise", () => {
