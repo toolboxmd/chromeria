@@ -34,6 +34,9 @@ import { ThreadId, OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
+import * as QuestionReactor from "../orchestration-v2/DelegatedTaskQuestionReactor.ts";
+import { RuntimeRequestId, ProviderSessionId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -438,6 +441,7 @@ const endRun = (
         },
       ],
     });
+    return { ...run, status: "completed" as const, completedAt: now };
   });
 
 const openRequest = (
@@ -1208,6 +1212,152 @@ it.live(
         const fs = yield* FileSystem.FileSystem;
         expect(
           (yield* fs.readDirectory(setup.b.config.secretsDir)).filter((name) =>
+            name.startsWith("secret-remote-"),
+          ),
+        ).toHaveLength(0);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "secret385 a failed active retirement hook preserves ownership, delivers the question and retries through recovery",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const setup = yield* pair("secret385-hook-retry");
+        const { a, b, parent } = setup;
+        const saved = yield* saveRequest(setup, "hook-retained-save");
+        const fs = yield* FileSystem.FileSystem;
+        const protectedFiles = yield* fs.readDirectory(b.config.secretsDir);
+        const protectedName = protectedFiles.find((name) => name.startsWith("secret-remote-"));
+        if (protectedName === undefined)
+          return yield* Effect.die("Missing protected request value");
+        const protectedDigest = () =>
+          fs
+            .readFile(`${b.config.secretsDir}/${protectedName}`)
+            .pipe(
+              Effect.map((bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex")),
+            );
+        const originalProtectedDigest = yield* protectedDigest();
+        const source = Context.get(a.database, SqlClient.SqlClient);
+        const destination = Context.get(b.database, SqlClient.SqlClient);
+        const original =
+          yield* source`SELECT * FROM remote_secret_obligations WHERE request_id=${saved.handle.requestId}`;
+        const parentRun = (yield* a.threads.getThreadRecords(parent, ["runs"])).runs.at(-1);
+        if (parentRun?.rootNodeId == null || a.project.defaultModelSelection === null)
+          return yield* Effect.die("Missing source run");
+        yield* a.orchestrator.dispatch({
+          type: "delegated_task.request",
+          commandId: CommandId.make("secret385-hook-child"),
+          parentThreadId: parent,
+          parentRunId: parentRun.id,
+          parentNodeId: parentRun.rootNodeId,
+          task: "Isolated pending question",
+          completionWake: "settled_only",
+          modelSelection: a.project.defaultModelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdBy: "agent",
+          creationSource: "mcp",
+        });
+        const task = (yield* a.threads.getThreadRecords(parent, ["subagents"])).subagents.at(-1);
+        if (task?.childThreadId == null) return yield* Effect.die("Missing real delegated child");
+        yield* activate(a, task.childThreadId);
+        const childRun = (yield* a.threads.getThreadRecords(task.childThreadId, ["runs"])).runs.at(
+          -1,
+        );
+        if (childRun?.rootNodeId == null) return yield* Effect.die("Missing child run");
+        const now = yield* DateTime.now;
+        const requestId = RuntimeRequestId.make("secret385-hook-question");
+        yield* a.sink.write({
+          events: [
+            {
+              id: EventId.make("secret385-hook-question-event"),
+              type: "runtime-request.updated",
+              threadId: task.childThreadId,
+              runId: childRun.id,
+              occurredAt: now,
+              payload: {
+                id: requestId,
+                nodeId: childRun.rootNodeId,
+                providerTurnId: null,
+                nativeRequestRef: null,
+                kind: "user_input",
+                status: "pending",
+                responseCapability: {
+                  type: "live",
+                  providerSessionId: ProviderSessionId.make("secret385-hook-session"),
+                },
+                createdAt: now,
+                resolvedAt: null,
+              },
+            },
+          ],
+        });
+        const services = yield* QuestionReactor.layer.pipe(
+          Layer.provide(Layer.succeedContext(Context.mergeAll(a.runtime, a.database, a.services))),
+          Layer.build,
+        );
+        const reactor = Context.get(services, QuestionReactor.DelegatedTaskQuestionReactor);
+        const logs: string[] = [];
+        const logger = Logger.make(({ message }) => logs.push(String(message)));
+        const completed = yield* endRun(a, parent, "secret385-hook-parent-ended");
+        yield* source`CREATE TRIGGER fixture385_retirement_failure BEFORE UPDATE ON remote_secret_obligations BEGIN SELECT RAISE(ABORT,'isolated retirement failure'); END`;
+        yield* reactor
+          .handle({
+            id: EventId.make("secret385-hook-parent-handle"),
+            type: "run.updated",
+            threadId: parent,
+            runId: completed.id,
+            occurredAt: now,
+            payload: completed,
+          })
+          .pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
+        expect(
+          logs.some((message) =>
+            message.includes("Remote secret retirement reconciliation remains pending"),
+          ),
+        ).toBe(true);
+        expect(logs.join("\n")).not.toContain(saved.value);
+        const notices = (yield* a.threads.getThreadRecords(parent, ["messages"])).messages.filter(
+          (message) => message.notification !== undefined && message.text.includes(requestId),
+        );
+        expect(notices).toHaveLength(1);
+        expect(
+          yield* source`SELECT * FROM remote_secret_obligations WHERE request_id=${saved.handle.requestId}`,
+        ).toEqual(original);
+        expect(
+          yield* source`SELECT request_id FROM remote_secret_obligations WHERE ack_json IS NOT NULL`,
+        ).toHaveLength(0);
+        expect(
+          yield* destination`SELECT request_id FROM remote_secret_requests WHERE request_id=${saved.handle.requestId} AND status='saved'`,
+        ).toHaveLength(1);
+        expect(
+          (yield* nativeCall(
+            a,
+            parent,
+            "schedule_task",
+            consumerInput(setup, saved.handle, "hook-stale-consumer"),
+          )).isError,
+        ).toBe(true);
+        expect(yield* destination`SELECT task_id FROM scheduled_tasks`).toHaveLength(0);
+        expect(yield* protectedDigest()).toBe(originalProtectedDigest);
+        yield* source`DROP TRIGGER fixture385_retirement_failure`;
+        const recovered = yield* a.reconstructAutomation;
+        if (recovered.peers.drainAutomationDisables === undefined)
+          return yield* Effect.die("Missing real recovery drain");
+        yield* recovered.peers.drainAutomationDisables;
+        expect(
+          yield* source`SELECT request_id FROM remote_secret_obligations WHERE request_id=${saved.handle.requestId} AND pending=1 AND ack_json IS NOT NULL`,
+        ).toHaveLength(1);
+        expect(
+          yield* destination`SELECT request_id FROM remote_secret_requests WHERE request_id=${saved.handle.requestId} AND status='retired'`,
+        ).toHaveLength(1);
+        expect(
+          yield* destination`SELECT thread_id FROM orchestration_v2_projection_threads`,
+        ).toHaveLength(0);
+        expect(
+          (yield* fs.readDirectory(b.config.secretsDir)).filter((name) =>
             name.startsWith("secret-remote-"),
           ),
         ).toHaveLength(0);
