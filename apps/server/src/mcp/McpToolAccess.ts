@@ -140,21 +140,21 @@ export const readsAsCaller = <P, A, E, R>(
 ) =>
   declare(
     (params: P) =>
-    McpInvocationContext.McpInvocationContext.pipe(
-      Effect.flatMap((scope) =>
-        options?.linkedCallers === "allowed" && scope.client?.linked === true
-          ? scope.client.access === "read-only"
-            ? Effect.fail(
-                new OrchestratorMcpFailure({
-                  code: "capability_denied",
-                  message: "This read requires a peer link with agent access.",
-                }),
-              )
-            : Effect.void
-          : requireThreadCaller,
+      McpInvocationContext.McpInvocationContext.pipe(
+        Effect.flatMap((scope) =>
+          options?.linkedCallers === "allowed" && scope.client?.linked === true
+            ? scope.client.access === "read-only"
+              ? Effect.fail(
+                  new OrchestratorMcpFailure({
+                    code: "capability_denied",
+                    message: "This read requires a peer link with agent access.",
+                  }),
+                )
+              : Effect.void
+            : requireThreadCaller,
+        ),
+        Effect.flatMap(() => McpRouting.invoke(params, handle)),
       ),
-      Effect.flatMap(() => McpRouting.invoke(params, handle)),
-    ),
     options?.effect ?? "read",
   );
 

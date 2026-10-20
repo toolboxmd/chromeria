@@ -2012,13 +2012,11 @@ sources and reasons.
     "packages/shared/src/orchestrationV2PendingBackgroundWork.test.ts",
     "packages/shared/src/orchestrationV2PendingBackgroundWork.ts",
     "apps/server/src/assets/AttachmentUpload.ts",
-    "apps/server/src/mcp/PreviewAutomationBroker.ts",
     "apps/server/src/mcp/ThreadMetadataMcpService.ts",
     "apps/server/src/mcp/toolkits/attachment/input.ts",
     "apps/server/src/mcp/toolkits/device/handlers.ts",
     "apps/server/src/mcp/toolkits/environment/handlers.ts",
     "apps/server/src/mcp/toolkits/preview/handlers.test.ts",
-    "apps/server/src/mcp/toolkits/preview/handlers.ts",
     "apps/server/src/mcp/toolkits/previewControls/handlers.ts",
     "apps/server/src/mcp/toolkits/pullRequests/handlers.test.ts",
     "apps/server/src/mcp/toolkits/pullRequests/handlers.ts",
@@ -2055,7 +2053,6 @@ sources and reasons.
     "apps/server/src/http.ts",
     "apps/server/src/preview/Manager.ts",
     "apps/server/src/preview/ServerBrowserPage.test.ts",
-    "apps/server/src/preview/ServerBrowserPage.ts",
     "apps/server/src/preview/ServerBrowserStream.ts",
     "apps/server/src/preview/SessionControl.test.ts",
     "apps/server/src/preview/SessionControl.ts",
@@ -2082,7 +2079,6 @@ sources and reasons.
     "packages/contracts/src/assets.test.ts",
     "packages/contracts/src/preview.test.ts",
     "packages/contracts/src/preview.ts",
-    "packages/contracts/src/previewAutomation.ts",
     "packages/shared/src/toolOutput.test.ts",
     "packages/shared/src/toolOutput.ts"
   ],
@@ -2182,7 +2178,11 @@ sources and reasons.
     "apps/web/src/components/chat/MessagesTimeline.tsx",
     "apps/web/src/rightPanelStore.test.ts",
     "apps/web/src/rightPanelStore.ts",
-    "packages/contracts/src/environmentHttp.ts"
+    "packages/contracts/src/environmentHttp.ts",
+    "apps/server/src/mcp/PreviewAutomationBroker.ts",
+    "apps/server/src/mcp/toolkits/preview/handlers.ts",
+    "apps/server/src/preview/ServerBrowserPage.ts",
+    "packages/contracts/src/previewAutomation.ts"
   ],
   "keywords": [
     "peer_environment_links",

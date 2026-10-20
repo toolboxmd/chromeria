@@ -1629,9 +1629,6 @@ const make = Effect.gen(function* () {
     // A popup in a profile with a login publishes no URL.
     const url = profileLogins.has(opener.profileKey) ? "" : popup.url();
 
-    const controller = [...opener.viewers].find(
-      (viewer) => viewer.id === opener.control.controller,
-    );
     await Effect.runPromise(
       manager.open({
         threadId: opener.threadId,
@@ -2516,16 +2513,18 @@ const make = Effect.gen(function* () {
       (request.input as PreviewAutomationClickInput).selector === undefined
     )
       throw loginInProgress();
-    const operation = runTabOperation(tab, request, authorize, resourceAuthorization).catch((cause: unknown) => {
-      // Playwright's errors can quote the page; a login tab reports only what failed.
-      if (!inLogin(tab) || cause instanceof BrowserControlInterrupted) throw cause;
-      const error = ServerBrowserPage.toOperationError(cause);
-      if (error.tag === "PreviewCredentialError") throw error;
-      throw new ServerBrowserPage.ServerBrowserOperationError(
-        error.tag,
-        `Preview automation ${request.operation} failed in a login tab.`,
-      );
-    });
+    const operation = runTabOperation(tab, request, authorize, resourceAuthorization).catch(
+      (cause: unknown) => {
+        // Playwright's errors can quote the page; a login tab reports only what failed.
+        if (!inLogin(tab) || cause instanceof BrowserControlInterrupted) throw cause;
+        const error = ServerBrowserPage.toOperationError(cause);
+        if (error.tag === "PreviewCredentialError") throw error;
+        throw new ServerBrowserPage.ServerBrowserOperationError(
+          error.tag,
+          `Preview automation ${request.operation} failed in a login tab.`,
+        );
+      },
+    );
     if (request.operation !== "fillCredential") {
       const set = running.get(tab) ?? new Set();
       running.set(tab, set);
@@ -2540,7 +2539,11 @@ const make = Effect.gen(function* () {
    * before the vault is read, or joins the one it has. Nothing lifts it but
    * preview_end_login or the profile's tabs closing, not even a failed fill.
    */
-  const fillInLogin = async (tab: ServerTab, input: PreviewAutomationFillCredentialInput) => {
+  const fillInLogin = async (
+    tab: ServerTab,
+    input: PreviewAutomationFillCredentialInput,
+    authorize: () => Promise<void>,
+  ) => {
     if (tab.desktop) throw serverBrowserOnly();
     if (profileLogins.get(tab.profileKey)?.ending) throw loginInProgress();
     const recordingIn = (members: ReadonlyArray<ServerTab>) =>
@@ -2567,6 +2570,7 @@ const make = Effect.gen(function* () {
           const members = profileTabs(tab.profileKey);
           await Promise.allSettled(members.flatMap((member) => [...(running.get(member) ?? [])]));
           if (recordingIn(members)) throw recordingRunning();
+          await authorize();
         },
       }),
     );
@@ -2714,7 +2718,7 @@ const make = Effect.gen(function* () {
           ServerBrowserPage.scroll(tab.page, input as PreviewAutomationScrollInput, authorize),
         );
       case "fillCredential":
-        return fillInLogin(tab, input as PreviewAutomationFillCredentialInput);
+        return fillInLogin(tab, input as PreviewAutomationFillCredentialInput, authorize);
       case "evaluate":
         return ServerBrowserPage.evaluate(
           tab.cdp,
@@ -2768,6 +2772,7 @@ const make = Effect.gen(function* () {
           : tabs.get(tabKey(request.threadId, request.tabId));
       if (target && inLogin(target)) throw loginInProgress();
     }
+    await authorize();
     return result;
   };
 
