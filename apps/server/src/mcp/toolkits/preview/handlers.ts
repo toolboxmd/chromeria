@@ -10,6 +10,8 @@ import {
   type ToolActivityIcon,
   type ThreadId,
   type PreviewAutomationOperation,
+  type PreviewAutomationEndLoginResult,
+  type PreviewAutomationFillCredentialResult,
   type PreviewAutomationOpenInput,
   type PreviewAutomationRecordingStatus,
   type PreviewAutomationResizeResult,
@@ -28,6 +30,7 @@ import {
 } from "../../../attachmentStore.ts";
 import { resolveAttachmentRelativePath } from "../../../attachmentPaths.ts";
 import * as ServerConfig from "../../../config.ts";
+import { recordCredentialFill } from "../../../preview/CredentialAudit.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
@@ -224,6 +227,34 @@ const handlers = {
   ),
   preview_upload: McpToolAccess.actsAsCaller((input) =>
     invokeTargeted<object>("upload", input, input.timeoutMs),
+  ),
+  preview_fill_credential: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
+      // The audit line takes nothing from the page: only the matched vault host.
+      const audit = (site: string | null, result: string) =>
+        recordCredentialFill({
+          environmentId: scope.environmentId,
+          threadId: scope.thread.threadId,
+          item: input.item,
+          field: input.field,
+          site,
+          result,
+        });
+      return yield* invokeTargeted<PreviewAutomationFillCredentialResult>(
+        "fillCredential",
+        input,
+        input.timeoutMs,
+      ).pipe(
+        Effect.tap((result) => audit(result.site, "filled")),
+        Effect.tapError((error) =>
+          audit(null, error._tag === "PreviewCredentialError" ? error.reason : error._tag),
+        ),
+      );
+    }),
+  ),
+  preview_end_login: McpToolAccess.actsAsCaller((input) =>
+    invokeTargeted<PreviewAutomationEndLoginResult>("endLogin", input ?? {}),
   ),
   preview_press: McpToolAccess.actsAsCaller((input) => invokeTargeted<object>("press", input)),
   preview_scroll: McpToolAccess.actsAsCaller((input) => invokeTargeted<object>("scroll", input)),
