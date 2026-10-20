@@ -16,15 +16,36 @@ vi.spyOn(chromium, "launch").mockImplementation(launches.launch);
 vi.spyOn(chromium, "launchPersistentContext").mockImplementation(launches.persistent);
 vi.mock("node:fs/promises", () => ({ mkdir: launches.mkdir, rm: launches.rm }));
 
-const makeContext = () => {
+const makePage = () => {
   const events = new NodeEvents.EventEmitter();
+  return {
+    once: vi.fn((event: string, listener: () => void) => events.once(event, listener)),
+    close: vi.fn(async () => void events.emit("close")),
+  };
+};
+
+const makeContext = (product = "HeadlessChrome/154.0.8037.92") => {
+  const events = new NodeEvents.EventEmitter();
+  const pages: ReturnType<typeof makePage>[] = [makePage()];
   let closed = false;
   return {
+    opened: pages,
     on: vi.fn((event: string, listener: () => void) => events.on(event, listener)),
-    pages: vi.fn(() => []),
+    pages: vi.fn(() => [...pages]),
+    newPage: vi.fn(async () => {
+      const page = makePage();
+      pages.push(page);
+      return page;
+    }),
+    newCDPSession: vi.fn(async () => ({
+      send: vi.fn(async () => ({ product })),
+      detach: vi.fn(async () => {}),
+    })),
     close: vi.fn(async () => {
       if (!closed) {
         closed = true;
+        // Closing a reserved page can add its replacement while this runs.
+        for (const page of pages.slice()) await page.close();
         events.emit("close");
       }
     }),
@@ -36,6 +57,7 @@ const makeBrowser = () => {
   const contexts: ReturnType<typeof makeContext>[] = [];
   return {
     contexts,
+    version: () => "154.0.8037.92",
     on: vi.fn((event: string, listener: () => void) => events.on(event, listener)),
     newContext: vi.fn(async () => {
       const context = makeContext();
@@ -52,6 +74,8 @@ const makeBrowser = () => {
 const options = () => ({
   profilesDir: "/test/profiles",
   executable: vi.fn(async () => "/test/chromium"),
+  version: "154.0.8037.92",
+  host: { platform: "linux" as const, arch: "x64" },
   env: {},
 });
 
@@ -239,5 +263,73 @@ describe("ServerBrowserContexts", () => {
     await pool.close();
     expect(browser.close).toHaveBeenCalledTimes(1);
     expect(browser.contexts[0]?.close).toHaveBeenCalled();
+  });
+  it("launches with the reduced Chrome user agent its pages present, and the GPU on", async () => {
+    launches.persistent.mockResolvedValue(makeContext() as unknown as BrowserContext);
+    const pool = new ServerBrowserContexts(options());
+    await pool.contextFor("default");
+    const args = launches.persistent.mock.calls[0]?.[1]?.args ?? [];
+    expect(pool.identity.userAgent).toBe(
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+    );
+    expect(args).toContain(`--user-agent=${pool.identity.userAgent}`);
+    expect(args).toContain("--use-angle=vulkan");
+    expect(args).not.toContain("--disable-gpu");
+    expect(pool.identity.userAgentMetadata.fullVersionList).toContainEqual({
+      brand: "Google Chrome",
+      version: "154.0.8037.92",
+    });
+    await pool.close();
+    const mac = new ServerBrowserContexts({
+      ...options(),
+      host: { platform: "darwin", arch: "arm64" },
+    });
+    launches.persistent.mockResolvedValue(makeContext() as unknown as BrowserContext);
+    await mac.contextFor("default");
+    expect(launches.persistent.mock.calls[1]?.[1]?.args).not.toContain("--use-angle=vulkan");
+    expect(mac.identity.userAgent).toContain("(Macintosh; Intel Mac OS X 10_15_7)");
+    await mac.close();
+  });
+
+  it("refuses a browser that is not the pinned version", async () => {
+    const human = makeContext("HeadlessChrome/155.0.1.2");
+    launches.persistent.mockResolvedValue(human as unknown as BrowserContext);
+    const pool = new ServerBrowserContexts(options());
+    await expect(pool.contextFor("default")).rejects.toMatchObject({
+      name: "Error",
+      expected: "154.0.8037.92",
+      actual: "155.0.1.2",
+    });
+    expect(human.close).toHaveBeenCalled();
+    const browser = { ...makeBrowser(), version: () => "153.0.1.1" };
+    launches.launch.mockResolvedValue(browser as unknown as Browser);
+    await expect(pool.contextFor("default", "agent")).rejects.toMatchObject({
+      actual: "153.0.1.1",
+    });
+    expect(browser.close).toHaveBeenCalled();
+    await pool.close();
+  });
+
+  it("keeps a persistent context's first page as its reserved page and recreates it", async () => {
+    const human = makeContext();
+    launches.persistent.mockResolvedValue(human as unknown as BrowserContext);
+    const pool = new ServerBrowserContexts(options());
+    const context = await pool.contextFor("default");
+    const first = human.opened[0]!;
+    expect(await pool.reservedPage(context)).toBe(first);
+    expect(first.close).not.toHaveBeenCalled();
+    await first.close();
+    const replacement = await pool.reservedPage(context);
+    expect(replacement).not.toBe(first);
+    expect(human.newPage).toHaveBeenCalledTimes(1);
+    await pool.close();
+    expect(human.newPage).toHaveBeenCalledTimes(1);
+    const browser = makeBrowser();
+    launches.launch.mockResolvedValue(browser as unknown as Browser);
+    const isolated = new ServerBrowserContexts(options());
+    await expect(
+      isolated.reservedPage(await isolated.contextFor("default", "agent")),
+    ).rejects.toThrow("no reserved page");
+    await isolated.close();
   });
 });

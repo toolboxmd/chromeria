@@ -8,7 +8,12 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 
-import { expectFullChrome, testChromium } from "./ChromeForTesting.testkit.ts";
+import {
+  expectFullChrome,
+  testChromium,
+  testChromiumVersion,
+  testHost,
+} from "./ChromeForTesting.testkit.ts";
 import { ServerBrowserContexts } from "./ServerBrowserContexts.ts";
 import { ServerCookieMirror } from "./ServerCookieMirror.ts";
 import { ServerCookieMirrorProfiles } from "./ServerCookieMirrorProfiles.ts";
@@ -59,6 +64,8 @@ describe.skipIf(!executable)("real Playwright Chromium mirror adapter", () => {
           const contexts = new ServerBrowserContexts({
             profilesDir: NodePath.join(dir, "profiles"),
             executable: async () => executable!,
+            version: testChromiumVersion,
+            host: testHost,
             env: { ...process.env, T3CODE_SERVER_BROWSER_SANDBOX: "0" },
           });
           const mirror = new ServerCookieMirror(contexts);

@@ -354,6 +354,8 @@ jobs:
           if ldd "$browser" | grep '=> not found'; then
             node apps/server/node_modules/playwright-core/cli.js install-deps chromium
           fi
+          # Writes profiles as installs before Chrome for Testing did, to prove they still open.
+          echo "CHROMERIA_TEST_HEADLESS_SHELL=$browser" >> "$GITHUB_ENV"
 
       # Real-browser suites run the Chrome for Testing build T3 pins, never the shell.
       - name: Resolve pinned Chrome for Testing

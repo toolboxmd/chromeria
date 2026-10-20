@@ -670,4 +670,6 @@ apps/server/src/htmlRender/headlessChrome.ts
 apps/server/src/preview/PreviewBrowser.test.ts
 apps/server/src/preview/PreviewBrowser.ts
 apps/server/src/preview/PreviewBrowserHost.ts
+apps/server/src/preview/ServerBrowserContexts.test.ts
+apps/server/src/preview/ServerBrowserPage.test.ts
 docs/user/html-renders.md

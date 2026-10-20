@@ -9,7 +9,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 
 import { makeExternalBrowserContext } from "./testing/BrowserExternal.fixture.ts";
 import { BrowserControlInterrupted } from "./SessionControl.ts";
-import { presentAsChrome } from "./ServerBrowserContexts.ts";
+import { chromeIdentity, presentAsChrome } from "./ServerBrowserContexts.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 
 describe("server browser element refs", () => {
@@ -303,7 +303,10 @@ describe("server browser element refs", () => {
   });
 
   it("presents a headless page as Chrome, with client hints that agree", async () => {
-    await presentAsChrome(cdp, { platform: "linux", arch: "x64" });
+    await presentAsChrome(
+      cdp,
+      chromeIdentity("154.0.8037.92", { platform: "linux", arch: "x64", release: "6.8.0" }),
+    );
     // userAgentData exists only in secure contexts; https comes from a route.
     let secChUa: string | undefined;
     await page.route("https://example.test/", (route) => {

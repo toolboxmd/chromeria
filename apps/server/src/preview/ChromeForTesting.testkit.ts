@@ -1,7 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off - Resolved once at test import, outside any Effect.
 import * as NodePath from "node:path";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import type { Page } from "playwright-core";
 import { expect } from "vite-plus/test";
+
+import { previewBrowserRelease } from "./PreviewBrowser.ts";
 
 const CHROME_FOR_TESTING = new Set(["chrome", "chrome.exe", "Google Chrome for Testing"]);
 
@@ -24,6 +27,23 @@ export const testChromium = ((): string | undefined => {
   }
   return executable;
 })();
+
+/** A chrome-headless-shell, only to write profiles as installs before Chrome for Testing did. */
+export const testHeadlessShell = ((): string | undefined => {
+  const executable = process.env.CHROMERIA_TEST_HEADLESS_SHELL;
+  if (!executable && process.env.CI) {
+    throw new Error("CI must set CHROMERIA_TEST_HEADLESS_SHELL to Playwright's headless shell.");
+  }
+  return executable || undefined;
+})();
+
+export const testHost = {
+  platform: HostProcess.Platform.defaultValue(),
+  arch: HostProcess.Architecture.defaultValue(),
+};
+
+/** The version every launch must report: the one T3 pins. */
+export const testChromiumVersion = previewBrowserRelease("linux", "x64")!.version;
 
 export const SKIP_WITHOUT_CHROMIUM =
   "Set CHROMERIA_TEST_CHROMIUM to the pinned Chrome for Testing executable.";
