@@ -63,6 +63,198 @@ import {
   typed383Pair,
 } from "./PeerAuthority.workflow.fixture.ts";
 
+it.live.each(["question", "approval"] as const)(
+  "pending369 notice: peer observation carries %s content into one parent notice",
+  (kind) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(descriptorOf("notice-a", "A", { peerAuthority: 1 }), "disk", {
+          attachmentRequests: true,
+          productionKernel: true,
+        });
+        const b = yield* makeNode(descriptorOf("notice-b", "B", { peerAuthority: 1 }), "disk", {
+          attachmentRequests: true,
+          productionKernel: true,
+        });
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("notice-parent");
+        yield* seedParent(a, parent);
+        const child = yield* delegate(a, b, parent, "notice-child");
+        yield* activate(b, child.childId);
+        const heldItems: Parameters<typeof b.sink.write>[0]["events"][number][] = [];
+        // Pi commits the runtime request before its question/approval item.
+        const requestId = yield* seedPending369(
+          {
+            ...b,
+            sink: {
+              ...b.sink,
+              write: (input) => {
+                heldItems.push(
+                  ...input.events.filter((event) => event.type === "turn-item.updated"),
+                );
+                return b.sink.write({
+                  ...input,
+                  events: input.events.filter((event) => event.type !== "turn-item.updated"),
+                });
+              },
+            },
+          },
+          child.childId,
+        );
+        const pending = yield* b.threads.getThreadRecords(child.childId, [
+          "runtimeRequests",
+          "providerThreads",
+        ]);
+        if (kind === "approval") {
+          yield* b.sink.write({
+            events: [
+              {
+                id: EventId.make("notice:approval-runtime-before-item"),
+                type: "runtime-request.updated",
+                threadId: child.childId,
+                occurredAt: yield* DateTime.now,
+                payload: {
+                  ...pending.runtimeRequests.find((request) => request.id === requestId)!,
+                  kind: "command",
+                  responseCapability: {
+                    type: "live",
+                    providerSessionId: pending.providerThreads[0]!.providerSessionId!,
+                  },
+                },
+              },
+            ],
+          });
+        }
+        const item = heldItems.find((event) => event.type === "turn-item.updated")?.payload;
+        if (item?.type !== "user_input_request") return yield* Effect.die("Expected question item");
+        const task = (yield* a.threads.getThreadRecords(parent, ["subagents"])).subagents.find(
+          (task) => task.id === child.taskId,
+        )!;
+        const connection = yield* a.reconnect();
+        const readSnapshot = (after = 0, wait = false) =>
+          connection.peers.taskLifecycle!(b.environmentId, task.remoteChild!.launch!.linkIdentity, {
+            pair: {
+              parentEnvironmentId: a.environmentId,
+              parentThreadId: parent,
+              taskId: task.id,
+              childEnvironmentId: b.environmentId,
+              childThreadId: child.childId,
+              childRunId: null,
+            },
+            operation: { type: "snapshot", after, wait },
+          });
+        const partial = yield* readSnapshot();
+        if (partial.type !== "snapshot") return yield* Effect.die("Expected partial snapshot");
+        expect(partial.snapshot.incomplete).toBe(true);
+        expect(
+          partial.snapshot.requests.find((request) => request.requestId === requestId)?.detail,
+        ).toBeUndefined();
+        yield* a.threads.dispatch({
+          type: "delegated_task.remote.observe",
+          commandId: CommandId.make("notice:partial"),
+          parentThreadId: parent,
+          taskId: task.id,
+          availability: "current",
+          observation: {
+            cursor:
+              (yield* a.threads.getThreadRecords(parent, ["subagents"])).subagents.find(
+                (entry) => entry.id === task.id,
+              )?.remoteChild?.cursor ?? 0,
+            snapshot: partial.snapshot,
+          },
+        });
+        yield* a.orchestrator.recoverDelegatedTasks;
+        expect(
+          (yield* a.threads.getThreadRecords(parent, ["messages"])).messages.filter((message) =>
+            message.text.includes(requestId),
+          ),
+        ).toHaveLength(0);
+        const subscribed = yield* Deferred.make<void>();
+        const streamFrom = b.threads.streamStoredEventsFrom;
+        const streamRead = vi
+          .spyOn(b.threads, "streamStoredEventsFrom")
+          .mockImplementation((options) =>
+            streamFrom(options).pipe(Stream.onStart(Deferred.succeed(subscribed, undefined))),
+          );
+        const reads = vi.spyOn(b.threads, "getThreadRecords");
+        const following = yield* readSnapshot(partial.snapshot.sequence, true).pipe(
+          Effect.forkChild,
+        );
+        yield* Deferred.await(subscribed);
+        const now = yield* DateTime.now;
+        yield* b.sink.write({
+          events: [
+            {
+              id: EventId.make("notice:request-content"),
+              type: "turn-item.updated",
+              threadId: child.childId,
+              occurredAt: now,
+              payload:
+                kind === "question"
+                  ? {
+                      ...item,
+                      questions: [
+                        {
+                          id: "color",
+                          header: "Color",
+                          question: "Which color?",
+                          options: [{ label: "Blue", description: "Use blue" }],
+                        },
+                      ],
+                    }
+                  : {
+                      ...item,
+                      type: "approval_request",
+                      requestKind: "command",
+                      prompt: "npm run build",
+                      options: [{ decision: "accept", label: "Approve build" }],
+                    },
+            },
+          ],
+        });
+        const detail = kind === "question" ? "Which color?" : "npm run build";
+        const option = kind === "question" ? "Blue" : "Approve build";
+        const snapshot = yield* Fiber.join(following);
+        streamRead.mockRestore();
+        const rootRead = reads.mock.calls.find(
+          ([threadId, fields]) => threadId === child.childId && fields.includes("turnItems"),
+        );
+        expect(rootRead?.[2]?.turnItemTypes).toEqual(["user_input_request", "approval_request"]);
+        reads.mockRestore();
+        expect(snapshot.type).toBe("snapshot");
+        if (snapshot.type !== "snapshot") return yield* Effect.die("Expected snapshot");
+        expect(snapshot.snapshot.sequence).toBeGreaterThan(partial.snapshot.sequence);
+        expect(snapshot.snapshot.incomplete).toBe(false);
+        expect(JSON.stringify(snapshot.snapshot.requests)).toContain(detail);
+        expect(JSON.stringify(snapshot.snapshot.requests)).toContain(option);
+        yield* a.threads.dispatch({
+          type: "delegated_task.remote.observe",
+          commandId: CommandId.make("notice:peer-snapshot"),
+          parentThreadId: parent,
+          taskId: task.id,
+          availability: "current",
+          observation: {
+            cursor:
+              (yield* a.threads.getThreadRecords(parent, ["subagents"])).subagents.find(
+                (entry) => entry.id === task.id,
+              )?.remoteChild?.cursor ?? 0,
+            snapshot: snapshot.snapshot,
+          },
+        });
+        yield* a.orchestrator.recoverDelegatedTasks;
+        yield* a.orchestrator.recoverDelegatedTasks;
+        const messages = (yield* a.threads.getThreadRecords(parent, ["messages"])).messages.filter(
+          (message) =>
+            message.notification?.outcome === "updated" && message.text.includes(requestId),
+        );
+        expect(messages).toHaveLength(1);
+        expect(messages[0]!.text).toContain(detail);
+        expect(messages[0]!.text).toContain(option);
+        expect(messages[0]!.notification?.source).not.toHaveProperty("childThreadId");
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
 it.live(
   "pending369: authenticated native HTTP proves pair ancestry and replays one native answer",
   () =>
