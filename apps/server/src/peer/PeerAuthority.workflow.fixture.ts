@@ -1,3 +1,7 @@
+import * as Clock from "effect/Clock";
+import * as OrchestratorService from "../mcp/OrchestratorMcpService.ts";
+import * as OrchestratorHandlers from "../mcp/toolkits/orchestrator/handlers.ts";
+import * as ThreadMetadataService from "../mcp/ThreadMetadataMcpService.ts";
 import * as RemoteSecretRequests from "../secrets/RemoteSecretRequests.ts";
 import * as RemoteSecretRelay from "../secrets/RemoteSecretRelay.ts";
 import { vi } from "vite-plus/test";
@@ -903,8 +907,14 @@ export const makeNode = (
         };
       }),
     ).pipe(Layer.provide(PeerMcpClient.layer));
+    const secretControlReplyGate = yield* Ref.make<
+      (ids: ReadonlyArray<string>) => Effect.Effect<void>
+    >(() => Effect.void);
     const peerHttp =
-      legacyAutomationPeer || captureReplyTransform !== undefined || captureReplyGate !== undefined
+      remoteSecrets ||
+      legacyAutomationPeer ||
+      captureReplyTransform !== undefined ||
+      captureReplyGate !== undefined
         ? Layer.effect(
             HttpClient.HttpClient,
             Effect.map(HttpClient.HttpClient, (client) =>
@@ -949,17 +959,24 @@ export const makeNode = (
                 }),
                 (effect, request) => {
                   if (
-                    captureReplyGate === undefined ||
                     !request.url.endsWith("/mcp/peer-control") ||
                     request.body._tag !== "Uint8Array"
                   )
                     return effect;
                   const control = decodeFixtureControl(new TextDecoder().decode(request.body.body));
-                  return control.answers.some(
-                    (answer) => answer.id.startsWith("capture:") && answer.result.ok,
-                  )
-                    ? captureReplyGate.pipe(Effect.andThen(effect))
-                    : effect;
+                  return Effect.flatMap(Ref.get(secretControlReplyGate), (gate) =>
+                    gate(control.answers.map((answer) => answer.id)),
+                  ).pipe(
+                    Effect.andThen(
+                      captureReplyGate !== undefined &&
+                        control.answers.some(
+                          (answer) => answer.id.startsWith("capture:") && answer.result.ok,
+                        )
+                        ? captureReplyGate
+                        : Effect.void,
+                    ),
+                    Effect.andThen(effect),
+                  );
                 },
               ),
             ),
@@ -1005,6 +1022,47 @@ export const makeNode = (
     const secretPublished = yield* Deferred.make<void>();
     const releaseSecretPublication = yield* Deferred.make<void>();
     const actualSecretStore = Context.get(services, Secrets.ServerSecretStore);
+    const secretRequestClock = yield* Ref.make<Clock.Clock | undefined>(undefined);
+    const secretRequestAbort = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
+    const secretRequestExits = yield* Queue.unbounded<void>();
+    const secretValidationClock = yield* Ref.make<Clock.Clock | undefined>(undefined);
+    const secretValidationErrors = yield* Queue.unbounded<{ id: string; code: string }>();
+    const secretRemovals = yield* Queue.unbounded<{ name: string; failed: boolean }>();
+    const secretCleanupName = yield* Ref.make<string | undefined>(undefined);
+    const secretCleanupClock = yield* Ref.make<Clock.Clock | undefined>(undefined);
+    const initialSecretClock = yield* Clock.Clock;
+    const cleanupClock = () => Ref.getUnsafe(secretCleanupClock) ?? initialSecretClock;
+    const secretOwnerClock: Clock.Clock = {
+      currentTimeMillis: Effect.suspend(() => cleanupClock().currentTimeMillis),
+      currentTimeMillisUnsafe: () => cleanupClock().currentTimeMillisUnsafe(),
+      currentTimeNanos: Effect.suspend(() => cleanupClock().currentTimeNanos),
+      currentTimeNanosUnsafe: () => cleanupClock().currentTimeNanosUnsafe(),
+      monotonicTimeNanos: Effect.suspend(() => cleanupClock().monotonicTimeNanos),
+      monotonicTimeNanosUnsafe: () => cleanupClock().monotonicTimeNanosUnsafe(),
+      sleep: (duration) => Effect.suspend(() => cleanupClock().sleep(duration)),
+    };
+    const secretAuthority = Layer.effect(
+      PeerAuthority.PeerAuthority,
+      Effect.gen(function* () {
+        const actual = yield* PeerAuthority.PeerAuthority;
+        return {
+          ...actual,
+          checkInteractiveRecord: (id: string) =>
+            Effect.gen(function* () {
+              const clock = yield* Ref.get(secretValidationClock);
+              return yield* actual.checkInteractiveRecord(id).pipe(
+                (effect) =>
+                  clock === undefined ? effect : Effect.provideService(effect, Clock.Clock, clock),
+                Effect.tapError((error) =>
+                  Queue.offer(secretValidationErrors, { id, code: error.code }),
+                ),
+              );
+            }),
+        };
+      }),
+    ).pipe(Layer.provide(Layer.succeedContext(baseServices)));
+    const secretOwnerScope = yield* Scope.make();
+    yield* Effect.addFinalizer(() => Scope.close(secretOwnerScope, Exit.void));
     const faultSecretStore = Layer.succeed(Secrets.ServerSecretStore, {
       ...actualSecretStore,
       create: (name, bytes) =>
@@ -1035,7 +1093,9 @@ export const makeNode = (
         Effect.gen(function* () {
           if (
             name.startsWith("secret-remote-") &&
-            (yield* Ref.get(remoteSecretFault)) === "cleanup"
+            (yield* Ref.get(remoteSecretFault)) === "cleanup" &&
+            ((yield* Ref.get(secretCleanupName)) === undefined ||
+              (yield* Ref.get(secretCleanupName)) === name)
           ) {
             return yield* new Secrets.SecretStoreRemoveError({
               resource: "isolated redundant copy",
@@ -1043,18 +1103,23 @@ export const makeNode = (
             });
           }
           return yield* actualSecretStore.remove(name);
-        }),
+        }).pipe(
+          Effect.tapError(() => Queue.offer(secretRemovals, { name, failed: true })),
+          Effect.tap(() => Queue.offer(secretRemovals, { name, failed: false })),
+        ),
     });
     const secretOwners = remoteSecrets
       ? yield* Layer.mergeAll(RemoteSecretRequests.layer, RemoteSecretRelay.layer).pipe(
+          Layer.provide(Layer.succeed(Clock.Clock, secretOwnerClock)),
           Layer.provide(faultSecretStore),
+          Layer.provide(secretAuthority),
           Layer.provide(Layer.succeedContext(services)),
           Layer.provide(Layer.succeedContext(baseServices)),
           Layer.provide(Layer.succeedContext(runtime)),
           Layer.provide(db),
           Layer.provide(environment),
           Layer.provide(nodeConfig),
-          Layer.build,
+          Layer.buildWithScope(secretOwnerScope),
         )
       : Context.empty();
     const handoffGitManager = GitManager.layer.pipe(
@@ -1790,6 +1855,35 @@ export const makeNode = (
             Layer.provide(FetchHttpClient.layer),
             Layer.provide(environment),
           );
+    const timedSecretService = Layer.effect(
+      OrchestratorService.OrchestratorMcpService,
+      Effect.gen(function* () {
+        const actual = yield* OrchestratorService.OrchestratorMcpService;
+        return {
+          ...actual,
+          requestSecret: (...args: Parameters<typeof actual.requestSecret>) =>
+            Effect.gen(function* () {
+              const clock = yield* Ref.get(secretRequestClock);
+              const abort = yield* Ref.get(secretRequestAbort);
+              const actualCall = actual.requestSecret(...args);
+              const effect =
+                abort === undefined
+                  ? actualCall
+                  : Effect.raceFirst(
+                      actualCall,
+                      Deferred.await(abort).pipe(Effect.andThen(Effect.interrupt)),
+                    );
+              return yield* (
+                clock === undefined ? effect : Effect.provideService(effect, Clock.Clock, clock)
+              ).pipe(Effect.onExit(() => Queue.offer(secretRequestExits, undefined)));
+            }),
+        };
+      }),
+    ).pipe(Layer.provide(OrchestratorService.layer));
+    const secretToolkit = McpHttpServer.toolkitRegistration(
+      OrchestratorToolkit,
+      OrchestratorHandlers.layer,
+    ).pipe(Layer.provide(timedSecretService), Layer.provide(ThreadMetadataService.layer));
     const toolsFor = (
       scheduleServices: typeof schedules,
       requests: typeof requestContext = requestContext,
@@ -1798,7 +1892,7 @@ export const makeNode = (
       Layer.mergeAll(
         artifactResponseBoundary,
         McpHttpServer.layerProjectRegistration,
-        McpHttpServer.layerOrchestratorToolkit,
+        remoteSecrets ? secretToolkit : McpHttpServer.layerOrchestratorToolkit,
         ...(previewControls === undefined
           ? []
           : [
@@ -2117,11 +2211,22 @@ export const makeNode = (
       runtime,
       requestContext,
       secretOwners,
+      secretRequestClock,
+      secretRequestAbort,
+      secretRequestExits,
+      secretValidationClock,
+      secretValidationErrors,
+      secretControlReplyGate,
+      secretRemovals,
+      secretCleanupName,
+      secretCleanupClock,
+      stopSecretOwner: Scope.close(secretOwnerScope, Exit.void),
       remoteSecretFault,
       secretPublished,
       releaseSecretPublication,
       rebuildSecretOwner: RemoteSecretRequests.layer.pipe(
         Layer.provide(faultSecretStore),
+        Layer.provide(secretAuthority),
         Layer.provide(Layer.succeedContext(baseServices)),
         Layer.provide(db),
         Layer.provide(environment),

@@ -2744,19 +2744,32 @@ const make = Effect.gen(function* () {
               : Effect.void,
           ),
         );
-        // Only this call can hand the agent its ref, so the card must not
-        // outlive it: a timeout, a failed wait or an aborted call closes it as
-        // cancelled.
-        const closeCard = record("cancelled").pipe(
-          Effect.andThen(
-            destination !== undefined && Option.isSome(relay)
-              ? relay.value.retire(threadId, turnItemId)
-              : Effect.void,
-          ),
-          Effect.catch((error) =>
-            Effect.logWarning("Could not close a secret request card", { error: error.message }),
-          ),
-        );
+        // Timeout reconciles a winning save; an aborted call has no remaining
+        // caller to receive the handle, even when the save already committed.
+        const closeCard = (reason: "timeout" | "aborted") =>
+          record("cancelled").pipe(
+            Effect.andThen(
+              Effect.gen(function* () {
+                if (destination === undefined || Option.isNone(relay)) return;
+                if (reason === "timeout") {
+                  const records = yield* threadManagement.getThreadRecords(
+                    threadId,
+                    ["turnItems"],
+                    {
+                      turnItemTypes: ["secret_request"],
+                      messageRoles: [],
+                    },
+                  );
+                  const item = records.turnItems.find((candidate) => candidate.id === turnItemId);
+                  if (item?.type === "secret_request" && item.secretStatus === "saved") return;
+                }
+                yield* relay.value.retire(threadId, turnItemId);
+              }),
+            ),
+            Effect.catch((error) =>
+              Effect.logWarning("Could not close a secret request card", { error: error.message }),
+            ),
+          );
 
         const answered = yield* Effect.gen(function* () {
           while (true) {
@@ -2782,7 +2795,7 @@ const make = Effect.gen(function* () {
               current === undefined ||
               ThreadManagementService.isTerminalRunStatus(current.status)
             ) {
-              yield* closeCard;
+              yield* closeCard("aborted");
               return "cancelled" as const;
             }
             yield* Effect.sleep(Duration.millis(SECRET_REQUEST_POLL_INTERVAL_MS));
@@ -2793,9 +2806,9 @@ const make = Effect.gen(function* () {
               Math.min(input.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS),
             ),
           ),
-          Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : closeCard)),
+          Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : closeCard("aborted"))),
         );
-        if (Option.isNone(answered)) yield* closeCard;
+        if (Option.isNone(answered)) yield* closeCard("timeout");
         const status = Option.isSome(answered)
           ? answered.value
           : yield* threadManagement

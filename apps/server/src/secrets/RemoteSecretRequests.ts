@@ -132,7 +132,12 @@ const make = Effect.gen(function* () {
   const remove = (row: Row) =>
     row.attempt_id === null
       ? Effect.void
-      : store.remove(nameFor(row)).pipe(Effect.mapError(unavailable));
+      : store.remove(nameFor(row)).pipe(
+          Effect.mapError(unavailable),
+          Effect.tapError(() =>
+            Option.isSome(linkEvents) ? linkEvents.value.automationChanged : Effect.void,
+          ),
+        );
   const owned = (scope: McpInvocationScope, row: Row) => {
     const record = interactiveAuthority(scope.authority);
     return (
@@ -154,11 +159,13 @@ const make = Effect.gen(function* () {
       yield* authority
         .checkInteractiveRecord(row.source_record_id)
         .pipe(
-          Effect.tapError(() =>
-            sql`UPDATE remote_secret_requests SET status='retired' WHERE request_id=${row.request_id} AND status NOT IN ('consumed','declined','retired')`.pipe(
-              Effect.mapError(unavailable),
-              Effect.andThen(remove(row)),
-            ),
+          Effect.tapError((error) =>
+            error.code === "capability_denied"
+              ? sql`UPDATE remote_secret_requests SET status='retired' WHERE request_id=${row.request_id} AND status NOT IN ('consumed','declined','retired')`.pipe(
+                  Effect.mapError(unavailable),
+                  Effect.andThen(remove(row)),
+                )
+              : Effect.void,
           ),
         );
     });
@@ -373,7 +380,8 @@ const make = Effect.gen(function* () {
       yield* remove(row);
       return { ...input, retired: true as const };
     }).pipe(lock.withPermits(1));
-  const reconcile = Effect.gen(function* () {
+  const reconcileBatch = Effect.gen(function* () {
+    let cleanupPending = false;
     yield* sql`UPDATE remote_secret_requests SET status='retired' WHERE status NOT IN ('consumed','declined','retired') AND session_id IN (SELECT session_id FROM auth_sessions WHERE revoked_at IS NOT NULL OR round(unixepoch(expires_at,'subsec')*1000)<=${yield* Clock.currentTimeMillis})`.pipe(
       Effect.mapError(unavailable),
     );
@@ -395,44 +403,67 @@ const make = Effect.gen(function* () {
         );
       const current = yield* read(row.request_id);
       if (current !== undefined && ["consumed", "declined", "retired"].includes(current.status))
-        yield* remove(current);
+        yield* remove(current).pipe(
+          Effect.catch(() => {
+            cleanupPending = true;
+            return Effect.logWarning("Remote secret protected copy cleanup remains pending.", {
+              requestId: current.request_id,
+            });
+          }),
+        );
     }
     if (store.directory !== undefined) {
-      for (const name of yield* fs
-        .readDirectory(store.directory)
-        .pipe(Effect.mapError(unavailable))) {
+      const entries = yield* fs.readDirectory(store.directory).pipe(
+        Effect.catch(() => {
+          cleanupPending = true;
+          return Effect.logWarning("Remote secret temporary copy scan remains pending.").pipe(
+            Effect.as([] as Array<string>),
+          );
+        }),
+      );
+      for (const name of entries) {
         if (!/^secret-remote-rsr_[0-9a-f]{32}-[0-9a-f]{32}\.bin\.[0-9a-f-]+\.tmp$/.test(name))
           continue;
-        yield* fs
-          .remove(path.join(store.directory, name), { force: true })
-          .pipe(Effect.mapError(unavailable));
+        yield* fs.remove(path.join(store.directory, name), { force: true }).pipe(
+          Effect.catch(() => {
+            cleanupPending = true;
+            return Effect.logWarning("Remote secret temporary copy cleanup remains pending.");
+          }),
+        );
       }
     }
+    return cleanupPending;
   }).pipe(lock.withPermits(1));
-  yield* reconcile;
+  const reconcile = reconcileBatch.pipe(
+    Effect.flatMap((pending) => (pending ? unavailable() : Effect.void)),
+  );
+  // Only cleanup leaves may defer startup; schema and state/authority failures still fail construction.
+  let retryCleanup = yield* reconcileBatch;
   if (Option.isSome(linkEvents)) {
     const changes = yield* linkEvents.value.subscribeAutomationChanges;
     yield* forkParked(
       Effect.forever(
         Effect.gen(function* () {
-          const [next] = yield* sql<{
-            deadline: number | null;
-          }>`SELECT min(min(r.expires_at,round(unixepoch(a.expires_at,'subsec')*1000))) AS deadline FROM remote_secret_requests r JOIN auth_sessions a ON a.session_id=r.session_id WHERE r.status IN ('pending','saving','saved','reserved')`.pipe(
-            Effect.mapError(unavailable),
-          );
-          if (next?.deadline == null) yield* PubSub.take(changes);
-          else
-            yield* Effect.raceFirst(
-              PubSub.take(changes),
-              Effect.sleep(Math.max(0, next.deadline - (yield* Clock.currentTimeMillis))),
+          if (retryCleanup) yield* Effect.sleep("2 seconds");
+          else {
+            const [next] = yield* sql<{
+              deadline: number | null;
+            }>`SELECT min(min(r.expires_at,round(unixepoch(a.expires_at,'subsec')*1000))) AS deadline FROM remote_secret_requests r JOIN auth_sessions a ON a.session_id=r.session_id WHERE r.status IN ('pending','saving','saved','reserved')`.pipe(
+              Effect.mapError(unavailable),
             );
-          yield* reconcile;
+            if (next?.deadline == null) yield* PubSub.take(changes);
+            else
+              yield* Effect.raceFirst(
+                PubSub.take(changes),
+                Effect.sleep(Math.max(0, next.deadline - (yield* Clock.currentTimeMillis))),
+              );
+          }
+          retryCleanup = yield* reconcileBatch;
         }).pipe(
-          Effect.catch(() =>
-            Effect.logWarning("Remote secret reconciliation remains pending.").pipe(
-              Effect.andThen(Effect.sleep("2 seconds")),
-            ),
-          ),
+          Effect.catch(() => {
+            retryCleanup = true;
+            return Effect.logWarning("Remote secret reconciliation remains pending.");
+          }),
         ),
       ),
     );

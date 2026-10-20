@@ -445,7 +445,7 @@ const make = Effect.gen(function* () {
   yield* sql`CREATE INDEX IF NOT EXISTS peer_return_by_record ON peer_return_pairs (record_id)`;
   // Validation requests have a live waiter, unlike durable pair/return receipts.
   // A restarted server cannot resume that prior process's interactive request.
-  yield* sql`DELETE FROM peer_control_frames WHERE json_extract(frame_json, '$.body.type') IN ('validate','capture-automation','capture-legacy-automation','request-actor','request-ancestry')`;
+  yield* sql`DELETE FROM peer_control_frames WHERE json_extract(frame_json, '$.body.type') IN ('validate','capture-automation','capture-legacy-automation','request-actor','request-ancestry','secret-origin')`;
   // Signals only avoid idle queries. Frames and answers are durable and replay after restart.
   const signals = new Map<string, Set<Deferred.Deferred<void>>>();
   const wake = (key: string) =>
@@ -743,7 +743,8 @@ const make = Effect.gen(function* () {
             frame.body.type === "capture-automation" ||
             frame.body.type === "capture-legacy-automation" ||
             frame.body.type === "request-actor" ||
-            frame.body.type === "request-ancestry"
+            frame.body.type === "request-ancestry" ||
+            frame.body.type === "secret-origin"
             ? sql`DELETE FROM peer_control_frames WHERE id = ${frame.id} AND session_id = ${sessionId}`.pipe(
                 Effect.orDie,
               )

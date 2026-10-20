@@ -1,3 +1,7 @@
+import * as Clock from "effect/Clock";
+import * as Duration from "effect/Duration";
+import * as TestClock from "effect/testing/TestClock";
+import * as RemoteRequests from "../secrets/RemoteSecretRequests.ts";
 import { CommandId, MessageId, remoteSecretIntent } from "@t3tools/contracts";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
@@ -14,6 +18,7 @@ import {
   WS_METHODS,
   OrchestratorMcpRequestSecretResult,
   McpScheduledMutationReceipt,
+  RemoteSecretReceiptIdentity,
 } from "@t3tools/contracts";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpServer from "effect/http/HttpServer";
@@ -56,6 +61,9 @@ import * as PeerMcpClient from "./PeerMcpClient.ts";
 const decodeSecretResult = Schema.decodeUnknownEffect(OrchestratorMcpRequestSecretResult);
 const decodeMutationReceipt = Schema.decodeUnknownEffect(
   Schema.fromJsonString(McpScheduledMutationReceipt),
+);
+const decodeSecretConsumer = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Struct({ request: RemoteSecretReceiptIdentity })),
 );
 
 it.live(
@@ -448,6 +456,7 @@ const openRequest = (
   setup: Effect.Success<ReturnType<typeof pair>>,
   key: string,
   oneField = false,
+  timeoutMs?: number,
 ) =>
   Effect.gen(function* () {
     const { a, b, parent } = setup;
@@ -460,6 +469,7 @@ const openRequest = (
       label: "Fixture secret",
       reason: "Owner lifetime proof",
       clientRequestId: key,
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
       ...(oneField ? { fields: [{ name: "signature", label: "Signing value" }] } : {}),
     }).pipe(Effect.forkScoped);
     const item = yield* a.orchestrator
@@ -1342,11 +1352,31 @@ it.live(
         ).toBe(true);
         expect(yield* destination`SELECT task_id FROM scheduled_tasks`).toHaveLength(0);
         expect(yield* protectedDigest()).toBe(originalProtectedDigest);
-        yield* source`DROP TRIGGER fixture385_retirement_failure`;
-        const recovered = yield* a.reconstructAutomation;
-        if (recovered.peers.drainAutomationDisables === undefined)
-          return yield* Effect.die("Missing real recovery drain");
-        yield* recovered.peers.drainAutomationDisables;
+        const recoveryTime = yield* Clock.currentTimeMillis;
+        yield* Effect.gen(function* () {
+          yield* TestClock.setTime(recoveryTime);
+          const clock = yield* Clock.Clock;
+          const retries = yield* Queue.unbounded<void>();
+          const observed = {
+            ...clock,
+            sleep: (duration: Duration.Duration) =>
+              (Duration.toMillis(duration) === 2000
+                ? Queue.offer(retries, undefined)
+                : Effect.void
+              ).pipe(Effect.andThen(clock.sleep(duration))),
+          };
+          const recovered = yield* a.reconstructAutomation.pipe(
+            Effect.provideService(Clock.Clock, observed),
+          );
+          yield* recovered.peers.start.pipe(Effect.provideService(Clock.Clock, observed));
+          yield* Queue.take(retries);
+          expect(
+            yield* source`SELECT * FROM remote_secret_obligations WHERE request_id=${saved.handle.requestId}`,
+          ).toEqual(original);
+          yield* source`DROP TRIGGER fixture385_retirement_failure`;
+          yield* TestClock.adjust("2 seconds");
+          yield* Queue.take(retries);
+        }).pipe(Effect.provide(TestClock.layer()));
         expect(
           yield* source`SELECT request_id FROM remote_secret_obligations WHERE request_id=${saved.handle.requestId} AND pending=1 AND ack_json IS NOT NULL`,
         ).toHaveLength(1);
@@ -1363,4 +1393,406 @@ it.live(
         ).toHaveLength(0);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("secret385 r1 timeout returns the saved winner from the final pending poll", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const setup = yield* pair("secret385-r1-timeout");
+      const now = yield* Clock.currentTimeMillis;
+      yield* Effect.gen(function* () {
+        yield* TestClock.setTime(now);
+        const clock = yield* Clock.Clock;
+        const polling = yield* Queue.unbounded<void>();
+        yield* Ref.set(setup.a.secretRequestClock, {
+          ...clock,
+          sleep: (duration: Duration.Duration) =>
+            (Duration.toMillis(duration) === 500
+              ? Queue.offer(polling, undefined)
+              : Effect.void
+            ).pipe(Effect.andThen(clock.sleep(duration))),
+        });
+        const opened = yield* openRequest(setup, "r1-timeout", false, 1200);
+        yield* Queue.take(polling);
+        yield* TestClock.adjust(1000);
+        yield* Queue.take(polling);
+        yield* Queue.take(polling);
+        expect((yield* opened.answer(opened.input)).exit?._tag).toBe("Success");
+        yield* TestClock.adjust(200);
+        const reply = yield* Fiber.join(opened.pending);
+        expect(reply.isError).not.toBe(true);
+        const result = yield* decodeSecretResult(reply.structuredContent);
+        expect(result.status).toBe("saved");
+        if (result.status !== "saved" || !("secretRequest" in result))
+          return yield* Effect.die("Missing saved winner");
+        const source = Context.get(setup.a.database, SqlClient.SqlClient);
+        expect(
+          yield* source`SELECT request_id FROM remote_secret_obligations WHERE pending=0 AND ack_json IS NULL`,
+        ).toHaveLength(1);
+        expect(
+          (yield* nativeCall(
+            setup.a,
+            setup.parent,
+            "schedule_task",
+            consumerInput(setup, result.secretRequest, "r1-timeout-consume"),
+          )).isError,
+        ).not.toBe(true);
+      }).pipe(Effect.provide(TestClock.layer()));
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("secret385 r1 terminal deletion retries automatically on idle B", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const setup = yield* pair("secret385-r1-idle");
+      const { a, b, parent } = setup;
+      const saved = yield* saveRequest(setup, "r1-idle");
+      const now = yield* Clock.currentTimeMillis;
+      yield* Effect.gen(function* () {
+        yield* TestClock.setTime(now);
+        const retryArmed = yield* Deferred.make<void>();
+        const clock = yield* Clock.Clock;
+        const observed = {
+          ...clock,
+          sleep: (duration: Duration.Duration) =>
+            (Duration.toMillis(duration) === 2000
+              ? Deferred.succeed(retryArmed, undefined)
+              : Effect.void
+            ).pipe(Effect.andThen(clock.sleep(duration))),
+        };
+        yield* Ref.set(b.secretCleanupClock, observed);
+        yield* Ref.set(b.remoteSecretFault, "cleanup");
+        expect(
+          (yield* nativeCall(
+            a,
+            parent,
+            "schedule_task",
+            consumerInput(setup, saved.handle, "r1-idle-consume"),
+          )).isError,
+        ).not.toBe(true);
+        expect((yield* Queue.take(b.secretRemovals)).failed).toBe(true);
+        expect((yield* Queue.take(b.secretRemovals)).failed).toBe(true);
+        yield* Deferred.await(retryArmed);
+        yield* Ref.set(b.remoteSecretFault, undefined);
+        yield* TestClock.adjust("2 seconds");
+        expect((yield* Queue.take(b.secretRemovals)).failed).toBe(false);
+        const fs = yield* FileSystem.FileSystem;
+        expect(
+          (yield* fs.readDirectory(b.config.secretsDir)).filter((name) =>
+            name.startsWith("secret-remote-"),
+          ),
+        ).toHaveLength(0);
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        expect(
+          yield* sql`SELECT request_id FROM remote_secret_requests WHERE status='consumed'`,
+        ).toHaveLength(1);
+        expect(yield* sql`SELECT task_id FROM scheduled_tasks`).toHaveLength(1);
+      }).pipe(Effect.provide(TestClock.layer()));
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "secret385 r1 startup isolates a failed terminal copy and keeps the protected owner available",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const setup = yield* pair("secret385-r1-startup");
+        const { a, b, parent } = setup;
+        const first = yield* saveRequest(setup, "r1-startup-first");
+        const second = yield* saveRequest(setup, "r1-startup-second");
+        yield* b.stopSecretOwner;
+        yield* Ref.set(b.remoteSecretFault, "cleanup");
+        for (const [saved, key] of [
+          [first, "first"],
+          [second, "second"],
+        ] as const)
+          expect(
+            (yield* nativeCall(
+              a,
+              parent,
+              "schedule_task",
+              consumerInput(setup, saved.handle, `r1-startup-${key}-consume`),
+            )).isError,
+          ).not.toBe(true);
+        const fs = yield* FileSystem.FileSystem;
+        const retained = (yield* fs.readDirectory(b.config.secretsDir)).filter((name) =>
+          name.startsWith("secret-remote-"),
+        );
+        expect(retained).toHaveLength(2);
+        yield* Ref.set(
+          b.secretCleanupName,
+          retained
+            .find((name) => name.startsWith(`secret-remote-${first.handle.requestId}-`))!
+            .replace(/\.bin$/, ""),
+        );
+        const result = yield* b.rebuildSecretOwner.pipe(Effect.result);
+        expect(result._tag).toBe("Success");
+        if (result._tag !== "Success")
+          return yield* Effect.die("Protected owner construction failed");
+        const freshOwner = Context.get(result.success, RemoteRequests.RemoteSecretRequests);
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const [terminal] = yield* sql<{
+          consumer_json: string;
+        }>`SELECT consumer_json FROM remote_secret_requests WHERE request_id=${first.handle.requestId}`;
+        if (terminal === undefined) return yield* Effect.die("Missing committed consumer");
+        const consumer = yield* decodeSecretConsumer(terminal.consumer_json);
+        expect(
+          (yield* freshOwner.take(first.handle, consumer.request).pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        expect(
+          (yield* fs.readDirectory(b.config.secretsDir)).filter((name) =>
+            name.startsWith("secret-remote-"),
+          ),
+        ).toHaveLength(1);
+        expect(
+          (yield* nativeCall(
+            a,
+            parent,
+            "schedule_task",
+            consumerInput(setup, first.handle, "r1-startup-forbidden-reuse"),
+          )).isError,
+        ).toBe(true);
+        const current = yield* nativeCall(a, parent, "orchestrator_capabilities", {
+          environmentId: b.environmentId,
+        });
+        expect(current.isError).not.toBe(true);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live.each(["success", "timeout", "cancel", "startup", "budget"] as const)(
+  "secret385 r1 secret-origin frames are transient (%s)",
+  (variant) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const setup = yield* pair(`secret385-r1-frame-${variant}`);
+        const saved = yield* saveRequest(setup, `r1-frame-${variant}`);
+        const sql = Context.get(setup.b.database, SqlClient.SqlClient);
+        const [row] = yield* sql<{
+          source_record_id: string;
+        }>`SELECT source_record_id FROM remote_secret_requests WHERE request_id=${saved.handle.requestId}`;
+        if (row === undefined) return yield* Effect.die("Missing real source record");
+        const frames = sql<{
+          id: string;
+          session_id: string;
+          frame_json: string;
+        }>`SELECT id,session_id,frame_json FROM peer_control_frames WHERE json_extract(frame_json,'$.body.type')='secret-origin'`;
+        if (variant === "success") {
+          expect(yield* frames).toHaveLength(0);
+          return;
+        }
+        yield* setup.a.stopConnections;
+        const now = yield* Clock.currentTimeMillis;
+        yield* Effect.gen(function* () {
+          yield* TestClock.setTime(now);
+          const clock = yield* Clock.Clock;
+          const armed = yield* Queue.unbounded<void>();
+          const observed = {
+            ...clock,
+            sleep: (duration: Duration.Duration) =>
+              Queue.offer(armed, undefined).pipe(Effect.andThen(clock.sleep(duration))),
+          };
+          for (let index = 0; index < (variant === "budget" ? 33 : 1); index++) {
+            const waiting = yield* setup.b.authority
+              .secretOrigin(row.source_record_id)
+              .pipe(Effect.provideService(Clock.Clock, observed), Effect.result, Effect.forkScoped);
+            yield* Queue.take(armed);
+            const pending = (yield* frames).find(
+              (frame) =>
+                frame.id.startsWith(`secret-origin:${row.source_record_id}:`) &&
+                JSON.parse(frame.frame_json).id === frame.id,
+            );
+            if (pending === undefined)
+              return yield* Effect.die("Missing actual in-flight secret-origin frame");
+            if (variant === "timeout") {
+              yield* TestClock.adjust("25 seconds");
+              const result = yield* Fiber.join(waiting);
+              expect(result._tag).toBe("Failure");
+              if (result._tag === "Failure")
+                expect(result.failure.code).toBe("orchestration_error");
+            } else yield* Fiber.interrupt(waiting);
+            if (variant === "startup") {
+              yield* sql`INSERT INTO peer_control_frames (id,session_id,frame_json) VALUES (${pending.id},${pending.session_id},${pending.frame_json}) ON CONFLICT DO NOTHING`;
+              yield* setup.b.reconstructAutomation;
+            }
+            expect(yield* frames).toHaveLength(0);
+          }
+        }).pipe(Effect.provide(TestClock.layer()));
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live.each(["saved", "reserved"] as const)(
+  "secret385 r1 unavailable source validation preserves %s material and the original consumer",
+  (state) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const setup = yield* pair(`secret385-r1-transient-${state}`);
+        const { a, b, parent } = setup;
+        const saved = yield* saveRequest(setup, `r1-transient-${state}`);
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const input = consumerInput(setup, saved.handle, `r1-transient-${state}-consume`);
+        if (state === "reserved") {
+          yield* sql`CREATE TRIGGER fixture385_transient_rollback BEFORE INSERT ON scheduled_mutation_receipts WHEN NEW.stage='confirmed' BEGIN SELECT RAISE(ABORT,'isolated outer receipt interruption'); END`;
+          expect((yield* nativeCall(a, parent, "schedule_task", input)).isError).toBe(true);
+          yield* sql`DROP TRIGGER fixture385_transient_rollback`;
+        }
+        const original = yield* sql<{
+          source_record_id: string;
+          attempt_id: string;
+          status: string;
+          consumer_json: string | null;
+        }>`SELECT source_record_id,attempt_id,status,consumer_json FROM remote_secret_requests WHERE request_id=${saved.handle.requestId}`;
+        expect(original[0]?.status).toBe(state);
+        const row = original[0]!;
+        const repeatAnswer = Effect.gen(function* () {
+          const body = {
+            type: "answer" as const,
+            requestId: saved.handle.requestId,
+            attemptId: row.attempt_id,
+            answer: "save" as const,
+            value: saved.value,
+          };
+          const envelope = yield* a.authority.prepareSecretAnswer(
+            saved.answer.sessionId,
+            b.environmentId,
+            setup.link.launchIdentity,
+            body,
+          );
+          if (setup.peers.remoteSecret === undefined)
+            return yield* Effect.die("Missing native secret control");
+          return yield* setup.peers.remoteSecret(b.environmentId, setup.link.launchIdentity, {
+            authority: envelope,
+            body,
+          });
+        });
+        const fs = yield* FileSystem.FileSystem;
+        const file = `${b.config.secretsDir}/secret-remote-${saved.handle.requestId}-${row.attempt_id}.bin`;
+        const digest = fs
+          .readFile(file)
+          .pipe(Effect.map((bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex")));
+        const before = yield* digest;
+        const blocked = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        yield* Ref.set(a.secretControlReplyGate, (ids) =>
+          ids.some((id) => id.startsWith(`validate:${row.source_record_id}:`))
+            ? Deferred.succeed(blocked, undefined).pipe(Effect.andThen(Deferred.await(release)))
+            : Effect.void,
+        );
+        const now = yield* Clock.currentTimeMillis;
+        yield* Effect.gen(function* () {
+          yield* TestClock.setTime(now);
+          yield* Ref.set(b.secretValidationClock, yield* Clock.Clock);
+          const attempted = yield* repeatAnswer.pipe(Effect.result, Effect.forkScoped);
+          yield* Deferred.await(blocked);
+          yield* TestClock.adjust("25 seconds");
+          expect((yield* Fiber.join(attempted))._tag).toBe("Failure");
+          const error = yield* Queue.take(b.secretValidationErrors);
+          expect(error).toEqual({ id: row.source_record_id, code: "orchestration_error" });
+          expect(
+            yield* sql`SELECT source_record_id,attempt_id,status,consumer_json FROM remote_secret_requests WHERE request_id=${saved.handle.requestId}`,
+          ).toEqual(original);
+          expect(yield* digest).toBe(before);
+        }).pipe(Effect.provide(TestClock.layer()));
+        yield* Ref.set(b.secretValidationClock, undefined);
+        yield* Ref.set(a.secretControlReplyGate, () => Effect.void);
+        yield* Deferred.succeed(release, undefined);
+        expect((yield* repeatAnswer)?.status).toBe(state);
+        const accepted = yield* nativeCall(a, parent, "schedule_task", input);
+        expect(accepted.isError).not.toBe(true);
+        expect((yield* nativeCall(a, parent, "schedule_task", input)).structuredContent).toEqual(
+          accepted.structuredContent,
+        );
+        expect(yield* sql`SELECT task_id FROM scheduled_tasks`).toHaveLength(1);
+        expect(
+          yield* sql`SELECT request_id FROM remote_secret_requests WHERE status='consumed'`,
+        ).toHaveLength(1);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live.each(["timeout", "aborted"] as const)(
+  "secret385 r1 a caller without a returned handle retires its exact request (%s)",
+  (reason) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const setup = yield* pair(`secret385-r1-close-${reason}`);
+        const now = yield* Clock.currentTimeMillis;
+        yield* Effect.gen(function* () {
+          yield* TestClock.setTime(now);
+          const clock = yield* Clock.Clock;
+          const polling = yield* Deferred.make<void>();
+          const abort = yield* Deferred.make<void>();
+          if (reason === "aborted") yield* Ref.set(setup.a.secretRequestAbort, abort);
+          yield* Ref.set(setup.a.secretRequestClock, {
+            ...clock,
+            sleep: (duration: Duration.Duration) =>
+              (Duration.toMillis(duration) === 500
+                ? Deferred.succeed(polling, undefined)
+                : Effect.void
+              ).pipe(Effect.andThen(clock.sleep(duration))),
+          });
+          const opened = yield* openRequest(setup, `r1-close-${reason}`, false, 1200);
+          yield* Deferred.await(polling);
+          if (reason === "aborted") {
+            expect((yield* opened.answer(opened.input)).exit?._tag).toBe("Success");
+            yield* Deferred.succeed(abort, undefined);
+            yield* Queue.take(setup.a.secretRequestExits);
+            yield* Fiber.interrupt(opened.pending);
+          } else {
+            yield* TestClock.adjust(1200);
+            const reply = yield* Fiber.join(opened.pending);
+            expect(reply.isError).not.toBe(true);
+            expect((yield* decodeSecretResult(reply.structuredContent)).status).toBe("timed_out");
+          }
+          const source = Context.get(setup.a.database, SqlClient.SqlClient);
+          expect(
+            yield* source`SELECT request_id FROM remote_secret_obligations WHERE pending=1 AND ack_json IS NULL`,
+          ).toHaveLength(1);
+          if (setup.peers.drainAutomationDisables === undefined)
+            return yield* Effect.die("Missing native retirement drain");
+          yield* setup.peers.drainAutomationDisables;
+          expect(
+            yield* source`SELECT request_id FROM remote_secret_obligations WHERE pending=1 AND ack_json IS NOT NULL`,
+          ).toHaveLength(1);
+          const destination = Context.get(setup.b.database, SqlClient.SqlClient);
+          expect(
+            yield* destination`SELECT request_id FROM remote_secret_requests WHERE status='retired'`,
+          ).toHaveLength(1);
+          const fs = yield* FileSystem.FileSystem;
+          expect(
+            (yield* fs.readDirectory(setup.b.config.secretsDir)).filter((name) =>
+              name.startsWith("secret-remote-"),
+            ),
+          ).toHaveLength(0);
+        }).pipe(Effect.provide(TestClock.layer()));
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("secret385 r1 startup does not hide a protected state transition SQL failure", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const setup = yield* pair("secret385-r1-startup-sql");
+      const opened = yield* openRequest(setup, "r1-startup-sql");
+      yield* setup.b.stopSecretOwner;
+      yield* Ref.set(setup.b.remoteSecretFault, "after-save");
+      expect((yield* opened.answer(opened.input)).exit?._tag).toBe("Failure");
+      const sql = Context.get(setup.b.database, SqlClient.SqlClient);
+      expect(
+        yield* sql`SELECT request_id FROM remote_secret_requests WHERE status='saving'`,
+      ).toHaveLength(1);
+      yield* sql`CREATE TRIGGER fixture385_startup_transition BEFORE UPDATE ON remote_secret_requests WHEN NEW.status='saved' BEGIN SELECT RAISE(ABORT,'isolated startup transition failure'); END`;
+      expect((yield* setup.b.rebuildSecretOwner.pipe(Effect.result))._tag).toBe("Failure");
+      expect(
+        yield* sql`SELECT request_id FROM remote_secret_requests WHERE status='saving'`,
+      ).toHaveLength(1);
+      yield* sql`DROP TRIGGER fixture385_startup_transition`;
+      yield* setup.b.rebuildSecretOwner;
+      expect((yield* opened.answer(opened.input)).exit?._tag).toBe("Success");
+      expect((yield* Fiber.join(opened.pending)).isError).not.toBe(true);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
 );
