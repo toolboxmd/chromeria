@@ -172,7 +172,7 @@ packages/contracts/src/auth.ts
 packages/contracts/src/environmentHttp.ts
 packages/contracts/src/orchestrationV2.ts
 packages/provider-core/src/server/subagentProjection.ts
-# Prism routing, settings and shared runtime guidance (#169)
+# Prism routing, settings and shared runtime guidance (#169, #568)
 apps/server/src/mcp/toolkits/preview/tools.test.ts
 apps/server/src/mcp/toolkits/orchestrator/tools.ts
 apps/server/src/mcp/toolkits/project/tools.ts

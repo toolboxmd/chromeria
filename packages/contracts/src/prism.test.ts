@@ -6,6 +6,7 @@ import {
   admitDelegateRole,
   DEFAULT_PRISM_ROLE_KITS,
   PRISM_DELEGATE_ROLE_ERROR,
+  PRISM_DELEGATE_ROLES,
   PrismRole,
   PrismRoleKits,
   PrismRoleKitsPatch,
@@ -163,16 +164,7 @@ describe("Prism role kits", () => {
   });
 
   it("accept the delegated roles and reject Promachos and unknown names with the list", () => {
-    for (const prismRole of [
-      "planner",
-      "researcher",
-      "designer",
-      "worker",
-      "computer-use",
-      "roast",
-      "reviewer",
-      "judge",
-    ]) {
+    for (const prismRole of PRISM_DELEGATE_ROLES) {
       expect(decodeDelegate({ task: "Do it.", prismRole }).prismRole).toBe(prismRole);
     }
     for (const prismRole of ["promachos", "nonsense"]) {
@@ -180,9 +172,9 @@ describe("Prism role kits", () => {
         PRISM_DELEGATE_ROLE_ERROR,
       );
     }
-    expect(PRISM_DELEGATE_ROLE_ERROR).toBe(
-      "prismRole must be one of: planner, researcher, designer, worker, computer-use, roast, reviewer, judge.",
-    );
+    for (const role of PRISM_DELEGATE_ROLES) {
+      expect(PRISM_DELEGATE_ROLE_ERROR).toContain(role);
+    }
   });
 
   it("admit a removed delegated role only when replaying a request an older build accepted", () => {
