@@ -2591,7 +2591,10 @@ sources and reasons.
   "id": "execution-purpose",
   "purpose": "Pin typed Issue or PR purpose at run admission and retain supported native causal evidence without treating job binding as outcome ownership.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/377"],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/388"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/388",
+    "https://github.com/toolboxmd/chromeria/pull/581"
+  ],
   "newFiles": [
     "apps/mobile/src/features/threads/ExecutionPurposePicker.tsx",
     "apps/mobile/src/features/threads/ThreadExecutionPurposeControl.tsx",
