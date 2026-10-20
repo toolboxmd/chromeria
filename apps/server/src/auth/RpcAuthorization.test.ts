@@ -10,7 +10,6 @@ import {
   EnvironmentId,
   ProviderInstanceId,
   ThreadId,
-  EnvironmentId,
   AuthOrchestrationOperateScope,
   ORCHESTRATION_V2_WS_METHODS,
   AuthOrchestrationReadScope,
