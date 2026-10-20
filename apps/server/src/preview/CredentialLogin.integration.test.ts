@@ -1,6 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - Finds Playwright's installed headless shell for a real Chromium run.
 import * as NodeEvents from "node:events";
-import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -22,7 +21,7 @@ import * as Queue from "effect/Queue";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/ai";
-import { chromium, type BrowserContext, type Page } from "playwright-core";
+import type { BrowserContext, Page } from "playwright-core";
 import { vi } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
@@ -32,6 +31,7 @@ import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as McpToolAccessTestkit from "../mcp/McpToolAccess.testkit.ts";
 import * as Broker from "../mcp/PreviewAutomationBroker.ts";
 import { CREDENTIAL_AUDIT_FILE } from "./CredentialAudit.ts";
+import { expectFullChrome, testChromium } from "./ChromeForTesting.testkit.ts";
 import * as CredentialVault from "./CredentialVault.ts";
 import * as DesktopChannel from "./DesktopBrowserChannel.ts";
 import * as Manager from "./Manager.ts";
@@ -39,24 +39,7 @@ import * as PreviewBrowser from "./PreviewBrowser.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
 import { ServerBrowserContexts } from "./ServerBrowserContexts.ts";
 
-/** Playwright's headless shell, which CI installs, beside the Chromium it would launch. */
-const headlessShell = () => {
-  if (process.env.CHROMERIA_TEST_CHROMIUM) return process.env.CHROMERIA_TEST_CHROMIUM;
-  let root = chromium.executablePath();
-  while (root !== NodePath.dirname(root) && !/^chromium-\d+$/.test(NodePath.basename(root)))
-    root = NodePath.dirname(root);
-  const revision = NodePath.basename(root).slice("chromium-".length);
-  const shellRoot = NodePath.join(NodePath.dirname(root), `chromium_headless_shell-${revision}`);
-  if (!NodeFS.existsSync(shellRoot)) return undefined;
-  for (const platform of NodeFS.readdirSync(shellRoot)) {
-    for (const name of ["chrome-headless-shell", "chrome-headless-shell.exe"]) {
-      const candidate = NodePath.join(shellRoot, platform, name);
-      if (NodeFS.existsSync(candidate)) return candidate;
-    }
-  }
-  return undefined;
-};
-const executable = headlessShell();
+const executable = testChromium;
 // Like the repository's other real-browser tests, which launch Playwright without
 // Chrome's sandbox: CI's Ubuntu runner blocks the unprivileged user namespaces it
 // needs (AppArmor). This is the server's own operator opt-out.
@@ -318,6 +301,7 @@ describe.skipIf(!executable)("credential login in a real browser", () => {
           const broker = yield* Broker.PreviewAutomationBroker;
           const tabId = yield* openTab(broker);
           const page = pageAt("/");
+          yield* Effect.promise(() => expectFullChrome(page));
           const entered = Promise.withResolvers<void>();
           const gate = Promise.withResolvers<void>();
           const title = page.title.bind(page);

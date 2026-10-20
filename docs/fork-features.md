@@ -3175,7 +3175,7 @@ sources and reasons.
   "purpose": "Run preview, research and HTML render browsers on pinned full Chrome for Testing instead of chrome-headless-shell, unpacked with checked symlinks so the macOS bundle installs. Drop when upstream installs full Chrome for Testing safely.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/572"],
   "prs": ["https://github.com/toolboxmd/chromeria/compare/main...agent/572-cft-agent-browser"],
-  "newFiles": [],
+  "newFiles": ["apps/server/src/preview/ChromeForTesting.testkit.ts"],
   "upstreamFiles": [
     "apps/server/src/htmlRender/headlessChrome.ts",
     "apps/server/src/preview/PreviewBrowser.test.ts",
@@ -3183,7 +3183,16 @@ sources and reasons.
     "apps/server/src/preview/PreviewBrowserHost.ts",
     "docs/user/html-renders.md"
   ],
-  "sharedFiles": ["apps/server/src/cli/browser.ts", "docs/user/remote-access.md"],
+  "sharedFiles": [
+    ".github/workflows/ci.yml",
+    "apps/server/src/cli/browser.ts",
+    "apps/server/src/mcp/WebResearchRender.integration.test.ts",
+    "apps/server/src/preview/CredentialLogin.integration.test.ts",
+    "apps/server/src/preview/ServerCookieMirror.integration.test.ts",
+    "apps/server/src/webResearch/PublicRender.test.ts",
+    "apps/server/src/webResearch/ResearchHost.test.ts",
+    "docs/user/remote-access.md"
+  ],
   "keywords": ["chrome-headless-shell", "chrome-for-testing", "PreviewBrowser", "symlink"]
 }
 ```
