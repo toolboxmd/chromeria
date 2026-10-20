@@ -53,6 +53,9 @@ const make = Effect.gen(function* () {
       ) {
         yield* RemoteSecretPersistence.reconcileObligations.pipe(
           Effect.provideService(SqlClient.SqlClient, sql.value),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Remote secret retirement reconciliation remains pending", { cause }),
+          ),
         );
         if (Option.isSome(links)) yield* links.value.automationChanged;
       }
