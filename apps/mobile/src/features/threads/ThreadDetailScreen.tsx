@@ -1163,7 +1163,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
       ) : null}
       {!usesNativeWorkspaceColumns ? <NativeLayoutObserver onChange={setScreenMetrics} /> : null}
       {showContent && toolResources.length > 0 ? (
-        <View className="border-b border-secondary-border">
+        <View className="h-12 shrink-0 border-b border-secondary-border">
           <FlatList
             horizontal
             data={toolResources}
