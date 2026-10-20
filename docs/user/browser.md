@@ -11,9 +11,11 @@ opens use the environment's agent browser and appear in the panel as a live
 stream. The agent browser runs pinned Chrome for Testing 154 in new headless
 mode with hardware GPU rendering.
 
-In a thread on another environment, such as a server, every tab streams from
-that environment. A web or mobile client also streams tabs. The page runs on
-the environment, so `localhost` reaches that machine.
+In a thread on another environment, such as a server, tabs stream from that
+environment by default. A web or mobile client also streams tabs. In a streamed
+tab, `localhost` reaches the environment's machine. On desktop, **Open on this
+computer** moves a remote tab to your computer's native browser; `localhost`
+then reaches your computer.
 
 For a page you want to use yourself, open it from the Browser menu on your local
 desktop. This gives you a native tab instead of an agent stream.
