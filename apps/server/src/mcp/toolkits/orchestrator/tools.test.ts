@@ -1,4 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
+import { PRISM_DELEGATE_ROLES, PRISM_ROLE_DESCRIPTIONS } from "@t3tools/contracts";
+import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "@t3tools/provider-core/server/orchestrationInstructions";
+import { T3_CODE_TOOL_USE_INSTRUCTIONS } from "@t3tools/shared/forkToolInstructions";
 import { Tool } from "effect/ai";
 
 import {
@@ -10,6 +13,26 @@ import {
 } from "./tools.ts";
 
 describe("orchestrator MCP tool guidance", () => {
+  it("publishes every delegate role and its description in agent guidance", () => {
+    const schema = Tool.getJsonSchema(DelegateTaskTool) as {
+      readonly properties?: Readonly<Record<string, unknown>>;
+    };
+    for (const role of PRISM_DELEGATE_ROLES) {
+      for (const text of [
+        T3_CODE_ORCHESTRATION_INSTRUCTIONS,
+        DelegateTaskTool.description ?? "",
+        T3_CODE_TOOL_USE_INSTRUCTIONS,
+      ]) {
+        assert.include(text, role);
+        assert.include(text, PRISM_ROLE_DESCRIPTIONS[role]);
+      }
+      assert.include(
+        JSON.stringify(schema.properties?.prismRole),
+        JSON.stringify(PRISM_ROLE_DESCRIPTIONS[role]).slice(1, -1),
+      );
+    }
+  });
+
   it("guides browser and desktop driving to the computer-use role", () => {
     assert.include(DelegateTaskTool.description ?? "", 'prismRole: "computer-use"');
     assert.include(DelegateTaskTool.description ?? "", "beyond a quick check");
