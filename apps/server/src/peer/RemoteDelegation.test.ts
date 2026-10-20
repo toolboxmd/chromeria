@@ -809,6 +809,12 @@ const makeLaptop = (
   >,
   /** The laptop's links from before a restart, which keep their sessions there. */
   kept?: Context.Context<Layer.Success<ReturnType<typeof layerLinkingEnvironment>>>,
+  /** Wraps the threads only the remote follower reads, to see what it saw. */
+  followerThreads: Layer.Layer<
+    ThreadManagement.ThreadManagementService,
+    never,
+    ThreadManagement.ThreadManagementService
+  > = Layer.empty as never,
 ) =>
   Effect.gen(function* () {
     const linking = kept ?? (yield* layerLinkingEnvironment(laptop).pipe(Layer.build));
@@ -836,6 +842,7 @@ const makeLaptop = (
       Layer.provideMerge(McpServer.McpServer.layer),
       Layer.provideMerge(
         RemoteDelegation.layer.pipe(
+          Layer.provide(followerThreads),
           Layer.provideMerge(PeerForwarding.layer),
           Layer.provide(
             Layer.mock(ProjectService.ProjectService)({
@@ -1512,6 +1519,79 @@ it.effect("follows an open task again after the laptop restarts", () =>
       yield* after.remote.start();
       const task = yield* taskResult(after, delegated.taskId);
       expect(task).toMatchObject({ status: "completed", result: "Finished while you were away." });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a reopened parent follows its remote task again", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
+      const delegated = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const before = yield* makeLaptop(database, offers, linking);
+          yield* linkTo(before.links, b, "full-access");
+          yield* seedParent(before);
+          const delegated = yield* delegateToBox(before);
+          yield* before.orchestrator.dispatch({
+            type: "thread.archive",
+            commandId: CommandId.make("command:archive:laptop-parent"),
+            threadId: parentThreadId,
+          });
+          return delegated;
+        }),
+      );
+
+      // The follower reads the parent's records right after its event sequence.
+      const sawArchived = yield* Deferred.make<void>();
+      let checking = false;
+      const followerThreads = Layer.effect(
+        ThreadManagement.ThreadManagementService,
+        Effect.gen(function* () {
+          const threads = yield* ThreadManagement.ThreadManagementService;
+          return ThreadManagement.ThreadManagementService.of({
+            ...threads,
+            getThreadEventSequence: (threadId) =>
+              Effect.sync(() => {
+                checking = true;
+              }).pipe(Effect.andThen(threads.getThreadEventSequence(threadId))),
+            getThreadRecords: ((threadId, include) =>
+              threads.getThreadRecords(threadId, include).pipe(
+                Effect.tap((records) => {
+                  const checked = checking;
+                  checking = false;
+                  return checked && records.thread.archivedAt !== null
+                    ? Deferred.succeed(sawArchived, undefined)
+                    : Effect.void;
+                }),
+              )) as typeof threads.getThreadRecords,
+          });
+        }),
+      );
+      const after = yield* makeLaptop(database, offers, linking, followerThreads);
+      yield* after.remote.start();
+      // Archived, the follower stops observing the box.
+      yield* Deferred.await(sawArchived);
+      yield* after.orchestrator.dispatch({
+        type: "thread.unarchive",
+        commandId: CommandId.make("command:unarchive:laptop-parent"),
+        threadId: parentThreadId,
+      });
+
+      yield* Ref.set(thread.reply, "Finished after the parent reopened.");
+      yield* Ref.set(thread.status, "completed");
+      yield* Deferred.succeed(thread.finished, undefined);
+      const task = yield* taskResult(after, delegated.taskId);
+      expect(task).toMatchObject({
+        status: "completed",
+        result: "Finished after the parent reopened.",
+      });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

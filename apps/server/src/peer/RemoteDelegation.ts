@@ -1222,12 +1222,20 @@ const make = Effect.gen(function* () {
       const sequence = yield* threads.getThreadEventSequence(parentThreadId);
       const records = yield* threads.getThreadRecords(parentThreadId, ["subagents"]);
       const task = records.subagents.find((candidate) => candidate.id === taskId);
-      if (
-        task?.remoteChild === undefined ||
-        records.thread.archivedAt != null ||
-        records.thread.deletedAt != null
-      )
-        return true;
+      if (task?.remoteChild === undefined || records.thread.deletedAt != null) return true;
+      if (records.thread.archivedAt != null) {
+        // Archived parents observe nothing there until reopened or deleted.
+        yield* threads
+          .streamStoredEventsFrom({ threadId: parentThreadId, afterSequence: sequence })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "thread.unarchived" || stored.event.type === "thread.deleted",
+            ),
+            Stream.runHead,
+          );
+        return false;
+      }
       if (task.remoteChild.threadId === undefined) return task.result !== null;
       const remote = { ...task.remoteChild, threadId: task.remoteChild.threadId };
       const scope = followScope(
