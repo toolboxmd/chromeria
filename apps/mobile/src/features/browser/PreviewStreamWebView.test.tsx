@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { act, useEffect, type ReactNode } from "react";
+import { act, useEffect, useImperativeHandle, type ReactNode, type Ref } from "react";
 import { createRoot } from "react-dom/client";
 import type { WebViewMessageEvent, WebViewProps } from "react-native-webview";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { DeviceHubAccess } from "@t3tools/client-runtime/device/hub-access";
 import { expect, it, vi } from "vite-plus/test";
 const observed = vi.hoisted(() => ({
   message: undefined as WebViewProps["onMessage"],
@@ -17,6 +18,9 @@ const observed = vi.hoisted(() => ({
   share: vi.fn(),
   alert: vi.fn(),
   changePrompt: undefined as ((value: string) => void) | undefined,
+  inject: vi.fn(),
+  refreshedAccess: null as DeviceHubAccess | null,
+  source: undefined as WebViewProps["source"],
 }));
 vi.mock("react-native", () => ({
   Platform: { OS: "android" },
@@ -45,8 +49,12 @@ vi.mock("react-native", () => ({
   },
 }));
 vi.mock("react-native-webview", () => ({
-  WebView: (props: WebViewProps) => {
+  WebView: (
+    props: WebViewProps & { ref?: Ref<{ injectJavaScript: (script: string) => void }> },
+  ) => {
     observed.message = props.onMessage;
+    observed.source = props.source;
+    useImperativeHandle(props.ref, () => ({ injectJavaScript: observed.inject }));
     useEffect(() => {
       observed.mounts++;
       return () => {
@@ -75,7 +83,11 @@ vi.mock("../../state/preview", () => {
     requestCurrentAccess: observed.renew,
   };
   return {
-    usePreviewStreamAccess: () => ({ access, error: null, refresh: observed.refresh }),
+    usePreviewStreamAccess: () => ({
+      access: observed.refreshedAccess ?? access,
+      error: null,
+      refresh: observed.refresh,
+    }),
     useThreadServerBrowserTabs: () => null,
   };
 });
@@ -100,6 +112,102 @@ vi.mock("./BrowserTabMenu", () => ({ BrowserTabMenu: () => null }));
 import { BrowserPreviewRouteScreen } from "./BrowserPreviewRouteScreen";
 import { isForegroundHandoffActive } from "../../lib/foreground-handoff";
 import { PreviewStreamWebView } from "./PreviewStreamWebView";
+
+it("renews expired access without replacing a background picture-in-picture document", async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  observed.mounts = observed.unmounts = 0;
+  observed.appState = "active";
+  observed.focused = true;
+  observed.refresh.mockReset();
+  observed.inject.mockClear();
+  observed.renew.mockReset();
+  observed.renew.mockRejectedValue(new Error("The exact active viewer is unavailable."));
+  const current = {
+    httpBase: "https://a.test/api/preview-stream",
+    wsBase: "wss://a.test/api/preview-stream",
+    credentials: false,
+    canOperate: true,
+    query: { viewerTicket: "fresh-opening" },
+    viewer: { id: "fresh-viewer", expiresAt: "2027-01-15T08:01:30.000Z" },
+    expiresAt: 1_800_000_090_000,
+  };
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const message = (value: unknown) =>
+    observed.message!({ nativeEvent: { data: JSON.stringify(value) } } as WebViewMessageEvent);
+  const render = () =>
+    root.render(
+      <BrowserPreviewRouteScreen
+        route={{
+          params: {
+            environmentId: "A",
+            threadId: "b",
+            resource: {
+              type: "preview",
+              environmentId: EnvironmentId.make("B"),
+              threadId: ThreadId.make("b"),
+              tabId: "tab",
+              serverEpoch: "epoch",
+            },
+          },
+        }}
+      />,
+    );
+  try {
+    await act(async () => render());
+    const source = observed.source;
+    await act(async () => {
+      message({ type: "status", status: "streaming" });
+      message({ type: "pictureInPicture", supported: true, active: true });
+    });
+    await act(async () => {
+      observed.appState = "background";
+      for (const listener of observed.listeners) listener("background");
+    });
+    await act(async () => {
+      message({ type: "unauthorized" });
+      vi.advanceTimersByTime(0);
+    });
+    expect(observed.renew).not.toHaveBeenCalled();
+    expect(observed.refresh).toHaveBeenCalledOnce();
+    expect(observed.unmounts).toBe(0);
+    await act(async () => {
+      observed.refreshedAccess = current;
+      render();
+    });
+    expect(observed.inject).toHaveBeenCalledWith(
+      `window.T3PreviewStream?.updateAccess(${JSON.stringify(current)}); true;`,
+    );
+    expect(observed.mounts).toBe(1);
+    expect(observed.unmounts).toBe(0);
+    expect(observed.source).toBe(source);
+    await act(async () => message({ type: "status", status: "error", detail: "Socket failed" }));
+    await act(async () => {
+      [...host.querySelectorAll("button")]
+        .find((button) => button.textContent === "Reconnect")!
+        .click();
+    });
+    expect(observed.refresh).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      observed.refreshedAccess = { ...current, query: { viewerTicket: "manual-retry" } };
+      render();
+    });
+    expect(observed.mounts).toBe(2);
+    expect(observed.unmounts).toBe(1);
+    expect(observed.source).not.toBe(source);
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    observed.appState = "active";
+    observed.mounts = observed.unmounts = 0;
+    observed.refreshedAccess = null;
+    observed.refresh.mockReset();
+  }
+});
 
 it("admits native files after picker completion and downloads after save confirmation without reopening control", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);

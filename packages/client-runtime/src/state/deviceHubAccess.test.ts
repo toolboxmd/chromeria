@@ -260,6 +260,18 @@ it.live.each(["device", "preview"] as const)(
             (request) => request.method === "device-close" || request.method === "tab-close",
           ),
         ).toBe(false);
+        const release = registry.mount(atom);
+        const beforeRefresh = yield* AtomRegistry.getResult(registry, atom, {
+          suspendOnWaiting: true,
+        });
+        registry.refresh(atom);
+        const fresh = yield* AtomRegistry.getResult(registry, atom, { suspendOnWaiting: true });
+        expect(fresh.viewer!.id).not.toBe(beforeRefresh.viewer!.id);
+        expect(requests.at(-1)).toEqual({
+          method: "open",
+          input: { resource: kind === "device" ? device : preview, operation: "view" },
+        });
+        release();
       }),
     ),
 );

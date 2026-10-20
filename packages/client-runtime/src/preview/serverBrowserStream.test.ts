@@ -1,4 +1,9 @@
-import { EnvironmentId, ThreadId, PreviewStreamInput } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ThreadId,
+  PreviewStreamInput,
+  PREVIEW_STREAM_HOST_SETUP_CLOSE_CODE,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -48,6 +53,130 @@ const target = {
   maxWidth: 800,
   maxHeight: 600,
 };
+
+describe("preview stream viewer expiry", () => {
+  const now = 1_800_000_000_000;
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    vi.stubGlobal("WebSocket", FakeSocket);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  const events = () => ({
+    onFrame: vi.fn(),
+    onViewport: vi.fn(),
+    onConnectedChange: vi.fn(),
+    onUnauthorized: vi.fn(),
+    onGone: vi.fn(),
+    onHostSetup: vi.fn(),
+  });
+
+  it.each(["destination", "source"])(
+    "refreshes an open relay at the earlier %s expiry and schedules the renewed ticket",
+    (earlier) => {
+      const sourceExpiry = now + (earlier === "source" ? 60_000 : 120_000);
+      const destinationExpiry = now + (earlier === "destination" ? 60_000 : 120_000);
+      const callbacks = events();
+      const connect = (ticket: string, expiresAt: number) =>
+        createPreviewStreamClient(
+          { ...target, access: { ...target.access, query: { viewerTicket: ticket }, expiresAt } },
+          callbacks,
+        );
+      const client = connect("original", Math.min(sourceExpiry, destinationExpiry));
+      const socket = FakeSocket.current;
+      socket.dispatchEvent(new Event("open"));
+      vi.advanceTimersByTime(59_999);
+      expect(socket.readyState).toBe(FakeSocket.OPEN);
+      expect(callbacks.onUnauthorized).not.toHaveBeenCalled();
+
+      // Surfaces refresh access and replace the client on this callback, including
+      // mobile where requestCurrentAccess cannot cross the WebView JSON bridge.
+      let renewed: ReturnType<typeof createPreviewStreamClient> | undefined;
+      callbacks.onUnauthorized.mockImplementationOnce(() => {
+        renewed = connect("renewed", now + 90_000);
+        FakeSocket.current.dispatchEvent(new Event("open"));
+      });
+      vi.advanceTimersByTime(1);
+      expect(callbacks.onUnauthorized).toHaveBeenCalledOnce();
+      expect(socket.readyState).toBe(3);
+      expect(callbacks.onConnectedChange.mock.calls).toEqual([[true], [false], [true]]);
+      const nextSocket = FakeSocket.current;
+      expect(new URL(nextSocket.url).searchParams.get("viewerTicket")).toBe("renewed");
+      socket.message(new ArrayBuffer(3));
+      socket.dispatchEvent(new Event("close"));
+      expect(callbacks.onFrame).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(29_999);
+      expect(callbacks.onUnauthorized).toHaveBeenCalledOnce();
+      vi.advanceTimersByTime(1);
+      expect(callbacks.onUnauthorized).toHaveBeenCalledTimes(2);
+      expect(nextSocket.readyState).toBe(3);
+      client.stop();
+      renewed?.stop();
+    },
+  );
+
+  it("cancels a pending socket retry when the viewer expires", () => {
+    const callbacks = events();
+    const client = createPreviewStreamClient(
+      { ...target, access: { ...target.access, expiresAt: now + 100 } },
+      callbacks,
+    );
+    const socket = FakeSocket.current;
+    socket.dispatchEvent(new Event("open"));
+    socket.dispatchEvent(new Event("close"));
+    vi.advanceTimersByTime(100);
+    expect(callbacks.onUnauthorized).toHaveBeenCalledOnce();
+    vi.advanceTimersByTime(10_000);
+    expect(FakeSocket.current).toBe(socket);
+    expect(callbacks.onUnauthorized).toHaveBeenCalledOnce();
+    client.stop();
+  });
+
+  it.each(["stop", 4404, PREVIEW_STREAM_HOST_SETUP_CLOSE_CODE, 4401])(
+    "cancels expiry after %s",
+    (ending) => {
+      const callbacks = events();
+      const client = createPreviewStreamClient(
+        { ...target, access: { ...target.access, expiresAt: now + 60_000 } },
+        callbacks,
+      );
+      const socket = FakeSocket.current;
+      socket.dispatchEvent(new Event("open"));
+      if (ending === "stop") client.stop();
+      else {
+        const close = new Event("close");
+        Object.assign(close, { code: ending, reason: "" });
+        socket.dispatchEvent(close);
+      }
+      const refusals = callbacks.onUnauthorized.mock.calls.length;
+      vi.advanceTimersByTime(120_000);
+      expect(callbacks.onUnauthorized).toHaveBeenCalledTimes(refusals);
+      expect(vi.getTimerCount()).toBe(0);
+      client.stop();
+    },
+  );
+
+  it("does not expire a legacy upgrade ticket on an already admitted socket", () => {
+    const callbacks = events();
+    const client = createPreviewStreamClient(
+      {
+        ...target,
+        access: { ...target.access, query: { wsTicket: "legacy" }, expiresAt: now + 100 },
+      },
+      callbacks,
+    );
+    const socket = FakeSocket.current;
+    socket.dispatchEvent(new Event("open"));
+    vi.advanceTimersByTime(1_000);
+    expect(socket.readyState).toBe(FakeSocket.OPEN);
+    expect(callbacks.onUnauthorized).not.toHaveBeenCalled();
+    client.stop();
+  });
+});
 
 describe("preview stream control", () => {
   beforeEach(() => vi.stubGlobal("WebSocket", FakeSocket));
