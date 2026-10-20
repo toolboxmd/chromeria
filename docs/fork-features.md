@@ -1306,7 +1306,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/mcp/RunGroups.integration.test.ts",
     "apps/server/src/orchestration-v2/RunGroups.ts"
   ],
-  "upstreamFiles": [],
+  "upstreamFiles": ["apps/server/src/testUtils/shardWeights.json"],
   "sharedFiles": [
     "apps/server/src/mcp/OrchestratorMcpService.ts",
     "apps/server/src/mcp/toolkits/orchestrator/handlers.ts",
@@ -2579,7 +2579,10 @@ sources and reasons.
   "id": "execution-purpose",
   "purpose": "Pin typed Issue or PR purpose at run admission and retain supported native causal evidence without treating job binding as outcome ownership.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/377"],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/388"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/388",
+    "https://github.com/toolboxmd/chromeria/pull/581"
+  ],
   "newFiles": [
     "apps/mobile/src/features/threads/ExecutionPurposePicker.tsx",
     "apps/mobile/src/features/threads/ThreadExecutionPurposeControl.tsx",
@@ -2618,6 +2621,7 @@ sources and reasons.
     "apps/server/src/environment/ServerEnvironment.ts",
     "apps/server/src/mcp/OrchestratorMcpService.ts",
     "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
+    "apps/server/src/mcp/RunGroups.integration.test.ts",
     "apps/server/src/mcp/toolkits/core.test.ts",
     "apps/server/src/mcp/toolkits/project/handlers.ts",
     "apps/server/src/mcp/toolkits/project/tools.ts",
