@@ -1,3 +1,9 @@
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import * as Invocation from "../mcp/McpInvocationContext.ts";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
+import { assertLiveCaller, loadCaller, unavailable } from "../mcp/threadAccess.ts";
+import { confirmNotDispatched, externalDispatch } from "../mcp/McpRequestReceipts.ts";
+import type { OrchestratorMcpFailure } from "@t3tools/contracts";
 import type { ThreadId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
@@ -28,7 +34,8 @@ import * as Stream from "effect/Stream";
 import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import { resolveAttachmentRelativePath } from "../attachmentPaths.ts";
-import { createAttachmentId } from "../attachmentStore.ts";
+import { createAttachmentId, createDeterministicAttachmentId } from "../attachmentStore.ts";
+import { CurrentRequest } from "../mcp/McpRequestReceipts.ts";
 import { resolveRootCliCommand } from "../cli/invocation.ts";
 import * as ServerConfig from "../config.ts";
 import * as HeadlessChrome from "./headlessChrome.ts";
@@ -106,14 +113,20 @@ export class HtmlRender extends Context.Service<
       readonly html: string;
       readonly title: string;
       readonly height: number;
-    }) => Effect.Effect<HtmlRenderReference, HtmlRenderPrepareError | HtmlRenderStoreError>;
+    }) => Effect.Effect<
+      HtmlRenderReference,
+      HtmlRenderPrepareError | HtmlRenderStoreError | OrchestratorMcpFailure
+    >;
     /** Stores a page already prepared on a peer, without interpreting local paths again. */
     readonly publishPrepared: (input: {
       readonly threadId: ThreadId;
       readonly html: string;
       readonly title: string;
       readonly height: number;
-    }) => Effect.Effect<HtmlRenderReference, HtmlRenderPageTooLargeError | HtmlRenderStoreError>;
+    }) => Effect.Effect<
+      HtmlRenderReference,
+      HtmlRenderPageTooLargeError | HtmlRenderStoreError | OrchestratorMcpFailure
+    >;
     /** Screenshots a page in headless Chrome, tolerating unreadable local images. */
     readonly preview: (input: {
       readonly html: string;
@@ -411,7 +424,13 @@ const make = Effect.gen(function* () {
     const sizeBytes = new TextEncoder().encode(html).byteLength;
     if (sizeBytes > MAX_PAGE_BYTES) return yield* new HtmlRenderPageTooLargeError({ sizeBytes });
     // The `-html` id suffix makes the asset route serve it as a sandboxed text/html document.
-    const attachmentId = createAttachmentId(input.threadId, "html");
+    const request = yield* CurrentRequest;
+    const deterministicId =
+      request === undefined ? null : createDeterministicAttachmentId(input.threadId, request.id);
+    const attachmentId =
+      deterministicId === null
+        ? createAttachmentId(input.threadId, "html")
+        : `${deterministicId}-html`;
     const filePath =
       attachmentId === null
         ? null
@@ -422,20 +441,53 @@ const make = Effect.gen(function* () {
     if (attachmentId === null || filePath === null) {
       return yield* new HtmlRenderStoreError({ cause: new Error("Invalid thread id.") });
     }
-    const measured = yield* fileSystem.writeFileString(filePath, html).pipe(
-      Effect.mapError((cause) => new HtmlRenderStoreError({ cause })),
-      Effect.andThen(measure(html)),
-      // Only the returned reference lets thread deletion find the page, so a
-      // publish that fails or is interrupted before returning removes it.
-      Effect.onError(() => fileSystem.remove(filePath, { force: true }).pipe(Effect.ignore)),
+    return yield* externalDispatch(
+      Effect.gen(function* () {
+        // Publication can follow remote preparation and receipt waits. Check the original
+        // invocation here, where the page bytes become a source-owned artifact.
+        yield* Effect.gen(function* () {
+          const invocation = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+          if (Option.isSome(invocation)) {
+            const scope = yield* Invocation.requireThreadScope(invocation.value, "html_render");
+            const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+            if (Option.isSome(authority))
+              yield* authority.value.recheckInvocation(scope, "thread-resource", input.threadId);
+            else {
+              if (scope.authority !== undefined || scope.legacyPeerCeiling !== undefined)
+                return yield* unavailable();
+              const threads = yield* Effect.serviceOption(ThreadManagement.ThreadManagementService);
+              if (Option.isNone(threads)) return yield* unavailable();
+              yield* loadCaller().pipe(
+                Effect.provideService(Invocation.McpInvocationContext, scope),
+                Effect.provideService(ThreadManagement.ThreadManagementService, threads.value),
+                Effect.tap(assertLiveCaller),
+              );
+            }
+          }
+        }).pipe(Effect.tapError(() => confirmNotDispatched));
+        const measured = yield* fileSystem
+          .writeFileString(filePath, html, request === undefined ? undefined : { flag: "wx" })
+          .pipe(
+            Effect.mapError((cause) => new HtmlRenderStoreError({ cause })),
+            Effect.andThen(measure(html)),
+            // Only the returned reference lets thread deletion find the page, so a
+            // legacy publication removes an unreturned page. Keyed ambiguous attempts
+            // retain their exact artifact for inspection instead of unsafe cleanup.
+            Effect.onError(() =>
+              request === undefined
+                ? fileSystem.remove(filePath, { force: true }).pipe(Effect.ignore)
+                : Effect.void,
+            ),
+          );
+        return {
+          attachmentId,
+          title: input.title.trim().slice(0, HTML_RENDER_MAX_TITLE_LENGTH) || "HTML",
+          height: clampHtmlRenderHeight(input.height),
+          ...(measured === undefined ? {} : { heights: measured.heights }),
+          ...(measured?.outline === undefined ? {} : { outline: measured.outline }),
+        } satisfies HtmlRenderReference;
+      }),
     );
-    return {
-      attachmentId,
-      title: input.title.trim().slice(0, HTML_RENDER_MAX_TITLE_LENGTH) || "HTML",
-      height: clampHtmlRenderHeight(input.height),
-      ...(measured === undefined ? {} : { heights: measured.heights }),
-      ...(measured?.outline === undefined ? {} : { outline: measured.outline }),
-    } satisfies HtmlRenderReference;
   });
 
   const publish = Effect.fn("HtmlRender.publish")(function* (input: {

@@ -64,6 +64,64 @@ unavailable with these limits. Leave the project id empty only when you intend
 to allow those operations across all projects. Renewal keeps the exact approved
 limits and permission mode.
 
+## Permissions between linked environments
+
+On the receiving environment, open **Settings → Connections** to choose a linked
+environment's access to existing resources, onward delegation, browsers, and
+devices. On mobile these permissions are in the environment's settings. Save
+only the permissions you want that environment's new work to use.
+
+Existing delegated work keeps the ceiling it started with, even after a restart
+or a permission increase. Removing permission also limits existing work. Update
+both environments before using remote return or onward delegation.
+
+A remote delegated child can queue a notice to its own parent without a reverse
+link. This does not let it interrupt the parent or use unrelated threads. A
+pending return receipt means the notice is stored for delivery; the parent has
+not acknowledged it yet.
+
+## Use a linked browser or device
+
+Keep your client connected to the source environment. Open a resource returned by
+its tools to view the linked environment without saving another connection.
+Closing the view releases that viewer; `t3_preview_close` or `device_close`
+closes the tool session. Reopening creates a new session, so use its new reference.
+Both environments must support remote viewers and permit the requested access.
+
+For devices, use `device_commands` to discover supported commands, then pass the
+qualified target from `device_open` to `device_execute`. Use snapshot references
+for clicks and literal text for fills. Follow the returned typed examples; a
+remote device does not require running a command on its host.
+
+Use `t3_attachment_inspect` to obtain a verified reference after an upload.
+Pass qualified file references to supported device commands or `preview_upload`;
+a file path on your computer is not a file on the linked computer. Use
+`t3_attachment_acquire` to bring a supported result into the source environment.
+Browser downloads larger than 50 MiB remain available through the authenticated
+viewer download, but cannot be acquired as agent attachments.
+
+## Recover an interrupted call
+
+For tools that accept a request key, keep the same key when retrying the same
+operation after a lost reply or sign-in renewal. Changing the operation needs a
+new key. If a tool reports `outcome_unknown`, inspect its destination before
+starting another action: the original action may already have happened.
+
+A keyed snapshot save returns its original PNG artifact receipt; its qualified
+path is in `artifact.screenshotPath`. For a remote saved snapshot, its server
+must remain reachable and your access must still permit that preview. Its
+renderer can be disconnected; update both servers if the renderer-free replay
+check is unsupported. Ordinary snapshot inspection remains available separately. A confirmed-operation receipt describes the original acceptance. Read current
+preferences with `t3_environment_read`, scheduled tasks with
+`list_scheduled_tasks`, and links with their list tools. For a new timer, report
+the current cadence and next run time from that list. For a webhook, read its
+current public URL there.
+
+Linked environments can transfer supported attachments with a send or launch.
+The source must own or be authorized to read the attachment, and the destination
+checks the received bytes before accepting it. A local path alone is not a
+transferable attachment.
+
 ## Claude Code
 
 ```sh

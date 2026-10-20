@@ -1,5 +1,9 @@
 import * as BrowserCookieMirror from "./preview/BrowserCookieMirror.ts";
 import * as CookieMirrorRoute from "./preview/CookieMirrorRoute.ts";
+import * as PendingRequestService from "./childThreads/PendingRequestService.ts";
+import * as PeerTaskLifecycle from "./peer/PeerTaskLifecycle.ts";
+import * as McpRequestRuntime from "./mcp/McpRequestRuntime.ts";
+import * as PeerLinkEvents from "./peer/PeerLinkEvents.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as ForkProviderMaintenance from "./provider/forkProviderMaintenance.ts";
 import * as ProviderAutoUpdate from "./provider/providerAutoUpdate.ts";
@@ -15,7 +19,7 @@ import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQ
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeHttp from "node:http";
 
-import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import * as ResourceWebSocketServer from "./http/ResourceWebSocketServer.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { EnvironmentHttpApi, type RepositoryIdentity } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -70,7 +74,8 @@ import * as ProviderInstanceRegistryHydration from "./provider/ProviderInstanceR
 import * as ProjectSettingsOverrideSweep from "./provider/ProjectSettingsOverrideSweep.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
-import * as PeerForwarding from "./peer/PeerForwarding.ts";
+import * as PeerAuthority from "./peer/PeerAuthority.ts";
+import * as PeerNoticeDelivery from "./peer/PeerNoticeDelivery.ts";
 import * as RemoteDelegation from "./peer/RemoteDelegation.ts";
 import * as PeerLinks from "./peer/PeerLinks.ts";
 import * as PeerMcpClient from "./peer/PeerMcpClient.ts";
@@ -298,16 +303,21 @@ const layerRelayClient = Layer.unwrap(
 const layerHttpServer = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;
-    return NodeHttpServer.layer(() => guardHttpResponseWriteErrors(NodeHttp.createServer()), {
-      host: config.host ?? "127.0.0.1",
-      port: config.port,
-      gracefulShutdownTimeout: HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS,
-      // Context takeover stays enabled (ws default) so the compression
-      // window is shared across frames — that also makes small frames cheap
-      // to compress, so no size threshold is set (ws only honors
-      // `threshold` when context takeover is disabled).
-      websocket: { perMessageDeflate: true },
-    });
+    return ResourceWebSocketServer.layer(
+      () => guardHttpResponseWriteErrors(NodeHttp.createServer()),
+      {
+        host: config.host ?? "127.0.0.1",
+        port: config.port,
+        gracefulShutdownTimeout: HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS,
+        // Negotiate permessage-deflate with clients that offer it; clients
+        // that don't still get uncompressed frames on their connection.
+        // Context takeover stays enabled (ws default) so the compression
+        // window is shared across frames — that also makes small frames cheap
+        // to compress, so no size threshold is set (ws only honors
+        // `threshold` when context takeover is disabled).
+        websocket: { perMessageDeflate: true },
+      },
+    );
   }),
 );
 
@@ -459,6 +469,18 @@ const layerProjectFaviconResolver = ProjectFaviconResolver.layer.pipe(
 );
 
 const layerServerEnvironment = ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer));
+
+// Shared below runtime and MCP credential construction, so dispatch and recovery
+// enforce the same durable ceilings as authenticated transport intake.
+const layerPeerAuthority = PeerAuthority.layer.pipe(
+  Layer.provide(layerServerSettings),
+  Layer.provideMerge(PeerLinks.layer),
+  Layer.provideMerge(PeerLinkEvents.layer),
+  Layer.provide(ProjectionStoreV2.layer),
+  Layer.provide(layerServerEnvironment),
+  Layer.provide(ServerSecretStore.layer),
+  Layer.provide(layerPersistence),
+);
 
 const layerAuth = EnvironmentAuth.layer.pipe(
   Layer.provideMerge(layerPersistence),
@@ -696,6 +718,7 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.mergeAll(
     HttpApiBuilder.layer(EnvironmentHttpApi).pipe(
       Layer.provide(AuthHttp.layer),
+      Layer.provide(DeviceHubProxy.layerApi),
       Layer.provide(McpOAuthHttp.layer.pipe(Layer.provide(McpOAuth.layer))),
       Layer.provide(CloudHttp.layer),
       Layer.provide(OrchestrationHttp.layer),
@@ -725,16 +748,13 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.effectDiscard(
     RemoteDelegation.RemoteDelegation.pipe(Effect.flatMap((remote) => remote.start())),
   ),
+  Layer.effectDiscard(PeerMcpClient.PeerMcpClient.pipe(Effect.flatMap((peers) => peers.start))),
 ).pipe(
+  Layer.provide(DeviceHubProxy.layerViewers),
+  Layer.provide(ServerBrowserStream.layerViewers),
+  // Guides read through the same pull request service as every other surface.
   Layer.provide(
     PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
-  ),
-  // delegate_task to a linked environment, from /mcp and the follower above.
-  Layer.provide(
-    RemoteDelegation.layer.pipe(
-      Layer.provide(ProjectionStoreV2.layer),
-      Layer.provide(RuntimeLayer.layerThreadMcpConfig),
-    ),
   ),
   // Both transports consume the same service instance, so caches single-flight across clients
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
@@ -749,13 +769,6 @@ const layerMakeRoutes = Layer.mergeAll(
     ),
   ),
   Layer.provide(PreviewBrowser.layer),
-  // Links to other environments, shared by Settings (WebSocket) and agents (/mcp).
-  Layer.provide(
-    PeerForwarding.layer.pipe(
-      Layer.provideMerge(PeerMcpClient.layer),
-      Layer.provideMerge(PeerLinks.layer),
-    ),
-  ),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(layerDesktopAppUpdate))),
   Layer.provide(layerCommandReadiness),
@@ -1101,12 +1114,29 @@ const layerMakeServer = Layer.unwrap(
 
     return layerServerApplication.pipe(
       Layer.provide(CloudLink.layer),
+      // The authenticated transport requires the runtime's real lifecycle dependencies.
+      Layer.provide(PendingRequestService.layer),
+      Layer.provide(PeerTaskLifecycle.layer),
+      // Source clients, MCP and startup recovery share one remote lifecycle owner.
+      Layer.provide(
+        RemoteDelegation.layer.pipe(
+          Layer.provide(ProjectionStoreV2.layer),
+          Layer.provide(RuntimeLayer.layerThreadMcpConfig),
+        ),
+      ),
+      Layer.provide(
+        McpRequestRuntime.layerForwarding.pipe(
+          Layer.provideMerge(PeerMcpClient.layer),
+          Layer.provideMerge(PeerNoticeDelivery.layer),
+        ),
+      ),
       Layer.provideMerge(layerRuntimeServices),
       Layer.provideMerge(
         McpSessionRegistry.layer.pipe(
           Layer.provide(ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer))),
         ),
       ),
+      Layer.provideMerge(layerPeerAuthority),
       Layer.provide(layerActivation),
       Layer.provideMerge(RelayTracing.layerServerRelayBroker),
       Layer.provideMerge(layerHttpServer),

@@ -1,3 +1,5 @@
+import { hasSourceRemoteTaskView } from "@t3tools/client-runtime/state/remote-tasks";
+import { RemoteTaskViewer } from "./RemoteTaskViewer";
 import { useAtomValue } from "@effect/atom-react";
 import { subagentChildTarget } from "@t3tools/client-runtime/state/thread-relationships";
 import type { ThreadTurnSubagents } from "@t3tools/client-runtime/state/thread-subagents";
@@ -40,6 +42,15 @@ export function useThreadTurnSubagents(target: AgentsTarget | null): ThreadTurnS
     target === null
       ? EMPTY_TURN_SUBAGENTS_ATOM
       : environmentThreadDetails.turnSubagentsAtom(target),
+  );
+}
+
+const EMPTY_PENDING_REMOTE_TASKS = Atom.make<ReadonlyArray<OrchestrationV2Subagent>>([]);
+export function usePendingRemoteTasks(target: AgentsTarget | null) {
+  return useAtomValue(
+    target === null
+      ? EMPTY_PENDING_REMOTE_TASKS
+      : environmentThreadDetails.pendingRemoteTasksAtom(target),
   );
 }
 
@@ -141,6 +152,7 @@ function AgentRow(props: {
   readonly onOpen: (childThreadId: ThreadId, environmentId: EnvironmentId) => void;
 }) {
   const { subagent } = props;
+  const [viewRemote, setViewRemote] = useState(false);
   const target = subagentChildTarget(subagent);
   const serverConfigs = useServerConfigs();
   // A child on a machine this device is not connected to has nowhere to open.
@@ -156,6 +168,25 @@ function AgentRow(props: {
     </View>
   );
 
+  if (hasSourceRemoteTaskView(subagent))
+    return (
+      <>
+        <Pressable
+          accessibilityRole="link"
+          accessibilityHint="Opens remote work through this conversation"
+          onPress={() => setViewRemote(true)}
+        >
+          {row}
+        </Pressable>
+        {viewRemote ? (
+          <RemoteTaskViewer
+            environmentId={props.environmentId}
+            task={subagent}
+            onClose={() => setViewRemote(false)}
+          />
+        ) : null}
+      </>
+    );
   if (target === null || unreachable) {
     return (
       <View

@@ -22,6 +22,7 @@ apps/desktop/src/app/DesktopUserData.ts
 apps/mobile/app.config.ts
 apps/server/src/auth/PairingGrantStore.test.ts
 apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts
+apps/server/src/testUtils/shardWeights.json
 apps/server/src/auth/RpcAuthorization.ts
 apps/server/src/cli/config.test.ts
 apps/server/src/config.ts
@@ -157,6 +158,7 @@ apps/server/src/auth/SessionStore.ts
 apps/server/src/auth/http.ts
 apps/server/src/mcp/toolkits/project/handlers.test.ts
 apps/server/src/mcp/toolkits/project/handlers.ts
+apps/server/src/orchestration-v2/ProjectionStore.test.ts
 apps/server/src/orchestration-v2/ProjectionStore.ts
 apps/server/src/orchestration-v2/testkit/OrchestratorScenario.ts
 apps/server/src/persistence/AuthSessions.ts
@@ -170,7 +172,6 @@ apps/web/test/environmentHttpTest.ts
 docs/README.md
 packages/contracts/src/auth.ts
 packages/contracts/src/environmentHttp.ts
-packages/contracts/src/orchestrationV2.ts
 packages/provider-core/src/server/subagentProjection.ts
 # Prism routing, settings and shared runtime guidance (#169, #568)
 apps/server/src/mcp/toolkits/preview/tools.test.ts
@@ -249,7 +250,11 @@ packages/provider-grok/src/testing.ts
 apps/web/src/components/files/BrowserDocumentFrame.tsx
 apps/web/src/components/chat/HtmlRenderDialog.browser.test.tsx
 
-# Peer links: upstream port and fork hooks (#164)
+# Peer links: upstream port and fork hooks (#164, #380)
+apps/mobile/src/features/home/HomeRouteScreen.tsx
+apps/mobile/src/features/settings/SettingsEnvironmentDetailRouteScreen.tsx
+apps/web/src/components/LegacySidebar.tsx
+packages/client-runtime/src/state/commandPermissions.test.ts
 apps/server/src/auth/McpOAuth.ts
 apps/server/src/binCli.ts
 apps/server/src/mcp/McpHttpServer.test.ts
@@ -271,6 +276,7 @@ apps/server/src/project/ProjectService.ts
 apps/server/src/project/ProjectSetupScriptRunner.test.ts
 apps/server/src/project/ProjectSetupScriptRunner.ts
 packages/shared/src/t3McpToolPresentation.ts
+packages/shared/src/t3McpToolPresentation.test.ts
 apps/server/src/cli/environment.ts
 apps/server/src/orchestration-v2/ProviderRuntimeRecoveryPerformance.test.ts
 apps/server/src/orchestration-v2/RestartContinuation.test.ts
@@ -306,7 +312,6 @@ apps/server/src/mcp/toolkits/worktree/tools.ts
 apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts
 docs/internals/remote.md
 packages/contracts/src/assets.ts
-apps/server/src/mcp/toolkits/orchestrator/tools.test.ts
 apps/server/src/htmlRender/HtmlRender.ts
 apps/server/src/mcp/toolkits/html/handlers.ts
 apps/server/src/htmlRender/HtmlRender.test.ts
@@ -371,8 +376,6 @@ packages/provider-cursor/src/server/sdk.ts
 packages/provider-grok/package.json
 packages/provider-grok/src/server/acpSupport.ts
 packages/provider-opencode/src/server/OpenCodeRuntime.ts
-packages/provider-opencode/src/server/adapter.test.ts
-packages/provider-opencode/src/server/adapter.ts
 packages/provider-opencode/src/server/driver.ts
 # Urgent interruption (#285)
 apps/server/src/orchestration-v2/ProviderTurnControlService.ts
@@ -429,6 +432,7 @@ packages/client-runtime/src/state/threadExecution.test.ts
 packages/client-runtime/src/state/threadExecution.ts
 packages/client-runtime/src/state/threadRelationships.test.ts
 packages/client-runtime/src/state/threadRelationships.ts
+packages/client-runtime/src/state/subagentRuntime.ts
 apps/mobile/src/features/threads/thread-work-log.tsx
 packages/client-runtime/src/work-log/itemDetail.test.ts
 packages/client-runtime/src/work-log/itemDetail.ts
@@ -516,7 +520,6 @@ apps/desktop/src/preview/Manager.ts
 apps/desktop/src/preview/Manager.test.ts
 
 # Execution purpose admission (#377)
-apps/server/src/testUtils/shardWeights.json
 apps/mobile/src/features/threads/McpAppWebView.tsx
 apps/mobile/src/features/threads/NewTaskDraftScreen.tsx
 apps/mobile/src/features/threads/ThreadDetailScreen.tsx
@@ -526,8 +529,6 @@ apps/mobile/src/state/thread-outbox.test.ts
 apps/mobile/src/state/use-thread-composer-state.ts
 apps/mobile/src/state/use-thread-outbox-drain.ts
 apps/server/src/mcp/toolkits/pullRequests/handlers.ts
-apps/server/src/orchestration-v2/ProviderContinuationService.test.ts
-apps/server/src/orchestration-v2/ProviderContinuationService.ts
 packages/client-runtime/src/state/models.ts
 packages/contracts/src/threadPullRequest.ts
 packages/provider-core/src/server/ProviderContinuationRequests.ts
@@ -588,3 +589,77 @@ apps/desktop/scripts/main-process-bundle.test.mjs
 apps/server/src/mcp/PreviewAutomationBroker.ts
 apps/server/src/mcp/toolkits/preview/handlers.ts
 apps/server/src/preview/ServerBrowserPage.ts
+
+apps/server/src/assets/AttachmentUpload.ts
+apps/server/src/mcp/ThreadMetadataMcpService.ts
+apps/server/src/mcp/toolkits/attachment/input.ts
+apps/server/src/mcp/toolkits/device/handlers.ts
+apps/server/src/mcp/toolkits/environment/handlers.ts
+apps/server/src/mcp/toolkits/preview/handlers.test.ts
+apps/server/src/mcp/toolkits/previewControls/handlers.ts
+apps/server/src/mcp/toolkits/worktree/handlers.ts
+apps/server/src/orchestration-v2/AttachmentClaims.ts
+apps/server/src/project/ManagedProjectFolders.test.ts
+apps/server/src/project/ManagedProjectFolders.ts
+packages/client-runtime/src/state/threadShell.test.ts
+packages/client-runtime/src/state/threadShell.ts
+packages/shared/src/agentAwareness.test.ts
+packages/shared/src/agentAwareness.ts
+
+# Remote pending request shell and dismissal regression proof (#369).
+apps/server/src/orchestration-v2/WireProjection.test.ts
+packages/client-runtime/src/t3ToolSummary.test.ts
+
+# Typed native device commands and supported-runtime inspection (peer-links).
+apps/server/src/device/DeviceToolchain.ts
+apps/server/src/mcp/McpDeviceToolkit.test.ts
+apps/mobile/src/features/browser/BrowserPreviewRouteScreen.tsx
+apps/mobile/src/features/browser/PreviewStreamWebView.tsx
+apps/mobile/src/features/browser/preview-stream-document.ts
+apps/mobile/src/features/browser/preview-stream.browser.ts
+apps/mobile/src/features/devices/DevicePreviewRouteScreen.tsx
+apps/mobile/src/features/devices/threadDevicePreviews.test.ts
+apps/mobile/src/features/devices/threadDevicePreviews.ts
+apps/mobile/src/state/device.ts
+apps/mobile/src/state/preview.ts
+apps/server/src/assets/AssetAccess.ts
+apps/server/src/device/DeviceHubProxy.test.ts
+apps/server/src/device/DeviceHubProxy.ts
+apps/server/src/device/DeviceService.test.ts
+apps/server/src/http.ts
+apps/server/src/preview/Manager.ts
+apps/server/src/preview/ServerBrowserPage.test.ts
+apps/server/src/preview/ServerBrowserPage.ts
+apps/server/src/preview/ServerBrowserStream.ts
+apps/server/src/preview/SessionControl.test.ts
+apps/server/src/preview/SessionControl.ts
+apps/web/src/browser/ServerBrowserSurface.tsx
+apps/web/src/browser/serverPictureInPicture.ts
+apps/web/src/components/device/DeviceStreamView.browser.test.tsx
+apps/web/src/components/device/DeviceStreamView.tsx
+apps/web/src/components/preview/PreviewPanel.tsx
+apps/web/src/components/preview/ThreadPreviewMiniPlayer.tsx
+apps/web/src/previewMiniPlayerStore.test.ts
+apps/web/src/previewMiniPlayerStore.ts
+apps/web/src/state/device.ts
+apps/web/src/state/previewStream.ts
+packages/client-runtime/src/device/hubAccess.ts
+packages/client-runtime/src/device/stream.test.ts
+packages/client-runtime/src/device/stream.ts
+packages/client-runtime/src/preview/serverBrowserStream.test.ts
+packages/client-runtime/src/preview/serverBrowserStream.ts
+packages/client-runtime/src/state/assets.test.ts
+packages/client-runtime/src/state/assets.ts
+packages/client-runtime/src/state/device.ts
+packages/client-runtime/src/state/deviceHubAccess.ts
+packages/client-runtime/src/state/preview.ts
+packages/contracts/src/assets.test.ts
+packages/contracts/src/preview.test.ts
+packages/contracts/src/preview.ts
+packages/contracts/src/previewAutomation.ts
+packages/shared/src/toolOutput.test.ts
+packages/shared/src/toolOutput.ts
+
+# Qualified viewer per-request screenshot admission (#383)
+packages/client-runtime/src/device/screenshot.ts
+packages/client-runtime/src/device/screenshot.test.ts

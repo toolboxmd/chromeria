@@ -1,10 +1,14 @@
+import * as Scope from "effect/Scope";
+import * as Exit from "effect/Exit";
+import * as DateTime from "effect/DateTime";
+import { permanentPeerSessionTtl } from "../peer/permanentSession.ts";
+import { REUSABLE_DEV_SESSION_EXPIRES_AT } from "./ReusableDevAuth.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import * as Clock from "effect/Clock";
-import { AuthStandardClientScopes, EnvironmentId, ProjectId } from "@t3tools/contracts";
+import { AuthStandardClientScopes, EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
-import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -124,6 +128,240 @@ const layerFailingSessionLookupCredential = Layer.effect(
 );
 
 it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
+  it.effect.each(["device", "preview"] as const)(
+    "admitted %s transport outlives admission but not scope or session retirement",
+    (kind) =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionStore.SessionStore;
+        const owner = yield* sessions.issue({ subject: "continuous-viewer" });
+        const rival = yield* sessions.issue({ subject: "rival-viewer" });
+        const base = { environmentId: EnvironmentId.make("B"), threadId: ThreadId.make("context") };
+        const resource: SessionStore.ViewerResource =
+          kind === "device"
+            ? {
+                ...base,
+                type: "device",
+                hostId: "local",
+                deviceId: "device",
+                platform: "ios",
+                toolSessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              }
+            : { ...base, type: "preview", tabId: "tab", serverEpoch: "epoch" };
+        const input = {
+          sessionId: owner.sessionId,
+          resource,
+          operation: "control" as const,
+          generation: "generation",
+        };
+        const ticket = yield* sessions.issueViewerToken(input);
+        const unused = yield* sessions.issueViewerToken(input);
+        const unusedObserver = yield* sessions
+          .awaitViewerInvalidation(unused.viewerId)
+          .pipe(Effect.forkScoped({ startImmediately: true }));
+        const scope = yield* Scope.make();
+        const admitted = yield* sessions
+          .admitViewerToken(ticket.token)
+          .pipe(Effect.provideService(Scope.Scope, scope));
+        const siblingScope = yield* Scope.make();
+        const sibling = yield* sessions
+          .admitViewerToken(ticket.token)
+          .pipe(Effect.provideService(Scope.Scope, siblingScope));
+        const observer = yield* sessions
+          .awaitViewerInvalidation(ticket.viewerId)
+          .pipe(Effect.forkScoped({ startImmediately: true }));
+        yield* TestClock.adjust("65 seconds");
+        yield* Fiber.join(unusedObserver);
+        expect(observer.pollUnsafe()).toBeUndefined();
+        yield* admitted.recheck;
+        expect(yield* sessions.closeViewer(rival.sessionId, ticket.viewerId)).toBe(false);
+        expect((yield* sessions.admitViewerToken(ticket.token).pipe(Effect.result))._tag).toBe(
+          "Failure",
+        );
+        const refreshed = yield* sessions.issueViewerToken({ ...input, viewerId: ticket.viewerId });
+        expect(refreshed.viewerId).toBe(ticket.viewerId);
+        expect((yield* sessions.authenticateViewerToken(refreshed.token)).resource).toEqual(
+          resource,
+        );
+        for (const changed of [
+          { ...input, sessionId: rival.sessionId },
+          { ...input, operation: "view" as const },
+          { ...input, generation: "other" },
+        ])
+          expect(
+            (yield* sessions
+              .issueViewerToken({ ...changed, viewerId: ticket.viewerId })
+              .pipe(Effect.result))._tag,
+          ).toBe("Failure");
+        expect(
+          (yield* sessions
+            .issueViewerToken({ ...input, viewerId: unused.viewerId })
+            .pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        // Creating another admission prunes unused expired viewers, not this retained transport.
+        const next = yield* sessions.issueViewerToken(input);
+        yield* admitted.recheck;
+        yield* Scope.close(scope, Exit.void);
+        expect((yield* admitted.recheck.pipe(Effect.result))._tag).toBe("Failure");
+        yield* sibling.recheck;
+        expect(observer.pollUnsafe()).toBeUndefined();
+        yield* Scope.close(siblingScope, Exit.void);
+        yield* Fiber.join(observer);
+        expect(
+          (yield* sessions
+            .issueViewerToken({ ...input, viewerId: ticket.viewerId })
+            .pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        expect(
+          (yield* sessions.authenticateViewerToken(refreshed.token).pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        const second = yield* sessions.admitViewerToken(next.token);
+        const revoked = yield* sessions
+          .awaitViewerInvalidation(next.viewerId)
+          .pipe(Effect.forkScoped({ startImmediately: true }));
+        yield* TestClock.adjust("65 seconds");
+        yield* second.recheck;
+        yield* sessions.revoke(owner.sessionId);
+        expect(
+          (yield* sessions
+            .issueViewerToken({ ...input, viewerId: next.viewerId })
+            .pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        yield* Fiber.join(revoked);
+        expect((yield* second.recheck.pipe(Effect.result))._tag).toBe("Failure");
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(layerSessionStore(), TestClock.layer()))),
+  );
+
+  it.effect("fresh viewer admission remains bounded by original session expiry", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionStore.SessionStore;
+      const owner = yield* sessions.issue({ subject: "short-viewer", ttl: Duration.seconds(70) });
+      const input = {
+        sessionId: owner.sessionId,
+        resource: {
+          type: "preview" as const,
+          environmentId: EnvironmentId.make("B"),
+          threadId: ThreadId.make("context"),
+          tabId: "tab",
+          serverEpoch: "epoch",
+        },
+        operation: "control" as const,
+        generation: "generation",
+      };
+      const initial = yield* sessions.issueViewerToken(input);
+      const admitted = yield* sessions.admitViewerToken(initial.token);
+      yield* TestClock.adjust("65 seconds");
+      const current = yield* sessions.issueViewerToken({ ...input, viewerId: initial.viewerId });
+      expect(current.expiresAt).toEqual(owner.expiresAt);
+      yield* sessions.authenticateViewerToken(current.token);
+      yield* TestClock.adjust("6 seconds");
+      expect(
+        (yield* sessions.authenticateViewerToken(current.token).pipe(Effect.result))._tag,
+      ).toBe("Failure");
+      expect(
+        (yield* sessions
+          .issueViewerToken({ ...input, viewerId: initial.viewerId })
+          .pipe(Effect.result))._tag,
+      ).toBe("Failure");
+      expect((yield* admitted.recheck.pipe(Effect.result))._tag).toBe("Failure");
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(layerSessionStore(), TestClock.layer()))),
+  );
+
+  it.effect(
+    "binds viewer credentials to an exact resource, opening, operation, generation and live source session",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionStore.SessionStore;
+        const owner = yield* sessions.issue({ subject: "source-client" });
+        const rival = yield* sessions.issue({ subject: "rival-client" });
+        const resource = {
+          type: "device" as const,
+          environmentId: EnvironmentId.make("destination-B"),
+          threadId: ThreadId.make("destination-context"),
+          hostId: "local",
+          deviceId: "same-device-id",
+          toolSessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          platform: "ios" as const,
+        };
+        const input = {
+          sessionId: owner.sessionId,
+          resource,
+          operation: "view" as const,
+          generation: "actual-link-generation",
+        };
+        const ticket = yield* sessions.issueViewerToken(input);
+        const verification = { ...input, token: ticket.token };
+        const verified = yield* sessions.verifyViewerToken(verification);
+        expect(verified.session.sessionId).toBe(owner.sessionId);
+        expect(verified.session.sessionId).not.toBe(rival.sessionId);
+        expect(verified.viewerId).toBe(ticket.viewerId);
+        // A viewer credential is not an ordinary credential for /ws, /mcp or HTTP APIs.
+        expect((yield* sessions.verify(ticket.token).pipe(Effect.result))._tag).toBe("Failure");
+        expect((yield* sessions.verifyWebSocketToken(ticket.token).pipe(Effect.result))._tag).toBe(
+          "Failure",
+        );
+        expect(
+          (yield* sessions
+            .verifyViewerToken({ ...verification, operation: "control" })
+            .pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        expect(
+          (yield* sessions
+            .verifyViewerToken({ ...verification, generation: "replacement-link" })
+            .pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        for (const replacement of [
+          { ...resource, environmentId: EnvironmentId.make("another-environment") },
+          { ...resource, threadId: ThreadId.make("another-context") },
+          { ...resource, hostId: "another-host" },
+          { ...resource, deviceId: "another-device" },
+          { ...resource, toolSessionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+          { ...resource, platform: "android" as const },
+        ])
+          expect(
+            (yield* sessions
+              .verifyViewerToken({ ...verification, resource: replacement })
+              .pipe(Effect.result))._tag,
+          ).toBe("Failure");
+        const control = yield* sessions.issueViewerToken({ ...input, operation: "control" });
+        expect(control.viewerId).not.toBe(ticket.viewerId);
+        expect(
+          (yield* sessions.verifyViewerToken({
+            ...verification,
+            token: control.token,
+            operation: "control",
+          })).session.sessionId,
+        ).toBe(owner.sessionId);
+        const observer = yield* sessions
+          .awaitViewerInvalidation(ticket.viewerId)
+          .pipe(Effect.forkScoped({ startImmediately: true }));
+        expect(yield* sessions.closeViewer(rival.sessionId, ticket.viewerId)).toBe(false);
+        expect((yield* sessions.verifyViewerToken(verification)).viewerId).toBe(ticket.viewerId);
+        expect(yield* sessions.closeViewer(owner.sessionId, ticket.viewerId)).toBe(true);
+        yield* Fiber.join(observer);
+        expect((yield* sessions.verifyViewerToken(verification).pipe(Effect.flip))._tag).toBe(
+          "UnknownWebSocketSessionError",
+        );
+        expect((yield* sessions.authenticateViewerToken(control.token)).viewerId).toBe(
+          control.viewerId,
+        );
+        yield* TestClock.adjust(Duration.seconds(60));
+        expect(
+          (yield* sessions.authenticateViewerToken(control.token).pipe(Effect.flip))._tag,
+        ).toBe("WebSocketTokenExpiredError");
+        const current = yield* sessions.issueViewerToken(input);
+        yield* sessions.revoke(owner.sessionId);
+        expect(
+          (yield* sessions
+            .verifyViewerToken({ ...verification, token: current.token })
+            .pipe(Effect.flip))._tag,
+        ).toBe("SessionTokenRevokedError");
+        expect((yield* sessions.issueViewerToken(input).pipe(Effect.flip))._tag).toBe(
+          "SessionTokenRevokedError",
+        );
+        expect((yield* sessions.verify(rival.token)).sessionId).toBe(rival.sessionId);
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(layerSessionStore(), TestClock.layer()))),
+  );
+
   it.effect.each(["revoke", "revokeAllExcept", "replace"] as const)(
     "invalidates every connection for a session on %s and leaves other sessions active",
     (operation) =>
@@ -152,6 +390,58 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
         expect(yield* Deferred.isDone(ownerInvalidated)).toBe(false);
         yield* sessions.awaitInvalidation(client.sessionId);
       }).pipe(Effect.scoped, Effect.provide(Layer.merge(layerSessionStore(), TestClock.layer()))),
+  );
+
+  it.effect(
+    "caps permanent peer issuance across the two-clock boundary and retains listing and revocation",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionStore.SessionStore;
+        yield* TestClock.setTime(DateTime.makeUnsafe("2026-10-17T00:00:00.000Z").epochMilliseconds);
+        const ttl = yield* permanentPeerSessionTtl;
+        yield* TestClock.adjust(Duration.millis(1));
+        const issued = yield* sessions.issue({
+          ttl,
+          subject: "mcp-client",
+          peerLink: true,
+          runtimeModeCeiling: "auto",
+          client: { label: "T3 Code · Stepped peer", deviceType: "bot" },
+        });
+        expect(DateTime.formatIso(issued.expiresAt)).toBe("9999-12-31T23:59:59.999Z");
+        const sql = yield* SqlClient.SqlClient;
+        const persisted = yield* sql<{
+          expires_at: string;
+        }>`SELECT expires_at FROM auth_sessions WHERE session_id=${issued.sessionId}`;
+        expect(persisted[0]?.expires_at).toBe("9999-12-31T23:59:59.999Z");
+        const listed = (yield* sessions.listActive()).find(
+          (session) => session.sessionId === issued.sessionId,
+        );
+        expect(listed?.expiresAt.epochMilliseconds).toBe(
+          REUSABLE_DEV_SESSION_EXPIRES_AT.epochMilliseconds,
+        );
+        expect((yield* sessions.verify(issued.token)).runtimeModeCeiling).toBe("auto");
+        expect((yield* sessions.verify(issued.token)).peerLink).toBe(true);
+        const ordinary = yield* sessions.issue();
+        expect(ordinary.expiresAt.epochMilliseconds - (yield* DateTime.now).epochMilliseconds).toBe(
+          Duration.toMillis(Duration.days(30)),
+        );
+        const short = yield* sessions.issue({ ttl: Duration.seconds(2) });
+        expect(short.expiresAt.epochMilliseconds - (yield* DateTime.now).epochMilliseconds).toBe(
+          2000,
+        );
+        yield* TestClock.adjust(Duration.seconds(2));
+        expect((yield* sessions.verify(short.token).pipe(Effect.result))._tag).toBe("Failure");
+        expect(yield* sessions.revoke(issued.sessionId)).toBe(true);
+        expect(
+          (yield* sessions.listActive()).some((session) => session.sessionId === issued.sessionId),
+        ).toBe(false);
+        expect((yield* sessions.verify(issued.token).pipe(Effect.result))._tag).toBe("Failure");
+        expect((yield* sessions.verify(ordinary.token)).sessionId).toBe(ordinary.sessionId);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(layerSessionStore(), SqlitePersistence.layerMemory, TestClock.layer()),
+        ),
+      ),
   );
 
   it.effect("expires a connected session at its credential deadline", () =>

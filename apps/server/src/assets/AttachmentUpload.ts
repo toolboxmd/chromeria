@@ -31,6 +31,9 @@ import {
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import { inferImageExtension } from "../imageMime.ts";
+import * as Staging from "./AttachmentStaging.ts";
+import { sha256 } from "@noble/hashes/sha2";
+import * as Hex from "effect/encoding/Hex";
 
 export const ATTACHMENT_UPLOAD_ROUTE_PREFIX = "/api/attachments/upload";
 
@@ -49,6 +52,8 @@ const AttachmentUploadClaims = Schema.Struct({
   mimeType: Schema.String,
   sizeBytes: Schema.Number,
   expiresAt: Schema.Number,
+  owner: Schema.optional(Schema.String),
+  digest: Schema.optional(Schema.String),
 });
 export type AttachmentUploadClaims = typeof AttachmentUploadClaims.Type;
 
@@ -71,6 +76,7 @@ const loadSigningSecret = Effect.gen(function* () {
 
 export const issueAttachmentUploadUrl = Effect.fn("AttachmentUpload.issueUrl")(function* (
   input: AttachmentCreateUploadUrlInput,
+  binding?: { readonly attachmentId: string; readonly owner: string; readonly digest?: string },
 ) {
   const secret = yield* loadSigningSecret.pipe(
     Effect.mapError((cause) => new AttachmentUploadSigningKeyError({ cause })),
@@ -93,9 +99,11 @@ export const issueAttachmentUploadUrl = Effect.fn("AttachmentUpload.issueUrl")(f
   }
 
   const attachmentType = input.type ?? "image";
-  const attachmentId = createPendingAttachmentId(
-    attachmentType === "file" ? attachmentFileExtension(input.name) : undefined,
-  );
+  const attachmentId =
+    binding?.attachmentId ??
+    createPendingAttachmentId(
+      attachmentType === "file" ? attachmentFileExtension(input.name) : undefined,
+    );
   const expiresAt = nowMs + ATTACHMENT_UPLOAD_URL_TTL_MS;
   const encodedPayload = base64UrlEncode(
     encodeAttachmentUploadClaims({
@@ -107,6 +115,12 @@ export const issueAttachmentUploadUrl = Effect.fn("AttachmentUpload.issueUrl")(f
       mimeType: input.mimeType,
       sizeBytes: input.sizeBytes,
       expiresAt,
+      ...(binding === undefined
+        ? {}
+        : {
+            owner: binding.owner,
+            ...(binding.digest === undefined ? {} : { digest: binding.digest }),
+          }),
     }),
   );
 
@@ -150,6 +164,24 @@ export const storeAttachmentUpload = Effect.fn("AttachmentUpload.store")(functio
   claims: AttachmentUploadClaims,
   body: Uint8Array | HttpServerRequest.HttpServerRequest["stream"],
 ) {
+  if (claims.owner !== undefined) {
+    const staging = yield* Effect.serviceOption(Staging.AttachmentStaging);
+    if (Option.isNone(staging))
+      return {
+        ok: false,
+        status: 409,
+        detail: "Durable attachment staging is unavailable.",
+      } satisfies StoreAttachmentUploadResult;
+    const permitted = yield* staging.value
+      .authorizeUpload(claims.attachmentId, claims.owner)
+      .pipe(Effect.result);
+    if (permitted._tag === "Failure")
+      return {
+        ok: false,
+        status: 403,
+        detail: "The attachment owner is no longer authorized.",
+      } satisfies StoreAttachmentUploadResult;
+  }
   if (body instanceof Uint8Array && body.byteLength !== claims.sizeBytes) {
     return {
       ok: false,
@@ -200,7 +232,36 @@ export const storeAttachmentUpload = Effect.fn("AttachmentUpload.store")(functio
         detail: `Body was ${receivedBytes} bytes, expected ${claims.sizeBytes}.`,
       } satisfies StoreAttachmentUploadResult;
     }
-    yield* fileSystem.rename(partPath, finalPath);
+    if (claims.owner !== undefined) {
+      const staging = yield* Effect.serviceOption(Staging.AttachmentStaging);
+      if (Option.isNone(staging))
+        return {
+          ok: false,
+          status: 409,
+          detail: "Durable attachment staging is unavailable.",
+        } satisfies StoreAttachmentUploadResult;
+      yield* staging.value.authorizeUpload(claims.attachmentId, claims.owner);
+      const bytes = yield* fileSystem.readFile(partPath);
+      const digest = Hex.encode(sha256(bytes));
+      if (claims.digest !== undefined && claims.digest !== digest)
+        return {
+          ok: false,
+          status: 400,
+          detail: "Attachment digest does not match.",
+        } satisfies StoreAttachmentUploadResult;
+      yield* fileSystem.link(partPath, finalPath).pipe(
+        Effect.catchIf(
+          (error) => error.reason._tag === "AlreadyExists",
+          () =>
+            Effect.gen(function* () {
+              const published = yield* fileSystem.readFile(finalPath);
+              if (Hex.encode(sha256(published)) !== digest)
+                return yield* Effect.fail("attachment_conflict");
+            }),
+        ),
+      );
+      yield* staging.value.complete(claims.attachmentId, claims.owner, digest);
+    } else yield* fileSystem.rename(partPath, finalPath);
     return { ok: true } satisfies StoreAttachmentUploadResult;
   }).pipe(
     Effect.catch((cause) =>

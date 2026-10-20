@@ -1,5 +1,6 @@
 import {
   type DeviceActionInput,
+  type DeviceViewerResource,
   type DeviceCloseInput,
   type DeviceConfigureInput,
   type DeviceDetail,
@@ -11,6 +12,7 @@ import {
   DeviceHostUnavailableError,
   DeviceNotFoundError,
   DeviceOperationError,
+  DeviceActionUnavailableError,
   type DeviceOpenInput,
   type DevicePlatform,
   DevicePlatformUnavailableError,
@@ -22,6 +24,13 @@ import {
   type DeviceHostSummary,
   LOCAL_DEVICE_HOST_ID,
   type ThreadId,
+  DeviceCommandInput,
+  type DeviceCommandResult,
+  type DeviceAtomicCommand,
+  type DeviceAtomicCommandResult,
+  type DeviceCommandCatalog,
+  type PeerAttachmentReference,
+  OrchestratorMcpFailure,
 } from "@t3tools/contracts";
 import * as FileSystem from "effect/FileSystem";
 import { resolveNodeExecutable, nodeRuntimeUnavailableMessage } from "@t3tools/shared/nodeRuntime";
@@ -56,6 +65,27 @@ import * as DeviceHost from "./DeviceHost.ts";
 import * as SshDeviceHost from "./SshDeviceHost.ts";
 import * as Exit from "effect/Exit";
 import * as LocalDeviceHost from "./LocalDeviceHost.ts";
+import * as AgentDeviceCommand from "./AgentDeviceCommand.ts";
+import {
+  AGENT_DEVICE_VERSION,
+  DEVICE_HUB_VERSION,
+  installedAgentDevice,
+} from "./DeviceToolchain.ts";
+import * as Option from "effect/Option";
+import { requestDigest } from "../mcp/McpRequestReceipts.ts";
+import { requestNamespace, requestGeneration } from "../mcp/requestIdentity.ts";
+import * as Invocation from "../mcp/McpInvocationContext.ts";
+import { CurrentRequest, externalDispatch, externalReplay } from "../mcp/McpRequestReceipts.ts";
+import * as AttachmentStaging from "../assets/AttachmentStaging.ts";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
+import {
+  createAttachmentId,
+  createPendingAttachmentId,
+  parseAttachmentUuid,
+  parseAttachmentFileExtension,
+  toSafeThreadAttachmentSegment,
+  resolveAttachmentPath,
+} from "../attachmentStore.ts";
 
 export const DEVICE_HUB_ROUTE_PREFIX = "/api/device-hub";
 
@@ -95,13 +125,33 @@ export interface DeviceAgentReadiness extends DeviceReadiness {
   readonly agentDevice: DeviceHost.AgentDeviceEndpoint;
 }
 
+const decodeCommandInput = Schema.decodeUnknownEffect(DeviceCommandInput, {
+  onExcessProperty: "error",
+});
+const encodeCommandJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeCommandJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+
 export class DeviceService extends Context.Service<
   DeviceService,
   {
     readonly agentCli: Effect.Effect<string, DeviceError>;
+    readonly checkCommandAccess: (hostId?: DeviceHostId) => Effect.Effect<void, DeviceError>;
+    readonly commandCatalog: (
+      hostId?: DeviceHostId,
+      target?: DeviceCommandInput["target"],
+    ) => Effect.Effect<DeviceCommandCatalog, DeviceError | OrchestratorMcpFailure>;
+    readonly executeCommand: (
+      input: DeviceCommandInput,
+    ) => Effect.Effect<
+      DeviceCommandResult,
+      DeviceError | OrchestratorMcpFailure,
+      Invocation.McpInvocationContext
+    >;
     readonly testHost: (
       config: SshDeviceHostConfig,
     ) => Effect.Effect<DeviceHostSummary, DeviceError>;
+    /** Fresh consent and host availability, without starting a host or writing config. */
+    readonly checkAgentAccess?: (hostId?: DeviceHostId) => Effect.Effect<void, DeviceError>;
     readonly agentTarget: (input: {
       threadId: ThreadId;
       hostId: DeviceHostId;
@@ -132,6 +182,10 @@ export class DeviceService extends Context.Service<
     readonly agentReadinessIfSupported: (
       hostId?: DeviceHostId,
     ) => Effect.Effect<DeviceAgentReadiness | null, DeviceError>;
+    /** Checks the exact still-open resource and consent without preparing a host. */
+    readonly authorizeViewer: (
+      resource: DeviceViewerResource,
+    ) => Effect.Effect<DeviceReadiness, DeviceHostUnavailableError | DeviceOperationError>;
     readonly currentReadiness: (hostId?: DeviceHostId) => Effect.Effect<DeviceReadiness | null>;
     readonly sessionsForThread: (threadId: ThreadId) => Effect.Effect<ReadonlyArray<DeviceSession>>;
   }
@@ -167,6 +221,47 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
 ) {
   const settings = yield* ServerSettings.ServerSettingsService;
   const crypto = yield* Crypto.Crypto;
+  const commandLock = yield* Semaphore.make(1);
+  const recheckAction = Effect.gen(function* () {
+    // Reads have verified invocation authority too, without a mutation receipt.
+    // Direct native UI calls retain their existing owner when there is no MCP scope.
+    const invocation = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+    if (Option.isNone(invocation) || invocation.value.thread === undefined) return;
+    const original = yield* Invocation.requireThreadScope(invocation.value, "Device action");
+    const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+    if (Option.isSome(authority)) {
+      // The authority owner consumes the returned current ceiling before admitting this effect.
+      yield* authority.value.recheckInvocation(original, "device", original.thread.threadId);
+    } else if (original.authority !== undefined || original.client?.linked === true)
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "Current invocation authority is unavailable.",
+      });
+  }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new DeviceHostUnavailableError({
+          hostId: LOCAL_DEVICE_HOST_ID,
+          reason: "The current device invocation is no longer authorized.",
+          cause,
+        }),
+    ),
+  );
+
+  const commandConfig = yield* Effect.serviceOption(ServerConfig.ServerConfig);
+  const commandFs = yield* Effect.serviceOption(FileSystem.FileSystem);
+  const commandPath = yield* Effect.serviceOption(Path.Path);
+  const commandRunner = yield* Effect.serviceOption(ProcessRunner.ProcessRunner);
+  // Resource bindings, not authority: every command still checks present consent and its opening.
+  const commandBindings = new Map<
+    DeviceSession,
+    Omit<Parameters<typeof AgentDeviceCommand.run>[0], "command">
+  >();
+  // An opening belongs to the actor that opened it, even when multiple source
+  // actors may independently access the same destination thread. This resource
+  // identity never substitutes for the shared owner's current authority checks.
+  const commandOwners = new Map<DeviceSession, { namespace: string; generation: string }>();
+  const commandCaptures = new Map<string, { directory: string; outputPath: string }>();
   const lifecycleLock = yield* Semaphore.make(1);
   const readDeviceSettings = settings.getSettings.pipe(
     Effect.map((value) => ({
@@ -306,6 +401,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
             "Device support is off. Enable it in the Device panel before installing or starting device tools.",
         });
       }
+      yield* recheckAction;
       const ready = yield* host
         .ensureReady((status, detail) =>
           setReadinessStatus(host.id, { status, detail }, attempt).pipe(Effect.asVoid),
@@ -354,14 +450,108 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     return yield* readiness(host.id, attempt);
   });
 
-  const agentReadinessIfSupported: ReadinessWithRefreshAttempt<"agentReadinessIfSupported"> =
-    Effect.fn("DeviceService.agentReadinessIfSupported")(function* (hostId, attempt) {
+  const supportedAgentHost = (hostId?: DeviceHostId) =>
+    Effect.gen(function* () {
       const deviceSettings = yield* readDeviceSettings;
-      if (!deviceSettings.enabled || !deviceSettings.agentAccessEnabled) return null;
+      if (!deviceSettings.enabled || !deviceSettings.agentAccessEnabled) return undefined;
       const host = yield* resolveHost(hostId);
       const summary = yield* host.summary;
       if (summary.kind === "local" && !summary.platforms.some((platform) => platform.available))
-        return null;
+        return undefined;
+      return host;
+    });
+  const checkAgentAccess = (hostId?: DeviceHostId) =>
+    supportedAgentHost(hostId).pipe(
+      Effect.flatMap((host) =>
+        host === undefined
+          ? Effect.fail(
+              new DeviceHostUnavailableError({
+                hostId: hostId ?? LOCAL_DEVICE_HOST_ID,
+                reason:
+                  "Agent device access requires enabled device support, agent access, and an available simulator platform on this host.",
+              }),
+            )
+          : Effect.void,
+      ),
+    );
+
+  const commandUnavailable = (hostId = LOCAL_DEVICE_HOST_ID) =>
+    new DeviceHostUnavailableError({
+      hostId,
+      reason:
+        "Typed device execution requires the native service and the pinned installed agent-device and device-hub runtimes.",
+    });
+  const commandPreflight = (hostId?: DeviceHostId) =>
+    Effect.gen(function* () {
+      yield* checkAgentAccess(hostId);
+      if (
+        Option.isNone(commandConfig) ||
+        Option.isNone(commandFs) ||
+        Option.isNone(commandPath) ||
+        Option.isNone(commandRunner)
+      )
+        return yield* commandUnavailable(hostId);
+      const host = yield* resolveHost(hostId);
+      const summary = yield* host.summary;
+      const tools = summary.tools;
+      if (
+        tools === undefined ||
+        tools.agent.requiredVersion !== AGENT_DEVICE_VERSION ||
+        tools.hub.requiredVersion !== DEVICE_HUB_VERSION ||
+        !tools.agent.installedVersions.includes(AGENT_DEVICE_VERSION) ||
+        !tools.hub.installedVersions.includes(DEVICE_HUB_VERSION) ||
+        (tools.agent.runningVersion !== null &&
+          tools.agent.runningVersion !== AGENT_DEVICE_VERSION) ||
+        (tools.hub.runningVersion !== null && tools.hub.runningVersion !== DEVICE_HUB_VERSION)
+      )
+        return yield* commandUnavailable(host.id);
+      const entry = yield* installedAgentDevice(commandConfig.value.baseDir).pipe(
+        Effect.provideService(FileSystem.FileSystem, commandFs.value),
+        Effect.provideService(Path.Path, commandPath.value),
+      );
+      if (entry === undefined) return yield* commandUnavailable(host.id);
+      const nodePath = yield* resolveNodeExecutable("Device automation").pipe(
+        Effect.provideService(FileSystem.FileSystem, commandFs.value),
+        Effect.provideService(Path.Path, commandPath.value),
+        Effect.mapError(() => commandUnavailable(host.id)),
+      );
+      return {
+        host,
+        entry,
+        nodePath,
+        fs: commandFs.value,
+        path: commandPath.value,
+        runner: commandRunner.value,
+        config: commandConfig.value,
+      };
+    });
+  const checkCommandAccess = (hostId?: DeviceHostId) =>
+    commandPreflight(hostId).pipe(Effect.andThen(recheckAction));
+
+  const forgetCommandSession = (session: DeviceSession) =>
+    Effect.gen(function* () {
+      const binding = commandBindings.get(session);
+      if (binding !== undefined && Option.isSome(commandFs))
+        yield* commandFs.value.remove(binding.configPath, { force: true }).pipe(Effect.orDie);
+      commandBindings.delete(session);
+      commandOwners.delete(session);
+      commandCaptures.delete(`${session.toolSessionId}:record`);
+      commandCaptures.delete(`${session.toolSessionId}:trace`);
+    });
+  const retireCommandSession = (session: DeviceSession) =>
+    Effect.gen(function* () {
+      const binding = commandBindings.get(session);
+      if (binding === undefined) return yield* forgetCommandSession(session);
+      yield* recheckAction;
+      yield* AgentDeviceCommand.run({ ...binding, command: { type: "close" } });
+      yield* forgetCommandSession(session);
+    });
+
+  const agentReadinessIfSupported: ReadinessWithRefreshAttempt<"agentReadinessIfSupported"> =
+    Effect.fn("DeviceService.agentReadinessIfSupported")(function* (hostId, attempt) {
+      const host = yield* supportedAgentHost(hostId);
+      if (host === undefined) return null;
+      yield* recheckAction;
       const ready = yield* host
         .ensureAgentReady((phase, detail) =>
           setReadinessStatus(host.id, { status: phase, detail }, attempt).pipe(Effect.asVoid),
@@ -616,6 +806,8 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
           } else if (input.agentAccessEnabled === false) {
             yield* Effect.forEach(hosts.values(), (host) => host.stopAgent, { discard: true });
           }
+          if (!nextEnabled || input.agentAccessEnabled === false)
+            yield* Effect.forEach(commandOwners.keys(), forgetCommandSession, { discard: true });
           yield* publish((state) => ({
             ...state,
             hostStatus: nextEnabled ? "idle" : "disabled",
@@ -707,6 +899,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
   });
 
   const open: DeviceService["Service"]["open"] = Effect.fn("DeviceService.open")(function* (input) {
+    yield* recheckAction;
     const host = yield* resolveHost(input.hostId);
     yield* ensurePlatform(host, input.platform);
     const ready = yield* readiness(host.id);
@@ -726,6 +919,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
           booting,
         ],
       }));
+      yield* recheckAction;
       const bootedId = yield* boot(ready, device).pipe(
         Effect.ensuring(
           publish((current) => ({
@@ -742,6 +936,8 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
         return yield* new DeviceNotFoundError({ hostId: host.id, deviceId: bootedId });
       }
     } else if (device.platform === "ios" && device.booted) {
+      yield* recheckAction;
+      // A simulator booted outside T3 has no helper attached yet.
       yield* HttpClientRequest.post(
         `${ready.hub.origin}${vendorPrefix("ios")}/grid/api/start`,
       ).pipe(
@@ -767,6 +963,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       deviceId: device.id,
       platform: device.platform,
       openedAt,
+      toolSessionId: yield* crypto.randomUUIDv4().pipe(Effect.orDie),
     };
     yield* lifecycleLock.withPermit(
       Effect.gen(function* () {
@@ -774,6 +971,21 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
           return yield* new DeviceHostUnavailableError({
             hostId: host.id,
             reason: "Device support was turned off while the device was opening.",
+          });
+        const previous = (yield* SynchronizedRef.get(stateRef)).state.sessions.filter(
+          (existing) =>
+            existing.threadId === session.threadId &&
+            existing.hostId === session.hostId &&
+            existing.deviceId === session.deviceId,
+        );
+        yield* recheckAction;
+        yield* Effect.forEach(previous, retireCommandSession, { discard: true });
+        const caller = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+        const request = yield* CurrentRequest;
+        if (Option.isSome(caller) && request !== undefined)
+          commandOwners.set(session, {
+            namespace: requestNamespace(caller.value),
+            generation: request.generation,
           });
         yield* publish((current) => ({
           ...current,
@@ -792,7 +1004,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       }),
     );
     return session;
-  });
+  }, commandLock.withPermit);
 
   const shutdownDevice = Effect.fn("DeviceService.shutdownDevice")(function* (
     hostId: DeviceHostId,
@@ -800,6 +1012,9 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     platform: DevicePlatform,
   ) {
     const ready = yield* readiness(hostId);
+    const closing = (yield* SynchronizedRef.get(stateRef)).state.sessions.filter(
+      (session) => session.hostId === ready.hostId && session.deviceId === deviceId,
+    );
     const postShutdown = (path: string, body: Record<string, string>) =>
       HttpClientRequest.post(`${ready.hub.origin}${path}`).pipe(
         HttpClientRequest.bodyJson(body),
@@ -823,7 +1038,11 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     // serve-sim's shutdown closes its in-process capture session before it runs
     // `simctl shutdown`; the hub's generic shutdown can leave that session cached
     // across a reboot. serve-sim runs simctl bare, though, so a simulator that is
-    // already off fails there.
+    // already off fails there. Accept that failure only when the hub confirms
+    // the simulator is off; a failure on a running one still surfaces.
+    // Readiness can wait while authority changes. Keep this refusal outside
+    // the iOS already-stopped recovery so it cannot be converted to success.
+    yield* recheckAction;
     yield* platform === "ios"
       ? postShutdown(`${vendorPrefix("ios")}/grid/api/shutdown`, { udid: deviceId }).pipe(
           Effect.catch((cause) =>
@@ -837,6 +1056,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
           ),
         )
       : postShutdown("/api/devices/shutdown", { platform, id: deviceId });
+    yield* Effect.forEach(closing, forgetCommandSession, { discard: true });
     yield* publish((state) => ({
       ...state,
       devices: state.devices.map((device) =>
@@ -857,29 +1077,31 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     );
   });
 
-  const close: DeviceService["Service"]["close"] = Effect.fn("DeviceService.close")(
-    function* (input) {
-      const { state } = yield* SynchronizedRef.get(stateRef);
-      const closing = state.sessions.filter(
-        (session) =>
-          session.threadId === input.threadId &&
-          (input.hostId === undefined || session.hostId === input.hostId) &&
-          (input.deviceId === undefined || session.deviceId === input.deviceId),
+  const close: DeviceService["Service"]["close"] = Effect.fn("DeviceService.close")(function* (
+    input,
+  ) {
+    yield* recheckAction;
+    const { state } = yield* SynchronizedRef.get(stateRef);
+    const closing = state.sessions.filter(
+      (session) =>
+        session.threadId === input.threadId &&
+        (input.hostId === undefined || session.hostId === input.hostId) &&
+        (input.deviceId === undefined || session.deviceId === input.deviceId),
+    );
+    if (closing.length === 0) return;
+    yield* Effect.forEach(closing, retireCommandSession, { discard: true });
+    yield* publish((current) => ({
+      ...current,
+      sessions: current.sessions.filter((session) => !closing.includes(session)),
+    }));
+    if (input.shutdown) {
+      yield* Effect.forEach(
+        closing,
+        (session) => shutdownDevice(session.hostId, session.deviceId, session.platform),
+        { discard: true },
       );
-      if (closing.length === 0) return;
-      yield* publish((current) => ({
-        ...current,
-        sessions: current.sessions.filter((session) => !closing.includes(session)),
-      }));
-      if (input.shutdown) {
-        yield* Effect.forEach(
-          closing,
-          (session) => shutdownDevice(session.hostId, session.deviceId, session.platform),
-          { discard: true },
-        );
-      }
-    },
-  );
+    }
+  }, commandLock.withPermit);
 
   const shutdown: DeviceService["Service"]["shutdown"] = Effect.fn("DeviceService.shutdown")(
     function* (input) {
@@ -892,12 +1114,14 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
         ),
       }));
     },
+    commandLock.withPermit,
   );
 
   const screenshot: DeviceService["Service"]["screenshot"] = Effect.fn("DeviceService.screenshot")(
     function* (input) {
       const { ready, device } = yield* resolveDevice(input.hostId, input.deviceId);
       const url = `${ready.hub.origin}${vendorPrefix(device.platform)}/api/screenshot?device=${encodeURIComponent(device.id)}`;
+      yield* recheckAction;
       const png = yield* httpClient.execute(HttpClientRequest.post(url)).pipe(
         Effect.flatMap(HttpClientResponse.filterStatusOk),
         Effect.flatMap((response) => response.arrayBuffer),
@@ -957,6 +1181,640 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       Effect.map(({ state }) => state.sessions.filter((session) => session.threadId === threadId)),
     );
 
+  const authorizeViewer: DeviceService["Service"]["authorizeViewer"] = Effect.fn(
+    "DeviceService.authorizeViewer",
+  )(function* (resource) {
+    yield* recheckAction;
+    const { state } = yield* SynchronizedRef.get(stateRef);
+    const session = state.sessions.find(
+      (session) =>
+        session.threadId === resource.threadId &&
+        session.hostId === resource.hostId &&
+        session.deviceId === resource.deviceId &&
+        session.platform === resource.platform &&
+        session.toolSessionId === resource.toolSessionId,
+    );
+    if (!session || !(yield* readDeviceSettings).enabled)
+      return yield* new DeviceHostUnavailableError({
+        hostId: resource.hostId,
+        reason: "This exact device opening is no longer available.",
+      });
+    const ready = yield* currentReadiness(resource.hostId);
+    if (!ready)
+      return yield* new DeviceHostUnavailableError({
+        hostId: resource.hostId,
+        reason: "The device hub is not running.",
+      });
+    yield* recheckAction;
+    const currentSettings = yield* readDeviceSettings;
+    const current = yield* SynchronizedRef.get(stateRef);
+    if (!currentSettings.enabled || !current.state.sessions.includes(session))
+      return yield* new DeviceHostUnavailableError({
+        hostId: resource.hostId,
+        reason: "This device opening or its consent was retired during readiness.",
+      });
+    return ready;
+  });
+
+  const executeCommand: DeviceService["Service"]["executeCommand"] = Effect.fn(
+    "DeviceService.executeCommand",
+  )((untrusted) =>
+    commandLock.withPermit(
+      Effect.gen(function* () {
+        const input = yield* decodeCommandInput(untrusted).pipe(
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "Invalid typed device command.",
+              }),
+          ),
+        );
+        const originalScope = yield* Invocation.requireThreadMcpCapability("device").pipe(
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "capability_denied",
+                message: "Agent device access is unavailable for this caller.",
+              }),
+          ),
+        );
+        let scope = originalScope;
+        const recheck = Effect.gen(function* () {
+          const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+          if (Option.isSome(authority))
+            scope = yield* authority.value.recheckInvocation(
+              originalScope,
+              "device",
+              originalScope.thread.threadId,
+            );
+          else if (originalScope.authority !== undefined || originalScope.client?.linked === true)
+            return yield* new OrchestratorMcpFailure({
+              code: "capability_denied",
+              message: "Current invocation authority is unavailable.",
+            });
+        });
+        yield* recheck;
+        const runtime = yield* commandPreflight(input.target.hostId);
+        const request = yield* CurrentRequest;
+        if (request === undefined)
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "Typed device commands require negotiated durable request identity.",
+          });
+        // Host/version inspection can wait after admission. Replay is still a current-authority action.
+        yield* recheck;
+        const previous = yield* externalReplay<DeviceCommandResult>();
+        if (Option.isSome(previous)) {
+          yield* recheck;
+          return previous.value;
+        }
+        const session = (yield* sessionsForThread(scope.thread.threadId)).find(
+          (session) =>
+            session.hostId === input.target.hostId &&
+            session.deviceId === input.target.deviceId &&
+            session.toolSessionId === input.target.toolSessionId,
+        );
+        if (session === undefined)
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "This exact device session is no longer open in this thread.",
+          });
+        const owner = commandOwners.get(session);
+        if (
+          owner === undefined ||
+          owner.namespace !== requestNamespace(scope) ||
+          owner.generation !== request.generation
+        )
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "This exact opening belongs to another caller or connection generation.",
+          });
+        const commands = input.command.type === "batch" ? input.command.steps : [input.command];
+        // Validate every step before accepting any effect. Nested batches and runtime overrides
+        // are absent from the atomic schema, and close can only terminate the sequence.
+        const captures = new Set(commandCaptures.keys());
+        for (const [index, command] of commands.entries()) {
+          if (command.type === "close" && index !== commands.length - 1)
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "Close must be the final batch step.",
+            });
+          if (
+            (command.type === "prepare" || command.type === "action-button") &&
+            session.platform !== "ios"
+          )
+            return yield* new DeviceActionUnavailableError({
+              operation: command.type,
+              platform: session.platform,
+              reason: "unsupported",
+            });
+          if (
+            command.type === "settings" &&
+            ((["faceid", "touchid"].includes(command.setting) && session.platform !== "ios") ||
+              (command.setting === "fingerprint" && session.platform !== "android"))
+          )
+            return yield* new DeviceActionUnavailableError({
+              operation: `settings ${command.setting}`,
+              platform: session.platform,
+              reason: "unsupported",
+            });
+          if (command.type === "record" || command.type === "trace") {
+            const key = `${session.toolSessionId}:${command.type}`;
+            if ((command.action === "start") === captures.has(key))
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "Capture sequence does not belong to this exact opening.",
+              });
+            if (command.action === "start") captures.add(key);
+            else captures.delete(key);
+          }
+        }
+        const staging = yield* Effect.serviceOption(AttachmentStaging.AttachmentStaging);
+        if (Option.isNone(staging))
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "Native artifact ownership is unavailable; no capture was accepted.",
+          });
+        const inputArtifact = (command: DeviceAtomicCommand) =>
+          Effect.gen(function* () {
+            yield* recheck;
+            if (command.type !== "install" && command.type !== "reinstall") return undefined;
+            const reference = command.artifact;
+            const extension = runtime.path.extname(reference.name).toLowerCase();
+            const allowed = session.platform === "android" ? [".apk", ".aab"] : [".zip"];
+            if (reference.environmentId !== scope.environmentId || !allowed.includes(extension))
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message:
+                  "Stage a supported app package in the destination context before installation.",
+              });
+            const verified = yield* staging.value.verify(scope, {
+              type: "file",
+              id: reference.attachmentId,
+              name: reference.name,
+              mimeType: reference.mimeType,
+              sizeBytes: reference.sizeBytes,
+            });
+            if (
+              verified.reference.owner !== reference.owner ||
+              verified.digest !== reference.digest ||
+              verified.reference.environmentId !== reference.environmentId
+            )
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "The qualified app artifact no longer matches its owner and bytes.",
+              });
+            return verified.path;
+          });
+        const publishJson = (document: unknown, name: string, maximumBytes: number) =>
+          Effect.gen(function* () {
+            yield* recheck;
+            const text = yield* encodeCommandJson(document).pipe(Effect.orDie);
+            const bytes = new TextEncoder().encode(text);
+            const id = createAttachmentId(scope.thread.threadId, "json");
+            if (id === null || bytes.length > maximumBytes)
+              return yield* commandUnavailable(session.hostId);
+            const attachment = {
+              type: "file" as const,
+              id,
+              name,
+              mimeType: "application/json",
+              sizeBytes: bytes.length,
+            };
+            const file = resolveAttachmentPath({
+              attachmentsDir: runtime.config.attachmentsDir,
+              attachment,
+            });
+            if (file === null) return yield* commandUnavailable(session.hostId);
+            yield* runtime.fs
+              .makeDirectory(runtime.path.dirname(file), { recursive: true })
+              .pipe(Effect.orDie);
+            yield* recheck;
+            yield* runtime.fs.writeFile(file, bytes, { flag: "wx" }).pipe(Effect.orDie);
+            return {
+              type: "artifact" as const,
+              target: input.target,
+              artifact: yield* recheck.pipe(
+                Effect.andThen(staging.value.publishReference(scope, attachment, "device")),
+              ),
+            };
+          });
+        const qualifyArtifact = (reference: PeerAttachmentReference) => ({
+          _tag: "peer-attachment" as const,
+          threadId: scope.thread.threadId,
+          reference,
+        });
+        const qualifyResult = (result: DeviceAtomicCommandResult): DeviceAtomicCommandResult =>
+          result.type === "artifact"
+            ? { ...result, resource: qualifyArtifact(result.artifact) }
+            : result.type === "artifacts"
+              ? { ...result, resources: result.artifacts.map(qualifyArtifact) }
+              : result;
+        const boundedResult = (raw: DeviceCommandResult) =>
+          Effect.gen(function* () {
+            const result =
+              raw.type === "batch"
+                ? { ...raw, results: raw.results.map(qualifyResult) }
+                : qualifyResult(raw);
+            const text = yield* encodeCommandJson(result).pipe(Effect.orDie);
+            // Keep the complete validated tree/sequence at its native artifact owner,
+            // instead of turning a successful capture into an oversized unknown receipt.
+            return new TextEncoder().encode(text).length <= 48_000
+              ? result
+              : qualifyResult(
+                  yield* publishJson(result, `device-${input.command.type}.json`, 20 * 1024 * 1024),
+                );
+          });
+        // Ownership and platform shape can be refused without starting any external helper.
+        yield* Effect.forEach(commands, inputArtifact, { discard: true, concurrency: 1 });
+        const inputReferences = commands.flatMap((command) =>
+          command.type === "install" || command.type === "reinstall" ? [command.artifact] : [],
+        );
+        if (inputReferences.length > 0) {
+          yield* recheck;
+          yield* staging.value.reserveTransfer(
+            scope,
+            `device-input:${request.id}`,
+            `device:${requestDigest(input.target)}`,
+            inputReferences.map((reference) => ({
+              type: "file" as const,
+              id: reference.attachmentId,
+              name: reference.name,
+              mimeType: reference.mimeType,
+              sizeBytes: reference.sizeBytes,
+            })),
+            inputReferences,
+          );
+          yield* recheck;
+        }
+        return yield* externalDispatch(
+          Effect.gen(function* () {
+            // Preparation is effectful and belongs to the same unknown-outcome boundary as dispatch.
+            yield* recheck;
+            yield* checkAgentAccess(session.hostId);
+            const ready = yield* agentReadinessIfSupported(session.hostId);
+            if (ready === null) return yield* commandUnavailable(session.hostId);
+            const running = (yield* runtime.host.summary).tools;
+            if (
+              running?.agent.runningVersion !== AGENT_DEVICE_VERSION ||
+              running.hub.runningVersion !== DEVICE_HUB_VERSION
+            )
+              return yield* commandUnavailable(session.hostId);
+            yield* recheck;
+            yield* configureAgent(session.hostId, ready);
+            const current = (yield* sessionsForThread(scope.thread.threadId)).includes(session);
+            if (!current || hosts.get(session.hostId) !== runtime.host)
+              return yield* commandUnavailable(session.hostId);
+            const privateSession = `${yield* agentDeviceSession(scope.thread.threadId, session.hostId, session.deviceId).pipe(Effect.provideService(Crypto.Crypto, crypto))}-${session.toolSessionId}`;
+            const configured = runtime.path.join(
+              runtime.config.stateDir,
+              "device",
+              "sessions",
+              `${session.toolSessionId}.json`,
+            );
+            yield* recheck;
+            yield* writeAgentDeviceConfig(configured, ready.agentDevice).pipe(
+              Effect.provideService(FileSystem.FileSystem, runtime.fs),
+              Effect.provideService(Path.Path, runtime.path),
+              Effect.mapError(() => commandUnavailable(session.hostId)),
+            );
+            const binding = {
+              nodePath: runtime.nodePath,
+              entryPath: runtime.entry.entryPath,
+              configPath: configured,
+              cwd: runtime.path.dirname(configured),
+              session: privateSession,
+              platform: session.platform,
+              deviceId: session.deviceId,
+              runner: runtime.runner,
+            };
+            commandBindings.set(session, binding);
+            let availableCommands: ReadonlyArray<string> = [];
+            if (commands.some((command) => command.type !== "close")) {
+              yield* recheck;
+              const available = yield* AgentDeviceCommand.run({
+                ...binding,
+                command: { type: "capabilities" },
+              });
+              if (
+                available === undefined ||
+                !("availableCommands" in available) ||
+                available.device.id !== session.deviceId ||
+                available.device.platform !== session.platform
+              )
+                return yield* commandUnavailable(session.hostId);
+              availableCommands = available.availableCommands;
+              for (const command of commands) {
+                if (
+                  command.type !== "close" &&
+                  command.type !== "capabilities" &&
+                  !availableCommands.includes(command.type)
+                )
+                  return yield* new DeviceActionUnavailableError({
+                    operation: command.type,
+                    platform: session.platform,
+                    reason: "unsupported",
+                  });
+              }
+            }
+            const executeBound = (
+              command: DeviceAtomicCommand,
+            ): Effect.Effect<DeviceAtomicCommandResult, DeviceError | OrchestratorMcpFailure> =>
+              Effect.gen(function* () {
+                yield* recheck;
+                if (command.type === "capabilities")
+                  return {
+                    type: "capabilities" as const,
+                    target: input.target,
+                    commands: [
+                      ...new Set([
+                        ...availableCommands.filter((name) =>
+                          AgentDeviceCommand.supportedCommands.some(
+                            (supported) => supported === name,
+                          ),
+                        ),
+                        "batch",
+                      ]),
+                    ],
+                  };
+                const captureKey =
+                  command.type === "record" || command.type === "trace"
+                    ? `${session.toolSessionId}:${command.type}`
+                    : undefined;
+                yield* checkAgentAccess(session.hostId);
+                if (
+                  !(yield* sessionsForThread(scope.thread.threadId)).includes(session) ||
+                  hosts.get(session.hostId) !== runtime.host
+                )
+                  return yield* commandUnavailable(session.hostId);
+                let capture =
+                  captureKey === undefined ? undefined : commandCaptures.get(captureKey);
+                if (captureKey !== undefined && "action" in command && command.action === "start") {
+                  const id = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+                  const directory = runtime.path.join(
+                    runtime.config.stateDir,
+                    "device",
+                    "media",
+                    input.target.toolSessionId,
+                    id,
+                  );
+                  yield* runtime.fs
+                    .makeDirectory(directory, { recursive: true })
+                    .pipe(Effect.orDie);
+                  capture = {
+                    directory,
+                    outputPath: runtime.path.join(
+                      directory,
+                      command.type === "record" ? "recording.mp4" : "trace.log",
+                    ),
+                  };
+                  commandCaptures.set(captureKey, capture);
+                }
+                if (command.type === "screenshot") {
+                  yield* recheck;
+                  const capture = yield* screenshot(session);
+                  const bytes = capture.png;
+                  if (
+                    bytes.length < 24 ||
+                    bytes.length > 10 * 1024 * 1024 ||
+                    new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0) !==
+                      0x89504e47
+                  )
+                    return yield* new DeviceOperationError({
+                      operation: "capture",
+                      reason: "invalid_payload",
+                      cause: "Invalid PNG capture.",
+                    });
+                  const id = createAttachmentId(scope.thread.threadId, "png");
+                  if (id === null || Option.isNone(staging))
+                    return yield* commandUnavailable(session.hostId);
+                  const attachment = {
+                    type: "image" as const,
+                    id,
+                    name: "device.png",
+                    mimeType: "image/png",
+                    sizeBytes: bytes.length,
+                  };
+                  const file = resolveAttachmentPath({
+                    attachmentsDir: runtime.config.attachmentsDir,
+                    attachment,
+                  });
+                  if (file === null) return yield* commandUnavailable(session.hostId);
+                  yield* runtime.fs
+                    .makeDirectory(runtime.path.dirname(file), { recursive: true })
+                    .pipe(Effect.orDie);
+                  yield* recheck;
+                  yield* runtime.fs.writeFile(file, bytes, { flag: "wx" }).pipe(Effect.orDie);
+                  return {
+                    type: "artifact" as const,
+                    target: input.target,
+                    artifact: yield* recheck.pipe(
+                      Effect.andThen(staging.value.publishReference(scope, attachment, "device")),
+                    ),
+                  };
+                }
+                const inputPath = yield* inputArtifact(command);
+                yield* recheck;
+                const result = yield* AgentDeviceCommand.run({
+                  ...binding,
+                  command: command,
+                  ...(inputPath === undefined ? {} : { inputPath }),
+                  ...(capture === undefined ? {} : { outputPath: capture.outputPath }),
+                });
+                if (result !== undefined && "document" in result) {
+                  if (Option.isNone(staging)) return yield* commandUnavailable(session.hostId);
+                  const document = AgentDeviceCommand.diagnosticDocument(
+                    command.type,
+                    result.document,
+                    [
+                      ready.agentDevice.token,
+                      ready.agentDevice.baseUrl,
+                      runtime.config.baseDir,
+                      runtime.entry.entryPath,
+                      configured,
+                    ],
+                  );
+                  return yield* publishJson(document, `device-${command.type}.json`, 512 * 1024);
+                }
+                if (captureKey !== undefined && "action" in command && command.action === "stop") {
+                  if (
+                    capture === undefined ||
+                    result === undefined ||
+                    !("outPath" in result) ||
+                    Option.isNone(staging)
+                  )
+                    return yield* commandUnavailable(session.hostId);
+                  const artifacts: PeerAttachmentReference[] = [];
+                  const paths = result.artifacts?.length
+                    ? result.artifacts.map((artifact) => artifact.localPath ?? artifact.path)
+                    : [capture.outputPath];
+                  yield* recheck;
+                  const directory = yield* runtime.fs
+                    .realPath(capture.directory)
+                    .pipe(Effect.orDie);
+                  for (const [index, candidate] of paths.entries()) {
+                    if (candidate === undefined || !runtime.path.isAbsolute(candidate))
+                      return yield* commandUnavailable(session.hostId);
+                    const file = yield* runtime.fs.realPath(candidate).pipe(Effect.orDie);
+                    const relative = runtime.path.relative(directory, file);
+                    if (
+                      relative === "" ||
+                      relative.startsWith("..") ||
+                      runtime.path.isAbsolute(relative)
+                    )
+                      return yield* commandUnavailable(session.hostId);
+                    const info = yield* runtime.fs.stat(file).pipe(Effect.orDie);
+                    if (info.type !== "File" || info.size < 1n || info.size > 50n * 1024n * 1024n)
+                      return yield* commandUnavailable(session.hostId);
+                    const extension = runtime.path.extname(file).toLowerCase().slice(1);
+                    if (!["mp4", "png", "json", "log"].includes(extension))
+                      return yield* commandUnavailable(session.hostId);
+                    yield* recheck;
+                    let bytes = yield* runtime.fs.readFile(file).pipe(Effect.orDie);
+                    if (
+                      extension === "mp4" &&
+                      (bytes.length < 12 ||
+                        new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(
+                          4,
+                        ) !== 0x66747970)
+                    )
+                      return yield* commandUnavailable(session.hostId);
+                    if (
+                      extension === "png" &&
+                      (bytes.length < 24 ||
+                        new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(
+                          0,
+                        ) !== 0x89504e47)
+                    )
+                      return yield* commandUnavailable(session.hostId);
+                    if (extension === "json" || extension === "log") {
+                      let text = yield* Effect.try({
+                        try: () => new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+                        catch: () => commandUnavailable(session.hostId),
+                      });
+                      const privateValues = [
+                        ready.agentDevice.token,
+                        ready.agentDevice.baseUrl,
+                        runtime.config.baseDir,
+                        runtime.entry.entryPath,
+                        configured,
+                      ];
+                      if (extension === "json") {
+                        const value = yield* decodeCommandJson(text).pipe(
+                          Effect.mapError(() => commandUnavailable(session.hostId)),
+                        );
+                        text = yield* encodeCommandJson(
+                          AgentDeviceCommand.diagnosticDocument(command.type, value, privateValues),
+                        ).pipe(Effect.orDie);
+                      } else text = AgentDeviceCommand.redactText(text, privateValues).text;
+                      bytes = new TextEncoder().encode(text);
+                    }
+                    const pendingId = createPendingAttachmentId(extension);
+                    const uuid = parseAttachmentUuid(pendingId);
+                    const segment = toSafeThreadAttachmentSegment(scope.thread.threadId);
+                    const suffix = parseAttachmentFileExtension(pendingId);
+                    if (!uuid || !segment || !suffix)
+                      return yield* commandUnavailable(session.hostId);
+                    const attachment = {
+                      type: "file" as const,
+                      id: `${segment}-${uuid}-${suffix}`,
+                      name: `device-${command.type}-${index + 1}.${extension}`,
+                      mimeType:
+                        extension === "mp4"
+                          ? "video/mp4"
+                          : extension === "png"
+                            ? "image/png"
+                            : extension === "json"
+                              ? "application/json"
+                              : "text/plain",
+                      sizeBytes: bytes.length,
+                    };
+                    const pending = resolveAttachmentPath({
+                      attachmentsDir: runtime.config.attachmentsDir,
+                      attachment: { ...attachment, id: pendingId },
+                    });
+                    if (pending === null) return yield* commandUnavailable(session.hostId);
+                    yield* runtime.fs
+                      .makeDirectory(runtime.path.dirname(pending), { recursive: true })
+                      .pipe(Effect.orDie);
+                    yield* recheck;
+                    yield* runtime.fs.writeFile(pending, bytes, { flag: "wx" }).pipe(Effect.orDie);
+                    yield* recheck;
+                    artifacts.push(
+                      yield* staging.value.claimRecording(
+                        scope,
+                        pendingId,
+                        attachment,
+                        "device",
+                        recheck,
+                      ),
+                    );
+                  }
+                  commandCaptures.delete(captureKey);
+                  return {
+                    type: "artifacts" as const,
+                    target: input.target,
+                    artifacts,
+                    recording: {
+                      ...(result.durationMs === undefined ? {} : { durationMs: result.durationMs }),
+                      ...(result.capturedDurationMs === undefined
+                        ? {}
+                        : { capturedDurationMs: result.capturedDurationMs }),
+                      ...(result.recorder === undefined ? {} : { recorder: result.recorder }),
+                      ...(result.nativePathDisposition === undefined
+                        ? {}
+                        : { nativePathDisposition: result.nativePathDisposition }),
+                    },
+                  };
+                }
+                if (command.type === "close") {
+                  yield* forgetCommandSession(session);
+                  yield* publish((current) => ({
+                    ...current,
+                    sessions: current.sessions.filter((candidate) => candidate !== session),
+                  }));
+                  return { type: "closed" as const, target: input.target };
+                }
+                if (command.type === "snapshot" && result !== undefined && "nodes" in result) {
+                  const serialized = yield* encodeCommandJson(result).pipe(Effect.orDie);
+                  if (
+                    [
+                      ready.agentDevice.token,
+                      ready.agentDevice.baseUrl,
+                      configured,
+                      runtime.entry.entryPath,
+                    ].some(
+                      (privateValue) =>
+                        privateValue.length > 0 && serialized.includes(privateValue),
+                    )
+                  )
+                    return yield* commandUnavailable(session.hostId);
+                  return {
+                    type: "snapshot" as const,
+                    target: input.target,
+                    ...result,
+                    truncated: result.truncated ?? false,
+                  };
+                }
+                return {
+                  type: "action" as const,
+                  target: input.target,
+                  status: "dispatched" as const,
+                };
+              });
+            if (input.command.type !== "batch")
+              return yield* boundedResult(yield* executeBound(input.command));
+            const results = yield* Effect.forEach(input.command.steps, executeBound, {
+              concurrency: 1,
+            });
+            return yield* boundedResult({ type: "batch" as const, target: input.target, results });
+          }),
+        );
+      }),
+    ),
+  );
+
   return {
     ...DeviceService.of({
       testHost,
@@ -981,6 +1839,60 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
           reason: "Agent CLI installation is unavailable in this device service.",
         }),
       ),
+      checkAgentAccess,
+      checkCommandAccess,
+      commandCatalog: (hostId, target) =>
+        Effect.gen(function* () {
+          const { host } = yield* commandPreflight(hostId);
+          let targetPlatform: DevicePlatform | undefined;
+          if (target !== undefined) {
+            const current = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+            const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+            if (Option.isNone(current) || Option.isNone(authority) || target.hostId !== host.id)
+              return yield* new OrchestratorMcpFailure({
+                code: "capability_denied",
+                message: "Exact device input preflight is unavailable.",
+              });
+            const original = yield* Invocation.requireThreadScope(
+              current.value,
+              "Device input preflight",
+            );
+            const scope = yield* authority.value.recheckInvocation(
+              original,
+              "device",
+              original.thread.threadId,
+            );
+            const session = (yield* sessionsForThread(scope.thread.threadId)).find(
+              (session) =>
+                session.hostId === target.hostId &&
+                session.deviceId === target.deviceId &&
+                session.toolSessionId === target.toolSessionId,
+            );
+            targetPlatform = session?.platform;
+            const owner = session === undefined ? undefined : commandOwners.get(session);
+            if (
+              owner === undefined ||
+              owner.namespace !== requestNamespace(scope) ||
+              owner.generation !== requestGeneration(scope)
+            )
+              return yield* new OrchestratorMcpFailure({
+                code: "capability_denied",
+                message: "This exact device opening is unavailable to the input caller.",
+              });
+            yield* authority.value.recheckInvocation(original, "device", original.thread.threadId);
+          }
+          return {
+            protocol: 1 as const,
+            inputArtifacts: 1 as const,
+            ...(targetPlatform === undefined ? {} : { targetPlatform }),
+            hostId: host.id,
+            agentDeviceVersion: AGENT_DEVICE_VERSION,
+            deviceHubVersion: DEVICE_HUB_VERSION,
+            commands: AgentDeviceCommand.supportedCommands,
+            families: AgentDeviceCommand.catalogFamilies,
+          };
+        }),
+      executeCommand,
       agentTarget: (input) =>
         Effect.gen(function* () {
           const host = yield* resolveHost(input.hostId);
@@ -998,6 +1910,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
                   hostId: host.id,
                   reason: "Host configuration changed. Retry the operation.",
                 });
+              yield* recheckAction;
               return yield* configureAgent(input.hostId, ready);
             }),
           );
@@ -1021,6 +1934,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       readiness,
       readinessIfSupported,
       agentReadinessIfSupported,
+      authorizeViewer,
       currentReadiness,
       sessionsForThread,
     }),
@@ -1030,6 +1944,11 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       const summaries = yield* Effect.forEach(hosts.values(), (host) => host.summary);
       const unchanged = (id: DeviceHostId) =>
         hosts.has(id) && hosts.get(id) === publishedHosts.get(id);
+      yield* Effect.forEach(
+        [...commandOwners.keys()].filter((session) => !unchanged(session.hostId)),
+        forgetCommandSession,
+        { discard: true },
+      );
       yield* publish((state) => ({
         ...state,
         hosts: summaries,

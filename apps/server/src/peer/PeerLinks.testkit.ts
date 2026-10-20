@@ -1,7 +1,16 @@
+import type * as SqlClient from "effect/sql/SqlClient";
+import * as PeerAuthority from "./PeerAuthority.ts";
+import * as PeerNoticeDelivery from "./PeerNoticeDelivery.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import { ProviderInstanceId, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import * as Providers from "../provider/ProviderRegistry.ts";
 import * as Adapters from "../orchestration-v2/ProviderAdapterRegistry.ts";
-import * as NodeServices from "@effect/platform-node/NodeServices";
+import type * as Adapter from "@t3tools/provider-core/server/ProviderAdapter";
+import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
+import * as NodePath from "@effect/platform-node/NodePath";
 import {
   EnvironmentHttpApi,
   EnvironmentId,
@@ -15,6 +24,7 @@ import * as Ref from "effect/Ref";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpServer from "effect/http/HttpServer";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
@@ -65,6 +75,16 @@ export const servePeer = <E, R>(
   tools: Layer.Layer<never, E, R>,
   options?: {
     readonly persisted?: boolean;
+    readonly serverConfig?: ServerConfig.ServerConfig["Service"];
+    readonly registry?: McpSessionRegistry.McpSessionRegistryShape;
+    readonly controlStreamUnavailable?: boolean;
+    readonly database?: Layer.Layer<SqlClient.SqlClient>;
+    readonly secretStore?: ServerSecretStore.ServerSecretStore["Service"];
+    readonly authorityServices?: Context.Context<PeerAuthority.PeerAuthority | PeerLinks.PeerLinks>;
+    readonly authority?: {
+      readonly projections: ProjectionStore.ProjectionStoreV2["Service"];
+      readonly threads?: ThreadManagement.ThreadManagementService["Service"];
+    };
     readonly scopeForThread?: McpSessionRegistry.McpSessionRegistryShape["scopeForThread"];
   },
 ) =>
@@ -72,23 +92,76 @@ export const servePeer = <E, R>(
     const descriptor = yield* Ref.make(initial);
     const bearers = yield* Ref.make<ReadonlyArray<string>>([]);
     const probes = yield* Ref.make(0);
+    const savedPreviewTransport = yield* Ref.make<"supported" | "unsupported" | "unavailable">(
+      "supported",
+    );
     const layerEnvironment = Layer.succeed(ServerEnvironment.ServerEnvironment, {
       getEnvironmentId: Ref.get(descriptor).pipe(Effect.map((current) => current.environmentId)),
       getDescriptor: Ref.get(descriptor),
     });
     const authContext = yield* EnvironmentAuth.layer.pipe(
-      Layer.provide(options?.persisted === true ? Sqlite.layerConfig : Sqlite.layerMemory),
-      Layer.provideMerge(ServerSecretStore.layer),
+      Layer.provideMerge(
+        options?.database ??
+          (options?.persisted === true ? Sqlite.layerConfig : Sqlite.layerMemory),
+      ),
+      Layer.provideMerge(
+        options?.secretStore === undefined
+          ? ServerSecretStore.layer
+          : Layer.succeed(ServerSecretStore.ServerSecretStore, options.secretStore),
+      ),
       Layer.provideMerge(ServerEnvironment.layerIdentity),
-      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-peer-link-peer-" })),
-      Layer.provideMerge(NodeServices.layer),
+      Layer.provideMerge(
+        options?.serverConfig === undefined
+          ? ServerConfig.layerTest(process.cwd(), { prefix: "t3-peer-link-peer-" })
+          : Layer.succeed(ServerConfig.ServerConfig, options.serverConfig),
+      ),
+      Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, NodeFileSystem.layer, NodePath.layer)),
       Layer.fresh,
       Layer.build,
     );
+    const authorityContext =
+      options?.authorityServices ??
+      (options?.authority === undefined
+        ? undefined
+        : yield* Layer.mergeAll(
+            PeerAuthority.layer,
+            ...(options.authority.threads === undefined
+              ? []
+              : [
+                  PeerNoticeDelivery.layer.pipe(
+                    Layer.provide(
+                      Layer.succeed(
+                        ThreadManagement.ThreadManagementService,
+                        options.authority.threads,
+                      ),
+                    ),
+                  ),
+                ]),
+          ).pipe(
+            Layer.provideMerge(PeerLinks.layer),
+            Layer.provide(
+              Layer.succeed(ProjectionStore.ProjectionStoreV2, options.authority.projections),
+            ),
+            Layer.provide(Layer.succeedContext(authContext)),
+            Layer.provide(layerEnvironment),
+            Layer.provide(FetchHttpClient.layer),
+            Layer.fresh,
+            Layer.build,
+          ));
     const layerRecordBearers = HttpRouter.middleware(
       (httpEffect) =>
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
+          if (request.url === "/mcp/peer-control/saved-preview") {
+            const transport = yield* Ref.get(savedPreviewTransport);
+            if (transport !== "supported")
+              return HttpServerResponse.empty({ status: transport === "unsupported" ? 404 : 503 });
+          }
+          if (
+            options?.controlStreamUnavailable === true &&
+            request.url === "/mcp/peer-control/stream"
+          )
+            return HttpServerResponse.empty({ status: 404 });
           if (request.url.startsWith("/.well-known/t3/environment")) {
             yield* Ref.update(probes, (count) => count + 1);
           }
@@ -109,21 +182,26 @@ export const servePeer = <E, R>(
       tools.pipe(
         Layer.provideMerge(McpHttpServer.layerMcpTransport),
         Layer.provide(
-          Layer.mock(McpSessionRegistry.McpSessionRegistry)({
-            resolve: () => Effect.succeed(undefined),
-            scopeForThread: options?.scopeForThread ?? (() => Effect.succeed(undefined)),
-          }),
+          options?.registry === undefined
+            ? Layer.mock(McpSessionRegistry.McpSessionRegistry)({
+                resolve: () => Effect.succeed(undefined),
+                scopeForThread: options?.scopeForThread ?? (() => Effect.succeed(undefined)),
+              })
+            : Layer.succeed(McpSessionRegistry.McpSessionRegistry, options.registry),
         ),
         Layer.provide(McpOAuth.layerMcpClientAuthenticator),
       ),
     ).pipe(
       Layer.provide(layerRecordBearers),
+      Layer.provide(Layer.succeedContext(authorityContext ?? Context.empty())),
       Layer.provide(layerEnvironment),
       Layer.provide(Layer.succeedContext(authContext)),
     );
     // Fresh, so the peer never shares a toolkit or MCP server with the
     // environment that links to it in the same test.
     yield* HttpRouter.serve(layerRoutes, { disableListenLog: true, disableLogger: true }).pipe(
+      Layer.provide(Layer.succeedContext(authContext)),
+      Layer.provide(Layer.succeedContext(authorityContext ?? Context.empty())),
       Layer.fresh,
       Layer.build,
     );
@@ -133,7 +211,18 @@ export const servePeer = <E, R>(
     const auth = Context.get(authContext, EnvironmentAuth.EnvironmentAuth);
     return {
       url,
+      setSavedPreviewTransport: (mode: "supported" | "unsupported" | "unavailable") =>
+        Ref.set(savedPreviewTransport, mode),
       auth,
+      authorityContext,
+      peerAuthority:
+        authorityContext === undefined
+          ? undefined
+          : Context.get(authorityContext, PeerAuthority.PeerAuthority),
+      peerLinks:
+        authorityContext === undefined
+          ? undefined
+          : Context.get(authorityContext, PeerLinks.PeerLinks),
       baseDir: Context.get(authContext, ServerConfig.ServerConfig).baseDir,
       descriptor,
       bearers,
@@ -170,7 +259,7 @@ export const layerLinkingEnvironment = (descriptor: ExecutionEnvironmentDescript
       }),
     ),
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-peer-link-here-" })),
-    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, NodeFileSystem.layer, NodePath.layer)),
     Layer.fresh,
   );
 
@@ -191,6 +280,16 @@ export const linkTo = (
 /** Destination launch catalog, distinct from any source catalog. */
 export const layerLaunchCatalog = Layer.mergeAll(
   Layer.mock(Adapters.ProviderAdapterRegistryV2)({
+    get: (instanceId) =>
+      instanceId !== "codex"
+        ? Effect.fail(new Adapters.ProviderAdapterRegistryLookupError({ instanceId }))
+        : Effect.succeed({
+            instanceId,
+            driver: ProviderDriverKind.make("codex"),
+            getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+            planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
+            openSession: () => Effect.die("The isolated catalog never starts a provider process"),
+          } as Adapter.ProviderAdapterV2["Service"]),
     list: () => Effect.succeed([ProviderInstanceId.make("codex")]),
   }),
   Layer.mock(Providers.ProviderRegistry)({

@@ -1,8 +1,33 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { T3_MCP_TOOL_NAMES, resolveT3McpToolPresentation } from "./t3McpToolPresentation.ts";
+import {
+  T3_MCP_TOOL_NAMES,
+  resolveT3McpToolDefinition,
+  resolveT3McpToolPresentation,
+} from "./t3McpToolPresentation.ts";
 
 describe("resolveT3McpToolPresentation", () => {
+  it("distinguishes current inspection from historical acquisition through provider aliases", () => {
+    const inspect = resolveT3McpToolDefinition("mcp__t3-code__t3_attachment_inspect");
+    const acquire = resolveT3McpToolDefinition("T3-code.t3_attachment_acquire completed");
+    expect(inspect?.summaryAction).toBe("attachment-inspect");
+    expect(acquire?.summaryAction).toBe("attachment-acquire");
+    expect(inspect?.labels).toEqual(["Inspect", "Inspecting", "Inspected", "an attachment upload"]);
+    expect(acquire?.labels[2]).toBe("Recorded acquisition of");
+    expect(resolveT3McpToolDefinition("mcp__another__t3_attachment_acquire")).toBeNull();
+  });
+  it("presents typed device discovery and execution through the existing device controls", () => {
+    for (const name of ["device_commands", "device_execute"]) {
+      const definition = resolveT3McpToolDefinition(name);
+      expect(definition?.icon).toBe("device");
+      expect(definition?.summaryAction).toBe("device");
+      expect(definition?.labels.every((label) => label.trim().length > 0)).toBe(true);
+      expect(resolveT3McpToolPresentation(`mcp__t3-code__${name}`)).toEqual({
+        displayName: definition?.displayName,
+        logo: "t3-code",
+      });
+    }
+  });
   it("recognizes every T3 tool across provider prefixes and completion suffixes", () => {
     for (const tool of T3_MCP_TOOL_NAMES) {
       const presentation = resolveT3McpToolPresentation(tool);

@@ -1,3 +1,15 @@
+import * as PeerLinkEvents from "../peer/PeerLinkEvents.ts";
+import { checkAutomationCommit } from "../scheduledTasks/DestinationAutomationAuthority.ts";
+import {
+  PeerDispatchAuthority,
+  PeerAcceptedAutomation,
+  NativeAuthorityValidation,
+  nativeAuthorityOwners,
+} from "../peer/peerEffectAuthority.ts";
+import {
+  initializePeerEffectAuthority,
+  recordPeerEffectAuthority,
+} from "../peer/peerEffectAuthority.ts";
 import { RESTART_CUT_REASONS } from "@t3tools/shared/restartCut";
 import {
   CommandId,
@@ -232,6 +244,9 @@ const layerBase: Layer.Layer<
   EventSinkV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const nativeAuthority = yield* Effect.serviceOption(NativeAuthorityValidation);
+    const peerLinkEvents = yield* Effect.serviceOption(PeerLinkEvents.PeerLinkEvents);
+    yield* initializePeerEffectAuthority.pipe(Effect.orDie);
     const commandReceipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
     const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
     const eventStore = yield* EventStore.EventStoreV2;
@@ -422,6 +437,9 @@ const layerBase: Layer.Layer<
             events: normalized,
           });
           yield* applyStoredEvents(committed);
+          yield* recordPeerEffectAuthority(input.events, input.effects).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
           yield* effectOutbox.enqueue(input.effects);
           return committed;
         }).pipe(Effect.withTracerEnabled(false)),
@@ -480,6 +498,9 @@ const layerBase: Layer.Layer<
               events: normalized,
             });
             yield* applyStoredEvents(storedEvents);
+            yield* recordPeerEffectAuthority(input.events, input.effects ?? []).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            );
             yield* effectOutbox.enqueue(input.effects ?? []);
             return { committed: true as const, storedEvents };
           }),
@@ -679,6 +700,58 @@ const layerBase: Layer.Layer<
       input: Parameters<EventSinkV2Shape["commitCommand"]>[0],
     ) {
       let drained: Effect.Effect<void> = Effect.void;
+      const execution = input.effects.some((effect) =>
+        [
+          "provider-turn.start",
+          "provider-runtime.continue",
+          "provider-turn.steer",
+          "provider-turn.restart",
+          "runtime-request.respond",
+          "provider-thread.rollback",
+        ].includes(effect.request.type),
+      );
+      const dispatch = yield* PeerDispatchAuthority;
+      const automation = yield* PeerAcceptedAutomation;
+      const explicit = [dispatch, automation].filter((id) => id !== undefined);
+      const threadIds = [
+        ...new Set([input.threadId, ...input.events.map((event) => event.threadId)]),
+      ];
+      const runIds = input.events.flatMap((event) => [
+        ...(event.runId == null ? [] : [event.runId]),
+        ...(event.type === "run.created"
+          ? [
+              event.payload.restartContinuationOfRunId,
+              event.payload.forkPrismContinuationSourceRunId,
+            ].filter((id) => id !== undefined)
+          : []),
+      ]);
+      runIds.push(
+        ...input.effects.flatMap((effect) =>
+          effect.request.type === "provider-runtime.continue"
+            ? [effect.request.sourceRunId]
+            : "runId" in effect.request
+              ? [effect.request.runId]
+              : [],
+        ),
+      );
+      const guarded = dispatch !== undefined || automation !== undefined || execution;
+      const capturedOwners = guarded
+        ? yield* nativeAuthorityOwners(explicit, threadIds, runIds).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          )
+        : [];
+      const admission =
+        guarded && Option.isSome(nativeAuthority)
+          ? yield* nativeAuthority.value.preflight(capturedOwners, threadIds).pipe(
+              Effect.mapError(
+                () =>
+                  new ForkCommitGuardRejected({
+                    threadId: input.threadId,
+                    kind: "invalid_transition",
+                  }),
+              ),
+            )
+          : undefined;
       const result = yield* commitThenPublish(
         Effect.gen(function* () {
           let standaloneDeclineEvent: OrchestrationV2DomainEvent | undefined;
@@ -776,6 +849,44 @@ const layerBase: Layer.Layer<
                 Effect.provideService(ProjectionStore.ProjectionStoreV2, projectionStore),
               );
           }
+          if (guarded) {
+            const owners = yield* nativeAuthorityOwners(explicit, threadIds, runIds).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            );
+            if (admission !== undefined) {
+              yield* admission.check.pipe(
+                Effect.mapError(
+                  () =>
+                    new ForkCommitGuardRejected({
+                      threadId: input.threadId,
+                      kind: "invalid_transition",
+                    }),
+                ),
+              );
+              const actual = yield* nativeAuthorityOwners(explicit, threadIds, runIds).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              );
+              if (
+                actual.length !== capturedOwners.length ||
+                actual.some((id, index) => id !== capturedOwners[index])
+              )
+                return yield* new ForkCommitGuardRejected({
+                  threadId: input.threadId,
+                  kind: "invalid_transition",
+                });
+            }
+            yield* checkAutomationCommit(owners, admission?.births).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.mapError(
+                () =>
+                  new ForkCommitGuardRejected({
+                    threadId: input.threadId,
+                    kind: "invalid_transition",
+                  }),
+              ),
+            );
+          }
+
           const normalized = yield* normalizeEvents(input.events);
           let storedEvents = yield* eventStore.append({
             commandId: input.commandId,
@@ -796,6 +907,10 @@ const layerBase: Layer.Layer<
             storedEvents,
             eventStore.latestSequence({ threadId: input.threadId }),
           );
+          yield* recordPeerEffectAuthority(
+            storedEvents.map((stored) => stored.event),
+            input.effects,
+          ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
           yield* effectOutbox.enqueue(input.effects);
           const receipt: CommandReceiptStore.CommandReceiptV2 = {
             commandId: input.commandId,
@@ -857,7 +972,11 @@ const layerBase: Layer.Layer<
             if (result.enqueuedEffectCount > 0) {
               yield* effectOutbox.notifyAvailable(result.enqueuedEffectCount);
             }
-            if (result.committed) yield* publishStoredEvents(result.storedEvents);
+            if (result.committed) {
+              if ((input.forkPlans?.length ?? 0) !== 0 && Option.isSome(peerLinkEvents))
+                yield* peerLinkEvents.value.automationChanged;
+              yield* publishStoredEvents(result.storedEvents);
+            }
           }),
       );
       // A stopped start may still commit what it did, which takes the publish

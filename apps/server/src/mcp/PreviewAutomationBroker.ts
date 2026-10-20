@@ -1,3 +1,4 @@
+import { interactiveAuthority } from "../peer/PeerAuthorityRecord.ts";
 import {
   PREVIEW_AUTOMATION_V1_OPERATIONS,
   PreviewAutomationClientDisconnectedError,
@@ -27,6 +28,7 @@ import {
   type PreviewAutomationHostFocus,
   type PreviewAutomationResponse,
   type PreviewAutomationStreamEvent,
+  OrchestratorMcpFailure,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Cause from "effect/Cause";
@@ -41,6 +43,14 @@ import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as McpInvocationContext from "./McpInvocationContext.ts";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
+import { requestNamespace, requestGeneration } from "./requestIdentity.ts";
+import {
+  externalDispatch,
+  externalReplay,
+  confirmNotDispatched,
+  requestDigest,
+} from "./McpRequestReceipts.ts";
 
 const HOST_RESPONSE_GRACE_MS = 1_000;
 
@@ -72,7 +82,21 @@ export class PreviewAutomationBroker extends Context.Service<
     ) => Effect.Effect<void, PreviewAutomationError>;
     readonly invoke: <A = unknown>(
       request: PreviewAutomationInvokeInput,
-    ) => Effect.Effect<A, PreviewAutomationError>;
+    ) => Effect.Effect<A, PreviewAutomationError | OrchestratorMcpFailure>;
+    /** Native execution checks the original invocation after its own waits. */
+    readonly requestAuthorization?: (input: {
+      readonly clientId: string;
+      readonly connectionId: string;
+      readonly requestId: string;
+    }) => Effect.Effect<
+      {
+        /** A queued command must still belong to the active request and host. */
+        readonly dispatch: Effect.Effect<void, OrchestratorMcpFailure>;
+        /** A recording outlives its start reply, but never its original authority. */
+        readonly resource: Effect.Effect<void, OrchestratorMcpFailure>;
+      },
+      OrchestratorMcpFailure
+    >;
   }
 >()("t3/mcp/PreviewAutomationBroker") {}
 
@@ -92,6 +116,7 @@ interface PendingRequest {
   readonly queue: ClientConnection["queue"];
   readonly deferred: Deferred.Deferred<unknown, PreviewAutomationError>;
   readonly context: PreviewAutomationRequestErrorContext;
+  readonly scope: McpInvocationContext.McpThreadInvocationScope;
 }
 
 /**
@@ -168,7 +193,10 @@ const selectorDiagnosticsFromInput = (
 };
 
 const hostAssignmentKey = (scope: McpInvocationContext.McpThreadInvocationScope): string =>
-  `${scope.environmentId}\u0000${scope.thread.providerSessionId}`;
+  scope.client?.linked === true &&
+  interactiveAuthority(scope.authority)?.envelope.requestOwner !== undefined
+    ? `peer:${requestDigest([scope.environmentId, requestNamespace(scope), requestGeneration(scope)])}`
+    : `${scope.environmentId}\u0000${scope.thread.providerSessionId}`;
 
 const isPreviewTabId = Schema.is(PreviewTabId);
 const decodeControlReason = Schema.decodeUnknownOption(PreviewAutomationControlReason);
@@ -348,6 +376,21 @@ const classifyResponseError = (
 
 export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   const crypto = yield* Crypto.Crypto;
+  const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+  const recheckScope = (scope: McpInvocationContext.McpThreadInvocationScope) => {
+    if (Option.isSome(authority))
+      return authority.value
+        .recheckInvocation(scope, "preview", scope.thread.threadId)
+        .pipe(Effect.asVoid);
+    return scope.authority !== undefined || scope.client?.linked === true
+      ? Effect.fail(
+          new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "Current original preview authority is unavailable.",
+          }),
+        )
+      : Effect.void;
+  };
   const state = yield* SynchronizedRef.make<BrokerState>({
     clients: new Map(),
     assignments: new Map(),
@@ -504,7 +547,25 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
 
   const invoke = Effect.fn("PreviewAutomationBroker.invoke")(function* <A = unknown>(
     input: Parameters<PreviewAutomationBroker["Service"]["invoke"]>[0],
-  ): Effect.fn.Return<A, PreviewAutomationError> {
+  ): Effect.fn.Return<A, PreviewAutomationError | OrchestratorMcpFailure> {
+    if (
+      input.scope.client?.linked === true &&
+      interactiveAuthority(input.scope.authority)?.envelope.requestOwner === undefined
+    )
+      return yield* new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message:
+          "This peer does not support a verified browser session identity; no browser operation was dispatched.",
+      });
+    yield* recheckScope(input.scope);
+    const readOnly = ["status", "snapshot", "waitFor"].includes(input.operation);
+    if (!readOnly) {
+      const previous = yield* externalReplay<A>();
+      if (Option.isSome(previous)) {
+        yield* recheckScope(input.scope);
+        return previous.value;
+      }
+    }
     const deferred = yield* Deferred.make<unknown, PreviewAutomationError>();
     const route = yield* SynchronizedRef.modify(state, (current) => {
       const assignments = new Map(
@@ -591,7 +652,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         ...selectorDiagnostics,
       };
       const pending = new Map(current.pending);
-      pending.set(requestId, { queue: connection.queue, deferred, context });
+      pending.set(requestId, { queue: connection.queue, deferred, context, scope: input.scope });
       return [
         { connection, requestId, requestContext: context, requestSequence },
         { ...current, assignments, pending, requestSequence: current.requestSequence + 1 },
@@ -625,22 +686,30 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         ) {
           return Effect.succeed([false, current] as const);
         }
-        return Queue.offer(connection.queue, {
-          type: "request",
-          connectionId: connection.connectionId,
-          request: {
-            requestId,
-            threadId: input.scope.thread.threadId,
-            tabId: requestContext.tabId,
-            tabIdExplicit: input.tabId !== undefined,
-            agentSessionId: hostAssignmentKey(input.scope),
-            operation: input.operation,
-            input: input.input,
-            timeoutMs,
-          },
-        }).pipe(Effect.map((offered) => [offered, current] as const));
+        return recheckScope(input.scope).pipe(
+          Effect.andThen(
+            Queue.offer(connection.queue, {
+              type: "request",
+              connectionId: connection.connectionId,
+              request: {
+                requestId,
+                threadId: input.scope.thread.threadId,
+                tabId: requestContext.tabId,
+                tabIdExplicit: input.tabId !== undefined,
+                agentSessionId: hostAssignmentKey(input.scope),
+                operation: input.operation,
+                input: input.input,
+                timeoutMs,
+              },
+            }),
+          ),
+          Effect.map((offered) => [offered, current] as const),
+        );
       });
       if (!offered) {
+        // This request never entered a client queue. Only this delivery owner
+        // can return its exact winning attempt to retryable state.
+        yield* confirmNotDispatched;
         const completion = yield* Deferred.poll(deferred);
         if (Option.isSome(completion)) {
           return (yield* completion.value) as A;
@@ -667,7 +736,9 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         onSome: (value) => Effect.succeed(value as A),
       });
     });
-    const result = yield* awaitResponse().pipe(Effect.ensuring(removePending));
+    const result = yield* (readOnly ? awaitResponse() : externalDispatch(awaitResponse())).pipe(
+      Effect.ensuring(removePending),
+    );
     if (input.updateCurrentTab === false) return result;
     const responseTabId = readResultTabId(result);
     const resultTabId = responseTabId === undefined ? input.tabId : responseTabId;
@@ -699,7 +770,45 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     return result;
   });
 
-  return PreviewAutomationBroker.of({ connect, focusHost, respond, invoke });
+  const requestAuthorization: NonNullable<
+    PreviewAutomationBroker["Service"]["requestAuthorization"]
+  > = (input) =>
+    Effect.gen(function* () {
+      const current = yield* SynchronizedRef.get(state);
+      const pending = current.pending.get(input.requestId);
+      const connection = current.clients.get(input.clientId);
+      if (
+        pending === undefined ||
+        connection === undefined ||
+        pending.context.clientId !== input.clientId ||
+        pending.context.connectionId !== input.connectionId ||
+        connection.connectionId !== input.connectionId ||
+        connection.queue !== pending.queue
+      )
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "The original preview request or execution host is no longer current.",
+        });
+      yield* recheckScope(pending.scope);
+      return {
+        resource: recheckScope(pending.scope),
+        dispatch: Effect.gen(function* () {
+          const latest = yield* SynchronizedRef.get(state);
+          const host = latest.clients.get(input.clientId);
+          if (
+            latest.pending.get(input.requestId) !== pending ||
+            host?.connectionId !== input.connectionId ||
+            host.queue !== pending.queue
+          )
+            return yield* new OrchestratorMcpFailure({
+              code: "capability_denied",
+              message: "The original preview request or execution host was retired.",
+            });
+          yield* recheckScope(pending.scope);
+        }),
+      };
+    });
+  return PreviewAutomationBroker.of({ connect, focusHost, respond, invoke, requestAuthorization });
 }).pipe(Effect.withSpan("PreviewAutomationBroker.make"));
 
 export const layer = Layer.effect(PreviewAutomationBroker, make);

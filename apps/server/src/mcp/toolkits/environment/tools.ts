@@ -4,6 +4,7 @@ import {
   BackgroundActivityProfileSelection,
   ExecutionEnvironmentDescriptor,
   OrchestratorMcpFailure,
+  McpConfirmedOperation,
   ServerSettings,
   ServerSettingsPatch,
 } from "@t3tools/contracts";
@@ -56,7 +57,7 @@ const EnvironmentReadTool = Tool.make("t3_environment_read", {
 const EnvironmentPreferencesTool = Tool.make("t3_environment_preferences_update", {
   ...shared,
   description:
-    "Update selected environment-wide preferences through normal settings persistence and notifications. Requires a live full-access/default calling thread. Omitted fields are preserved; empty customInstructions clears them.",
+    "Update selected environment-wide preferences through normal settings persistence and notifications. Requires a live full-access/default calling thread. Omitted fields are preserved; empty customInstructions clears them. A negotiated clientRequestId returns a confirmed-operation receipt for this original action. Retry that key to recover its receipt; use t3_environment_read for current preferences.",
   parameters: McpRouting.parameters(
     Schema.Struct({
       defaultThreadEnvMode: ServerSettingsPatch.fields.defaultThreadEnvMode,
@@ -66,6 +67,6 @@ const EnvironmentPreferencesTool = Tool.make("t3_environment_preferences_update"
       sourceControlWritingStyle: ServerSettingsPatch.fields.sourceControlWritingStyle,
     }),
   ),
-  success: Schema.Struct(PreferenceFields),
+  success: Schema.Union([Schema.Struct(PreferenceFields), McpConfirmedOperation]),
 }).annotate(Tool.Destructive, true);
 export const EnvironmentToolkit = Toolkit.make(EnvironmentReadTool, EnvironmentPreferencesTool);

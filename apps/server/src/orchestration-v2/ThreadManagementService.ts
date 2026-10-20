@@ -36,6 +36,8 @@ import {
   resolveProjectProviderInstanceEnabled,
   RunId,
   type ScheduledTaskId,
+  type NodeId,
+  type EnvironmentId,
   ThreadId,
   type TurnItemId,
 } from "@t3tools/contracts";
@@ -122,6 +124,7 @@ export function existingThreadIdsForCommand(
     case "delegated_task.remote.request":
     case "delegated_task.remote.launch":
     case "delegated_task.remote.attach":
+    case "delegated_task.remote.observe":
     case "delegated_task.remote.complete":
       return [command.parentThreadId];
     case "thread.created.record":
@@ -147,6 +150,13 @@ export interface ThreadManagementSendInput {
   readonly messageId: MessageId;
   readonly scheduledTaskId?: ScheduledTaskId;
   readonly senderThreadId?: ThreadId;
+  /** Constructed only by the authenticated pair owner, never decoded from tool inputs. */
+  readonly remoteDescendant?: {
+    readonly taskId: NodeId;
+    readonly environmentId: EnvironmentId;
+    readonly threadId: ThreadId;
+    readonly runId: RunId;
+  };
   readonly text: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
   readonly modelSelection?: ModelSelection;
@@ -915,7 +925,21 @@ const make = Effect.gen(function* () {
         }
         return null;
       });
-      const notice = ancestorSender === null ? undefined : descendantNotice(input, ancestorSender);
+      const remote = input.remoteDescendant;
+      const notice =
+        remote !== undefined
+          ? {
+              text: input.text,
+              notification: {
+                source: { kind: "delegated_task" as const, taskIds: [remote.taskId] },
+                outcome: "updated" as const,
+                summary: input.text.trim().split(/\r?\n/, 1)[0]!.slice(0, 100),
+                detail: input.text,
+              },
+            }
+          : ancestorSender === null
+            ? undefined
+            : descendantNotice(input, ancestorSender);
       const steerableRun = latestSteerableRun(target);
       let dispatchMode: Extract<
         OrchestrationV2Command,
@@ -925,7 +949,7 @@ const make = Effect.gen(function* () {
         if (input.mode === "steer" || input.mode === "restart")
           return yield* new ThreadManagementAncestorDeliveryModeError({
             threadId: input.threadId,
-            senderThreadId: notice.notification.source.childThreadId,
+            senderThreadId: input.senderThreadId ?? input.threadId,
             mode: input.mode,
           });
         dispatchMode = { type: "queue_after_active" };
@@ -1323,17 +1347,24 @@ const make = Effect.gen(function* () {
         if (task.origin !== "app_owned") continue;
         if (task.childThreadId === null) {
           // A task in a linked environment ends here; its follower then stops it there.
-          if (task.remoteChild === undefined || task.result !== null) continue;
+          if (task.remoteChild === undefined) continue;
           yield* dispatch({
-            type: "delegated_task.remote.complete",
-            commandId: CommandId.make(`${input.commandId}:stop:${task.id}`),
+            type: "delegated_task.remote.observe",
+            commandId: CommandId.make(`${input.commandId}:stop-intent:${task.id}`),
             parentThreadId: input.threadId,
             taskId: task.id,
-            status: "interrupted",
-            result:
-              input.reason === undefined
-                ? "Stopped with its parent."
-                : `Stopped with its parent: ${input.reason}`,
+            stop: {
+              requestId: `${input.commandId}:stop:${task.id}`,
+              state: "pending",
+              ...(input.reason === undefined ? {} : { reason: input.reason }),
+            },
+            stopResult: {
+              status: "interrupted",
+              result:
+                input.reason === undefined
+                  ? "Stopped with its parent."
+                  : `Stopped with its parent: ${input.reason}`,
+            },
           }).pipe(
             Effect.catch((error) =>
               Effect.logWarning("Unable to stop a delegated task", {

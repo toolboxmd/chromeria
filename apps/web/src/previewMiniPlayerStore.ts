@@ -1,5 +1,10 @@
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
-import type { DevicePlatform, ScopedThreadRef } from "@t3tools/contracts";
+import type {
+  DevicePlatform,
+  ScopedThreadRef,
+  DeviceViewerResource,
+  PreviewViewerResource,
+} from "@t3tools/contracts";
 import { create } from "zustand";
 
 export interface PreviewMiniPlayerPosition {
@@ -13,13 +18,14 @@ export interface PreviewMiniPlayerSize {
 }
 
 export type PreviewMiniPlayerSource =
-  | { readonly kind: "browser"; readonly tabId: string }
+  | { readonly kind: "browser"; readonly tabId: string; readonly resource?: PreviewViewerResource }
   | {
       readonly kind: "device";
       readonly hostId: string;
       readonly deviceId: string;
       readonly platform: DevicePlatform;
       readonly name: string;
+      readonly resource?: DeviceViewerResource;
     };
 
 export interface PreviewMiniPlayerState {
@@ -49,6 +55,7 @@ interface PreviewMiniPlayerStoreState {
 }
 
 export function previewMiniPlayerSourceKey(source: PreviewMiniPlayerSource): string {
+  if (source.resource !== undefined) return JSON.stringify([source.kind, source.resource]);
   return source.kind === "browser"
     ? `browser:${source.tabId}`
     : `device:${encodeURIComponent(source.hostId)}:${encodeURIComponent(source.deviceId)}`;

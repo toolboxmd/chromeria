@@ -2,6 +2,11 @@ import * as Dialog from "../../components/ui/Dialog";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button as RetryStopButton } from "../../components/ui/Button";
 import { ThreadExecutionPurposeControl } from "./ThreadExecutionPurposeControl";
+import { resourcesFromToolItem, type ToolResource } from "@t3tools/shared/toolOutput";
+import { useRefreshAssetUrl } from "../../state/assets";
+import { downloadAndShareAttachment } from "../../lib/attachmentDownload";
+import { AppText } from "../../components/ui/AppText";
+import { RemoteTaskViewer } from "./RemoteTaskViewer";
 import { useAtomValue } from "@effect/atom-react";
 import { useChildThreadInputs, useThreadReportedModelSelection } from "../../state/entities";
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
@@ -66,6 +71,8 @@ import {
   useState,
 } from "react";
 import {
+  FlatList,
+  Pressable,
   AppState,
   Keyboard,
   Platform,
@@ -90,7 +97,7 @@ import Animated, {
   useSharedValue,
   withTiming,
 } from "react-native-reanimated";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkspaceContentWidth } from "../layout/workspace-content-width";
 import { useNativeWorkspaceColumnsSupported } from "../../native/NativeWorkspaceColumns";
 import { useNativeColumnLayoutMetrics } from "../../native/native-layout-metrics";
@@ -153,7 +160,7 @@ import {
 } from "./ThreadComposer";
 import { ComposerPopoverHost } from "./ComposerPopoverHost";
 import { ThreadFeed, type ThreadFeedHistoryControls } from "./ThreadFeed";
-import { useThreadTurnSubagents } from "./ThreadAgentsSheet";
+import { useThreadTurnSubagents, usePendingRemoteTasks } from "./ThreadAgentsSheet";
 import { ComposerQueuedEditBanner } from "./ComposerQueuedEdit";
 import { useThreadQueuedCount } from "./ThreadQueueControl";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
@@ -329,9 +336,91 @@ const USER_INPUT_TOGGLE_TIMING = {
   easing: Easing.out(Easing.cubic),
 };
 
+function ToolArtifactButton({
+  environmentId,
+  resource,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly resource: Extract<ToolResource, { _tag: string }>;
+}) {
+  const reference = resource._tag === "peer-attachment" ? resource.reference : resource;
+  const operation = useRef<AbortController | null>(null);
+  useEffect(() => () => operation.current?.abort(), []);
+  const refresh = useRefreshAssetUrl(environmentId, resource);
+  const [pending, setPending] = useState(false);
+  return (
+    <Pressable
+      accessibilityRole="button"
+      disabled={pending}
+      onPress={() => {
+        const controller = new AbortController();
+        operation.current?.abort();
+        operation.current = controller;
+        setPending(true);
+        void (async () => {
+          const url = await refresh();
+          if (controller.signal.aborted) return;
+          if (url === null)
+            throw new Error("This artifact is unavailable to the current connection.");
+          await downloadAndShareAttachment({
+            url,
+            attachment: { name: reference.name, mimeType: reference.mimeType },
+            signal: controller.signal,
+          });
+        })()
+          .catch((error: unknown) => {
+            if (!controller.signal.aborted)
+              Dialog.alert(
+                "Could not save artifact",
+                error instanceof Error ? error.message : "The artifact is unavailable.",
+              );
+          })
+          .finally(() => {
+            if (operation.current === controller) {
+              operation.current = null;
+              setPending(false);
+            }
+          });
+      }}
+      className="px-3 py-2"
+    >
+      <AppText numberOfLines={1}>{pending ? "Saving…" : `Save ${reference.name}`}</AppText>
+    </Pressable>
+  );
+}
+
 export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: ThreadDetailScreenProps) {
   const usesNativeWorkspaceColumns = useNativeWorkspaceColumnsSupported();
   const navigation = useNavigation();
+  const toolResources = useMemo(() => {
+    const resources = new Map<string, ToolResource>();
+    for (const entry of props.selectedThreadFeed) {
+      if (entry.type !== "activity-group") continue;
+      for (const activity of entry.activities) {
+        const item = activity.projectedItem.item;
+        if (item.type !== "dynamic_tool" || item.status !== "completed") continue;
+        for (const resource of resourcesFromToolItem(item))
+          resources.set(JSON.stringify(resource), resource);
+      }
+    }
+    return [...resources.values()];
+  }, [props.selectedThreadFeed]);
+  const openToolResource = (resource: Exclude<ToolResource, { _tag: string }>) => {
+    Keyboard.dismiss();
+    if (resource.type === "device")
+      navigation.navigate("ThreadDevicePreview", {
+        environmentId: props.environmentId,
+        threadId: props.selectedThread.id,
+        resource,
+      });
+    else
+      navigation.navigate("ThreadBrowserPreview", {
+        environmentId: props.environmentId,
+        threadId: props.selectedThread.id,
+        tabId: resource.tabId,
+        resource,
+      });
+  };
   const { session: voiceInputSession } = useGlobalVoiceInput();
   const reportedModelSelection = useThreadReportedModelSelection(props.selectedThreadDetailRef);
   const deviceState = useEnvironmentQuery(
@@ -412,6 +501,8 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   });
   const composerError = useAtomValue(threadComposerErrorsAtom)[selectedThreadKey]?.message ?? null;
   const queuedCount = useThreadQueuedCount(props.selectedThreadDetailRef);
+  const pendingRemoteTasks = usePendingRemoteTasks(props.selectedThreadDetailRef);
+  const [viewingRemoteInput, setViewingRemoteInput] = useState(false);
   const turnSubagents = useThreadTurnSubagents(props.selectedThreadDetailRef);
   const agentsSegment = resolveSubagentPillSegment(turnSubagents);
   const composerEditorRef = useRef<ComposerEditorHandle>(null);
@@ -495,6 +586,17 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     if (threadSyncLabel !== null) {
       return { kind: "syncing", label: threadSyncLabel };
     }
+    const remoteInput = pendingRemoteTasks[0];
+    if (remoteInput && contentPresentationKind === "ready")
+      return {
+        kind: "child-input",
+        label: "Remote task needs input",
+        accessibilityLabel: `Open request from ${remoteInput.title ?? "remote task"}`,
+        onPress: () => {
+          Keyboard.dismiss();
+          setViewingRemoteInput(true);
+        },
+      };
     const childInput = childThreadInputs[0];
     if (childInput && contentPresentationKind === "ready") {
       return {
@@ -1054,7 +1156,40 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
 
   return (
     <View className="flex-1">
+      {viewingRemoteInput && pendingRemoteTasks[0] ? (
+        <RemoteTaskViewer
+          environmentId={props.environmentId}
+          task={pendingRemoteTasks[0]}
+          onClose={() => setViewingRemoteInput(false)}
+        />
+      ) : null}
       {!usesNativeWorkspaceColumns ? <NativeLayoutObserver onChange={setScreenMetrics} /> : null}
+      {showContent && toolResources.length > 0 ? (
+        <SafeAreaView edges={Platform.OS === "ios" ? ["top"] : []} style={{ flexShrink: 0 }}>
+          <View className="h-12 shrink-0 border-b border-secondary-border">
+            <FlatList
+              horizontal
+              data={toolResources}
+              keyExtractor={(resource) => JSON.stringify(resource)}
+              accessibilityLabel="Resources returned by tools"
+              showsHorizontalScrollIndicator={false}
+              renderItem={({ item }) =>
+                "_tag" in item ? (
+                  <ToolArtifactButton environmentId={props.environmentId} resource={item} />
+                ) : (
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => openToolResource(item)}
+                    className="px-3 py-2"
+                  >
+                    <AppText>{item.type === "device" ? "View device" : "View browser"}</AppText>
+                  </Pressable>
+                )
+              }
+            />
+          </View>
+        </SafeAreaView>
+      ) : null}
       {showContent ? (
         <View
           style={{ flex: 1 }}

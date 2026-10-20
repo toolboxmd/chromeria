@@ -1,4 +1,9 @@
 import {
+  registerToolEffect,
+  classifyToolEffect,
+  type McpToolEffectClassification,
+} from "./McpToolEffects.ts";
+import {
   type OrchestrationV2LinkOrigin,
   OrchestratorMcpFailure,
   type ProviderInteractionMode,
@@ -8,6 +13,8 @@ import {
 import * as McpRouting from "./McpRouting.ts";
 import { checkOutsideGrant } from "./outsideGrant.ts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
 import * as Ref from "effect/Ref";
 import * as Struct from "effect/Struct";
 import type * as Layer from "effect/Layer";
@@ -45,6 +52,7 @@ const refuseOutsideConstruction = (token: symbol) => {
 
 let declare: <P, A, E, R>(
   handle: (params: P) => Effect.Effect<A, E, R>,
+  effect?: McpToolEffectClassification,
 ) => Declaration<(params: P) => Effect.Effect<A, E | OrchestratorMcpFailure, R>>;
 
 type CheckedHandlerOf<D> = D extends Declaration<infer Handler> ? Handler : never;
@@ -66,17 +74,26 @@ let handlersLayer: <Tools extends Record<string, Tool.Any>, EX, RX>(
  */
 export class Declaration<out Handler> {
   readonly #handle: Handler;
-  private constructor(token: typeof builtHere, handle: Handler) {
+  readonly effect: McpToolEffectClassification;
+  private constructor(
+    token: typeof builtHere,
+    handle: Handler,
+    effect: McpToolEffectClassification,
+  ) {
     refuseOutsideConstruction(token);
     this.#handle = handle;
+    this.effect = effect;
   }
   static {
-    declare = (handle) =>
-      new Declaration(builtHere, (params) =>
-        McpRouting.CurrentTool.pipe(
-          Effect.flatMap((tool) => checkOutsideGrant(tool?.name ?? "", params)),
-          Effect.andThen(McpRouting.withContext(params, handle(params))),
-        ),
+    declare = (handle, effect = "owned") =>
+      new Declaration(
+        builtHere,
+        (params) =>
+          McpRouting.CurrentTool.pipe(
+            Effect.flatMap((tool) => checkOutsideGrant(tool?.name ?? "", params)),
+            Effect.andThen(McpRouting.withContext(params, handle(params))),
+          ),
+        effect,
       );
     checkedHandler = Struct.lambda<CheckedHandler>((declaration) => declaration.#handle);
   }
@@ -111,36 +128,117 @@ const requireThreadCaller = McpInvocationContext.McpInvocationContext.pipe(
 );
 
 export const reads = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
-  declare((params: P) => McpRouting.invoke(params, handle));
+  declare((params: P) => McpRouting.invoke(params, handle), "read");
 
 // Peer agents have no destination thread; opt-in keeps other caller reads from widening.
 export const readsAsCaller = <P, A, E, R>(
   handle: (params: P) => Effect.Effect<A, E, R>,
-  options?: { readonly linkedCallers: "allowed" },
+  options?: {
+    readonly linkedCallers?: "allowed";
+    readonly effect?: McpToolEffectClassification;
+  },
 ) =>
-  declare((params: P) =>
-    McpInvocationContext.McpInvocationContext.pipe(
-      Effect.flatMap((scope) =>
-        options?.linkedCallers === "allowed" && scope.client?.linked === true
-          ? scope.client.access === "read-only"
-            ? Effect.fail(
-                new OrchestratorMcpFailure({
-                  code: "capability_denied",
-                  message: "This read requires a peer link with agent access.",
-                }),
-              )
-            : Effect.void
-          : requireThreadCaller,
+  declare(
+    (params: P) =>
+      McpInvocationContext.McpInvocationContext.pipe(
+        Effect.flatMap((scope) =>
+          options?.linkedCallers === "allowed" && scope.client?.linked === true
+            ? scope.client.access === "read-only"
+              ? Effect.fail(
+                  new OrchestratorMcpFailure({
+                    code: "capability_denied",
+                    message: "This read requires a peer link with agent access.",
+                  }),
+                )
+              : Effect.void
+            : requireThreadCaller,
+        ),
+        Effect.flatMap(() => McpRouting.invoke(params, handle)),
       ),
-      Effect.flatMap(() => McpRouting.invoke(params, handle)),
-    ),
+    options?.effect ?? "read",
   );
 
-export const actsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
+/**
+ * Acts as the calling T3 thread (its subagents, preview tabs, devices,
+ * worktree) while that thread's run is live. Only an agent running inside a
+ * T3 thread has one.
+ */
+export const actsAsCaller = <P, A, E, R>(
+  handle: (params: P) => Effect.Effect<A, E, R>,
+  effect: "read" | "owned" | "external-unknown" = "owned",
+) =>
+  declare(
+    (params: P) =>
+      requireThreadCaller.pipe(
+        Effect.flatMap(() => writingCaller),
+        Effect.flatMap(() => McpRouting.invoke(params, handle)),
+      ),
+    effect,
+  );
+
+/** Resource context need not run a provider when verified incoming authority owns the action. */
+export const recheckResource = (
+  intent: Parameters<PeerAuthority.PeerAuthority["Service"]["recheckInvocation"]>[1],
+) =>
+  Effect.gen(function* () {
+    const scope = yield* requireThreadCaller;
+    yield* refuseReadOnlyClient;
+    if (scope.client?.linked === true && scope.authority !== undefined) {
+      const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+      if (Option.isNone(authority)) return yield* unavailable();
+      return yield* authority.value.recheckInvocation(scope, intent, scope.thread.threadId);
+    }
+    yield* writingCaller;
+    return scope;
+  });
+
+export const actsOnResource = <P, A, E, R>(
+  intent: Parameters<typeof recheckResource>[0],
+  handle: (params: P) => Effect.Effect<A, E, R>,
+  effect: "read" | "owned" | "external-unknown" = "owned",
+) =>
+  declare(
+    (params: P) => recheckResource(intent).pipe(Effect.andThen(McpRouting.invoke(params, handle))),
+    effect,
+  );
+
+/** Rechecks staged bytes without treating a verified destination context as a provider run. */
+export const recheckAttachmentStaging = Effect.gen(function* () {
+  const caller = yield* loadCaller();
+  const { scope } = caller;
+  if (
+    scope.client?.linked === true &&
+    scope.authority !== undefined &&
+    scope.thread !== undefined
+  ) {
+    if (caller.caller?.archivedAt !== null)
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "The attachment resource context is no longer available.",
+      });
+    const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+    if (Option.isNone(authority)) return yield* unavailable();
+    yield* authority.value.checkTarget(scope, { type: "thread", threadId: scope.thread.threadId });
+  } else {
+    yield* assertLiveCaller(caller);
+    if (scope.authority !== undefined && scope.thread !== undefined) {
+      const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+      if (Option.isNone(authority)) return yield* unavailable();
+      yield* authority.value.checkTarget(scope, {
+        type: "thread",
+        threadId: scope.thread.threadId,
+      });
+    }
+  }
+});
+
+/** Staging is generic attachment work; its eventual native consumer owns resource capability consent. */
+export const stagesAttachments = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare((params: P) =>
-    requireThreadCaller.pipe(
-      Effect.flatMap(() => writingCaller),
-      Effect.flatMap(() => McpRouting.invoke(params, handle)),
+    refuseReadOnlyClient.pipe(
+      Effect.andThen(readCaller()),
+      Effect.andThen(recheckAttachmentStaging),
+      Effect.andThen(McpRouting.invoke(params, handle)),
     ),
   );
 
@@ -171,9 +269,13 @@ export const writes = <P, A, E, R>(
  * Unlike `writes` it does not need thread control; the handler checks its
  * capability, as the capability toolkits do.
  */
-export const writesWithCapability = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
-  declare((params: P) =>
-    writingCaller.pipe(Effect.flatMap(() => McpRouting.invoke(params, handle))),
+export const writesWithCapability = <P, A, E, R>(
+  handle: (params: P) => Effect.Effect<A, E, R>,
+  effect: "owned" | "external-unknown" = "owned",
+) =>
+  declare(
+    (params: P) => writingCaller.pipe(Effect.flatMap(() => McpRouting.invoke(params, handle))),
+    effect,
   );
 
 export const writesThreads = <P, A, E, R>(
@@ -189,7 +291,7 @@ export const writesThreads = <P, A, E, R>(
       for (const threadId of McpRouting.isRemote(params, caller.scope)
         ? []
         : threads(params, caller.scope)) {
-        if (threadId === undefined || threadId === caller.scope.thread?.threadId) continue;
+        if (threadId === undefined) continue;
         const target = yield* caller.threads
           .getThreadShell(threadId)
           .pipe(Effect.mapError(unavailable));
@@ -269,13 +371,16 @@ export const writesEnvironment = <P, A, E, R>(
     params: P,
     check: Effect.Effect<Caller, OrchestratorMcpFailure, CheckServices>,
   ) => Effect.Effect<A, E, R>,
+  effect: "owned" | "external-unknown" = "owned",
 ) => {
   const check = orchestratingCaller.pipe(
     Effect.tap((caller) => assertNotLinked(caller, "change projects or environment settings")),
     Effect.tap((caller) => assertFullAccess(caller, fullAccessRequired)),
   );
-  return declare((params: P) =>
-    check.pipe(Effect.flatMap(() => McpRouting.invoke(params, (local) => handle(local, check)))),
+  return declare(
+    (params: P) =>
+      check.pipe(Effect.flatMap(() => McpRouting.invoke(params, (local) => handle(local, check)))),
+    effect,
   );
 };
 
@@ -323,10 +428,17 @@ const routedHandlers = <Tools extends Record<string, Tool.Any>>(
     ...checkedHandlers<Toolkit.HandlersFrom<Tools>>(declarations),
   };
   for (const name of Object.keys(handlers) as Array<keyof Toolkit.HandlersFrom<Tools>>) {
+    const tool = toolkit.tools[name as keyof Tools];
+    if (tool === undefined) throw new Error(`Missing registered tool ${String(name)}.`);
+    registerToolEffect(tool, declarations[name].effect);
     const handler = handlers[name];
     handlers[name] = (params, context) =>
       handler(params, context).pipe(
         Effect.provideService(McpRouting.CurrentTool, toolkit.tools[name as keyof Tools]),
+        Effect.provideService(
+          McpRouting.CurrentEffect,
+          classifyToolEffect(declarations[name].effect, params),
+        ),
       );
   }
   // The nominal declarations were checked against this toolkit before mapping.

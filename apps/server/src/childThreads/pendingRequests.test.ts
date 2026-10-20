@@ -15,6 +15,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import { McpSchema, McpServer } from "effect/ai";
 
@@ -69,6 +70,10 @@ const scope = (id: ThreadId | undefined): McpInvocationScope => ({
     id === undefined ? { sessionId: "oauth", label: "external", access: "full-access" } : undefined,
 });
 
+const decodeRequestList = Schema.decodeUnknownEffect(
+  ThreadToolkit.tools.t3_pending_request_list.successSchema,
+);
+
 type Kind = "approval" | "question";
 
 const subagentOf = (parent: ThreadId) => ({
@@ -108,6 +113,8 @@ const respond = (input: {
   readonly target: ThreadId;
   readonly kind: Kind;
   readonly shells?: Map<ThreadId, OrchestrationV2ThreadShell>;
+  /** Read the request first; the read is accepted exactly when the answer is. */
+  readonly read?: boolean;
 }) =>
   Effect.gen(function* () {
     const { target, kind } = input;
@@ -173,15 +180,38 @@ const respond = (input: {
       Layer.provide(Layer.mock(ScheduledTasks.ScheduledTaskService)({})),
       Layer.provideMerge(NodeServices.layer),
     );
+    let listedApproval = false;
+    let readRefused: boolean | undefined;
     const result = yield* McpServer.McpServer.pipe(
       Effect.flatMap((service) =>
-        service.callTool({
-          name: "t3_pending_request_respond",
-          arguments: {
-            threadId: target,
-            requestId,
-            ...(kind === "approval" ? { decision: "accept" } : { answers: { choice: "continue" } }),
-          },
+        Effect.gen(function* () {
+          if (kind === "approval") {
+            const listed = yield* service.callTool({
+              name: "t3_pending_request_list",
+              arguments: { threadId: target },
+            });
+            assert.notEqual(listed.isError, true);
+            listedApproval = (yield* decodeRequestList(
+              listed.structuredContent,
+            )).requestIds.includes(requestId);
+          }
+          if (input.read === true)
+            readRefused =
+              (yield* service.callTool({
+                name: "t3_pending_request_read",
+                arguments: { threadId: target, requestId },
+              })).isError === true;
+          return yield* service.callTool({
+            name: "t3_pending_request_respond",
+            arguments: {
+              threadId: target,
+              requestId,
+              ...(input.scope.client?.linked === true ? { expectedRevision: 0 } : {}),
+              ...(kind === "approval"
+                ? { decision: "accept" }
+                : { answers: { choice: "continue" } }),
+            },
+          });
         }),
       ),
       Effect.provideService(McpInvocationContext, input.scope),
@@ -192,6 +222,8 @@ const respond = (input: {
     assert.equal(result.isError === true, dispatched.length === 0);
     assert.isAtMost(dispatched.length, 1);
     const command = dispatched[0];
+    if (kind === "approval") assert.equal(listedApproval, command !== undefined);
+    if (input.read === true) assert.equal(readRefused, command === undefined);
     return command?.type === "runtime-request.respond" ? command : undefined;
   }).pipe(Effect.scoped);
 
@@ -211,6 +243,26 @@ it.effect.each([
     assert.equal(command !== undefined, accepted);
     assert.isUndefined(command?.answeredBy);
   }),
+);
+
+it.effect.each([
+  [grandchild, "question", true],
+  [undefined, "question", true],
+  [grandchild, "approval", false],
+  [undefined, "approval", false],
+] as const)(
+  "the thread itself or a client (%s) reads and answers its own %s",
+  ([caller, kind, accepted]) =>
+    Effect.gen(function* () {
+      const command = yield* respond({
+        scope: scope(caller),
+        target: grandchild,
+        kind,
+        read: true,
+      });
+      assert.equal(command !== undefined, accepted);
+      assert.isUndefined(command?.answeredBy);
+    }),
 );
 
 // Fork: the Promachos answers for the user when no ancestor can (toolboxmd/chromeria#532).
@@ -244,6 +296,16 @@ it.effect.each([
     false,
   ],
   ["stale", { activeRunId: null, status: "idle" as const }, true],
+  [
+    "exactly 30 minutes idle",
+    { activeRunId: null, updatedAt: DateTime.makeUnsafe("2026-01-01T00:30:00.000Z") },
+    true,
+  ],
+  [
+    "one millisecond inside 30 minutes",
+    { activeRunId: null, updatedAt: DateTime.makeUnsafe("2026-01-01T00:30:00.001Z") },
+    false,
+  ],
   ["deleted", { deletedAt: DateTime.makeUnsafe("2026-01-01T00:10:00.000Z") }, true],
   ["gone", null, true],
 ] as const)("the Promachos answers a child whose parent is %s: %s", ([_state, patch, accepted]) =>
