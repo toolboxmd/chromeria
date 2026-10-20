@@ -819,6 +819,8 @@ export const makeNode = (
     const holdResultPage = yield* Ref.make(false);
     /** Tasks whose waiting observations hang, as a destination with nothing new does. */
     const quietWaits = yield* Ref.make<ReadonlySet<string>>(new Set());
+    /** Each task whose waiting observation started to hang. */
+    const quietWaitsHeld = yield* Queue.unbounded<string>();
     const resultPageStarted = yield* Deferred.make<void>();
     const releaseResultPage = yield* Deferred.make<void>();
     const faultablePeers = Layer.effect(
@@ -863,8 +865,10 @@ export const makeNode = (
                 (operation.type === "observe" || operation.type === "snapshot") &&
                 operation.wait === true &&
                 (yield* Ref.get(quietWaits)).has(args[2].pair.taskId)
-              )
+              ) {
+                yield* Queue.offer(quietWaitsHeld, args[2].pair.taskId);
                 return yield* Effect.never;
+              }
             }).pipe(
               Effect.andThen(peers.taskLifecycle!(...args)),
               Effect.flatMap((result) =>
@@ -2026,6 +2030,7 @@ export const makeNode = (
       ackResponseLost,
       holdResultPage,
       quietWaits,
+      quietWaitsHeld,
       resultPageStarted,
       releaseResultPage,
       reopenDatabase,

@@ -971,14 +971,14 @@ const make = Effect.gen(function* () {
         task.result !== null &&
         (task.completionDelivery?.state === "pending" ||
           task.completionDelivery?.state === "claimed");
+      // Only the latest snapshot says a job is quiet there: a confirmed Stop
+      // does not, since later direct input there is independent work.
       const settledThere =
-        remote.stop?.state === "confirmed" ||
-        (remote.stop === undefined &&
-          task.result !== null &&
-          remote.snapshot?.workState === "result_available" &&
-          remote.snapshot.queuedRuns === 0 &&
-          remote.snapshot.pendingQuestions === 0 &&
-          !remote.snapshot.recoveryWaiting);
+        remote.snapshot?.workState === "result_available" &&
+        remote.snapshot.queuedRuns === 0 &&
+        remote.snapshot.pendingQuestions === 0 &&
+        !remote.snapshot.recoveryWaiting &&
+        (remote.stop?.state === "confirmed" || (remote.stop === undefined && task.result !== null));
       const watch = lifecycleIn(settledThere ? settledSlots : networkSlots);
       const stopObservation =
         remote.stop?.destinationCommandId === undefined

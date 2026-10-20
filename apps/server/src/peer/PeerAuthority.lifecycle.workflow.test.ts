@@ -476,6 +476,108 @@ it.live(
 );
 
 it.live(
+  "lifecycle381: a stopped job with new work there is not held back by finished jobs",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* makeNode(descriptorOf("restarted-b", "B", { peerAuthority: 1 }));
+        const a = yield* makeNode(descriptorOf("restarted-a", "A", { peerAuthority: 1 }));
+        yield* linkTo(a.links, b, "full-access");
+        const parentId = ThreadId.make("restarted-parent");
+        yield* seedParent(a, parentId);
+        const delegate = (name: string) =>
+          nativeCall(a, parentId, "delegate_task", {
+            task: `Job ${name}`,
+            target: {
+              environmentId: b.environmentId,
+              projectId: b.project.id,
+              providerInstanceId: instanceId,
+              model: selection.model,
+            },
+            clientRequestId: `restarted-${name}`,
+          }).pipe(
+            Effect.flatMap((receipt) => decodeTaskReceipt(receipt.structuredContent)),
+            Effect.map(({ taskId }) => taskId),
+          );
+        const recorded = (
+          taskId: NodeId,
+          predicate: (task: import("@t3tools/contracts").OrchestrationV2Subagent) => boolean,
+        ) =>
+          a.orchestrator
+            .streamStoredEventsFrom({
+              threadId: parentId,
+              afterSequence: 0,
+              eventType: "subagent.updated",
+            })
+            .pipe(
+              Stream.filter(
+                (stored) =>
+                  stored.event.type === "subagent.updated" &&
+                  stored.event.payload.id === taskId &&
+                  predicate(stored.event.payload),
+              ),
+              Stream.runHead,
+              Effect.flatMap(Effect.fromOption),
+            );
+        const stoppedId = yield* delegate("stopped");
+        const childId = yield* attachedChild(a, parentId, stoppedId);
+        yield* activate(b, childId);
+        const cancelled = yield* nativeCall(a, parentId, "task_cancel", {
+          taskId: stoppedId,
+          clientRequestId: "restarted-stop",
+        });
+        expect(cancelled.isError, json(cancelled.content)).not.toBe(true);
+        yield* recorded(stoppedId, (task) => task.remoteChild?.stop?.state === "acknowledged");
+        yield* drainStops(b);
+        yield* recorded(stoppedId, (task) => task.remoteChild?.stop?.state === "confirmed");
+        // Fresh direct input there after the confirmed Stop is independent later work.
+        yield* b.threads.dispatch({
+          type: "message.dispatch",
+          threadId: childId,
+          commandId: CommandId.make("restarted-later-work"),
+          messageId: MessageId.make("restarted-later-work"),
+          text: "Independent later work",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* recorded(
+          stoppedId,
+          (task) =>
+            task.remoteChild?.stop?.state === "confirmed" &&
+            task.remoteChild.snapshot !== undefined &&
+            task.remoteChild.snapshot.workState !== "result_available",
+        );
+        // As many finished jobs as there are settled permits, each holding its wait.
+        const finished: Array<NodeId> = [];
+        for (let n = 0; n < 8; n++) {
+          const taskId = yield* delegate(`finished-${n}`);
+          yield* finishLifecycleRun(b, yield* attachedChild(a, parentId, taskId), `finished-${n}`);
+          yield* recorded(
+            taskId,
+            (task) =>
+              task.result === `finished-${n}` &&
+              task.remoteChild?.snapshot?.workState === "result_available",
+          );
+          finished.push(taskId);
+        }
+        yield* Ref.set(a.quietWaits, new Set(finished));
+        yield* a.stopConnections;
+        const reconnected = yield* a.reconnect();
+        yield* Context.get(reconnected.services, RemoteDelegation.RemoteDelegation).start();
+        yield* Effect.forEach(finished, () => Queue.take(a.quietWaitsHeld), { discard: true });
+        yield* finishLifecycleRun(b, childId, "restarted-later-result");
+        yield* recorded(
+          stoppedId,
+          (task) => task.remoteChild?.latestResult?.text === "restarted-later-result",
+        );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  30_000,
+);
+
+it.live(
   "lifecycle381: delayed first observation after conversation revert uses the completing purpose",
   () =>
     Effect.scoped(
