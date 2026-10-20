@@ -218,14 +218,14 @@ function AuthorizedPreviewStream({
       ref={ref}
       configuration={configuration}
       interactive={props.interactive && props.access.canOperate !== false}
-      onUnauthorized={() => {
+      onUnauthorized={(renew) => {
         const refusals = ++unauthorized.current;
         if (refusals >= MAX_REFUSALS) return false;
         if (refreshTimer.current !== null) clearTimeout(refreshTimer.current);
         refreshTimer.current = setTimeout(
           () => {
             refreshTimer.current = null;
-            props.onUnauthorized();
+            (renew ?? props.onUnauthorized)();
           },
           refusals === 1 ? 0 : 1_000 * 2 ** (refusals - 1),
         );
@@ -275,7 +275,7 @@ function PreviewStreamDocumentView({
   readonly resource?: PreviewViewerResource;
   readonly interactive: boolean;
   readonly background: string;
-  readonly onUnauthorized: () => boolean;
+  readonly onUnauthorized: (renew?: () => void) => boolean;
   readonly onRetry: () => void;
   readonly onStreaming: () => void;
   readonly onRecoverProcess: () => boolean;
@@ -330,6 +330,27 @@ function PreviewStreamDocumentView({
   const bootstrapTimedOut = useEffectEvent(() =>
     fail("Browser viewer could not start. Reconnect to try again."),
   );
+  const requestCurrentAccess = access.requestCurrentAccess;
+  const renewAccess =
+    requestCurrentAccess === undefined
+      ? undefined
+      : () => {
+          void requestCurrentAccess()
+            .then((current) => {
+              if (!active.current || failed.current) return;
+              // The document owns the PiP capture track; renew only its socket.
+              webView.current?.injectJavaScript(
+                `window.T3PreviewStream?.updateAccess(${JSON.stringify(current)}); true;`,
+              );
+            })
+            .catch((cause: unknown) =>
+              fail(
+                cause instanceof Error
+                  ? cause.message
+                  : "Browser viewer access could not be renewed.",
+              ),
+            );
+        };
   useEffect(() => {
     if (started) return;
     const timer = setTimeout(bootstrapTimedOut, 15_000);
@@ -425,11 +446,12 @@ function PreviewStreamDocumentView({
             case "inputRejected":
               Dialog.alert("Browser input refused", message.message);
               return;
-            case "unauthorized":
-              if (!onUnauthorized()) {
+            case "unauthorized": {
+              if (!onUnauthorized(renewAccess)) {
                 fail("This session can't open the browser stream. Reconnect to try again.");
               }
               return;
+            }
             case "popup":
               if (
                 message.resource !== undefined &&

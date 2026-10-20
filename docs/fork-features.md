@@ -1949,6 +1949,7 @@ sources and reasons.
     "apps/mobile/src/features/browser/preview-stream-document.test.ts",
     "apps/mobile/src/features/browser/BrowserPreviewRouteScreen.test.tsx",
     "apps/mobile/src/features/browser/PreviewStreamWebView.test.tsx",
+    "apps/mobile/src/features/browser/preview-stream.browser.test.ts",
     "apps/server/src/assets/NativeBrowserDownload.test.ts",
     "apps/server/src/http/ResourceWebSocketServer.test.ts",
     "apps/server/src/http/ResourceWebSocketServer.ts",
