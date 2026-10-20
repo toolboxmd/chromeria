@@ -78,3 +78,10 @@ it("exports exact object result schemas for preview actions", () => {
     });
   }
 });
+
+it("guides every preview tool to delegate driving beyond a quick check", () => {
+  for (const tool of Object.values(PreviewToolkit.tools)) {
+    expect(tool.description).toContain('prismRole: "computer-use"');
+    expect(tool.description).toContain("beyond a quick check");
+  }
+});

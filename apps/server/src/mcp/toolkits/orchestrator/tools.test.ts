@@ -10,6 +10,11 @@ import {
 } from "./tools.ts";
 
 describe("orchestrator MCP tool guidance", () => {
+  it("guides browser and desktop driving to the computer-use role", () => {
+    assert.include(DelegateTaskTool.description ?? "", 'prismRole: "computer-use"');
+    assert.include(DelegateTaskTool.description ?? "", "beyond a quick check");
+  });
+
   it("directs subagent requests to delegation instead of ordinary threads", () => {
     assert.include(DelegateTaskTool.description ?? "", "child agent/subagent");
     assert.include(DelegateTaskTool.description ?? "", "cross-provider");
