@@ -561,12 +561,19 @@ const make = Effect.gen(function* () {
           reason: "unknown_link",
           message: "The protected automation recovery identity is unavailable.",
         });
-      const url = yield* Effect.findFirst(link.urls, (candidate) =>
-        describe(candidate).pipe(
-          Effect.map(
-            (found) => Option.isSome(found) && found.value.environmentId === environmentId,
+      // Only the primary origin completed OAuth pairing. A replacement's
+      // alternate URLs and an unpaired descriptor are not continuity evidence.
+      const pairedOrigins = Option.isSome(ordinary)
+        ? yield* decodeUrls(ordinary.value.urls_json).pipe(Effect.catch(failStorage))
+        : [];
+      const url = yield* Effect.findFirst(
+        [...new Set([...pairedOrigins.slice(0, 1), ...link.urls])],
+        (candidate) =>
+          describe(candidate).pipe(
+            Effect.map(
+              (found) => Option.isSome(found) && found.value.environmentId === environmentId,
+            ),
           ),
-        ),
       );
       if (Option.isNone(url))
         return yield* new PeerLinkError({

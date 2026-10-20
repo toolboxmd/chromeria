@@ -856,6 +856,7 @@ const make = Effect.gen(function* () {
     coverage?: Coverage,
     purpose: "local" | "interactive" = "local",
     replacements: ReadonlyMap<string, Automation.AutomationCertificate> = new Map(),
+    capabilityView: "operation" | "contributor" = "operation",
   ): Effect.Effect<PeerCeiling, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
       const accepted =
@@ -913,10 +914,18 @@ const make = Effect.gen(function* () {
               historical.set(prior.id, prior);
           }
         }
+        // B's capability availability belongs to the operation, after local birth composition.
         for (const id of certificate.recordIds)
           ceiling = intersect(
             ceiling,
-            yield* validate(yield* read(id), stop, accepted, nextPurpose, historical),
+            yield* validate(
+              yield* read(id),
+              stop,
+              accepted,
+              nextPurpose,
+              historical,
+              "contributor",
+            ),
           );
         if (
           nextPurpose === "interactive" &&
@@ -955,12 +964,15 @@ const make = Effect.gen(function* () {
         }
         const current = {
           ...ceiling,
-          capabilities: yield* currentCapabilities(ceiling.capabilities, record.projectId),
+          capabilities:
+            capabilityView === "operation"
+              ? yield* currentCapabilities(ceiling.capabilities, record.projectId)
+              : ceiling.capabilities,
         };
         if (
           record.kind === "automation-birth" &&
           nextPurpose === "interactive" &&
-          json(intersect(certificate.ceiling, current)) !== json(certificate.ceiling)
+          json(intersect(certificate.ceiling, ceiling)) !== json(certificate.ceiling)
         )
           return yield* denied(
             "An original automation birth contributor was narrowed by current policy.",
@@ -973,7 +985,14 @@ const make = Effect.gen(function* () {
         for (const id of control.recordIds)
           ceiling = intersect(
             ceiling,
-            yield* validate(yield* read(id), control, accepted, purpose, replacements),
+            yield* validate(
+              yield* read(id),
+              control,
+              accepted,
+              purpose,
+              replacements,
+              capabilityView,
+            ),
           );
         for (const target of control.targets) {
           const binding = yield* loadResource({ type: "thread", threadId: target.threadId });
@@ -983,7 +1002,7 @@ const make = Effect.gen(function* () {
             const owner = yield* read(id);
             yield* checkResource(
               owner,
-              yield* validate(owner, control, accepted, purpose, replacements),
+              yield* validate(owner, control, accepted, purpose, replacements, capabilityView),
               binding,
               control,
               accepted,
@@ -991,7 +1010,14 @@ const make = Effect.gen(function* () {
           }
           for (const id of target.recordIds) {
             const owner = yield* read(id);
-            const current = yield* validate(owner, control, accepted, purpose, replacements);
+            const current = yield* validate(
+              owner,
+              control,
+              accepted,
+              purpose,
+              replacements,
+              capabilityView,
+            );
             yield* checkResource(owner, current, binding, control, accepted);
             ceiling = intersect(ceiling, current);
           }
@@ -1005,7 +1031,7 @@ const make = Effect.gen(function* () {
         for (const id of record.context.recordIds)
           ceiling = intersect(
             ceiling,
-            yield* validate(yield* read(id), stop, accepted, purpose, replacements),
+            yield* validate(yield* read(id), stop, accepted, purpose, replacements, capabilityView),
           );
         return ceiling;
       }
@@ -1031,7 +1057,14 @@ const make = Effect.gen(function* () {
         // belongs to the actual operation target, which may be a new joint child.
         for (const id of owners) {
           const owner = yield* read(id);
-          const current = yield* validate(owner, stop, accepted, purpose, replacements);
+          const current = yield* validate(
+            owner,
+            stop,
+            accepted,
+            purpose,
+            replacements,
+            capabilityView,
+          );
           ceiling = intersect(ceiling, current);
         }
         return ceiling;
@@ -1089,6 +1122,7 @@ const make = Effect.gen(function* () {
           accepted,
           purpose,
           replacements,
+          capabilityView,
         );
         if (!parent.onward)
           return yield* denied("The originating grant does not permit onward delegation.");
@@ -1125,7 +1159,10 @@ const make = Effect.gen(function* () {
       }
       const current = {
         ...record.ceiling,
-        capabilities: yield* currentCapabilities(record.ceiling.capabilities, thread.projectId),
+        capabilities:
+          capabilityView === "operation"
+            ? yield* currentCapabilities(record.ceiling.capabilities, thread.projectId)
+            : record.ceiling.capabilities,
         runtimeMode: thread.runtimeMode,
         interactionMode: thread.interactionMode,
       };
@@ -1133,7 +1170,14 @@ const make = Effect.gen(function* () {
       const ceiling =
         parent === undefined
           ? record.ceiling
-          : yield* validate(parent, stop?.upstream ?? stop, accepted, purpose, replacements);
+          : yield* validate(
+              parent,
+              stop?.upstream ?? stop,
+              accepted,
+              purpose,
+              replacements,
+              capabilityView,
+            );
       if (parent !== undefined) {
         if (!ceiling.onward)
           return yield* denied("The originating grant does not permit onward delegation.");
@@ -1244,6 +1288,17 @@ const make = Effect.gen(function* () {
               if ("certificateId" in owner && owner.certificateId === certificate.id) {
                 belongs = true;
                 break;
+              }
+              if ("certificateId" in owner) {
+                const inherited = yield* owner.kind === "automation-birth"
+                  ? automation.birth(owner.certificateId)
+                  : automation.claim(owner.certificateId);
+                if (
+                  inherited.audience !== here ||
+                  inherited.binding.projectId !== target.thread.projectId
+                )
+                  return yield* denied("The descendant automation belongs to another destination.");
+                for (const id of inherited.recordIds) pending.push(yield* read(id));
               }
               if (owner.context !== undefined) {
                 const context = owner.context;
@@ -1764,10 +1819,33 @@ const make = Effect.gen(function* () {
         dependencies: [...dependencies.values()],
       };
     });
+  // Session identity alone cannot cover a later, unrelated input from the same owner.
+  type BirthFacts = { readonly records: ReadonlySet<string>; readonly legacy: ReadonlySet<string> };
+  const noBirthFacts = (): BirthFacts => ({ records: new Set(), legacy: new Set() });
+  const addBirthFacts = (
+    facts: BirthFacts,
+    certificate: Automation.AutomationCertificate,
+  ): BirthFacts => ({
+    records: new Set([
+      ...facts.records,
+      ...certificate.graph.records
+        .filter((node) => node.environmentId === here)
+        .map((node) => json(node.record)),
+    ]),
+    legacy: new Set([
+      ...facts.legacy,
+      ...certificate.graph.legacy
+        .filter((node) => node.environmentId === here)
+        .map((node) => json(node)),
+    ]),
+  });
+  const dependencyGrant = (sessionId: string, covered: boolean): Automation.DependencyGrant =>
+    covered ? { kind: "automation-birth", sessionId } : sessionId;
   const captureLegacy = (
     owner: Automation.LegacyContributor,
     input: Omit<AutomationCapture, "type" | "envelope">,
     relay?: { readonly environmentId: EnvironmentId; readonly generation: string },
+    birthFacts: BirthFacts = noBirthFacts(),
   ): Effect.Effect<Automation.AcceptedGraph, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
       if (owner.environmentId !== here)
@@ -1808,7 +1886,12 @@ const make = Effect.gen(function* () {
               channel.credential_identity!,
             );
             if (relay !== undefined)
-              yield* automation.registerDependency(dependency, relay, [owner.sessionId], false);
+              yield* automation.registerDependency(
+                dependency,
+                relay,
+                [dependencyGrant(owner.sessionId, birthFacts.legacy.has(json(owner)))],
+                false,
+              );
           }),
         )
         .pipe(Effect.mapError(unavailable));
@@ -1838,6 +1921,7 @@ const make = Effect.gen(function* () {
     ancestors: ReadonlySet<string> = new Set(),
     relay?: { readonly environmentId: EnvironmentId; readonly generation: string },
     replacements: ReadonlyMap<string, Automation.AutomationCertificate> = new Map(),
+    inheritedBirthFacts: BirthFacts = noBirthFacts(),
   ): Effect.Effect<Automation.AcceptedGraph, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
       if (input.remaining < 1 || ancestors.has(record.id) || ancestors.size >= 256)
@@ -1849,6 +1933,7 @@ const make = Effect.gen(function* () {
       let expiresAt: number | null = null;
       const nextAncestors = new Set([...ancestors, record.id]);
       const childIds: string[] = [];
+      let birthFacts = inheritedBirthFacts;
       if (record.context !== undefined) {
         const context = record.context;
         childIds.push(
@@ -1870,6 +1955,7 @@ const make = Effect.gen(function* () {
           (yield* record.kind === "automation-birth"
             ? automation.birth(record.certificateId)
             : automation.claim(record.certificateId));
+        if (record.kind === "automation-birth") birthFacts = addBirthFacts(birthFacts, previous);
         expiresAt = previous.expiresAt;
         if (expiresAt !== null && expiresAt <= (yield* Clock.currentTimeMillis))
           return yield* denied("The original automation contributor expired.");
@@ -1926,7 +2012,17 @@ const make = Effect.gen(function* () {
                   channel.credential_identity!,
                 );
                 if (relay !== undefined)
-                  yield* automation.registerDependency(expected, relay, [record.sessionId!], false);
+                  yield* automation.registerDependency(
+                    expected,
+                    relay,
+                    [
+                      dependencyGrant(
+                        record.sessionId!,
+                        inheritedBirthFacts.records.has(json(record)),
+                      ),
+                    ],
+                    false,
+                  );
               }),
             )
             .pipe(Effect.mapError(unavailable));
@@ -1975,7 +2071,14 @@ const make = Effect.gen(function* () {
       }
       for (const id of new Set(childIds))
         children.push(
-          yield* captureRecord(yield* read(id), input, nextAncestors, relay, replacements),
+          yield* captureRecord(
+            yield* read(id),
+            input,
+            nextAncestors,
+            relay,
+            replacements,
+            birthFacts,
+          ),
         );
       const threadId =
         record.context !== undefined && record.context.type !== "task-stop"
@@ -2001,7 +2104,8 @@ const make = Effect.gen(function* () {
           });
         }
       }
-      for (const owner of legacyOwners) children.push(yield* captureLegacy(owner, input, relay));
+      for (const owner of legacyOwners)
+        children.push(yield* captureLegacy(owner, input, relay, birthFacts));
       const graph = yield* mergeGraphs([
         ...children,
         {
@@ -2401,7 +2505,20 @@ const make = Effect.gen(function* () {
         yield* sql
           .withTransaction(
             Effect.gen(function* () {
-              const sessionIds = new Set<string>();
+              let birthFacts = noBirthFacts();
+              for (const node of graph.records)
+                if (
+                  node.environmentId === here &&
+                  "certificateId" in node.record &&
+                  node.record.kind === "automation-birth"
+                )
+                  birthFacts = addBirthFacts(
+                    birthFacts,
+                    yield* automation.birth(node.record.certificateId),
+                  );
+              const sessionIds = new Map<string, boolean>();
+              const includeSession = (sessionId: string, covered: boolean) =>
+                sessionIds.set(sessionId, (sessionIds.get(sessionId) ?? true) && covered);
               for (const node of graph.records) {
                 if (node.environmentId !== here || !("envelope" in node.record)) continue;
                 for (const sessionId of [
@@ -2412,7 +2529,7 @@ const make = Effect.gen(function* () {
                 ]) {
                   if (sessionId === null || sessionId === undefined) continue;
                   yield* activeSession(sessionId);
-                  sessionIds.add(sessionId);
+                  includeSession(sessionId, birthFacts.records.has(json(node.record)));
                 }
                 if (node.record.sessionId === null) {
                   const link = yield* links
@@ -2429,7 +2546,7 @@ const make = Effect.gen(function* () {
               for (const node of graph.legacy)
                 if (node.environmentId === here) {
                   yield* activeSession(node.sessionId);
-                  sessionIds.add(node.sessionId);
+                  includeSession(node.sessionId, birthFacts.legacy.has(json(node)));
                 }
               const expiries = [
                 ...graph.records.flatMap((node) =>
@@ -2440,16 +2557,26 @@ const make = Effect.gen(function* () {
               const certificates = graph.records.flatMap((node) =>
                 node.environmentId === here && "certificateId" in node.record ? [node.record] : [],
               );
+              const grants = [...sessionIds].map(([sessionId, covered]) =>
+                dependencyGrant(sessionId, covered),
+              );
               yield* automation.registerDependency(
                 dependency,
                 next,
-                [...sessionIds],
+                grants,
                 true,
                 expiries.length === 0 ? null : Math.min(...expiries),
                 certificates,
               );
               for (const upstream of graph.dependencies)
-                yield* automation.registerDependency(upstream, next, [...sessionIds], false);
+                yield* automation.registerDependency(
+                  upstream,
+                  next,
+                  grants,
+                  false,
+                  undefined,
+                  certificates,
+                );
             }),
           )
           .pipe(Effect.catchTags({ SqlError: () => Effect.fail(unavailable()) }));

@@ -481,3 +481,53 @@ it.effect(
       expect(yield* authority.pending).toEqual([{ dependency: dep, ...route }]);
     }).pipe(Effect.provide(fixture)),
 );
+
+it.effect.each(["birth-only", "execution-first", "execution-last", "unrelated-session"] as const)(
+  "session dependency retirement preserves only exact birth facts: %s",
+  (scenario) =>
+    Effect.gen(function* () {
+      const authority = yield* Authority.DestinationAutomationAuthority;
+      const sql = yield* SqlClient.SqlClient;
+      const dep = dependency(certificate("r4-session-downstream"));
+      const route = { environmentId: destination, generation: "r4-original-route" };
+      const birth = { kind: "automation-birth", sessionId: "r4-birth-session" } as const;
+      const strict = scenario === "unrelated-session" ? "r4-unrelated-session" : birth.sessionId;
+      if (scenario === "execution-first")
+        yield* authority.registerDependency(dep, route, [strict], true);
+      yield* authority.registerDependency(dep, route, [birth], true);
+      if (scenario === "execution-last" || scenario === "unrelated-session")
+        yield* authority.registerDependency(dep, route, [strict], true);
+      yield* Authority.invalidateAutomationSessions([birth.sessionId, strict], "retired");
+      const expected = [{ dependency: dep, ...route }];
+      expect(yield* authority.pending).toEqual(scenario === "birth-only" ? [] : expected);
+      yield* Authority.invalidateAutomationSessions([birth.sessionId]);
+      expect(yield* authority.pending).toEqual(expected);
+      expect(
+        yield* sql`SELECT grant_kind FROM fork_automation_dependency_grants WHERE session_id=${birth.sessionId}`,
+      ).toEqual([
+        {
+          grant_kind:
+            scenario === "execution-first" || scenario === "execution-last"
+              ? "automation-execution"
+              : "automation-birth",
+        },
+      ]);
+    }).pipe(Effect.provide(fixture)),
+);
+
+it.effect("historical session indexes migrate to strict execution retirement", () =>
+  Effect.gen(function* () {
+    const authority = yield* Authority.DestinationAutomationAuthority;
+    const sql = yield* SqlClient.SqlClient;
+    const dep = dependency(certificate("r4-historical-session"));
+    const route = { environmentId: destination, generation: "r4-historical-route" };
+    yield* authority.registerDependency(dep, route, ["r4-historical-session"], true);
+    yield* sql`ALTER TABLE fork_automation_dependency_grants DROP COLUMN grant_kind`;
+    yield* Authority.ensureAutomationAuthoritySchema;
+    expect(yield* sql`SELECT grant_kind FROM fork_automation_dependency_grants`).toEqual([
+      { grant_kind: "automation-execution" },
+    ]);
+    yield* Authority.invalidateAutomationSessions(["r4-historical-session"], "retired");
+    expect(yield* authority.pending).toEqual([{ dependency: dep, ...route }]);
+  }).pipe(Effect.provide(fixture)),
+);

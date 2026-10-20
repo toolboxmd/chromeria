@@ -191,6 +191,12 @@ export const ensureAutomationAuthoritySchema = Effect.gen(function* () {
   )
     yield* sql`ALTER TABLE fork_automation_obligations ADD COLUMN selection_order INTEGER NOT NULL DEFAULT 0`;
   yield* sql`CREATE TABLE IF NOT EXISTS fork_automation_dependency_grants (dependency_id TEXT NOT NULL,session_id TEXT NOT NULL,PRIMARY KEY(dependency_id,session_id))`;
+  if (
+    !(yield* sql<{ name: string }>`PRAGMA table_info(fork_automation_dependency_grants)`).some(
+      (column) => column.name === "grant_kind",
+    )
+  )
+    yield* sql`ALTER TABLE fork_automation_dependency_grants ADD COLUMN grant_kind TEXT NOT NULL DEFAULT 'automation-execution'`;
   yield* sql`CREATE TABLE IF NOT EXISTS fork_automation_dependency_certificates (dependency_id TEXT NOT NULL,certificate_id TEXT NOT NULL,PRIMARY KEY(dependency_id,certificate_id))`;
   if (
     !(yield* sql<{
@@ -223,7 +229,7 @@ export const invalidateAutomationSessions = (
     if (sessionIds.length === 0) return;
     const sql = yield* SqlClient.SqlClient;
     yield* ensureAutomationAuthoritySchema;
-    yield* sql`UPDATE fork_automation_obligations SET pending=1 WHERE ack_json IS NULL AND dependency_id IN (SELECT dependency_id FROM fork_automation_dependency_grants WHERE ${sql.in("session_id", sessionIds)})`;
+    yield* sql`UPDATE fork_automation_obligations SET pending=1 WHERE ack_json IS NULL AND dependency_id IN (SELECT dependency_id FROM fork_automation_dependency_grants WHERE ${sql.in("session_id", sessionIds)} AND (${reason}='revoked' OR grant_kind='automation-execution'))`;
     const affected = yield* sql<{
       id: string;
     }>`SELECT id FROM fork_automation_certificates WHERE id IN (SELECT json_extract(dependency_json,'$.certificateId') FROM fork_automation_recovery WHERE ${sql.in("session_id", sessionIds)}) OR EXISTS (SELECT 1 FROM json_each(certificate_json,'$.graph.records') node JOIN json_each(${json(sessionIds)}) requested WHERE json_extract(node.value,'$.environmentId')=json_extract(certificate_json,'$.audience') AND requested.value IN (json_extract(node.value,'$.record.sessionId'),json_extract(node.value,'$.record.originClientId'),json_extract(node.value,'$.record.requestClientSessionId'),json_extract(node.value,'$.record.resourceSessionId'))) OR EXISTS (SELECT 1 FROM json_each(certificate_json,'$.graph.legacy') node JOIN json_each(${json(sessionIds)}) requested WHERE json_extract(node.value,'$.environmentId')=json_extract(certificate_json,'$.audience') AND json_extract(node.value,'$.sessionId')=requested.value)`;
@@ -239,6 +245,14 @@ export const invalidateAutomationLink = (environmentId: string, generation: stri
     yield* ensureAutomationAuthoritySchema;
     yield* sql`UPDATE fork_automation_obligations SET pending=1 WHERE ack_json IS NULL AND next_environment_id=${environmentId} AND next_generation=${generation}`;
   });
+
+/** Historical callers and index rows retain strict execution retirement. */
+export type DependencyGrant =
+  | string
+  | {
+      readonly kind: "automation-birth";
+      readonly sessionId: string;
+    };
 
 export class DestinationAutomationAuthority extends Context.Service<
   DestinationAutomationAuthority,
@@ -266,7 +280,7 @@ export class DestinationAutomationAuthority extends Context.Service<
     readonly registerDependency: (
       dependency: AutomationDependency,
       next: { readonly environmentId: EnvironmentId; readonly generation: string },
-      sessionIds: ReadonlyArray<string>,
+      sessionIds: ReadonlyArray<DependencyGrant>,
       originating: boolean,
       knownExpiry?: number | null,
       certificates?: ReadonlyArray<CertificateContributor>,
@@ -689,8 +703,12 @@ const make = Effect.gen(function* () {
             return yield* denied("The original automation disable route is already bound.");
           if (knownExpiry !== undefined && knownExpiry !== null)
             yield* sql`UPDATE fork_automation_obligations SET expires_at=CASE WHEN expires_at IS NULL THEN ${knownExpiry} ELSE min(expires_at,${knownExpiry}) END WHERE dependency_id=${key}`;
-          for (const sessionId of sessionIds)
-            yield* sql`INSERT INTO fork_automation_dependency_grants VALUES (${key},${sessionId}) ON CONFLICT DO NOTHING`;
+          for (const contributor of sessionIds) {
+            const sessionId = typeof contributor === "string" ? contributor : contributor.sessionId;
+            const kind =
+              typeof contributor === "string" ? "automation-execution" : contributor.kind;
+            yield* sql`INSERT INTO fork_automation_dependency_grants(dependency_id,session_id,grant_kind) VALUES (${key},${sessionId},${kind}) ON CONFLICT(dependency_id,session_id) DO UPDATE SET grant_kind=CASE WHEN grant_kind='automation-execution' OR excluded.grant_kind='automation-execution' THEN 'automation-execution' ELSE grant_kind END`;
+          }
           for (const certificate of certificates) {
             yield* certificate.kind === "automation-birth"
               ? claimBirthCertificate(certificate.certificateId).pipe(

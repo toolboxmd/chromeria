@@ -1,3 +1,9 @@
+import * as DateTime from "effect/DateTime";
+import * as Ref from "effect/Ref";
+import * as PeerLinks from "./PeerLinks.ts";
+import * as PeerMcpClient from "./PeerMcpClient.ts";
+import * as PeerAuthority from "./PeerAuthority.ts";
+import * as Environment from "../environment/ServerEnvironment.ts";
 import * as PubSub from "effect/PubSub";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import { SecretRef } from "@t3tools/contracts";
@@ -41,6 +47,7 @@ import {
   decodeAutomationAck,
   decodeAutomationCertificate,
   decodeAutomationScheduleReceipt,
+  decodeLaunchReceipt,
   decodeFixtureDependency,
   decodeFixtureDisable,
   delegate,
@@ -50,6 +57,7 @@ import {
   json,
   makeNode,
   nativeCall,
+  nativeInvalidParams,
   seedParent,
   selection,
   traceAutomationValidation,
@@ -1843,4 +1851,556 @@ it.live.each(["non-turn", "non-turn-offline", "policy", "onward"] as const)(
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   90_000,
+);
+
+it.live(
+  "automation384-r4: original recovery identity reaches a relocated, freshly paired destination",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(
+          descriptorOf("r4-moving-a", "R4 source", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const b = yield* makeNode(
+          descriptorOf("r4-moving-b", "R4 destination", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("r4-moving-parent");
+        yield* seedParent(a, parent);
+        const created = yield* nativeCall(a, parent, "schedule_task", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
+          prompt: "R4 isolated relocation recovery",
+          bindToCurrentThread: false,
+          schedule: { type: "interval", everyMs: 60000 },
+          clientRequestId: "r4-moving-create",
+        });
+        expect(created.isError, json(created)).not.toBe(true);
+        yield* a.stopConnections;
+        yield* a.links.unlink(b.environmentId);
+        const originalSession = (yield* b.linkedSessions)[0]!;
+        yield* b.auth.revokeSession(originalSession.sessionId);
+        const pending = (yield* a.authority.pendingAutomationDisables)[0]!;
+        const original = yield* a.links.resolveAutomationRecovery!(
+          pending.environmentId,
+          pending.generation,
+        );
+        const restarted = yield* b.restartSchedulerTransport;
+        expect(restarted.url).not.toBe(original.url);
+        yield* linkTo(a.links, restarted, "full-access");
+        const ordinary = yield* a.links.resolve(b.environmentId);
+        expect(ordinary.url).toBe(restarted.url);
+        expect(ordinary.link.launchIdentity).not.toBe(pending.generation);
+        const requests: string[] = [];
+        const movedTransport = Layer.effect(
+          HttpClient.HttpClient,
+          Effect.map(HttpClient.HttpClient, (client) =>
+            HttpClient.transform(client, (effect, request) => {
+              requests.push(request.url);
+              return request.url.startsWith(original.url + "/")
+                ? Effect.succeed(
+                    HttpClientResponse.fromWeb(request, new Response(null, { status: 503 })),
+                  )
+                : effect;
+            }),
+          ),
+        ).pipe(Layer.provide(FetchHttpClient.layer));
+        const recoveredAuthority = (yield* a.reconstructAutomation).authority;
+        const relocatedLinks = Context.get(
+          yield* PeerLinks.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.succeedContext(a.database),
+                Layer.succeed(
+                  Secrets.ServerSecretStore,
+                  Context.get(a.services, Secrets.ServerSecretStore),
+                ),
+                Layer.succeed(Environment.ServerEnvironment, {
+                  getEnvironmentId: Effect.succeed(a.environmentId),
+                  getDescriptor: Effect.succeed(
+                    descriptorOf("r4-moving-a", "R4 source", { peerAuthority: 1 }),
+                  ),
+                }),
+                movedTransport,
+              ),
+            ),
+            Layer.fresh,
+            Layer.build,
+          ),
+          PeerLinks.PeerLinks,
+        );
+        const relocatedClient = Context.get(
+          yield* PeerMcpClient.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.succeed(PeerLinks.PeerLinks, relocatedLinks),
+                Layer.succeed(PeerAuthority.PeerAuthority, recoveredAuthority),
+                movedTransport,
+              ),
+            ),
+            Layer.fresh,
+            Layer.build,
+          ),
+          PeerMcpClient.PeerMcpClient,
+        );
+        const recovered = {
+          authority: recoveredAuthority,
+          links: relocatedLinks,
+          peers: relocatedClient,
+        };
+        const storedDescriptor = yield* Ref.get(restarted.descriptor);
+        yield* Ref.set(restarted.descriptor, {
+          ...storedDescriptor,
+          environmentId: EnvironmentId.make("r4-unrelated-destination"),
+        });
+        expect(
+          (yield* Effect.result(
+            recovered.links.resolveAutomationRecovery!(pending.environmentId, pending.generation),
+          ))._tag,
+        ).toBe("Failure");
+        yield* recovered.peers.drainAutomationDisables!;
+        expect(yield* recovered.authority.pendingAutomationDisables).toHaveLength(1);
+        expect(requests.some((url) => url.endsWith("/automation-disable"))).toBe(false);
+        yield* Ref.set(restarted.descriptor, storedDescriptor);
+        expect(
+          (yield* Effect.result(
+            recovered.links.resolveAutomationRecovery!(
+              pending.environmentId,
+              "r4-wrong-original-generation",
+            ),
+          ))._tag,
+        ).toBe("Failure");
+        const resolved = yield* Effect.result(
+          recovered.links.resolveAutomationRecovery!(pending.environmentId, pending.generation),
+        );
+        expect(resolved._tag).toBe("Success");
+        if (resolved._tag === "Failure") return yield* Effect.die(resolved.failure);
+        expect(resolved.success.url).toBe(restarted.url);
+        expect(resolved.success.token).toBe(original.token);
+        expect(resolved.success.link.launchIdentity).toBe(pending.generation);
+        yield* Effect.gen(function* () {
+          yield* TestClock.setTime(DateTime.toEpochMillis(ordinary.link.expiresAt) + 1);
+          const expired = yield* Effect.result(recovered.links.resolve(b.environmentId));
+          expect(expired._tag).toBe("Failure");
+          if (expired._tag === "Success")
+            return yield* Effect.die("An expired ordinary link was accepted");
+          expect(expired.failure.reason).toBe("expired");
+          const recovery = yield* recovered.links.resolveAutomationRecovery!(
+            pending.environmentId,
+            pending.generation,
+          );
+          expect(recovery.url).toBe(restarted.url);
+          expect(recovery.token).toBe(original.token);
+          yield* recovered.peers.drainAutomationDisables!;
+        }).pipe(Effect.provide(TestClock.layer()));
+        expect(yield* recovered.authority.pendingAutomationDisables).toEqual([]);
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        expect(yield* sql`SELECT 1 FROM fork_automation_disable_acks`).toHaveLength(1);
+        expect(
+          requests.some((url) => url === restarted.url + "/mcp/peer-control/automation-disable"),
+        ).toBe(true);
+        // The original protected token is valid for its exact registered disable at the new destination route.
+        const http = yield* HttpClient.HttpClient;
+        const ordinaryRetired = yield* http.execute(
+          HttpClientRequest.post(restarted.url + "/mcp").pipe(
+            HttpClientRequest.setHeader("authorization", "Bearer " + original.token),
+            HttpClientRequest.setBody(
+              HttpBody.text(
+                json({ jsonrpc: "2.0", id: "retired-r4", method: "tools/list", params: {} }),
+                "application/json",
+              ),
+            ),
+          ),
+        );
+        expect(ordinaryRetired.status).toBe(401);
+        const wrong = yield* http.execute(
+          HttpClientRequest.post(restarted.url + "/mcp/peer-control/automation-disable").pipe(
+            HttpClientRequest.setHeader("authorization", "Bearer " + original.token),
+            HttpClientRequest.setBody(
+              HttpBody.text(
+                json({
+                  version: 1,
+                  dependency: { ...pending.dependency, definitionDigest: "r4-wrong-definition" },
+                }),
+                "application/json",
+              ),
+            ),
+          ),
+        );
+        expect(wrong.status).toBe(403);
+        const response = yield* http.execute(
+          HttpClientRequest.post(restarted.url + "/mcp/peer-control/automation-disable").pipe(
+            HttpClientRequest.setHeader("authorization", "Bearer " + original.token),
+            HttpClientRequest.setBody(
+              HttpBody.text(
+                json({ version: 1, dependency: pending.dependency }),
+                "application/json",
+              ),
+            ),
+          ),
+        );
+        expect(response.status).toBe(200);
+        const ack = yield* decodeAutomationAck(yield* response.text);
+        expect(ack.dependency).toEqual(pending.dependency);
+        yield* recovered.authority.acknowledgeAutomationDisable(
+          ack,
+          pending.environmentId,
+          pending.generation,
+        );
+        expect(yield* recovered.authority.pendingAutomationDisables).toEqual([]);
+        expect(yield* sql`SELECT 1 FROM fork_automation_disable_acks`).toHaveLength(1);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30000,
+);
+
+it.live.each(["browser-off-after", "device-default", "browser-off-nested"] as const)(
+  "automation384-r4: %s filters capabilities without denying unrelated native birth work",
+  (variant) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(
+          descriptorOf(`probe384r4-${variant}-source`, "Probe source", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const started: Adapter.ProviderAdapterV2TurnInput[] = [];
+        const opened: Adapter.ProviderAdapterV2OpenSessionInput[] = [];
+        const b = yield* makeNode(
+          descriptorOf(`probe384r4-${variant}-dest`, "Probe destination", { peerAuthority: 1 }),
+          "disk",
+          {
+            productionKernel: true,
+            attachmentRequests: true,
+            ownerWorkspace: yield* automationWorkspace,
+            providerAdapter: automationAdapter(started, opened, (turn, events) =>
+              turn.message.text === "R4 nested capture"
+                ? Effect.void
+                : automationReply(turn, events, "Done"),
+            ),
+            manualScheduler: Scheduler.Scheduler.of({ register: () => Effect.void }),
+          },
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make(`probe384r4-${variant}-parent`);
+        yield* seedParent(a, parent);
+        // Interactive-born control under the same link, project and grant.
+        const launched = yield* nativeCall(a, parent, "t3_thread_launch", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          title: "Interactive control",
+          message: "Wait",
+          modelSelection: selection,
+          clientRequestId: `probe384r4-${variant}-child`,
+        });
+        expect(launched.isError, json(launched)).not.toBe(true);
+        const child = (yield* decodeLaunchReceipt(launched.structuredContent)).threadId;
+        yield* activate(b, child);
+        const originalGrant = (yield* b.authority.grants)[0]!;
+        const grant = {
+          ...originalGrant,
+          resourceScope:
+            variant === "browser-off-nested"
+              ? ("environment-resources" as const)
+              : originalGrant.resourceScope,
+        };
+        if (variant !== "device-default") {
+          yield* b.authority.setGrant({ ...grant, preview: true });
+        } else {
+          // Product default for B: agent device access is off.
+          yield* b.fixtureSettings.updateSettings({ enableAgentDeviceAccess: false });
+          yield* b.authority.setGrant({ ...grant, device: true });
+        }
+        const created = yield* nativeCall(a, parent, "schedule_task", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
+          title: "Probe schedule",
+          prompt: "Scheduled work",
+          schedule: { type: "interval", everyMs: 60_000 },
+          bindToCurrentThread: false,
+          workspaceStrategy: { type: "root" },
+          clientRequestId: `probe384r4-${variant}-create`,
+        });
+        expect(created.isError, json(created)).not.toBe(true);
+        const receipt = yield* decodeAutomationScheduleReceipt(created.structuredContent);
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const certificate = yield* decodeAutomationCertificate(
+          (yield* sql<{
+            certificate_json: string;
+          }>`SELECT certificate_json FROM fork_automation_certificates`)[0]!.certificate_json,
+        );
+        expect(certificate.ceiling.capabilities).toContain(
+          variant === "device-default" ? "device" : "preview",
+        );
+        yield* b.scheduled.runNow({ id: receipt.scheduledTaskId });
+        let threadId = ThreadId.make(
+          (yield* sql<{
+            thread_id: string;
+          }>`SELECT thread_id FROM orchestration_v2_projection_threads WHERE project_id=${b.project.id} AND thread_id<>${child}`)[0]!
+            .thread_id,
+        );
+        const worker = Context.get(b.runtime, EffectWorker.OrchestrationEffectWorkerV2);
+        const run = (target: ThreadId, created: { readonly id: RunId; readonly status: string }) =>
+          Effect.gen(function* () {
+            if (created.status === "preparing")
+              yield* b.threads
+                .streamStoredEventsFrom({
+                  threadId: target,
+                  afterSequence: 0,
+                  eventType: "run.updated",
+                })
+                .pipe(
+                  Stream.filter(
+                    (event) =>
+                      event.event.type === "run.updated" &&
+                      event.event.payload.id === created.id &&
+                      event.event.payload.status !== "preparing",
+                  ),
+                  Stream.runHead,
+                  Effect.flatMap(Effect.fromOption),
+                );
+            yield* worker.drain();
+            yield* finishAutomationRun(b, target, created.id);
+          });
+        const first = (yield* b.threads.getThreadRecords(threadId, ["runs"])).runs[0]!;
+        yield* run(threadId, first);
+        if (variant === "browser-off-nested") {
+          yield* b.threads.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("r4-nested-active"),
+            threadId,
+            messageId: MessageId.make("r4-nested-active"),
+            text: "R4 nested capture",
+            attachments: [],
+            dispatchMode: { type: "start_immediately" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+          yield* awaitAutomationRunning(b, threadId);
+          const nested = yield* nativeCall(b, threadId, "schedule_task", {
+            projectId: b.project.id,
+            purposeIntent: { version: 1, intent: { type: "unscoped" } },
+            prompt: "Nested local birth",
+            bindToCurrentThread: false,
+            workspaceStrategy: { type: "root" },
+            schedule: { type: "interval", everyMs: 60_000 },
+            clientRequestId: "r4-nested-create",
+          });
+          expect(nested.isError, json(nested)).not.toBe(true);
+          const nestedReceipt = yield* decodeAutomationScheduleReceipt(nested.structuredContent);
+          const nestedManual = yield* b.scheduled.runNow({ id: nestedReceipt.scheduledTaskId });
+          expect(nestedManual.task.lastRunError, json(nestedManual)).toBeNull();
+          yield* worker.drain();
+          const nestedRows = yield* sql<{
+            thread_id: string;
+          }>`SELECT thread_id FROM orchestration_v2_projection_threads WHERE project_id=${b.project.id} AND thread_id<>${child} AND thread_id<>${threadId}`;
+          expect(nestedRows).toHaveLength(1);
+          threadId = ThreadId.make(nestedRows[0]!.thread_id);
+          const created = yield* b.threads
+            .streamStoredEventsFrom({ threadId, afterSequence: 0, eventType: "run.created" })
+            .pipe(Stream.runHead, Effect.flatMap(Effect.fromOption));
+          if (created.event.type !== "run.created")
+            return yield* Effect.die("Missing nested native run");
+          yield* run(threadId, created.event.payload);
+        }
+        const follow = (target: ThreadId, label: string) =>
+          Effect.gen(function* () {
+            const result = yield* b.threads.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make(`probe384r4-${variant}-${label}`),
+              threadId: target,
+              messageId: MessageId.make(`probe384r4-${variant}-message-${label}`),
+              text: "Ordinary local user follow-up",
+              attachments: [],
+              dispatchMode: { type: "start_immediately" },
+              createdBy: "user",
+              creationSource: "web",
+            });
+            const createdRun = result.storedEvents.find(
+              (event) => event.event.type === "run.created",
+            );
+            if (createdRun?.event.type !== "run.created")
+              return yield* Effect.die("Missing follow-up run");
+            yield* run(target, createdRun.event.payload);
+          });
+        if (variant !== "device-default") {
+          const before = yield* Effect.result(follow(threadId, "before"));
+          expect(before._tag).toBe("Success");
+          yield* b.fixtureSettings.updateSettings({ enableAgentBrowserAccess: false });
+        }
+        const startsBefore = started.length;
+        const after = yield* Effect.result(follow(threadId, "after"));
+        const owner = yield* b.authority.checkThread(threadId);
+        expect(owner?.ceiling.capabilities).not.toContain(
+          variant === "device-default" ? "device" : "preview",
+        );
+        expect((yield* Effect.result(b.authority.checkThread(child)))._tag).toBe("Success");
+        const renamed = yield* nativeCall(a, parent, "t3_thread_update", {
+          environmentId: b.environmentId,
+          threadId: child,
+          action: "rename",
+          title: "R4 interactive control",
+        });
+        expect(renamed.isError, json(renamed)).not.toBe(true);
+        if (variant === "device-default") {
+          const deniedTool = yield* nativeInvalidParams(b, threadId, "device_commands", {});
+          expect(deniedTool.error.message).toMatch(/not found|not available|unknown tool/i);
+        } else {
+          const deniedTool = yield* nativeCall(b, threadId, "preview_status", {});
+          expect(deniedTool.isError, json(deniedTool)).toBe(true);
+          expect(json(deniedTool)).toMatch(/browser|preview|capability/i);
+        }
+        if (variant !== "device-default") {
+          yield* b.fixtureSettings.updateSettings({ enableAgentBrowserAccess: true });
+          expect((yield* Effect.result(follow(threadId, "restored")))._tag).toBe("Success");
+        }
+        expect(after._tag).toBe("Success");
+        expect(started.length).toBeGreaterThan(startsBefore);
+        yield* b.authority.setGrant({ ...grant, preview: false, device: false });
+        expect((yield* Effect.result(b.authority.checkThread(threadId)))._tag).toBe("Failure");
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  60_000,
+);
+it.live(
+  "automation384-r4: birth-only onward automation survives broadening and receives exact DISABLE on real revocation",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(
+          descriptorOf("probe384r4-ob-a", "Source", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const starts: Adapter.ProviderAdapterV2TurnInput[] = [];
+        const opened: Adapter.ProviderAdapterV2OpenSessionInput[] = [];
+        const b = yield* makeNode(
+          descriptorOf("probe384r4-ob-b", "Destination", { peerAuthority: 1 }),
+          "disk",
+          {
+            productionKernel: true,
+            attachmentRequests: true,
+            ownerWorkspace: yield* automationWorkspace,
+            manualScheduler: Scheduler.Scheduler.of({ register: () => Effect.void }),
+            providerAdapter: automationAdapter(starts, opened, (turn, events) =>
+              turn.message.text === "R3 active onward"
+                ? Effect.void
+                : automationReply(turn, events, "Done"),
+            ),
+          },
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("probe384r4-ob-parent");
+        yield* seedParent(a, parent);
+        expect(
+          (yield* nativeCall(a, parent, "t3_project_list", { environmentId: b.environmentId }))
+            .isError,
+        ).not.toBe(true);
+        const grant = {
+          ...(yield* b.authority.grants)[0]!,
+          resourceScope: "environment-resources" as const,
+          onward: true,
+        };
+        yield* b.authority.setGrant(grant);
+        const created = yield* nativeCall(a, parent, "schedule_task", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
+          prompt: "Scheduled work",
+          bindToCurrentThread: false,
+          workspaceStrategy: { type: "root" },
+          schedule: { type: "interval", everyMs: 60000 },
+          clientRequestId: "probe384r4-ob-create",
+        });
+        expect(created.isError, json(created)).not.toBe(true);
+        const receipt = yield* decodeAutomationScheduleReceipt(created.structuredContent);
+        yield* b.scheduled.runNow({ id: receipt.scheduledTaskId });
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const threadId = ThreadId.make(
+          (yield* sql<{
+            thread_id: string;
+          }>`SELECT thread_id FROM orchestration_v2_projection_threads WHERE project_id=${b.project.id}`)[0]!
+            .thread_id,
+        );
+        const first = (yield* b.threads.getThreadRecords(threadId, ["runs"])).runs[0]!;
+        yield* drainAutomationRun(b, threadId, first);
+        // A retired definition must not retire its thread's original live contributors.
+        yield* b.scheduled.setEnabled({ id: receipt.scheduledTaskId, enabled: false });
+        const result = yield* b.threads.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("probe384r4-ob-active"),
+          threadId,
+          messageId: MessageId.make("probe384r4-ob-active"),
+          text: "R3 active onward",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        expect(result.storedEvents.some((event) => event.event.type === "run.created")).toBe(true);
+        yield* awaitAutomationRunning(b, threadId);
+        const c = yield* makeNode(
+          descriptorOf("probe384r4-ob-c", "Onward", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        yield* linkTo(b.links, c, "full-access");
+        expect(
+          (yield* nativeCall(b, threadId, "t3_project_list", { environmentId: c.environmentId }))
+            .isError,
+        ).not.toBe(true);
+        yield* c.authority.setGrant({
+          ...(yield* c.authority.grants)[0]!,
+          resourceScope: "environment-resources",
+        });
+        const onward = yield* nativeCall(b, threadId, "schedule_task", {
+          environmentId: c.environmentId,
+          projectId: c.project.id,
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
+          prompt: "Onward from completed birth",
+          bindToCurrentThread: false,
+          schedule: { type: "interval", everyMs: 60000 },
+          clientRequestId: "probe384r4-ob-onward",
+        });
+        expect(onward.isError, json(onward)).not.toBe(true);
+        const csql = Context.get(c.database, SqlClient.SqlClient);
+        // Pure broadening on B: add device to A's grant. No revocation.
+        yield* b.authority.setGrant({ ...grant, device: true });
+        const peers = Context.get(b.services, PeerMcpClient.PeerMcpClient);
+        if (peers.drainAutomationDisables === undefined)
+          return yield* Effect.die("Missing production disable driver");
+        yield* peers.drainAutomationDisables;
+        const cRows = yield* csql`SELECT disabled,revoked FROM fork_automation_certificates`;
+        const cTask = (yield* c.scheduled.list()).tasks[0]!;
+        expect(cRows).toEqual([{ disabled: 0, revoked: 0 }]);
+        expect(yield* csql`SELECT 1 FROM fork_automation_disable_acks`).toHaveLength(0);
+        expect(yield* b.authority.pendingAutomationDisables).toEqual([]);
+        expect(cTask.enabled).toBe(true);
+        yield* b.auth.revokeSession(grant.sessionId);
+        const pending = (yield* b.authority.pendingAutomationDisables).filter(
+          (item) => item.environmentId === c.environmentId,
+        );
+        expect(pending.length).toBeGreaterThan(0);
+        yield* peers.drainAutomationDisables;
+        expect(yield* csql`SELECT disabled,revoked FROM fork_automation_certificates`).toEqual([
+          { disabled: 1, revoked: 1 },
+        ]);
+        const acknowledgements = yield* csql<{
+          ack_json: string;
+        }>`SELECT ack_json FROM fork_automation_disable_acks`;
+        expect(acknowledgements).toHaveLength(pending.length);
+        for (const item of pending)
+          expect(
+            yield* Effect.forEach(acknowledgements, (row) => decodeAutomationAck(row.ack_json)),
+          ).toContainEqual({ version: 1, dependency: item.dependency, disabled: true });
+        expect(yield* b.authority.pendingAutomationDisables).toEqual([]);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  120_000,
 );
