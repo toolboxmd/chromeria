@@ -70,13 +70,13 @@ describe("alternatePreviewRuntime", () => {
 });
 
 describe("rendersServerTabNatively", () => {
-  it("hosts a person's local server tab in the desktop and streams an agent's", () => {
+  it("hosts a person's local server tab in the desktop and streams a server page", () => {
     state.electron = true;
 
     expect(rendersServerTabNatively(local, local, { runtime: "server" })).toBe(true);
-    expect(
-      rendersServerTabNatively(local, local, { runtime: "server", automationOwner: "agent-a" }),
-    ).toBe(false);
+    expect(rendersServerTabNatively(local, local, { runtime: "server", serverPage: true })).toBe(
+      false,
+    );
     expect(rendersServerTabNatively(remote, local, { runtime: "server" })).toBe(false);
   });
 });

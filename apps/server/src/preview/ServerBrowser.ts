@@ -896,9 +896,8 @@ const make = Effect.gen(function* () {
     }
   };
 
-  // Agent tabs stream from the server browser; only a person's tab is the desktop's own.
   const desktopRenders = (snapshot: PreviewSessionSnapshot) =>
-    desktopChannel.available && snapshot.automationOwner === undefined
+    desktopChannel.available && snapshot.serverPage !== true
       ? Effect.runPromise(
           desktopChannel.awaitAttached(
             { threadId: snapshot.threadId, tabId: snapshot.tabId },
@@ -1642,6 +1641,8 @@ const make = Effect.gen(function* () {
         ...(opener.profileId === undefined ? {} : { profileId: opener.profileId }),
         // Agent popups stay with the agent and only float when it asks, like its own opens.
         ...(agentId === null ? {} : { automationOwner: agentId, reveal: false }),
+        // A person's popup from a server page is still that page's popup, not a desktop one.
+        ...(opener.desktop === null ? { serverPage: true } : {}),
         beforePublish: (snapshot) =>
           adoptedPages.set(tabKey(snapshot.threadId, snapshot.tabId), {
             page: popup,

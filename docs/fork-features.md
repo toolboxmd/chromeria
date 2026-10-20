@@ -3197,6 +3197,7 @@ sources and reasons.
     "apps/server/src/cli/browser.ts",
     "apps/server/src/mcp/WebResearchRender.integration.test.ts",
     "apps/server/src/preview/CredentialLogin.integration.test.ts",
+    "apps/server/src/preview/Manager.ts",
     "apps/server/src/preview/ServerBrowser.test.ts",
     "apps/server/src/preview/ServerBrowser.ts",
     "apps/server/src/preview/ServerBrowserContexts.ts",
@@ -3207,7 +3208,8 @@ sources and reasons.
     "apps/server/src/webResearch/ResearchHost.test.ts",
     "docs/user/remote-access.md",
     "packages/client-runtime/src/state/preview.ts",
-    "packages/client-runtime/src/state/runtime.test.ts"
+    "packages/client-runtime/src/state/runtime.test.ts",
+    "packages/contracts/src/preview.ts"
   ],
   "keywords": [
     "--user-agent",
@@ -3218,6 +3220,7 @@ sources and reasons.
     "presentAsChrome",
     "rendersServerTabNatively",
     "reservedPage",
+    "serverPage",
     "symlink"
   ]
 }
