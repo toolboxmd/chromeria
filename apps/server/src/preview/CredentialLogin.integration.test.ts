@@ -267,7 +267,10 @@ const withBrowser = <A, E>(
   effect: Effect.Effect<
     A,
     E,
-    Broker.PreviewAutomationBroker | Manager.PreviewManager | Scope.Scope
+    | Broker.PreviewAutomationBroker
+    | Manager.PreviewManager
+    | ServerBrowser.ServerBrowser
+    | Scope.Scope
   >,
 ) =>
   Effect.scoped(
@@ -449,6 +452,61 @@ describe.skipIf(!executable)("credential login in a real browser", () => {
           expect([...ended.closed].toSorted()).toEqual([tabId, other].toSorted());
           const fresh = yield* openTab(broker, "https://login.example.test/account");
           expect(yield* invoke(broker)(fresh, "evaluate", { expression: "1" })).toBe(1);
+        }),
+      ),
+    60_000,
+  );
+
+  it.live(
+    "a cookie batch racing the end of a login lands in the fresh context without leaking a page",
+    () =>
+      withBrowser(
+        Effect.gen(function* () {
+          const broker = yield* Broker.PreviewAutomationBroker;
+          const browser = yield* ServerBrowser.ServerBrowser;
+          const tabId = yield* openTab(broker);
+          yield* fillPassword(broker, tabId);
+          const loginContext = pageAt("/").context();
+          const mirrored = yield* browser
+            .mirrorCookies({
+              environmentId: scope.environmentId,
+              sequence: 0,
+              profile: { id: "default", name: "Default", kind: "persistent" },
+              mutations: [
+                {
+                  type: "set",
+                  cookie: {
+                    name: "mirrored",
+                    value: "from-desktop",
+                    domain: "login.example.test",
+                    path: "/",
+                    secure: true,
+                    httpOnly: false,
+                    sameSite: "lax",
+                    // 2100-01-01: persisted, so it survives the login's context.
+                    expires: 4_102_444_800,
+                  },
+                },
+              ],
+            })
+            .pipe(Effect.result, Effect.forkScoped);
+          const ended = yield* invoke(broker)<{ closed: Array<string> }>(tabId, "endLogin");
+          expect(ended.closed).toEqual([tabId]);
+          const result = yield* Fiber.join(mirrored);
+          const fresh = yield* openTab(broker);
+          expect(yield* invoke(broker)(fresh, "evaluate", { expression: "1" })).toBe(1);
+          const context = pageAt("/").context();
+          expect(context).not.toBe(loginContext);
+          // The reserved page and the new tab, nothing the mirror left behind.
+          expect(context.pages()).toHaveLength(2);
+          const cookies = yield* Effect.promise(() =>
+            context.cookies("https://login.example.test/"),
+          );
+          if (result._tag === "Success") {
+            expect(cookies.map((cookie) => cookie.name)).toContain("mirrored");
+          } else {
+            expect(result.failure._tag).toBe("CookieMirrorError");
+          }
         }),
       ),
     60_000,

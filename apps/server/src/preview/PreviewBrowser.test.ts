@@ -258,6 +258,18 @@ it.layer(NodeServices.layer)("PreviewBrowser", (it) => {
         { name: `${ROOT}a`, data: "../escape", mode: LINK },
       ],
     },
+    {
+      name: "a Windows-style link escape",
+      entries: [{ name: `${ROOT}a`, data: "..\\download.zip", mode: LINK }],
+    },
+    {
+      name: "a link through a file",
+      entries: [
+        { name: `${ROOT}f`, data: "x", mode: 0o100644 },
+        { name: `${ROOT}d/`, mode: 0o40755 },
+        { name: `${ROOT}a`, data: "f/../d", mode: LINK },
+      ],
+    },
     { name: "a dangling link", entries: [{ name: `${ROOT}a`, data: "missing", mode: LINK }] },
     {
       name: "an oversized link target",

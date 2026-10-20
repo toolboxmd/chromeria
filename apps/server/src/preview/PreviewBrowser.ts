@@ -296,7 +296,12 @@ export const makePreviewBrowser = Effect.fn("PreviewBrowser.make")(function* (
         pending.unshift(...target.split("/"));
         continue;
       }
-      if (!info.isFile() && !info.isDirectory()) return false;
+      if (
+        !info.isDirectory() &&
+        !(info.isFile() && pending.every((next) => ["", "."].includes(next)))
+      ) {
+        return false;
+      }
       resolved = candidate;
     }
     return true;
@@ -399,7 +404,8 @@ export const makePreviewBrowser = Effect.fn("PreviewBrowser.make")(function* (
             catch: unpackFailure,
           });
         }).pipe(Effect.scoped);
-        if (linkTarget === "" || linkTarget.includes("\0") || path.isAbsolute(linkTarget)) {
+        // Targets use `/` only; Windows would read a backslash as a separator the walk never checks.
+        if (linkTarget === "" || /[\\\0]/.test(linkTarget) || path.isAbsolute(linkTarget)) {
           return yield* unsafe;
         }
         const link = target(relative);

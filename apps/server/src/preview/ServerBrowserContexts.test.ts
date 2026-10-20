@@ -31,6 +31,7 @@ const makeContext = (product = "HeadlessChrome/154.0.8037.92") => {
   return {
     opened: pages,
     on: vi.fn((event: string, listener: () => void) => events.on(event, listener)),
+    once: vi.fn((event: string, listener: () => void) => events.once(event, listener)),
     pages: vi.fn(() => [...pages]),
     newPage: vi.fn(async () => {
       const page = makePage();
@@ -307,6 +308,26 @@ describe("ServerBrowserContexts", () => {
       actual: "153.0.1.1",
     });
     expect(browser.close).toHaveBeenCalled();
+    await pool.close();
+  });
+
+  it("never caches a persistent context that closes while it starts", async () => {
+    const crashing = makeContext();
+    crashing.newCDPSession.mockImplementationOnce(async () => ({
+      send: vi.fn(async () => ({ product: "HeadlessChrome/154.0.8037.92" })),
+      // Chrome exits after answering, while the session detaches.
+      detach: vi.fn(async () => {
+        await crashing.close();
+      }),
+    }));
+    launches.persistent
+      .mockResolvedValueOnce(crashing as unknown as BrowserContext)
+      .mockResolvedValue(makeContext() as unknown as BrowserContext);
+    const pool = new ServerBrowserContexts(options());
+    await expect(pool.contextFor("default")).rejects.toThrow("closed while it started");
+    const reopened = await pool.contextFor("default");
+    expect(reopened).not.toBe(crashing);
+    expect(launches.persistent).toHaveBeenCalledTimes(2);
     await pool.close();
   });
 

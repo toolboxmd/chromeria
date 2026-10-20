@@ -247,6 +247,11 @@ export class ServerBrowserContexts {
     const context = await this.launch(options, () =>
       chromium.launchPersistentContext(directory, { ...options, ...contextOptions }),
     );
+    // The caller listens for close only once this returns, so a close meanwhile fails the start.
+    let closed = false;
+    context.once("close", () => {
+      closed = true;
+    });
     try {
       const [first, ...rest] = context.pages();
       for (const page of rest) await page.close().catch(constVoid);
@@ -257,6 +262,7 @@ export class ServerBrowserContexts {
       } finally {
         await cdp.detach().catch(constVoid);
       }
+      if (closed) throw new Error("The preview browser closed while it started.");
       return context;
     } catch (error) {
       this.endingContexts.add(context);
