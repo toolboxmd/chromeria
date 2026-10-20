@@ -953,10 +953,19 @@ const make = Effect.gen(function* () {
               ceiling = intersect(ceiling, contributor.ceiling);
           }
         }
-        return {
+        const current = {
           ...ceiling,
           capabilities: yield* currentCapabilities(ceiling.capabilities, record.projectId),
         };
+        if (
+          record.kind === "automation-birth" &&
+          nextPurpose === "interactive" &&
+          json(intersect(certificate.ceiling, current)) !== json(certificate.ceiling)
+        )
+          return yield* denied(
+            "An original automation birth contributor was narrowed by current policy.",
+          );
+        return current;
       }
       if (record.context?.type === "task-stop") {
         const control = record.context;
@@ -2428,10 +2437,8 @@ const make = Effect.gen(function* () {
                 ),
                 ...graph.legacy.map((node) => node.expiresAt),
               ];
-              const certificateIds = graph.records.flatMap((node) =>
-                node.environmentId === here && "certificateId" in node.record
-                  ? [node.record.certificateId]
-                  : [],
+              const certificates = graph.records.flatMap((node) =>
+                node.environmentId === here && "certificateId" in node.record ? [node.record] : [],
               );
               yield* automation.registerDependency(
                 dependency,
@@ -2439,7 +2446,7 @@ const make = Effect.gen(function* () {
                 [...sessionIds],
                 true,
                 expiries.length === 0 ? null : Math.min(...expiries),
-                certificateIds,
+                certificates,
               );
               for (const upstream of graph.dependencies)
                 yield* automation.registerDependency(upstream, next, [...sessionIds], false);
@@ -3236,7 +3243,7 @@ const make = Effect.gen(function* () {
             const previous = yield* grant(input.sessionId);
             const priorEncoded = yield* encodeGrant(previous).pipe(Effect.mapError(unavailable));
             if (priorEncoded !== encoded)
-              yield* Automation.invalidateAutomationSessions([input.sessionId]).pipe(
+              yield* Automation.invalidateAutomationSessions([input.sessionId], "retired").pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
                 Effect.mapError(unavailable),
               );

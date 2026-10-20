@@ -734,13 +734,14 @@ const layerBase: Layer.Layer<
               : [],
         ),
       );
-      const capturedOwners = execution
+      const guarded = dispatch !== undefined || automation !== undefined || execution;
+      const capturedOwners = guarded
         ? yield* nativeAuthorityOwners(explicit, threadIds, runIds).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
           )
         : [];
       const admission =
-        execution && Option.isSome(nativeAuthority)
+        guarded && Option.isSome(nativeAuthority)
           ? yield* nativeAuthority.value.preflight(capturedOwners, threadIds).pipe(
               Effect.mapError(
                 () =>
@@ -848,7 +849,7 @@ const layerBase: Layer.Layer<
                 Effect.provideService(ProjectionStore.ProjectionStoreV2, projectionStore),
               );
           }
-          if (dispatch !== undefined || automation !== undefined || execution) {
+          if (guarded) {
             const owners = yield* nativeAuthorityOwners(explicit, threadIds, runIds).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
             );

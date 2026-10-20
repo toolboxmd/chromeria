@@ -156,6 +156,11 @@ const decodeCertificate = Schema.decodeUnknownEffect(Schema.fromJsonString(Autom
 const decodeDependency = Schema.decodeUnknownEffect(Schema.fromJsonString(AutomationDependency));
 const decodeAck = Schema.decodeUnknownEffect(Schema.fromJsonString(AutomationDisableAck));
 
+type CertificateContributor = Pick<
+  Extract<typeof ExecutionRecord.Type, { readonly certificateId: string }>,
+  "kind" | "certificateId"
+>;
+
 export const ensureAutomationAuthoritySchema = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`CREATE TABLE IF NOT EXISTS fork_automation_certificates (id TEXT PRIMARY KEY, certificate_json TEXT NOT NULL, disabled INTEGER NOT NULL DEFAULT 0)`;
@@ -187,6 +192,14 @@ export const ensureAutomationAuthoritySchema = Effect.gen(function* () {
     yield* sql`ALTER TABLE fork_automation_obligations ADD COLUMN selection_order INTEGER NOT NULL DEFAULT 0`;
   yield* sql`CREATE TABLE IF NOT EXISTS fork_automation_dependency_grants (dependency_id TEXT NOT NULL,session_id TEXT NOT NULL,PRIMARY KEY(dependency_id,session_id))`;
   yield* sql`CREATE TABLE IF NOT EXISTS fork_automation_dependency_certificates (dependency_id TEXT NOT NULL,certificate_id TEXT NOT NULL,PRIMARY KEY(dependency_id,certificate_id))`;
+  if (
+    !(yield* sql<{
+      name: string;
+    }>`PRAGMA table_info(fork_automation_dependency_certificates)`).some(
+      (column) => column.name === "certificate_kind",
+    )
+  )
+    yield* sql`ALTER TABLE fork_automation_dependency_certificates ADD COLUMN certificate_kind TEXT NOT NULL DEFAULT 'automation-execution'`;
 });
 
 /** Persist downstream obligations before retiring an exact local generation. */
@@ -197,12 +210,15 @@ const invalidateAutomationCertificates = (
   Effect.gen(function* () {
     if (certificateIds.length === 0) return;
     const sql = yield* SqlClient.SqlClient;
-    yield* sql`UPDATE fork_automation_obligations SET pending=1 WHERE ack_json IS NULL AND dependency_id IN (SELECT dependency_id FROM fork_automation_dependency_certificates WHERE ${sql.in("certificate_id", certificateIds)})`;
+    yield* sql`UPDATE fork_automation_obligations SET pending=1 WHERE ack_json IS NULL AND dependency_id IN (SELECT dependency_id FROM fork_automation_dependency_certificates WHERE ${sql.in("certificate_id", certificateIds)} AND (${reason}='revoked' OR certificate_kind='automation-execution'))`;
     yield* sql`UPDATE fork_automation_certificates SET disabled=1,revoked=CASE WHEN ${reason}='revoked' THEN 1 ELSE revoked END WHERE ${sql.in("id", certificateIds)}`;
   });
 
 /** SQL-only: call in the revocation owner's transaction, before invalidating credentials. */
-export const invalidateAutomationSessions = (sessionIds: ReadonlyArray<string>) =>
+export const invalidateAutomationSessions = (
+  sessionIds: ReadonlyArray<string>,
+  reason: "retired" | "revoked" = "revoked",
+) =>
   Effect.gen(function* () {
     if (sessionIds.length === 0) return;
     const sql = yield* SqlClient.SqlClient;
@@ -213,7 +229,7 @@ export const invalidateAutomationSessions = (sessionIds: ReadonlyArray<string>) 
     }>`SELECT id FROM fork_automation_certificates WHERE id IN (SELECT json_extract(dependency_json,'$.certificateId') FROM fork_automation_recovery WHERE ${sql.in("session_id", sessionIds)}) OR EXISTS (SELECT 1 FROM json_each(certificate_json,'$.graph.records') node JOIN json_each(${json(sessionIds)}) requested WHERE json_extract(node.value,'$.environmentId')=json_extract(certificate_json,'$.audience') AND requested.value IN (json_extract(node.value,'$.record.sessionId'),json_extract(node.value,'$.record.originClientId'),json_extract(node.value,'$.record.requestClientSessionId'),json_extract(node.value,'$.record.resourceSessionId'))) OR EXISTS (SELECT 1 FROM json_each(certificate_json,'$.graph.legacy') node JOIN json_each(${json(sessionIds)}) requested WHERE json_extract(node.value,'$.environmentId')=json_extract(certificate_json,'$.audience') AND json_extract(node.value,'$.sessionId')=requested.value)`;
     yield* invalidateAutomationCertificates(
       affected.map((row) => row.id),
-      "revoked",
+      reason,
     );
   });
 
@@ -253,7 +269,7 @@ export class DestinationAutomationAuthority extends Context.Service<
       sessionIds: ReadonlyArray<string>,
       originating: boolean,
       knownExpiry?: number | null,
-      certificateIds?: ReadonlyArray<string>,
+      certificates?: ReadonlyArray<CertificateContributor>,
     ) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly receiveDisable: (
       input: AutomationDisable,
@@ -653,7 +669,7 @@ const make = Effect.gen(function* () {
     sessionIds,
     originating,
     knownExpiry,
-    certificateIds = [],
+    certificates = [],
   ) =>
     sql
       .withTransaction(
@@ -675,9 +691,13 @@ const make = Effect.gen(function* () {
             yield* sql`UPDATE fork_automation_obligations SET expires_at=CASE WHEN expires_at IS NULL THEN ${knownExpiry} ELSE min(expires_at,${knownExpiry}) END WHERE dependency_id=${key}`;
           for (const sessionId of sessionIds)
             yield* sql`INSERT INTO fork_automation_dependency_grants VALUES (${key},${sessionId}) ON CONFLICT DO NOTHING`;
-          for (const certificateId of certificateIds) {
-            yield* claim(certificateId);
-            yield* sql`INSERT INTO fork_automation_dependency_certificates VALUES (${key},${certificateId}) ON CONFLICT DO NOTHING`;
+          for (const certificate of certificates) {
+            yield* certificate.kind === "automation-birth"
+              ? claimBirthCertificate(certificate.certificateId).pipe(
+                  Effect.provideService(SqlClient.SqlClient, sql),
+                )
+              : claim(certificate.certificateId);
+            yield* sql`INSERT INTO fork_automation_dependency_certificates(dependency_id,certificate_id,certificate_kind) VALUES (${key},${certificate.certificateId},${certificate.kind}) ON CONFLICT(dependency_id,certificate_id) DO UPDATE SET certificate_kind=CASE WHEN certificate_kind='automation-execution' OR excluded.certificate_kind='automation-execution' THEN 'automation-execution' ELSE certificate_kind END`;
           }
         }),
       )
@@ -727,7 +747,7 @@ const make = Effect.gen(function* () {
     yield* sql`UPDATE fork_automation_obligations SET pending=1 WHERE ack_json IS NULL AND expires_at IS NOT NULL AND expires_at<=${yield* Clock.currentTimeMillis}`.pipe(
       Effect.mapError(unavailable),
     );
-    yield* sql`UPDATE fork_automation_obligations SET pending=1 WHERE ack_json IS NULL AND dependency_id IN (SELECT d.dependency_id FROM fork_automation_dependency_certificates d JOIN fork_automation_certificates c ON c.id=d.certificate_id WHERE c.disabled=1 OR (json_extract(c.certificate_json,'$.expiresAt') IS NOT NULL AND json_extract(c.certificate_json,'$.expiresAt')<=${yield* Clock.currentTimeMillis}))`.pipe(
+    yield* sql`UPDATE fork_automation_obligations SET pending=1 WHERE ack_json IS NULL AND dependency_id IN (SELECT d.dependency_id FROM fork_automation_dependency_certificates d JOIN fork_automation_certificates c ON c.id=d.certificate_id WHERE c.revoked=1 OR (d.certificate_kind='automation-execution' AND c.disabled=1) OR (json_extract(c.certificate_json,'$.expiresAt') IS NOT NULL AND json_extract(c.certificate_json,'$.expiresAt')<=${yield* Clock.currentTimeMillis}))`.pipe(
       Effect.mapError(unavailable),
     );
     const rows = yield* sql

@@ -216,7 +216,9 @@ it.effect(
         environmentId: dep.destinationEnvironmentId,
         generation: "original-downstream-link",
       };
-      yield* authority.registerDependency(dep, route, [], true, null, [parent.id]);
+      yield* authority.registerDependency(dep, route, [], true, null, [
+        { kind: "automation-execution", certificateId: parent.id },
+      ]);
       const aborted = yield* Effect.result(
         sql.withTransaction(
           Effect.gen(function* () {
@@ -358,5 +360,124 @@ it.effect(
       expect((yield* Effect.result(authority.birth(value.id)))._tag).toBe("Failure");
       yield* accept(certificate("replacement-after-source-disable-384"));
       expect((yield* Effect.result(authority.birth(value.id)))._tag).toBe("Failure");
+    }).pipe(Effect.provide(fixture)),
+);
+
+it.effect.each([false, true])(
+  "birth dependency registration before/after retirement (%s) survives retirement but not security invalidation",
+  (retireBeforeCapture) =>
+    Effect.gen(function* () {
+      const authority = yield* Authority.DestinationAutomationAuthority;
+      const value = certificate("r3-original");
+      yield* accept(value);
+      yield* authority.registerRecovery(
+        dependency(value),
+        "r3-source-session",
+        "r3-original-identity",
+      );
+      if (retireBeforeCapture) yield* authority.disableLocal("schedule", value.binding.resourceId);
+      const dep = {
+        ...dependency(certificate("r3-downstream")),
+        destinationEnvironmentId: EnvironmentId.make("third-384"),
+      };
+      const route = {
+        environmentId: dep.destinationEnvironmentId,
+        generation: "r3-original-route",
+      };
+      yield* authority.registerDependency(dep, route, [], true, null, [
+        { kind: "automation-birth", certificateId: value.id },
+      ]);
+      if (!retireBeforeCapture) yield* authority.disableLocal("schedule", value.binding.resourceId);
+      expect((yield* Effect.result(authority.claim(value.id)))._tag).toBe("Failure");
+      expect((yield* authority.birth(value.id)).id).toBe(value.id);
+      expect(yield* authority.pending).toEqual([]);
+      const reopened = Context.get(
+        yield* Authority.layer.pipe(Layer.fresh, Layer.build),
+        Authority.DestinationAutomationAuthority,
+      );
+      expect(yield* reopened.pending).toEqual([]);
+      yield* Authority.invalidateAutomationSessions(["r3-source-session"]);
+      expect(yield* reopened.pending).toEqual([{ dependency: dep, ...route }]);
+      expect((yield* Effect.result(reopened.birth(value.id)))._tag).toBe("Failure");
+      yield* reopened.acknowledge(
+        { version: 1, dependency: dep, disabled: true },
+        route.environmentId,
+        route.generation,
+      );
+      expect(yield* reopened.pending).toEqual([]);
+    }).pipe(Effect.provide(fixture)),
+);
+
+it.effect.each([false, true])(
+  "execution dependency dominates a shared birth regardless of registration order (%s)",
+  (executionFirst) =>
+    Effect.gen(function* () {
+      const authority = yield* Authority.DestinationAutomationAuthority;
+      const value = certificate();
+      yield* accept(value);
+      const kinds = executionFirst
+        ? (["automation-execution", "automation-birth"] as const)
+        : (["automation-birth", "automation-execution"] as const);
+      const dep = dependency(certificate("r3-joint-downstream"));
+      const route = { environmentId: destination, generation: "r3-joint-route" };
+      for (const kind of kinds)
+        yield* authority.registerDependency(dep, route, [], true, null, [
+          { kind, certificateId: value.id },
+        ]);
+      yield* authority.disableLocal("schedule", value.binding.resourceId);
+      expect(yield* authority.pending).toEqual([{ dependency: dep, ...route }]);
+      expect(
+        (yield* Effect.result(
+          authority.registerDependency(
+            { ...dep, recordId: "new-execution" },
+            route,
+            [],
+            true,
+            null,
+            [{ kind: "automation-execution", certificateId: value.id }],
+          ),
+        ))._tag,
+      ).toBe("Failure");
+    }).pipe(Effect.provide(fixture)),
+);
+
+it.effect("birth dependency expiry still disables downstream after ordinary retirement", () =>
+  Effect.gen(function* () {
+    const authority = yield* Authority.DestinationAutomationAuthority;
+    const value = { ...certificate(), expiresAt: 1000 };
+    yield* accept(value);
+    const dep = dependency(certificate("r3-expiring-downstream"));
+    const route = { environmentId: destination, generation: "r3-expiring-route" };
+    yield* authority.registerDependency(dep, route, [], true, null, [
+      { kind: "automation-birth", certificateId: value.id },
+    ]);
+    yield* authority.disableLocal("schedule", value.binding.resourceId);
+    expect(yield* authority.pending).toEqual([]);
+    yield* TestClock.adjust("1 second");
+    expect(yield* authority.pending).toEqual([{ dependency: dep, ...route }]);
+    expect((yield* Effect.result(authority.birth(value.id)))._tag).toBe("Failure");
+  }).pipe(Effect.provide(fixture)),
+);
+
+it.effect(
+  "historical dependency rows keep strict execution retirement after additive purpose migration",
+  () =>
+    Effect.gen(function* () {
+      const authority = yield* Authority.DestinationAutomationAuthority;
+      const sql = yield* SqlClient.SqlClient;
+      const value = certificate();
+      yield* accept(value);
+      const dep = dependency(certificate("r3-historical-downstream"));
+      const route = { environmentId: destination, generation: "r3-historical-route" };
+      yield* authority.registerDependency(dep, route, [], true, null, [
+        { kind: "automation-execution", certificateId: value.id },
+      ]);
+      yield* sql`ALTER TABLE fork_automation_dependency_certificates DROP COLUMN certificate_kind`;
+      yield* Authority.ensureAutomationAuthoritySchema;
+      expect(
+        yield* sql`SELECT certificate_kind FROM fork_automation_dependency_certificates`,
+      ).toEqual([{ certificate_kind: "automation-execution" }]);
+      yield* authority.disableLocal("schedule", value.binding.resourceId);
+      expect(yield* authority.pending).toEqual([{ dependency: dep, ...route }]);
     }).pipe(Effect.provide(fixture)),
 );
