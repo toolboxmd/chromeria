@@ -1,4 +1,8 @@
-import { externalDispatch } from "../mcp/McpRequestReceipts.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import * as Invocation from "../mcp/McpInvocationContext.ts";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
+import { assertLiveCaller, loadCaller, unavailable } from "../mcp/threadAccess.ts";
+import { confirmNotDispatched, externalDispatch } from "../mcp/McpRequestReceipts.ts";
 import type { OrchestratorMcpFailure } from "@t3tools/contracts";
 import type { ThreadId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -439,6 +443,28 @@ const make = Effect.gen(function* () {
     }
     return yield* externalDispatch(
       Effect.gen(function* () {
+        // Publication can follow remote preparation and receipt waits. Check the original
+        // invocation here, where the page bytes become a source-owned artifact.
+        yield* Effect.gen(function* () {
+          const invocation = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+          if (Option.isSome(invocation)) {
+            const scope = yield* Invocation.requireThreadScope(invocation.value, "html_render");
+            const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+            if (Option.isSome(authority))
+              yield* authority.value.recheckInvocation(scope, "thread-resource", input.threadId);
+            else {
+              if (scope.authority !== undefined || scope.legacyPeerCeiling !== undefined)
+                return yield* unavailable();
+              const threads = yield* Effect.serviceOption(ThreadManagement.ThreadManagementService);
+              if (Option.isNone(threads)) return yield* unavailable();
+              yield* loadCaller().pipe(
+                Effect.provideService(Invocation.McpInvocationContext, scope),
+                Effect.provideService(ThreadManagement.ThreadManagementService, threads.value),
+                Effect.tap(assertLiveCaller),
+              );
+            }
+          }
+        }).pipe(Effect.tapError(() => confirmNotDispatched));
         const measured = yield* fileSystem
           .writeFileString(filePath, html, request === undefined ? undefined : { flag: "wx" })
           .pipe(

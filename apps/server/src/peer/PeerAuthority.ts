@@ -282,7 +282,7 @@ export class PeerAuthority extends Context.Service<
     readonly checkInteractiveRecord: (id: string) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly recheckInvocation: (
       scope: Invocation.McpThreadInvocationScope,
-      capability: "device" | "preview",
+      intent: "device" | "preview" | "thread-resource",
       threadId: ThreadId,
     ) => Effect.Effect<Invocation.McpThreadInvocationScope, OrchestratorMcpFailure>;
     readonly authorizeStopEffect: (
@@ -3278,7 +3278,7 @@ const make = Effect.gen(function* () {
     });
   const recheckInvocation: PeerAuthority["Service"]["recheckInvocation"] = (
     scope,
-    capability,
+    intent,
     threadId,
   ) =>
     Effect.gen(function* () {
@@ -3313,14 +3313,16 @@ const make = Effect.gen(function* () {
       } else modes = Invocation.intersectModes(Invocation.clientModeCeiling(scope.client), modes);
       if (exceededDispatchModeLimit(modes, target.thread) !== undefined)
         return yield* denied(
-          "The device or browser action exceeds current originating or destination modes.",
+          intent === "thread-resource"
+            ? "The resource action exceeds current originating or destination modes."
+            : "The device or browser action exceeds current originating or destination modes.",
         );
       const capabilities = new Set(
         (yield* currentCapabilities([...scope.capabilities], target.thread.projectId)).filter(
           (name) => ceiling === undefined || ceiling.capabilities.includes(name),
         ),
       );
-      if (!capabilities.has(capability))
+      if (intent !== "thread-resource" && !capabilities.has(intent))
         return yield* denied("The original invocation no longer has the required capability.");
       return {
         ...scope,

@@ -177,23 +177,28 @@ export const actsAsCaller = <P, A, E, R>(
   );
 
 /** Resource context need not run a provider when verified incoming authority owns the action. */
+export const recheckResource = (
+  intent: Parameters<PeerAuthority.PeerAuthority["Service"]["recheckInvocation"]>[1],
+) =>
+  Effect.gen(function* () {
+    const scope = yield* requireThreadCaller;
+    yield* refuseReadOnlyClient;
+    if (scope.client?.linked === true && scope.authority !== undefined) {
+      const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+      if (Option.isNone(authority)) return yield* unavailable();
+      return yield* authority.value.recheckInvocation(scope, intent, scope.thread.threadId);
+    }
+    yield* writingCaller;
+    return scope;
+  });
+
 export const actsOnResource = <P, A, E, R>(
-  capability: "preview" | "device",
+  intent: Parameters<typeof recheckResource>[0],
   handle: (params: P) => Effect.Effect<A, E, R>,
   effect: "read" | "owned" | "external-unknown" = "owned",
 ) =>
   declare(
-    (params: P) =>
-      Effect.gen(function* () {
-        const scope = yield* requireThreadCaller;
-        yield* refuseReadOnlyClient;
-        if (scope.client?.linked === true && scope.authority !== undefined) {
-          const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
-          if (Option.isNone(authority)) return yield* unavailable();
-          yield* authority.value.recheckInvocation(scope, capability, scope.thread.threadId);
-        } else yield* writingCaller;
-        return yield* McpRouting.invoke(params, handle);
-      }),
+    (params: P) => recheckResource(intent).pipe(Effect.andThen(McpRouting.invoke(params, handle))),
     effect,
   );
 
