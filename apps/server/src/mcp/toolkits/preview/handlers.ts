@@ -1,3 +1,4 @@
+import { interactiveAuthority } from "../../../peer/PeerAuthorityRecord.ts";
 import { CurrentRequest } from "../../McpRequestReceipts.ts";
 import { loadCaller } from "../../threadAccess.ts";
 import { assertSameLink } from "../../linkOrigin.ts";
@@ -341,7 +342,8 @@ const handlers = {
         const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
         const staging = yield* Effect.serviceOption(AttachmentStaging.AttachmentStaging);
         const modern =
-          scope.client?.linked === true && scope.authority?.envelope.requestOwner !== undefined;
+          scope.client?.linked === true &&
+          interactiveAuthority(scope.authority)?.envelope.requestOwner !== undefined;
         const request = yield* CurrentRequest;
         if ((modern || request !== undefined) && Option.isNone(staging))
           return yield* new OrchestratorMcpFailure({

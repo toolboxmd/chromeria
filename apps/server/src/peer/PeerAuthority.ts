@@ -1,10 +1,18 @@
+import * as LinkEvents from "./PeerLinkEvents.ts";
 import * as ScheduleReceipts from "../scheduledTasks/mutationReceipts.ts";
 import type { RequestIdentity } from "../mcp/McpRequestReceipts.ts";
 import type { McpScheduledMutationReceipt } from "@t3tools/contracts";
-import { Authority, PeerSession, intersect } from "./PeerAuthorityRecord.ts";
-export { Authority, PeerSession } from "./PeerAuthorityRecord.ts";
+import {
+  Authority,
+  Authority as InteractiveAuthority,
+  ExecutionRecord,
+  conjunction,
+  PeerSession,
+  intersect,
+} from "./PeerAuthorityRecord.ts";
+export { ExecutionRecord as Authority, PeerSession } from "./PeerAuthorityRecord.ts";
 import { readStopDescendants } from "../childThreads/stopDescendants.ts";
-import { initializePeerEffectAuthority } from "./peerEffectAuthority.ts";
+import { initializePeerEffectAuthority, NativeAuthorityValidation } from "./peerEffectAuthority.ts";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
 import { exceededDispatchModeLimit } from "../orchestration-v2/DispatchModeLimit.ts";
 import {
@@ -46,6 +54,7 @@ import { requestNamespace, requestGeneration } from "../mcp/requestIdentity.ts";
 import { requestDigest } from "../mcp/McpRequestReceipts.ts";
 import * as Environment from "../environment/ServerEnvironment.ts";
 import * as Links from "./PeerLinks.ts";
+import * as Automation from "../scheduledTasks/DestinationAutomationAuthority.ts";
 
 export type ResourceTarget =
   | { readonly type: "thread"; readonly threadId: ThreadId }
@@ -55,6 +64,7 @@ type ResourceBinding =
   | { readonly type: "thread"; readonly thread: OrchestrationV2ThreadShell }
   | {
       readonly type: "schedule";
+      readonly taskId: ScheduledTaskId;
       readonly linkOrigin: Pick<OrchestrationV2LinkOrigin, "sessionId"> | undefined;
     }
   | { readonly type: "environment" };
@@ -68,6 +78,26 @@ const StopControl = Schema.Struct({
 });
 type StopControl = typeof StopControl.Type;
 type StopValidation = StopControl & { readonly upstream?: StopControl };
+const AutomationCapture = Schema.Struct({
+  type: Schema.Literal("capture-automation"),
+  envelope: PeerAuthorityEnvelope,
+  certificateId: Schema.String,
+  audience: EnvironmentId,
+  binding: Automation.AutomationBinding,
+  remaining: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 16 })),
+});
+type AutomationCapture = typeof AutomationCapture.Type;
+const LegacyAutomationCapture = Schema.Struct({
+  type: Schema.Literal("capture-legacy-automation"),
+  certificateId: Schema.String,
+  audience: EnvironmentId,
+  binding: Automation.AutomationBinding,
+  contributor: Automation.LegacyContributor,
+});
+const LegacyAutomationAttestation = Schema.Struct({
+  dependency: Automation.AutomationDependency,
+  expiresAt: Schema.Number,
+});
 const Validation = Schema.Struct({
   type: Schema.Literal("validate"),
   envelope: PeerAuthorityEnvelope,
@@ -105,6 +135,8 @@ const Frame = Schema.Struct({
   id: Schema.String,
   body: Schema.Union([
     Validation,
+    AutomationCapture,
+    LegacyAutomationCapture,
     ReturnNotice,
     Schema.Struct({ type: Schema.Literal("request-actor"), envelope: PeerAuthorityEnvelope }),
     Schema.Struct({
@@ -138,7 +170,9 @@ export const ExchangeResult = Schema.Struct({ frames: Schema.Array(Frame), curso
 export type Exchange = typeof Exchange.Type;
 const ReturnReceipt = OrchestratorMcpThreadSendResult;
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
-const decodeAuthority = Schema.decodeUnknownEffect(Schema.fromJsonString(Authority));
+const decodeAcceptedGraph = Schema.decodeUnknownEffect(Automation.AcceptedGraph);
+const decodeLegacyAttestation = Schema.decodeUnknownEffect(LegacyAutomationAttestation);
+const decodeAuthority = Schema.decodeUnknownEffect(Schema.fromJsonString(ExecutionRecord));
 const decodeFrame = Schema.decodeUnknownEffect(Schema.fromJsonString(Frame));
 const decodeAnswer = Schema.decodeUnknownEffect(Schema.fromJsonString(Answer.fields.result));
 const decodeCeiling = Schema.decodeUnknownEffect(PeerCeiling);
@@ -163,12 +197,51 @@ const unavailable = () =>
 export class PeerAuthority extends Context.Service<
   PeerAuthority,
   {
+    readonly nativePreflight: NativeAuthorityValidation["Service"]["preflight"];
+    readonly notifyAutomationChanges: Effect.Effect<void>;
+    readonly nextAutomationDisableDeadline: Effect.Effect<number | null, OrchestratorMcpFailure>;
+    readonly pendingAutomationDisables: Effect.Effect<
+      ReadonlyArray<{
+        readonly dependency: Automation.AutomationDependency;
+        readonly environmentId: EnvironmentId;
+        readonly generation: string;
+      }>,
+      OrchestratorMcpFailure
+    >;
+    readonly acknowledgeAutomationDisable: (
+      acknowledgement: Automation.AutomationDisableAck,
+      environmentId: EnvironmentId,
+      generation: string,
+    ) => Effect.Effect<void, OrchestratorMcpFailure>;
+    readonly receiveAutomationDisable: (
+      input: Automation.AutomationDisable,
+      credentialIdentity: string,
+    ) => Effect.Effect<Automation.AutomationDisableAck | undefined, OrchestratorMcpFailure>;
+    readonly captureAutomation: (
+      scope: Invocation.McpInvocationScope | undefined,
+      binding: Automation.AutomationBinding,
+      action: RequestIdentity | { readonly nativeCommandId: string },
+      limits: PeerCeiling,
+    ) => Effect.Effect<Automation.ValidatedAcceptance | undefined, OrchestratorMcpFailure>;
+    readonly automationAdmission: (
+      value: Automation.ValidatedAcceptance,
+      binding: Automation.AutomationBinding,
+      actionId: string,
+    ) => Effect.Effect<{
+      readonly record: ExecutionRecord;
+      readonly commit: Effect.Effect<void, OrchestratorMcpFailure>;
+    }>;
+    readonly automationExecution: (
+      certificateId: string,
+      actionId: string,
+    ) => Effect.Effect<ExecutionRecord, OrchestratorMcpFailure>;
     readonly historicalScheduleReceipt: (
       scope: Invocation.McpInvocationScope,
       request: RequestIdentity,
       expectedProjectId?: string,
     ) => Effect.Effect<Option.Option<McpScheduledMutationReceipt>, OrchestratorMcpFailure>;
     readonly checkRecord: (id: string) => Effect.Effect<void, OrchestratorMcpFailure>;
+    readonly checkInteractiveRecord: (id: string) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly recheckInvocation: (
       scope: Invocation.McpThreadInvocationScope,
       capability: "device" | "preview",
@@ -183,7 +256,7 @@ export class PeerAuthority extends Context.Service<
       input: PeerTaskLifecycleRequest & {
         operation: Extract<PeerTaskLifecycleRequest["operation"], { type: "stop" }>;
       },
-    ) => Effect.Effect<Authority, OrchestratorMcpFailure>;
+    ) => Effect.Effect<InteractiveAuthority, OrchestratorMcpFailure>;
     /** Authenticates only an already committed receipt, never a new operation. */
     readonly verifyTaskReceipt: (
       scope: Invocation.McpInvocationScope,
@@ -204,6 +277,7 @@ export class PeerAuthority extends Context.Service<
     readonly enroll: (
       scope: Invocation.McpInvocationScope,
       peer: typeof PeerSession.Type,
+      credentialIdentity?: string,
     ) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly grants: Effect.Effect<ReadonlyArray<PeerGrantSummary>, OrchestratorMcpFailure>;
     readonly setGrant: (grant: PeerGrant) => Effect.Effect<PeerGrant, OrchestratorMcpFailure>;
@@ -223,31 +297,31 @@ export class PeerAuthority extends Context.Service<
       tool: string,
       args: unknown,
       limits: Invocation.ClientModes,
-      pair?: Authority["pair"],
+      pair?: InteractiveAuthority["pair"],
       readOnly?: boolean,
       stableRequests?: boolean,
     ) => Effect.Effect<PeerAuthorityEnvelope, OrchestratorMcpFailure>;
     readonly accept: (
       scope: Invocation.McpInvocationScope,
       envelope: PeerAuthorityEnvelope,
-    ) => Effect.Effect<Authority, OrchestratorMcpFailure>;
+    ) => Effect.Effect<InteractiveAuthority, OrchestratorMcpFailure>;
     readonly checkPayload: (
-      authority: Authority,
+      authority: InteractiveAuthority,
       tool: string,
       args: unknown,
     ) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly bind: (
-      authority: Authority,
+      authority: ExecutionRecord,
       threadId: ThreadId,
       registerReturn?: true,
     ) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly checkEffect: (
       effectId: string,
       threadId: ThreadId,
-    ) => Effect.Effect<void, OrchestratorMcpFailure>;
+    ) => Effect.Effect<ExecutionRecord | undefined, OrchestratorMcpFailure>;
     readonly checkThread: (
       threadId: ThreadId,
-    ) => Effect.Effect<Authority | undefined, OrchestratorMcpFailure>;
+    ) => Effect.Effect<ExecutionRecord | undefined, OrchestratorMcpFailure>;
     readonly legacyCeiling: (
       threadId: ThreadId,
     ) => Effect.Effect<PeerCeiling | undefined, OrchestratorMcpFailure>;
@@ -257,7 +331,7 @@ export class PeerAuthority extends Context.Service<
     ) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly forThread: (
       threadId: ThreadId,
-    ) => Effect.Effect<Authority | undefined, OrchestratorMcpFailure>;
+    ) => Effect.Effect<ExecutionRecord | undefined, OrchestratorMcpFailure>;
     readonly returnNotice: (
       scope: Invocation.McpInvocationScope,
       environmentId: EnvironmentId,
@@ -272,6 +346,10 @@ export class PeerAuthority extends Context.Service<
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const automation = yield* Automation.DestinationAutomationAuthority;
+  const linkEvents = yield* Effect.serviceOption(LinkEvents.PeerLinkEvents);
+  const policySettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
+  const wakeDisables = Option.isSome(linkEvents) ? linkEvents.value.automationChanged : Effect.void;
   const authSessions = yield* AuthSessions.AuthSessionRepository;
   const crypto = yield* Crypto.Crypto;
   const threads = yield* ProjectionStore.ProjectionStoreV2;
@@ -280,6 +358,11 @@ const make = Effect.gen(function* () {
     Effect.flatMap((environment) => environment.getEnvironmentId),
   );
   yield* sql`CREATE TABLE IF NOT EXISTS peer_authority_sessions (session_id TEXT PRIMARY KEY, environment_id TEXT NOT NULL, generation TEXT NOT NULL, grant_json TEXT NOT NULL)`;
+  const sessionColumns = yield* sql<{ name: string }>`PRAGMA table_info(peer_authority_sessions)`;
+  if (!sessionColumns.some((column) => column.name === "automation_version"))
+    yield* sql`ALTER TABLE peer_authority_sessions ADD COLUMN automation_version INTEGER NOT NULL DEFAULT 0`;
+  if (!sessionColumns.some((column) => column.name === "credential_identity"))
+    yield* sql`ALTER TABLE peer_authority_sessions ADD COLUMN credential_identity TEXT`;
   yield* sql`CREATE TABLE IF NOT EXISTS peer_authority_records (id TEXT PRIMARY KEY, record_json TEXT NOT NULL)`;
   yield* initializePeerEffectAuthority;
   yield* sql`CREATE TABLE IF NOT EXISTS peer_legacy_authority (thread_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, ceiling_json TEXT NOT NULL)`;
@@ -306,7 +389,7 @@ const make = Effect.gen(function* () {
   yield* sql`CREATE INDEX IF NOT EXISTS peer_return_by_record ON peer_return_pairs (record_id)`;
   // Validation requests have a live waiter, unlike durable pair/return receipts.
   // A restarted server cannot resume that prior process's interactive request.
-  yield* sql`DELETE FROM peer_control_frames WHERE json_extract(frame_json, '$.body.type') IN ('validate','request-actor','request-ancestry')`;
+  yield* sql`DELETE FROM peer_control_frames WHERE json_extract(frame_json, '$.body.type') IN ('validate','capture-automation','capture-legacy-automation','request-actor','request-ancestry')`;
   // Signals only avoid idle queries. Frames and answers are durable and replay after restart.
   const signals = new Map<string, Set<Deferred.Deferred<void>>>();
   const wake = (key: string) =>
@@ -342,7 +425,7 @@ const make = Effect.gen(function* () {
     crypto
       .digest("SHA-256", new TextEncoder().encode(json(value)))
       .pipe(Effect.map(Hex.encode), Effect.orDie);
-  const read = (id: string): Effect.Effect<Authority, OrchestratorMcpFailure> =>
+  const read = (id: string): Effect.Effect<ExecutionRecord, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
       const rows = yield* sql<{
         record_json: string;
@@ -352,11 +435,18 @@ const make = Effect.gen(function* () {
       if (!rows[0]) return yield* denied("Unknown peer authority record.");
       return yield* decodeAuthority(rows[0].record_json).pipe(Effect.mapError(unavailable));
     });
-  const save = (record: Authority) =>
+  const save = (record: ExecutionRecord) =>
     sql`INSERT INTO peer_authority_records (id, record_json) VALUES (${record.id}, ${json(record)}) ON CONFLICT DO NOTHING`.pipe(
       Effect.asVoid,
       Effect.mapError(unavailable),
     );
+  const readInteractive = (id: string) =>
+    Effect.gen(function* () {
+      const record = yield* read(id);
+      return "envelope" in record
+        ? record
+        : yield* denied("This operation requires an original interactive authority record.");
+    });
   const permanentForThread: PeerAuthority["Service"]["forThread"] = (threadId) =>
     Effect.gen(function* () {
       const seen = new Set<ThreadId>();
@@ -413,6 +503,7 @@ const make = Effect.gen(function* () {
         if (
           run.context?.type === "legacy-thread" &&
           run.context.threadId === threadId &&
+          "resourceSessionId" in run &&
           run.resourceSessionId === imported.sessionId
         )
           return run;
@@ -423,12 +514,8 @@ const make = Effect.gen(function* () {
         };
         const id = `context:${yield* hash(context)}`;
         yield* save({
-          ...run,
-          id,
-          context,
-          resourceSessionId: AuthSessionId.make(imported.sessionId),
+          ...conjunction(id, context, [run], AuthSessionId.make(imported.sessionId)),
           ceiling: intersect(run.ceiling, imported.ceiling),
-          envelope: { ...run.envelope, recordId: id, actionId: id, digest: id },
         });
         return yield* read(id);
       }
@@ -444,16 +531,7 @@ const make = Effect.gen(function* () {
         runRecordId: run.id,
       };
       const id = `context:${yield* hash(context)}`;
-      yield* save({
-        ...created,
-        id,
-        context,
-        ceiling: intersect(created.ceiling, run.ceiling),
-        // This derived record is not an issuer's original action. Readers that
-        // do not understand local intersections must fail its issuer lookup,
-        // rather than silently validate just one of the two owners.
-        envelope: { ...created.envelope, recordId: id, actionId: id, digest: id },
-      });
+      yield* save(conjunction(id, context, [created, run]));
       return yield* read(id);
     });
   const legacy = (threadId: ThreadId) =>
@@ -497,7 +575,7 @@ const make = Effect.gen(function* () {
       if (!rows[0]) return yield* denied("The link has not negotiated peer authority.");
       return yield* decodeGrant(rows[0].grant_json).pipe(Effect.mapError(unavailable));
     });
-  const enroll: PeerAuthority["Service"]["enroll"] = (scope, peer) =>
+  const enroll: PeerAuthority["Service"]["enroll"] = (scope, peer, credentialIdentity) =>
     Effect.gen(function* () {
       if (scope.client?.linked !== true)
         return yield* denied("Only an authenticated peer can open a control channel.");
@@ -515,6 +593,21 @@ const make = Effect.gen(function* () {
       yield* sql`INSERT INTO peer_authority_sessions (session_id, environment_id, generation, grant_json) VALUES (${sessionId}, ${peer.environmentId}, ${peer.generation}, ${json(initial)}) ON CONFLICT DO NOTHING`.pipe(
         Effect.mapError(unavailable),
       );
+      if (peer.automationVersion === 1 && credentialIdentity !== undefined) {
+        const enrolled = yield* sql<{
+          credential_identity: string | null;
+        }>`SELECT credential_identity FROM peer_authority_sessions WHERE session_id=${sessionId}`.pipe(
+          Effect.mapError(unavailable),
+        );
+        if (
+          enrolled[0]?.credential_identity !== null &&
+          enrolled[0]?.credential_identity !== credentialIdentity
+        )
+          return yield* denied("The recovery credential does not match its original session.");
+        yield* sql`UPDATE peer_authority_sessions SET automation_version=1,credential_identity=${credentialIdentity} WHERE session_id=${sessionId}`.pipe(
+          Effect.mapError(unavailable),
+        );
+      }
       const rows = yield* sql<{
         environment_id: string;
         generation: string;
@@ -569,6 +662,8 @@ const make = Effect.gen(function* () {
         Effect.ensuring(releaseSignal(`frame:${frame.id}`, responseSignal)),
         Effect.ensuring(
           frame.body.type === "validate" ||
+            frame.body.type === "capture-automation" ||
+            frame.body.type === "capture-legacy-automation" ||
             frame.body.type === "request-actor" ||
             frame.body.type === "request-ancestry"
             ? sql`DELETE FROM peer_control_frames WHERE id = ${frame.id} AND session_id = ${sessionId}`.pipe(
@@ -632,7 +727,7 @@ const make = Effect.gen(function* () {
         Effect.mapError(unavailable),
       );
       if (rows[0]?.pair_json !== json(pair)) return yield* denied("Unknown stop obligation pair.");
-      const launch = yield* read(rows[0]!.record_id);
+      const launch = yield* readInteractive(rows[0]!.record_id);
       if (launch.peer.environmentId !== peer || launch.peer.generation !== generation)
         return yield* denied("The stop obligation belongs to another generation.");
       yield* validateReturn(launch);
@@ -665,9 +760,8 @@ const make = Effect.gen(function* () {
     projectId: OrchestrationV2ThreadShell["projectId"],
   ) =>
     Effect.gen(function* () {
-      const settings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
-      if (Option.isNone(settings)) return capabilities;
-      const current = yield* settings.value.getSettings.pipe(Effect.mapError(unavailable));
+      if (Option.isNone(policySettings)) return capabilities;
+      const current = yield* policySettings.value.getSettings.pipe(Effect.mapError(unavailable));
       const effective = resolveProjectSettings(current, projectId).settings;
       return capabilities.filter((name) =>
         name === "preview"
@@ -677,28 +771,255 @@ const make = Effect.gen(function* () {
             : true,
       );
     });
+  type Coverage = ReadonlyMap<string, Automation.AcceptedGraph["records"][number]> & {
+    readonly executions: ReadonlySet<string>;
+  };
+  const emptyCoverage = (): Coverage =>
+    Object.assign(new Map<string, Automation.AcceptedGraph["records"][number]>(), {
+      executions: new Set<string>(),
+    });
+  const coverageFor = (record: ExecutionRecord): Effect.Effect<Coverage, OrchestratorMcpFailure> =>
+    Effect.gen(function* () {
+      const covered = new Map<string, Automation.AcceptedGraph["records"][number]>();
+      const pending = [record];
+      const seen = new Set<string>();
+      const certificates: Extract<ExecutionRecord, { readonly certificateId: string }>[] = [];
+      const executions = new Set<string>();
+      while (pending.length !== 0) {
+        const next = pending.pop()!;
+        if (seen.has(next.id)) continue;
+        seen.add(next.id);
+        if (seen.size > 256) return yield* denied("The automation contributor bound was exceeded.");
+        if ("certificateId" in next) {
+          if (next.kind === "automation-execution") certificates.push(next);
+        } else if (next.context !== undefined) {
+          const context = next.context;
+          const ids =
+            context.type === "run-inputs" || context.type === "task-stop"
+              ? [
+                  ...context.recordIds,
+                  ...(context.type === "task-stop"
+                    ? context.targets.flatMap((target) => target.recordIds)
+                    : []),
+                ]
+              : context.type === "owned-thread"
+                ? [context.creationRecordId, context.runRecordId]
+                : [context.runRecordId];
+          for (const id of ids) pending.push(yield* read(id));
+        }
+      }
+      const failures: {
+        record: Extract<ExecutionRecord, { readonly certificateId: string }>;
+        error: OrchestratorMcpFailure;
+      }[] = [];
+      for (const next of certificates) {
+        const claimed = yield* Effect.result(automation.claim(next.certificateId));
+        if (claimed._tag === "Failure") {
+          failures.push({ record: next, error: claimed.failure });
+          continue;
+        }
+        const certificate = claimed.success;
+        executions.add(certificate.id);
+        if (certificate.audience !== here || certificate.binding.projectId !== next.projectId)
+          return yield* denied("The automation authority belongs to another destination.");
+        for (const node of certificate.graph.records) {
+          if (node.environmentId !== here) continue;
+          const previous = covered.get(node.record.id);
+          if (previous !== undefined && json(previous.record) !== json(node.record))
+            return yield* denied("Automation contributors have conflicting immutable facts.");
+          covered.set(
+            node.record.id,
+            previous === undefined
+              ? node
+              : {
+                  ...node,
+                  ceiling: intersect(previous.ceiling, node.ceiling),
+                  expiresAt:
+                    previous.expiresAt === null
+                      ? node.expiresAt
+                      : node.expiresAt === null
+                        ? previous.expiresAt
+                        : Math.min(previous.expiresAt, node.expiresAt),
+                },
+          );
+        }
+      }
+      for (const failure of failures) {
+        const frozen = covered.get(failure.record.id);
+        if (frozen === undefined || json(frozen.record) !== json(failure.record))
+          return yield* failure.error;
+      }
+      return Object.assign(covered, { executions });
+    });
   const validate = (
-    record: Authority,
+    record: ExecutionRecord,
     stop?: StopValidation,
+    coverage?: Coverage,
+    purpose: "local" | "interactive" = "local",
+    replacements: ReadonlyMap<string, Automation.AutomationCertificate> = new Map(),
+    capabilityView: "operation" | "contributor" = "operation",
   ): Effect.Effect<PeerCeiling, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
+      const accepted =
+        coverage ??
+        (purpose === "local"
+          ? yield* coverageFor(record)
+          : Object.assign(new Map<string, Automation.AcceptedGraph["records"][number]>(), {
+              executions: new Set<string>(),
+            }));
+      if ("certificateId" in record && record.kind === "automation-birth")
+        yield* automation.birth(record.certificateId);
+      const frozen = accepted.get(record.id);
+      if (frozen !== undefined) {
+        if (json(frozen.record) !== json(record))
+          return yield* denied("The accepted contributor identity changed.");
+        if (frozen.expiresAt !== null && frozen.expiresAt <= (yield* Clock.currentTimeMillis))
+          return yield* denied("An accepted automation contributor has expired.");
+        if ("envelope" in record && record.sessionId !== null) {
+          const current = yield* grant(record.sessionId);
+          return intersect(frozen.ceiling, {
+            ...frozen.ceiling,
+            resourceScope: current.resourceScope,
+            onward: current.onward,
+            capabilities: frozen.ceiling.capabilities.filter(
+              (capability) =>
+                (capability !== "preview" && capability !== "device") || current[capability],
+            ),
+          });
+        }
+        return frozen.ceiling;
+      }
+      if ("certificateId" in record) {
+        const nextPurpose =
+          record.kind === "automation-birth" && !accepted.executions.has(record.certificateId)
+            ? "interactive"
+            : purpose;
+        const certificate =
+          replacements.get(record.certificateId) ??
+          (yield* record.kind === "automation-birth"
+            ? automation.birth(record.certificateId)
+            : automation.claim(record.certificateId));
+        if (certificate.audience !== here || certificate.binding.projectId !== record.projectId)
+          return yield* denied("The automation authority belongs to another destination.");
+        let ceiling = certificate.ceiling;
+        const historical = new Map(replacements);
+        if (nextPurpose === "interactive" && certificate.binding.kind === "spectrum") {
+          for (const node of certificate.graph.records) {
+            if (node.environmentId !== here || !("certificateId" in node.record)) continue;
+            const prior = yield* automation.birth(node.record.certificateId);
+            if (
+              prior.binding.kind === "spectrum" &&
+              prior.binding.resourceId === certificate.binding.resourceId &&
+              prior.binding.workflowGeneration < certificate.binding.workflowGeneration
+            )
+              historical.set(prior.id, prior);
+          }
+        }
+        // B's capability availability belongs to the operation, after local birth composition.
+        for (const id of certificate.recordIds)
+          ceiling = intersect(
+            ceiling,
+            yield* validate(
+              yield* read(id),
+              stop,
+              accepted,
+              nextPurpose,
+              historical,
+              "contributor",
+            ),
+          );
+        if (
+          nextPurpose === "interactive" &&
+          certificate.graph.legacy.some((owner) => owner.environmentId !== here)
+        ) {
+          for (const id of certificate.recordIds) {
+            const live = yield* captureRecord(
+              yield* read(id),
+              {
+                certificateId: certificate.id,
+                audience: certificate.audience,
+                binding: certificate.binding,
+                remaining: 16,
+              },
+              new Set(),
+              undefined,
+              historical,
+            );
+            for (const contributor of live.legacy)
+              ceiling = intersect(ceiling, contributor.ceiling);
+          }
+        }
+        for (const owner of certificate.graph.legacy) {
+          if (owner.environmentId !== here) continue;
+          yield* activeSession(owner.sessionId);
+          if (nextPurpose === "interactive") {
+            const live = yield* captureLegacy(owner, {
+              certificateId: certificate.id,
+              audience: certificate.audience,
+              binding: certificate.binding,
+              remaining: 16,
+            });
+            for (const contributor of live.legacy)
+              ceiling = intersect(ceiling, contributor.ceiling);
+          }
+        }
+        const current = {
+          ...ceiling,
+          capabilities:
+            capabilityView === "operation"
+              ? yield* currentCapabilities(ceiling.capabilities, record.projectId)
+              : ceiling.capabilities,
+        };
+        if (
+          record.kind === "automation-birth" &&
+          nextPurpose === "interactive" &&
+          json(intersect(certificate.ceiling, ceiling)) !== json(certificate.ceiling)
+        )
+          return yield* denied(
+            "An original automation birth contributor was narrowed by current policy.",
+          );
+        return current;
+      }
       if (record.context?.type === "task-stop") {
         const control = record.context;
         let ceiling = record.ceiling;
         for (const id of control.recordIds)
-          ceiling = intersect(ceiling, yield* validate(yield* read(id), control));
+          ceiling = intersect(
+            ceiling,
+            yield* validate(
+              yield* read(id),
+              control,
+              accepted,
+              purpose,
+              replacements,
+              capabilityView,
+            ),
+          );
         for (const target of control.targets) {
           const binding = yield* loadResource({ type: "thread", threadId: target.threadId });
           if (binding.type !== "thread" || binding.thread.archivedAt !== null)
             return yield* denied("The stop target was retired.");
           for (const id of control.recordIds) {
             const owner = yield* read(id);
-            yield* checkResource(owner, yield* validate(owner, control), binding, control);
+            yield* checkResource(
+              owner,
+              yield* validate(owner, control, accepted, purpose, replacements, capabilityView),
+              binding,
+              control,
+              accepted,
+            );
           }
           for (const id of target.recordIds) {
             const owner = yield* read(id);
-            const current = yield* validate(owner, control);
-            yield* checkResource(owner, current, binding, control);
+            const current = yield* validate(
+              owner,
+              control,
+              accepted,
+              purpose,
+              replacements,
+              capabilityView,
+            );
+            yield* checkResource(owner, current, binding, control, accepted);
             ceiling = intersect(ceiling, current);
           }
           if (exceededDispatchModeLimit(ceiling, binding.thread) !== undefined)
@@ -709,7 +1030,10 @@ const make = Effect.gen(function* () {
       if (record.context?.type === "run-inputs") {
         let ceiling = record.ceiling;
         for (const id of record.context.recordIds)
-          ceiling = intersect(ceiling, yield* validate(yield* read(id), stop));
+          ceiling = intersect(
+            ceiling,
+            yield* validate(yield* read(id), stop, accepted, purpose, replacements, capabilityView),
+          );
         return ceiling;
       }
       if (record.context !== undefined) {
@@ -734,11 +1058,19 @@ const make = Effect.gen(function* () {
         // belongs to the actual operation target, which may be a new joint child.
         for (const id of owners) {
           const owner = yield* read(id);
-          const current = yield* validate(owner, stop);
+          const current = yield* validate(
+            owner,
+            stop,
+            accepted,
+            purpose,
+            replacements,
+            capabilityView,
+          );
           ceiling = intersect(ceiling, current);
         }
         return ceiling;
       }
+      if (!("envelope" in record)) return yield* denied("Invalid local authority context.");
       if (record.sessionId !== null) {
         const current = yield* grant(record.sessionId);
         const upstream = yield* ask(record.sessionId, {
@@ -785,7 +1117,14 @@ const make = Effect.gen(function* () {
         if (record.requestClientSessionId !== undefined)
           yield* requireClient(record.requestClientSessionId, record.readOnly);
         if (record.parentId === null) return record.ceiling;
-        const parent = yield* validate(yield* read(record.parentId));
+        const parent = yield* validate(
+          yield* read(record.parentId),
+          stop,
+          accepted,
+          purpose,
+          replacements,
+          capabilityView,
+        );
         if (!parent.onward)
           return yield* denied("The originating grant does not permit onward delegation.");
         return intersect(record.ceiling, parent);
@@ -821,30 +1160,69 @@ const make = Effect.gen(function* () {
       }
       const current = {
         ...record.ceiling,
-        capabilities: yield* currentCapabilities(record.ceiling.capabilities, thread.projectId),
+        capabilities:
+          capabilityView === "operation"
+            ? yield* currentCapabilities(record.ceiling.capabilities, thread.projectId)
+            : record.ceiling.capabilities,
         runtimeMode: thread.runtimeMode,
         interactionMode: thread.interactionMode,
       };
       const parent = record.parentId === null ? undefined : yield* read(record.parentId);
       const ceiling =
-        parent === undefined ? record.ceiling : yield* validate(parent, stop?.upstream ?? stop);
+        parent === undefined
+          ? record.ceiling
+          : yield* validate(
+              parent,
+              stop?.upstream ?? stop,
+              accepted,
+              purpose,
+              replacements,
+              capabilityView,
+            );
       if (parent !== undefined) {
         if (!ceiling.onward)
           return yield* denied("The originating grant does not permit onward delegation.");
         // A forwarded action still depends on permission for its actual source
         // thread, even when its owners were inherited from an older context.
-        yield* checkResource(parent, ceiling, { type: "thread", thread }, stop?.upstream ?? stop);
+        yield* checkResource(
+          parent,
+          ceiling,
+          { type: "thread", thread },
+          stop?.upstream ?? stop,
+          accepted,
+        );
       }
       return intersect(current, intersect(record.ceiling, ceiling));
     });
-  const resourceSession = (record: Authority) => record.resourceSessionId ?? record.sessionId;
+  const resourceSession = (record: ExecutionRecord) =>
+    "envelope" in record
+      ? (record.resourceSessionId ?? record.sessionId)
+      : "resourceSessionId" in record
+        ? (record.resourceSessionId ?? null)
+        : null;
   // Creation membership is a union; an acting authority is a conjunction.
   // Only permanent birth bindings use membership, never an existing target's run.
   const hasResourceSession = (
-    record: Authority,
+    record: ExecutionRecord,
     sessionId: string,
+    coverage?: Coverage,
   ): Effect.Effect<boolean, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
+      if ("certificateId" in record) {
+        const certificate = coverage?.has(record.id)
+          ? yield* automation.facts(record.certificateId)
+          : yield* record.kind === "automation-birth"
+              ? automation.birth(record.certificateId)
+              : automation.claim(record.certificateId);
+        return (
+          certificate.graph.records.some(
+            (node) => node.environmentId === here && resourceSession(node.record) === sessionId,
+          ) ||
+          certificate.graph.legacy.some(
+            (node) => node.environmentId === here && node.sessionId === sessionId,
+          )
+        );
+      }
       const context = record.context;
       if (context === undefined) return resourceSession(record) === sessionId;
       if (context.type === "legacy-thread" && record.resourceSessionId === sessionId) return true;
@@ -854,29 +1232,112 @@ const make = Effect.gen(function* () {
           : context.type === "owned-thread"
             ? [context.creationRecordId, context.runRecordId]
             : [context.runRecordId];
-      for (const id of ids) if (yield* hasResourceSession(yield* read(id), sessionId)) return true;
+      for (const id of ids)
+        if (yield* hasResourceSession(yield* read(id), sessionId, coverage)) return true;
       return false;
     });
   const checkCreated = (
     sessionId: string,
     target: ResourceBinding,
+    coverage?: Coverage,
   ): Effect.Effect<void, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
       if (target.type === "schedule" && target.linkOrigin?.sessionId === sessionId) return;
       if (target.type === "thread") {
         if (target.thread.linkOrigin?.sessionId === sessionId) return;
         const created = yield* permanentForThread(target.thread.id);
-        if (created !== undefined && (yield* hasResourceSession(created, sessionId))) return;
+        if (created !== undefined && (yield* hasResourceSession(created, sessionId, coverage)))
+          return;
       }
       return yield* denied("The destination is outside the link's current resource scope.");
     });
   const checkResource = (
-    record: Authority,
+    record: ExecutionRecord,
     ceiling: PeerCeiling,
     target: ResourceBinding,
     stop?: StopValidation,
+    coverage?: Coverage,
   ): Effect.Effect<void, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
+      const accepted = coverage ?? (yield* coverageFor(record));
+      if ("certificateId" in record) {
+        const certificate = accepted.has(record.id)
+          ? yield* automation.facts(record.certificateId)
+          : yield* record.kind === "automation-birth"
+              ? automation.birth(record.certificateId)
+              : automation.claim(record.certificateId);
+        if (target.type === "thread") {
+          if (target.thread.projectId !== certificate.binding.projectId)
+            return yield* denied("The automation cannot move to another project.");
+          if (
+            target.thread.id !== certificate.binding.threadId &&
+            !(
+              certificate.binding.kind === "spectrum" &&
+              (certificate.binding.callerThreadId === target.thread.id ||
+                certificate.binding.memberThreadIds.includes(target.thread.id))
+            )
+          ) {
+            const pending: ExecutionRecord[] = [];
+            const birth = yield* permanentForThread(target.thread.id);
+            if (birth !== undefined) pending.push(birth);
+            const seen = new Set<string>();
+            let belongs = false;
+            while (pending.length !== 0 && seen.size < 256) {
+              const owner = pending.pop()!;
+              if (seen.has(owner.id)) continue;
+              seen.add(owner.id);
+              if ("certificateId" in owner && owner.certificateId === certificate.id) {
+                belongs = true;
+                break;
+              }
+              if ("certificateId" in owner) {
+                const inherited = yield* owner.kind === "automation-birth"
+                  ? automation.birth(owner.certificateId)
+                  : automation.claim(owner.certificateId);
+                if (
+                  inherited.audience !== here ||
+                  inherited.binding.projectId !== target.thread.projectId
+                )
+                  return yield* denied("The descendant automation belongs to another destination.");
+                for (const id of inherited.recordIds) pending.push(yield* read(id));
+              }
+              if (owner.context !== undefined) {
+                const context = owner.context;
+                const ids =
+                  context.type === "run-inputs" || context.type === "task-stop"
+                    ? context.recordIds
+                    : context.type === "owned-thread"
+                      ? [context.creationRecordId, context.runRecordId]
+                      : [context.runRecordId];
+                for (const id of ids) pending.push(yield* read(id));
+              }
+            }
+            if (!belongs) return yield* denied("The thread is outside this accepted automation.");
+          }
+        } else if (
+          target.type === "schedule" &&
+          (certificate.binding.kind !== "schedule" ||
+            target.taskId !== certificate.binding.resourceId)
+        )
+          return yield* denied("The schedule is outside this accepted automation.");
+        for (const owner of certificate.graph.legacy)
+          if (owner.environmentId === here) {
+            yield* activeSession(owner.sessionId);
+            if (owner.ceiling.resourceScope === "created-work")
+              yield* checkCreated(owner.sessionId, target, accepted);
+          }
+        for (const id of certificate.recordIds) {
+          const owner = yield* read(id);
+          yield* checkResource(
+            owner,
+            yield* validate(owner, stop, accepted),
+            target,
+            stop,
+            accepted,
+          );
+        }
+        return;
+      }
       const context = record.context;
       if (context?.type === "task-stop") {
         if (target.type !== "thread")
@@ -886,7 +1347,13 @@ const make = Effect.gen(function* () {
           return yield* denied("The effect is outside the recorded stop target set.");
         for (const id of [...context.recordIds, ...entry.recordIds]) {
           const owner = yield* read(id);
-          yield* checkResource(owner, yield* validate(owner, context), target, context);
+          yield* checkResource(
+            owner,
+            yield* validate(owner, context, accepted),
+            target,
+            context,
+            accepted,
+          );
         }
         return;
       }
@@ -898,7 +1365,7 @@ const make = Effect.gen(function* () {
           if (imported === undefined || imported.sessionId !== record.resourceSessionId)
             return yield* denied("The legacy context is no longer available.");
           yield* activeSession(imported.sessionId);
-          yield* checkCreated(imported.sessionId, target);
+          yield* checkCreated(imported.sessionId, target, accepted);
         }
         const ids =
           context.type === "run-inputs"
@@ -908,13 +1375,19 @@ const make = Effect.gen(function* () {
               : [context.runRecordId];
         for (const id of ids) {
           const owner = yield* read(id);
-          yield* checkResource(owner, yield* validate(owner, stop), target, stop);
+          yield* checkResource(
+            owner,
+            yield* validate(owner, stop, accepted),
+            target,
+            stop,
+            accepted,
+          );
         }
         return;
       }
       const sessionId = resourceSession(record);
       if (sessionId !== null && ceiling.resourceScope === "created-work")
-        yield* checkCreated(sessionId, target);
+        yield* checkCreated(sessionId, target, accepted);
     });
   const loadResource = (
     target: ResourceTarget,
@@ -940,17 +1413,24 @@ const make = Effect.gen(function* () {
         rows[0].link_origin_json === null
           ? undefined
           : yield* decodeLinkOrigin(rows[0].link_origin_json).pipe(Effect.mapError(unavailable));
-      return { type: "schedule", linkOrigin };
+      return { type: "schedule", taskId: target.taskId, linkOrigin };
     });
   const checkThread: PeerAuthority["Service"]["checkThread"] = (threadId) =>
     Effect.gen(function* () {
       const record = yield* forThread(threadId);
       if (record !== undefined) {
-        const ceiling = yield* validate(record);
+        const coverage = yield* coverageFor(record);
+        const ceiling = yield* validate(record, undefined, coverage);
         const target = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
         if (target === null || target.deletedAt !== null)
           return yield* denied("The destination thread is no longer available.");
-        yield* checkResource(record, ceiling, { type: "thread", thread: target });
+        yield* checkResource(
+          record,
+          ceiling,
+          { type: "thread", thread: target },
+          undefined,
+          coverage,
+        );
         return { ...record, ceiling };
       }
       const migrated = yield* legacy(threadId);
@@ -986,7 +1466,9 @@ const make = Effect.gen(function* () {
       if (parent && !parent.ceiling.onward)
         return yield* denied("This child's grant does not permit onward delegation.");
       const route =
-        scope.client !== undefined && parent ? [...parent.envelope.route, here] : [here];
+        scope.client !== undefined && parent && "envelope" in parent
+          ? [...parent.envelope.route, here]
+          : [here];
       if (route.includes(peer))
         return yield* denied("Peer transport route repeats an environment.");
       const origin =
@@ -1049,7 +1531,7 @@ const make = Effect.gen(function* () {
         ...(pair ? { pair } : {}),
       };
       yield* save(record);
-      yield* validate(record);
+      yield* validate(record, undefined, undefined, "interactive");
       return envelope;
     });
   const accept: PeerAuthority["Service"]["accept"] = (scope, envelope) =>
@@ -1093,7 +1575,7 @@ const make = Effect.gen(function* () {
         originRunId: null,
       };
       yield* save(record);
-      const frozen = yield* read(record.id);
+      const frozen = yield* readInteractive(record.id);
       return { ...frozen, ceiling: intersect(frozen.ceiling, record.ceiling) };
     });
   const checkPayload: PeerAuthority["Service"]["checkPayload"] = (authority, tool, args) =>
@@ -1107,9 +1589,11 @@ const make = Effect.gen(function* () {
     });
   const bind: PeerAuthority["Service"]["bind"] = (authority, threadId, registerReturn) =>
     Effect.gen(function* () {
+      if (!("envelope" in authority)) return;
       yield* sql`INSERT INTO peer_thread_authority (thread_id, record_id) VALUES (${threadId}, ${authority.id}) ON CONFLICT DO NOTHING`.pipe(
         Effect.mapError(unavailable),
       );
+      if (!("envelope" in authority)) return;
       const parent = authority.envelope.pair;
       if (registerReturn === true && parent && authority.sessionId !== null) {
         const pair: PeerReturnPair = {
@@ -1131,7 +1615,7 @@ const make = Effect.gen(function* () {
     });
   const registerPair: PeerAuthority["Service"]["registerPair"] = (envelope, pair) =>
     Effect.gen(function* () {
-      const record = yield* read(envelope.recordId);
+      const record = yield* readInteractive(envelope.recordId);
       if (
         record.sessionId !== null ||
         record.pair?.taskId !== pair.taskId ||
@@ -1155,8 +1639,26 @@ const make = Effect.gen(function* () {
       )
         return yield* denied("The parent task already belongs to another return pair.");
     });
-  const validateReturn = (record: Authority): Effect.Effect<void, OrchestratorMcpFailure> =>
+  const validateReturn = (record: ExecutionRecord): Effect.Effect<void, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
+      if ("certificateId" in record) {
+        const certificate = yield* record.kind === "automation-birth"
+          ? automation.birth(record.certificateId)
+          : automation.claim(record.certificateId);
+        for (const id of certificate.recordIds) yield* validateReturn(yield* read(id));
+        return;
+      }
+      if (!("envelope" in record)) {
+        const context = record.context;
+        const ids =
+          context.type === "run-inputs" || context.type === "task-stop"
+            ? context.recordIds
+            : context.type === "owned-thread"
+              ? [context.creationRecordId, context.runRecordId]
+              : [context.runRecordId];
+        for (const id of ids) yield* validateReturn(yield* read(id));
+        return;
+      }
       if (record.sessionId !== null) {
         yield* grant(record.sessionId);
         return;
@@ -1201,7 +1703,7 @@ const make = Effect.gen(function* () {
       if (record.requestActorThreadId != null)
         return { type: "thread", environmentId: here, threadId: record.requestActorThreadId };
       if (record.requestActorThreadId === null && record.parentId !== null)
-        return yield* actorForRecord(yield* read(record.parentId));
+        return yield* actorForRecord(yield* readInteractive(record.parentId));
       return yield* denied("The request has no verified originating thread or client.");
     });
   // Walk real local edges, then ask the owner of the exact authenticated pair.
@@ -1236,7 +1738,7 @@ const make = Effect.gen(function* () {
         );
         if (rows.length !== 1) return false;
         const pair = yield* decodePair(rows[0]!.pair_json).pipe(Effect.mapError(unavailable));
-        const owner = yield* read(rows[0]!.record_id);
+        const owner = yield* readInteractive(rows[0]!.record_id);
         if (owner.sessionId === null || owner.peer.environmentId !== pair.parentEnvironmentId)
           return false;
         yield* validateReturn(owner);
@@ -1257,7 +1759,7 @@ const make = Effect.gen(function* () {
       }
       const actor: PendingActor | undefined =
         scope.client?.linked === true && scope.authority !== undefined
-          ? yield* actorForRecord(scope.authority)
+          ? yield* actorForRecord(yield* readInteractive(scope.authority.id))
           : scope.thread !== undefined
             ? { type: "thread", environmentId: here, threadId: scope.thread.threadId }
             : undefined;
@@ -1266,10 +1768,835 @@ const make = Effect.gen(function* () {
       if (actor.environmentId === here && actor.threadId === target) return undefined;
       return (yield* ancestor(actor, target)) ? "ancestor" : undefined;
     });
+  const mergeGraphs = (graphs: ReadonlyArray<Automation.AcceptedGraph>) =>
+    Effect.gen(function* () {
+      const records = new Map<string, Automation.AcceptedGraph["records"][number]>();
+      const legacyOwners = new Map<string, Automation.AcceptedGraph["legacy"][number]>();
+      const dependencies = new Map<string, Automation.AutomationDependency>();
+      for (const graph of graphs) {
+        for (const node of graph.records) {
+          const key = `${node.environmentId}:${node.record.id}`;
+          const prior = records.get(key);
+          if (prior !== undefined && json(prior.record) !== json(node.record))
+            return yield* denied("An automation contributor changed during capture.");
+          records.set(
+            key,
+            prior === undefined
+              ? node
+              : {
+                  ...node,
+                  ceiling: intersect(prior.ceiling, node.ceiling),
+                  expiresAt:
+                    prior.expiresAt === null
+                      ? node.expiresAt
+                      : node.expiresAt === null
+                        ? prior.expiresAt
+                        : Math.min(prior.expiresAt, node.expiresAt),
+                },
+          );
+        }
+        for (const node of graph.legacy) {
+          const key = `${node.environmentId}:${node.threadId === null ? `schedule:${node.taskId}` : `thread:${node.threadId}`}:${node.sessionId}`;
+          const prior = legacyOwners.get(key);
+          legacyOwners.set(
+            key,
+            prior === undefined
+              ? node
+              : {
+                  ...node,
+                  ceiling: intersect(prior.ceiling, node.ceiling),
+                  expiresAt: Math.min(prior.expiresAt, node.expiresAt),
+                },
+          );
+        }
+        for (const dependency of graph.dependencies)
+          dependencies.set(requestDigest(dependency), dependency);
+      }
+      if (records.size > 256 || legacyOwners.size > 256 || dependencies.size > 256)
+        return yield* denied("The automation contributor bound was exceeded.");
+      return {
+        records: [...records.values()],
+        legacy: [...legacyOwners.values()],
+        dependencies: [...dependencies.values()],
+      };
+    });
+  // Session identity alone cannot cover a later, unrelated input from the same owner.
+  type BirthFacts = { readonly records: ReadonlySet<string>; readonly legacy: ReadonlySet<string> };
+  const noBirthFacts = (): BirthFacts => ({ records: new Set(), legacy: new Set() });
+  const addBirthFacts = (
+    facts: BirthFacts,
+    certificate: Automation.AutomationCertificate,
+  ): BirthFacts => ({
+    records: new Set([
+      ...facts.records,
+      ...certificate.graph.records
+        .filter((node) => node.environmentId === here)
+        .map((node) => json(node.record)),
+    ]),
+    legacy: new Set([
+      ...facts.legacy,
+      ...certificate.graph.legacy
+        .filter((node) => node.environmentId === here)
+        .map((node) => json(node)),
+    ]),
+  });
+  const dependencyGrant = (sessionId: string, covered: boolean): Automation.DependencyGrant =>
+    covered ? { kind: "automation-birth", sessionId } : sessionId;
+  const captureLegacy = (
+    owner: Automation.LegacyContributor,
+    input: Omit<AutomationCapture, "type" | "envelope">,
+    relay?: { readonly environmentId: EnvironmentId; readonly generation: string },
+    birthFacts: BirthFacts = noBirthFacts(),
+  ): Effect.Effect<Automation.AcceptedGraph, OrchestratorMcpFailure> =>
+    Effect.gen(function* () {
+      if (owner.environmentId !== here)
+        return yield* denied("Legacy capture requires its actual resource owner.");
+      yield* activeSession(owner.sessionId);
+      const channel = (yield* sql<{
+        environment_id: EnvironmentId;
+        generation: string;
+        automation_version: number;
+        credential_identity: string | null;
+      }>`SELECT environment_id,generation,automation_version,credential_identity FROM peer_authority_sessions WHERE session_id=${owner.sessionId}`.pipe(
+        Effect.mapError(unavailable),
+      ))[0];
+      if (
+        channel === undefined ||
+        channel.automation_version !== 1 ||
+        channel.credential_identity === null
+      )
+        return yield* denied(
+          "The legacy source does not support destination automation authority v1.",
+        );
+      const dependency: Automation.AutomationDependency = {
+        sourceEnvironmentId: channel.environment_id,
+        destinationEnvironmentId: input.audience,
+        certificateId: input.certificateId,
+        recordId: owner.sessionId,
+        grantGeneration: channel.generation,
+        resourceId: input.binding.resourceId,
+        definitionGeneration: input.binding.definitionGeneration,
+        definitionDigest: input.binding.definitionDigest,
+      };
+      yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* automation.registerRecovery(
+              dependency,
+              owner.sessionId,
+              channel.credential_identity!,
+            );
+            if (relay !== undefined)
+              yield* automation.registerDependency(
+                dependency,
+                relay,
+                [dependencyGrant(owner.sessionId, birthFacts.legacy.has(json(owner)))],
+                false,
+              );
+          }),
+        )
+        .pipe(
+          Effect.mapError(unavailable),
+          Effect.tap(() => (relay === undefined ? Effect.void : wakeDisables)),
+        );
+      const attestation = yield* decodeLegacyAttestation(
+        yield* ask(owner.sessionId, {
+          id: `capture-legacy:${input.certificateId}:${owner.sessionId}:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+          body: {
+            type: "capture-legacy-automation",
+            certificateId: input.certificateId,
+            audience: input.audience,
+            binding: input.binding,
+            contributor: owner,
+          },
+        }),
+      ).pipe(Effect.mapError(unavailable));
+      if (json(attestation.dependency) !== json(dependency))
+        return yield* denied("The legacy attestation changed its exact dependency.");
+      return {
+        records: [],
+        legacy: [{ ...owner, expiresAt: Math.min(owner.expiresAt, attestation.expiresAt) }],
+        dependencies: [dependency],
+      };
+    });
+  const captureRecord = (
+    record: ExecutionRecord,
+    input: Omit<AutomationCapture, "type" | "envelope">,
+    ancestors: ReadonlySet<string> = new Set(),
+    relay?: { readonly environmentId: EnvironmentId; readonly generation: string },
+    replacements: ReadonlyMap<string, Automation.AutomationCertificate> = new Map(),
+    inheritedBirthFacts: BirthFacts = noBirthFacts(),
+  ): Effect.Effect<Automation.AcceptedGraph, OrchestratorMcpFailure> =>
+    Effect.gen(function* () {
+      if (input.remaining < 1 || ancestors.has(record.id) || ancestors.size >= 256)
+        return yield* denied("The automation contributor graph is cyclic or too deep.");
+      const ceiling = yield* validate(record, undefined, undefined, "interactive", replacements);
+      const children: Automation.AcceptedGraph[] = [];
+      const legacyOwners: Automation.AcceptedGraph["legacy"][number][] = [];
+      const sessionIds = new Set<string>();
+      let expiresAt: number | null = null;
+      const nextAncestors = new Set([...ancestors, record.id]);
+      const childIds: string[] = [];
+      let birthFacts = inheritedBirthFacts;
+      if (record.context !== undefined) {
+        const context = record.context;
+        childIds.push(
+          ...(context.type === "run-inputs" || context.type === "task-stop"
+            ? [
+                ...context.recordIds,
+                ...(context.type === "task-stop"
+                  ? context.targets.flatMap((target) => target.recordIds)
+                  : []),
+              ]
+            : context.type === "owned-thread"
+              ? [context.creationRecordId, context.runRecordId]
+              : [context.runRecordId]),
+        );
+      }
+      if ("certificateId" in record) {
+        const previous =
+          replacements.get(record.certificateId) ??
+          (yield* record.kind === "automation-birth"
+            ? automation.birth(record.certificateId)
+            : automation.claim(record.certificateId));
+        if (record.kind === "automation-birth") birthFacts = addBirthFacts(birthFacts, previous);
+        expiresAt = previous.expiresAt;
+        if (expiresAt !== null && expiresAt <= (yield* Clock.currentTimeMillis))
+          return yield* denied("The original automation contributor expired.");
+        childIds.push(...previous.recordIds);
+        legacyOwners.push(...previous.graph.legacy.filter((owner) => owner.environmentId === here));
+      }
+      if ("envelope" in record && record.context === undefined) {
+        if (record.parentId !== null) childIds.push(record.parentId);
+        for (const sessionId of [
+          record.sessionId,
+          record.originClientId,
+          record.requestClientSessionId,
+          record.resourceSessionId,
+        ]) {
+          if (sessionId === null || sessionId === undefined) continue;
+          yield* activeSession(sessionId);
+          const session = yield* authSessions
+            .getById({ sessionId: AuthSessionId.make(sessionId) })
+            .pipe(Effect.mapError(unavailable));
+          if (Option.isNone(session)) return yield* unavailable();
+          sessionIds.add(sessionId);
+          const expiry = DateTime.toEpochMillis(session.value.expiresAt);
+          expiresAt = expiresAt === null ? expiry : Math.min(expiresAt, expiry);
+        }
+        if (record.sessionId !== null) {
+          const channel = (yield* sql<{
+            automation_version: number;
+            credential_identity: string | null;
+          }>`SELECT automation_version,credential_identity FROM peer_authority_sessions WHERE session_id=${record.sessionId}`.pipe(
+            Effect.mapError(unavailable),
+          ))[0];
+          if (channel?.automation_version !== 1 || channel.credential_identity === null)
+            return yield* denied(
+              "The source does not support destination automation authority v1.",
+            );
+          if (input.remaining <= 1)
+            return yield* denied("The automation capture hop bound was exceeded.");
+          const expected: Automation.AutomationDependency = {
+            sourceEnvironmentId: record.envelope.environmentId,
+            destinationEnvironmentId: input.audience,
+            certificateId: input.certificateId,
+            recordId: record.envelope.recordId,
+            grantGeneration: record.peer.generation,
+            resourceId: input.binding.resourceId,
+            definitionGeneration: input.binding.definitionGeneration,
+            definitionDigest: input.binding.definitionDigest,
+          };
+          yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                yield* automation.registerRecovery(
+                  expected,
+                  record.sessionId!,
+                  channel.credential_identity!,
+                );
+                if (relay !== undefined)
+                  yield* automation.registerDependency(
+                    expected,
+                    relay,
+                    [
+                      dependencyGrant(
+                        record.sessionId!,
+                        inheritedBirthFacts.records.has(json(record)),
+                      ),
+                    ],
+                    false,
+                  );
+              }),
+            )
+            .pipe(
+              Effect.mapError(unavailable),
+              Effect.tap(() => (relay === undefined ? Effect.void : wakeDisables)),
+            );
+          const upstream = yield* decodeAcceptedGraph(
+            yield* ask(record.sessionId, {
+              id: `capture:${input.certificateId}:${record.id}:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+              body: {
+                type: "capture-automation",
+                envelope: record.envelope,
+                ...input,
+                remaining: input.remaining - 1,
+              },
+            }),
+          ).pipe(Effect.mapError(unavailable));
+          if (upstream.records.some((node) => node.environmentId === here))
+            return yield* denied(
+              "A peer cannot supply this destination's local automation authority.",
+            );
+          for (const dependency of upstream.dependencies)
+            if (
+              dependency.certificateId !== input.certificateId ||
+              dependency.destinationEnvironmentId !== input.audience ||
+              dependency.resourceId !== input.binding.resourceId ||
+              dependency.definitionGeneration !== input.binding.definitionGeneration ||
+              dependency.definitionDigest !== input.binding.definitionDigest
+            )
+              return yield* denied(
+                "The upstream disable dependency does not match this exact automation capture.",
+              );
+          for (const dependency of upstream.dependencies)
+            yield* automation.registerRecovery(
+              dependency,
+              record.sessionId,
+              channel.credential_identity,
+            );
+          children.push(upstream);
+        } else {
+          const link = yield* links
+            .get(record.peer.environmentId)
+            .pipe(Effect.mapError(unavailable));
+          if (Option.isNone(link) || link.value.launchIdentity !== record.peer.generation)
+            return yield* denied("The source link changed during automation capture.");
+          const expiry = DateTime.toEpochMillis(link.value.expiresAt);
+          expiresAt = expiresAt === null ? expiry : Math.min(expiresAt, expiry);
+        }
+      }
+      for (const id of new Set(childIds))
+        children.push(
+          yield* captureRecord(
+            yield* read(id),
+            input,
+            nextAncestors,
+            relay,
+            replacements,
+            birthFacts,
+          ),
+        );
+      const threadId =
+        record.context !== undefined && record.context.type !== "task-stop"
+          ? record.context.threadId
+          : "localThreadId" in record
+            ? record.localThreadId
+            : null;
+      if (threadId !== null) {
+        const imported = yield* legacy(threadId);
+        if (imported !== undefined) {
+          yield* activeSession(imported.sessionId);
+          const session = yield* authSessions
+            .getById({ sessionId: AuthSessionId.make(imported.sessionId) })
+            .pipe(Effect.mapError(unavailable));
+          if (Option.isNone(session)) return yield* unavailable();
+          sessionIds.add(imported.sessionId);
+          legacyOwners.push({
+            environmentId: here,
+            threadId,
+            sessionId: AuthSessionId.make(imported.sessionId),
+            ceiling: imported.ceiling,
+            expiresAt: DateTime.toEpochMillis(session.value.expiresAt),
+          });
+        }
+      }
+      for (const owner of legacyOwners)
+        children.push(yield* captureLegacy(owner, input, relay, birthFacts));
+      const graph = yield* mergeGraphs([
+        ...children,
+        {
+          records: [{ environmentId: here, record, ceiling, expiresAt }],
+          legacy: [],
+          dependencies: [],
+        },
+      ]);
+      return graph;
+    });
+  const captureAutomation: PeerAuthority["Service"]["captureAutomation"] = (
+    scope,
+    binding,
+    action,
+    limits,
+  ) =>
+    Effect.gen(function* () {
+      const grantFence = yield* sql<{
+        session_id: string;
+        generation: string;
+        grant_json: string;
+      }>`SELECT session_id,generation,grant_json FROM peer_authority_sessions`.pipe(
+        Effect.mapError(unavailable),
+      );
+      const targetThreadId =
+        binding.kind === "spectrum" ? binding.callerThreadId : binding.threadId;
+      const roots: ExecutionRecord[] = [];
+      if (scope?.authority !== undefined) roots.push(yield* read(scope.authority.id));
+      if (targetThreadId !== null) {
+        const owner = yield* forThread(targetThreadId);
+        if (owner !== undefined) roots.push(owner);
+      }
+      const retainedLegacy: Automation.AcceptedGraph["legacy"][number][] = [];
+      let existingSchedule: ResourceBinding | undefined;
+      if (binding.kind === "schedule") {
+        const found =
+          yield* sql`SELECT task_id FROM scheduled_tasks WHERE task_id=${binding.resourceId}`.pipe(
+            Effect.mapError(unavailable),
+          );
+        if (found.length !== 0)
+          existingSchedule = yield* loadResource({
+            type: "schedule",
+            taskId: ScheduledTaskId.make(binding.resourceId),
+          });
+        const previous = yield* automation.current("schedule", binding.resourceId);
+        if (Option.isSome(previous)) {
+          for (const id of previous.value.recordIds) roots.push(yield* read(id));
+          retainedLegacy.push(
+            ...previous.value.graph.legacy.filter((owner) => owner.environmentId === here),
+          );
+        } else if (
+          existingSchedule?.type === "schedule" &&
+          existingSchedule.linkOrigin !== undefined
+        ) {
+          const sessionId = AuthSessionId.make(existingSchedule.linkOrigin.sessionId);
+          yield* activeSession(sessionId);
+          const original = (yield* sql<{
+            runtime_mode: PeerCeiling["runtimeMode"];
+            interaction_mode: PeerCeiling["interactionMode"];
+          }>`SELECT runtime_mode,interaction_mode FROM scheduled_tasks WHERE task_id=${binding.resourceId}`.pipe(
+            Effect.mapError(unavailable),
+          ))[0];
+          const session = yield* authSessions
+            .getById({ sessionId })
+            .pipe(Effect.mapError(unavailable));
+          if (original === undefined || Option.isNone(session)) return yield* unavailable();
+          retainedLegacy.push({
+            environmentId: here,
+            threadId: null,
+            taskId: ScheduledTaskId.make(binding.resourceId),
+            sessionId,
+            ceiling: {
+              runtimeMode: original.runtime_mode,
+              interactionMode: original.interaction_mode,
+              resourceScope: "created-work",
+              onward: false,
+              capabilities: ["orchestration", "worktree", "pull-requests"],
+            },
+            expiresAt: DateTime.toEpochMillis(session.value.expiresAt),
+          });
+        }
+      }
+      const replacements = new Map<string, Automation.AutomationCertificate>();
+      if (binding.kind === "spectrum" && binding.workflowGeneration > 0) {
+        const current = yield* automation.current("spectrum", binding.resourceId);
+        if (Option.isSome(current)) {
+          if (current.value.binding.kind !== "spectrum")
+            return yield* denied("The accepted automation is not a Spectrum.");
+          const native = (yield* sql<{
+            generation: number;
+            status: string;
+            certificate_id: string | null;
+          }>`SELECT generation,json_extract(payload_json,'$.status') AS status,json_extract(payload_json,'$.state.automationCertificateId') AS certificate_id FROM fork_spectra WHERE thread_id=${binding.resourceId}`.pipe(
+            Effect.mapError(unavailable),
+          ))[0];
+          if (
+            native === undefined ||
+            native.status === "active" ||
+            native.generation + 1 !== binding.workflowGeneration ||
+            native.certificate_id !== current.value.id
+          )
+            return yield* denied("The Spectrum changed before fresh reopen capture.");
+          const previous = current.value;
+          const priorBinding = previous.binding;
+          if (
+            priorBinding.kind !== "spectrum" ||
+            previous.audience !== here ||
+            priorBinding.workflowGeneration >= binding.workflowGeneration ||
+            priorBinding.threadId !== binding.threadId ||
+            priorBinding.projectId !== binding.projectId ||
+            priorBinding.callerThreadId !== binding.callerThreadId ||
+            requestDigest(priorBinding.memberThreadIds) !== requestDigest(binding.memberThreadIds)
+          )
+            return yield* denied("The Spectrum reopen changed its accepted ownership.");
+          const pending = [previous];
+          while (pending.length !== 0) {
+            const prior = pending.pop()!;
+            if (replacements.has(prior.id)) continue;
+            if (replacements.size >= 256)
+              return yield* denied("The Spectrum generation bound was exceeded.");
+            if (
+              prior.audience !== here ||
+              prior.binding.kind !== "spectrum" ||
+              prior.binding.resourceId !== binding.resourceId ||
+              prior.binding.projectId !== binding.projectId ||
+              prior.binding.workflowGeneration >= binding.workflowGeneration
+            )
+              return yield* denied("The Spectrum birth contributor belongs to another automation.");
+            replacements.set(prior.id, prior);
+            for (const node of prior.graph.records)
+              if (
+                node.environmentId === here &&
+                "certificateId" in node.record &&
+                !replacements.has(node.record.certificateId)
+              ) {
+                const ancestor = yield* automation.facts(node.record.certificateId);
+                if (
+                  ancestor.binding.kind === "spectrum" &&
+                  ancestor.binding.resourceId === binding.resourceId
+                )
+                  pending.push(ancestor);
+              }
+          }
+          for (const threadId of [binding.threadId, ...binding.memberThreadIds]) {
+            const birth = yield* permanentForThread(threadId);
+            if (birth !== undefined) roots.push(birth);
+          }
+        }
+      }
+      const id = `automation:${"id" in action ? action.id : action.nativeCommandId}`;
+      const input = { certificateId: id, audience: here, binding, remaining: 16 };
+      let ceiling = limits;
+      const graphs: Automation.AcceptedGraph[] = [];
+      for (const root of roots) {
+        const live = yield* validate(root, undefined, undefined, "interactive", replacements);
+        ceiling = intersect(ceiling, live);
+        if (existingSchedule !== undefined)
+          yield* checkResource(root, live, existingSchedule, undefined, emptyCoverage());
+        if (
+          targetThreadId !== null &&
+          !("certificateId" in root && replacements.has(root.certificateId))
+        )
+          yield* checkResource(
+            root,
+            live,
+            yield* loadResource({ type: "thread", threadId: targetThreadId }),
+            undefined,
+            emptyCoverage(),
+          );
+        graphs.push(yield* captureRecord(root, input, new Set(), undefined, replacements));
+      }
+      if (
+        scope?.client?.linked === true &&
+        roots.length === 0 &&
+        !(binding.kind === "schedule" && scope.authority === undefined)
+      )
+        return yield* denied(
+          "Imported authority cannot create autonomous execution without live provenance.",
+        );
+      const legacyOwners: Automation.AcceptedGraph["legacy"][number][] = [];
+      if (
+        binding.kind === "schedule" &&
+        scope?.client?.linked === true &&
+        scope.authority === undefined
+      ) {
+        yield* checkBinding(
+          scope,
+          existingSchedule === undefined
+            ? Effect.succeed({ type: "environment" })
+            : Effect.succeed(existingSchedule),
+        );
+        const sessionId = AuthSessionId.make(scope.client.sessionId);
+        const session = yield* authSessions
+          .getById({ sessionId })
+          .pipe(Effect.mapError(unavailable));
+        if (Option.isNone(session)) return yield* unavailable();
+        const direct =
+          scope.thread === undefined &&
+          scope.client.access === "full-access" &&
+          Invocation.clientModeCeiling(scope.client).runtimeMode === "full-access" &&
+          Invocation.clientModeCeiling(scope.client).interactionMode === "default" &&
+          (existingSchedule === undefined ||
+            (existingSchedule.type === "schedule" && existingSchedule.linkOrigin === undefined));
+        legacyOwners.push({
+          environmentId: here,
+          threadId: null,
+          taskId: ScheduledTaskId.make(binding.resourceId),
+          sessionId,
+          ceiling: {
+            ...limits,
+            resourceScope: direct ? "environment-resources" : "created-work",
+            onward: (yield* grant(sessionId)).onward,
+            capabilities: limits.capabilities.filter(
+              (capability) => capability !== "preview" && capability !== "device",
+            ),
+          },
+          expiresAt: DateTime.toEpochMillis(session.value.expiresAt),
+        });
+      }
+      for (const owner of retainedLegacy) {
+        yield* activeSession(owner.sessionId);
+        ceiling = intersect(ceiling, owner.ceiling);
+        if (owner.expiresAt <= (yield* Clock.currentTimeMillis))
+          return yield* denied("An original schedule contributor expired.");
+        if (existingSchedule !== undefined && owner.ceiling.resourceScope === "created-work")
+          yield* checkCreated(owner.sessionId, existingSchedule);
+        legacyOwners.push(owner);
+      }
+      for (const threadId of new Set([
+        ...(targetThreadId === null ? [] : [targetThreadId]),
+        ...(scope?.thread === undefined ? [] : [scope.thread.threadId]),
+      ])) {
+        const imported = yield* legacy(threadId);
+        if (imported === undefined) continue;
+        yield* activeSession(imported.sessionId);
+        const session = yield* authSessions
+          .getById({ sessionId: AuthSessionId.make(imported.sessionId) })
+          .pipe(Effect.mapError(unavailable));
+        if (Option.isNone(session)) return yield* unavailable();
+        if (targetThreadId !== null)
+          yield* checkCreated(
+            imported.sessionId,
+            yield* loadResource({ type: "thread", threadId: targetThreadId }),
+          );
+        ceiling = intersect(ceiling, imported.ceiling);
+        legacyOwners.push({
+          environmentId: here,
+          threadId,
+          sessionId: AuthSessionId.make(imported.sessionId),
+          ceiling: imported.ceiling,
+          expiresAt: DateTime.toEpochMillis(session.value.expiresAt),
+        });
+      }
+      for (const owner of legacyOwners) graphs.push(yield* captureLegacy(owner, input));
+      const graph = yield* mergeGraphs(graphs);
+      if (
+        graph.records.length === 0 &&
+        graph.legacy.length === 0 &&
+        graph.dependencies.length === 0
+      )
+        return undefined;
+      for (const node of graph.records) ceiling = intersect(ceiling, node.ceiling);
+      for (const owner of graph.legacy) ceiling = intersect(ceiling, owner.ceiling);
+      if (
+        ceiling.runtimeMode !== limits.runtimeMode ||
+        ceiling.interactionMode !== limits.interactionMode
+      )
+        return yield* denied(
+          "The automation definition exceeds an original contributor's current mode ceiling.",
+        );
+      const expiries = [
+        ...graph.records.flatMap((node) => (node.expiresAt === null ? [] : [node.expiresAt])),
+        ...graph.legacy.map((node) => node.expiresAt),
+      ];
+      const localSessions = new Set<string>();
+      for (const node of graph.records) {
+        if (node.environmentId !== here) continue;
+        if ("envelope" in node.record) {
+          for (const session of [
+            node.record.sessionId,
+            node.record.originClientId,
+            node.record.requestClientSessionId,
+            node.record.resourceSessionId,
+          ])
+            if (session !== null && session !== undefined) localSessions.add(session);
+        } else if (
+          "resourceSessionId" in node.record &&
+          node.record.resourceSessionId !== undefined
+        )
+          localSessions.add(node.record.resourceSessionId);
+      }
+      for (const owner of graph.legacy)
+        if (owner.environmentId === here) localSessions.add(owner.sessionId);
+      return Automation.ValidatedAcceptance.afterLiveCapture(
+        {
+          version: 1,
+          id,
+          audience: here,
+          binding,
+          recordIds: [...new Set(roots.map((root) => root.id))],
+          graph,
+          ceiling,
+          ...(scope === undefined ? {} : { namespace: requestNamespace(scope) }),
+          generation: "generation" in action ? action.generation : "local",
+          acceptedAt: yield* Clock.currentTimeMillis,
+          expiresAt: expiries.length === 0 ? null : Math.min(...expiries),
+        },
+        grantFence.filter((row) => localSessions.has(row.session_id)),
+      );
+    });
   const process: PeerAuthority["Service"]["process"] = (peer, generation, frame) =>
     Effect.gen(function* () {
+      if (frame.body.type === "capture-legacy-automation") {
+        const input = frame.body;
+        if (input.contributor.environmentId !== peer)
+          return yield* denied("The legacy contributor belongs to another destination.");
+        const link = yield* links.get(peer).pipe(Effect.mapError(unavailable));
+        const now = yield* Clock.currentTimeMillis;
+        if (
+          Option.isNone(link) ||
+          link.value.launchIdentity !== generation ||
+          DateTime.toEpochMillis(link.value.expiresAt) <= now ||
+          input.contributor.expiresAt <= now
+        )
+          return yield* denied("The original legacy source generation retired before capture.");
+        if (
+          link.value.access === "read-only" ||
+          Invocation.intersectModes(
+            { runtimeMode: link.value.access, interactionMode: "default" },
+            input.contributor.ceiling,
+          ).runtimeMode !== input.contributor.ceiling.runtimeMode
+        )
+          return yield* denied(
+            "The legacy contributor exceeds the original source link's current access.",
+          );
+        const expiresAt = Math.min(
+          input.contributor.expiresAt,
+          DateTime.toEpochMillis(link.value.expiresAt),
+        );
+        const dependency: Automation.AutomationDependency = {
+          sourceEnvironmentId: here,
+          destinationEnvironmentId: input.audience,
+          certificateId: input.certificateId,
+          recordId: input.contributor.sessionId,
+          grantGeneration: generation,
+          resourceId: input.binding.resourceId,
+          definitionGeneration: input.binding.definitionGeneration,
+          definitionDigest: input.binding.definitionDigest,
+        };
+        yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const current = yield* links.get(peer).pipe(Effect.mapError(unavailable));
+              if (
+                Option.isNone(current) ||
+                current.value.launchIdentity !== generation ||
+                DateTime.toEpochMillis(current.value.expiresAt) <= (yield* Clock.currentTimeMillis)
+              )
+                return yield* denied(
+                  "The legacy source link retired before dependency registration.",
+                );
+              yield* automation.registerDependency(
+                dependency,
+                { environmentId: peer, generation },
+                [],
+                true,
+                expiresAt,
+              );
+            }),
+          )
+          .pipe(
+            Effect.catchTags({ SqlError: () => Effect.fail(unavailable()) }),
+            Effect.tap(() => wakeDisables),
+          );
+        return { dependency, expiresAt };
+      }
+      if (frame.body.type === "capture-automation") {
+        const { certificateId, audience, binding, remaining, envelope } = frame.body;
+        const input = { certificateId, audience, binding, remaining };
+        const record = yield* readInteractive(envelope.recordId);
+        if (
+          record.sessionId !== null ||
+          record.peer.environmentId !== peer ||
+          record.peer.generation !== generation ||
+          json(record.envelope) !== json(envelope)
+        )
+          return yield* denied("The automation capture belongs to another action or link.");
+        const next = { environmentId: peer, generation };
+        const graph = yield* captureRecord(record, input, new Set(), next);
+        const dependency: Automation.AutomationDependency = {
+          sourceEnvironmentId: here,
+          destinationEnvironmentId: input.audience,
+          certificateId: input.certificateId,
+          recordId: record.id,
+          grantGeneration: generation,
+          resourceId: input.binding.resourceId,
+          definitionGeneration: input.binding.definitionGeneration,
+          definitionDigest: input.binding.definitionDigest,
+        };
+        yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              let birthFacts = noBirthFacts();
+              for (const node of graph.records)
+                if (
+                  node.environmentId === here &&
+                  "certificateId" in node.record &&
+                  node.record.kind === "automation-birth"
+                )
+                  birthFacts = addBirthFacts(
+                    birthFacts,
+                    yield* automation.birth(node.record.certificateId),
+                  );
+              const sessionIds = new Map<string, boolean>();
+              const includeSession = (sessionId: string, covered: boolean) =>
+                sessionIds.set(sessionId, (sessionIds.get(sessionId) ?? true) && covered);
+              for (const node of graph.records) {
+                if (node.environmentId !== here || !("envelope" in node.record)) continue;
+                for (const sessionId of [
+                  node.record.sessionId,
+                  node.record.originClientId,
+                  node.record.requestClientSessionId,
+                  node.record.resourceSessionId,
+                ]) {
+                  if (sessionId === null || sessionId === undefined) continue;
+                  yield* activeSession(sessionId);
+                  includeSession(sessionId, birthFacts.records.has(json(node.record)));
+                }
+                if (node.record.sessionId === null) {
+                  const link = yield* links
+                    .get(node.record.peer.environmentId)
+                    .pipe(Effect.mapError(unavailable));
+                  if (
+                    Option.isNone(link) ||
+                    link.value.launchIdentity !== node.record.peer.generation ||
+                    DateTime.toEpochMillis(link.value.expiresAt) <= (yield* Clock.currentTimeMillis)
+                  )
+                    return yield* denied("The source link retired before capture registration.");
+                }
+              }
+              for (const node of graph.legacy)
+                if (node.environmentId === here) {
+                  yield* activeSession(node.sessionId);
+                  includeSession(node.sessionId, birthFacts.legacy.has(json(node)));
+                }
+              const expiries = [
+                ...graph.records.flatMap((node) =>
+                  node.expiresAt === null ? [] : [node.expiresAt],
+                ),
+                ...graph.legacy.map((node) => node.expiresAt),
+              ];
+              const certificates = graph.records.flatMap((node) =>
+                node.environmentId === here && "certificateId" in node.record ? [node.record] : [],
+              );
+              const grants = [...sessionIds].map(([sessionId, covered]) =>
+                dependencyGrant(sessionId, covered),
+              );
+              yield* automation.registerDependency(
+                dependency,
+                next,
+                grants,
+                true,
+                expiries.length === 0 ? null : Math.min(...expiries),
+                certificates,
+              );
+              for (const upstream of graph.dependencies)
+                yield* automation.registerDependency(
+                  upstream,
+                  next,
+                  grants,
+                  false,
+                  undefined,
+                  certificates,
+                );
+            }),
+          )
+          .pipe(
+            Effect.catchTags({ SqlError: () => Effect.fail(unavailable()) }),
+            Effect.tap(() => wakeDisables),
+          );
+        return yield* mergeGraphs([graph, { records: [], legacy: [], dependencies: [dependency] }]);
+      }
       if (frame.body.type === "request-actor") {
-        const record = yield* read(frame.body.envelope.recordId);
+        const record = yield* readInteractive(frame.body.envelope.recordId);
         if (
           record.sessionId !== null ||
           record.peer.environmentId !== peer ||
@@ -1289,7 +2616,7 @@ const make = Effect.gen(function* () {
         );
         if (!rows[0] || rows[0].pair_json !== json(pair))
           return yield* denied("Unknown request ancestry pair.");
-        const record = yield* read(rows[0].record_id);
+        const record = yield* readInteractive(rows[0].record_id);
         if (
           record.sessionId !== null ||
           record.peer.environmentId !== peer ||
@@ -1313,18 +2640,18 @@ const make = Effect.gen(function* () {
         return yield* ancestor(actor, pair.parentThreadId, remaining);
       }
       if (frame.body.type === "pair") {
-        const record = yield* read(frame.body.envelope.recordId);
+        const record = yield* readInteractive(frame.body.envelope.recordId);
         if (record.peer.environmentId !== peer || record.peer.generation !== generation)
           return yield* denied("Pair registration belongs to another link.");
         if (json(record.envelope) !== json(frame.body.envelope))
           return yield* denied("Pair registration belongs to another action.");
-        yield* validate(record);
+        yield* validate(record, undefined, undefined, "interactive");
         yield* registerPair(frame.body.envelope, frame.body.pair);
         return { registered: true };
       }
       if (frame.body.type === "validate") {
         const envelope = frame.body.envelope;
-        const record = yield* read(envelope.recordId);
+        const record = yield* readInteractive(envelope.recordId);
         if (
           record.sessionId !== null ||
           record.peer.environmentId !== peer ||
@@ -1349,11 +2676,18 @@ const make = Effect.gen(function* () {
           const upstream =
             inheritedRecord?.context?.type === "task-stop" ? inheritedRecord.context : undefined;
           const requesterCeiling =
-            inheritedRecord === undefined ? undefined : yield* validate(inheritedRecord);
-          let ceiling = yield* validate(record, {
-            ...control,
-            ...(upstream === undefined ? {} : { upstream }),
-          });
+            inheritedRecord === undefined
+              ? undefined
+              : yield* validate(inheritedRecord, undefined, undefined, "interactive");
+          let ceiling = yield* validate(
+            record,
+            {
+              ...control,
+              ...(upstream === undefined ? {} : { upstream }),
+            },
+            undefined,
+            "interactive",
+          );
           const parent = yield* threads
             .getThreadShell(control.pair.parentThreadId)
             .pipe(Effect.mapError(unavailable));
@@ -1379,13 +2713,13 @@ const make = Effect.gen(function* () {
             ...latest.map((row) => row.record_id),
           ])) {
             const owner = yield* read(id);
-            const live = yield* validate(owner, upstream);
+            const live = yield* validate(owner, upstream, undefined, "interactive");
             yield* checkResource(owner, live, { type: "thread", thread: parent }, upstream);
             ceiling = intersect(ceiling, live);
           }
           return ceiling;
         }
-        return yield* validate(record);
+        return yield* validate(record, undefined, undefined, "interactive");
       }
       const input = frame.body;
       const rows = yield* sql<{
@@ -1396,7 +2730,7 @@ const make = Effect.gen(function* () {
       );
       if (!rows[0] || rows[0].pair_json !== json(input.pair))
         return yield* denied("Unknown parent return pair.");
-      const record = yield* read(rows[0].record_id);
+      const record = yield* readInteractive(rows[0].record_id);
       if (record.peer.environmentId !== peer || record.peer.generation !== generation)
         return yield* denied("Return notice belongs to another link generation.");
       yield* validateReturn(record);
@@ -1434,33 +2768,19 @@ const make = Effect.gen(function* () {
   const returnNotice: PeerAuthority["Service"]["returnNotice"] = (scope, environmentId, input) =>
     Effect.gen(function* () {
       if (!scope.thread) return undefined;
-      const record = yield* forThread(scope.thread.threadId);
-      if (!record || record.sessionId === null || record.peer.environmentId !== environmentId)
+      const rows = yield* sql<{
+        record_id: string;
+        pair_json: string;
+      }>`SELECT record_id,pair_json FROM peer_return_pairs WHERE json_extract(pair_json,'$.childEnvironmentId')=${here} AND json_extract(pair_json,'$.childThreadId')=${scope.thread.threadId} AND json_extract(pair_json,'$.parentEnvironmentId')=${environmentId} AND json_extract(pair_json,'$.parentThreadId')=${input.threadId}`.pipe(
+        Effect.mapError(unavailable),
+      );
+      if (rows.length !== 1) return undefined;
+      const record = yield* readInteractive(rows[0]!.record_id);
+      if (record.sessionId === null || record.peer.environmentId !== environmentId)
         return undefined;
       if (input.mode !== undefined && input.mode !== "auto" && input.mode !== "queue")
         return yield* denied("A child may only queue a notice to its parent.");
-      // The destination stores only a verified pair returned by the source owner.
-      // Returns retain the actual creation pair, not a newer contributor's
-      // command identity. Its exact child thread is still checked below.
-      let pairOwner = record;
-      while (pairOwner.context?.type === "owned-thread")
-        pairOwner = yield* read(pairOwner.context.creationRecordId);
-      if (pairOwner.context?.type === "legacy-thread" || pairOwner.context?.type === "run-inputs")
-        return undefined;
-      const rows = yield* sql<{
-        pair_json: string;
-      }>`SELECT pair_json FROM peer_return_pairs WHERE record_id = ${pairOwner.id}`.pipe(
-        Effect.mapError(unavailable),
-      );
-      const pair = rows[0]
-        ? yield* decodePair(rows[0].pair_json).pipe(Effect.mapError(unavailable))
-        : undefined;
-      if (
-        !pair ||
-        pair.parentThreadId !== input.threadId ||
-        pair.childThreadId !== scope.thread.threadId
-      )
-        return undefined;
+      const pair = yield* decodePair(rows[0]!.pair_json).pipe(Effect.mapError(unavailable));
       const sender = yield* threads
         .getThreadShell(scope.thread.threadId)
         .pipe(Effect.mapError(unavailable));
@@ -1511,7 +2831,7 @@ const make = Effect.gen(function* () {
       );
       if (!rows[0] || rows[0].pair_json !== json(input.pair))
         return yield* denied("Unknown delegated lifecycle pair.");
-      const record = yield* read(rows[0].record_id);
+      const record = yield* readInteractive(rows[0].record_id);
       if (
         record.sessionId !== scope.client.sessionId ||
         record.peer.environmentId !== input.environmentId ||
@@ -1570,6 +2890,7 @@ const make = Effect.gen(function* () {
       );
       const created = yield* permanentForThread(threadId);
       const record = rows[0] === undefined ? created : yield* read(rows[0].record_id);
+      const coverage = record === undefined ? undefined : yield* coverageFor(record);
       const migrated = created === undefined ? yield* legacy(threadId) : undefined;
       if (record?.context?.type === "task-stop") {
         const effects = yield* sql<{
@@ -1589,7 +2910,7 @@ const make = Effect.gen(function* () {
       if (migrated !== undefined) yield* activeSession(migrated.sessionId);
       const ceiling =
         record !== undefined
-          ? yield* validate(record)
+          ? yield* validate(record, undefined, coverage)
           : migrated !== undefined
             ? migrated.ceiling
             : yield* unavailable();
@@ -1597,18 +2918,26 @@ const make = Effect.gen(function* () {
       if (target === null || target.deletedAt !== null)
         return yield* denied("The destination thread is no longer available.");
       if (record !== undefined)
-        yield* checkResource(record, ceiling, { type: "thread", thread: target });
+        yield* checkResource(
+          record,
+          ceiling,
+          { type: "thread", thread: target },
+          undefined,
+          coverage,
+        );
       let effective = migrated === undefined ? ceiling : intersect(ceiling, migrated.ceiling);
       if (created !== undefined && created.id !== record?.id) {
         const creationCeiling = yield* validate(
           created,
           record?.context?.type === "task-stop" ? record.context : undefined,
+          coverage,
         );
         yield* checkResource(
           created,
           creationCeiling,
           { type: "thread", thread: target },
           record?.context?.type === "task-stop" ? record.context : undefined,
+          coverage,
         );
         effective = intersect(effective, creationCeiling);
       }
@@ -1616,6 +2945,28 @@ const make = Effect.gen(function* () {
         return yield* denied(
           "The destination effect exceeds the current originating authority ceiling.",
         );
+      if (record === undefined) return undefined;
+      let owner = record;
+      if (created !== undefined && created.id !== record.id) {
+        const context = {
+          type: "owned-thread" as const,
+          threadId,
+          creationRecordId: created.id,
+          runRecordId: record.id,
+        };
+        owner = conjunction(`context:${yield* hash(context)}`, context, [created, record]);
+        yield* save(owner);
+      } else if (migrated !== undefined && record.context?.type !== "legacy-thread") {
+        const context = { type: "legacy-thread" as const, threadId, runRecordId: record.id };
+        owner = conjunction(
+          `context:${yield* hash(context)}`,
+          context,
+          [record],
+          AuthSessionId.make(migrated.sessionId),
+        );
+        yield* save(owner);
+      }
+      return { ...owner, ceiling: effective };
     });
   const checkBinding = (
     scope: Invocation.McpInvocationScope,
@@ -1649,7 +3000,7 @@ const make = Effect.gen(function* () {
       const directFull =
         scope.thread === undefined &&
         scope.client?.linked === true &&
-        record?.envelope.descendant !== true &&
+        (record === undefined || ("envelope" in record && record.envelope.descendant !== true)) &&
         modes.runtimeMode === "full-access" &&
         modes.interactionMode === "default";
       // Preserve the legacy direct exception for environment operations and
@@ -1721,10 +3072,129 @@ const make = Effect.gen(function* () {
           : { authority: { ...record, ceiling } }),
       };
     });
+  const executionRecord = (
+    certificate: Automation.AutomationCertificate,
+    actionId: string,
+  ): ExecutionRecord => ({
+    kind: "automation-execution",
+    id: `automation-execution:${certificate.id}:${actionId}`,
+    certificateId: certificate.id,
+    actionId,
+    ceiling: certificate.ceiling,
+    generation: certificate.generation,
+    projectId: certificate.binding.projectId,
+  });
+  const nativePreflight: NativeAuthorityValidation["Service"]["preflight"] = (
+    ownerIds,
+    threadIds,
+  ) =>
+    Effect.gen(function* () {
+      const grants = () =>
+        sql`SELECT session_id,generation,grant_json FROM peer_authority_sessions ORDER BY session_id`.pipe(
+          Effect.mapError(unavailable),
+        );
+      const expected = requestDigest(yield* grants());
+      const roots: ExecutionRecord[] = [];
+      for (const id of ownerIds) {
+        const rows = yield* sql<{
+          record_json: string;
+        }>`SELECT record_json FROM peer_authority_records WHERE id=${id}`.pipe(
+          Effect.mapError(unavailable),
+        );
+        // New fork-plan owners are persisted in the atomic commit and checked there.
+        if (rows[0] !== undefined)
+          roots.push(
+            yield* decodeAuthority(rows[0].record_json).pipe(Effect.mapError(unavailable)),
+          );
+      }
+      const pending = [...roots];
+      const seen = new Set<string>();
+      const births = new Set<string>();
+      while (pending.length !== 0) {
+        const record = pending.pop()!;
+        if (seen.has(record.id)) continue;
+        seen.add(record.id);
+        if (seen.size > 256)
+          return yield* denied("The native birth contributor bound was exceeded.");
+        if ("certificateId" in record) {
+          if (record.kind === "automation-birth") births.add(record.id);
+          continue;
+        }
+        const context = record.context;
+        if (context === undefined || context.type === "task-stop") continue;
+        for (const id of context.type === "run-inputs"
+          ? context.recordIds
+          : context.type === "owned-thread"
+            ? [context.creationRecordId, context.runRecordId]
+            : [context.runRecordId])
+          pending.push(yield* read(id));
+      }
+      if (births.size !== 0) {
+        const covered = new Map<string, Automation.AcceptedGraph["records"][number]>();
+        const executions = new Set<string>();
+        for (const root of roots) {
+          const coverage = yield* coverageFor(root);
+          for (const [id, node] of coverage) covered.set(id, node);
+          for (const id of coverage.executions) executions.add(id);
+        }
+        const coverage = Object.assign(covered, { executions });
+        for (const root of roots) {
+          const ceiling = yield* validate(root, undefined, coverage);
+          for (const threadId of threadIds) {
+            const thread = yield* threads
+              .getThreadShell(threadId)
+              .pipe(Effect.mapError(unavailable));
+            if (thread !== null) {
+              yield* checkResource(root, ceiling, { type: "thread", thread }, undefined, coverage);
+              if (exceededDispatchModeLimit(ceiling, thread) !== undefined)
+                return yield* denied("The native follow-up exceeds current destination modes.");
+            }
+          }
+        }
+      }
+      return {
+        births,
+        check: Effect.gen(function* () {
+          if (births.size !== 0 && requestDigest(yield* grants()) !== expected)
+            return yield* denied("An original contributor changed before native commit.");
+        }),
+      };
+    });
   return PeerAuthority.of({
+    nativePreflight,
+    notifyAutomationChanges: wakeDisables,
+    nextAutomationDisableDeadline: automation.nextDisableDeadline,
+    pendingAutomationDisables: automation.pending,
+    acknowledgeAutomationDisable: (acknowledgement, peer, generation) =>
+      automation
+        .acknowledge(acknowledgement, peer, generation)
+        .pipe(Effect.tap(() => wakeDisables)),
+    receiveAutomationDisable: (input, identity) =>
+      automation.receiveDisable(input, identity).pipe(Effect.tap(() => wakeDisables)),
+    captureAutomation,
+    automationAdmission: (value, binding, actionId) =>
+      Effect.sync(() => {
+        const record = executionRecord(value.certificate, actionId);
+        return {
+          record,
+          commit: automation.accept(value, binding).pipe(Effect.andThen(save(record))),
+        };
+      }),
+    automationExecution: (certificateId, actionId) =>
+      Effect.gen(function* () {
+        const certificate = yield* automation.claim(certificateId);
+        const record = executionRecord(certificate, actionId);
+        yield* save(record);
+        yield* validate(record);
+        return record;
+      }),
     recheckInvocation,
     pendingWithinTask: (resource, target) => ancestor({ type: "thread", ...resource }, target),
     checkRecord: (id) => Effect.flatMap(read(id), validate).pipe(Effect.asVoid),
+    checkInteractiveRecord: (id) =>
+      Effect.flatMap(read(id), (record) =>
+        validate(record, undefined, undefined, "interactive"),
+      ).pipe(Effect.asVoid),
     authorizeTaskStop: (scope, input) =>
       Effect.gen(function* () {
         yield* verifyTask(scope, input);
@@ -1734,7 +3204,7 @@ const make = Effect.gen(function* () {
           Effect.mapError(unavailable),
         );
         if (!rows[0]) return yield* denied("Unknown stop pair.");
-        const original = yield* read(rows[0].record_id);
+        const original = yield* readInteractive(rows[0].record_id);
         const control = {
           pair: input.pair,
           requestId: input.operation.requestId,
@@ -1811,7 +3281,13 @@ const make = Effect.gen(function* () {
     accept,
     checkPayload,
     bind,
-    forThread,
+    forThread: (threadId) =>
+      Effect.gen(function* () {
+        const record = yield* forThread(threadId);
+        return record !== undefined && !("envelope" in record)
+          ? yield* checkThread(threadId)
+          : record;
+      }),
     checkTarget: (scope, target) => checkBinding(scope, loadResource(target)).pipe(Effect.asVoid),
     historicalScheduleReceipt: (scope, request, expectedProjectId) =>
       Effect.gen(function* () {
@@ -1831,6 +3307,7 @@ const make = Effect.gen(function* () {
           );
         const binding: ResourceBinding = {
           type: "schedule",
+          taskId: receipt.scheduledTaskId,
           linkOrigin:
             resource.linkSessionId === undefined
               ? undefined
@@ -1899,16 +3376,41 @@ const make = Effect.gen(function* () {
       );
     }),
     setGrant: (input) =>
-      Effect.gen(function* () {
-        yield* activeSession(input.sessionId);
-        const encoded = yield* encodeGrant(input).pipe(Effect.mapError(unavailable));
-        const rows =
-          yield* sql`UPDATE peer_authority_sessions SET grant_json = ${encoded} WHERE session_id = ${input.sessionId} RETURNING session_id`.pipe(
-            Effect.mapError(unavailable),
-          );
-        if (rows.length !== 1) return yield* denied("This session has no authenticated peer link.");
-        return input;
-      }),
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* activeSession(input.sessionId);
+            const encoded = yield* encodeGrant(input).pipe(Effect.mapError(unavailable));
+            const previous = yield* grant(input.sessionId);
+            const priorEncoded = yield* encodeGrant(previous).pipe(Effect.mapError(unavailable));
+            if (priorEncoded !== encoded)
+              yield* Automation.invalidateAutomationSessions([input.sessionId], "retired").pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.mapError(unavailable),
+              );
+            const rows =
+              yield* sql`UPDATE peer_authority_sessions SET grant_json=${encoded} WHERE session_id=${input.sessionId} RETURNING session_id`.pipe(
+                Effect.mapError(unavailable),
+              );
+            if (rows.length !== 1)
+              return yield* denied("This session has no authenticated peer link.");
+            return input;
+          }),
+        )
+        .pipe(
+          Effect.catchTags({ SqlError: () => Effect.fail(unavailable()) }),
+          Effect.tap(() => wakeDisables),
+        ),
   });
 });
-export const layer = Layer.effect(PeerAuthority, make).pipe(Layer.provide(AuthSessions.layer));
+export const layer = Layer.effect(
+  NativeAuthorityValidation,
+  Effect.map(PeerAuthority, (authority) => ({ preflight: authority.nativePreflight })),
+).pipe(
+  Layer.provideMerge(
+    Layer.effect(PeerAuthority, make).pipe(
+      Layer.provide(AuthSessions.layer),
+      Layer.provide(Automation.layer),
+    ),
+  ),
+);

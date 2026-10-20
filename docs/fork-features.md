@@ -1861,7 +1861,7 @@ sources and reasons.
 ```json
 {
   "id": "peer-links",
-  "purpose": "Port upstream server peer links and record-first remote delegation until absorption replaces the port; retain permanent pairing-code sessions, target Prism launch intent and recovery-aware waits. Extend routing to all MCP toolkit groups while retaining caller capabilities and link-mode narrowing. Own explicit peer consent, including its mobile settings entry and destination permission checks. Replay delegated lifecycle results durably and open qualified destination work through the source client connection. Bind negotiated requests to verified durable caller identity, transfer attachment bytes through destination staging, reconcile native acceptance and retain truthful unknown outcomes for unreconcilable effects. Surface qualified descendant questions and approvals through verified mixed ancestry and the authenticated source client, with native revision guards and receipt replay. Keep source viewers and question choices readable across clients, with exact transport diagnostics behind a disclosure. Align sparse remote follow-up selection with full projections so initial work appears once. Execute typed device commands on their exact native session with current originating authority, pre-open authenticated command discovery and qualified native artifact output. Retain real remote-parent provenance in client shells, hide destination delegated children from default navigation and keep them in scoped existing search even when the parent is offline. Apply default-child hiding to phone Home, Promachos conversations and legacy rendered/jump lists while keeping existing search on full qualified shells.",
+  "purpose": "Port upstream server peer links and record-first remote delegation until absorption replaces the port; retain permanent pairing-code sessions, target Prism launch intent and recovery-aware waits. Extend routing to all MCP toolkit groups while retaining caller capabilities and link-mode narrowing. Own explicit peer consent, including its mobile settings entry and destination permission checks. Replay delegated lifecycle results durably and open qualified destination work through the source client connection. Bind negotiated requests to verified durable caller identity, transfer attachment bytes through destination staging, reconcile native acceptance and retain truthful unknown outcomes for unreconcilable effects. Surface qualified descendant questions and approvals through verified mixed ancestry and the authenticated source client, with native revision guards and receipt replay. Keep source viewers and question choices readable across clients, with exact transport diagnostics behind a disclosure. Align sparse remote follow-up selection with full projections so initial work appears once. Execute typed device commands on their exact native session with current originating authority, pre-open authenticated command discovery and qualified native artifact output. Retain real remote-parent provenance in client shells, hide destination delegated children from default navigation and keep them in scoped existing search even when the parent is offline. Apply default-child hiding to phone Home, Promachos conversations and legacy rendered/jump lists while keeping existing search on full qualified shells. Keep accepted destination schedules and Spectrum rounds local within immutable contributor bounds, and recover exact disable acknowledgements after ordinary link retirement.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/164",
     "https://github.com/toolboxmd/chromeria/issues/302",
@@ -1872,7 +1872,8 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/issues/369",
     "https://github.com/toolboxmd/chromeria/issues/383",
     "https://github.com/toolboxmd/chromeria/issues/379",
-    "https://github.com/toolboxmd/chromeria/issues/386"
+    "https://github.com/toolboxmd/chromeria/issues/386",
+    "https://github.com/toolboxmd/chromeria/issues/384"
   ],
   "prs": [
     "https://github.com/pingdotgg/t3code/pull/16653",
@@ -1889,9 +1890,12 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/pull/420",
     "https://github.com/toolboxmd/chromeria/pull/421",
     "https://github.com/toolboxmd/chromeria/pull/539",
-    "https://github.com/toolboxmd/chromeria/pull/546"
+    "https://github.com/toolboxmd/chromeria/pull/546",
+    "https://github.com/toolboxmd/chromeria/pull/555"
   ],
   "newFiles": [
+    "apps/server/src/scheduledTasks/DestinationAutomationAuthority.ts",
+    "apps/server/src/scheduledTasks/DestinationAutomationAuthority.test.ts",
     "packages/contracts/src/peerTask.ts",
     "packages/client-runtime/src/state/remoteTasks.ts",
     "packages/client-runtime/src/state/remoteTasks.test.ts",
@@ -2032,6 +2036,15 @@ sources and reasons.
     "apps/web/src/components/LegacySidebar.tsx"
   ],
   "sharedFiles": [
+    "apps/server/src/orchestration-v2/EventSink.ts",
+    "apps/server/src/persistence/AuthSessions.ts",
+    "apps/server/src/scheduledTaskChecks/store.ts",
+    "apps/server/src/spectrum/LaunchService.ts",
+    "apps/server/src/spectrum/RoundService.ts",
+    "apps/server/src/spectrum/barrier.test.ts",
+    "apps/server/src/spectrum/commandPlan.ts",
+    "apps/server/src/spectrum/state.ts",
+    "apps/server/src/spectrum/store.ts",
     "packages/client-runtime/src/state/threadDetail.ts",
     "apps/server/src/device/DeviceService.ts",
     "packages/contracts/src/device.ts",

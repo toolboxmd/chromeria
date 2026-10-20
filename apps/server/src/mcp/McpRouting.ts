@@ -1,3 +1,4 @@
+import { interactiveAuthority } from "../peer/PeerAuthorityRecord.ts";
 import { PeerDispatchAuthority } from "../peer/peerEffectAuthority.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -145,7 +146,10 @@ export const withContext = <A, E, R>(
     ) {
       const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
       if (Option.isNone(authority)) return yield* unavailable();
-      yield* authority.value.checkPayload(invocation.value.authority, currentTool.name, params);
+      const wire = interactiveAuthority(invocation.value.authority);
+      if (wire === undefined)
+        return yield* denied("A linked call requires its original interactive authority.");
+      yield* authority.value.checkPayload(wire, currentTool.name, params);
     }
     const decoded = target(params);
     if (Option.isNone(decoded) || decoded.value.contextThreadId === undefined)
@@ -343,14 +347,15 @@ export const invoke = <P, A, E, R>(
         tool !== undefined &&
           effect === "external-unknown" &&
           (Option.isSome(receipts) ||
-            (Option.isSome(scope) && scope.value.authority?.envelope.requestOwner !== undefined)) &&
+            (Option.isSome(scope) &&
+              interactiveAuthority(scope.value.authority)?.envelope.requestOwner !== undefined)) &&
           typeof params === "object" &&
           params !== null &&
           "clientRequestId" in params &&
           typeof params.clientRequestId === "string" &&
           (Option.isNone(scope) ||
             scope.value.client?.linked !== true ||
-            scope.value.authority?.envelope.requestOwner !== undefined)
+            interactiveAuthority(scope.value.authority)?.envelope.requestOwner !== undefined)
           ? { tool: tool.name, input: params }
           : undefined,
       ),
@@ -364,7 +369,7 @@ export const invoke = <P, A, E, R>(
       params !== null &&
       "clientRequestId" in params &&
       typeof params.clientRequestId === "string" &&
-      scope.value.authority?.envelope.requestOwner !== undefined
+      interactiveAuthority(scope.value.authority)?.envelope.requestOwner !== undefined
     )
       return yield* new OrchestratorMcpFailure({
         code: "capability_denied",
