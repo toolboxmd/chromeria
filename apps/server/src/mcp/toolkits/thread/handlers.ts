@@ -104,7 +104,12 @@ export const layer = McpToolAccess.toLayer(
                 );
           const { task, manualReceipt } = yield* operation.pipe(
             Effect.mapError((error) =>
-              error._tag === "OrchestratorMcpFailure" ? error : unavailable(),
+              error._tag === "OrchestratorMcpFailure"
+                ? error
+                : new OrchestratorMcpFailure({
+                    code: "orchestration_error",
+                    message: error.message,
+                  }),
             ),
           );
           return {

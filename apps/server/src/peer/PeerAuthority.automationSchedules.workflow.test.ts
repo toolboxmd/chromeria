@@ -64,6 +64,77 @@ import {
   traceAutomationValidation,
 } from "./PeerAuthority.workflow.fixture.ts";
 
+it.live.each(["client", "mcp", "unkeyed-mcp"] as const)(
+  "paused certificate schedule refuses %s manual runs with resume guidance",
+  (entry) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(
+          descriptorOf("paused586-source", "Source", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const b = yield* makeNode(
+          descriptorOf("paused586-destination", "Destination", { peerAuthority: 1 }),
+          "disk",
+          {
+            productionKernel: true,
+            attachmentRequests: true,
+            manualScheduler: Scheduler.Scheduler.of({ register: () => Effect.void }),
+          },
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("paused586-parent");
+        yield* seedParent(a, parent);
+        const created = yield* nativeCall(a, parent, "schedule_task", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
+          prompt: "Must not run while paused",
+          bindToCurrentThread: false,
+          schedule: { type: "interval", everyMs: 60_000 },
+          clientRequestId: "paused586-create",
+        });
+        expect(created.isError, json(created)).not.toBe(true);
+        const receipt = yield* decodeAutomationScheduleReceipt(created.structuredContent);
+        const id = receipt.scheduledTaskId;
+        yield* b.scheduled.setEnabled({ id, enabled: false });
+        const paused = (yield* b.scheduled.list()).tasks.find((task) => task.id === id);
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const localParent = ThreadId.make("paused586-local-parent");
+        if (entry === "unkeyed-mcp") yield* seedParent(b, localParent);
+        const effectsBefore = yield* sql`SELECT 1 FROM orchestration_v2_effect_outbox`;
+        expect(
+          yield* sql`SELECT 1 FROM fork_automation_certificates WHERE disabled=1`,
+        ).toHaveLength(1);
+        if (entry === "client") {
+          const error = yield* b.scheduled.runNow({ id }).pipe(Effect.flip);
+          expect(error.message).toMatch(/paused.*resume/i);
+        } else {
+          const refused = yield* nativeCall(
+            entry === "mcp" ? a : b,
+            entry === "mcp" ? parent : localParent,
+            "run_scheduled_task_now",
+            {
+              ...(entry === "mcp" ? { environmentId: b.environmentId } : {}),
+              taskId: id,
+              ...(entry === "mcp" ? { clientRequestId: "paused586-run" } : {}),
+            },
+          );
+          expect(refused.isError, json(refused)).toBe(true);
+          expect(json(refused)).toMatch(/paused.*resume/i);
+        }
+        expect((yield* b.scheduled.list()).tasks.find((task) => task.id === id)).toEqual(paused);
+        expect(yield* sql`SELECT 1 FROM orchestration_v2_effect_outbox`).toEqual(effectsBefore);
+        expect(yield* sql`SELECT 1 FROM scheduled_manual_requests`).toHaveLength(0);
+        expect(
+          yield* sql`SELECT 1 FROM fork_automation_certificates WHERE disabled=1`,
+        ).toHaveLength(1);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
 it.live(
   "automation384: an old peer keeps ordinary reads but refuses unsupported automation before checking or native effects",
   () =>
@@ -537,7 +608,11 @@ it.live.each(["disable", "edit", "delete"] as const)(
           creationSource: "web",
         } as const;
         const saved = yield* b.scheduled.upsert(definition);
-        yield* b.scheduled.runNow({ id: saved.task.id });
+        if (change === "disable")
+          yield* b.scheduled.setEnabled({ id: saved.task.id, enabled: false });
+        const manual = yield* b.scheduled.runNow({ id: saved.task.id });
+        expect(manual.task.enabled).toBe(change !== "disable");
+        expect(manual.task.runCount).toBe(1);
         const sql = Context.get(b.database, SqlClient.SqlClient);
         const threadId = ThreadId.make(
           (yield* sql<{
