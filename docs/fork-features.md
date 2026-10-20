@@ -3130,9 +3130,16 @@ sources and reasons.
     "apps/server/src/secrets/remoteSecretPersistence.ts",
     "packages/contracts/src/remoteSecret.ts"
   ],
-  "upstreamFiles": [
+  "upstreamFiles": [],
+  "sharedFiles": [
+    "apps/mobile/src/features/threads/SecretRequestCard.tsx",
+    "apps/server/src/mcp/McpHttpServer.ts",
     "apps/server/src/mcp/McpRequestReceipts.ts",
     "apps/server/src/mcp/McpRouting.ts",
+    "apps/server/src/mcp/OrchestratorMcpService.ts",
+    "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+    "apps/server/src/orchestration-v2/DelegatedTaskQuestionReactor.ts",
+    "apps/server/src/orchestration-v2/Orchestrator.ts",
     "apps/server/src/peer/PeerAuthority.ts",
     "apps/server/src/peer/PeerAuthority.workflow.fixture.ts",
     "apps/server/src/peer/PeerForwarding.ts",
@@ -3140,16 +3147,8 @@ sources and reasons.
     "apps/server/src/peer/PeerMcpClient.ts",
     "apps/server/src/peer/PeerToolRouting.test.ts",
     "apps/server/src/scheduledTasks/DestinationAutomationAuthority.ts",
-    "apps/server/src/scheduledTasks/mutationReceipts.ts"
-  ],
-  "sharedFiles": [
-    "apps/mobile/src/features/threads/SecretRequestCard.tsx",
-    "apps/server/src/mcp/McpHttpServer.ts",
-    "apps/server/src/mcp/OrchestratorMcpService.ts",
-    "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
-    "apps/server/src/orchestration-v2/DelegatedTaskQuestionReactor.ts",
-    "apps/server/src/orchestration-v2/Orchestrator.ts",
     "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
+    "apps/server/src/scheduledTasks/mutationReceipts.ts",
     "apps/server/src/secrets/SecretRequests.ts",
     "apps/server/src/server.ts",
     "apps/server/src/ws.ts",
