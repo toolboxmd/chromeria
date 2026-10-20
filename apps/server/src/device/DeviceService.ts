@@ -1802,7 +1802,17 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
                   target: input.target,
                   status: "dispatched" as const,
                 };
-              });
+              }).pipe(
+                Effect.onError(() =>
+                  Effect.sync(() => {
+                    if (
+                      (command.type === "record" || command.type === "trace") &&
+                      command.action === "start"
+                    )
+                      commandCaptures.delete(`${session.toolSessionId}:${command.type}`);
+                  }),
+                ),
+              );
             if (input.command.type !== "batch")
               return yield* boundedResult(yield* executeBound(input.command));
             const results = yield* Effect.forEach(input.command.steps, executeBound, {
