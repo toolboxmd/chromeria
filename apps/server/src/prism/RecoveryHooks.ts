@@ -14,7 +14,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type { SqlError } from "effect/sql/SqlError";
-import type { ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
+import { ForkCommitGuardRejected, type ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
 import * as Projection from "../orchestration-v2/ProjectionStore.ts";
 import * as Coordinator from "./RecoveryCoordinator.ts";
 import { readRecoveryProjection } from "./recoveryProjection.ts";
@@ -86,9 +86,35 @@ export const layer = Layer.effect(
         command: OrchestrationV2ServerCommand,
         events: ReadonlyArray<OrchestrationV2DomainEvent> = [],
       ) => {
+        const takeover: ForkCommitPlan | null =
+          command.type === "run.interrupt" ||
+          (command.type === "message.dispatch" &&
+            command.createdBy === "user" &&
+            command.usageLimitContinuationOfRunId === undefined)
+            ? {
+                guards: [],
+                mutations: [
+                  sql`UPDATE fork_prism_recovery SET state='closed',
+              payload_json=json_set(payload_json,'$.state','closed')
+              WHERE thread_id=${command.threadId} AND state <> 'closed'
+              ${command.type === "run.interrupt" ? sql`AND source_run_id=${command.runId}` : sql``}`.pipe(
+                    Effect.asVoid,
+                    Effect.mapError(
+                      () =>
+                        new ForkCommitGuardRejected({
+                          threadId: command.threadId,
+                          kind: "storage_failure",
+                        }),
+                    ),
+                  ),
+                ],
+              }
+            : null;
         const plan = command.type === "message.dispatch" ? retryAdmission(command) : null;
         const continuation = continuationAdmission(command, events);
-        return [plan, continuation].filter((entry): entry is ForkCommitPlan => entry !== null);
+        return [takeover, plan, continuation].filter(
+          (entry): entry is ForkCommitPlan => entry !== null,
+        );
       },
     };
   }),

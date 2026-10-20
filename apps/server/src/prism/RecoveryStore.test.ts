@@ -23,6 +23,61 @@ const input = {
 const storeLayer = Store.layer.pipe(Layer.provide(Persistence.layerMemory));
 
 describe("Prism persisted recovery", () => {
+  it("mixed transport and provider failures keep distinct identities and the one immediate retry budget", () => {
+    const immediate = decideRecovery(input);
+    const transport = decideRecovery({
+      ...input,
+      previous: immediate,
+      run: {
+        ...run,
+        id: RunId.make("after-immediate"),
+        ordinal: 2,
+        userMessageId: immediate.retryMessageId,
+      },
+      failure: { ...input.failure, class: "transport_error" },
+    });
+    assert.strictEqual(transport.state, "retry_pending");
+    assert.notEqual(transport.retryMessageId, immediate.retryMessageId);
+    const exhausted = decideRecovery({
+      ...input,
+      previous: transport,
+      run: {
+        ...run,
+        id: RunId.make("after-transport"),
+        ordinal: 3,
+        userMessageId: transport.retryMessageId,
+      },
+    });
+    assert.strictEqual(exhausted.state, "closed");
+    const firstTransport = decideRecovery({
+      ...input,
+      failure: { ...input.failure, class: "transport_error" },
+    });
+    const firstProvider = decideRecovery({
+      ...input,
+      previous: firstTransport,
+      run: {
+        ...run,
+        id: RunId.make("first-provider"),
+        ordinal: 2,
+        userMessageId: firstTransport.retryMessageId,
+      },
+    });
+    assert.strictEqual(firstProvider.state, "retry_pending");
+    assert.strictEqual(firstProvider.retryAt, undefined);
+    assert.notEqual(firstProvider.retryMessageId, firstTransport.retryMessageId);
+    const secondProvider = decideRecovery({
+      ...input,
+      previous: firstProvider,
+      run: {
+        ...run,
+        id: RunId.make("second-provider"),
+        ordinal: 3,
+        userMessageId: firstProvider.retryMessageId,
+      },
+    });
+    assert.strictEqual(secondProvider.state, "closed");
+  });
   it.effect(
     "transport retry waits sixty seconds across reloads, independently of usage-limit opt-out",
     () =>
@@ -117,6 +172,20 @@ describe("Prism persisted recovery", () => {
           Effect.gen(function* () {
             const store = yield* Store.RecoveryStore;
             const record = yield* store.get(threadId);
+            assert.strictEqual(record?.transportAttempts, 1);
+            const next = decideRecovery({
+              ...input,
+              previous: record,
+              run: {
+                ...run,
+                id: RunId.make("next-after-reopen"),
+                ordinal: 2,
+                userMessageId: record!.retryMessageId,
+              },
+              failure: { ...input.failure, class: "transport_error" },
+            });
+            assert.strictEqual(next.retryAt, Date.parse("2026-10-08T10:03:00Z"));
+            assert.strictEqual(next.transportAttempts, 2);
             assert.strictEqual(retryCommand(record!, Date.parse("2026-10-08T10:01:59.999Z")), null);
             assert.strictEqual(
               retryCommand(record!, Date.parse("2026-10-08T10:02:00Z"))?.type,
@@ -148,6 +217,7 @@ describe("Prism persisted recovery", () => {
               },
             });
             assert.strictEqual(completed.state, "closed");
+            assert.strictEqual(completed.transportAttempts, 0);
           }),
         );
       }).pipe(

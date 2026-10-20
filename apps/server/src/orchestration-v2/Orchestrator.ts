@@ -3427,6 +3427,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 }),
             ...(command.title === undefined ? {} : { title: command.title }),
             ...(command.limitRecovery === undefined ? {} : { limitRecovery }),
+            ...(command.transportRecovery === undefined
+              ? {}
+              : { transportRecovery: command.transportRecovery }),
             ...(command.limitRecovery !== undefined &&
             limitRecovery?.snooze === true &&
             Date.parse(limitRecovery.resetAt) > DateTime.toEpochMillis(now)
@@ -10794,6 +10797,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         },
       );
       const run = projection.runs.find((candidate) => candidate.id === command.runId);
+      if (run?.status === "failed" && projection.thread.transportRecovery?.runId === run.id) {
+        const now = yield* DateTime.now;
+        yield* markStoppedRun({ command, events, thread: projection.thread, run, now });
+        yield* holdStoppedThread({ command, events, projection, now });
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "thread.metadata-updated",
+          threadId: command.threadId,
+          occurredAt: now,
+          payload: { ...projection.thread, transportRecovery: null, updatedAt: now },
+        });
+        return undefined;
+      }
       const rootNode =
         run?.rootNodeId === null
           ? undefined

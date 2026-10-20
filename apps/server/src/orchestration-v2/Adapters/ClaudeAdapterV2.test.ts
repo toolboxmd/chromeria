@@ -3834,6 +3834,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       // The message quotes its paths, which escapes Windows separators.
       assert.include(terminal.failure.message, JSON.stringify(cwd));
       assert.notInclude(terminal.failure.message, "repeated API errors");
+      assert.equal(terminal.failure.class, "provider_error");
+      assert.equal(terminal.failure.retryable, null);
     }).pipe(
       Effect.provide(
         Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),

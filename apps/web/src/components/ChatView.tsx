@@ -3348,7 +3348,8 @@ export default function ChatView(props: ChatViewProps) {
   const forkSpectrumRunning = isForkSpectrumRunning(activeThreadShell);
   const canInterruptRunningThread =
     canOperateThread &&
-    deriveCanStopThread(activeThread !== undefined, activeRuntime, forkSpectrumRunning);
+    (activeThreadShell?.transportRecovery != null ||
+      deriveCanStopThread(activeThread !== undefined, activeRuntime, forkSpectrumRunning));
   const onInterrupt = async () => {
     if (
       !activeThread ||
@@ -5429,6 +5430,34 @@ export default function ChatView(props: ChatViewProps) {
       : null;
   const composerBannerItems = (() => {
     const limitRecoveryItems = limitRecoveryBanner === null ? [] : [limitRecoveryBanner];
+    const transportWait = activeThreadShell?.transportRecovery;
+    if (
+      transportWait &&
+      transportWait.runId === activeThreadShell.latestRun?.runId &&
+      serverRuntime?.status === "failed" &&
+      !activeThreadShell.archivedAt &&
+      !activeThreadShell.deletedAt &&
+      activeThreadShell.settledOverride !== "settled"
+    ) {
+      limitRecoveryItems.push({
+        id: `transport-recovery:${transportWait.runId}`,
+        variant: "warning",
+        priority: "urgent",
+        icon: <WifiOffIcon />,
+        title: "Waiting to retry the connection",
+        description: `Next retry ${new Date(transportWait.retryAt).toLocaleString()}. Send a message or press Stop to cancel.`,
+        actions: (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!canOperateThread}
+            onClick={() => void onInterruptStable()}
+          >
+            Stop retrying
+          </Button>
+        ),
+      });
+    }
     const backgroundWorkItems = [
       childInputBannerItem,
       goalBannerItem,

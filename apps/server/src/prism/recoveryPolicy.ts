@@ -25,6 +25,7 @@ export const RecoveryRecord = Schema.Struct({
   resetAt: Schema.NullOr(Schema.String),
   // Separate from subscription resets: transport recovery ignores usage-limit preferences.
   retryAt: Schema.optionalKey(Schema.Number),
+  transportAttempts: Schema.optionalKey(Schema.Int),
 });
 export type RecoveryRecord = typeof RecoveryRecord.Type;
 
@@ -67,10 +68,13 @@ export function decideRecovery(input: {
     sourceOrdinal: run.ordinal,
     sourceEndedAt,
     modelSelection: related ? previous.modelSelection : run.modelSelection,
-    retryMessageId: MessageId.make(`prism-retry:${run.threadId}:${originalRunId}`),
+    retryMessageId: related
+      ? previous.retryMessageId
+      : MessageId.make(`prism-retry:${run.threadId}:${originalRunId}`),
     retryUsed: related && previous.retryUsed,
     state: "closed",
     resetAt: null,
+    transportAttempts: related ? (previous.transportAttempts ?? 0) : 0,
   };
   if (input.stoppedOrRetired) return record;
   if (
@@ -82,7 +86,8 @@ export function decideRecovery(input: {
       state: run.userMessageId === previous.retryMessageId ? "retry_started" : previous.state,
       resetAt: previous.resetAt,
     };
-  if (run.status !== "failed" || !failure) return record;
+  if (run.status !== "failed" || !failure)
+    return run.status === "completed" ? { ...record, transportAttempts: 0 } : record;
   if (
     related &&
     previous.state === "retry_started" &&
@@ -106,14 +111,29 @@ export function decideRecovery(input: {
   if (related && run.id === previous.sourceRunId && previous.state === "retry_pending") {
     return { ...previous };
   }
-  if (record.retryUsed || failure.retryable !== true) return record;
+  if (failure.retryable !== true) return record;
+  const retryMessageId = MessageId.make(
+    run.id === originalRunId
+      ? `prism-retry:${run.threadId}:${originalRunId}`
+      : `prism-retry:${run.threadId}:${originalRunId}:${run.id}`,
+  );
+  if (failure.class === "transport_error") {
+    const attempt = record.transportAttempts ?? 0;
+    const delayMinutes = [1, 2, 5, 15, 30][Math.min(attempt, 4)]!;
+    return {
+      ...record,
+      state: "retry_pending",
+      transportAttempts: Math.min(attempt + 1, 5),
+      retryMessageId,
+      retryAt: DateTime.toEpochMillis(run.completedAt ?? run.requestedAt) + delayMinutes * 60_000,
+    };
+  }
+  if (record.retryUsed) return record;
   return {
     ...record,
     state: "retry_pending",
     retryUsed: true,
-    ...(failure.class === "transport_error"
-      ? { retryAt: DateTime.toEpochMillis(run.completedAt ?? run.requestedAt) + 60_000 }
-      : {}),
+    retryMessageId,
   };
 }
 
@@ -129,7 +149,7 @@ export function retryCommand(record: RecoveryRecord, nowMs: number): Orchestrati
     forkPrismRetryOfRunId: record.sourceRunId,
     forkPrismOriginalRunId: record.originalRunId,
     modelSelection: record.modelSelection,
-    text: "Continue where you left off. The provider failure permits one retry on the same provider and model.",
+    text: "Continue where you left off on the same provider and model.",
     attachments: [],
     dispatchMode: { type: "start_immediately" },
     createdBy: "system",

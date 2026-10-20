@@ -257,6 +257,48 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
 
 describe("OpenCodeAdapterV2", () => {
   it.effect.each([
+    "getaddrinfo ENOTFOUND api.provider.test",
+    "connect ECONNRESET",
+    "Invalid API key",
+  ])("classifies session failure %s", (message) =>
+    Effect.gen(function* () {
+      const nativeEvents = asyncEventStream();
+      const harness = yield* makeOpenCodeRuntimeHarness("network", "root", {
+        event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
+        session: {
+          create: async () => ({ data: { id: "root", time: { created: 1, updated: 1 } } }),
+          promptAsync: async () => ({ data: true }),
+        },
+      });
+      yield* harness.startTurn();
+      const received = yield* harness.runtime.events.pipe(
+        Stream.takeUntil((event) => event.type === "turn.terminal"),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+      yield* Effect.promise(() =>
+        nativeEvents.push({
+          type: "session.error",
+          properties: { sessionID: "root", error: { name: "UnknownError", data: { message } } },
+        }),
+      );
+      const terminal = (yield* Fiber.join(received)).find(
+        (event) => event.type === "turn.terminal",
+      );
+      assert.equal(terminal?.status, "failed");
+      assert.equal(
+        terminal?.failure?.class,
+        message === "Invalid API key" ? "provider_error" : "transport_error",
+      );
+      assert.equal(terminal?.failure?.retryable, message === "Invalid API key" ? null : true);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
+      Effect.scoped,
+    ),
+  );
+  it.effect.each([
     { name: "default build", interactionMode: "default", agent: undefined },
     { name: "inherited plan after build resume", interactionMode: "plan", agent: undefined },
     { name: "explicit plan", interactionMode: "default", agent: "plan" },

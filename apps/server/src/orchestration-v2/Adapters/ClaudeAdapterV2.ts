@@ -2884,6 +2884,7 @@ function providerFailureFromResult(
     }
   }
   const transportError =
+    failureHint === undefined &&
     message.terminal_reason === "api_error" &&
     (message.subtype !== "success" || message.api_error_status == null);
   const failureClass =

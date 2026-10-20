@@ -35,15 +35,17 @@ export function retryAdmission(
         original_run_id: string;
         state: string;
         retry_at: number | null;
+        retry_message_id: string;
       }>`
-      SELECT source_run_id, original_run_id, state, json_extract(payload_json,'$.retryAt') AS retry_at
+      SELECT source_run_id, original_run_id, state, json_extract(payload_json,'$.retryAt') AS retry_at,
+      json_extract(payload_json,'$.retryMessageId') AS retry_message_id
       FROM fork_prism_recovery WHERE thread_id=${command.threadId}`;
       const record = row[0];
       if (!record || !latest) return yield* reject();
       if (
         command.creationSource !== "server" ||
         command.createdBy !== "system" ||
-        command.messageId !== `prism-retry:${command.threadId}:${command.forkPrismOriginalRunId}` ||
+        command.messageId !== record.retry_message_id ||
         record.source_run_id !== command.forkPrismRetryOfRunId ||
         record.original_run_id !== command.forkPrismOriginalRunId ||
         record.state !== "retry_pending" ||
