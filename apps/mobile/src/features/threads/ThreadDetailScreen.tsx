@@ -95,7 +95,7 @@ import Animated, {
   useSharedValue,
   withTiming,
 } from "react-native-reanimated";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkspaceContentWidth } from "../layout/workspace-content-width";
 import { useNativeWorkspaceColumnsSupported } from "../../native/NativeWorkspaceColumns";
 import { useNativeColumnLayoutMetrics } from "../../native/native-layout-metrics";
@@ -1163,28 +1163,30 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
       ) : null}
       {!usesNativeWorkspaceColumns ? <NativeLayoutObserver onChange={setScreenMetrics} /> : null}
       {showContent && toolResources.length > 0 ? (
-        <View className="h-12 shrink-0 border-b border-secondary-border">
-          <FlatList
-            horizontal
-            data={toolResources}
-            keyExtractor={(resource) => JSON.stringify(resource)}
-            accessibilityLabel="Resources returned by tools"
-            showsHorizontalScrollIndicator={false}
-            renderItem={({ item }) =>
-              "_tag" in item ? (
-                <ToolArtifactButton environmentId={props.environmentId} resource={item} />
-              ) : (
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => openToolResource(item)}
-                  className="px-3 py-2"
-                >
-                  <AppText>{item.type === "device" ? "View device" : "View browser"}</AppText>
-                </Pressable>
-              )
-            }
-          />
-        </View>
+        <SafeAreaView edges={Platform.OS === "ios" ? ["top"] : []} style={{ flexShrink: 0 }}>
+          <View className="h-12 shrink-0 border-b border-secondary-border">
+            <FlatList
+              horizontal
+              data={toolResources}
+              keyExtractor={(resource) => JSON.stringify(resource)}
+              accessibilityLabel="Resources returned by tools"
+              showsHorizontalScrollIndicator={false}
+              renderItem={({ item }) =>
+                "_tag" in item ? (
+                  <ToolArtifactButton environmentId={props.environmentId} resource={item} />
+                ) : (
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => openToolResource(item)}
+                    className="px-3 py-2"
+                  >
+                    <AppText>{item.type === "device" ? "View device" : "View browser"}</AppText>
+                  </Pressable>
+                )
+              }
+            />
+          </View>
+        </SafeAreaView>
       ) : null}
       {showContent ? (
         <View
