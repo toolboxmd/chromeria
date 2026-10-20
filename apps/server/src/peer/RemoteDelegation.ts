@@ -5,9 +5,7 @@ import {
 } from "@t3tools/provider-core/server/toolPolicy";
 import * as ThreadMcpConfig from "../orchestration-v2/ThreadMcpConfig.ts";
 import * as Schema from "effect/Schema";
-import * as CommandReceipts from "../orchestration-v2/CommandReceiptStore.ts";
 import * as Semaphore from "effect/Semaphore";
-import { reconcileRemoteDelegatedTaskQuestions } from "../orchestration-v2/DelegatedTaskQuestions.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
 import {
   type PeerReturnPair,
@@ -160,7 +158,6 @@ const make = Effect.gen(function* () {
   const links = yield* PeerLinks.PeerLinks;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
-  const commandReceipts = yield* CommandReceipts.CommandReceiptStoreV2;
   const projects = yield* ProjectService.ProjectService;
   const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const crypto = yield* Crypto.Crypto;
@@ -917,10 +914,6 @@ const make = Effect.gen(function* () {
           });
         acknowledgedCursors.set(task.id, remote.cursor!);
       }
-      yield* reconcileRemoteDelegatedTaskQuestions(task, threads.dispatch).pipe(
-        Effect.provideService(ProjectionStore.ProjectionStoreV2, projections),
-        Effect.provideService(CommandReceipts.CommandReceiptStoreV2, commandReceipts),
-      );
       const failedStop =
         remote.stop?.destinationCommandId !== undefined &&
         remote.snapshot?.stopExecution?.commandId === remote.stop.destinationCommandId &&
@@ -1415,6 +1408,4 @@ const isTerminal = (status: string) =>
 const terminalStatus = (status: string): "completed" | "failed" | "cancelled" | "interrupted" =>
   status === "completed" || status === "failed" || status === "interrupted" ? status : "cancelled";
 
-export const layer = Layer.effect(RemoteDelegation, make).pipe(
-  Layer.provide(CommandReceipts.layer),
-);
+export const layer = Layer.effect(RemoteDelegation, make);
