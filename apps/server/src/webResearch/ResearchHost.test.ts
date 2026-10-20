@@ -6,7 +6,6 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
-import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -43,6 +42,7 @@ import * as PublicRender from "./PublicRender.ts";
 import * as TinyFish from "./TinyFish.ts";
 import * as WebResearch from "./WebResearch.ts";
 import { HostedWebReadResult } from "./ResearchHost.ts";
+import { SKIP_WITHOUT_CHROMIUM, testChromium } from "../preview/ChromeForTesting.testkit.ts";
 
 const bestia = descriptorOf("research-bestia", "Bestia");
 const cavallo = descriptorOf("research-cavallo", "Cavallo");
@@ -340,9 +340,8 @@ it.effect(
   "shares real rendered subpages, continuation and restricted navigation across peers",
   (ctx) =>
     Effect.gen(function* () {
-      const executable = (yield* HostProcess.Environment).T3CODE_TEST_HEADLESS_SHELL;
-      if (!executable)
-        return ctx.skip("Set T3CODE_TEST_HEADLESS_SHELL to the installed pinned shell.");
+      const executable = testChromium;
+      if (!executable) return ctx.skip(SKIP_WITHOUT_CHROMIUM);
       const rendererLayer = PublicRender.layer.pipe(
         Layer.provide(
           Layer.succeed(PreviewBrowser.PreviewBrowser, {

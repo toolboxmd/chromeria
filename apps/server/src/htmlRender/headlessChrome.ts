@@ -166,7 +166,10 @@ interface PageEvents {
   omittedConsoleMessages: number;
 }
 
-// CDP pipe uses fd 3 in, fd 4 out and NUL-delimited JSON.
+/**
+ * Starts headless Chrome for the life of the scope, speaking CDP over
+ * `--remote-debugging-pipe` (fd 3 in, fd 4 out, NUL-delimited JSON).
+ */
 const launchBrowser = Effect.fnUntraced(function* (input: {
   readonly executable: string;
   readonly noSandbox: boolean;
@@ -188,6 +191,9 @@ const launchBrowser = Effect.fnUntraced(function* (input: {
           "--remote-debugging-pipe",
           "--no-first-run",
           "--no-default-browser-check",
+          // Full Chrome would otherwise wait on the OS keychain at startup.
+          "--use-mock-keychain",
+          "--password-store=basic",
           "--disable-gpu",
           "--hide-scrollbars",
           "--mute-audio",
@@ -457,6 +463,9 @@ const launchBrowser = Effect.fnUntraced(function* (input: {
       Ignored,
       sessionId,
     );
+    // Full Chrome's new headless leaves a page it never focused unfocused, so
+    // :focus-visible and focus events would differ from a visible tab.
+    yield* send("Emulation.setFocusEmulationEnabled", { enabled: true }, Ignored, sessionId);
 
     const load = Effect.fnUntraced(function* (body: Uint8Array, urlFragment: string) {
       const loaded = yield* Deferred.make<void, BrowserFailure>();

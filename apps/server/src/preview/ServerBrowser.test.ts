@@ -855,6 +855,28 @@ it.live("reports a pending dialog without evaluating the page and resolves it ex
   ).pipe(Effect.provide(layer)),
 );
 
+
+it.live("a person's popup from an agent's tab stays a server page the desktop cannot host", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, tabId } = yield* ready;
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      yield* viewer.input({ type: "takeControl" });
+      const popup = makeContext();
+      contexts[0]!.page.emit("popup", popup.page);
+      const manager = yield* Manager.PreviewManager;
+      let sessions = (yield* manager.list({ threadId: scope.thread.threadId })).sessions;
+      while (sessions.length < 2) {
+        yield* Effect.sleep("5 millis");
+        sessions = (yield* manager.list({ threadId: scope.thread.threadId })).sessions;
+      }
+      const popupTab = sessions.find((session) => session.tabId !== tabId)!;
+      expect(popupTab.automationOwner).toBeUndefined();
+      expect(popupTab.serverPage).toBe(true);
+      expect(sessions.find((session) => session.tabId === tabId)?.serverPage).toBe(true);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
 it.live("a tab opened to a file the browser cannot show reports the file to download", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -1172,6 +1194,27 @@ it.live("only the current controller can answer a file picker", () =>
   ).pipe(Effect.provide(layer)),
 );
 
+
+it.live("an agent's tab runs in the server browser without waiting for the desktop", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const manager = yield* Manager.PreviewManager;
+      yield* ServerBrowser.ServerBrowser;
+      yield* Effect.yieldNow;
+      desktopRendersNext = true;
+      yield* manager.open({
+        threadId: scope.thread.threadId,
+        runtime: "server",
+        automationOwner: "agent-desktop",
+        reveal: false,
+      });
+      while (contexts.length === 0) yield* Effect.yieldNow;
+      expect(desktopConnections).toEqual([]);
+      // The desktop was never asked to attach, so its next tab is still pending.
+      expect(desktopRendersNext).toBe(true);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
 it.live("agents read a human's tab with no arguments and act on it only while nobody drives", () =>
   Effect.scoped(
     Effect.gen(function* () {
