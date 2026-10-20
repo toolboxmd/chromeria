@@ -3177,6 +3177,7 @@ sources and reasons.
   "prs": ["https://github.com/toolboxmd/chromeria/compare/main...agent/572-cft-agent-browser"],
   "newFiles": [],
   "upstreamFiles": [
+    "apps/server/src/htmlRender/headlessChrome.ts",
     "apps/server/src/preview/PreviewBrowser.test.ts",
     "apps/server/src/preview/PreviewBrowser.ts",
     "apps/server/src/preview/PreviewBrowserHost.ts",
