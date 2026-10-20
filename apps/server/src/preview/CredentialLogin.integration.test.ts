@@ -507,12 +507,13 @@ describe.skipIf(!executable)("credential login in a real browser", () => {
       return withBrowser(
         Effect.gen(function* () {
           const broker = yield* Broker.PreviewAutomationBroker;
-          const opened = yield* broker.invoke<PreviewAutomationStatus>({
-            scope,
-            operation: "open",
-            input: { url: "https://login.example.test/", show: false, reuseExistingTab: false },
+          // Only a person's tab is the desktop's own; an agent's would run in the server browser.
+          const opened = yield* (yield* Manager.PreviewManager).open({
+            threadId: scope.thread.threadId,
+            url: "https://login.example.test/",
+            runtime: "server",
           });
-          const tabId = PreviewTabId.make(opened.tabId!);
+          const tabId = PreviewTabId.make(opened.tabId);
           expect(yield* fillPassword(broker, tabId).pipe(Effect.flip)).toMatchObject({
             _tag: "PreviewCredentialError",
             reason: "serverBrowserOnly",

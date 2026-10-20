@@ -1423,6 +1423,27 @@ it.live("drives the desktop's own page for a tab the desktop renders", () =>
   ).pipe(Effect.provide(layer)),
 );
 
+it.live("an agent's tab runs in the server browser without waiting for the desktop", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const manager = yield* Manager.PreviewManager;
+      yield* ServerBrowser.ServerBrowser;
+      yield* Effect.yieldNow;
+      desktopRendersNext = true;
+      yield* manager.open({
+        threadId: scope.thread.threadId,
+        runtime: "server",
+        automationOwner: "agent-desktop",
+        reveal: false,
+      });
+      while (contexts.length === 0) yield* Effect.yieldNow;
+      expect(desktopConnections).toEqual([]);
+      // The desktop was never asked to attach, so its next tab is still pending.
+      expect(desktopRendersNext).toBe(true);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.live("a desktop page the desktop takes back reconnects instead of closing", () =>
   Effect.scoped(
     Effect.gen(function* () {

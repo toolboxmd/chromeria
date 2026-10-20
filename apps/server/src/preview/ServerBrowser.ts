@@ -896,8 +896,9 @@ const make = Effect.gen(function* () {
     }
   };
 
+  // Agent tabs stream from the server browser; only a person's tab is the desktop's own.
   const desktopRenders = (snapshot: PreviewSessionSnapshot) =>
-    desktopChannel.available
+    desktopChannel.available && snapshot.automationOwner === undefined
       ? Effect.runPromise(
           desktopChannel.awaitAttached(
             { threadId: snapshot.threadId, tabId: snapshot.tabId },
