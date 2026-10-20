@@ -56,7 +56,7 @@ import {
   type OrchestratorMcpTaskOrRunGroupCancelResult,
   type OrchestratorMcpTaskOrRunGroupResult,
   type OrchestratorMcpRunGroupResult,
-  type OrchestratorMcpUpdateScheduledTaskInput,
+  OrchestratorMcpUpdateScheduledTaskInput,
   type OrchestratorMcpListScheduledTasksInput,
   type ProjectId,
   type OrchestratorMcpThreadDetail,
@@ -2442,18 +2442,38 @@ const make = Effect.gen(function* () {
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
         yield* assertSameLink({ scope, caller: parent?.thread }, existing);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
-        const { scheduledTaskId: _id, enabled, ...definition } = input;
+        const { enabled } = input;
+        // Routing fields such as clientRequestId also arrive on the input; only
+        // definition fields make this more than a pause or resume.
         if (
           enabled !== undefined &&
-          Object.values(definition).every((value) => value === undefined)
+          Object.keys(OrchestratorMcpUpdateScheduledTaskInput.fields).every(
+            (field) =>
+              field === "scheduledTaskId" ||
+              field === "enabled" ||
+              input[field as keyof typeof input] === undefined,
+          )
         ) {
-          const { task } = yield* scheduledTasks
-            .setEnabled({ id: existing.id, enabled })
-            .pipe(
-              Effect.mapError((error) =>
-                failure("orchestration_error", `Could not update scheduled task: ${error.message}`),
-              ),
-            );
+          const { task } = yield* scheduledTasks.setEnabled({ id: existing.id, enabled }).pipe(
+            Effect.provideService(
+              ScheduleMutation.CurrentMutation,
+              request === undefined
+                ? undefined
+                : { request, recheck: scheduleRecheck(scope, existing.id), consumesSecret: false },
+            ),
+            Effect.mapError((error) =>
+              failure("orchestration_error", `Could not update scheduled task: ${error.message}`),
+            ),
+          );
+          if (request !== undefined) {
+            const accepted = yield* scheduleReceipt(request);
+            if (Option.isNone(accepted))
+              return yield* failure(
+                "orchestration_error",
+                "Native scheduler acceptance was not recorded.",
+              );
+            return accepted.value;
+          }
           return yield* summarizeScheduledTask(scope, { parent, limits }, task);
         }
         if (

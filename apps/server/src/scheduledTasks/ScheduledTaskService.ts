@@ -1503,7 +1503,10 @@ export const layer = Layer.effect(
         }),
       );
 
-    const setEnabled: ScheduledTaskService["Service"]["setEnabled"] = (input) =>
+    const applyEnabled = (input: {
+      readonly id: ScheduledTaskId;
+      readonly enabled: boolean;
+    }): Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError> =>
       Effect.gen(function* () {
         const existing = yield* loadTask(input.id);
         if (existing.enabled === input.enabled) return { task: existing };
@@ -1512,8 +1515,6 @@ export const layer = Layer.effect(
             "Choose an Issue, PR or deliberately unscoped purpose before enabling this legacy schedule.",
             { taskId: input.id },
           );
-        if (input.enabled && Option.isSome(yield* automation.current("schedule", input.id)))
-          return yield* upsert({ ...existing, enabled: true });
         const now = yield* localNow;
         const next = nextRunAt({ enabled: input.enabled, schedule: existing.schedule }, now);
         // RETURNING so a task deleted between the load and this UPDATE is a
@@ -1553,6 +1554,26 @@ export const layer = Layer.effect(
                 cause,
               }),
             ),
+        }),
+      );
+
+    const setEnabled: ScheduledTaskService["Service"]["setEnabled"] = (input) =>
+      Effect.gen(function* () {
+        const existing = yield* loadTask(input.id);
+        // Re-accepting an automation records its own keyed receipt through upsert.
+        const reaccept =
+          input.enabled && !existing.enabled && existing.purposeIntent !== undefined
+            ? Option.isSome(yield* automation.current("schedule", input.id))
+            : false;
+        if (reaccept) return yield* upsert({ ...existing, enabled: true });
+        return yield* MutationReceipts.accept(
+          input.id,
+          applyEnabled(input),
+          loadTask(input.id).pipe(Effect.map((task) => ({ task }))),
+        ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      }).pipe(
+        Effect.catchTags({
+          OrchestratorMcpFailure: (cause) => Effect.fail(taskError(cause.message, { cause })),
         }),
       );
 

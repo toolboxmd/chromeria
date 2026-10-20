@@ -2534,6 +2534,65 @@ it.live(
 );
 
 it.live(
+  "toggle584: a retried keyed disable replays its receipt after a later enable",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(descriptorOf("toggle584-a", "A", { peerAuthority: 1 }), "disk", {
+          productionKernel: true,
+          attachmentRequests: true,
+        });
+        const b = yield* makeNode(descriptorOf("toggle584-b", "B", { peerAuthority: 1 }), "disk", {
+          productionKernel: true,
+          attachmentRequests: true,
+        });
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("toggle584-parent");
+        yield* seedParent(a, parent);
+        const created = yield* nativeCall(a, parent, "schedule_task", {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          title: "Toggled",
+          prompt: "Toggled fixture",
+          schedule: { type: "interval", everyMs: 3600000 },
+          clientRequestId: "toggle584-create",
+        });
+        expect(created.isError, json(created)).not.toBe(true);
+        const { scheduledTaskId } = yield* decodeAutomationScheduleReceipt(
+          created.structuredContent,
+        );
+        const toggle = (enabled: boolean, clientRequestId: string) =>
+          nativeCall(a, parent, "update_scheduled_task", {
+            environmentId: b.environmentId,
+            scheduledTaskId,
+            enabled,
+            clientRequestId,
+          });
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const certificate = sql<{
+          id: string;
+          disabled: number;
+        }>`SELECT c.id,c.disabled FROM fork_automation_bindings b JOIN fork_automation_certificates c ON c.id=b.certificate_id WHERE b.kind='schedule' AND b.resource_id=${scheduledTaskId}`;
+        const disable = yield* toggle(false, "toggle584-disable");
+        expect(disable.isError, json(disable)).not.toBe(true);
+        const enable = yield* toggle(true, "toggle584-enable");
+        expect(enable.isError, json(enable)).not.toBe(true);
+        const enabled = yield* certificate;
+        expect(enabled).toEqual([{ id: expect.any(String), disabled: 0 }]);
+        // A lost acknowledgement retries the same disable; it must not apply again.
+        const retried = yield* toggle(false, "toggle584-disable");
+        expect(retried.structuredContent).toEqual(disable.structuredContent);
+        expect(yield* certificate).toEqual(enabled);
+        expect(
+          (yield* b.scheduled.list()).tasks.find((t) => t.id === scheduledTaskId)?.enabled,
+        ).toBe(true);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  90000,
+);
+
+it.live(
   "runtime382-F1: remote keyed manual admission validates outside SQL and replays native acceptance",
   () =>
     Effect.scoped(
