@@ -113,6 +113,8 @@ const respond = (input: {
   readonly target: ThreadId;
   readonly kind: Kind;
   readonly shells?: Map<ThreadId, OrchestrationV2ThreadShell>;
+  /** Read the request first; the read is accepted exactly when the answer is. */
+  readonly read?: boolean;
 }) =>
   Effect.gen(function* () {
     const { target, kind } = input;
@@ -179,6 +181,7 @@ const respond = (input: {
       Layer.provideMerge(NodeServices.layer),
     );
     let listedApproval = false;
+    let readRefused: boolean | undefined;
     const result = yield* McpServer.McpServer.pipe(
       Effect.flatMap((service) =>
         Effect.gen(function* () {
@@ -192,6 +195,12 @@ const respond = (input: {
               listed.structuredContent,
             )).requestIds.includes(requestId);
           }
+          if (input.read === true)
+            readRefused =
+              (yield* service.callTool({
+                name: "t3_pending_request_read",
+                arguments: { threadId: target, requestId },
+              })).isError === true;
           return yield* service.callTool({
             name: "t3_pending_request_respond",
             arguments: {
@@ -214,6 +223,7 @@ const respond = (input: {
     assert.isAtMost(dispatched.length, 1);
     const command = dispatched[0];
     if (kind === "approval") assert.equal(listedApproval, command !== undefined);
+    if (input.read === true) assert.equal(readRefused, command === undefined);
     return command?.type === "runtime-request.respond" ? command : undefined;
   }).pipe(Effect.scoped);
 
@@ -233,6 +243,26 @@ it.effect.each([
     assert.equal(command !== undefined, accepted);
     assert.isUndefined(command?.answeredBy);
   }),
+);
+
+it.effect.each([
+  [grandchild, "question", true],
+  [undefined, "question", true],
+  [grandchild, "approval", false],
+  [undefined, "approval", false],
+] as const)(
+  "the thread itself or a client (%s) reads and answers its own %s",
+  ([caller, kind, accepted]) =>
+    Effect.gen(function* () {
+      const command = yield* respond({
+        scope: scope(caller),
+        target: grandchild,
+        kind,
+        read: true,
+      });
+      assert.equal(command !== undefined, accepted);
+      assert.isUndefined(command?.answeredBy);
+    }),
 );
 
 // Fork: the Promachos answers for the user when no ancestor can (toolboxmd/chromeria#532).

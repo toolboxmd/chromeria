@@ -232,7 +232,17 @@ const make = Effect.gen(function* () {
         yield* assertSameLink(context, context.projection.thread);
       }
       yield* assertTargetWithinLimits(context.limits, context.projection.thread);
-      if (context.answerer === undefined || context.answerer.kind === "own") return yield* denied();
+      // A thread's own question, or an ordinary local client, keeps local read and
+      // answer (readPendingRequest refuses own approvals). A linked client or a child
+      // delegated from another environment answers only through qualified ancestry.
+      if (
+        context.answerer === undefined ||
+        (context.answerer.kind === "own" &&
+          (action.type === "dismiss" ||
+            context.scope.client?.linked === true ||
+            context.projection.thread.delegatedFrom !== undefined))
+      )
+        return yield* denied();
       if (action.type === "read") {
         const { item, revision } = context;
         const common = {
