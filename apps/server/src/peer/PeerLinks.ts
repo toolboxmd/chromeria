@@ -1,3 +1,4 @@
+import * as RemoteSecretPersistence from "../secrets/remoteSecretPersistence.ts";
 import {
   ensureAutomationAuthoritySchema,
   invalidateAutomationLink,
@@ -211,19 +212,23 @@ const make = Effect.gen(function* () {
   // remains unacknowledged. It never retains a replacement's bearer or alternates.
   const rememberRecoveryPrimary = (environmentId: string, primary: string) =>
     sql`UPDATE fork_automation_retired_links SET paired_primary_origin=${primary}
-        WHERE environment_id=${environmentId} AND EXISTS (
+        WHERE environment_id=${environmentId} AND (EXISTS (
           SELECT 1 FROM fork_automation_obligations
           WHERE next_environment_id=${environmentId}
             AND next_generation=fork_automation_retired_links.generation AND ack_json IS NULL
-        )`;
+        ) OR EXISTS (SELECT 1 FROM remote_secret_obligations WHERE environment_id=${environmentId} AND generation=fork_automation_retired_links.generation AND ack_json IS NULL))`;
+  yield* RemoteSecretPersistence.schema;
   const retireAutomationLink = (row: PeerLinkRow) =>
     Effect.gen(function* () {
       const generation = yield* launchIdentity(row.secret_name);
+      yield* RemoteSecretPersistence.invalidateLink(row.environment_id, generation).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
       yield* invalidateAutomationLink(row.environment_id, generation).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
       );
       const obligations =
-        yield* sql`SELECT 1 FROM fork_automation_obligations WHERE next_environment_id=${row.environment_id} AND next_generation=${generation} AND ack_json IS NULL LIMIT 1`;
+        yield* sql`SELECT 1 FROM fork_automation_obligations WHERE next_environment_id=${row.environment_id} AND next_generation=${generation} AND ack_json IS NULL UNION ALL SELECT 1 FROM remote_secret_obligations WHERE environment_id=${row.environment_id} AND generation=${generation} AND ack_json IS NULL LIMIT 1`;
       const retained = obligations.length !== 0;
       if (retained)
         yield* sql`INSERT INTO fork_automation_retired_links ${sql.insert({ generation, ...row })} ON CONFLICT DO NOTHING`;
@@ -669,7 +674,7 @@ const make = Effect.gen(function* () {
           message: "The original automation recovery identity is unavailable.",
         });
       const obligations =
-        yield* sql`SELECT 1 FROM fork_automation_obligations WHERE next_environment_id=${environmentId} AND next_generation=${generation} AND ack_json IS NULL LIMIT 1`.pipe(
+        yield* sql`SELECT 1 FROM fork_automation_obligations WHERE next_environment_id=${environmentId} AND next_generation=${generation} AND ack_json IS NULL UNION ALL SELECT 1 FROM remote_secret_obligations WHERE environment_id=${environmentId} AND generation=${generation} AND ack_json IS NULL LIMIT 1`.pipe(
           Effect.catch(failStorage),
         );
       if (obligations.length === 0) {

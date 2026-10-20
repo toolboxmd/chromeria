@@ -5,7 +5,7 @@ import {
   secretRequestComplete,
   secretRequestDisplay,
   secretRequestFailureMessage,
-  SECRET_REQUEST_PRIVACY_NOTE,
+  secretRequestPrivacyNote,
   secretRequestFields,
   type SecretRequestItem,
 } from "@t3tools/client-runtime/secret-request";
@@ -161,7 +161,7 @@ function PendingSecretRequestForm(props: {
             type="monochrome"
           />
           <Text className="flex-1 font-sans text-xs text-foreground-muted">
-            {SECRET_REQUEST_PRIVACY_NOTE}
+            {secretRequestPrivacyNote(item)}
           </Text>
         </View>
         <Button

@@ -1,3 +1,5 @@
+import * as RemoteSecretRelay from "./RemoteSecretRelay.ts";
+import type { AuthSessionId } from "@t3tools/contracts";
 /**
  * The user's answer goes straight to private files on the server, one per
  * field, that the agent's tools can read by path; a single-field answer is
@@ -72,7 +74,10 @@ export class SecretRequests extends Context.Service<
      * Answers a pending request in a thread. Saving writes every field's
      * value to its own file, all or none, before the card says saved.
      */
-    readonly answer: (input: SecretRequestAnswerInput) => Effect.Effect<void, SecretRequestError>;
+    readonly answer: (
+      input: SecretRequestAnswerInput,
+      clientSessionId?: AuthSessionId,
+    ) => Effect.Effect<void, SecretRequestError>;
     /** The files and ref a saved request left, for the tool that asked. */
     readonly saved: (input: {
       readonly threadId: ThreadId;
@@ -182,7 +187,7 @@ const make = Effect.gen(function* () {
   };
 
   const answerLock = yield* Semaphore.make(1);
-  const answer: SecretRequests["Service"]["answer"] = (input) =>
+  const answer: SecretRequests["Service"]["answer"] = (input, clientSessionId) =>
     Effect.gen(function* () {
       yield* Effect.annotateCurrentSpan({
         "orchestration_v2.thread_id": input.threadId,
@@ -205,9 +210,19 @@ const make = Effect.gen(function* () {
       if (run === undefined || ThreadManagementService.isTerminalRunStatus(run.status)) {
         return yield* new SecretRequestError({ reason: "agent_stopped" });
       }
+      const relay = yield* Effect.serviceOption(RemoteSecretRelay.RemoteSecretRelay);
+      const remote = item.destination !== undefined;
+      if (remote && (clientSessionId === undefined || Option.isNone(relay)))
+        return yield* new SecretRequestError({ reason: "store_failed" });
       const ref = refFor(salt, input.threadId, item.id);
       // Store first: the card only says saved once the value is kept.
-      if (input.answer.type === "save") {
+      if (remote && Option.isSome(relay) && clientSessionId !== undefined) {
+        if (input.answer.type === "save" && answerValues(item, input.answer) === undefined)
+          return yield* new SecretRequestError({ reason: "fields_mismatch" });
+        yield* relay.value
+          .answer(input, clientSessionId)
+          .pipe(Effect.mapError(() => new SecretRequestError({ reason: "store_failed" })));
+      } else if (input.answer.type === "save") {
         const values = answerValues(item, input.answer);
         if (values === undefined) {
           return yield* new SecretRequestError({ reason: "fields_mismatch" });
@@ -239,13 +254,14 @@ const make = Effect.gen(function* () {
           ...(item.placeholder === undefined ? {} : { placeholder: item.placeholder }),
           ...(item.delivery === undefined ? {} : { delivery: item.delivery }),
           ...(item.fields === undefined ? {} : { fields: item.fields }),
+          ...(item.destination === undefined ? {} : { destination: item.destination }),
           secretStatus,
         })
         .pipe(
           Effect.mapError((cause) => new SecretRequestError({ reason: "record_failed", cause })),
           // Clear failed saves so the pending card can be answered again.
           Effect.tapError(() =>
-            input.answer.type === "save"
+            !remote && input.answer.type === "save"
               ? Effect.andThen(removeLogged(storeName(ref)), removeFiles(ref))
               : Effect.void,
           ),
@@ -262,8 +278,14 @@ const make = Effect.gen(function* () {
         );
       const card = recorded.turnItems.find((candidate) => candidate.id === item.id);
       if (card?.type === "secret_request" && card.secretStatus !== "saved") {
-        yield* removeLogged(storeName(ref));
-        yield* removeFiles(ref);
+        if (remote && Option.isSome(relay))
+          yield* relay.value
+            .retire(input.threadId, item.id)
+            .pipe(Effect.mapError(() => new SecretRequestError({ reason: "record_failed" })));
+        else {
+          yield* removeLogged(storeName(ref));
+          yield* removeFiles(ref);
+        }
         return yield* new SecretRequestError({ reason: "agent_stopped" });
       }
     }).pipe(

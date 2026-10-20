@@ -1,3 +1,4 @@
+import * as RemoteSecretRequests from "../secrets/RemoteSecretRequests.ts";
 import * as Automation from "./DestinationAutomationAuthority.ts";
 import * as PeerAuthority from "../peer/PeerAuthority.ts";
 import * as Invocation from "../mcp/McpInvocationContext.ts";
@@ -1533,8 +1534,26 @@ export const layer = Layer.effect(
                               );
                       // A ref, when given, is the only source: a plain secret sent
                       // alongside it must not replace what a replayed save stored.
+                      const remoteOwner = yield* Effect.serviceOption(
+                        RemoteSecretRequests.RemoteSecretRequests,
+                      );
+                      const fromRemote =
+                        signature?.secretRequest === undefined
+                          ? undefined
+                          : mutation?.secret.type !== "remote" || Option.isNone(remoteOwner)
+                            ? yield* taskError(
+                                "Remote secret consumption requires its verified acceptance owner.",
+                              )
+                            : yield* remoteOwner.value.take(
+                                signature.secretRequest,
+                                mutation.request,
+                              );
                       const provided =
-                        signature?.secretRef === undefined ? signature?.secret : fromRef;
+                        signature?.secretRequest !== undefined
+                          ? fromRemote
+                          : signature?.secretRef === undefined
+                            ? signature?.secret
+                            : fromRef;
                       const secret =
                         signature == null ? null : (provided ?? existing?.secret ?? null);
                       const secretChanged =

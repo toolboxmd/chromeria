@@ -1,3 +1,4 @@
+import * as RemoteSecretPersistence from "../secrets/remoteSecretPersistence.ts";
 import * as DateTime from "effect/DateTime";
 import {
   AuthSessionId,
@@ -229,6 +230,7 @@ export const invalidateAutomationSessions = (
     if (sessionIds.length === 0) return;
     const sql = yield* SqlClient.SqlClient;
     yield* ensureAutomationAuthoritySchema;
+    yield* RemoteSecretPersistence.invalidateSessions(sessionIds);
     yield* sql`UPDATE fork_automation_obligations SET pending=1 WHERE ack_json IS NULL AND dependency_id IN (SELECT dependency_id FROM fork_automation_dependency_grants WHERE ${sql.in("session_id", sessionIds)} AND (${reason}='revoked' OR grant_kind='automation-execution'))`;
     const affected = yield* sql<{
       id: string;

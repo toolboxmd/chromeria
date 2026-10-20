@@ -1,3 +1,4 @@
+import { RemoteSecretHandle } from "./remoteSecret.ts";
 import { ThreadToolsRequest } from "./threadTools.ts";
 import { McpScheduledMutationReceipt } from "./mcpRequest.ts";
 import { PeerTaskResult, PeerTaskSnapshot, PeerTaskStop } from "./peerTask.ts";
@@ -893,6 +894,13 @@ export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;
 
 export const OrchestratorMcpRequestSecretInput = Schema.Struct({
+  environmentId: Schema.optional(EnvironmentId).annotate({
+    description: "Destination for a single webhook signing value. Omit for private local files.",
+  }),
+  projectId: Schema.optional(ProjectId).annotate({
+    description:
+      "Required with a remote destination; the request can only serve a webhook in this project.",
+  }),
   label: TrimmedNonEmptyString.annotate({
     description: "Card title, such as 'GitHub webhook secret'.",
   }),
@@ -929,6 +937,13 @@ export const OrchestratorMcpRequestSecretInput = Schema.Struct({
 export type OrchestratorMcpRequestSecretInput = typeof OrchestratorMcpRequestSecretInput.Type;
 
 export const OrchestratorMcpRequestSecretResult = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("saved"),
+    secretRequest: RemoteSecretHandle.annotate({
+      description:
+        "Destination-owned one-use request. Pass to schedule_task signature.secretRequest in the same destination and project; holds no value and grants no authority.",
+    }),
+  }),
   Schema.Struct({
     status: Schema.Literal("saved"),
     files: Schema.Record(SecretRequestFieldName, TrimmedNonEmptyString).annotate({
