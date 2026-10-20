@@ -55,6 +55,25 @@ const shell = (forkSpectrumRunning?: boolean) =>
 const runId = RunId.make("run-1");
 
 describe("Spectrum Stop reachability", () => {
+  it("routes Stop to the failed source while a transport retry waits", () => {
+    const waiting = presentThreadShell(environmentId, {
+      ...v2ThreadShell,
+      transportRecovery: { runId, retryAt: 60_000 },
+    });
+    expect(threadStopInput(waiting, null)).toEqual({ threadId: v2ThreadId, runId });
+    const activeRunId = RunId.make("new-user-turn");
+    expect(threadStopInput(waiting, activeRunId)).toEqual({
+      threadId: v2ThreadId,
+      runId: activeRunId,
+    });
+    const updated = applyShellStreamEvent(v2ShellSnapshot, {
+      kind: "thread.updated",
+      sequence: 1,
+      location: "active",
+      thread: { ...v2ThreadShell, transportRecovery: { runId, retryAt: 120_000 } },
+    });
+    expect(updated.threads[0]?.transportRecovery?.retryAt).toEqual(120_000);
+  });
   it("reads the server's flag through the presented shell", () => {
     expect(isForkSpectrumRunning(shell(true))).toBe(true);
     expect(isForkSpectrumRunning(shell(false))).toBe(false);

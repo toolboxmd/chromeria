@@ -1,5 +1,6 @@
-import { RunId, ThreadId } from "@t3tools/contracts";
+import { CommandId, RunId, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
@@ -36,7 +37,7 @@ export const recoveryCandidates = (sql: SqlClient.SqlClient, threadId?: ThreadId
     ${threadId === undefined ? sql`` : sql`AND r.thread_id=${threadId}`}
   UNION SELECT thread_id,source_run_id FROM fork_prism_recovery_outcomes WHERE status='pending'
     ${threadId === undefined ? sql`` : sql`AND thread_id=${threadId}`}
-  UNION SELECT thread_id,source_run_id FROM fork_prism_recovery WHERE state <> 'closed'
+  UNION SELECT thread_id,source_run_id FROM fork_prism_recovery WHERE state NOT IN ('closed','cancelled')
     ${threadId === undefined ? sql`` : sql`AND thread_id=${threadId}`}
 `;
 
@@ -76,7 +77,22 @@ export const layer = Layer.effect(
           retirement.retired || !retirement.complete,
         );
         if (record === null) return;
-        const command = retryCommand(record);
+        const wait =
+          record.state === "retry_pending" && record.retryAt !== undefined
+            ? { runId: record.sourceRunId, retryAt: record.retryAt }
+            : null;
+        const shown = projection.thread.transportRecovery;
+        if ((shown?.runId ?? null) !== (wait?.runId ?? null) || shown?.retryAt !== wait?.retryAt) {
+          yield* threads.dispatch({
+            type: "thread.metadata.update",
+            commandId: CommandId.make(
+              `transport-wait:${threadId}:${record.sourceRunId}:${wait?.retryAt ?? "clear"}`,
+            ),
+            threadId,
+            transportRecovery: wait,
+          });
+        }
+        const command = retryCommand(record, DateTime.toEpochMillis(yield* DateTime.now));
         // Source eligibility and ancestry are rechecked by the composed commit plans.
         if (command !== null) yield* threads.dispatch(command);
       }).pipe(
@@ -111,10 +127,7 @@ export const layer = Layer.effect(
       sink.stream({ afterSequence: sequence }).pipe(
         Stream.filter(
           (stored) =>
-            stored.event.type === "run.updated" ||
-            (stored.event.type === "thread.metadata-updated" &&
-              (stored.event.payload.forkRetirement !== undefined ||
-                stored.event.payload.limitRecovery !== undefined)),
+            stored.event.type === "run.updated" || stored.event.type === "thread.metadata-updated",
         ),
         // Coalesce signals already buffered by the event stream, without another scheduler.
         Stream.chunks,

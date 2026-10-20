@@ -4,6 +4,7 @@ import { sourceControlClients } from "@t3tools/client-runtime/source-control-cli
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import { queuedRunEditBlockedReason } from "@t3tools/client-runtime/queued-run-edit";
 import { ScrollToEndButton, WorkspaceFileDropOverlay } from "./chat/TimelineOverlays";
+import { WifiOffIcon } from "lucide-react";
 import { usePasteToFocusComposer } from "./chat/usePasteToFocusComposer";
 import { configuredHostedAppUrl } from "../hostedPairing";
 import { announcedRun, isDetailBehindShell } from "./chat/threadActivityAnnouncement";
@@ -158,7 +159,11 @@ import { copyThreadReference } from "../lib/copyThreadReference";
 import { subscribeSnapShotComposerFocus } from "../lib/desktopSnapShot";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { FileMetadataThreadProvider } from "../hooks/FileMetadataThreadProvider";
-import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
+import {
+  RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
+  type ThreadPanelPresentation,
+} from "../rightPanelLayout";
+import { Button } from "./ui/button";
 import { PopoverCreateHandle } from "./ui/popover";
 import {
   selectActiveRightPanel,
@@ -1879,7 +1884,8 @@ export default function ChatView(props: ChatViewProps) {
   const forkSpectrumRunning = isForkSpectrumRunning(activeThreadShell);
   const canInterruptRunningThread =
     canOperateThread &&
-    deriveCanStopThread(activeThread !== undefined, activeRuntime, forkSpectrumRunning);
+    (activeThreadShell?.transportRecovery != null ||
+      deriveCanStopThread(activeThread !== undefined, activeRuntime, forkSpectrumRunning));
   const onInterrupt = async () => {
     if (
       !activeThread ||
@@ -2688,6 +2694,34 @@ export default function ChatView(props: ChatViewProps) {
           ]
         : [];
     const limitRecoveryItems = limitRecoveryBanner === null ? [] : [limitRecoveryBanner];
+    const transportWait = activeThreadShell?.transportRecovery;
+    if (
+      transportWait &&
+      transportWait.runId === activeThreadShell.latestRun?.runId &&
+      serverRuntime?.status === "failed" &&
+      !activeThreadShell.archivedAt &&
+      !activeThreadShell.deletedAt &&
+      activeThreadShell.settledOverride !== "settled"
+    ) {
+      limitRecoveryItems.push({
+        id: `transport-recovery:${transportWait.runId}`,
+        variant: "warning",
+        priority: "urgent",
+        icon: <WifiOffIcon />,
+        title: "Waiting to retry the connection",
+        description: `Next retry ${new Date(transportWait.retryAt).toLocaleString()}. Send a message or press Stop to cancel.`,
+        actions: (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!canOperateThread}
+            onClick={() => void onInterruptStable()}
+          >
+            Stop retrying
+          </Button>
+        ),
+      });
+    }
     const usageLimitsItems = usageLimitsBanner === null ? [] : [usageLimitsBanner];
     const projectCloneItems = projectCloneBannerItem === null ? [] : [projectCloneBannerItem];
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {

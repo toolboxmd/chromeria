@@ -196,6 +196,7 @@ export type ProjectionLimitRecoveryCandidate = Pick<
   | "pendingRuntimeRequest"
   | "latestRunCompletedAt"
   | "updatedAt"
+  | "transportRecovery"
   | "limitRecovery"
   | "snoozedUntil"
 >;
@@ -1822,6 +1823,7 @@ export function threadShellFromProjection(
     opens: projection.thread.opens ?? null,
     titleRegeneration: projection.thread.titleRegeneration ?? null,
     limitRecovery: projection.thread.limitRecovery ?? null,
+    transportRecovery: projection.thread.transportRecovery ?? null,
     deletedAt: projection.thread.deletedAt,
   };
 }
@@ -2097,6 +2099,7 @@ function shellFromState(input: {
     opens: input.state.thread.opens ?? null,
     titleRegeneration: input.state.thread.titleRegeneration ?? null,
     limitRecovery: input.state.thread.limitRecovery ?? null,
+    transportRecovery: input.state.thread.transportRecovery ?? null,
     deletedAt: input.state.thread.deletedAt,
   };
 }

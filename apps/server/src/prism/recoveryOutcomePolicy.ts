@@ -51,6 +51,7 @@ export function recoveryOutcomeFor(input: {
   )
     return abandoned("ineligible");
   const failure = latestRootProviderFailure(run, projection.turnItems);
+  if (record?.state === "cancelled") return abandoned("ineligible");
   if (failure === null) return noRetry("missing_failure");
   if (failure.class === "usage_limit") {
     const choice = projection.thread.limitRecovery;
@@ -67,7 +68,6 @@ export function recoveryOutcomeFor(input: {
       return noRetry("invalid_reset");
     return { ...identity, status: "pending", reason: "reset" };
   }
-  if (projection.thread.creationSource !== "mcp") return noRetry("non_mcp");
   if (failure.retryable !== true) return noRetry("non_retryable");
   if (record?.state === "retry_pending" || record?.state === "retry_started")
     return { ...identity, status: "pending", reason: "retry" };

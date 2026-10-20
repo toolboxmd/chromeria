@@ -17,6 +17,17 @@ const projection = {
 };
 
 describe("Prism recovery finalization coordination", () => {
+  it.effect("web threads receive the same retry budget as delegated threads", () =>
+    Effect.gen(function* () {
+      const coordinator = yield* Coordinator.RecoveryCoordinator;
+      const armed = yield* coordinator.observe(
+        { ...projection, thread: { ...projection.thread, creationSource: "web" } },
+        false,
+      );
+      assert.strictEqual(armed?.state, "retry_pending");
+      assert.strictEqual(yield* coordinator.holdsResult(run.threadId), true);
+    }).pipe(Effect.provide(layer)),
+  );
   it.effect("holds the first failed result and releases only the retry's eventual result", () =>
     Effect.gen(function* () {
       const coordinator = yield* Coordinator.RecoveryCoordinator;
@@ -123,7 +134,7 @@ describe("Prism recovery finalization coordination", () => {
         yield* coordinator.observe(projection, false);
         assert.strictEqual(yield* coordinator.holdsResult(run.threadId), true);
         const closed = yield* coordinator.observe(projection, true);
-        assert.strictEqual(closed?.state, "closed");
+        assert.strictEqual(closed?.state, "cancelled");
         assert.strictEqual(yield* coordinator.holdsResult(run.threadId), false);
       }).pipe(Effect.provide(layer)),
   );

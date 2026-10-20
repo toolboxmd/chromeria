@@ -7155,6 +7155,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       assert.include(terminal.failure.message, configDir);
       assert.include(terminal.failure.message, JSON.stringify(cwd));
       assert.notInclude(terminal.failure.message, "repeated API errors");
+      assert.equal(terminal.failure.class, "provider_error");
+      assert.equal(terminal.failure.retryable, null);
     }).pipe(
       Effect.provide(
         Layer.mergeAll(
@@ -7996,7 +7998,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const terminal = yield* Queue.take(harness.terminalReceipts);
       assert.equal(terminal.status, "failed");
       if (terminal.status !== "failed") return;
-      assert.equal(terminal.failure.class, expectedLimit ? "usage_limit" : "provider_error");
+      assert.equal(terminal.failure.class, expectedLimit ? "usage_limit" : "transport_error");
       assert.equal(
         terminal.failure.resetAt,
         expectedLimit ? "2026-09-25T01:10:00.000Z" : undefined,

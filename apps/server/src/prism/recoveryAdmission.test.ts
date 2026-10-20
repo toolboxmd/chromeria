@@ -2,6 +2,8 @@ import { assert, describe, it } from "@effect/vitest";
 import { CommandId, EventId, RunId } from "@t3tools/contracts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
+import * as TestClock from "effect/testing/TestClock";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import { retirementAdmission, explicitMessage } from "../childThreads/retirement.ts";
 import { threadFor } from "./recovery.testkit.ts";
@@ -35,12 +37,35 @@ const setup = Effect.gen(function* () {
     stoppedOrRetired: false,
     autoResume: true,
   });
-  const command = retryCommand(armed);
+  const command = retryCommand(armed, Number.MAX_SAFE_INTEGER);
   if (command?.type !== "message.dispatch") throw new Error("fixture");
   const plan = retryAdmission(command)!;
   return { sink, store, armed, command, plan };
 });
 describe("Prism atomic retry admission", () => {
+  it.effect("the commit guard rejects an early retry and admits it at the persisted deadline", () =>
+    Effect.gen(function* () {
+      const { sink, store, command, plan } = yield* setup;
+      const sql = yield* SqlClient.SqlClient;
+      const deadline = DateTime.toEpochMillis(yield* DateTime.now) + 60_000;
+      yield* sql`UPDATE fork_prism_recovery SET payload_json=json_set(payload_json,'$.retryAt',${deadline}) WHERE thread_id=${run.threadId}`;
+      const commit = sink.commitCommand({
+        commandId: command.commandId,
+        threadId: command.threadId,
+        commandType: command.type,
+        acceptedAt: run.requestedAt,
+        events: [],
+        effects: [],
+        forkPlans: [plan],
+      });
+      const rejected = yield* commit.pipe(Effect.flip);
+      assert.strictEqual(rejected._tag, "ForkCommitGuardRejected");
+      assert.strictEqual((yield* store.get(run.threadId))?.state, "retry_pending");
+      yield* TestClock.adjust(60_000);
+      yield* commit;
+      assert.strictEqual((yield* store.get(run.threadId))?.state, "retry_started");
+    }).pipe(Effect.provide(recoveryTestLayer)),
+  );
   it.effect(
     "a Stop committed after recovery planning rejects both composed plans without acknowledgement",
     () =>

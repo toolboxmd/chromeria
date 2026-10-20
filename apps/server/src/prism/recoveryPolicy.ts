@@ -21,8 +21,11 @@ export const RecoveryRecord = Schema.Struct({
   modelSelection: ModelSelection,
   retryMessageId: MessageId,
   retryUsed: Schema.Boolean,
-  state: Schema.Literals(["retry_pending", "retry_started", "reset_wait", "closed"]),
+  state: Schema.Literals(["retry_pending", "retry_started", "reset_wait", "closed", "cancelled"]),
   resetAt: Schema.NullOr(Schema.String),
+  // Separate from subscription resets: transport recovery ignores usage-limit preferences.
+  retryAt: Schema.optionalKey(Schema.Number),
+  transportAttempts: Schema.optionalKey(Schema.Int),
 });
 export type RecoveryRecord = typeof RecoveryRecord.Type;
 
@@ -55,7 +58,7 @@ export function decideRecovery(input: {
     run.id !== previous.sourceRunId &&
     (end < previousEnd || (end === previousEnd && run.ordinal < previous.sourceOrdinal))
   )
-    return input.stoppedOrRetired ? { ...previous, state: "closed", resetAt: null } : previous;
+    return input.stoppedOrRetired ? { ...previous, state: "cancelled", resetAt: null } : previous;
   const related = previous !== null && continues(previous, run);
   const originalRunId = related ? previous.originalRunId : run.id;
   const record: RecoveryRecord = {
@@ -65,12 +68,16 @@ export function decideRecovery(input: {
     sourceOrdinal: run.ordinal,
     sourceEndedAt,
     modelSelection: related ? previous.modelSelection : run.modelSelection,
-    retryMessageId: MessageId.make(`prism-retry:${run.threadId}:${originalRunId}`),
+    retryMessageId: related
+      ? previous.retryMessageId
+      : MessageId.make(`prism-retry:${run.threadId}:${originalRunId}`),
     retryUsed: related && previous.retryUsed,
     state: "closed",
     resetAt: null,
+    transportAttempts: related ? (previous.transportAttempts ?? 0) : 0,
   };
-  if (input.stoppedOrRetired) return record;
+  if (input.stoppedOrRetired || (related && previous.state === "cancelled"))
+    return { ...record, state: "cancelled" };
   if (
     related &&
     !["completed", "failed", "interrupted", "cancelled", "rolled_back"].includes(run.status)
@@ -80,7 +87,8 @@ export function decideRecovery(input: {
       state: run.userMessageId === previous.retryMessageId ? "retry_started" : previous.state,
       resetAt: previous.resetAt,
     };
-  if (run.status !== "failed" || !failure) return record;
+  if (run.status !== "failed" || !failure)
+    return run.status === "completed" ? { ...record, transportAttempts: 0 } : record;
   if (
     related &&
     previous.state === "retry_started" &&
@@ -104,13 +112,36 @@ export function decideRecovery(input: {
   if (related && run.id === previous.sourceRunId && previous.state === "retry_pending") {
     return { ...previous };
   }
-  if (record.retryUsed || failure.retryable !== true) return record;
-  return { ...record, state: "retry_pending", retryUsed: true };
+  if (failure.retryable !== true) return record;
+  const retryMessageId = MessageId.make(
+    run.id === originalRunId
+      ? `prism-retry:${run.threadId}:${originalRunId}`
+      : `prism-retry:${run.threadId}:${originalRunId}:${run.id}`,
+  );
+  if (failure.class === "transport_error") {
+    const attempt = record.transportAttempts ?? 0;
+    const delayMinutes = [1, 2, 5, 15, 30][Math.min(attempt, 4)]!;
+    return {
+      ...record,
+      state: "retry_pending",
+      transportAttempts: Math.min(attempt + 1, 5),
+      retryMessageId,
+      retryAt: DateTime.toEpochMillis(run.completedAt ?? run.requestedAt) + delayMinutes * 60_000,
+    };
+  }
+  if (record.retryUsed) return record;
+  return {
+    ...record,
+    state: "retry_pending",
+    retryUsed: true,
+    retryMessageId,
+  };
 }
 
 /** Eligibility is rechecked under serialized dispatch, not trusted from this record. */
-export function retryCommand(record: RecoveryRecord): OrchestrationV2Command | null {
+export function retryCommand(record: RecoveryRecord, nowMs: number): OrchestrationV2Command | null {
   if (record.state !== "retry_pending") return null;
+  if (record.retryAt !== undefined && record.retryAt > nowMs) return null;
   return {
     type: "message.dispatch",
     commandId: CommandId.make(String(record.retryMessageId)),
@@ -119,7 +150,7 @@ export function retryCommand(record: RecoveryRecord): OrchestrationV2Command | n
     forkPrismRetryOfRunId: record.sourceRunId,
     forkPrismOriginalRunId: record.originalRunId,
     modelSelection: record.modelSelection,
-    text: "Continue where you left off. The provider failure permits one retry on the same provider and model.",
+    text: "Continue where you left off on the same provider and model.",
     attachments: [],
     dispatchMode: { type: "start_immediately" },
     createdBy: "system",
