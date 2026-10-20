@@ -39,9 +39,9 @@ const REDUCED_UA_PLATFORMS: Partial<Record<NodeJS.Platform, string>> = {
 };
 
 /** The full version in a `Browser.getVersion` product or user agent, with or without Headless. */
-export const chromeVersion = (text: string) => /(?:Headless)?Chrome\/(\d+\.[\d.]+)/.exec(text)?.[1];
+const chromeVersion = (text: string) => /(?:Headless)?Chrome\/(\d+\.[\d.]+)/.exec(text)?.[1];
 
-export class ChromeVersionMismatchError extends Error {
+class ChromeVersionMismatchError extends Error {
   readonly expected: string;
   readonly actual: string | undefined;
   constructor(expected: string, actual: string | undefined) {
