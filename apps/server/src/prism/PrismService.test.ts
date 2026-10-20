@@ -33,6 +33,62 @@ const provider = Effect.map(
 );
 
 describe("PrismService", () => {
+  it.effect("routes default computer use to Haiku and rejects it when disabled", () =>
+    Effect.gen(function* () {
+      const claudeId = ProviderInstanceId.make("claudeAgent");
+      const claude = yield* buildUnavailableProviderSnapshot({
+        driverKind: "claudeAgent",
+        instanceId: claudeId,
+        reason: "test",
+        checkedAt: "2026-10-20T00:00:00Z",
+      });
+      for (const enabled of [true, false]) {
+        yield* Effect.gen(function* () {
+          const service = yield* Prism.PrismService;
+          const resolve = service.resolve({
+            projectId,
+            role: "computer-use",
+            inherited: selection,
+          });
+          if (!enabled) {
+            const error = yield* Effect.flip(resolve);
+            assert.strictEqual(error.code, "provider_unavailable");
+            return;
+          }
+          const result = yield* resolve;
+          assert.deepStrictEqual(result.modelSelection, {
+            instanceId: claudeId,
+            model: "claude-haiku-5-5",
+          });
+        }).pipe(
+          Effect.provide(
+            Prism.layer.pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  registry([
+                    {
+                      ...claude,
+                      enabled,
+                      availability: "available",
+                      models: [
+                        {
+                          slug: "claude-haiku-5-5",
+                          name: "Haiku",
+                          isCustom: false,
+                          capabilities: null,
+                        },
+                      ],
+                    },
+                  ]),
+                  Settings.layerTest({}),
+                ),
+              ),
+            ),
+          ),
+        );
+      }
+    }),
+  );
   it.effect("bare selection keeps routing and removes both role instructions and skill hints", () =>
     Effect.gen(function* () {
       const service = yield* Prism.PrismService;
@@ -264,7 +320,7 @@ describe("PrismService", () => {
       const p = yield* provider;
       const models = [
         ...p.models,
-        ...["research", "design", "roast", "judge"].map((slug) => ({
+        ...["research", "design", "roast", "judge", "computer"].map((slug) => ({
           slug,
           name: slug,
           isCustom: false,
@@ -278,6 +334,7 @@ describe("PrismService", () => {
           ["designer", "design"],
           ["roast", "roast"],
           ["judge", "judge"],
+          ["computer-use", "computer"],
         ] as const) {
           const result = yield* service.resolve({ projectId, role });
           assert.strictEqual(result.modelSelection.model, model);
@@ -291,6 +348,10 @@ describe("PrismService", () => {
                 registry([{ ...p, models }]),
                 Settings.layerTest({
                   prismRoles: {
+                    "computer-use": {
+                      models: [{ instanceId, model: "computer" }],
+                      instructions: "computer-use kit.",
+                    },
                     researcher: {
                       models: [{ instanceId, model: "research" }],
                       instructions: "researcher kit.",

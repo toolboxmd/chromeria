@@ -3,7 +3,11 @@ import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { PositiveInt, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
-import { ProviderInstanceId } from "./providerInstance.ts";
+import {
+  defaultInstanceIdForDriver,
+  ProviderDriverKind,
+  ProviderInstanceId,
+} from "./providerInstance.ts";
 
 /**
  * Prism (Model Router) roles and their kits (toolboxmd/model-router#115).
@@ -19,6 +23,7 @@ const PRISM_DELEGATE_ROLES = [
   "researcher",
   "designer",
   "worker",
+  "computer-use",
   "roast",
   "reviewer",
   "judge",
@@ -132,6 +137,7 @@ export const PRISM_ROLE_LABELS: Record<PrismRole, string> = {
   researcher: "Researcher",
   designer: "Designer",
   worker: "Worker",
+  "computer-use": "Computer use",
   roast: "Roast",
   reviewer: "Reviewer",
   judge: "Judge",
@@ -147,6 +153,8 @@ export const PRISM_ROLE_DESCRIPTIONS: Record<PrismRole, string> = {
   designer:
     "Proposes or compares designs, interfaces and plans for a goal, and recommends one. Changes nothing.",
   worker: "Implements the task and commits as it goes. Lanes easy, medium, hard.",
+  "computer-use":
+    "Drives the browser (preview_* tools) and, where available, the desktop through computer-use tools. Reports what it saw and did.",
   roast:
     "Attacks a plan or idea before work starts: weak assumptions, missing cases, cheaper alternatives.",
   reviewer:
@@ -202,12 +210,27 @@ const runGroupKit = Schema.Record(Schema.String, Schema.Unknown).pipe(
   Schema.withDecodingDefault(Effect.succeed({})),
 );
 
+const computerUseKit = Schema.Struct({
+  ...kitFields,
+  models: Schema.Array(Color).pipe(
+    Schema.withDecodingDefault(
+      Effect.succeed([
+        {
+          instanceId: defaultInstanceIdForDriver(ProviderDriverKind.make("claudeAgent")),
+          model: "claude-haiku-5-5",
+        },
+      ]),
+    ),
+  ),
+}).pipe(Schema.withDecodingDefault(Effect.succeed({})));
+
 /** Kits of removed roles in saved settings are dropped like any unknown key. */
 export const PrismRoleKits = Schema.Struct({
   planner: singleListKit,
   researcher: runGroupKit,
   designer: runGroupKit,
   worker: workerKit,
+  "computer-use": computerUseKit,
   roast: runGroupKit,
   reviewer: runGroupKit,
   judge: runGroupKit,
@@ -249,6 +272,7 @@ const runGroupKitPatch = Schema.Struct({
 /** Per-role, per-field, per-lane update; arrays (skills, a model list) replace whole. */
 export const PrismRoleKitsPatch = Schema.Struct({
   planner: Schema.optionalKey(Schema.Struct({ ...singleListKitPatch.fields, ...singleRun })),
+  "computer-use": Schema.optionalKey(Schema.Struct({ ...singleListKitPatch.fields, ...singleRun })),
   researcher: Schema.optionalKey(runGroupKitPatch),
   designer: Schema.optionalKey(runGroupKitPatch),
   worker: Schema.optionalKey(

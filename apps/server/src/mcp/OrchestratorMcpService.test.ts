@@ -2127,7 +2127,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           assert.equal(refused.code, "invalid_request");
           assert.equal(
             refused.message,
-            "prismRole must be one of: planner, researcher, designer, worker, roast, reviewer, judge.",
+            "prismRole must be one of: planner, researcher, designer, worker, computer-use, roast, reviewer, judge.",
           );
           assert.equal(yield* Ref.get(dispatched), 0);
 

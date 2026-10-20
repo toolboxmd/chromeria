@@ -32,6 +32,9 @@ import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import * as ServerConfig from "../../../config.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 
+const COMPUTER_USE_HINT =
+  ' For browser or desktop driving beyond a quick check, delegate with delegate_task using prismRole: "computer-use".';
+
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
   ThreadManagementService.ThreadManagementService,
@@ -55,7 +58,7 @@ const readonlyBrowserTool = <T extends Tool.Any>(tool: T): T =>
 
 const PreviewStatusTool = Tool.make("preview_status", {
   description:
-    "Report preview tab state: owner, pending dialog, URL, title, loading, viewport, and size. `tabs` lists this thread's tabs. `profiles` lists logins for `preview_open`. Read any listed tab. Act only on your tab, or an unclaimed tab with no human in control.",
+    "Report preview tab state: owner, pending dialog, URL, title, loading, viewport, and size. `tabs` lists this thread's tabs. `profiles` lists logins for `preview_open`. Read any listed tab. Act only on your tab, or an unclaimed tab with no human in control." + COMPUTER_USE_HINT,
   parameters: PreviewAutomationTabTargetInput,
   success: PreviewAutomationStatus,
   failure: PreviewToolFailure,
@@ -69,7 +72,7 @@ const PreviewStatusTool = Tool.make("preview_status", {
 const PreviewOpenTool = browserTool(
   Tool.make("preview_open", {
     description:
-      "Open a preview tab in this thread and show it. `open=false` keeps it in the background. Reuses your current tab unless `tabId` or `reuseExistingTab=false` says otherwise. Parallel subagents in one session must each use `reuseExistingTab=false`, then their own returned `tabId`.",
+      "Open a preview tab in this thread and show it. `open=false` keeps it in the background. Reuses your current tab unless `tabId` or `reuseExistingTab=false` says otherwise. Parallel subagents in one session must each use `reuseExistingTab=false`, then their own returned `tabId`." + COMPUTER_USE_HINT,
     parameters: PreviewAutomationOpenInput,
     success: PreviewAutomationStatus,
     failure: PreviewToolFailure,
@@ -82,7 +85,7 @@ const PreviewOpenTool = browserTool(
 const PreviewDialogTool = browserTool(
   Tool.make("preview_dialog", {
     description:
-      "Accept or dismiss the dialog `preview_status` reports. Pass `promptText` to accept a prompt. Needs your own tab, or an unclaimed one. Desktop hosts may not support this.",
+      "Accept or dismiss the dialog `preview_status` reports. Pass `promptText` to accept a prompt. Needs your own tab, or an unclaimed one. Desktop hosts may not support this." + COMPUTER_USE_HINT,
     parameters: PreviewAutomationDialogInput,
     success: PreviewAutomationStatus,
     failure: PreviewToolFailure,
@@ -93,7 +96,7 @@ const PreviewDialogTool = browserTool(
 const PreviewNavigateTool = safeBrowserTool(
   Tool.make("preview_navigate", {
     description:
-      "Navigate the chosen tab. Pass `url` for a website, or `target:{kind:'environment-port',port}` for a dev server. Exactly one of `url` and `target`.",
+      "Navigate the chosen tab. Pass `url` for a website, or `target:{kind:'environment-port',port}` for a dev server. Exactly one of `url` and `target`." + COMPUTER_USE_HINT,
     parameters: PreviewAutomationNavigateInput,
     success: PreviewAutomationStatus,
     failure: PreviewToolFailure,
@@ -104,7 +107,7 @@ const PreviewNavigateTool = safeBrowserTool(
 const PreviewResizeTool = safeBrowserTool(
   Tool.make("preview_resize", {
     description:
-      "Resize the chosen tab: {mode:'fill'}, {mode:'freeform',width,height}, or {mode:'preset',preset,orientation}. Changes CSS size only, not the user agent.",
+      "Resize the chosen tab: {mode:'fill'}, {mode:'freeform',width,height}, or {mode:'preset',preset,orientation}. Changes CSS size only, not the user agent." + COMPUTER_USE_HINT,
     parameters: PreviewAutomationResizeInput,
     success: Schema.Struct({ ...PreviewAutomationResizeResult.fields, ...presentationFields }),
     failure: PreviewToolFailure,
@@ -117,7 +120,7 @@ const PreviewResizeTool = safeBrowserTool(
 const PreviewSetAppearanceTool = safeBrowserTool(
   Tool.make("preview_set_appearance", {
     description:
-      "Set `prefers-color-scheme` for the chosen tab: 'dark', 'light', or 'system' to clear the override.",
+      "Set `prefers-color-scheme` for the chosen tab: 'dark', 'light', or 'system' to clear the override." + COMPUTER_USE_HINT,
     parameters: PreviewAutomationSetColorSchemeInput,
     success: Schema.Struct({
       ...PreviewAutomationSetColorSchemeResult.fields,
@@ -134,7 +137,7 @@ const PreviewSetAppearanceTool = safeBrowserTool(
 export const PreviewSnapshotTool = safeBrowserTool(
   Tool.make("preview_snapshot", {
     description:
-      "Use it only when the current request asks for browser work, including checking an edit in the browser. Never use it unasked to verify your own edit, or to repeat a snapshot from an earlier turn. Works on a tab the user is driving. Returns page state, elements, diagnostics, and screenshot size. Target one element with `locator='aria-ref=<ref>'` from `accessibilityTree`, even in frames. Refs die on navigation, a new snapshot, or handoff. Text caps near 20 KB; on your own or an unclaimed tab, `preview_evaluate` reads more. To show a screenshot when asked: `save=true`, then embed ![alt](screenshotPath).",
+      "Use it only when the current request asks for browser work, including checking an edit in the browser. Never use it unasked to verify your own edit, or to repeat a snapshot from an earlier turn. Works on a tab the user is driving. Returns page state, elements, diagnostics, and screenshot size. Target one element with `locator='aria-ref=<ref>'` from `accessibilityTree`, even in frames. Refs die on navigation, a new snapshot, or handoff. Text caps near 20 KB; on your own or an unclaimed tab, `preview_evaluate` reads more. To show a screenshot when asked: `save=true`, then embed ![alt](screenshotPath)." + COMPUTER_USE_HINT,
     parameters: Schema.Struct({
       ...PreviewAutomationTabTargetInput.fields,
       includeImage: Schema.optional(
@@ -157,7 +160,8 @@ export const PreviewSnapshotTool = safeBrowserTool(
 const PreviewFillCredentialTool = browserTool(
   Tool.make("preview_fill_credential", {
     description:
-      "Fill one login input in the tab selected by tabId, or this agent session's current tab when omitted, with a value from this environment's credential vault: the username, the password, or the current one-time code (totp) of a vault item. You never see the value; the result says only whether it was filled. The input's page must be https and one of the item's sites. The fill starts a login for the tab's whole browser profile, even when it fails: no tab in that profile, other agents' included, can be read (no snapshot, evaluate, recording, URL or title) until it ends, so keep logins short. Finish signing in with more fills, preview_click or preview_type with a locator, preview_press and preview_wait_for, then call preview_end_login, which closes the profile's browser with every tab in it; open a new tab to continue, signed in through the profile's saved cookies. After a failed fill, end the login and retry in a new tab. Server browser tabs only, not desktop-hosted ones.",
+      "Fill one login input in the tab selected by tabId, or this agent session's current tab when omitted, with a value from this environment's credential vault: the username, the password, or the current one-time code (totp) of a vault item. You never see the value; the result says only whether it was filled. The input's page must be https and one of the item's sites. The fill starts a login for the tab's whole browser profile, even when it fails: no tab in that profile, other agents' included, can be read (no snapshot, evaluate, recording, URL or title) until it ends, so keep logins short. Finish signing in with more fills, preview_click or preview_type with a locator, preview_press and preview_wait_for, then call preview_end_login, which closes the profile's browser with every tab in it; open a new tab to continue, signed in through the profile's saved cookies. After a failed fill, end the login and retry in a new tab. Server browser tabs only, not desktop-hosted ones." +
+      COMPUTER_USE_HINT,
     parameters: McpRouting.parameters(PreviewAutomationFillCredentialInput),
     success: Schema.Struct({
       ...PreviewAutomationFillCredentialResult.fields,
@@ -171,7 +175,8 @@ const PreviewFillCredentialTool = browserTool(
 const PreviewEndLoginTool = browserTool(
   Tool.make("preview_end_login", {
     description:
-      "End the login started by preview_fill_credential in the tab selected by tabId, or this agent session's current tab when omitted: closes that browser profile's browser, with every tab in it, including tabs still opening, and returns once it has closed. Then call preview_open for a new tab; the profile's saved cookies keep the session, except cookies the site set without an expiry. Returns the closed tab ids, or none when the tab was not in a login.",
+      "End the login started by preview_fill_credential in the tab selected by tabId, or this agent session's current tab when omitted: closes that browser profile's browser, with every tab in it, including tabs still opening, and returns once it has closed. Then call preview_open for a new tab; the profile's saved cookies keep the session, except cookies the site set without an expiry. Returns the closed tab ids, or none when the tab was not in a login." +
+      COMPUTER_USE_HINT,
     parameters: McpRouting.parameters(PreviewAutomationTabTargetInput),
     success: Schema.Struct({
       ...PreviewAutomationEndLoginResult.fields,
@@ -185,7 +190,7 @@ const PreviewEndLoginTool = browserTool(
 const PreviewActTool = browserTool(
   Tool.make("preview_act", {
     description:
-      "Act on the chosen tab. Target with `locator='aria-ref=<ref>'` from `preview_snapshot`; `x` and `y` go together. `timeoutMs` defaults to 15000. click: `button`, `clickCount` 1 to 3. type: literal `text`, `clear=true` replaces it. hover: shows menus or tooltips. select: `values` in one native <select>, by value or label; for a custom dropdown, click it open, then click the option. drag: `source` onto `target`. upload: absolute `paths` answer the file picker `preview_status` reports, [] cancels it, or a `locator` sets an <input type=file>. press: one `key`, such as 'Enter', with `modifiers`, to the focused element; click a field first to focus it. scroll: the tab, or one container with a locator; positive `deltaY` scrolls down, positive `deltaX` right.",
+      "Act on the chosen tab. Target with `locator='aria-ref=<ref>'` from `preview_snapshot`; `x` and `y` go together. `timeoutMs` defaults to 15000. click: `button`, `clickCount` 1 to 3. type: literal `text`, `clear=true` replaces it. hover: shows menus or tooltips. select: `values` in one native <select>, by value or label; for a custom dropdown, click it open, then click the option. drag: `source` onto `target`. upload: absolute `paths` answer the file picker `preview_status` reports, [] cancels it, or a `locator` sets an <input type=file>. press: one `key`, such as 'Enter', with `modifiers`, to the focused element; click a field first to focus it. scroll: the tab, or one container with a locator; positive `deltaY` scrolls down, positive `deltaX` right." + COMPUTER_USE_HINT,
     parameters: PreviewAutomationActInput,
     success: Schema.Union([
       Schema.Struct({ ...PreviewAutomationSelectResult.fields, ...presentationFields }),
@@ -207,7 +212,7 @@ export const PreviewEvaluateResult = Schema.Struct({
 const PreviewEvaluateTool = browserTool(
   Tool.make("preview_evaluate", {
     description:
-      "Run JavaScript in the page. It can change page state. Returns `{value}`, up to 64 KB. Needs your tab, or an unclaimed one. To read a tab the user drives, use `preview_snapshot`. Page tools reached here: read data only, never create, save, or display. Show results with `html_render`.",
+      "Run JavaScript in the page. It can change page state. Returns `{value}`, up to 64 KB. Needs your tab, or an unclaimed one. To read a tab the user drives, use `preview_snapshot`. Page tools reached here: read data only, never create, save, or display. Show results with `html_render`." + COMPUTER_USE_HINT,
     parameters: PreviewAutomationEvaluateInput,
     success: PreviewEvaluateResult,
     failure: PreviewToolFailure,
@@ -218,7 +223,7 @@ const PreviewEvaluateTool = browserTool(
 const PreviewWaitForTool = readonlyBrowserTool(
   Tool.make("preview_wait_for", {
     description:
-      "Wait until all given locator, selector, text, and URL conditions match in the chosen tab.",
+      "Wait until all given locator, selector, text, and URL conditions match in the chosen tab." + COMPUTER_USE_HINT,
     parameters: PreviewAutomationWaitForInput,
     success: PreviewActionResult,
     failure: PreviewToolFailure,
@@ -228,7 +233,7 @@ const PreviewWaitForTool = readonlyBrowserTool(
 
 const PreviewRecordingStartTool = safeBrowserTool(
   Tool.make("preview_recording_start", {
-    description: "Start recording the chosen tab.",
+    description: "Start recording the chosen tab." + COMPUTER_USE_HINT,
     parameters: PreviewAutomationTabTargetInput,
     success: Schema.Struct({ ...PreviewAutomationRecordingStatus.fields, ...presentationFields }),
     failure: PreviewToolFailure,
@@ -239,7 +244,7 @@ const PreviewRecordingStartTool = safeBrowserTool(
 const PreviewRecordingStopTool = safeBrowserTool(
   Tool.make("preview_recording_stop", {
     description:
-      "Stop recording the chosen tab. Returns a local path to the recording file (max 50 MiB).",
+      "Stop recording the chosen tab. Returns a local path to the recording file (max 50 MiB)." + COMPUTER_USE_HINT,
     parameters: PreviewAutomationTabTargetInput,
     success: Schema.Struct({ ...PreviewAutomationRecordingArtifact.fields, ...presentationFields }),
     failure: PreviewToolFailure,

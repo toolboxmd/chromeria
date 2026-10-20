@@ -44,6 +44,34 @@ const environment = (id: string, connected = true) => ({
 });
 
 describe("Prism role preferences", () => {
+  it("saves, clears and resets the computer-use Color list", () => {
+    const envs = [environment("one")];
+    const scope = resolveSettingsScope({}, [], envs);
+    for (const models of [[second], []]) {
+      const plan = planPrismRolePatch(scope, envs, {
+        kind: "models",
+        role: "computer-use",
+        models,
+      });
+      const next = applyServerSettingsPatch(
+        envs[0]!.serverConfig.settings,
+        plan.serverWrites[0]!.patch,
+      );
+      expect(next.prismRoles["computer-use"].models).toEqual(models);
+      const changed = [
+        {
+          ...envs[0]!,
+          serverConfig: { settings: next, environment: envs[0]!.serverConfig.environment },
+        },
+      ];
+      const reset = planPrismRolesReset(scope, changed);
+      expect(
+        applyServerSettingsPatch(next, reset.serverWrites[0]!.patch).prismRoles["computer-use"]
+          .models,
+      ).toEqual([{ instanceId: "claudeAgent", model: "claude-haiku-5-5" }]);
+    }
+  });
+
   it("moves preferences with their effort and does not mutate or wrap the list", () => {
     const original = [first, second];
     expect(movePrismPreference(original, 0, 1)).toEqual([second, first]);

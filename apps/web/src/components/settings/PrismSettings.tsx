@@ -9,6 +9,7 @@ import { type ReactNode, useState } from "react";
 import { useEnvironmentProviders } from "../../state/environments";
 import {
   FlameIcon,
+  MonitorIcon,
   HammerIcon,
   ListChecksIcon,
   PencilRulerIcon,
@@ -41,6 +42,7 @@ const PAGE_ROLES = [
   "researcher",
   "designer",
   "worker",
+  "computer-use",
   "roast",
   "reviewer",
   "judge",
@@ -52,6 +54,7 @@ const ROLE_ICONS: Record<PageRole, ReactNode> = {
   researcher: <SearchIcon />,
   designer: <PencilRulerIcon />,
   worker: <HammerIcon />,
+  "computer-use": <MonitorIcon />,
   roast: <FlameIcon />,
   reviewer: <SearchCheckIcon />,
   judge: <ScaleIcon />,
