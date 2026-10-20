@@ -729,6 +729,9 @@ const make = Effect.gen(function* () {
       await NodeFSP.writeFile(launcher, agentScopeLauncherScript(launch), { mode: 0o700 });
       return { path: launcher, release: () => NodeFSP.rm(launcher, { force: true }) };
     },
+    // An unsupported host never launches: its executable fails first.
+    version: PreviewBrowser.previewBrowserRelease(host.platform, host.arch)?.version ?? "",
+    host,
     // Playwright's launch error drops Chrome's own output; its sandbox note survives.
     diagnose: (executable, cause) =>
       Effect.runPromiseWith(launchServices)(
@@ -999,7 +1002,7 @@ const make = Effect.gen(function* () {
   };
 
   const desktopRenders = (snapshot: PreviewSessionSnapshot) =>
-    desktopChannel.available && !snapshot.headless
+    desktopChannel.available && !snapshot.headless && snapshot.serverPage !== true
       ? runPromise(
           desktopChannel.awaitAttached(
             { threadId: snapshot.threadId, tabId: snapshot.tabId },
@@ -1079,7 +1082,7 @@ const make = Effect.gen(function* () {
       await authorize();
       // The desktop's page is already a normal browser. A popup's first request
       // went out before it became a tab; everything after presents as Chrome.
-      if (!desktop) await presentAsChrome(cdp, host);
+      if (!desktop) await presentAsChrome(cdp, contexts.identity);
       await authorize();
       if (!desktop) await recordCopies(cdp, authorize);
       page.setDefaultTimeout(NAVIGATION_TIMEOUT_MS);
@@ -1821,6 +1824,8 @@ const make = Effect.gen(function* () {
         ...(opener.profileId === undefined ? {} : { profileId: opener.profileId }),
         // Agent popups stay with the agent and only float when it asks, like its own opens.
         ...(agentId === null ? {} : { automationOwner: agentId, reveal: false }),
+        // A person's popup from a server page is still that page's popup, not a desktop one.
+        ...(opener.desktop === null ? { serverPage: true } : {}),
         beforePublish: (snapshot) =>
           adoptedPages.set(tabKey(snapshot.threadId, snapshot.tabId), {
             page: popup,

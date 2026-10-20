@@ -1,6 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - Finds Playwright's installed headless shell for a real Chromium run.
 import * as NodeEvents from "node:events";
-import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -22,7 +21,7 @@ import * as Queue from "effect/Queue";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/ai";
-import { chromium, type BrowserContext, type Page } from "playwright-core";
+import type { BrowserContext, Page } from "playwright-core";
 import { vi } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
@@ -32,6 +31,7 @@ import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as McpToolAccessTestkit from "../mcp/McpToolAccess.testkit.ts";
 import * as Broker from "../mcp/PreviewAutomationBroker.ts";
 import { CREDENTIAL_AUDIT_FILE } from "./CredentialAudit.ts";
+import { expectFullChrome, testChromium } from "./ChromeForTesting.testkit.ts";
 import * as CredentialVault from "./CredentialVault.ts";
 import * as DesktopChannel from "./DesktopBrowserChannel.ts";
 import * as Manager from "./Manager.ts";
@@ -39,24 +39,7 @@ import * as PreviewBrowser from "./PreviewBrowser.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
 import { ServerBrowserContexts } from "./ServerBrowserContexts.ts";
 
-/** Playwright's headless shell, which CI installs, beside the Chromium it would launch. */
-const headlessShell = () => {
-  if (process.env.CHROMERIA_TEST_CHROMIUM) return process.env.CHROMERIA_TEST_CHROMIUM;
-  let root = chromium.executablePath();
-  while (root !== NodePath.dirname(root) && !/^chromium-\d+$/.test(NodePath.basename(root)))
-    root = NodePath.dirname(root);
-  const revision = NodePath.basename(root).slice("chromium-".length);
-  const shellRoot = NodePath.join(NodePath.dirname(root), `chromium_headless_shell-${revision}`);
-  if (!NodeFS.existsSync(shellRoot)) return undefined;
-  for (const platform of NodeFS.readdirSync(shellRoot)) {
-    for (const name of ["chrome-headless-shell", "chrome-headless-shell.exe"]) {
-      const candidate = NodePath.join(shellRoot, platform, name);
-      if (NodeFS.existsSync(candidate)) return candidate;
-    }
-  }
-  return undefined;
-};
-const executable = headlessShell();
+const executable = testChromium;
 // Like the repository's other real-browser tests, which launch Playwright without
 // Chrome's sandbox: CI's Ubuntu runner blocks the unprivileged user namespaces it
 // needs (AppArmor). This is the server's own operator opt-out.
@@ -284,7 +267,10 @@ const withBrowser = <A, E>(
   effect: Effect.Effect<
     A,
     E,
-    Broker.PreviewAutomationBroker | Manager.PreviewManager | Scope.Scope
+    | Broker.PreviewAutomationBroker
+    | Manager.PreviewManager
+    | ServerBrowser.ServerBrowser
+    | Scope.Scope
   >,
 ) =>
   Effect.scoped(
@@ -318,6 +304,7 @@ describe.skipIf(!executable)("credential login in a real browser", () => {
           const broker = yield* Broker.PreviewAutomationBroker;
           const tabId = yield* openTab(broker);
           const page = pageAt("/");
+          yield* Effect.promise(() => expectFullChrome(page));
           const entered = Promise.withResolvers<void>();
           const gate = Promise.withResolvers<void>();
           const title = page.title.bind(page);
@@ -471,6 +458,61 @@ describe.skipIf(!executable)("credential login in a real browser", () => {
   );
 
   it.live(
+    "a cookie batch racing the end of a login lands in the fresh context without leaking a page",
+    () =>
+      withBrowser(
+        Effect.gen(function* () {
+          const broker = yield* Broker.PreviewAutomationBroker;
+          const browser = yield* ServerBrowser.ServerBrowser;
+          const tabId = yield* openTab(broker);
+          yield* fillPassword(broker, tabId);
+          const loginContext = pageAt("/").context();
+          const mirrored = yield* browser
+            .mirrorCookies({
+              environmentId: scope.environmentId,
+              sequence: 0,
+              profile: { id: "default", name: "Default", kind: "persistent" },
+              mutations: [
+                {
+                  type: "set",
+                  cookie: {
+                    name: "mirrored",
+                    value: "from-desktop",
+                    domain: "login.example.test",
+                    path: "/",
+                    secure: true,
+                    httpOnly: false,
+                    sameSite: "lax",
+                    // 2100-01-01: persisted, so it survives the login's context.
+                    expires: 4_102_444_800,
+                  },
+                },
+              ],
+            })
+            .pipe(Effect.result, Effect.forkScoped);
+          const ended = yield* invoke(broker)<{ closed: Array<string> }>(tabId, "endLogin");
+          expect(ended.closed).toEqual([tabId]);
+          const result = yield* Fiber.join(mirrored);
+          const fresh = yield* openTab(broker);
+          expect(yield* invoke(broker)(fresh, "evaluate", { expression: "1" })).toBe(1);
+          const context = pageAt("/").context();
+          expect(context).not.toBe(loginContext);
+          // The reserved page and the new tab, nothing the mirror left behind.
+          expect(context.pages()).toHaveLength(2);
+          const cookies = yield* Effect.promise(() =>
+            context.cookies("https://login.example.test/"),
+          );
+          if (result._tag === "Success") {
+            expect(cookies.map((cookie) => cookie.name)).toContain("mirrored");
+          } else {
+            expect(result.failure._tag).toBe("CookieMirrorError");
+          }
+        }),
+      ),
+    60_000,
+  );
+
+  it.live(
     "a popup still attaching when its filled opener closes stays in the login",
     () =>
       withBrowser(
@@ -523,12 +565,13 @@ describe.skipIf(!executable)("credential login in a real browser", () => {
       return withBrowser(
         Effect.gen(function* () {
           const broker = yield* Broker.PreviewAutomationBroker;
-          const opened = yield* broker.invoke<PreviewAutomationStatus>({
-            scope,
-            operation: "open",
-            input: { url: "https://login.example.test/", show: false, reuseExistingTab: false },
+          // Only a person's tab is the desktop's own; an agent's would run in the server browser.
+          const opened = yield* (yield* Manager.PreviewManager).open({
+            threadId: scope.thread.threadId,
+            url: "https://login.example.test/",
+            runtime: "server",
           });
-          const tabId = PreviewTabId.make(opened.tabId!);
+          const tabId = PreviewTabId.make(opened.tabId);
           expect(yield* fillPassword(broker, tabId).pipe(Effect.flip)).toMatchObject({
             _tag: "PreviewCredentialError",
             reason: "serverBrowserOnly",
@@ -564,11 +607,13 @@ describe.skipIf(!executable)("credential login in a real browser", () => {
             return attach(target);
           });
           const popupOpened = yield* nextOpened(tabId);
+          // The profile's reserved keep-alive page is open too; the popup is the new one.
+          const before = new Set(context.pages());
           // The popup's URL carries the filled password.
           yield* invoke(broker)(tabId, "click", { locator: "#popup" });
           const popup = yield* popupOpened;
           yield* Effect.promise(() => entered.promise);
-          const popupPage = context.pages().find((page) => page !== opener)!;
+          const popupPage = context.pages().find((page) => !before.has(page))!;
           // End the login while the popup is still attaching, then let it finish.
           const ending = yield* invoke(broker)<{ closed: Array<string> }>(tabId, "endLogin").pipe(
             Effect.forkScoped,
@@ -664,10 +709,12 @@ describe.skipIf(!executable)("credential login in a real browser", () => {
             }
             return attach(target);
           });
+          // The profile's reserved keep-alive page is open too; the tab is the new one.
+          const before = new Set(context.pages());
           // An ordinary new tab in the same profile, not a popup.
           const opening = yield* openTab(broker).pipe(Effect.result, Effect.forkScoped);
           yield* Effect.promise(() => entered.promise);
-          const pending = context.pages().find((page) => page !== opener)!;
+          const pending = context.pages().find((page) => !before.has(page))!;
           expect(yield* invoke(broker)<{ closed: Array<string> }>(tabId, "endLogin")).toEqual({
             closed: [tabId],
           });

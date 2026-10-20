@@ -34,7 +34,7 @@ flowchart TD
     end
 
     PBI["Preview browser identity"]
-    %% PBI: #460 PR #470 PR #527
+    %% PBI: #460 PR #470 PR #527 #572 PR #585
     T3C --> PBI
 
     BLM["Chrome login mirror"]

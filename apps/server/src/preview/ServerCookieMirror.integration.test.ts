@@ -2,20 +2,23 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import * as NodeFS from "node:fs";
 import { cdpCookieMirrorStore } from "@t3tools/shared/browserCookieMirror";
 import { EnvironmentId, type CookieMirrorBatch, type MirrorCookie } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 
+import {
+  expectFullChrome,
+  testChromium,
+  testChromiumVersion,
+  testHost,
+} from "./ChromeForTesting.testkit.ts";
 import { ServerBrowserContexts } from "./ServerBrowserContexts.ts";
 import { ServerCookieMirror } from "./ServerCookieMirror.ts";
 import { ServerCookieMirrorProfiles } from "./ServerCookieMirrorProfiles.ts";
 
-const executable =
-  process.env.CHROMERIA_TEST_CHROMIUM ??
-  ["/usr/bin/chromium", "/usr/bin/chromium-browser"].find(NodeFS.existsSync);
+const executable = testChromium;
 const environmentId = EnvironmentId.make("synthetic-environment");
 const cookie: MirrorCookie = {
   name: "__Host-login",
@@ -61,6 +64,8 @@ describe.skipIf(!executable)("real Playwright Chromium mirror adapter", () => {
           const contexts = new ServerBrowserContexts({
             profilesDir: NodePath.join(dir, "profiles"),
             executable: async () => executable!,
+            version: testChromiumVersion,
+            host: testHost,
             env: { ...process.env, T3CODE_SERVER_BROWSER_SANDBOX: "0" },
           });
           const mirror = new ServerCookieMirror(contexts);
@@ -78,6 +83,7 @@ describe.skipIf(!executable)("real Playwright Chromium mirror adapter", () => {
             const context = await mirror.apply(batch);
             expect(context).toBe(await contexts.contextFor(profile.id));
             const page = await context.newPage();
+            await expectFullChrome(page);
             const cdp = await context.newCDPSession(page);
             const store = cdpCookieMirrorStore(cdp);
             expect(

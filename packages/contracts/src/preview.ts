@@ -221,6 +221,8 @@ export const PreviewSessionSnapshot = Schema.Struct({
   /** The server runs this tab in headless Chromium, so the desktop streams it like other clients. */
   headless: Schema.optional(Schema.Boolean),
   automationOwner: Schema.optional(Schema.String),
+  /** The page lives in the server browser, so every client streams it and the desktop never hosts it. */
+  serverPage: Schema.optional(Schema.Boolean),
   reveal: Schema.optional(Schema.Boolean),
   revealRequest: Schema.optional(Schema.Struct({ id: Schema.String, force: Schema.Boolean })),
   updatedAt: Schema.String,
