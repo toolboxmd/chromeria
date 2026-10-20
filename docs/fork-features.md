@@ -3121,7 +3121,7 @@ sources and reasons.
   "id": "remote-secret-requests",
   "purpose": "Relay private source-client answers to a destination-owned one-use webhook request with durable retirement and receipt recovery.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/385"],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/583"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/599"],
   "newFiles": [
     "apps/server/src/peer/PeerAuthority.remoteSecrets.workflow.test.ts",
     "apps/server/src/secrets/RemoteSecretRelay.ts",
