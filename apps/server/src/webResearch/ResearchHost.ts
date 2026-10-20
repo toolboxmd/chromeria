@@ -109,12 +109,12 @@ const peerTool = Tool.make("web_read", {
   parameters: HostedWebReadInput,
   success: HostedWebReadResult,
   failure: OrchestratorMcpFailure,
-});
+}).annotate(Tool.Readonly, true);
 const sessionPeerTool = Tool.make("web_read", {
   parameters: McpRouting.parameters(HostedWebReadInput),
   success: HostedWebReadResult,
   failure: OrchestratorMcpFailure,
-});
+}).annotate(Tool.Readonly, true);
 const decodeInput = Schema.decodeUnknownEffect(HostedWebReadInput);
 
 const make = Effect.gen(function* () {
@@ -267,7 +267,7 @@ const make = Effect.gen(function* () {
     parameters: WebSearchInput,
     success: HostedWebSearchResult,
     failure: OrchestratorMcpFailure,
-  });
+  }).annotate(Tool.Readonly, true);
   const search = Effect.fn("ResearchHost.search")(function* (input: typeof WebSearchInput.Type) {
     const scope = yield* Invocation.McpInvocationContext;
     const host =

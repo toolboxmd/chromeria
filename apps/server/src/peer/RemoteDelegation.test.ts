@@ -2208,6 +2208,19 @@ it.effect("credential rotation replays the same remote task for the same parent 
       expect(second.taskId).toBe(first.taskId);
       expect(second.remoteChild.threadId).toBe(first.remoteChild.threadId);
       expect((yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(1);
+      const changedPolicy = yield* a.call(
+        "delegate_task",
+        {
+          task: "Run the full suite on the box.",
+          target: { environmentId: box.environmentId },
+          clientRequestId: "suite-on-box",
+          tools: { allow: ["Read"] },
+        },
+        { ...parentScope, requestNamespace: "provider-session:laptop-parent-2" },
+      );
+      expect(changedPolicy.isError).toBe(true);
+      expect(JSON.stringify(changedPolicy.content)).toContain("Launch tool allowlist changed.");
+      expect(yield* Ref.get(thread.launchIds)).toEqual([first.remoteChild.threadId]);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
