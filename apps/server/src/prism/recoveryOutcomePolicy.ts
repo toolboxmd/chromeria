@@ -51,6 +51,7 @@ export function recoveryOutcomeFor(input: {
   )
     return abandoned("ineligible");
   const failure = latestRootProviderFailure(run, projection.turnItems);
+  if (record?.state === "cancelled") return abandoned("ineligible");
   if (failure === null) return noRetry("missing_failure");
   if (failure.class === "usage_limit") {
     const choice = projection.thread.limitRecovery;

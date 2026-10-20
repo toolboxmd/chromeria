@@ -10797,21 +10797,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         },
       );
       const run = projection.runs.find((candidate) => candidate.id === command.runId);
-      if (run?.status === "failed" && projection.thread.transportRecovery?.runId === run.id) {
-        const now = yield* DateTime.now;
-        yield* markStoppedRun({ command, events, thread: projection.thread, run, now });
-        yield* holdStoppedThread({ command, events, projection, now });
-        yield* emit(
-          events,
-          command,
-        )({
-          type: "thread.metadata-updated",
-          threadId: command.threadId,
-          occurredAt: now,
-          payload: { ...projection.thread, transportRecovery: null, updatedAt: now },
-        });
-        return undefined;
-      }
       const rootNode =
         run?.rootNodeId === null
           ? undefined
@@ -12881,8 +12866,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "subagent.stop":
         yield* dispatchSubagentStop(command, events, effects);
         break;
-      case "run.interrupt":
-        cancelUnsettledEffects = yield* dispatchRunInterrupt(command, events, effects);
+      case "run.interrupt": {
+        const projection = yield* loadProjectionForCommand(command, ["runs"]);
+        if (command.holdQueue === true && PrismRecovery.isRecoveryStop(projection, command.runId)) {
+          cancelUnsettledEffects = yield* dispatchThreadStop(
+            { ...command, type: "thread.stop" },
+            events,
+            effects,
+          );
+          const stopped = yield* getProjectionWithPendingEvents(command.threadId, events);
+          const now = yield* DateTime.now;
+          yield* emit(
+            events,
+            command,
+          )({
+            type: "thread.metadata-updated",
+            threadId: command.threadId,
+            occurredAt: now,
+            payload: { ...stopped.thread, transportRecovery: null, updatedAt: now },
+          });
+        } else {
+          cancelUnsettledEffects = yield* dispatchRunInterrupt(command, events, effects);
+        }
         if (command.holdQueue === true) {
           yield* Ref.update(effects, (existing) => [
             ...existing,
@@ -12902,6 +12907,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ]);
         }
         break;
+      }
       case "thread.stop":
         cancelUnsettledEffects = yield* dispatchThreadStop(command, events, effects);
         break;

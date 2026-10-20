@@ -134,7 +134,7 @@ describe("Prism recovery finalization coordination", () => {
         yield* coordinator.observe(projection, false);
         assert.strictEqual(yield* coordinator.holdsResult(run.threadId), true);
         const closed = yield* coordinator.observe(projection, true);
-        assert.strictEqual(closed?.state, "closed");
+        assert.strictEqual(closed?.state, "cancelled");
         assert.strictEqual(yield* coordinator.holdsResult(run.threadId), false);
       }).pipe(Effect.provide(layer)),
   );

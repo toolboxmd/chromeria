@@ -94,10 +94,10 @@ export const layer = Layer.effect(
             ? {
                 guards: [],
                 mutations: [
-                  sql`UPDATE fork_prism_recovery SET state='closed',
-              payload_json=json_set(payload_json,'$.state','closed')
-              WHERE thread_id=${command.threadId} AND state <> 'closed'
-              ${command.type === "run.interrupt" ? sql`AND source_run_id=${command.runId}` : sql``}`.pipe(
+                  sql`UPDATE fork_prism_recovery SET state='cancelled',
+              payload_json=json_set(payload_json,'$.state','cancelled')
+              WHERE thread_id=${command.threadId} AND state <> 'cancelled'
+              ${command.type === "run.interrupt" && command.holdQueue !== true ? sql`AND source_run_id=${command.runId}` : sql``}`.pipe(
                     Effect.asVoid,
                     Effect.mapError(
                       () =>
@@ -125,4 +125,23 @@ export function continuationRunFields(command: OrchestrationV2ServerCommand) {
   if (command.type !== "message.dispatch") return {};
   const source = command.forkPrismRetryOfRunId ?? command.usageLimitContinuationOfRunId;
   return source === undefined ? {} : { forkPrismContinuationSourceRunId: source };
+}
+
+/** A Stop selected before retry admission still targets that recovery's current continuation. */
+export function isRecoveryStop(
+  projection: Pick<Coordinator.RecoveryProjection, "thread" | "runs">,
+  sourceRunId: RunId,
+) {
+  const byId = new Map(projection.runs.map((run) => [run.id, run]));
+  let run = latestExecutedRun(projection.runs);
+  if (run?.id === sourceRunId && projection.thread.transportRecovery?.runId === sourceRunId)
+    return true;
+  const seen = new Set<RunId>();
+  while (run?.forkPrismContinuationSourceRunId !== undefined && !seen.has(run.id)) {
+    seen.add(run.id);
+    const source = run.forkPrismContinuationSourceRunId;
+    if (source === sourceRunId) return true;
+    run = byId.get(source) ?? null;
+  }
+  return false;
 }

@@ -255,6 +255,94 @@ it.effect("Stop during the transport delay prevents the scheduled retry", () =>
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("a user takeover stays cancelled when a stale active retry is reconciled", () =>
+  Effect.gen(function* () {
+    const { orchestrator } = yield* setup;
+    const source = (yield* orchestrator.getThreadProjection(parentId)).runs[0]!;
+    const transport = { ...failure, class: "transport_error" as const };
+    const reactor = yield* Reactor.RecoveryReactor;
+    const coordinator = yield* Coordinator.RecoveryCoordinator;
+    yield* finish(source, transport);
+    yield* reactor.sweep;
+    yield* TestClock.adjust(60_000);
+    yield* reactor.sweep;
+    const stale = yield* orchestrator.getThreadProjection(parentId);
+    const retry = stale.runs.at(-1)!;
+    yield* coordinator.observe(stale, false);
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("takeover:active"),
+      threadId: parentId,
+      messageId: MessageId.make("takeover:active"),
+      text: "Take over",
+      attachments: [],
+      dispatchMode: { type: "queue_after_active" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    yield* coordinator.observe(stale, false);
+    assert.strictEqual(yield* coordinator.holdsResult(parentId), false);
+    yield* finish(retry, transport);
+    yield* reactor.sweep;
+    yield* TestClock.adjust(3_600_000);
+    yield* reactor.sweep;
+    assert.lengthOf(
+      (yield* orchestrator.getThreadProjection(parentId)).runs.filter(
+        (r) => r.forkPrismContinuationSourceRunId === retry.id,
+      ),
+      0,
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each(["admitted", "observed", "wait-cleared"] as const)(
+  "Stop for a waiting source reaches its admitted retry (%s)",
+  (stage) =>
+    Effect.gen(function* () {
+      const { orchestrator } = yield* setup;
+      const source = (yield* orchestrator.getThreadProjection(parentId)).runs[0]!;
+      const transport = { ...failure, class: "transport_error" as const };
+      const reactor = yield* Reactor.RecoveryReactor;
+      yield* finish(source, transport);
+      yield* reactor.sweep;
+      yield* TestClock.adjust(60_000);
+      yield* reactor.sweep;
+      const admitted = yield* orchestrator.getThreadProjection(parentId);
+      const retry = admitted.runs.at(-1)!;
+      if (stage !== "admitted")
+        yield* (yield* Coordinator.RecoveryCoordinator).observe(admitted, false);
+      if (stage === "wait-cleared") {
+        yield* reactor.sweep;
+        assert.isNull((yield* orchestrator.getThreadProjection(parentId)).thread.transportRecovery);
+      }
+      yield* orchestrator.dispatch({
+        type: "run.interrupt",
+        commandId: CommandId.make("stop:deadline"),
+        threadId: parentId,
+        runId: source.id,
+        holdQueue: true,
+      });
+      assert.strictEqual(
+        (yield* orchestrator.getThreadProjection(parentId)).runs.find((r) => r.id === retry.id)
+          ?.status,
+        "interrupted",
+      );
+      yield* reactor.sweep;
+      assert.strictEqual(
+        yield* (yield* Coordinator.RecoveryCoordinator).holdsResult(parentId),
+        false,
+      );
+      yield* TestClock.adjust(3_600_000);
+      yield* reactor.sweep;
+      assert.lengthOf(
+        (yield* orchestrator.getThreadProjection(parentId)).runs.filter(
+          (r) => r.forkPrismContinuationSourceRunId === retry.id,
+        ),
+        0,
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect.each(["message", "archive", "delete", "settle", "request", "model"] as const)(
   "%s cancels a waiting transport retry",
   (action) =>
@@ -675,7 +763,7 @@ it.effect(
       assert.strictEqual(yield* hooks.holdsFinalization(childId, run.id), false);
       assert.deepStrictEqual(
         yield* sql`SELECT state FROM fork_prism_recovery WHERE thread_id=${childId}`,
-        [{ state: "closed" }],
+        [{ state: "cancelled" }],
       );
       yield* (yield* Reactor.RecoveryReactor).sweep;
       assert.lengthOf((yield* orchestrator.getThreadProjection(childId)).runs, 1);

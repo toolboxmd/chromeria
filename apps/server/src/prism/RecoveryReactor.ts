@@ -37,7 +37,7 @@ export const recoveryCandidates = (sql: SqlClient.SqlClient, threadId?: ThreadId
     ${threadId === undefined ? sql`` : sql`AND r.thread_id=${threadId}`}
   UNION SELECT thread_id,source_run_id FROM fork_prism_recovery_outcomes WHERE status='pending'
     ${threadId === undefined ? sql`` : sql`AND thread_id=${threadId}`}
-  UNION SELECT thread_id,source_run_id FROM fork_prism_recovery WHERE state <> 'closed'
+  UNION SELECT thread_id,source_run_id FROM fork_prism_recovery WHERE state NOT IN ('closed','cancelled')
     ${threadId === undefined ? sql`` : sql`AND thread_id=${threadId}`}
 `;
 

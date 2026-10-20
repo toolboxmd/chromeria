@@ -244,7 +244,7 @@ describe("Prism persisted recovery", () => {
     );
     assert.strictEqual(
       decideRecovery({ ...input, previous: active, stoppedOrRetired: true }).state,
-      "closed",
+      "cancelled",
     );
     const exhausted = decideRecovery({
       ...input,
@@ -284,7 +284,7 @@ describe("Prism persisted recovery", () => {
     const armed = decideRecovery(input);
     assert.strictEqual(
       decideRecovery({ ...input, previous: armed, stoppedOrRetired: true }).state,
-      "closed",
+      "cancelled",
     );
     const waiting = decideRecovery({
       ...input,
@@ -293,7 +293,7 @@ describe("Prism persisted recovery", () => {
     assert.strictEqual(waiting.state, "reset_wait");
     assert.strictEqual(
       decideRecovery({ ...input, previous: waiting, stoppedOrRetired: true }).state,
-      "closed",
+      "cancelled",
     );
   });
   it("reset continuation preserves retry budget and closes on the eventual result", () => {

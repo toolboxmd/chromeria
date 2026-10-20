@@ -21,7 +21,7 @@ export const RecoveryRecord = Schema.Struct({
   modelSelection: ModelSelection,
   retryMessageId: MessageId,
   retryUsed: Schema.Boolean,
-  state: Schema.Literals(["retry_pending", "retry_started", "reset_wait", "closed"]),
+  state: Schema.Literals(["retry_pending", "retry_started", "reset_wait", "closed", "cancelled"]),
   resetAt: Schema.NullOr(Schema.String),
   // Separate from subscription resets: transport recovery ignores usage-limit preferences.
   retryAt: Schema.optionalKey(Schema.Number),
@@ -58,7 +58,7 @@ export function decideRecovery(input: {
     run.id !== previous.sourceRunId &&
     (end < previousEnd || (end === previousEnd && run.ordinal < previous.sourceOrdinal))
   )
-    return input.stoppedOrRetired ? { ...previous, state: "closed", resetAt: null } : previous;
+    return input.stoppedOrRetired ? { ...previous, state: "cancelled", resetAt: null } : previous;
   const related = previous !== null && continues(previous, run);
   const originalRunId = related ? previous.originalRunId : run.id;
   const record: RecoveryRecord = {
@@ -76,7 +76,8 @@ export function decideRecovery(input: {
     resetAt: null,
     transportAttempts: related ? (previous.transportAttempts ?? 0) : 0,
   };
-  if (input.stoppedOrRetired) return record;
+  if (input.stoppedOrRetired || (related && previous.state === "cancelled"))
+    return { ...record, state: "cancelled" };
   if (
     related &&
     !["completed", "failed", "interrupted", "cancelled", "rolled_back"].includes(run.status)
