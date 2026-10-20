@@ -190,27 +190,37 @@ function AuthorizedPreviewStream({
 }: PreviewStreamConfiguration & NativeStreamBridge) {
   const [attempt, setAttempt] = useState(0);
   const [previousAccess, setPreviousAccess] = useState(props.access);
-  // Wait for refreshed access, including cookie credentials with unchanged JSON.
+  const [restartOnRefresh, setRestartOnRefresh] = useState(false);
   if (props.access !== previousAccess) {
     setPreviousAccess(props.access);
-    setAttempt((current) => current + 1);
+    if (restartOnRefresh) {
+      setRestartOnRefresh(false);
+      setAttempt((current) => current + 1);
+    }
   }
   const processRetried = useRef(false);
   const unauthorized = useRef(0);
-  const configuration = JSON.stringify({
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (refreshTimer.current !== null) clearTimeout(refreshTimer.current);
+    },
+    [],
+  );
+  const configuration = {
     access: props.access,
     threadId: props.threadId,
     tabId: props.tabId,
     ...(props.resource === undefined ? {} : { resource: props.resource }),
     interactive: props.interactive && props.access.canOperate !== false,
     background: props.background,
-  } satisfies PreviewStreamConfiguration);
+  } satisfies PreviewStreamConfiguration;
   return (
     <PreviewStreamDocumentView
-      key={`${attempt}:${configuration}`}
+      key={`${attempt}:${JSON.stringify({ ...configuration, access: undefined })}`}
       {...props}
       ref={ref}
-      configuration={configuration}
+      configuration={JSON.stringify(configuration)}
       interactive={props.interactive && props.access.canOperate !== false}
       onUnauthorized={() => {
         const refusals = ++unauthorized.current;
@@ -221,6 +231,7 @@ function AuthorizedPreviewStream({
       onRetry={() => {
         processRetried.current = false;
         unauthorized.current = 0;
+        setRestartOnRefresh(true);
         props.onUnauthorized();
       }}
       onStreaming={() => {
@@ -332,28 +343,24 @@ function PreviewStreamDocumentView({
   const bootstrapTimedOut = useEffectEvent(() =>
     fail("Browser viewer could not start. Reconnect to try again."),
   );
-  const streamEnded = useEffectEvent(() => {
-    onStreamingChange?.(false);
-    onControl?.(null);
-  });
-  // The stream lives exactly as long as this view.
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts the bootstrap timeout and stops the WebView stream when this view unmounts
-  useLayoutEffect(() => {
-    active.current = true;
-    const view = webView.current;
-    bootstrapTimer.current = setTimeout(bootstrapTimedOut, 15_000);
-    return () => {
-      if (bootstrapTimer.current !== null) clearTimeout(bootstrapTimer.current);
-      bootstrapTimer.current = null;
-      active.current = false;
-      view?.injectJavaScript("window.T3PreviewStream?.stop(); true;");
-      streamEnded();
-    };
-  }, []);
-  const source = {
+  const previousAccess = useRef(access);
+  useEffect(() => {
+    if (!started || previousAccess.current === access) return;
+    previousAccess.current = access;
+    webView.current?.injectJavaScript(
+      `window.T3PreviewStream?.updateAccess(${JSON.stringify(access)}); true;`,
+    );
+  }, [access, started]);
+  useEffect(() => {
+    if (started) return;
+    const timer = setTimeout(bootstrapTimedOut, 15_000);
+    return () => clearTimeout(timer);
+  }, [started]);
+  // Access refresh replaces the socket; the document owns the PiP capture track.
+  const [source] = useState(() => ({
     html: previewStreamDocument(configuration, previewStreamScript),
     baseUrl: Platform.OS === "android" ? "https://localhost/" : "file:///",
-  };
+  }));
   useImperativeHandle(ref, () => ({
     command,
     paste,
@@ -433,11 +440,12 @@ function PreviewStreamDocumentView({
               case "inputRejected":
                 Dialog.alert("Browser input refused", message.message);
                 return;
-              case "unauthorized":
+              case "unauthorized": {
                 if (!onUnauthorized()) {
                   fail("This session can't open the browser stream. Reconnect to try again.");
                 }
                 return;
+              }
               case "popup":
                 if (
                   message.resource !== undefined &&
@@ -494,6 +502,7 @@ function PreviewStreamDocumentView({
                   // Dialogs may have closed and reopened while this viewer was disconnected.
                   dialogRef.current = null;
                   setControl(null);
+                  setFileChooser(null);
                   onControl?.(null);
                 }
                 onStreamingChange?.(message.status === "streaming");
