@@ -77,14 +77,19 @@ A fill happens only on an https page whose host is one of the item's URIs or a s
 one. For example, `shopify.com` covers `admin.shopify.com`, but not `evilshopify.com`. Inside an
 iframe, the iframe's own origin must match.
 
-A fill starts a login, even if the fill then fails. Until it ends, nothing in that tab, in the
-tabs linked to it by opener, or in any tab opened in the same browser profile meanwhile can be
-read: no snapshots, screenshots, page text, scripts,
-recordings, console or network entries, downloads, URLs or titles. Chromeria shows those tabs as
-**Login in progress**. The agent can still fill, click and type by locator, press keys and wait
-for an element, URL or text. The agent ends the login with `preview_end_login`, which closes those
-tabs, and continues in a new tab that is signed in through the profile's cookies. Closing the tabs
-yourself also ends it. A desktop tab whose connection drops and returns stays in its login. A login in an incognito profile loses its session when its tabs close.
+Fills run only in the server's own browser tabs, not in tabs the desktop app hosts.
+
+A fill starts a login for the whole browser profile the agent's tab uses, even if the fill then
+fails. The login uses that profile's sign-ins and cookies. Until it ends, no tab in the profile can
+be read: no snapshots, screenshots, page text, scripts, recordings, console or network entries,
+downloads, URLs or titles. That includes other agents' tabs in the same profile, which are paused,
+and tabs opened meanwhile. Keep logins short. Chromeria shows these tabs as **Login in progress**.
+
+During a login the agent can still fill, click and type by locator, press keys and wait for an
+element, URL or text. It ends the login with `preview_end_login`, which closes every tab in the
+profile, then continues in a new tab that is signed in through the profile's cookies. Closing all
+of the profile's tabs yourself also ends it. A login in an incognito profile loses its session when
+its tabs close.
 
 You still see the page in the live view.
 

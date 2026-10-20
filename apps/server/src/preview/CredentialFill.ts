@@ -26,6 +26,7 @@ const refused = (reason: PreviewCredentialReason, tabId?: string) => {
 
 /** The one answer to every read of a tab in a login. */
 export const loginInProgress = () => refused("loginInProgress");
+export const serverBrowserOnly = () => refused("serverBrowserOnly");
 
 /**
  * What a login tab still allows: more fills, and actions that return no page

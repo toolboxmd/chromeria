@@ -96,6 +96,7 @@ export const PreviewCredentialReason = Schema.Literals([
   "protocolLogging",
   "fillFailed",
   "loginInProgress",
+  "serverBrowserOnly",
 ]);
 export type PreviewCredentialReason = typeof PreviewCredentialReason.Type;
 
@@ -114,6 +115,8 @@ const REASON_MESSAGES: Record<PreviewCredentialReason, string> = {
     "Browser protocol logging (DEBUG=pw:*) is on in this server, so credentials are not filled.",
   fillFailed:
     "The input did not take the value. The tab stays in its login; finish it with clicks or call preview_end_login.",
+  serverBrowserOnly:
+    "Credentials are filled only in server browser tabs, not in tabs the desktop app hosts. Open the page with preview_open.",
   loginInProgress:
     "This tab is in a login after preview_fill_credential, so nothing in it or its related tabs can be read. Use preview_fill_credential, preview_click or preview_type with a locator, preview_press and preview_wait_for to finish signing in, then call preview_end_login and open a new tab.",
 };

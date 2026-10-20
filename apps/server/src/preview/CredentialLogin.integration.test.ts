@@ -68,9 +68,20 @@ const PASSWORD = `LOGIN-Password+&=#?% 42<"'>`;
 const USERNAME = "LOGIN-user@example.test";
 const CODE = "826493";
 const SECRETS = [PASSWORD, USERNAME, CODE, encodeURIComponent(PASSWORD)];
+/** Also decoded: Chromium escapes a URL its own way, such as ' as %27. */
 const expectNoSecret = (value: unknown) => {
   const text = JSON.stringify(value);
-  for (const secret of SECRETS) expect(text).not.toContain(secret);
+  const decoded = text.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
+    try {
+      return decodeURIComponent(run);
+    } catch {
+      return run;
+    }
+  });
+  for (const secret of SECRETS) {
+    expect(text).not.toContain(secret);
+    expect(decoded).not.toContain(secret);
+  }
 };
 
 const LOGIN_PAGE = `<title>Login</title>
@@ -506,7 +517,7 @@ describe.skipIf(!executable)("credential login in a real browser", () => {
   );
 
   it.live(
-    "a desktop page that detaches and returns keeps its login",
+    "a desktop-hosted tab refuses a fill and stays readable",
     () => {
       desktop.enabled = true;
       return withBrowser(
@@ -518,21 +529,102 @@ describe.skipIf(!executable)("credential login in a real browser", () => {
             input: { url: "https://login.example.test/", show: false, reuseExistingTab: false },
           });
           const tabId = PreviewTabId.make(opened.tabId!);
-          yield* fillPassword(broker, tabId);
-          const page = desktop.page!;
-          const disconnected = Promise.withResolvers<void>();
-          desktop.disconnected = disconnected.resolve;
-          desktop.bus.emit("detach", { threadId: scope.thread.threadId, tabId });
-          yield* Effect.promise(() => disconnected.promise);
-          expect(page.isClosed()).toBe(false);
-          // The next request reconnects to the same page through the normal path.
-          yield* refusedRead(broker, tabId);
-          const status = yield* invoke(broker)<PreviewAutomationStatus>(tabId, "status");
-          expect(status).toMatchObject({ title: null, loginInProgress: true });
-          expectNoSecret(status);
+          expect(yield* fillPassword(broker, tabId).pipe(Effect.flip)).toMatchObject({
+            _tag: "PreviewCredentialError",
+            reason: "serverBrowserOnly",
+          });
+          expect(yield* Effect.promise(() => desktop.page!.inputValue("#pw"))).toBe("");
+          expect(yield* invoke(broker)(tabId, "evaluate", { expression: "1" })).toBe(1);
         }),
       );
     },
+    60_000,
+  );
+
+  it.live(
+    "ending a login closes a popup that was still attaching",
+    () =>
+      withBrowser(
+        Effect.gen(function* () {
+          const broker = yield* Broker.PreviewAutomationBroker;
+          const tabId = yield* openTab(broker);
+          const opener = pageAt("/");
+          yield* fillPassword(broker, tabId);
+          const context = opener.context();
+          const attach = context.newCDPSession.bind(context);
+          const gate = Promise.withResolvers<void>();
+          const entered = Promise.withResolvers<void>();
+          let held = false;
+          vi.spyOn(context, "newCDPSession").mockImplementation(async (target) => {
+            if (target !== opener && "mainFrame" in target && !held) {
+              held = true;
+              entered.resolve();
+              await gate.promise;
+            }
+            return attach(target);
+          });
+          const popupOpened = yield* nextOpened(tabId);
+          // The popup's URL carries the filled password.
+          yield* invoke(broker)(tabId, "click", { locator: "#popup" });
+          const popup = yield* popupOpened;
+          yield* Effect.promise(() => entered.promise);
+          const popupPage = context.pages().find((page) => page !== opener)!;
+          expect(yield* invoke(broker)<{ closed: Array<string> }>(tabId, "endLogin")).toEqual({
+            closed: [tabId],
+          });
+          const closed = Promise.withResolvers<void>();
+          popupPage.once("close", () => closed.resolve());
+          gate.resolve();
+          yield* Effect.promise(() => closed.promise);
+          expect(popupPage.isClosed()).toBe(true);
+          const read = yield* invoke(broker)<void>(popup, "evaluate", {
+            expression: "location.href",
+          }).pipe(Effect.flip);
+          expect(read._tag).not.toBe("PreviewCredentialError");
+          expectNoSecret(read);
+          // The profile is free again once nothing of the login is left.
+          const fresh = yield* openTab(broker);
+          expect(yield* invoke(broker)(fresh, "evaluate", { expression: "1" })).toBe(1);
+        }),
+      ),
+    60_000,
+  );
+
+  it.live(
+    "a popup from another tab of the profile publishes no URL during a login",
+    () =>
+      withBrowser(
+        Effect.gen(function* () {
+          const broker = yield* Broker.PreviewAutomationBroker;
+          const manager = yield* Manager.PreviewManager;
+          const first = yield* openTab(broker);
+          const second = yield* openTab(broker);
+          // The first page keeps what is typed; the second puts it in a popup's URL.
+          yield* invoke(broker)(first, "evaluate", {
+            expression:
+              "document.getElementById('pw').addEventListener('input', e => { localStorage.echo = e.target.value })",
+          });
+          yield* invoke(broker)(second, "evaluate", {
+            expression:
+              "document.getElementById('popup').onclick = () => window.open('/child?pw=' + encodeURIComponent(localStorage.echo))",
+          });
+          yield* fillPassword(broker, first);
+          // The whole profile is in the login, the unrelated second tab included.
+          yield* refusedRead(broker, second);
+          const events: Array<unknown> = [];
+          yield* manager.events.pipe(
+            Stream.runForEach((event) => Effect.sync(() => events.push(event))),
+            Effect.forkScoped,
+          );
+          const popupOpened = yield* nextOpened(first);
+          yield* invoke(broker)(second, "click", { locator: "#popup" });
+          const popup = yield* popupOpened;
+          yield* refusedRead(broker, popup);
+          expectNoSecret(events);
+          expectNoSecret((yield* manager.list({ threadId: scope.thread.threadId })).sessions);
+          expectNoSecret(yield* invoke(broker)(popup, "status"));
+        }),
+      ),
     60_000,
   );
 
