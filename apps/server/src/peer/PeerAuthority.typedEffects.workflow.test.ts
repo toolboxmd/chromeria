@@ -2632,6 +2632,98 @@ it.live(
 );
 
 it.live(
+  "manual584r3: a keyed manual run refused by a post-admission recheck fails terminally and frees the schedule",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const node = yield* makeNode(
+          descriptorOf("manual584r3", "Manual recheck", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const parent = ThreadId.make("manual584r3-parent");
+        yield* seedParent(node, parent);
+        const sql = Context.get(node.database, SqlClient.SqlClient);
+        const requestOwner = yield* RequestReceipts.layer.pipe(
+          Layer.provide(Layer.succeedContext(node.database)),
+          Layer.fresh,
+          Layer.build,
+        );
+        const userMessages = sql`SELECT message_id FROM orchestration_v2_projection_messages WHERE role='user'`;
+        // The second recheck follows admission; the third follows the dispatch claim.
+        for (const refusingCall of [2, 3]) {
+          const { task } = yield* node.scheduled.upsert({
+            purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
+            commandId: CommandId.make(`manual584r3-schedule-${refusingCall}`),
+            title: "Refused after admission",
+            prompt: "Never dispatched",
+            enabled: true,
+            schedule: { type: "interval", everyMs: 60_000 },
+            projectId: node.project.id,
+            threadId: null,
+            workspaceStrategy: { type: "root" },
+            modelSelection: selection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+          });
+          const identity = yield* Context.get(
+            requestOwner,
+            RequestReceipts.McpRequestReceipts,
+          ).identify(
+            caller(node, parent),
+            "run_scheduled_task_now",
+            { taskId: task.id },
+            `manual584r3-refused-${refusingCall}`,
+          );
+          const messagesBefore = (yield* userMessages).length;
+          const calls = yield* Ref.make(0);
+          const refusal = new OrchestratorMcpFailure({
+            code: "parent_not_active",
+            message: "The calling thread is no longer active.",
+          });
+          const refused = yield* Effect.flip(
+            node.scheduled.runNow(
+              { id: task.id },
+              {
+                request: identity,
+                recheck: Ref.updateAndGet(calls, (n) => n + 1).pipe(
+                  Effect.flatMap((n) => (n === refusingCall ? Effect.fail(refusal) : Effect.void)),
+                ),
+              },
+            ),
+          );
+          expect(refused).toMatchObject({ code: "parent_not_active" });
+          const [row] = yield* sql<{
+            stage: string;
+            result_json: string | null;
+          }>`SELECT stage,result_json FROM scheduled_manual_requests WHERE request_id=${identity.id}`;
+          expect(row).toEqual({ stage: "failed", result_json: refusal.message });
+          const failed = (yield* node.scheduled.list()).tasks.find((t) => t.id === task.id)!;
+          expect(failed.lastRunStatus).toBe("failed");
+          expect(failed.runCount).toBe(1);
+          const replay = yield* Effect.flip(
+            node.scheduled.runNow({ id: task.id }, { request: identity }),
+          );
+          expect(replay.message).toContain(refusal.message);
+          expect(
+            yield* Effect.flip(node.scheduled.runNow({ id: task.id }, { request: identity })),
+          ).toEqual(replay);
+          const retried = yield* nativeCall(node, parent, "run_scheduled_task_now", {
+            taskId: task.id,
+            clientRequestId: `manual584r3-new-key-${refusingCall}`,
+          });
+          expect(retried.isError, json(retried)).not.toBe(true);
+          const recovered = (yield* node.scheduled.list()).tasks.find((t) => t.id === task.id)!;
+          expect(recovered.lastRunStatus).toBe("succeeded");
+          expect(recovered.runCount).toBe(2);
+          expect((yield* userMessages).length).toBe(messagesBefore + 1);
+        }
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
   "preferences382: negotiated peer result retains its bounded variant and original grant checks",
   () =>
     Effect.scoped(

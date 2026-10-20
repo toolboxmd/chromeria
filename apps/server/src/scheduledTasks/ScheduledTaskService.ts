@@ -1677,12 +1677,13 @@ export const layer = Layer.effect(
       taskId: ScheduledTaskId,
       incarnation: string,
       message: string,
+      fromStage: "prepared" | "dispatching",
     ) =>
       sql
         .withTransaction(
           Effect.gen(function* () {
             const claimed =
-              yield* sql`UPDATE scheduled_manual_requests SET stage='failed',result_json=${message} WHERE request_id=${request.id} AND result_json IS NULL RETURNING request_id`;
+              yield* sql`UPDATE scheduled_manual_requests SET stage='failed',result_json=${message} WHERE request_id=${request.id} AND stage=${fromStage} AND result_json IS NULL RETURNING request_id`;
             if (claimed.length === 0) return;
             const active = (yield* sql<{
               active_request_id: string | null;
@@ -1809,7 +1810,16 @@ export const layer = Layer.effect(
         const snapshot = yield* decodeManualSnapshot(row.snapshot_json).pipe(
           Effect.mapError(manualUnavailable),
         );
-        yield* recheck;
+        // A typed refusal before this key claims dispatch never reached a
+        // destination, so it is this key's outcome and releases the schedule.
+        const refuseBeforeDispatch =
+          (fromStage: "prepared" | "dispatching") => (refusal: OrchestratorMcpFailure) =>
+            failManual(request, input.id, row.incarnation, refusal.message, fromStage).pipe(
+              Effect.andThen(Effect.fail(refusal)),
+            );
+        yield* row.stage === "prepared" && row.result_json === null
+          ? recheck.pipe(Effect.catch(refuseBeforeDispatch("prepared")))
+          : recheck;
         const commandId = CommandId.make(`scheduled-task:manual:${request.id}`);
         const messageId = MessageId.make(`scheduled-task-message:manual:${request.id}`);
         const threadId = ThreadId.make(
@@ -1863,7 +1873,9 @@ export const layer = Layer.effect(
             );
           if (row.stage === "prepared" && claimed.length === 0)
             return yield* manualUnknown(request);
-          yield* recheck;
+          yield* claimed.length > 0
+            ? recheck.pipe(Effect.catch(refuseBeforeDispatch("dispatching")))
+            : recheck;
           const dispatched = yield* Effect.exit(
             dispatchTask(
               snapshot.task,
@@ -1899,7 +1911,7 @@ export const layer = Layer.effect(
                 ));
             if (!refused) return yield* manualUnknown(request);
             const message = errorMessage(Cause.squash(failure));
-            yield* failManual(request, input.id, row.incarnation, message);
+            yield* failManual(request, input.id, row.incarnation, message, "dispatching");
             return yield* manualFailed(message);
           }
         } else if (decision?._tag === "fork") {
