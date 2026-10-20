@@ -85,6 +85,7 @@ import * as ServerConfig from "../config.ts";
 import { resolveRootCliCommand } from "../cli/invocation.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import {
   fillCredential,
   loginInProgress,
@@ -642,6 +643,7 @@ const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const host = { platform: yield* HostProcess.Platform, arch: yield* HostProcess.Architecture };
   const manager = yield* PreviewManager.PreviewManager;
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const environmentId = yield* environment.getEnvironmentId;
@@ -664,9 +666,8 @@ const make = Effect.gen(function* () {
   const tabs = new Map<string, ServerTab>();
   const pendingTabs = new Map<
     string,
-    { readonly agentId: string | null; promise?: Promise<ServerTab> }
+    { readonly agentId: string | null; readonly threadId?: string; promise?: Promise<ServerTab>; settled?: boolean }
   >();
-
   // Retain the original invocation across a failed launch or a desktop reconnect.
   // These are current checks, never cached grant results.
   const tabAuthorizations = new Map<string, () => Promise<void>>();
@@ -689,6 +690,12 @@ const make = Effect.gen(function* () {
   const profileLogins = new Map<string, { ending: boolean; context: BrowserContext }>();
   let loginEpoch = 0;
   const inLogin = (tab: ServerTab) => profileLogins.has(tab.profileKey);
+  const mayCloseSettledTab = (tab: ServerTab) =>
+    tab.control.agentId !== null &&
+    tab.control.controller === null &&
+    tab.viewers.size === 0 &&
+    // Quarantine ends only after the whole profile context closes.
+    !inLogin(tab);
   const profileTabs = (profileKey: string) =>
     [...tabs.values()].filter((tab) => tab.profileKey === profileKey);
   const endLoginsOf = (context: BrowserContext) => {
@@ -1272,6 +1279,10 @@ const make = Effect.gen(function* () {
         throw new ServerBrowserTabNotFoundError({ threadId: tab.threadId, tabId: tab.tabId });
       }
       tabs.set(key, tab);
+      if (pendingTabs.get(key)?.settled && mayCloseSettledTab(tab)) {
+        dropTab(tab, true);
+        throw new ServerBrowserTabNotFoundError({ threadId: tab.threadId, tabId: tab.tabId });
+      }
       if (inLogin(tab)) report(tab, { _tag: "Idle" });
       reportLiveTabs();
       if (desktop) void page.waitForLoadState("load").then(() => reportLoaded(tab), constVoid);
@@ -1890,7 +1901,7 @@ const make = Effect.gen(function* () {
         pendingTabs.delete(key);
         closedPendingTabs.delete(key);
       });
-    pendingTabs.set(key, { agentId: snapshot.automationOwner ?? null, promise: opening });
+    pendingTabs.set(key, { agentId: snapshot.automationOwner ?? null, threadId: snapshot.threadId, promise: opening, settled: false });
     return opening;
   };
 
@@ -3690,6 +3701,20 @@ const make = Effect.gen(function* () {
     });
 
   yield* manager.serverEvents.pipe(Stream.runForEach(mirrorManagerEvent), Effect.forkScoped);
+  yield* orchestrator.streamDomainEvents.pipe(
+    Stream.runForEach((event) =>
+      Effect.sync(() => {
+        if (event.type !== "thread.settled") return;
+        for (const pending of pendingTabs.values()) {
+          if (pending.threadId === event.threadId) pending.settled = true;
+        }
+        for (const tab of tabs.values()) {
+          if (tab.threadId === event.threadId && mayCloseSettledTab(tab)) dropTab(tab, true);
+        }
+      }),
+    ),
+    Effect.forkScoped,
+  );
   // Whoever runs the server learns the fix before anyone opens a tab.
   if (
     !PreviewBrowserHost.sandboxDisabled(yield* HostProcess.Environment) &&

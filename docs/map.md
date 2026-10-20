@@ -36,6 +36,9 @@ flowchart TD
     PBI["Preview browser identity"]
     %% PBI: #460 PR #470 PR #527 #572 PR #585
     T3C --> PBI
+    BST["Settled thread browser cleanup"]
+    %% BST: #601
+    PBI --> BST
 
     BLM["Chrome login mirror"]
     %% BLM: #520 #541 PR #530 PR #545

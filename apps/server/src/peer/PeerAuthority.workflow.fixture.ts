@@ -1354,6 +1354,7 @@ export const makeNode = (
     });
     const nativeBrowser = browserOwner
       ? yield* NativeBrowser.layer.pipe(
+          Layer.provide(Layer.succeedContext(runtime)),
           Layer.provide(
             Layer.mock(CredentialVault.CredentialVault)({
               uris: () => Effect.die("No real vault access in the peer authority fixture"),
