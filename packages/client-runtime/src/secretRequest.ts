@@ -11,6 +11,10 @@ export type SecretRequestItem = Extract<
 >;
 
 export const SECRET_REQUEST_PRIVACY_NOTE = "Sent privately to the agent, never shown in chat";
+export const secretRequestPrivacyNote = (item: Pick<SecretRequestItem, "destination">) =>
+  item.destination === undefined
+    ? SECRET_REQUEST_PRIVACY_NOTE
+    : `Sent privately to ${item.destination.environmentLabel} for project ${item.destination.projectId}, never shown in chat`;
 export const SECRET_REQUEST_DEFAULT_PLACEHOLDER = "Paste the secret";
 
 export type SecretRequestDisplay =

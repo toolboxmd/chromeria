@@ -1,3 +1,12 @@
+import { McpScheduledMutationReceipt, type RemoteSecretReceiptQuery } from "@t3tools/contracts";
+import * as RemoteSecretPersistence from "../secrets/remoteSecretPersistence.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import { RemoteSecretRetirementAck, RemoteSecretOrigin } from "@t3tools/contracts";
+import {
+  RemoteSecretSupport,
+  RemoteSecretResult,
+  type RemoteSecretControl,
+} from "@t3tools/contracts";
 import type * as HttpClientResponse from "effect/http/HttpClientResponse";
 import {
   DeviceViewerAccess,
@@ -102,6 +111,18 @@ const decodeAutomationSupport = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Struct({ version: Schema.Literal(1) })),
 );
 
+const decodeSecretEnvelope = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(PeerAuthorityEnvelope),
+);
+const decodeSecretOrigin = Schema.decodeUnknownEffect(Schema.fromJsonString(RemoteSecretOrigin));
+const decodeSecretRetirementAck = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(RemoteSecretRetirementAck),
+);
+const decodeSecretReceipt = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(McpScheduledMutationReceipt),
+);
+const decodeSecretSupport = Schema.decodeUnknownEffect(Schema.fromJsonString(RemoteSecretSupport));
+const decodeSecretResult = Schema.decodeUnknownEffect(Schema.fromJsonString(RemoteSecretResult));
 const PROTOCOL_VERSION = "2025-06-18";
 
 /** The limits a call carries to the peer: the calling agent's modes here. */
@@ -118,6 +139,19 @@ export interface PeerCallLimits {
 export class PeerMcpClient extends Context.Service<
   PeerMcpClient,
   {
+    readonly remoteSecretReceipt?: (
+      environmentId: EnvironmentId,
+      generation: string,
+      query: RemoteSecretReceiptQuery,
+    ) => Effect.Effect<
+      Option.Option<import("@t3tools/contracts").McpScheduledMutationReceipt>,
+      OrchestratorMcpFailure
+    >;
+    readonly remoteSecret?: (
+      environmentId: EnvironmentId,
+      generation: string,
+      input?: { readonly authority: PeerAuthorityEnvelope; readonly body: RemoteSecretControl },
+    ) => Effect.Effect<RemoteSecretResult | undefined, OrchestratorMcpFailure>;
     /** Server-private access. The destination ticket never crosses the source client boundary. */
     readonly closeDeviceViewer?: (input: {
       readonly environmentId: EnvironmentId;
@@ -269,6 +303,7 @@ const responseJson = (contentType: string | undefined, text: string) =>
     : text;
 
 const make = Effect.gen(function* () {
+  const secretSql = yield* Effect.serviceOption(SqlClient.SqlClient);
   const links = yield* PeerLinks.PeerLinks;
   const httpClient = yield* HttpClient.HttpClient;
   const crypto = yield* Crypto.Crypto;
@@ -508,8 +543,73 @@ const make = Effect.gen(function* () {
         Effect.forkIn(lifetime),
       );
     });
+  const deliverSecretRetirements = Effect.gen(function* () {
+    if (Option.isNone(secretSql) || Option.isNone(environment)) return false;
+    const sql = secretSql.value;
+    yield* RemoteSecretPersistence.reconcileObligations.pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+    if (Option.isSome(authority)) {
+      const active = yield* sql<{
+        request_id: string;
+        authority_json: string;
+      }>`SELECT request_id,authority_json FROM remote_secret_obligations WHERE pending=0 AND ack_json IS NULL`;
+      for (const row of active) {
+        const envelope = yield* decodeSecretEnvelope(row.authority_json);
+        yield* authority.value
+          .checkInteractiveRecord(envelope.recordId)
+          .pipe(
+            Effect.catch((error) =>
+              error.code === "capability_denied"
+                ? sql`UPDATE remote_secret_obligations SET pending=1 WHERE request_id=${row.request_id} AND ack_json IS NULL`.pipe(
+                    Effect.asVoid,
+                  )
+                : Effect.void,
+            ),
+          );
+      }
+    }
+    const pending = yield* sql<{
+      request_id: string;
+      environment_id: EnvironmentId;
+      generation: string;
+      origin_json: string;
+    }>`SELECT request_id,environment_id,generation,origin_json FROM remote_secret_obligations WHERE pending=1 AND ack_json IS NULL`;
+    for (const row of pending)
+      yield* Effect.gen(function* () {
+        if (links.resolveAutomationRecovery === undefined) return;
+        const resolved = yield* links
+          .resolveAutomationRecovery(row.environment_id, row.generation)
+          .pipe(Effect.mapError(fromLinkError));
+        const input = {
+          version: 1 as const,
+          environmentId: yield* environment.value.getEnvironmentId,
+          generation: row.generation,
+          requestId: row.request_id,
+          origin: yield* decodeSecretOrigin(row.origin_json),
+        };
+        const response = yield* httpClient.execute(
+          HttpClientRequest.post(`${resolved.url}/mcp/peer-control/secrets/retire`).pipe(
+            HttpClientRequest.setHeaders({ authorization: `Bearer ${resolved.token}` }),
+            HttpClientRequest.setBody(HttpBody.text(json(input), "application/json")),
+          ),
+        );
+        if (response.status !== 200) return;
+        const ack = yield* decodeSecretRetirementAck(yield* response.text);
+        const { retired: _retired, ...identity } = ack;
+        if (json(identity) !== json(input)) return;
+        yield* sql`UPDATE remote_secret_obligations SET ack_json=${json(ack)} WHERE request_id=${row.request_id} AND generation=${row.generation} AND pending=1`;
+      }).pipe(
+        Effect.timeout("10 seconds"),
+        Effect.catch(() => Effect.logWarning("Remote secret retirement remains unconfirmed.")),
+      );
+    return pending.length !== 0;
+  });
   const deliverAutomationDisableBatch = Effect.gen(function* () {
     if (Option.isNone(authority)) return false;
+    const secretPending = yield* deliverSecretRetirements.pipe(
+      Effect.catch(() => Effect.succeed(true)),
+    );
     const batch = yield* authority.value.pendingAutomationDisables;
     yield* Effect.forEach(
       batch,
@@ -550,7 +650,7 @@ const make = Effect.gen(function* () {
         }).pipe(Effect.timeout("10 seconds"), Effect.ignoreCause({ log: true })),
       { concurrency: 4, discard: true },
     );
-    return batch.length !== 0;
+    return batch.length !== 0 || secretPending;
   });
   const drainAutomationDisables = deliverAutomationDisableBatch.pipe(Effect.asVoid);
   const disableWakeups = yield* Queue.sliding<void>(1);
@@ -1550,6 +1650,150 @@ const make = Effect.gen(function* () {
       ),
     );
   return PeerMcpClient.of({
+    remoteSecretReceipt: (environmentId, generation, query) =>
+      Effect.gen(function* () {
+        const resolved = yield* links.resolve(environmentId).pipe(Effect.mapError(fromLinkError));
+        if (resolved.link.launchIdentity !== generation || Option.isNone(environment))
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "Receipt recovery requires its original link generation.",
+          });
+        const response = yield* httpClient.execute(
+          HttpClientRequest.post(`${resolved.url}/mcp/peer-control/secrets/receipt`).pipe(
+            HttpClientRequest.setHeaders({
+              authorization: `Bearer ${resolved.token}`,
+              [PeerAuthority.LINK_HEADER]: json({
+                environmentId: yield* environment.value.getEnvironmentId,
+                generation,
+                automationVersion: 1,
+              }),
+            }),
+            HttpClientRequest.setBody(HttpBody.text(json(query), "application/json")),
+          ),
+        );
+        if (response.status === 204) return Option.none();
+        if (response.status !== 200)
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "The original secret consumer receipt could not be recovered.",
+          });
+        return Option.some(
+          yield* decodeSecretReceipt(yield* deviceViewerReply(response)).pipe(
+            Effect.mapError(
+              () =>
+                new OrchestratorMcpFailure({
+                  code: "orchestration_error",
+                  message: "The recovered receipt was invalid.",
+                }),
+            ),
+          ),
+        );
+      }).pipe(
+        Effect.catchTags({
+          HttpClientError: () =>
+            Effect.fail(
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "The receipt owner is unreachable.",
+              }),
+            ),
+        }),
+      ),
+    remoteSecret: (environmentId, generation, input) =>
+      Effect.gen(function* () {
+        if (Option.isNone(secretSql))
+          return yield* new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: "Remote secret control requires its durable source retirement owner.",
+          });
+        const resolved = yield* links.resolve(environmentId).pipe(Effect.mapError(fromLinkError));
+        if (resolved.link.launchIdentity !== generation || Option.isNone(environment))
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "The secret request link generation changed.",
+          });
+        const self = yield* environment.value.getEnvironmentId;
+        // Intake is independent of the first POST, so reverse validation can complete while it is open.
+        yield* ensureChannel(resolved, self);
+        const request =
+          input === undefined
+            ? HttpClientRequest.get(`${resolved.url}/mcp/peer-control/secrets`)
+            : HttpClientRequest.post(`${resolved.url}/mcp/peer-control/secrets`).pipe(
+                HttpClientRequest.setBody(HttpBody.text(json(input.body), "application/json")),
+              );
+        const response = yield* httpClient.execute(
+          request.pipe(
+            HttpClientRequest.setHeaders({
+              authorization: `Bearer ${resolved.token}`,
+              [PeerAuthority.LINK_HEADER]: json({
+                environmentId: self,
+                generation,
+                automationVersion: 1,
+              }),
+              ...(input === undefined
+                ? {}
+                : { [PeerAuthority.AUTHORITY_HEADER]: json(input.authority) }),
+            }),
+          ),
+        );
+        if (response.status !== 200)
+          return yield* new OrchestratorMcpFailure({
+            code:
+              response.status === 404 || response.status === 409
+                ? "invalid_request"
+                : response.status === 403 || response.status === 401
+                  ? "capability_denied"
+                  : "orchestration_error",
+            message:
+              "The destination could not confirm remote secret v1; no fallback prompt was created.",
+          });
+        const reply = yield* deviceViewerReply(response);
+        if (input === undefined) {
+          const support = yield* decodeSecretSupport(reply).pipe(
+            Effect.mapError(
+              () =>
+                new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message: "The destination does not support remote secret v1.",
+                }),
+            ),
+          );
+          if (
+            !support.families.includes("schedule.webhook-signature") ||
+            !support.consumers.includes("schedule_task")
+          )
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "The destination does not support this secret consumer.",
+            });
+          return undefined;
+        }
+        const current = yield* links.get(environmentId).pipe(Effect.mapError(fromLinkError));
+        if (Option.isNone(current) || current.value.launchIdentity !== generation)
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "The secret reply belongs to a retired link generation.",
+          });
+        return yield* decodeSecretResult(reply).pipe(
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "The secret control reply was invalid.",
+              }),
+          ),
+        );
+      }).pipe(
+        Effect.catchTags({
+          HttpClientError: () =>
+            Effect.fail(
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "The secret destination is unreachable.",
+              }),
+            ),
+        }),
+      ),
     readAttachment,
     readNativeBrowserDownload,
     call,

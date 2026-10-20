@@ -3113,3 +3113,56 @@ sources and reasons.
   "keywords": ["preview_fill_credential", "fillCredential", "credentialVault", "rbw"]
 }
 ```
+
+## remote-secret-requests
+
+```json
+{
+  "id": "remote-secret-requests",
+  "purpose": "Relay private source-client answers to a destination-owned one-use webhook request with durable retirement and receipt recovery.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/385"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/compare/feat/379-cross-machine-parity...feat/385-remote-secret-channel"
+  ],
+  "newFiles": [
+    "apps/server/src/peer/PeerAuthority.remoteSecrets.workflow.test.ts",
+    "apps/server/src/secrets/RemoteSecretRelay.ts",
+    "apps/server/src/secrets/RemoteSecretRequests.ts",
+    "apps/server/src/secrets/SecretRequestIngress.ts",
+    "apps/server/src/secrets/remoteSecretPersistence.ts",
+    "packages/contracts/src/remoteSecret.ts"
+  ],
+  "upstreamFiles": [
+    "apps/server/src/mcp/McpRequestReceipts.ts",
+    "apps/server/src/mcp/McpRouting.ts",
+    "apps/server/src/peer/PeerAuthority.ts",
+    "apps/server/src/peer/PeerAuthority.workflow.fixture.ts",
+    "apps/server/src/peer/PeerForwarding.ts",
+    "apps/server/src/peer/PeerLinks.ts",
+    "apps/server/src/peer/PeerMcpClient.ts",
+    "apps/server/src/peer/PeerToolRouting.test.ts",
+    "apps/server/src/scheduledTasks/DestinationAutomationAuthority.ts",
+    "apps/server/src/scheduledTasks/mutationReceipts.ts"
+  ],
+  "sharedFiles": [
+    "apps/mobile/src/features/threads/SecretRequestCard.tsx",
+    "apps/server/src/mcp/McpHttpServer.ts",
+    "apps/server/src/mcp/OrchestratorMcpService.ts",
+    "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+    "apps/server/src/orchestration-v2/DelegatedTaskQuestionReactor.ts",
+    "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
+    "apps/server/src/secrets/SecretRequests.ts",
+    "apps/server/src/server.ts",
+    "apps/server/src/ws.ts",
+    "apps/web/src/components/chat/SecretRequestCard.tsx",
+    "packages/client-runtime/src/secretRequest.ts",
+    "packages/contracts/src/index.ts",
+    "packages/contracts/src/orchestrationV2.ts",
+    "packages/contracts/src/orchestratorMcp.ts",
+    "packages/contracts/src/rpc.ts",
+    "packages/contracts/src/scheduledTask.ts"
+  ],
+  "keywords": ["remote_secret", "RemoteSecret", "secret385"]
+}
+```

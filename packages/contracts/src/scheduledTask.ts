@@ -1,3 +1,4 @@
+import { RemoteSecretHandle } from "./remoteSecret.ts";
 import { McpManualRunReceipt } from "./mcpRequest.ts";
 import { BareLaunchRequest } from "./bareLaunch.ts";
 import { SavedPurposeIntent } from "./executionPurpose.ts";
@@ -107,6 +108,10 @@ const ScheduledTaskUpsertWebhookSchedule = Schema.Struct({
     Schema.NullOr(
       Schema.Struct({
         ...ScheduledTaskWebhookSignatureFields,
+        secretRequest: Schema.optional(RemoteSecretHandle).annotate({
+          description:
+            "Remote request_secret handle for this destination/project. schedule_task only, consumed atomically on first acceptance; cannot be combined with secret or secretRef.",
+        }),
         secret: Schema.optional(TrimmedNonEmptyString).annotate({
           description: "Shared signing secret. Omit to keep the stored secret.",
         }),
@@ -114,7 +119,14 @@ const ScheduledTaskUpsertWebhookSchedule = Schema.Struct({
           description:
             "A secret the user entered through request_secret, used instead of secret. It is consumed by this save.",
         }),
-      }),
+      }).check(
+        Schema.makeFilter(
+          (signature) =>
+            signature.secretRequest === undefined ||
+            (signature.secret === undefined && signature.secretRef === undefined),
+          { expected: "one destination request without a local secret or ref" },
+        ),
+      ),
     ),
   ).annotate({
     description: "Signature check; omit or null to accept requests by URL token only.",
