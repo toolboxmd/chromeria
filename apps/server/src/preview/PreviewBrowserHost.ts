@@ -14,7 +14,9 @@ export const sandboxDisabled = (env: Readonly<Record<string, string | undefined>
 
 /** Set on Ubuntu 23.10+: unprivileged user namespaces need an AppArmor profile. */
 const USERNS_RESTRICTION = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns";
-export const APPARMOR_PROFILE_PATH = "/etc/apparmor.d/t3-chrome-headless-shell";
+// Named after the install directory, so hosts set up for the old headless shell
+// get the profile for Chrome for Testing on their next setup.
+export const APPARMOR_PROFILE_PATH = "/etc/apparmor.d/t3-chrome-for-testing";
 
 /**
  * Modelled on the profile Ubuntu ships for Google Chrome; `unconfined` adds
@@ -24,10 +26,10 @@ export const APPARMOR_PROFILE = `# Written by \`t3 browser setup\`: lets T3 Code
 abi <abi/4.0>,
 include <tunables/global>
 
-profile t3-chrome-headless-shell /**/tools/chrome-headless-shell/*/*/chrome-headless-shell flags=(unconfined) {
+profile t3-chrome-for-testing /**/tools/chrome-for-testing/*/*/chrome flags=(unconfined) {
   userns,
 
-  include if exists <local/t3-chrome-headless-shell>
+  include if exists <local/t3-chrome-for-testing>
 }
 `;
 
@@ -53,6 +55,11 @@ export const DEBIAN_PACKAGES: ReadonlyArray<ReadonlyArray<string>> = [
   ["libgbm1"],
   ["libasound2t64", "libasound2"],
   ["libexpat1"],
+  // Full Chrome links these beyond what the headless shell needed.
+  ["libcups2t64", "libcups2"],
+  ["libcairo2"],
+  ["libpango-1.0-0"],
+  ["libudev1"],
 ];
 
 export class PreviewBrowserSandboxError extends Schema.TaggedError<PreviewBrowserSandboxError>()(

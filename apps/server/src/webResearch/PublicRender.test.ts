@@ -1,7 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - an isolated local HTTP listener detects proxy escapes.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
@@ -15,6 +14,7 @@ import { ServerBrowserContexts } from "../preview/ServerBrowserContexts.ts";
 import * as PublicHttp from "./PublicHttp.ts";
 import * as PublicRender from "./PublicRender.ts";
 import { classify, extract } from "./extract.ts";
+import { SKIP_WITHOUT_CHROMIUM, testChromium } from "../preview/ChromeForTesting.testkit.ts";
 
 const dns = vi.hoisted(() => ({ rebound: vi.fn() }));
 vi.mock("node:dns/promises", async (original) => {
@@ -62,9 +62,8 @@ it.live(
   "the pinned shell renders JavaScript with fresh storage and blocks private/rebound subresources",
   (ctx) =>
     Effect.gen(function* () {
-      const executable = (yield* HostProcess.Environment).T3CODE_TEST_HEADLESS_SHELL;
-      if (!executable)
-        return ctx.skip("Set T3CODE_TEST_HEADLESS_SHELL to the installed pinned shell.");
+      const executable = testChromium;
+      if (!executable) return ctx.skip(SKIP_WITHOUT_CHROMIUM);
       const requests: string[] = [];
       dns.rebound.mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
       const server = yield* Effect.acquireRelease(
@@ -95,6 +94,7 @@ it.live(
       fetch('${origin}/fetch').catch(() => {}); fetch('${rebound}/fetch').catch(() => {});
       try { new WebSocket('${origin.replace("http:", "ws:")}/socket'); } catch {}
       document.body.dataset.webrtc = String(typeof RTCPeerConnection);
+      document.body.dataset.plugins = String(navigator.plugins.length);
       window.open('${origin}/popup');
     </script></body></html>`;
       expect(classify(extract("<div id='root'></div>", "http://research.invalid/"), 200)).toBe(
@@ -131,6 +131,8 @@ it.live(
         expect(page.text).toContain("| Family | 4 |");
         expect(page.text).toContain("http://research.invalid/rooms");
         expect(result.body).toContain('data-webrtc="undefined"');
+        // chrome-headless-shell lists no plugins; full Chrome does.
+        expect(result.body).toMatch(/data-plugins="[1-9]/);
         const second = yield* render();
         expect(extract(second.body, second.finalUrl).text).toContain("# fresh storage");
         expect(dns.rebound).toHaveBeenCalled();
@@ -144,9 +146,8 @@ it.live(
   "a JavaScript redirect to a private document is blocked through the real HTTP boundary",
   (ctx) =>
     Effect.gen(function* () {
-      const executable = (yield* HostProcess.Environment).T3CODE_TEST_HEADLESS_SHELL;
-      if (!executable)
-        return ctx.skip("Set T3CODE_TEST_HEADLESS_SHELL to the installed pinned shell.");
+      const executable = testChromium;
+      if (!executable) return ctx.skip(SKIP_WITHOUT_CHROMIUM);
       yield* Effect.gen(function* () {
         const http = yield* PublicHttp.PublicHttp;
         const result = yield* PublicRender.PublicRender.use((renderer) =>
@@ -180,9 +181,8 @@ it.live(
   "cancelling a render closes the real browser context and its pending document load",
   (ctx) =>
     Effect.gen(function* () {
-      const executable = (yield* HostProcess.Environment).T3CODE_TEST_HEADLESS_SHELL;
-      if (!executable)
-        return ctx.skip("Set T3CODE_TEST_HEADLESS_SHELL to the installed pinned shell.");
+      const executable = testChromium;
+      if (!executable) return ctx.skip(SKIP_WITHOUT_CHROMIUM);
       const entered = yield* Deferred.make<void>();
       const documentClosed = yield* Deferred.make<void>();
       const closed = Promise.withResolvers<void>();
@@ -222,9 +222,8 @@ it.live(
   "routes HTTP redirect hops through the document port and preserves the final URL/status",
   (ctx) =>
     Effect.gen(function* () {
-      const executable = (yield* HostProcess.Environment).T3CODE_TEST_HEADLESS_SHELL;
-      if (!executable)
-        return ctx.skip("Set T3CODE_TEST_HEADLESS_SHELL to the installed pinned shell.");
+      const executable = testChromium;
+      if (!executable) return ctx.skip(SKIP_WITHOUT_CHROMIUM);
       const calls: string[] = [];
       const result = yield* PublicRender.PublicRender.use((renderer) =>
         renderer.render({
@@ -261,9 +260,8 @@ it.live(
   "HTTP redirects to private documents retain blocked_local instead of a browser error page",
   (ctx) =>
     Effect.gen(function* () {
-      const executable = (yield* HostProcess.Environment).T3CODE_TEST_HEADLESS_SHELL;
-      if (!executable)
-        return ctx.skip("Set T3CODE_TEST_HEADLESS_SHELL to the installed pinned shell.");
+      const executable = testChromium;
+      if (!executable) return ctx.skip(SKIP_WITHOUT_CHROMIUM);
       const calls: string[] = [];
       yield* Effect.gen(function* () {
         const http = yield* PublicHttp.PublicHttp;
@@ -305,9 +303,8 @@ it.live(
   "bounds HTTP redirect loops without releasing a hop to browser networking",
   (ctx) =>
     Effect.gen(function* () {
-      const executable = (yield* HostProcess.Environment).T3CODE_TEST_HEADLESS_SHELL;
-      if (!executable)
-        return ctx.skip("Set T3CODE_TEST_HEADLESS_SHELL to the installed pinned shell.");
+      const executable = testChromium;
+      if (!executable) return ctx.skip(SKIP_WITHOUT_CHROMIUM);
       let calls = 0;
       const result = yield* PublicRender.PublicRender.use((renderer) =>
         renderer.render({
@@ -330,9 +327,8 @@ it.live(
   "keeps thin plain text as text rather than executing it as HTML",
   (ctx) =>
     Effect.gen(function* () {
-      const executable = (yield* HostProcess.Environment).T3CODE_TEST_HEADLESS_SHELL;
-      if (!executable)
-        return ctx.skip("Set T3CODE_TEST_HEADLESS_SHELL to the installed pinned shell.");
+      const executable = testChromium;
+      if (!executable) return ctx.skip(SKIP_WITHOUT_CHROMIUM);
       const result = yield* PublicRender.PublicRender.use((renderer) =>
         renderer.render({
           url: new URL("http://research.invalid/"),
@@ -353,9 +349,8 @@ it.live(
   "reports unsupported main-frame POST navigation without issuing a document request",
   (ctx) =>
     Effect.gen(function* () {
-      const executable = (yield* HostProcess.Environment).T3CODE_TEST_HEADLESS_SHELL;
-      if (!executable)
-        return ctx.skip("Set T3CODE_TEST_HEADLESS_SHELL to the installed pinned shell.");
+      const executable = testChromium;
+      if (!executable) return ctx.skip(SKIP_WITHOUT_CHROMIUM);
       const result = yield* PublicRender.PublicRender.use((renderer) =>
         renderer.render({
           url: new URL("http://research.invalid/"),

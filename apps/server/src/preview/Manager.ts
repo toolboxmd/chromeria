@@ -44,6 +44,8 @@ export class PreviewManager extends Context.Service<
     readonly open: (
       input: PreviewOpenInput & {
         readonly automationOwner?: string;
+        /** A page already in the server browser, such as a popup a person opened from one. */
+        readonly serverPage?: boolean;
         /** Runs before the `opened` event publishes, so subscribers find state keyed by the tab. */
         readonly beforePublish?: (snapshot: PreviewSessionSnapshot) => void;
         readonly authorize?: Authorize;
@@ -220,6 +222,10 @@ export const make = Effect.gen(function* PreviewManagerMake() {
         ...(runtime === undefined ? {} : { runtime }),
         ...(runtime === "server" && input.automationOwner !== undefined
           ? { automationOwner: input.automationOwner }
+          : {}),
+        // Agents' tabs and pages that already exist there run in the server browser.
+        ...(runtime === "server" && (input.automationOwner !== undefined || input.serverPage)
+          ? { serverPage: true }
           : {}),
         ...(input.reveal === undefined ? {} : { reveal: input.reveal }),
         updatedAt,

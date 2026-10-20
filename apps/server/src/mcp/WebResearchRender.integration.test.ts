@@ -9,7 +9,6 @@ import {
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
-import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -39,6 +38,7 @@ import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as Invocation from "./McpInvocationContext.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
+import { SKIP_WITHOUT_CHROMIUM, testChromium } from "../preview/ChromeForTesting.testkit.ts";
 
 const threadId = ThreadId.make("render-integration-thread");
 const client = McpSchema.McpServerClient.of({
@@ -533,9 +533,8 @@ it.effect(
   "the pinned renderer preserves an HTTP redirect's final error status through MCP",
   (ctx) =>
     Effect.gen(function* () {
-      const executable = (yield* HostProcess.Environment).T3CODE_TEST_HEADLESS_SHELL;
-      if (!executable)
-        return ctx.skip("Set T3CODE_TEST_HEADLESS_SHELL to the installed pinned shell.");
+      const executable = testChromium;
+      if (!executable) return ctx.skip(SKIP_WITHOUT_CHROMIUM);
       const rendererLayer = PublicRender.layer.pipe(
         Layer.provide(
           Layer.succeed(PreviewBrowser.PreviewBrowser, {
@@ -671,9 +670,8 @@ it.effect.each(["continuation", "repeat"] as const)(
 
 it.effect("rendered origin queue refusals stay typed and do not poison the page cache", (ctx) =>
   Effect.gen(function* () {
-    const executable = (yield* HostProcess.Environment).T3CODE_TEST_HEADLESS_SHELL;
-    if (!executable)
-      return ctx.skip("Set T3CODE_TEST_HEADLESS_SHELL to the installed pinned shell.");
+    const executable = testChromium;
+    if (!executable) return ctx.skip(SKIP_WITHOUT_CHROMIUM);
     const rendererLayer = PublicRender.layer.pipe(
       Layer.provide(
         Layer.succeed(PreviewBrowser.PreviewBrowser, {
@@ -737,9 +735,8 @@ it.effect(
   "render/subpages: DOM links discover rendered children with shared paging and cache",
   (ctx) =>
     Effect.gen(function* () {
-      const executable = (yield* HostProcess.Environment).T3CODE_TEST_HEADLESS_SHELL;
-      if (!executable)
-        return ctx.skip("Set T3CODE_TEST_HEADLESS_SHELL to the installed pinned shell.");
+      const executable = testChromium;
+      if (!executable) return ctx.skip(SKIP_WITHOUT_CHROMIUM);
       yield* Effect.gen(function* () {
         const renderer = yield* PublicRender.PublicRender;
         const root = `<h1>Guest house</h1><p>${"Visit our guest house and its garden. ".repeat(12)}</p><a href='/camere'>Rooms</a>`;
@@ -786,9 +783,8 @@ it.effect(
 
 it.effect("render/subpages: a child browser navigation cannot leave the root origin", (ctx) =>
   Effect.gen(function* () {
-    const executable = (yield* HostProcess.Environment).T3CODE_TEST_HEADLESS_SHELL;
-    if (!executable)
-      return ctx.skip("Set T3CODE_TEST_HEADLESS_SHELL to the installed pinned shell.");
+    const executable = testChromium;
+    if (!executable) return ctx.skip(SKIP_WITHOUT_CHROMIUM);
     yield* Effect.gen(function* () {
       const renderer = yield* PublicRender.PublicRender;
       const root = `<h1>Guest house</h1><p>${"Visit our guest house and its garden. ".repeat(12)}</p><a href='/camere'>Rooms</a>`;
@@ -834,9 +830,8 @@ it.effect(
   "render/subpages: a cached redirect alias keeps rendered provenance and body age",
   (ctx) =>
     Effect.gen(function* () {
-      const executable = (yield* HostProcess.Environment).T3CODE_TEST_HEADLESS_SHELL;
-      if (!executable)
-        return ctx.skip("Set T3CODE_TEST_HEADLESS_SHELL to the installed pinned shell.");
+      const executable = testChromium;
+      if (!executable) return ctx.skip(SKIP_WITHOUT_CHROMIUM);
       yield* Effect.gen(function* () {
         const renderer = yield* PublicRender.PublicRender;
         const releaseAlias = yield* Deferred.make<void>();

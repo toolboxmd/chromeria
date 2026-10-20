@@ -1,5 +1,6 @@
 import { createResourceViewerAccessAtomFamily } from "./deviceHubAccess.ts";
 import { WS_METHODS, PreviewViewerOpenInput } from "@t3tools/contracts";
+import * as Stream from "effect/Stream";
 import { Atom } from "effect/reactivity";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
@@ -45,6 +46,8 @@ export function createPreviewEnvironmentAtoms<R, E>(
     events: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:preview:events",
       tag: WS_METHODS.subscribePreviewEvents,
+      // Stream atoms publish only the last value per chunk; every preview event must arrive.
+      transform: (stream) => stream.pipe(Stream.rechunk(1)),
     }),
     discoveredServers: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:preview:discovered-servers",

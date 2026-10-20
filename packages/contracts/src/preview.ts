@@ -234,6 +234,8 @@ export const PreviewSessionSnapshot = Schema.Struct({
   profileId: Schema.optional(BrowserProfileId),
   runtime: Schema.optional(PreviewRuntime),
   automationOwner: Schema.optional(Schema.String),
+  /** The page lives in the server browser, so every client streams it and the desktop never hosts it. */
+  serverPage: Schema.optional(Schema.Boolean),
   reveal: Schema.optional(Schema.Boolean),
   revealRequest: Schema.optional(Schema.Struct({ id: Schema.String, force: Schema.Boolean })),
   updatedAt: Schema.String,

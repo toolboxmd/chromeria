@@ -354,9 +354,57 @@ jobs:
           if ldd "$browser" | grep '=> not found'; then
             node apps/server/node_modules/playwright-core/cli.js install-deps chromium
           fi
+          # Writes profiles as installs before Chrome for Testing did, to prove they still open.
+          echo "CHROMERIA_TEST_HEADLESS_SHELL=$browser" >> "$GITHUB_ENV"
+
+      # Real-browser suites run the Chrome for Testing build T3 pins, never the shell.
+      - name: Resolve pinned Chrome for Testing
+        id: chrome_for_testing
+        run: |
+          node --input-type=module -e '
+            const { previewBrowserRelease } = await import("./apps/server/src/preview/PreviewBrowser.ts");
+            const release = previewBrowserRelease("linux", "x64");
+            console.log(`url=${release.url}`);
+            console.log(`sha256=${release.sha256}`);
+            console.log(`executable=${process.env.HOME}/.cache/chromeria-cft/chrome-${release.platform}/${release.executable}`);
+          ' >> "$GITHUB_OUTPUT"
+
+      - name: Cache Chrome for Testing
+        id: chrome_for_testing_cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/chromeria-cft
+          key: chrome-for-testing-${{ runner.os }}-${{ runner.arch }}-${{ steps.chrome_for_testing.outputs.sha256 }}
+
+      - name: Install Chrome for Testing
+        if: steps.chrome_for_testing_cache.outputs.cache-hit != 'true'
+        env:
+          URL: ${{ steps.chrome_for_testing.outputs.url }}
+          SHA256: ${{ steps.chrome_for_testing.outputs.sha256 }}
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/chrome.zip" "$URL"
+          echo "$SHA256  $RUNNER_TEMP/chrome.zip" | sha256sum -c -
+          mkdir -p ~/.cache/chromeria-cft
+          unzip -q "$RUNNER_TEMP/chrome.zip" -d ~/.cache/chromeria-cft
+
+      # Ubuntu restricts the user namespaces Chrome's sandbox needs to AppArmor-profiled
+      # binaries; lifting it keeps the sandbox on for the pinned build.
+      - name: Allow Chrome's sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Install missing Chrome for Testing system dependencies
+        env:
+          CHROME: ${{ steps.chrome_for_testing.outputs.executable }}
+        run: |
+          test -x "$CHROME"
+          if ldd "$CHROME" | grep '=> not found'; then
+            node apps/server/node_modules/playwright-core/cli.js install-deps chromium
+          fi
 
       - name: Test
         env:
+          CHROMERIA_TEST_CHROMIUM: ${{ steps.chrome_for_testing.outputs.executable }}
+          T3CODE_TEST_HEADLESS_SHELL: ${{ steps.chrome_for_testing.outputs.executable }}
           T3CODE_TRANSFER_BUDGET_REPORT_PATH: ${{ runner.temp }}/t3code-transfer-budget.md
           T3CODE_TRANSFER_BUDGET_RESULT_PATH: ${{ runner.temp }}/thread-transfer-result.json
         run: vp run --filter t3 test --shard ${{ matrix.shard }}/${{ strategy.job-total }}
