@@ -47,6 +47,7 @@
   "src/mcp/OrchestratorMcpService.test.ts": 1.2,
   "src/mcp/OrchestratorMcpToolkit.integration.test.ts": 1.2,
   "src/mcp/PreviewAutomationBroker.test.ts": 0.5,
+  "src/mcp/RunGroups.integration.test.ts": 18.8,
   "src/mcp/TaskCancelNativeSubagent.integration.test.ts": 1,
   "src/mcp/WorktreeMcpService.test.ts": 0.9,
   "src/mcp/toolkits/core.test.ts": 1.7,

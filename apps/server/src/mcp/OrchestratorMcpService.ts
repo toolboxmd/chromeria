@@ -3,6 +3,7 @@ import { toolPolicyRejection, toolAllowlistsEqual } from "@t3tools/provider-core
 import {
   executionPurposeOf,
   executionPurposesEqual,
+  purposeIntentsEqual,
   type ExecutionPurpose,
 } from "@t3tools/contracts";
 import { executionPurposeWarnings } from "@t3tools/contracts";
@@ -87,6 +88,7 @@ import {
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue } from "@t3tools/shared/model";
 import { runGroupMembers } from "../orchestration-v2/RunGroups.ts";
+import { PurposeAdmissionError } from "../orchestration-v2/ExecutionPurpose.ts";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import {
@@ -2168,10 +2170,20 @@ const make = Effect.gen(function* () {
         const groupId = NodeId.make(`run-group:${commandId}`);
         // A retry returns the group its first call committed, never a fuller one.
         const committed = yield* loadRunGroup(scope, groupId);
-        if (committed.length > 0)
+        if (committed.length > 0) {
+          if (
+            committed.some(
+              (member) => !purposeIntentsEqual(member.purposeIntent, input.purposeIntent),
+            )
+          )
+            return yield* failure(
+              "orchestration_error",
+              new PurposeAdmissionError({ reason: "intent_reused" }).message,
+            );
           return yield* input.mode === "wait"
             ? awaitRunGroup(scope, groupId, committed, input.timeoutMs)
             : readRunGroup(scope, groupId, committed);
+        }
         // A retry of a request accepted as one task stays one task.
         const acceptedAsTask = yield* threadManagement.hasReceipt(
           stableCommandId({ scope, requestKey: key, operation: "delegate-task" }),
@@ -2245,6 +2257,7 @@ const make = Effect.gen(function* () {
         yield* threadManagement
           .dispatch({
             type: "delegated_task.group.request",
+            ...(input.purposeIntent === undefined ? {} : { purposeIntent: input.purposeIntent }),
             createdBy: "agent",
             creationSource: "mcp",
             commandId,
