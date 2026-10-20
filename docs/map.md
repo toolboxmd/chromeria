@@ -102,7 +102,7 @@ flowchart TD
     %% DNC: PR #546 #379 #386
     PGR --> DNC
     PAR["Peer attachments and request recovery"]
-    %% PAR: #382 PR #410
+    %% PAR: #382 PR #563
     RTL --> PAR
     RPR["Remote descendant requests"]
     %% RPR: #369 #379 #532 PR #420 PR #539
