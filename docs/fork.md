@@ -112,6 +112,13 @@ do not establish duplication. Preserve the original pre-absorption report.
 there is no fallback to `origin/main`. CI fetches upstream explicitly. An explicit
 `--base` is available for reproducing proof against an approved historical pin.
 
+Browser code changes must update [the Browser guide](user/browser.md) or include
+the standalone line `browser doc: no user-visible change` in the PR body.
+Fork CI reads the body and base/head SHAs from GitHub's event file and compares
+their trees, so this also covers upstream absorption. Editing the body reruns
+the check. Outside a PR event, the guard is skipped; to check the guide's numeric
+claims locally, run `node scripts/browser-doc-check.mjs --numbers`.
+
 Run focused tests and scoped lint/typecheck for the carried changes. CI owns
 repo-wide checks. Neutralize inherited desktop and host environment differences
 when running focused proof on macOS:

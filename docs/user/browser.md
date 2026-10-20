@@ -60,12 +60,11 @@ desktop tab.
 
 ## Tab lifetime and limits
 
-Agent tabs close after 30 minutes unused unless someone is watching them. The
-agent browser allows up to 8 tabs per agent session and 32 per environment;
+When a thread settles, its agent tabs close unless you are watching or
+controlling them, or a login is in progress in their profile. Tabs you opened
+yourself stay open. Agent tabs also close after 30 minutes unused unless someone
+is watching them. The agent browser allows up to 8 tabs per agent session and 32 per environment;
 agents can close or reuse tabs to make room.
-
-Closing unwatched agent tabs when a thread settles is planned in
-[#601](https://github.com/toolboxmd/chromeria/issues/601); it is not available yet.
 
 For streaming controls and Linux setup, see
 [Browser on a remote environment](remote-access.md#browser-on-a-remote-environment).
