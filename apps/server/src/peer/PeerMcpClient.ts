@@ -58,6 +58,7 @@ import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerNoticeDelivery from "./PeerNoticeDelivery.ts";
+import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import * as PeerAuthority from "./PeerAuthority.ts";
 import { PeerAuthorityEnvelope } from "@t3tools/contracts";
 import { PeerRequestProtocol } from "@t3tools/contracts";
@@ -1814,3 +1815,17 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(PeerMcpClient, make);
+
+/**
+ * The client built over the runtime services that own the environment identity
+ * and the threads parent notices land in. The client reads both as optional
+ * services, so built below the runtime it still type-checks and fails only on
+ * its first remote call.
+ */
+export const layerOver = <ROut, E, RIn>(
+  runtime: Layer.Layer<
+    ROut | ServerEnvironment.ServerEnvironment | Threads.ThreadManagementService,
+    E,
+    RIn
+  >,
+) => layer.pipe(Layer.provide(PeerNoticeDelivery.layer), Layer.provideMerge(runtime));

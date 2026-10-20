@@ -1141,7 +1141,7 @@ const layerMakeServer = Layer.unwrap(
         McpRequestRuntime.layerForwarding.pipe(Layer.provideMerge(PeerNoticeDelivery.layer)),
       ),
       Layer.provide(RemoteSecretRelay.layer.pipe(Layer.provide(layerPersistence))),
-      Layer.provideMerge(layerRuntimeServices),
+      Layer.provideMerge(PeerMcpClient.layerOver(layerRuntimeServices)),
       Layer.provideMerge(
         RemoteSecretRequests.layer.pipe(
           Layer.provide(layerServerEnvironment),
@@ -1149,7 +1149,6 @@ const layerMakeServer = Layer.unwrap(
           Layer.provide(layerPersistence),
         ),
       ),
-      Layer.provideMerge(PeerMcpClient.layer.pipe(Layer.provide(layerPersistence))),
       Layer.provideMerge(
         McpSessionRegistry.layer.pipe(
           Layer.provide(ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer))),
