@@ -6,6 +6,7 @@ import {
   type OrchestrationV2Run,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2TurnItem,
+  type OrchestrationV2RuntimeRequest,
   type ThreadId,
   type PeerTaskLifecycleResult,
   type PeerTaskSnapshot,
@@ -54,6 +55,7 @@ const lifecycleTypes = [
   "provider-thread.updated",
   "provider-turn.updated",
   "runtime-request.updated",
+  "turn-item.updated",
   "thread.created",
   "thread.metadata-updated",
   "thread.archived",
@@ -73,6 +75,7 @@ const executionEffects = [
   "delegated-tasks.stop",
 ] as const;
 const lifecycleTypeSet = new Set<string>(lifecycleTypes);
+const requestItemTypes = ["user_input_request", "approval_request"] as const;
 
 const requestDetail = (requestId: string, items: ReadonlyArray<OrchestrationV2TurnItem>) => {
   const item = items.find(
@@ -268,17 +271,21 @@ const make = Effect.gen(function* () {
               observedThrough = sequence;
               const rootRevisions = yield* sql<{
                 sequence: number;
-              }>`SELECT COALESCE(MAX(sequence),0) AS sequence FROM orchestration_events WHERE stream_id=${pair.childThreadId} AND sequence<=${sequence} AND event_type IN ${sql.in(lifecycleTypes)}`;
+              }>`SELECT COALESCE(MAX(sequence),0) AS sequence FROM orchestration_events WHERE stream_id=${pair.childThreadId} AND sequence<=${sequence} AND event_type IN ${sql.in(lifecycleTypes)} AND (event_type!='turn-item.updated' OR json_extract(payload_json,'$.type') IN ${sql.in(requestItemTypes)})`;
               const rootSequence = rootRevisions[0]?.sequence ?? 0;
-              const child = yield* threads.getThreadRecords(pair.childThreadId, [
-                "runs",
-                "messages",
-                "turnItems",
-                "subagents",
-                "providerThreads",
-                "providerTurns",
-                "runtimeRequests",
-              ]);
+              const child = yield* threads.getThreadRecords(
+                pair.childThreadId,
+                [
+                  "runs",
+                  "messages",
+                  "turnItems",
+                  "subagents",
+                  "providerThreads",
+                  "providerTurns",
+                  "runtimeRequests",
+                ],
+                { turnItemTypes: requestItemTypes },
+              );
               const monitors = new Set(
                 child.messages
                   .filter((message) => message.notification?.source.kind === "monitor")
@@ -307,6 +314,21 @@ const make = Effect.gen(function* () {
                 (run) => run.status === "queued" && run.queueHeld !== true && !monitors.has(run.id),
               ).length;
               let incomplete = false;
+              const pendingDetail = (
+                request: OrchestrationV2RuntimeRequest,
+                items: ReadonlyArray<OrchestrationV2TurnItem>,
+              ) => {
+                const detail = requestDetail(request.id, items);
+                // Providers can commit a runtime request before its content item.
+                if (
+                  request.kind !== "auth_refresh" &&
+                  request.kind !== "dynamic_tool_call" &&
+                  (request.kind === "user_input" || request.responseCapability.type === "live") &&
+                  detail.detail === undefined
+                )
+                  incomplete = true;
+                return detail;
+              };
               let omittedRequests = 0;
               let omittedQuestions = 0;
               let executionSettled = !child.providerTurns.some((turn) =>
@@ -321,7 +343,7 @@ const make = Effect.gen(function* () {
                   revision: revisionById.get(request.id) ?? sequence,
                   kind: request.kind,
                   responseType: request.responseCapability.type,
-                  ...requestDetail(request.id, child.turnItems),
+                  ...pendingDetail(request, child.turnItems),
                 }));
               const seen = new Set([pair.childThreadId]);
               const queue = [...child.subagents];
@@ -402,7 +424,7 @@ const make = Effect.gen(function* () {
                   ],
                   {
                     messageRoles: ["user"],
-                    turnItemTypes: ["user_input_request", "approval_request"],
+                    turnItemTypes: requestItemTypes,
                   },
                 );
                 if (nested.thread.archivedAt !== null || nested.thread.deletedAt !== null) continue;
@@ -449,7 +471,7 @@ const make = Effect.gen(function* () {
                       revision: nestedRevisionById.get(request.id) ?? sequence,
                       kind: request.kind,
                       responseType: request.responseCapability.type,
-                      ...requestDetail(request.id, nested.turnItems),
+                      ...pendingDetail(request, nested.turnItems),
                     });
                 }
                 queue.push(...nested.subagents);
@@ -468,7 +490,7 @@ const make = Effect.gen(function* () {
                 !recoveryWaiting;
               const revisionsThrough = yield* sql<{
                 sequence: number;
-              }>`SELECT COALESCE(MAX(sequence),0) AS sequence FROM orchestration_events WHERE stream_id IN ${sql.in(executionThreads)} AND sequence<=${sequence} AND event_type IN ${sql.in(lifecycleTypes)}`;
+              }>`SELECT COALESCE(MAX(sequence),0) AS sequence FROM orchestration_events WHERE stream_id IN ${sql.in(executionThreads)} AND sequence<=${sequence} AND event_type IN ${sql.in(lifecycleTypes)} AND (event_type!='turn-item.updated' OR json_extract(payload_json,'$.type') IN ${sql.in(requestItemTypes)})`;
               let stopExecution: PeerTaskSnapshot["stopExecution"];
               if (
                 (operation.type === "observe" || operation.type === "snapshot") &&
@@ -711,7 +733,10 @@ const make = Effect.gen(function* () {
               Stream.filter(
                 (stored) =>
                   dependencyThreads.has(stored.event.threadId) &&
-                  lifecycleTypeSet.has(stored.event.type),
+                  lifecycleTypeSet.has(stored.event.type) &&
+                  (stored.event.type !== "turn-item.updated" ||
+                    stored.event.payload.type === "user_input_request" ||
+                    stored.event.payload.type === "approval_request"),
               ),
               Stream.runHead,
               Effect.raceFirst(

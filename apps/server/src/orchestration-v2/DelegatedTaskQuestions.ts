@@ -128,10 +128,12 @@ export const reconcileRemoteDelegatedTaskQuestions = Effect.fnUntraced(function*
     parent.thread.archivedAt === null &&
     parent.thread.deletedAt === null;
   const pending = new Set<string>();
+  // Complete legacy snapshots may omit detail; incomplete assembly must not consume a receipt.
   for (const request of remote.snapshot.requests) {
     if (
       !eligible ||
       remote.availability !== "current" ||
+      (remote.snapshot.incomplete && request.detail === undefined) ||
       request.kind === "auth_refresh" ||
       request.kind === "dynamic_tool_call" ||
       (request.kind !== "user_input" && request.responseType !== "live")

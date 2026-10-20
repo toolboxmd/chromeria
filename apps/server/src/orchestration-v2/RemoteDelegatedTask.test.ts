@@ -18,6 +18,7 @@ import {
   RunId,
   RuntimeRequestId,
   type OrchestrationV2DomainEvent,
+  type PeerTaskSnapshot,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -323,7 +324,11 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
           kind: "user_input",
           responseType: "message",
         };
-        const observe = (sequence: number, requests = [request]) =>
+        const observe = (
+          sequence: number,
+          requests: PeerTaskSnapshot["requests"] = [request],
+          incomplete = false,
+        ) =>
           engine.dispatch({
             type: "delegated_task.remote.observe",
             commandId: CommandId.make(`notice:observe:${sequence}`),
@@ -340,7 +345,7 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
                 pendingChildren: 0,
                 queuedRuns: 0,
                 recoveryWaiting: false,
-                incomplete: false,
+                incomplete,
                 executionSettled: false,
                 pendingQuestions: requests.filter((request) => request.kind === "user_input")
                   .length,
@@ -349,6 +354,15 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
               },
             },
           });
+        yield* observe(8, [request], true);
+        yield* engine.recoverDelegatedTasks;
+        assert.lengthOf(
+          (yield* engine.getThreadProjection(parent.threadId)).messages.filter(
+            (message) => message.notification?.outcome === "updated",
+          ),
+          0,
+        );
+        yield* observe(9, [{ ...request, detail: "Which actual Pi color? Blue or Red" }]);
         yield* observe(10);
         const noticed = yield* engine.getThreadProjection(parent.threadId);
         const notices = noticed.messages.filter(
@@ -356,6 +370,7 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
         );
         assert.lengthOf(notices, 1);
         assert.include(notices[0]!.text, "Remote builder");
+        assert.include(notices[0]!.text, "Which actual Pi color?");
         assert.include(notices[0]!.text, "choose-build");
         assert.include(notices[0]!.text, "requestTarget");
         assert.notProperty(notices[0]!.notification!.source, "childThreadId");
