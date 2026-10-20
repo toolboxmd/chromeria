@@ -3,6 +3,7 @@ import * as Ref from "effect/Ref";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
 import * as PeerAuthority from "./PeerAuthority.ts";
+import * as PeerLinkEvents from "./PeerLinkEvents.ts";
 import * as Environment from "../environment/ServerEnvironment.ts";
 import * as PubSub from "effect/PubSub";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
@@ -2692,4 +2693,298 @@ it.live(
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
   30000,
+);
+
+it.live(
+  "automation384-r6: a captured known expiry wakes reconstructed idle recovery and durably acknowledges without another mutation",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(
+          descriptorOf("r6-expiry-a", "Expiry source", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const b = yield* makeNode(
+          descriptorOf("r6-expiry-b", "Expiry destination", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const sourceSql = Context.get(a.database, SqlClient.SqlClient);
+        const destinationSql = Context.get(b.database, SqlClient.SqlClient);
+        const now = DateTime.toEpochMillis(yield* DateTime.now);
+        const expiry = now + 60_000;
+        yield* sourceSql`UPDATE peer_environment_links SET expires_at=${DateTime.formatIso(DateTime.makeUnsafe(expiry))} WHERE environment_id=${b.environmentId}`;
+        const parent = ThreadId.make("r6-expiry-parent");
+        yield* seedParent(a, parent);
+        const created = yield* nativeCall(a, parent, "schedule_task", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
+          prompt: "Isolated captured expiry",
+          bindToCurrentThread: false,
+          schedule: { type: "interval", everyMs: 60_000 },
+          clientRequestId: "r6-expiry-create",
+        });
+        expect(created.isError, json(created)).not.toBe(true);
+        const before = yield* sourceSql<{
+          expires_at: number;
+          pending: number;
+          ack_json: string | null;
+        }>`SELECT expires_at,pending,ack_json FROM fork_automation_obligations`;
+        expect(before).toHaveLength(1);
+        expect(before[0]).toMatchObject({ expires_at: expiry, pending: 0, ack_json: null });
+        yield* a.stopConnections;
+        yield* Effect.gen(function* () {
+          yield* TestClock.setTime(now);
+          const recovered = yield* a.reconstructAutomation;
+          const armed = yield* Deferred.make<void>();
+          const selected = yield* Deferred.make<void>();
+          let deadlineReads = 0;
+          const actualAuthority = PeerAuthority.PeerAuthority.of({
+            ...recovered.authority,
+            nextAutomationDisableDeadline: recovered.authority.nextAutomationDisableDeadline.pipe(
+              Effect.tap((deadline) => {
+                if (deadline === null) return Effect.void;
+                expect(deadline).toBe(expiry);
+                deadlineReads++;
+                return deadlineReads >= 2 ? Deferred.succeed(armed, undefined) : Effect.void;
+              }),
+            ),
+            pendingAutomationDisables: recovered.authority.pendingAutomationDisables.pipe(
+              Effect.tap((batch) =>
+                batch.length !== 0 ? Deferred.succeed(selected, undefined) : Effect.void,
+              ),
+            ),
+          });
+          const transport = Layer.effect(
+            HttpClient.HttpClient,
+            Effect.map(HttpClient.HttpClient, (client) =>
+              HttpClient.transform(client, (effect) => TestClock.withLive(effect)),
+            ),
+          ).pipe(Layer.provide(FetchHttpClient.layer));
+          const peers = Context.get(
+            yield* PeerMcpClient.layer.pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  Layer.succeed(PeerLinks.PeerLinks, recovered.links),
+                  Layer.succeed(PeerAuthority.PeerAuthority, actualAuthority),
+                  Layer.succeed(PeerLinkEvents.PeerLinkEvents, recovered.linkEvents),
+                  transport,
+                ),
+              ),
+              Layer.fresh,
+              Layer.build,
+            ),
+            PeerMcpClient.PeerMcpClient,
+          );
+          const changes = yield* recovered.linkEvents.subscribeAutomationChanges;
+          yield* peers.start;
+          yield* Deferred.await(armed);
+          yield* TestClock.adjust("0 millis");
+          expect(yield* destinationSql`SELECT 1 FROM fork_automation_disable_acks`).toHaveLength(0);
+          yield* TestClock.setTime(expiry + 1);
+          yield* Deferred.await(selected);
+          const due = (yield* sourceSql<{
+            pending: number;
+            ack_json: string | null;
+          }>`SELECT pending,ack_json FROM fork_automation_obligations`)[0]!;
+          expect(due.pending === 1 || due.ack_json !== null).toBe(true);
+          while (
+            (yield* sourceSql`SELECT 1 FROM fork_automation_obligations WHERE ack_json IS NULL`)
+              .length !== 0
+          )
+            yield* PubSub.take(changes);
+          expect(yield* destinationSql`SELECT 1 FROM fork_automation_disable_acks`).toHaveLength(1);
+          expect(yield* recovered.authority.pendingAutomationDisables).toEqual([]);
+          const expired = yield* Effect.result(recovered.links.resolve(b.environmentId));
+          expect(expired._tag).toBe("Failure");
+          if (expired._tag === "Failure") expect(expired.failure.reason).toBe("expired");
+          yield* TestClock.adjust("2 hours");
+          expect(yield* destinationSql`SELECT 1 FROM fork_automation_disable_acks`).toHaveLength(1);
+        }).pipe(Effect.provide(TestClock.layer()));
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live.each(["late", "earlier", "simultaneous"] as const)(
+  "automation384-r6: parked recovery rearms from actual capture registration (%s)",
+  (variant) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(
+          descriptorOf(`r6-${variant}-a`, "Register source", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const b = yield* makeNode(
+          descriptorOf(`r6-${variant}-b`, "Register destination", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const sourceSql = Context.get(a.database, SqlClient.SqlClient);
+        const destinationSql = Context.get(b.database, SqlClient.SqlClient);
+        const parent = ThreadId.make(`r6-${variant}-parent`);
+        yield* seedParent(a, parent);
+        const now = DateTime.toEpochMillis(yield* DateTime.now);
+        const early = now + 60_000;
+        const late = now + 120_000;
+        const events = Context.get(a.services, PeerLinkEvents.PeerLinkEvents);
+        yield* Effect.gen(function* () {
+          yield* TestClock.setTime(now);
+          const parked = yield* Deferred.make<void>();
+          const earlyArmed = yield* Deferred.make<void>();
+          const lateArmed = yield* Deferred.make<void>();
+          const lateRearmed = yield* Deferred.make<void>();
+          const cancelled = yield* Deferred.make<void>();
+          let lateReads = 0;
+          let cancelling = false;
+          const selected = yield* Deferred.make<void>();
+          let emptyReads = 0;
+          let attempts = 0;
+          const observedAuthority = PeerAuthority.PeerAuthority.of({
+            ...a.authority,
+            nextAutomationDisableDeadline: a.authority.nextAutomationDisableDeadline.pipe(
+              Effect.tap((deadline) => {
+                if (deadline === early) return Deferred.succeed(earlyArmed, undefined);
+                if (deadline === late) {
+                  lateReads++;
+                  return Deferred.succeed(lateReads >= 2 ? lateRearmed : lateArmed, undefined);
+                }
+                if (deadline === null && cancelling) return Deferred.succeed(cancelled, undefined);
+                if (deadline === null && ++emptyReads >= 2)
+                  return Deferred.succeed(parked, undefined);
+                return Effect.void;
+              }),
+            ),
+            pendingAutomationDisables: a.authority.pendingAutomationDisables.pipe(
+              Effect.tap((batch) =>
+                batch.length ? Deferred.succeed(selected, undefined) : Effect.void,
+              ),
+            ),
+          });
+          const transport = Layer.effect(
+            HttpClient.HttpClient,
+            Effect.map(HttpClient.HttpClient, (client) =>
+              HttpClient.transform(client, (effect, request) => {
+                if (request.url.endsWith("/automation-disable")) attempts++;
+                return TestClock.withLive(effect);
+              }),
+            ),
+          ).pipe(Layer.provide(FetchHttpClient.layer));
+          const peers = Context.get(
+            yield* PeerMcpClient.layer.pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  Layer.succeed(PeerLinks.PeerLinks, a.links),
+                  Layer.succeed(PeerAuthority.PeerAuthority, observedAuthority),
+                  Layer.succeed(PeerLinkEvents.PeerLinkEvents, events),
+                  transport,
+                ),
+              ),
+              Layer.fresh,
+              Layer.build,
+            ),
+            PeerMcpClient.PeerMcpClient,
+          );
+          const changes = yield* events.subscribeAutomationChanges;
+          yield* peers.start;
+          yield* Deferred.await(parked);
+          const create = (key: string, expiry: number) =>
+            TestClock.withLive(
+              Effect.gen(function* () {
+                yield* sourceSql`UPDATE peer_environment_links SET expires_at=${DateTime.formatIso(DateTime.makeUnsafe(expiry))} WHERE environment_id=${b.environmentId}`;
+                const result = yield* nativeCall(a, parent, "schedule_task", {
+                  environmentId: b.environmentId,
+                  projectId: b.project.id,
+                  purposeIntent: { version: 1, intent: { type: "unscoped" } },
+                  prompt: "Isolated later deadline registration",
+                  bindToCurrentThread: false,
+                  schedule: { type: "interval", everyMs: 60_000 },
+                  clientRequestId: `r6-${variant}-${key}`,
+                });
+                expect(result.isError, json(result)).not.toBe(true);
+              }),
+            );
+          if (variant !== "late") {
+            yield* create("late", late);
+            yield* Deferred.await(lateArmed);
+          }
+          yield* create("early", early);
+          yield* Deferred.await(earlyArmed);
+          expect(attempts).toBe(0);
+          if (variant === "simultaneous")
+            yield* Effect.all([TestClock.setTime(early + 1), events.automationChanged], {
+              concurrency: 2,
+            });
+          else yield* TestClock.setTime(early + 1);
+          yield* Deferred.await(selected);
+          while (
+            (yield* sourceSql`SELECT 1 FROM fork_automation_obligations WHERE expires_at=${early} AND ack_json IS NULL`)
+              .length !== 0
+          )
+            yield* PubSub.take(changes);
+          expect(yield* destinationSql`SELECT 1 FROM fork_automation_disable_acks`).toHaveLength(1);
+          if (variant !== "late") {
+            expect(
+              yield* sourceSql`SELECT 1 FROM fork_automation_obligations WHERE expires_at=${late} AND pending=0 AND ack_json IS NULL`,
+            ).toHaveLength(1);
+            if (variant === "earlier") {
+              yield* TestClock.adjust("2 seconds");
+              yield* Deferred.await(lateRearmed);
+              const remaining = (yield* sourceSql<{
+                dependency_json: string;
+                next_generation: string;
+              }>`SELECT dependency_json,next_generation FROM fork_automation_obligations WHERE ack_json IS NULL`)[0]!;
+              const dependency = decodeFixtureDependency(remaining.dependency_json);
+              const original = yield* a.links.resolveAutomationRecovery!(
+                b.environmentId,
+                remaining.next_generation,
+              );
+              const http = yield* HttpClient.HttpClient;
+              const response = yield* TestClock.withLive(
+                http.execute(
+                  HttpClientRequest.post(
+                    `${original.url}/mcp/peer-control/automation-disable`,
+                  ).pipe(
+                    HttpClientRequest.setHeader("authorization", `Bearer ${original.token}`),
+                    HttpClientRequest.setBody(
+                      HttpBody.text(json({ version: 1, dependency }), "application/json"),
+                    ),
+                  ),
+                ),
+              );
+              expect(response.status).toBe(200);
+              const ack = yield* decodeAutomationAck(yield* response.text);
+              cancelling = true;
+              yield* a.authority.acknowledgeAutomationDisable(
+                ack,
+                b.environmentId,
+                remaining.next_generation,
+              );
+              yield* Deferred.await(cancelled);
+            }
+            yield* TestClock.setTime(late + 1);
+            while (
+              (yield* sourceSql`SELECT 1 FROM fork_automation_obligations WHERE ack_json IS NULL`)
+                .length !== 0
+            )
+              yield* PubSub.take(changes);
+          }
+          expect(attempts).toBe(variant === "simultaneous" ? 2 : 1);
+          yield* TestClock.adjust("2 seconds");
+          const completeAttempts = attempts;
+          yield* TestClock.adjust("2 hours");
+          expect(attempts).toBe(completeAttempts);
+          expect(yield* a.authority.nextAutomationDisableDeadline).toBeNull();
+          expect(yield* destinationSql`SELECT 1 FROM fork_automation_disable_acks`).toHaveLength(
+            variant === "late" ? 1 : 2,
+          );
+        }).pipe(Effect.provide(TestClock.layer()));
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
 );

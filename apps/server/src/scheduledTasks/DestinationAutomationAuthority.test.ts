@@ -1,6 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import { AuthSessionId, EnvironmentId, ProjectId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -530,4 +531,86 @@ it.effect("historical session indexes migrate to strict execution retirement", (
     yield* Authority.invalidateAutomationSessions(["r4-historical-session"], "retired");
     expect(yield* authority.pending).toEqual([{ dependency: dep, ...route }]);
   }).pipe(Effect.provide(fixture)),
+);
+
+it.effect.each([
+  "origin",
+  "certificate-birth",
+  "certificate-execution",
+  "grant-birth",
+  "grant-execution",
+] as const)("recovery deadline and durable expiry promotion agree for %s", (kind) =>
+  Effect.gen(function* () {
+    const authority = yield* Authority.DestinationAutomationAuthority;
+    const sql = yield* SqlClient.SqlClient;
+    const expiry = 1001;
+    const value = { ...certificate("r6-deadline"), expiresAt: expiry };
+    const dep = dependency(certificate("r6-downstream"));
+    const route = { environmentId: destination, generation: "r6-route" };
+    if (kind.startsWith("certificate")) yield* accept(value);
+    if (kind.startsWith("grant"))
+      yield* sql`INSERT INTO auth_sessions(session_id,subject,scopes,method,issued_at,expires_at) VALUES ('r6-session','fixture','[]','pairing-code',${DateTime.formatIso(DateTime.makeUnsafe(0))},${DateTime.formatIso(DateTime.makeUnsafe(expiry))})`;
+    yield* authority.registerDependency(
+      dep,
+      route,
+      kind === "grant-birth"
+        ? [{ kind: "automation-birth", sessionId: "r6-session" }]
+        : kind === "grant-execution"
+          ? ["r6-session"]
+          : [],
+      true,
+      kind === "origin" ? expiry : null,
+      kind === "certificate-birth"
+        ? [{ kind: "automation-birth", certificateId: value.id }]
+        : kind === "certificate-execution"
+          ? [{ kind: "automation-execution", certificateId: value.id }]
+          : [],
+    );
+    expect(yield* authority.nextDisableDeadline).toBe(expiry);
+    expect(yield* authority.pending).toEqual([]);
+    const reopened = Context.get(
+      yield* Authority.layer.pipe(Layer.fresh, Layer.build),
+      Authority.DestinationAutomationAuthority,
+    );
+    expect(yield* reopened.nextDisableDeadline).toBe(expiry);
+    yield* TestClock.setTime(expiry - 1);
+    expect(yield* reopened.pending).toEqual([]);
+    expect(yield* reopened.nextDisableDeadline).toBe(expiry);
+    yield* TestClock.adjust("1 millis");
+    expect(yield* reopened.pending).toEqual([{ dependency: dep, ...route }]);
+    expect(yield* reopened.nextDisableDeadline).toBeNull();
+    yield* reopened.acknowledge(
+      { version: 1, dependency: dep, disabled: true },
+      route.environmentId,
+      route.generation,
+    );
+    expect(yield* reopened.pending).toEqual([]);
+    expect(yield* reopened.nextDisableDeadline).toBeNull();
+  }).pipe(Effect.provide(fixture)),
+);
+
+it.effect(
+  "deadline selection rearms to earlier registration and cancels ACKed or removed obligations",
+  () =>
+    Effect.gen(function* () {
+      const authority = yield* Authority.DestinationAutomationAuthority;
+      const sql = yield* SqlClient.SqlClient;
+      const later = dependency(certificate("r6-later"));
+      const earlier = dependency(certificate("r6-earlier"));
+      const route = { environmentId: destination, generation: "r6-cancel-route" };
+      expect(yield* authority.nextDisableDeadline).toBeNull();
+      yield* authority.registerDependency(later, route, [], true, 2000);
+      yield* authority.registerDependency(earlier, route, [], true, 1000);
+      expect(yield* authority.nextDisableDeadline).toBe(1000);
+      yield* authority.acknowledge(
+        { version: 1, dependency: earlier, disabled: true },
+        destination,
+        route.generation,
+      );
+      expect(yield* authority.nextDisableDeadline).toBe(2000);
+      yield* sql`DELETE FROM fork_automation_obligations WHERE ack_json IS NULL`;
+      expect(yield* authority.nextDisableDeadline).toBeNull();
+      yield* TestClock.adjust("1 hour");
+      expect(yield* authority.pending).toEqual([]);
+    }).pipe(Effect.provide(fixture)),
 );

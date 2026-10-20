@@ -289,6 +289,7 @@ export class DestinationAutomationAuthority extends Context.Service<
       input: AutomationDisable,
       credentialIdentity: string,
     ) => Effect.Effect<AutomationDisableAck | undefined, OrchestratorMcpFailure>;
+    readonly nextDisableDeadline: Effect.Effect<number | null, OrchestratorMcpFailure>;
     readonly pending: Effect.Effect<
       ReadonlyArray<{
         readonly dependency: AutomationDependency;
@@ -761,11 +762,37 @@ const make = Effect.gen(function* () {
         }),
       )
       .pipe(Effect.catchTags({ SqlError: (cause) => Effect.fail(unavailable(cause)) }));
+  const nextDisableDeadline = Effect.gen(function* () {
+    const rows = yield* sql<{ deadline: number | null }>`
+      SELECT min(deadline) AS deadline FROM (
+        SELECT o.expires_at AS deadline FROM fork_automation_obligations o
+          WHERE o.ack_json IS NULL AND o.pending=0
+        UNION ALL
+        SELECT json_extract(c.certificate_json,'$.expiresAt') AS deadline
+          FROM fork_automation_dependency_certificates d
+          JOIN fork_automation_certificates c ON c.id=d.certificate_id
+          JOIN fork_automation_obligations o ON o.dependency_id=d.dependency_id
+          WHERE o.ack_json IS NULL AND o.pending=0
+        UNION ALL
+        SELECT round(unixepoch(a.expires_at,'subsec')*1000) AS deadline
+          FROM fork_automation_dependency_grants d
+          JOIN auth_sessions a ON a.session_id=d.session_id
+          JOIN fork_automation_obligations o ON o.dependency_id=d.dependency_id
+          WHERE o.ack_json IS NULL AND o.pending=0
+      )
+    `.pipe(Effect.mapError(unavailable));
+    if (rows[0] === undefined) return yield* unavailable(undefined);
+    return rows[0].deadline;
+  });
   const pending: DestinationAutomationAuthority["Service"]["pending"] = Effect.gen(function* () {
-    yield* sql`UPDATE fork_automation_obligations SET pending=1 WHERE ack_json IS NULL AND expires_at IS NOT NULL AND expires_at<=${yield* Clock.currentTimeMillis}`.pipe(
+    const now = yield* Clock.currentTimeMillis;
+    yield* sql`UPDATE fork_automation_obligations SET pending=1 WHERE ack_json IS NULL AND expires_at IS NOT NULL AND expires_at<=${now}`.pipe(
       Effect.mapError(unavailable),
     );
-    yield* sql`UPDATE fork_automation_obligations SET pending=1 WHERE ack_json IS NULL AND dependency_id IN (SELECT d.dependency_id FROM fork_automation_dependency_certificates d JOIN fork_automation_certificates c ON c.id=d.certificate_id WHERE c.revoked=1 OR (d.certificate_kind='automation-execution' AND c.disabled=1) OR (json_extract(c.certificate_json,'$.expiresAt') IS NOT NULL AND json_extract(c.certificate_json,'$.expiresAt')<=${yield* Clock.currentTimeMillis}))`.pipe(
+    yield* sql`UPDATE fork_automation_obligations SET pending=1 WHERE ack_json IS NULL AND dependency_id IN (SELECT d.dependency_id FROM fork_automation_dependency_certificates d JOIN fork_automation_certificates c ON c.id=d.certificate_id WHERE c.revoked=1 OR (d.certificate_kind='automation-execution' AND c.disabled=1) OR (json_extract(c.certificate_json,'$.expiresAt') IS NOT NULL AND json_extract(c.certificate_json,'$.expiresAt')<=${now}))`.pipe(
+      Effect.mapError(unavailable),
+    );
+    yield* sql`UPDATE fork_automation_obligations SET pending=1 WHERE ack_json IS NULL AND dependency_id IN (SELECT d.dependency_id FROM fork_automation_dependency_grants d JOIN auth_sessions a ON a.session_id=d.session_id WHERE a.revoked_at IS NOT NULL OR round(unixepoch(a.expires_at,'subsec')*1000)<=${now})`.pipe(
       Effect.mapError(unavailable),
     );
     const rows = yield* sql
@@ -821,6 +848,7 @@ const make = Effect.gen(function* () {
     registerRecovery,
     registerDependency,
     receiveDisable,
+    nextDisableDeadline,
     pending,
     acknowledge,
   });

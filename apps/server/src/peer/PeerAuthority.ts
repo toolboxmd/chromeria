@@ -199,6 +199,7 @@ export class PeerAuthority extends Context.Service<
   {
     readonly nativePreflight: NativeAuthorityValidation["Service"]["preflight"];
     readonly notifyAutomationChanges: Effect.Effect<void>;
+    readonly nextAutomationDisableDeadline: Effect.Effect<number | null, OrchestratorMcpFailure>;
     readonly pendingAutomationDisables: Effect.Effect<
       ReadonlyArray<{
         readonly dependency: Automation.AutomationDependency;
@@ -1894,7 +1895,10 @@ const make = Effect.gen(function* () {
               );
           }),
         )
-        .pipe(Effect.mapError(unavailable));
+        .pipe(
+          Effect.mapError(unavailable),
+          Effect.tap(() => (relay === undefined ? Effect.void : wakeDisables)),
+        );
       const attestation = yield* decodeLegacyAttestation(
         yield* ask(owner.sessionId, {
           id: `capture-legacy:${input.certificateId}:${owner.sessionId}:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
@@ -2025,7 +2029,10 @@ const make = Effect.gen(function* () {
                   );
               }),
             )
-            .pipe(Effect.mapError(unavailable));
+            .pipe(
+              Effect.mapError(unavailable),
+              Effect.tap(() => (relay === undefined ? Effect.void : wakeDisables)),
+            );
           const upstream = yield* decodeAcceptedGraph(
             yield* ask(record.sessionId, {
               id: `capture:${input.certificateId}:${record.id}:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
@@ -2476,7 +2483,10 @@ const make = Effect.gen(function* () {
               );
             }),
           )
-          .pipe(Effect.catchTags({ SqlError: () => Effect.fail(unavailable()) }));
+          .pipe(
+            Effect.catchTags({ SqlError: () => Effect.fail(unavailable()) }),
+            Effect.tap(() => wakeDisables),
+          );
         return { dependency, expiresAt };
       }
       if (frame.body.type === "capture-automation") {
@@ -2579,7 +2589,10 @@ const make = Effect.gen(function* () {
                 );
             }),
           )
-          .pipe(Effect.catchTags({ SqlError: () => Effect.fail(unavailable()) }));
+          .pipe(
+            Effect.catchTags({ SqlError: () => Effect.fail(unavailable()) }),
+            Effect.tap(() => wakeDisables),
+          );
         return yield* mergeGraphs([graph, { records: [], legacy: [], dependencies: [dependency] }]);
       }
       if (frame.body.type === "request-actor") {
@@ -3150,6 +3163,7 @@ const make = Effect.gen(function* () {
   return PeerAuthority.of({
     nativePreflight,
     notifyAutomationChanges: wakeDisables,
+    nextAutomationDisableDeadline: automation.nextDisableDeadline,
     pendingAutomationDisables: automation.pending,
     acknowledgeAutomationDisable: (acknowledgement, peer, generation) =>
       automation

@@ -18,6 +18,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
@@ -460,21 +461,30 @@ const make = Effect.gen(function* () {
   });
   const drainAutomationDisables = deliverAutomationDisableBatch.pipe(Effect.asVoid);
   const disableWakeups = yield* Queue.sliding<void>(1);
-  const recoverAutomationDisables = Effect.forever(
-    Queue.take(disableWakeups).pipe(
-      Effect.andThen(
+  const recoverAutomationDisables = Queue.take(disableWakeups).pipe(
+    Effect.andThen(
+      Effect.forever(
         Effect.gen(function* () {
-          while (
-            yield* deliverAutomationDisableBatch.pipe(
-              Effect.catch(() =>
-                Effect.logWarning(
-                  "Pending automation disable recovery is unavailable; retrying.",
-                ).pipe(Effect.as(true)),
-              ),
-            )
-          )
+          if (yield* deliverAutomationDisableBatch) {
             yield* Effect.sleep("2 seconds");
-        }),
+            return;
+          }
+          const deadline = Option.isSome(authority)
+            ? yield* authority.value.nextAutomationDisableDeadline
+            : null;
+          if (deadline === null) yield* Queue.take(disableWakeups);
+          else
+            yield* Effect.raceFirst(
+              Queue.take(disableWakeups),
+              Effect.sleep(Math.max(0, deadline - (yield* Clock.currentTimeMillis))),
+            );
+        }).pipe(
+          Effect.catch(() =>
+            Effect.logWarning("Pending automation disable recovery is unavailable; retrying.").pipe(
+              Effect.andThen(Effect.sleep("2 seconds")),
+            ),
+          ),
+        ),
       ),
     ),
   );
