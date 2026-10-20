@@ -198,6 +198,59 @@ describe("PrismService", () => {
       ]);
     }),
   );
+  it.effect("sends a Muse Color's effort as reasoningEffort", () =>
+    Effect.gen(function* () {
+      const museId = ProviderInstanceId.make("muse-personal");
+      const muse = yield* buildUnavailableProviderSnapshot({
+        driverKind: "muse",
+        instanceId: museId,
+        reason: "test",
+        checkedAt: "2026-10-20T00:00:00Z",
+      });
+      const result = yield* Effect.gen(function* () {
+        const service = yield* Prism.PrismService;
+        return yield* service.resolve({ projectId, role: "worker", lane: "easy" });
+      }).pipe(
+        Effect.provide(
+          Prism.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                registry([
+                  {
+                    ...muse,
+                    enabled: true,
+                    availability: "available",
+                    models: [
+                      {
+                        slug: "muse-spark-1.3",
+                        name: "Spark",
+                        isCustom: false,
+                        capabilities: null,
+                      },
+                    ],
+                  },
+                ]),
+                Settings.layerTest({
+                  prismRoles: {
+                    worker: {
+                      lanes: {
+                        easy: [{ instanceId: museId, model: "muse-spark-1.3", effort: "high" }],
+                      },
+                    },
+                  },
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+      assert.deepStrictEqual(result.modelSelection, {
+        instanceId: museId,
+        model: "muse-spark-1.3",
+        options: [{ id: "reasoningEffort", value: "high" }],
+      });
+    }),
+  );
   it.effect("skips exhausted capacity and honors project role overrides", () =>
     Effect.gen(function* () {
       const p = yield* provider;
