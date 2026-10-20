@@ -27,8 +27,9 @@ import {
   syncPrismDraft,
   type PrismDraftPreference,
 } from "./PrismSettings.logic";
-import { ColorPicker } from "./ColorPicker";
-import { defaultColor, findColorChoice, type ColorProviderChoice } from "./ColorPicker.logic";
+import { ColorPicker, ProviderLabel } from "./ColorPicker";
+import { findColorChoice, type ColorProviderChoice } from "./ColorPicker.logic";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 
 type DraftPreference = PrismDraftPreference;
 const editablePreference = (model: Color, entryId: number): DraftPreference => ({
@@ -165,9 +166,6 @@ export function ColorList({
     const synced = syncPrismDraft(draft, saved);
     if (synced !== draft) setDraft(synced);
   }
-  // The Color being added; null follows the scope's first choice.
-  const [adding, setAdding] = useState<Color | null>(null);
-  const addColor = adding ?? defaultColor(providers);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -227,33 +225,30 @@ export function ColorList({
           </ol>
         </SortableContext>
       </DndContext>
-      {addColor && (
-        <div className="flex flex-wrap items-center gap-2">
-          <ColorPicker
-            value={addColor}
-            providers={providers}
-            label={`New ${title} Color`}
-            disabled={disabled}
-            onChange={setAdding}
-          />
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={
-              disabled ||
-              saving ||
-              draft.length >= maxItems ||
-              !findColorChoice(providers, addColor).model
-            }
-            onClick={() => {
-              commit([...draft, editablePreference(addColor, nextPrismEntryId(draft))]);
-              setAdding(null);
-            }}
-            aria-label={`Add ${title} Color`}
-          >
-            Add Color
-          </Button>
-        </div>
+      {providers.length > 0 && draft.length < maxItems && (
+        // Picking a provider saves its first model at once; the new row then edits model and effort.
+        <Select
+          value={null}
+          disabled={disabled || saving}
+          onValueChange={(instanceId) => {
+            const provider = providers.find((candidate) => candidate.instanceId === instanceId);
+            const model = provider?.models[0];
+            if (!provider || !model) return;
+            const color = { instanceId: provider.instanceId, model: model.slug };
+            commit([...draft, editablePreference(color, nextPrismEntryId(draft))]);
+          }}
+        >
+          <SelectTrigger size="sm" className="w-fit" aria-label={`Add ${title} Color`}>
+            <SelectValue>{draft.length === 0 ? "Add primary" : "Add fallback"}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup>
+            {providers.map((candidate) => (
+              <SelectItem key={candidate.instanceId} value={candidate.instanceId}>
+                <ProviderLabel provider={candidate} />
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
       )}
       {providers.length === 0 && (
         <p className="text-xs text-muted-foreground">

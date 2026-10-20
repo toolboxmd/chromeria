@@ -188,14 +188,6 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["model", "provider", "effort", "fallback", "persona"],
   },
   {
-    id: "prism-capacity",
-    title: "Prism live capacity",
-    to: "/settings/prism",
-    targetId: "prism-capacity",
-    scope: "environment",
-    searchTerms: ["usage", "limits", "provider"],
-  },
-  {
     id: "storage-worktrees",
     title: "Worktree cleanup",
     to: "/settings/storage",
