@@ -83,8 +83,8 @@ _Avoid_: Model Router, router (alone)
 
 **Prism role**:
 What delegated work is for, with its own instructions and ordered Colors:
-Planner, Researcher, Designer, Worker, Roast, Reviewer or Judge. Promachos is a
-stored launch kit, not a role `delegate_task` accepts.
+Planner, Researcher, Designer, Worker, Computer use, Roast, Reviewer or Judge.
+Promachos is a stored launch kit, not a role `delegate_task` accepts.
 
 **Run group**:
 The Drafters one delegation starts on several Colors of a read-only Prism role.
