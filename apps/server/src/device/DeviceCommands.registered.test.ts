@@ -109,6 +109,7 @@ const fixture = Effect.gen(function* () {
   let wrongTarget = false;
   let largeSnapshot = false;
   let outsideMedia = false;
+  let failCaptureStart = false;
   let revokeAfter: string | undefined;
   const mediaPaths = new Map<string, string>();
   const ready: DeviceHost.DeviceHostReady = {
@@ -248,6 +249,19 @@ const fixture = Effect.gen(function* () {
           data = { text: "Continue", privatePath: "/host/private", token: "PRIVATE_TOKEN_383" };
         if (family === "record" || family === "trace") {
           if (positionals[0] === "start") {
+            if (failCaptureStart) {
+              failCaptureStart = false;
+              return {
+                code: ChildProcessSpawner.ExitCode(1),
+                stdout: "",
+                stderr: "Capture start failed",
+                timedOut: false,
+                stdoutTruncated: false,
+                stderrTruncated: false,
+                stdoutInvalidUtf8: false,
+                stderrInvalidUtf8: false,
+              };
+            }
             const path = positionals[1];
             if (path === undefined) throw new Error("Expected private capture output path");
             mediaPaths.set(captureKey, path);
@@ -359,6 +373,9 @@ const fixture = Effect.gen(function* () {
     sql: Context.get(database, SqlClient.SqlClient),
     preparations: () => preparations,
     captures: () => captures,
+    failCaptureStart: () => {
+      failCaptureStart = true;
+    },
     failPreparation: () => {
       failPreparation = true;
     },
@@ -627,6 +644,27 @@ it.effect(
         expect(f.calls).toHaveLength(count);
       }
       expect((yield* f.sql`SELECT id FROM attachment_staging`).length).toBe(2);
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(Net.layer, NodeServices.layer))),
+);
+
+it.effect.each(["record", "trace"] as const)(
+  "a failed %s start releases the capture for the same session",
+  (type) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const { target } = yield* f.open("failed-capture-open");
+      const execute = (key: string, action: "start" | "stop") =>
+        f.call("device_execute", { target, command: { type, action }, clientRequestId: key });
+      f.failCaptureStart();
+      const failed = yield* execute("failed-start", "start");
+      expect(failed.isError).toBe(true);
+      expect(JSON.stringify(failed)).toContain("outcome_unknown");
+      expect(f.calls.filter((call) => call.args[1] === type)).toHaveLength(1);
+      const restarted = yield* execute("fresh-start", "start");
+      expect(restarted.isError, JSON.stringify(restarted)).not.toBe(true);
+      const stopped = yield* execute("fresh-stop", "stop");
+      expect(stopped.isError, JSON.stringify(stopped)).not.toBe(true);
+      expect((yield* decodeCommandResult(stopped.structuredContent)).type).toBe("artifacts");
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(Net.layer, NodeServices.layer))),
 );
 
