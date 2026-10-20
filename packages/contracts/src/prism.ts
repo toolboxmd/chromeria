@@ -18,7 +18,7 @@ import {
  * project like any key in `PROJECT_SCOPED_SERVER_SETTING_KEYS`;
  * `delegate_task` and `t3_thread_launch` apply them through Prism.
  */
-const PRISM_DELEGATE_ROLES = [
+export const PRISM_DELEGATE_ROLES = [
   "planner",
   "researcher",
   "designer",
@@ -152,9 +152,9 @@ export const PRISM_ROLE_DESCRIPTIONS: Record<PrismRole, string> = {
     "Investigates read-only and reports cited facts, unknowns and options. Changes nothing.",
   designer:
     "Proposes or compares designs, interfaces and plans for a goal, and recommends one. Changes nothing.",
-  worker: "Implements the task and commits as it goes. Lanes easy, medium, hard.",
+  worker: `Implements the task and commits as it goes. Use optional lane for difficulty: ${PRISM_LANES.join(", ")}.`,
   "computer-use":
-    "Drives the browser (preview_* tools) and, where available, the desktop through computer-use tools. Reports what it saw and did.",
+    'Drives the browser (preview_* tools) and, where available, the desktop through computer-use tools. Reports what it saw and did. For browser or desktop driving beyond a quick check, delegate with delegate_task using prismRole: "computer-use".',
   roast:
     "Attacks a plan or idea before work starts: weak assumptions, missing cases, cheaper alternatives.",
   reviewer:
@@ -166,7 +166,8 @@ export const PRISM_ROLE_DESCRIPTIONS: Record<PrismRole, string> = {
 
 /** `delegate_task` roles with their descriptions, for tool and instruction text. */
 export const PRISM_DELEGATE_ROLE_GUIDE = PRISM_DELEGATE_ROLES.map(
-  (role) => `${role} (${PRISM_ROLE_DESCRIPTIONS[role]})`,
+  (role) =>
+    `${role} (${PRISM_ROLE_DESCRIPTIONS[role]}${isPrismRunGroupRole(role) ? " Read-only; supports Run groups when Run is above 1 in Prism settings." : ""})`,
 ).join("; ");
 
 /** Saved kits may still carry `threadTools`; decoding drops it like any unknown key. */
