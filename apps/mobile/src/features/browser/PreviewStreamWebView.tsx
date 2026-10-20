@@ -3,14 +3,20 @@ import * as Dialog from "../../components/ui/Dialog";
 import previewStreamScript from "@t3tools/mobile-preview-stream";
 import {
   previewStreamControlLabel,
+  resolvePreviewStreamFileUrl,
   previewStreamHostSetupMessage,
   type PreviewStreamControl,
   type PreviewStreamDownload,
   type PreviewStreamFileChooser,
   type PreviewStreamInput,
 } from "@t3tools/client-runtime/preview/server-browser-stream";
-import type { EnvironmentId, PreviewStreamHostSetup } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  PreviewStreamHostSetup,
+  PreviewViewerResource,
+} from "@t3tools/contracts";
 import {
+  useCallback,
   useEffect,
   useEffectEvent,
   useImperativeHandle,
@@ -50,12 +56,14 @@ type NativeStreamBridge = {
   readonly ref?: Ref<PreviewStreamRef>;
   readonly onUnauthorized: () => void;
   readonly onGone?: () => void;
+  readonly onPopup?: (resource: PreviewViewerResource) => void;
   readonly onViewport?: (viewport: { readonly width: number; readonly height: number }) => void;
   readonly onControl?: (control: PreviewStreamControl | null) => void;
   readonly onPictureInPicture?: (state: PreviewPictureInPictureState, detail?: string) => void;
   /** True while frames show, so commands reach the page. Pass a stable function. */
   readonly onStreamingChange?: (streaming: boolean) => void;
   readonly compact?: boolean;
+  readonly onFileTransferChange?: (active: boolean) => void;
 };
 
 async function sendFilesToPage(chooser: PreviewStreamFileChooser, pick: boolean) {
@@ -78,7 +86,9 @@ async function sendFilesToPage(chooser: PreviewStreamFileChooser, pick: boolean)
       } as unknown as Blob);
     }
   }
-  const response = await fetch(chooser.uploadUrl, {
+  const url =
+    chooser.resolveUploadUrl === undefined ? chooser.uploadUrl : await chooser.resolveUploadUrl();
+  const response = await fetch(url, {
     method: "POST",
     body,
     credentials: chooser.credentials ? "include" : "omit",
@@ -92,11 +102,12 @@ function offerDownload(download: PreviewStreamDownload) {
     {
       text: "Save or share",
       onPress: () =>
-        void downloadAndShareAttachment({
-          url: download.url,
-          attachment: { name: download.fileName, mimeType: "application/octet-stream" },
-          signal: new AbortController().signal,
-        }).catch((cause: unknown) =>
+        void (async () =>
+          downloadAndShareAttachment({
+            url: download.resolveUrl === undefined ? download.url : await download.resolveUrl(),
+            attachment: { name: download.fileName, mimeType: "application/octet-stream" },
+            signal: new AbortController().signal,
+          }))().catch((cause: unknown) =>
           Dialog.alert(
             "Could not save the download",
             cause instanceof Error ? cause.message : undefined,
@@ -110,14 +121,33 @@ const MAX_REFUSALS = 3;
 
 export function PreviewStreamWebView(
   props: Omit<PreviewStreamConfiguration, "access"> &
-    Omit<NativeStreamBridge, "onUnauthorized"> & {
+    Omit<NativeStreamBridge, "onUnauthorized" | "onFileTransferChange"> & {
       readonly environmentId: EnvironmentId;
       readonly paused?: boolean;
+      readonly backgrounded?: boolean;
     },
 ) {
-  const { access, error, refresh } = usePreviewStreamAccess(props.environmentId);
-  if (access && !props.paused) {
-    return <AuthorizedPreviewStream {...props} access={access} onUnauthorized={refresh} />;
+  const [pendingFiles, setPendingFiles] = useState(0);
+  const fileTransferChanged = useCallback((active: boolean) => {
+    setPendingFiles((current) => current + (active ? 1 : -1));
+  }, []);
+  // Android backgrounds the app for its document picker. Keep this exact viewer
+  // through current admission and its answer, but always honor focus loss.
+  const live = !props.paused && (!props.backgrounded || pendingFiles > 0);
+  const { access, error, refresh } = usePreviewStreamAccess(
+    props.environmentId,
+    props.resource,
+    live,
+  );
+  if (access && live) {
+    return (
+      <AuthorizedPreviewStream
+        {...props}
+        access={access}
+        onUnauthorized={refresh}
+        onFileTransferChange={fileTransferChanged}
+      />
+    );
   }
   return (
     <View
@@ -177,7 +207,8 @@ function AuthorizedPreviewStream({
     access: props.access,
     threadId: props.threadId,
     tabId: props.tabId,
-    interactive: props.interactive,
+    ...(props.resource === undefined ? {} : { resource: props.resource }),
+    interactive: props.interactive && props.access.canOperate !== false,
     background: props.background,
   } satisfies PreviewStreamConfiguration);
   return (
@@ -186,6 +217,7 @@ function AuthorizedPreviewStream({
       {...props}
       ref={ref}
       configuration={configuration}
+      interactive={props.interactive && props.access.canOperate !== false}
       onUnauthorized={() => {
         const refusals = ++unauthorized.current;
         if (refusals >= MAX_REFUSALS) return false;
@@ -220,20 +252,28 @@ function AuthorizedPreviewStream({
 
 function PreviewStreamDocumentView({
   ref,
+  access,
   configuration,
   background,
   compact,
+  interactive,
   onUnauthorized,
   onGone,
+  onPopup,
+  resource,
   onViewport,
   onControl,
   onPictureInPicture,
   onStreamingChange,
+  onFileTransferChange,
   onRetry,
   onStreaming,
   onRecoverProcess,
 }: Omit<NativeStreamBridge, "onUnauthorized"> & {
+  readonly access: PreviewStreamConfiguration["access"];
   readonly configuration: string;
+  readonly resource?: PreviewViewerResource;
+  readonly interactive: boolean;
   readonly background: string;
   readonly onUnauthorized: () => boolean;
   readonly onRetry: () => void;
@@ -252,16 +292,24 @@ function PreviewStreamDocumentView({
   const dialogRef = useRef<PreviewStreamControl["dialog"]>(null);
   const [promptText, setPromptText] = useState("");
   const [fileChooser, setFileChooser] = useState<PreviewStreamFileChooser | null>(null);
+  const pendingAnswers = useRef(new Set<() => void>());
   const answerFileChooser = (pick: boolean) => {
     const chooser = fileChooser;
     if (!chooser) return;
     setFileChooser(null);
-    void sendFilesToPage(chooser, pick).catch((cause: unknown) =>
-      Dialog.alert(
-        "Could not send the files to the page",
-        cause instanceof Error ? cause.message : undefined,
-      ),
-    );
+    const finish = () => {
+      if (pendingAnswers.current.delete(finish)) onFileTransferChange?.(false);
+    };
+    pendingAnswers.current.add(finish);
+    onFileTransferChange?.(true);
+    void sendFilesToPage(chooser, pick)
+      .catch((cause: unknown) =>
+        Dialog.alert(
+          "Could not send the files to the page",
+          cause instanceof Error ? cause.message : undefined,
+        ),
+      )
+      .finally(finish);
   };
   const controlChanged = useEffectEvent((next: PreviewStreamControl | null) => onControl?.(next));
   const command = (input: PreviewStreamInput) =>
@@ -304,6 +352,9 @@ function PreviewStreamDocumentView({
     const view = webView.current;
     return () => {
       active.current = false;
+      // A pending answer can retain only this opening. Its later settlement
+      // must not change the lifetime of a replacement stream.
+      for (const finish of pendingAnswers.current) finish();
       view?.injectJavaScript("window.T3PreviewStream?.stop(); true;");
     };
   }, []);
@@ -320,7 +371,7 @@ function PreviewStreamDocumentView({
           <AppText className="text-xs text-foreground-muted">
             {previewStreamControlLabel(control)}
           </AppText>
-          {control?.canOperate ? (
+          {interactive && control?.canOperate ? (
             <Pressable
               accessibilityRole="button"
               disabled={control.controller === "another-viewer"}
@@ -371,11 +422,24 @@ function PreviewStreamDocumentView({
               onControl?.(message);
               return;
             }
+            case "inputRejected":
+              Dialog.alert("Browser input refused", message.message);
+              return;
             case "unauthorized":
               if (!onUnauthorized()) {
                 fail("This session can't open the browser stream. Reconnect to try again.");
               }
               return;
+            case "popup":
+              if (
+                message.resource !== undefined &&
+                resource !== undefined &&
+                message.resource.environmentId === resource.environmentId &&
+                message.resource.threadId === resource.threadId &&
+                message.resource.serverEpoch === resource.serverEpoch
+              )
+                onPopup?.(message.resource);
+              break;
             case "gone":
               setGone(true);
               fail("This tab was closed.");
@@ -392,10 +456,21 @@ function PreviewStreamDocumentView({
               void Clipboard.setStringAsync(message.text).catch(() => undefined);
               return;
             case "download":
-              offerDownload(message);
+              offerDownload({
+                ...message,
+                resolveUrl: () => resolvePreviewStreamFileUrl(message.url, access),
+              });
               return;
             case "fileChooser":
-              setFileChooser(message.chooser);
+              setFileChooser(
+                message.chooser === null
+                  ? null
+                  : {
+                      ...message.chooser,
+                      resolveUploadUrl: () =>
+                        resolvePreviewStreamFileUrl(message.chooser!.uploadUrl, access),
+                    },
+              );
               return;
             case "pictureInPicture":
               onPictureInPicture?.(message, message.detail);

@@ -1,5 +1,7 @@
 import type { DeviceHubAccess } from "@t3tools/client-runtime/device/hub-access";
-import type { PreviewStreamHostSetup } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+import * as Option from "effect/Option";
+import { PreviewViewerResource, type PreviewStreamHostSetup } from "@t3tools/contracts";
 import type {
   PreviewStreamControl,
   PreviewStreamDownload,
@@ -10,6 +12,7 @@ export interface PreviewStreamConfiguration {
   readonly access: DeviceHubAccess;
   readonly threadId: string;
   readonly tabId: string;
+  readonly resource?: PreviewViewerResource;
   readonly interactive: boolean;
   readonly background: string;
 }
@@ -21,8 +24,10 @@ export type PreviewStreamMessage =
       readonly status: "connecting" | "streaming" | "error";
       readonly detail?: string;
     }
+  | { readonly type: "inputRejected"; readonly message: string }
   | { readonly type: "unauthorized" }
   | { readonly type: "gone" }
+  | { readonly type: "popup"; readonly tabId: string; readonly resource?: PreviewViewerResource }
   | ({ readonly type: "hostSetup" } & PreviewStreamHostSetup)
   | { readonly type: "viewport"; readonly width: number; readonly height: number }
   | { readonly type: "clipboard"; readonly text: string }
@@ -73,7 +78,28 @@ export function previewStreamDocument(configuration: string, script: string) {
 
 export function previewStreamMessage(data: string): PreviewStreamMessage | null {
   try {
-    return JSON.parse(data) as PreviewStreamMessage;
+    // Only our bundled viewer runs in this WebView; the remote page never does.
+    const parsed: unknown = JSON.parse(data);
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "type" in parsed &&
+      parsed.type === "popup"
+    ) {
+      if (
+        !("tabId" in parsed) ||
+        typeof parsed.tabId !== "string" ||
+        parsed.tabId.length > 512 ||
+        !parsed.tabId.trim()
+      )
+        return null;
+      if (!("resource" in parsed)) return { type: "popup", tabId: parsed.tabId };
+      const resource = Schema.decodeUnknownOption(PreviewViewerResource)(parsed.resource);
+      return Option.isSome(resource) && resource.value.tabId === parsed.tabId
+        ? { type: "popup", tabId: parsed.tabId, resource: resource.value }
+        : null;
+    }
+    return parsed as PreviewStreamMessage;
   } catch {
     return null;
   }

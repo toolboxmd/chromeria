@@ -10,7 +10,11 @@ export function threadDevicePreviews(state: DeviceServiceState | null, threadId:
       );
       const host = state?.hosts.find((host) => host.id === session.hostId);
       return {
-        key: JSON.stringify([session.hostId, session.deviceId]),
+        key: JSON.stringify(
+          session.toolSessionId === undefined
+            ? [session.hostId, session.deviceId]
+            : [session.hostId, session.deviceId, session.toolSessionId],
+        ),
         session,
         name: device?.name ?? (session.platform === "ios" ? "iOS Simulator" : "Android Emulator"),
         description: [device?.version, host?.label].filter(Boolean).join(" · "),

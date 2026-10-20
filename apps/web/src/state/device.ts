@@ -1,10 +1,11 @@
+import { useId } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import { createDeviceEnvironmentAtoms } from "@t3tools/client-runtime/state/device";
 import {
   type DeviceHubAccess,
   resolveDeviceHubAccess,
 } from "@t3tools/client-runtime/state/deviceHubAccess";
-import type { DeviceServiceState, EnvironmentId } from "@t3tools/contracts";
+import type { DeviceServiceState, EnvironmentId, DeviceViewerResource } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -50,16 +51,45 @@ const deviceHubAccessAtom = Atom.family((environmentId: EnvironmentId) =>
     .pipe(Atom.setIdleTTL(60_000), Atom.withLabel(`device-hub-access:${environmentId}`)),
 );
 
+export function useDeviceHubAccessState(
+  environmentId: EnvironmentId | null,
+  hostId = "local",
+  resource?: DeviceViewerResource,
+  visible = true,
+) {
+  const viewerKey = useId();
+  const input = resource === undefined ? undefined : { resource, operation: "control" as const };
+  const canControl = useAtomValue(
+    deviceEnvironment.viewerOpen.permissionAtom(environmentId, input),
+  );
+  const viewerInput =
+    resource === undefined
+      ? undefined
+      : { resource, operation: canControl ? ("control" as const) : ("view" as const) };
+  type AccessResult =
+    | Atom.Type<ReturnType<typeof deviceHubAccessAtom>>
+    | Atom.Type<ReturnType<typeof deviceEnvironment.viewerAccess>>;
+  const query = useEnvironmentQuery<DeviceHubAccess, AsyncResult.AsyncResult.Failure<AccessResult>>(
+    environmentId === null || !visible
+      ? EMPTY_ACCESS_ATOM
+      : viewerInput !== undefined
+        ? deviceEnvironment.viewerAccess({ environmentId, input: viewerInput, viewerKey })
+        : deviceHubAccessAtom(environmentId),
+  );
+  const access =
+    query.isSuccess && query.data !== null
+      ? { ...query.data, query: { ...query.data.query, hostId } }
+      : null;
+  return { access, error: query.error, refresh: query.refresh };
+}
+
 export function useDeviceHubAccess(
   environmentId: EnvironmentId | null,
   hostId = "local",
+  resource?: DeviceViewerResource,
+  visible = true,
 ): DeviceHubAccess | null {
-  const result = useAtomValue(
-    environmentId === null ? EMPTY_ACCESS_ATOM : deviceHubAccessAtom(environmentId),
-  );
-  return AsyncResult.isSuccess(result)
-    ? { ...result.value, query: { ...result.value.query, hostId } }
-    : null;
+  return useDeviceHubAccessState(environmentId, hostId, resource, visible).access;
 }
 
 const EMPTY_ACCESS_ATOM = Atom.make(AsyncResult.initial<DeviceHubAccess, never>()).pipe(

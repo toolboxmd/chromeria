@@ -12,14 +12,18 @@ export class DeviceScreenshotError extends Error {
 }
 
 export async function captureDeviceScreenshot(target: DeviceStreamTarget, signal: AbortSignal) {
+  const access =
+    target.access.requestCurrentAccess === undefined
+      ? target.access
+      : await target.access.requestCurrentAccess();
   const vendor = target.platform === "ios" ? "serve-sim" : "serve-emu";
   const url = withDeviceHubQuery(
-    `${target.access.httpBase}/vendor/${vendor}/api/screenshot?device=${encodeURIComponent(target.deviceId)}`,
-    target.access,
+    `${access.httpBase}/vendor/${vendor}/api/screenshot?device=${encodeURIComponent(target.deviceId)}`,
+    access,
   );
   const response = await fetch(url, {
     method: "POST",
-    credentials: target.access.credentials ? "include" : "omit",
+    credentials: access.credentials ? "include" : "omit",
     signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
   });
   if (!response.ok) throw new DeviceScreenshotError(response.status);

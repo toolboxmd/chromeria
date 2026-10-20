@@ -611,13 +611,6 @@ const cases = [
     context: true,
   },
   {
-    group: "preview controls",
-    name: "t3_preview_close",
-    args: { tabId: "tab" },
-    operation: "preview-close",
-    context: true,
-  },
-  {
     group: "browser automation",
     name: "preview_press",
     args: { key: "Escape" },
@@ -737,6 +730,48 @@ it.effect(
           "does not support verified pending request actions",
         );
         expect(yield* Ref.get(f.seen)).toEqual(before);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+// Lawful linked close/reopen is exercised with the actual authority owner in
+// PeerAuthority.workflow.test.ts: "modern opener survives authenticated reads...".
+// This older routing fixture intentionally has no verified original PeerAuthority.
+it.effect(
+  "legacy preview close stays local but linked close requires current original authority",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* fixture;
+        const local = yield* f.call("t3_preview_close", { tabId: "tab" }, true, capabilities, null);
+        expect(local.isError, JSON.stringify(local)).toBe(false);
+        expect(yield* Ref.get(f.seen)).toContainEqual(
+          expect.objectContaining({
+            operation: "preview-close",
+            environmentId: laptop.environmentId,
+          }),
+        );
+        yield* Ref.set(f.seen, []);
+        yield* f.link("full-access");
+        const unverified = yield* f.call("t3_preview_close", { tabId: "tab" }, true);
+        expect(unverified.isError, JSON.stringify(unverified)).toBe(true);
+        expect(JSON.stringify(unverified)).toContain(
+          "Current original preview authority is unavailable",
+        );
+        expect(yield* Ref.get(f.seen)).toEqual([]);
+        yield* f.link("auto");
+        const narrowed = yield* f.call("t3_preview_close", { tabId: "tab" }, true);
+        expect(narrowed.isError, JSON.stringify(narrowed)).toBe(true);
+        expect(yield* Ref.get(f.seen)).toEqual([]);
+        yield* f.link("full-access");
+        const noPreview = yield* f.call(
+          "t3_preview_close",
+          { tabId: "tab" },
+          true,
+          new Set(["orchestration"]),
+        );
+        expect(noPreview.isError).toBe(true);
+        expect(yield* Ref.get(f.seen)).toEqual([]);
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

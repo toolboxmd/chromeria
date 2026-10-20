@@ -123,15 +123,21 @@ export type PointerReporter = (
   phase: "move" | "click",
 ) => Promise<void>;
 const noPointer: PointerReporter = async () => {};
+/** Native callers carry their original invocation; ordinary local helpers have none. */
+type Authorize = () => Promise<void>;
+const noAuthorization: Authorize = async () => {};
 
 const targetPoint = async (
   page: Page,
   locator: Locator | null,
   input: { readonly x?: number | undefined; readonly y?: number | undefined },
   timeout: number,
+  authorize: Authorize,
 ) => {
   if (locator === null) return { x: input.x ?? 0, y: input.y ?? 0 };
+  await authorize();
   await locator.scrollIntoViewIfNeeded({ timeout });
+  await authorize();
   const box = await locator.boundingBox({ timeout });
   if (box) return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
   const viewport = page.viewportSize();
@@ -208,12 +214,13 @@ const answered = <A>(promise: Promise<A>) => {
  * each reader's values, or undefined for one that didn't answer, and fails when the
  * page's own frames don't or frames came or went.
  */
-const openReaders = async (page: Page, cdp: CDPSession) => {
+const openReaders = async (page: Page, cdp: CDPSession, authorize: Authorize) => {
   const frames = page.frames();
   const owners = new Map<Frame, CDPSession | null | undefined>(
     await Promise.all(
       frames.map(async (frame) => {
         if (frame === page.mainFrame()) return [frame, cdp] as const;
+        await authorize();
         const session = frameSessions.get(frame) ?? page.context().newCDPSession(frame);
         frameSessions.set(frame, session);
         try {
@@ -237,6 +244,7 @@ const openReaders = async (page: Page, cdp: CDPSession) => {
   const sessionReader = (frame: Frame, session: CDPSession) => {
     const owned = frames.filter((each) => ownerOf(each) === session);
     const open = async () => {
+      await authorize();
       const { frameTree } = await session.send("Page.getFrameTree");
       const ids = (node: typeof frameTree): Array<string> => [
         node.frame.id,
@@ -246,6 +254,7 @@ const openReaders = async (page: Page, cdp: CDPSession) => {
       if (ids(frameTree).length !== owned.length) throw pageChanged();
       return Promise.all(
         ids(frameTree).map(async (frameId) => {
+          await authorize();
           const world = await session.send("Page.createIsolatedWorld", {
             frameId,
             worldName: "t3-preview",
@@ -259,6 +268,7 @@ const openReaders = async (page: Page, cdp: CDPSession) => {
       const values = (contexts ??= open()).then((ids) =>
         Promise.all(
           ids.map(async (contextId) => {
+            await authorize();
             const { result, exceptionDetails } = await session.send("Runtime.evaluate", {
               contextId,
               expression: DOTTED_SCRIPT,
@@ -287,7 +297,10 @@ const openReaders = async (page: Page, cdp: CDPSession) => {
     ...frames.flatMap((frame) => {
       const owner = owners.get(frame);
       if (owner) return owner === cdp ? [] : [sessionReader(frame, owner)];
-      const own = () => frame.evaluate(DOTTED_SCRIPT) as Promise<Array<string>>;
+      const own = async () => {
+        await authorize();
+        return frame.evaluate(DOTTED_SCRIPT) as Promise<Array<string>>;
+      };
       return ownerOf(frame) === null ? [{ frames: [frame], read: own }] : [];
     }),
   ];
@@ -295,6 +308,7 @@ const openReaders = async (page: Page, cdp: CDPSession) => {
     readers,
     /** Readers that didn't answer `before` aren't asked again. */
     read: async (before?: ReadonlyArray<unknown>) => {
+      await authorize();
       const now = page.frames();
       // A frame added since the readers opened has none.
       if (now.length !== frames.length || now.some((frame, i) => frame !== frames[i])) {
@@ -378,10 +392,12 @@ export const captureViewport = async (
   page: Page,
   cdp: CDPSession,
   options: { readonly format: "png" | "jpeg"; readonly quality?: number; readonly scale: number },
+  authorize: Authorize = noAuthorization,
 ) => {
   let clip;
   if (options.scale < 1) {
     const viewport = page.viewportSize() ?? { width: 1280, height: 800 };
+    await authorize();
     const { cssVisualViewport } = await cdp.send("Page.getLayoutMetrics");
     clip = {
       x: cssVisualViewport.pageX,
@@ -390,6 +406,7 @@ export const captureViewport = async (
       scale: options.scale,
     };
   }
+  await authorize();
   const { data } = await cdp.send("Page.captureScreenshot", {
     format: options.format,
     ...(options.quality === undefined ? {} : { quality: options.quality }),
@@ -410,27 +427,30 @@ type SnapshotInput = {
 const capture = async (
   input: SnapshotInput,
   deadline: number,
+  authorize: Authorize,
 ): Promise<PreviewAutomationSnapshot> => {
+  await authorize();
   const viewport = input.page.viewportSize() ?? { width: 1280, height: 800 };
   const scale = Math.min(1, MAX_SCREENSHOT_WIDTH / (viewport.width * input.renderScale));
   const state = refsFor(input.page);
   invalidateRefs(input.page);
   const generation = state.generation;
-  const { readers, read } = await openReaders(input.page, input.cdp);
+  const { readers, read } = await openReaders(input.page, input.cdp, authorize);
   const before = await read();
   // Taken between the reads, so a value that changes during either fails the comparison.
   // Awaited after the tree: a capture that fails has finished its tree before a retry starts.
   const pageAndScreenshot = Promise.all([
-    input.page.evaluate(SNAPSHOT_SCRIPT) as Promise<
+    authorize().then(() => input.page.evaluate(SNAPSHOT_SCRIPT)) as Promise<
       Pick<
         PreviewAutomationSnapshot,
         "url" | "title" | "loading" | "visibleText" | "interactiveElements"
       >
     >,
-    captureViewport(input.page, input.cdp, { format: "png", scale }),
+    captureViewport(input.page, input.cdp, { format: "png", scale }, authorize),
   ]);
   void pageAndScreenshot.catch(constVoid);
   // Leaves time for the second read; a frame that never loads holds the tree until then.
+  await authorize();
   const tree = await input.page.ariaSnapshot({
     mode: "ai",
     boxes: true,
@@ -446,13 +466,16 @@ const capture = async (
   const unread = readers.flatMap((reader, i) => (after[i] ? [] : reader.frames));
   const filled = /^\s*- iframe (?:\[active\] )?\[ref=(\S+?)\].*:$/gm;
   for (const [, ref] of unread.length ? tree.matchAll(filled) : []) {
+    await authorize();
     const iframe = await input.page.locator(`aria-ref=${ref}`).elementHandle({ timeout: 2_000 });
     if (!iframe) throw pageChanged();
+    await authorize();
     const frame = await iframe.contentFrame();
     void iframe.dispose().catch(constVoid);
     if (frame && unread.includes(frame)) throw tooBusy();
   }
   const [page, data] = await pageAndScreenshot;
+  await authorize();
   if (state.generation !== generation) throw pageChanged();
   const mask = (text: string) => (dotted ? text.replace(dotted, MASKED_VALUE) : text);
   const accessibilityTree = (dotted ? maskTree(tree, dotted) : tree)
@@ -483,7 +506,11 @@ const capture = async (
 /** Snapshots begun per page; observers' snapshots aren't queued, so two can overlap. */
 const snapshotTurns = new WeakMap<Page, number>();
 
-export const snapshot = async (input: SnapshotInput): Promise<PreviewAutomationSnapshot> => {
+export const snapshot = async (
+  input: SnapshotInput,
+  authorize: Authorize = noAuthorization,
+): Promise<PreviewAutomationSnapshot> => {
+  await authorize();
   const deadline = Date.now() + SNAPSHOT_TIMEOUT_MS;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<never>((_, reject) => {
@@ -494,13 +521,17 @@ export const snapshot = async (input: SnapshotInput): Promise<PreviewAutomationS
   // A page that changed mid-capture, like one rotating ads, has usually settled by a second
   // try. None starts late or after another snapshot began, since it would revoke the refs of
   // whichever snapshot came next.
-  const captured = capture(input, deadline).catch((cause: unknown) =>
-    Date.now() < deadline &&
-    snapshotTurns.get(input.page) === turn &&
-    !(cause instanceof Error && cause.message === VALUE_TOO_LONG)
-      ? capture(input, deadline)
-      : Promise.reject(cause),
-  );
+  const captured = capture(input, deadline, authorize).catch(async (cause: unknown) => {
+    // A refused invocation must escape the snapshot's page/frame retry policy.
+    await authorize();
+    if (
+      Date.now() < deadline &&
+      snapshotTurns.get(input.page) === turn &&
+      !(cause instanceof Error && cause.message === VALUE_TOO_LONG)
+    )
+      return capture(input, deadline, authorize);
+    throw cause;
+  });
   try {
     return await Promise.race([captured, expired]);
   } catch (cause) {
@@ -518,12 +549,15 @@ export const click = async (
   page: Page,
   input: PreviewAutomationClickInput,
   pointer: PointerReporter = noPointer,
+  authorize: Authorize = noAuthorization,
 ): Promise<{ readonly x: number; readonly y: number }> => {
   const timeout = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const locator = targetLocator(page, input);
-  const point = await targetPoint(page, locator, input, timeout);
+  const point = await targetPoint(page, locator, input, timeout, authorize);
+  await authorize();
   await pointer(point, "click");
   const options = { button: input.button ?? "left", clickCount: input.clickCount ?? 1 } as const;
+  await authorize();
   const clicked =
     locator === null
       ? page.mouse.click(point.x, point.y, options)
@@ -541,17 +575,25 @@ export const click = async (
   return point;
 };
 
-export const type = async (page: Page, input: PreviewAutomationTypeInput) => {
+export const type = async (
+  page: Page,
+  input: PreviewAutomationTypeInput,
+  authorize: Authorize = noAuthorization,
+) => {
   const timeout = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const locator = targetLocator(page, input);
   if (locator !== null && input.clear) {
+    await authorize();
     await locator.fill(input.text, { timeout });
     return;
   }
   // A shadow host also matches :focus; use its innermost focused descendant.
   const target = locator ?? page.locator("*:focus").last();
+  await authorize();
+  const exists = locator !== null || (await target.count()) > 0;
+  await authorize();
   const focused =
-    (locator !== null || (await target.count()) > 0) &&
+    exists &&
     (await target.evaluate(
       (element) => {
         // Like the desktop host: an enabled text control or contenteditable
@@ -597,9 +639,12 @@ export const type = async (page: Page, input: PreviewAutomationTypeInput) => {
     );
   }
   if (input.clear) {
+    await authorize();
     await page.keyboard.press("ControlOrMeta+A");
+    await authorize();
     await page.keyboard.press("Delete");
   }
+  await authorize();
   await page.keyboard.insertText(input.text);
 };
 
@@ -607,10 +652,14 @@ export const hover = async (
   page: Page,
   input: PreviewAutomationHoverInput,
   pointer: PointerReporter = noPointer,
+  authorize: Authorize = noAuthorization,
 ) => {
   const timeout = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const locator = targetLocator(page, input);
-  await pointer(await targetPoint(page, locator, input, timeout), "move");
+  const point = await targetPoint(page, locator, input, timeout, authorize);
+  await authorize();
+  await pointer(point, "move");
+  await authorize();
   if (locator === null) {
     await page.mouse.move(input.x ?? 0, input.y ?? 0);
     return;
@@ -621,9 +670,12 @@ export const hover = async (
 export const select = async (
   page: Page,
   input: PreviewAutomationSelectInput,
+  authorize: Authorize = noAuthorization,
 ): Promise<PreviewAutomationSelectResult> => {
   const locator = targetLocator(page, input)!;
   const timeout = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  // Each entry matches an option by value first, then by its visible label.
+  await authorize();
   const options = await locator.evaluate(
     (element) =>
       element.tagName === "SELECT"
@@ -650,6 +702,7 @@ export const select = async (
       "PreviewAutomationTargetNotEditableError",
       "This element is not a <select>. Click a custom dropdown, then click its option.",
     );
+  await authorize();
   return { selected: await locator.selectOption(values, { timeout }) };
 };
 
@@ -657,37 +710,68 @@ export const drag = async (
   page: Page,
   input: PreviewAutomationDragInput,
   pointer: PointerReporter = noPointer,
+  authorize: Authorize = noAuthorization,
 ) => {
   const timeout = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const source = targetLocator(page, { locator: input.source })!;
   const target = targetLocator(page, { locator: input.target })!;
-  await pointer(await targetPoint(page, source, {}, timeout), "move");
-  // Observe the drag's outcome as it starts: a rejection nobody handles while the cursor
-  // moves exits the server.
+  const point = await targetPoint(page, source, {}, timeout, authorize);
+  await authorize();
+  await pointer(point, "move");
+  // The cursor travels with the drag; the page sees one continuous gesture. Observe the drag's
+  // outcome as it starts: a rejection nobody handles while the cursor moves exits the server.
+  await authorize();
   const dragFailure = source.dragTo(target, { timeout }).then(
     () => null,
     (error: unknown) => ({ error }),
   );
-  const end = await target.boundingBox({ timeout }).catch(() => null);
-  if (end) await pointer({ x: end.x + end.width / 2, y: end.y + end.height / 2 }, "move");
-  const failure = await dragFailure;
+  let failure;
+  try {
+    await authorize();
+    const end = await target.boundingBox({ timeout }).catch(() => null);
+    if (end) {
+      await authorize();
+      await pointer({ x: end.x + end.width / 2, y: end.y + end.height / 2 }, "move");
+    }
+  } finally {
+    // An already dispatched drag must settle before the tab's control queue drains.
+    failure = await dragFailure;
+  }
   if (failure) throw failure.error;
 };
 
-export const setInputFiles = async (page: Page, input: PreviewAutomationUploadInput) => {
+/** Sets files on one file input; false when no locator or selector names one. */
+export const setInputFiles = async (
+  page: Page,
+  input: Omit<PreviewAutomationUploadInput, "paths" | "artifacts"> & {
+    readonly paths: ReadonlyArray<string>;
+  },
+  authorize: Authorize = noAuthorization,
+) => {
   const locator = targetLocator(page, input);
   if (locator === null) return false;
+  await authorize();
   await locator.setInputFiles([...input.paths], { timeout: input.timeoutMs ?? DEFAULT_TIMEOUT_MS });
   return true;
 };
 
-export const press = async (page: Page, input: PreviewAutomationPressInput) => {
+export const press = async (
+  page: Page,
+  input: PreviewAutomationPressInput,
+  authorize: Authorize = noAuthorization,
+) => {
+  await authorize();
   await page.keyboard.press([...(input.modifiers ?? []), input.key].join("+"));
 };
 
-export const scroll = async (page: Page, input: PreviewAutomationScrollInput) => {
+export const scroll = async (
+  page: Page,
+  input: PreviewAutomationScrollInput,
+  authorize: Authorize = noAuthorization,
+) => {
   const delta = [input.deltaX ?? 0, input.deltaY ?? 0] as const;
   const locator = targetLocator(page, input);
+  await authorize();
   if (locator === null) {
     // Page-side code is passed as source: the server compiles without DOM types.
     await page.evaluate(`scrollBy(${delta[0]}, ${delta[1]})`);
@@ -705,7 +789,9 @@ export const evaluate = async (
   cdp: CDPSession,
   input: PreviewAutomationEvaluateInput,
   timeoutMs: number,
+  authorize: Authorize = noAuthorization,
 ) => {
+  await authorize();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
@@ -745,7 +831,11 @@ export const evaluate = async (
   return value;
 };
 
-export const waitFor = async (page: Page, input: PreviewAutomationWaitForInput) => {
+export const waitFor = async (
+  page: Page,
+  input: PreviewAutomationWaitForInput,
+  authorize: Authorize = noAuthorization,
+) => {
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const deadline = Date.now() + timeoutMs;
   const locator = targetLocator(page, input);
@@ -763,7 +853,13 @@ export const waitFor = async (page: Page, input: PreviewAutomationWaitForInput) 
   }
   if (urlIncludes !== undefined) checks.push(async () => page.url().includes(urlIncludes));
   for (;;) {
-    const results = await Promise.all(checks.map((check) => check()));
+    const results = await Promise.all(
+      checks.map(async (check) => {
+        await authorize();
+        return check();
+      }),
+    );
+    await authorize();
     if (results.every(Boolean)) return;
     if (Date.now() >= deadline) {
       throw new ServerBrowserOperationError(

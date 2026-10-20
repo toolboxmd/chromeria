@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
   DeviceId,
+  EnvironmentId,
   DeviceOperationError,
   LOCAL_DEVICE_HOST_ID,
   ThreadId,
@@ -137,7 +138,7 @@ const fixture = Effect.fn("fixture")(function* (
           agentDevice: { baseUrl: "http://agent.test", token: "test", entryPath: "/agent" },
         };
       }),
-    current: Effect.succeed(null),
+    current: Effect.sync(() => (starts.at(-1) === "start" ? ready : null)),
     stopAgent: Effect.sync(() => {
       agentStops.push("stop");
     }),
@@ -232,6 +233,60 @@ const fixture = Effect.fn("fixture")(function* (
 });
 
 describe("device setup consent", () => {
+  it.effect(
+    "viewer checks retain the exact opening without preparing a host or closing later work",
+    () =>
+      Effect.gen(function* () {
+        const { service, settings, starts, requests } = yield* fixture();
+        yield* service.configure({ enabled: true });
+        const input = {
+          threadId: ThreadId.make("viewer-thread"),
+          hostId: LOCAL_DEVICE_HOST_ID,
+          deviceId: DeviceId.make("Pixel_API_35"),
+          platform: "android" as const,
+        };
+        const opening = yield* service.open(input);
+        if (!opening.toolSessionId) return yield* Effect.die("Opening has no exact identity");
+        const resource = {
+          type: "device" as const,
+          environmentId: EnvironmentId.make("local-env"),
+          ...input,
+          deviceId: opening.deviceId,
+          toolSessionId: opening.toolSessionId,
+        };
+        const footprint = { starts: starts.length, requests: requests.length };
+        expect((yield* service.authorizeViewer(resource)).hostId).toBe(LOCAL_DEVICE_HOST_ID);
+        expect({ starts: starts.length, requests: requests.length }).toEqual(footprint);
+        for (const replacement of [
+          { ...resource, threadId: ThreadId.make("rival-thread") },
+          { ...resource, hostId: "rival-host" },
+          { ...resource, deviceId: "rival-device" },
+          { ...resource, platform: "ios" as const },
+          { ...resource, toolSessionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+        ])
+          expect((yield* service.authorizeViewer(replacement).pipe(Effect.result))._tag).toBe(
+            "Failure",
+          );
+        yield* service.close({ ...input, deviceId: opening.deviceId });
+        const later = yield* service.open({ ...input, deviceId: opening.deviceId });
+        expect(later.toolSessionId).not.toBe(opening.toolSessionId);
+        const afterReopen = { starts: starts.length, requests: requests.length };
+        expect((yield* service.authorizeViewer(resource).pipe(Effect.result))._tag).toBe("Failure");
+        expect((yield* service.sessionsForThread(input.threadId))[0]?.toolSessionId).toBe(
+          later.toolSessionId,
+        );
+        expect({ starts: starts.length, requests: requests.length }).toEqual(afterReopen);
+        yield* Ref.update(settings, (current) => ({ ...current, enableDeviceSupport: false }));
+        if (!later.toolSessionId) return yield* Effect.die("Reopening has no exact identity");
+        expect(
+          (yield* service
+            .authorizeViewer({ ...resource, toolSessionId: later.toolSessionId })
+            .pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        expect({ starts: starts.length, requests: requests.length }).toEqual(afterReopen);
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("exposes daemon startup diagnostics through agent readiness and host status", () =>
     Effect.gen(function* () {
       const startupError = new DeviceHost.AgentDeviceStartError({

@@ -1,3 +1,14 @@
+import type * as HttpClientResponse from "effect/http/HttpClientResponse";
+import {
+  DeviceViewerAccess,
+  DeviceViewerProtocol,
+  type DeviceViewerOpenInput,
+  PreviewViewerAccess,
+  PreviewViewerProtocol,
+  type PreviewViewerOpenInput,
+  type PeerAttachmentAssetResource,
+  type NativeBrowserDownloadAssetResource,
+} from "@t3tools/contracts";
 import * as AutomationAuthority from "../scheduledTasks/DestinationAutomationAuthority.ts";
 import {
   PeerSavedPreviewAuthorizationRequest,
@@ -18,6 +29,8 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
+import * as Hex from "effect/encoding/Hex";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -29,6 +42,7 @@ import * as Scope from "effect/Scope";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as HttpBody from "effect/http/HttpBody";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 
@@ -51,6 +65,36 @@ const decodeSavedPreviewResult = Schema.decodeUnknownEffect(
   Schema.fromJsonString(PeerSavedPreviewAuthorizationResult),
 );
 
+/** Credential replies are small JSON, never an unbounded media/body transport. */
+const deviceViewerReply = (response: HttpClientResponse.HttpClientResponse) =>
+  response.stream.pipe(
+    Stream.runFoldEffect(
+      () => ({ size: 0, chunks: new Array<Uint8Array>() }),
+      (state, chunk) => {
+        if (state.size + chunk.byteLength > 16 * 1024)
+          return Effect.fail(
+            new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: "The device viewer credential reply exceeded its bound.",
+            }),
+          );
+        return Effect.sync(() => {
+          state.size += chunk.byteLength;
+          state.chunks.push(chunk);
+          return state;
+        });
+      },
+    ),
+    Effect.map((state) => {
+      const bytes = new Uint8Array(state.size);
+      let offset = 0;
+      for (const chunk of state.chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return new TextDecoder().decode(bytes);
+    }),
+  );
 const decodeAutomationDisableAck = Schema.decodeUnknownEffect(
   Schema.fromJsonString(AutomationAuthority.AutomationDisableAck),
 );
@@ -74,6 +118,54 @@ export interface PeerCallLimits {
 export class PeerMcpClient extends Context.Service<
   PeerMcpClient,
   {
+    /** Server-private access. The destination ticket never crosses the source client boundary. */
+    readonly closeDeviceViewer?: (input: {
+      readonly environmentId: EnvironmentId;
+      readonly generation: string;
+      readonly viewerId: string;
+    }) => Effect.Effect<boolean, OrchestratorMcpFailure>;
+    readonly openDeviceViewer?: (input: {
+      request: DeviceViewerOpenInput;
+      authority: PeerAuthorityEnvelope;
+    }) => Effect.Effect<
+      { readonly origin: string; readonly access: DeviceViewerAccess },
+      OrchestratorMcpFailure
+    >;
+    readonly openPreviewViewer?: (input: {
+      request: PreviewViewerOpenInput;
+      authority: PeerAuthorityEnvelope;
+    }) => Effect.Effect<
+      { readonly origin: string; readonly access: PreviewViewerAccess },
+      OrchestratorMcpFailure
+    >;
+    readonly closePreviewViewer?: (input: {
+      readonly environmentId: EnvironmentId;
+      readonly generation: string;
+      readonly viewerId: string;
+    }) => Effect.Effect<boolean, OrchestratorMcpFailure>;
+    readonly readNativeBrowserDownload?: (input: {
+      readonly resource: NativeBrowserDownloadAssetResource;
+      readonly authority: PeerAuthorityEnvelope;
+      readonly authorize: Effect.Effect<void, OrchestratorMcpFailure>;
+    }) => Effect.Effect<
+      {
+        readonly authorize: Effect.Effect<void, OrchestratorMcpFailure>;
+        readonly readBlock: (offset: number) => Effect.Effect<Uint8Array, OrchestratorMcpFailure>;
+      },
+      OrchestratorMcpFailure
+    >;
+    readonly readAttachment?: (input: {
+      readonly resource: PeerAttachmentAssetResource;
+      readonly authority: PeerAuthorityEnvelope;
+      readonly authorize: Effect.Effect<void, OrchestratorMcpFailure>;
+    }) => Effect.Effect<
+      {
+        readonly bytes: Uint8Array;
+        readonly producer: "device" | "preview";
+        readonly authorize: Effect.Effect<void, OrchestratorMcpFailure>;
+      },
+      OrchestratorMcpFailure
+    >;
     readonly authorizeSavedPreview?: (input: {
       request: PeerSavedPreviewAuthorizationRequest;
       authority: PeerAuthorityEnvelope;
@@ -179,6 +271,7 @@ const responseJson = (contentType: string | undefined, text: string) =>
 const make = Effect.gen(function* () {
   const links = yield* PeerLinks.PeerLinks;
   const httpClient = yield* HttpClient.HttpClient;
+  const crypto = yield* Crypto.Crypto;
   const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
   const lifetime = yield* Scope.Scope;
   const delivery = yield* Effect.serviceOption(PeerNoticeDelivery.PeerNoticeDelivery);
@@ -939,6 +1032,149 @@ const make = Effect.gen(function* () {
         ),
       );
     });
+  const openViewer = (input: {
+    request: DeviceViewerOpenInput | PreviewViewerOpenInput;
+    authority: PeerAuthorityEnvelope;
+  }) =>
+    Effect.gen(function* () {
+      const resolved = yield* links
+        .resolve(input.request.resource.environmentId)
+        .pipe(Effect.mapError(fromLinkError));
+      if (resolved.link.launchIdentity !== input.authority.generation)
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "The device viewer link generation was replaced.",
+        });
+      const purpose = input.request.resource.type === "device" ? "device-viewer" : "preview-viewer";
+      const endpoint = `${resolved.url}/mcp/peer-control/${purpose}`;
+      const support = yield* httpClient.get(endpoint, {
+        headers: { authorization: `Bearer ${resolved.token}` },
+      });
+      if (support.status !== 200)
+        return yield* new OrchestratorMcpFailure({
+          code:
+            support.status === 401 || support.status === 403
+              ? "capability_denied"
+              : "invalid_request",
+          message:
+            "The destination does not support authenticated device viewing; no viewer was admitted.",
+        });
+      yield* Schema.decodeUnknownEffect(
+        Schema.fromJsonString(
+          input.request.resource.type === "device" ? DeviceViewerProtocol : PreviewViewerProtocol,
+        ),
+      )(yield* deviceViewerReply(support)).pipe(
+        Effect.mapError(
+          () =>
+            new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "The destination device viewer protocol is unsupported.",
+            }),
+        ),
+      );
+      yield* ensureChannel(resolved, input.authority.environmentId);
+      const response = yield* httpClient.execute(
+        HttpClientRequest.post(endpoint).pipe(
+          HttpClientRequest.setHeaders({
+            authorization: `Bearer ${resolved.token}`,
+            [PeerAuthority.LINK_HEADER]: json({
+              environmentId: input.authority.environmentId,
+              generation: input.authority.generation,
+            }),
+            [PeerAuthority.AUTHORITY_HEADER]: json(input.authority),
+          }),
+          HttpClientRequest.setBody(HttpBody.text(json(input.request), "application/json")),
+        ),
+      );
+      const text = yield* deviceViewerReply(response);
+      if (response.status !== 200) {
+        const refusal = decodeFailure(text);
+        if (Option.isSome(refusal)) return yield* new OrchestratorMcpFailure(refusal.value);
+        return yield* new OrchestratorMcpFailure({
+          code:
+            response.status === 401 || response.status === 403
+              ? "capability_denied"
+              : "orchestration_error",
+          message: "The destination refused the device viewer.",
+        });
+      }
+      return { origin: resolved.url, text };
+    }).pipe(
+      Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+      Effect.mapError((error) =>
+        Schema.is(OrchestratorMcpFailure)(error)
+          ? error
+          : new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: "The destination device viewer is unavailable.",
+            }),
+      ),
+    );
+  const closeViewer = (
+    input: { environmentId: EnvironmentId; generation: string; viewerId: string },
+    purpose: "device-viewer" | "preview-viewer",
+  ) =>
+    Effect.gen(function* () {
+      const resolved = yield* links
+        .resolve(input.environmentId)
+        .pipe(Effect.mapError(fromLinkError));
+      if (resolved.link.launchIdentity !== input.generation) return false;
+      const response = yield* httpClient.execute(
+        HttpClientRequest.post(`${resolved.url}/mcp/peer-control/${purpose}/close`).pipe(
+          HttpClientRequest.setHeader("authorization", `Bearer ${resolved.token}`),
+          HttpClientRequest.setBody(
+            HttpBody.text(json({ viewerId: input.viewerId }), "application/json"),
+          ),
+        ),
+      );
+      if (response.status !== 200) return false;
+      return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Boolean))(
+        yield* deviceViewerReply(response),
+      );
+    }).pipe(
+      Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+      Effect.mapError(
+        () =>
+          new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: "The destination viewer could not be released.",
+          }),
+      ),
+    );
+  const openDeviceViewer: NonNullable<PeerMcpClient["Service"]["openDeviceViewer"]> = (input) =>
+    openViewer(input).pipe(
+      Effect.flatMap(({ origin, text }) =>
+        Schema.decodeUnknownEffect(Schema.fromJsonString(DeviceViewerAccess))(text).pipe(
+          Effect.map((access) => ({ origin, access })),
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "The destination device viewer response is invalid.",
+              }),
+          ),
+        ),
+      ),
+    );
+  const openPreviewViewer: NonNullable<PeerMcpClient["Service"]["openPreviewViewer"]> = (input) =>
+    openViewer(input).pipe(
+      Effect.flatMap(({ origin, text }) =>
+        Schema.decodeUnknownEffect(Schema.fromJsonString(PreviewViewerAccess))(text).pipe(
+          Effect.map((access) => ({ origin, access })),
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "The destination browser viewer response is invalid.",
+              }),
+          ),
+        ),
+      ),
+    );
+  const closeDeviceViewer: NonNullable<PeerMcpClient["Service"]["closeDeviceViewer"]> = (input) =>
+    closeViewer(input, "device-viewer");
+  const closePreviewViewer: NonNullable<PeerMcpClient["Service"]["closePreviewViewer"]> = (input) =>
+    closeViewer(input, "preview-viewer");
   const authorizeSavedPreview: NonNullable<PeerMcpClient["Service"]["authorizeSavedPreview"]> = (
     input,
   ) =>
@@ -1039,7 +1275,283 @@ const make = Effect.gen(function* () {
           ),
       }),
     );
+  const readNativeBrowserDownload: NonNullable<
+    PeerMcpClient["Service"]["readNativeBrowserDownload"]
+  > = (input) => {
+    const refused = () =>
+      new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "The native browser download is unavailable to its original reader.",
+      });
+    const mapFailure = () => refused();
+    const request = (offset?: number) =>
+      Effect.gen(function* () {
+        yield* input.authorize;
+        const current = yield* links
+          .resolve(input.resource.resource.environmentId)
+          .pipe(Effect.mapError(fromLinkError));
+        if (current.link.launchIdentity !== input.authority.generation) return yield* refused();
+        const response = yield* httpClient.execute(
+          HttpClientRequest.post(`${current.url}/mcp/peer-control/attachment`).pipe(
+            HttpClientRequest.setHeaders({
+              authorization: `Bearer ${current.token}`,
+              [PeerAuthority.LINK_HEADER]: json({
+                environmentId: input.authority.environmentId,
+                generation: input.authority.generation,
+              }),
+              [PeerAuthority.AUTHORITY_HEADER]: json(input.authority),
+              ...(offset === undefined
+                ? { "t3-attachment-check-only": "1" }
+                : { "t3-download-offset": String(offset) }),
+            }),
+            HttpClientRequest.setBody(HttpBody.text(json(input.resource), "application/json")),
+          ),
+        );
+        if (
+          response.status !== (offset === undefined ? 204 : 200) ||
+          response.headers["t3-attachment-producer"] !== "preview" ||
+          response.headers["t3-download-digest"] !== input.resource.digest ||
+          response.headers["t3-download-size"] !== String(input.resource.sizeBytes)
+        )
+          return yield* refused();
+        return response;
+      });
+    return Effect.gen(function* () {
+      yield* input.authorize;
+      const resolved = yield* links
+        .resolve(input.resource.resource.environmentId)
+        .pipe(Effect.mapError(fromLinkError));
+      if (resolved.link.launchIdentity !== input.authority.generation) return yield* refused();
+      const support = yield* httpClient.execute(
+        HttpClientRequest.get(`${resolved.url}/mcp/peer-control/attachment`).pipe(
+          HttpClientRequest.setHeader("authorization", `Bearer ${resolved.token}`),
+        ),
+      );
+      if (support.status !== 200)
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "Native browser download streaming is unsupported by this peer.",
+        });
+      yield* deviceViewerReply(support).pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(
+            Schema.fromJsonString(
+              Schema.Struct({
+                version: Schema.Literal(1),
+                purpose: Schema.Literal("attachment-read"),
+                nativeBrowserDownloads: Schema.Literal(1),
+              }),
+            ),
+          ),
+        ),
+      );
+      yield* ensureChannel(resolved, input.authority.environmentId);
+      const authorize = request().pipe(
+        Effect.asVoid,
+        Effect.mapError(mapFailure),
+        Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+      );
+      yield* authorize;
+      return {
+        authorize,
+        readBlock: (offset: number) =>
+          Effect.gen(function* () {
+            if (
+              !Number.isSafeInteger(offset) ||
+              offset < 0 ||
+              offset >= input.resource.sizeBytes ||
+              offset % (1024 * 1024) !== 0
+            )
+              return yield* refused();
+            const response = yield* request(offset);
+            const expected = Math.min(1024 * 1024, input.resource.sizeBytes - offset);
+            const bytes = new Uint8Array(expected);
+            const size = yield* response.stream.pipe(
+              Stream.runFoldEffect(
+                () => 0,
+                (size, chunk) => {
+                  if (size + chunk.byteLength > expected) return Effect.fail(refused());
+                  return input.authorize.pipe(
+                    Effect.andThen(
+                      Effect.sync(() => {
+                        bytes.set(chunk, size);
+                        return size + chunk.byteLength;
+                      }),
+                    ),
+                  );
+                },
+              ),
+            );
+            if (
+              size !== expected ||
+              (yield* crypto.digest("SHA-256", bytes).pipe(Effect.map(Hex.encode))) !==
+                response.headers["t3-download-block-digest"]
+            )
+              return yield* refused();
+            yield* authorize;
+            return bytes;
+          }).pipe(
+            Effect.mapError(mapFailure),
+            Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+          ),
+      };
+    }).pipe(
+      Effect.mapError(mapFailure),
+      Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+    );
+  };
+  const readAttachment: NonNullable<PeerMcpClient["Service"]["readAttachment"]> = (input) =>
+    Effect.gen(function* () {
+      yield* input.authorize;
+      const resolved = yield* links
+        .resolve(input.resource.reference.environmentId)
+        .pipe(Effect.mapError(fromLinkError));
+      if (resolved.link.launchIdentity !== input.authority.generation)
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "The attachment destination generation was replaced.",
+        });
+      const endpoint = `${resolved.url}/mcp/peer-control/attachment`;
+      const support = yield* httpClient.execute(
+        HttpClientRequest.get(endpoint).pipe(
+          HttpClientRequest.setHeader("authorization", `Bearer ${resolved.token}`),
+        ),
+      );
+      if (support.status !== 200)
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "Qualified attachment access is unsupported by this peer.",
+        });
+      yield* deviceViewerReply(support).pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(
+            Schema.fromJsonString(
+              Schema.Struct({
+                version: Schema.Literal(1),
+                purpose: Schema.Literal("attachment-read"),
+              }),
+            ),
+          ),
+        ),
+      );
+      yield* ensureChannel(resolved, input.authority.environmentId);
+      yield* input.authorize;
+      const response = yield* httpClient.execute(
+        HttpClientRequest.post(endpoint).pipe(
+          HttpClientRequest.setHeaders({
+            authorization: `Bearer ${resolved.token}`,
+            [PeerAuthority.LINK_HEADER]: json({
+              environmentId: input.authority.environmentId,
+              generation: input.authority.generation,
+            }),
+            [PeerAuthority.AUTHORITY_HEADER]: json(input.authority),
+          }),
+          HttpClientRequest.setBody(HttpBody.text(json(input.resource), "application/json")),
+        ),
+      );
+      if (response.status !== 200) {
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "The qualified attachment is unavailable to its current reader.",
+        });
+      }
+      const producer = yield* Schema.decodeUnknownEffect(Schema.Literals(["device", "preview"]))(
+        response.headers["t3-attachment-producer"],
+      );
+      const state = yield* response.stream.pipe(
+        Stream.runFoldEffect(
+          () => ({ size: 0, chunks: new Array<Uint8Array>() }),
+          (state, chunk) => {
+            if (state.size + chunk.byteLength > input.resource.reference.sizeBytes)
+              return Effect.fail(
+                new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message: "The attachment exceeded its verified byte count.",
+                }),
+              );
+            return input.authorize.pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  state.size += chunk.byteLength;
+                  state.chunks.push(chunk);
+                  return state;
+                }),
+              ),
+            );
+          },
+        ),
+      );
+      const bytes = new Uint8Array(state.size);
+      let offset = 0;
+      for (const chunk of state.chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      const digest = yield* crypto.digest("SHA-256", bytes).pipe(Effect.map(Hex.encode));
+      if (
+        state.size !== input.resource.reference.sizeBytes ||
+        digest !== input.resource.reference.digest
+      )
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "The attachment bytes do not match their original manifest.",
+        });
+      const authorize = Effect.gen(function* () {
+        yield* input.authorize;
+        const current = yield* links
+          .resolve(input.resource.reference.environmentId)
+          .pipe(Effect.mapError(fromLinkError));
+        if (current.link.launchIdentity !== input.authority.generation)
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "The attachment destination generation was replaced.",
+          });
+        const checked = yield* httpClient.execute(
+          HttpClientRequest.post(`${current.url}/mcp/peer-control/attachment`).pipe(
+            HttpClientRequest.setHeaders({
+              authorization: `Bearer ${current.token}`,
+              [PeerAuthority.LINK_HEADER]: json({
+                environmentId: input.authority.environmentId,
+                generation: input.authority.generation,
+              }),
+              [PeerAuthority.AUTHORITY_HEADER]: json(input.authority),
+              "t3-attachment-check-only": "1",
+            }),
+            HttpClientRequest.setBody(HttpBody.text(json(input.resource), "application/json")),
+          ),
+        );
+        if (checked.status !== 204 || checked.headers["t3-attachment-producer"] !== producer)
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "The attachment reader was retired before publication.",
+          });
+      }).pipe(
+        Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+        Effect.mapError((error) =>
+          error._tag === "OrchestratorMcpFailure"
+            ? error
+            : new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "Current attachment authority is unavailable.",
+              }),
+        ),
+      );
+      yield* authorize;
+      return { bytes, authorize, producer };
+    }).pipe(
+      Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+      Effect.mapError((error) =>
+        error._tag === "OrchestratorMcpFailure"
+          ? error
+          : new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: "Qualified attachment transport is unavailable.",
+            }),
+      ),
+    );
   return PeerMcpClient.of({
+    readAttachment,
+    readNativeBrowserDownload,
     call,
     start,
     drainAutomationDisables,
@@ -1061,6 +1573,10 @@ const make = Effect.gen(function* () {
     uploadAttachment,
     requireRequestProtocol,
     authorizeSavedPreview,
+    openDeviceViewer,
+    closeDeviceViewer,
+    openPreviewViewer,
+    closePreviewViewer,
   });
 });
 

@@ -1,3 +1,9 @@
+import { rejectMcpClientAudience } from "../auth/EnvironmentAuth.ts";
+import type {
+  DeviceViewerOpenInput,
+  PreviewViewerOpenInput,
+  QualifiedAssetResource,
+} from "@t3tools/contracts";
 import * as LinkEvents from "./PeerLinkEvents.ts";
 import * as ScheduleReceipts from "../scheduledTasks/mutationReceipts.ts";
 import type { RequestIdentity } from "../mcp/McpRequestReceipts.ts";
@@ -241,6 +247,38 @@ export class PeerAuthority extends Context.Service<
       expectedProjectId?: string,
     ) => Effect.Effect<Option.Option<McpScheduledMutationReceipt>, OrchestratorMcpFailure>;
     readonly checkRecord: (id: string) => Effect.Effect<void, OrchestratorMcpFailure>;
+    /** Only the native authenticated client ingress supplies this session id. */
+    readonly prepareAttachmentRead: (
+      sessionId: AuthSessionId,
+      peer: EnvironmentId,
+      generation: string,
+      resource: QualifiedAssetResource,
+    ) => Effect.Effect<PeerAuthorityEnvelope, OrchestratorMcpFailure>;
+    readonly recheckAttachmentRead: (
+      scope: Invocation.McpInvocationScope,
+      resource: QualifiedAssetResource,
+      capability: "device" | "preview",
+    ) => Effect.Effect<void, OrchestratorMcpFailure>;
+    readonly prepareDeviceViewer: (
+      sessionId: AuthSessionId,
+      peer: EnvironmentId,
+      generation: string,
+      input: DeviceViewerOpenInput,
+    ) => Effect.Effect<PeerAuthorityEnvelope, OrchestratorMcpFailure>;
+    readonly recheckDeviceViewer: (
+      scope: Invocation.McpInvocationScope,
+      input: DeviceViewerOpenInput,
+    ) => Effect.Effect<void, OrchestratorMcpFailure>;
+    readonly preparePreviewViewer: (
+      sessionId: AuthSessionId,
+      peer: EnvironmentId,
+      generation: string,
+      input: PreviewViewerOpenInput,
+    ) => Effect.Effect<PeerAuthorityEnvelope, OrchestratorMcpFailure>;
+    readonly recheckPreviewViewer: (
+      scope: Invocation.McpInvocationScope,
+      input: PreviewViewerOpenInput,
+    ) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly checkInteractiveRecord: (id: string) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly recheckInvocation: (
       scope: Invocation.McpThreadInvocationScope,
@@ -564,6 +602,28 @@ const make = Effect.gen(function* () {
       )
         return yield* denied("The peer grant expired or was revoked.");
     });
+  const nativeViewerSession = (
+    sessionId: AuthSessionId,
+    readOnly: boolean,
+    capability: "device" | "preview" = "device",
+  ) =>
+    Effect.gen(function* () {
+      yield* activeSession(sessionId);
+      const session = yield* authSessions.getById({ sessionId }).pipe(Effect.mapError(unavailable));
+      if (Option.isNone(session))
+        return yield* denied("The original native client is unavailable.");
+      yield* rejectMcpClientAudience(session.value).pipe(
+        Effect.mapError(() => denied("An MCP agent cannot claim native human viewing authority.")),
+      );
+      if (
+        !session.value.scopes.includes("orchestration:read") ||
+        (!readOnly &&
+          !session.value.scopes.includes(
+            capability === "preview" ? "preview:operate" : "orchestration:operate",
+          ))
+      )
+        return yield* denied("The original native client no longer permits this viewer operation.");
+    });
   const grant = (sessionId: string) =>
     Effect.gen(function* () {
       yield* activeSession(sessionId);
@@ -860,6 +920,27 @@ const make = Effect.gen(function* () {
     capabilityView: "operation" | "contributor" = "operation",
   ): Effect.Effect<PeerCeiling, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
+      if (
+        "envelope" in record &&
+        (record.tool === "device_viewer" ||
+          record.tool === "preview_viewer" ||
+          record.tool === "attachment_read")
+      ) {
+        if (
+          record.sessionId !== null ||
+          record.originClientId === null ||
+          record.localThreadId !== null ||
+          record.parentId !== null
+        )
+          return yield* denied(
+            "Native viewing requires its original authenticated client session.",
+          );
+        yield* nativeViewerSession(
+          record.originClientId,
+          record.readOnly,
+          record.tool === "preview_viewer" ? "preview" : "device",
+        );
+      }
       const accepted =
         coverage ??
         (purpose === "local"
@@ -1533,6 +1614,185 @@ const make = Effect.gen(function* () {
       yield* save(record);
       yield* validate(record, undefined, undefined, "interactive");
       return envelope;
+    });
+  const prepareAttachmentRead: PeerAuthority["Service"]["prepareAttachmentRead"] = (
+    sessionId,
+    peer,
+    generation,
+    resource,
+  ) =>
+    Effect.gen(function* () {
+      if (
+        (resource._tag === "peer-attachment"
+          ? resource.reference.environmentId
+          : resource.resource.environmentId) !== peer ||
+        peer === here
+      )
+        return yield* denied("The attachment must address its exact linked environment.");
+      yield* nativeViewerSession(sessionId, true);
+      const id = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+      const envelope: PeerAuthorityEnvelope = {
+        version: 1,
+        environmentId: here,
+        generation,
+        recordId: id,
+        actionId: id,
+        digest: yield* hash({ tool: "attachment_read", args: resource }),
+        route: [here],
+        descendant: false,
+      };
+      const record: Authority = {
+        id,
+        peer: { environmentId: peer, generation },
+        sessionId: null,
+        localThreadId: null,
+        originClientId: sessionId,
+        parentId: null,
+        requestActorThreadId: null,
+        envelope,
+        tool: "attachment_read",
+        readOnly: true,
+        originRunId: null,
+        // The publisher's persisted provenance chooses the required capability at
+        // the destination. Current grants and ALL resource owners narrow this set.
+        ceiling: {
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          resourceScope: "environment-resources",
+          onward: false,
+          capabilities: ["device", "preview"],
+        },
+      };
+      yield* save(record);
+      yield* validate(record);
+      return envelope;
+    });
+  const recheckAttachmentRead: PeerAuthority["Service"]["recheckAttachmentRead"] = (
+    scope,
+    resource,
+    capability,
+  ) =>
+    Effect.gen(function* () {
+      if (
+        scope.client?.linked !== true ||
+        scope.authority === undefined ||
+        (resource._tag === "peer-attachment"
+          ? resource.reference.environmentId
+          : resource.resource.environmentId) !== here
+      )
+        return yield* denied(
+          "Attachment access requires its original authenticated destination authority.",
+        );
+      const record = yield* read(scope.authority.id);
+      if (!("envelope" in record))
+        return yield* denied("Native resource access requires its original interactive authority.");
+      // The authenticated payload digest distinguishes the original MCP read
+      // from a native viewer read. It cannot convert either actor into the other.
+      const acquisition =
+        record.envelope.requestOwner !== undefined &&
+        record.envelope.digest === requestDigest({ tool: "attachment_acquire", args: resource });
+      yield* checkPayload(record, acquisition ? "attachment_acquire" : "attachment_read", resource);
+      const ceiling = intersect(scope.authority.ceiling, yield* validate(record));
+      const target = yield* loadResource({
+        type: "thread",
+        threadId:
+          resource._tag === "peer-attachment" ? resource.threadId : resource.resource.threadId,
+      });
+      if (target.type !== "thread" || target.thread.archivedAt !== null)
+        return yield* denied("The attachment context is no longer available.");
+      yield* checkResource(record, ceiling, target);
+      const capabilities = yield* currentCapabilities(
+        ceiling.capabilities,
+        target.thread.projectId,
+      );
+      if (
+        !scope.capabilities.has(capability) ||
+        !capabilities.includes(capability) ||
+        exceededDispatchModeLimit(ceiling, target.thread) !== undefined
+      )
+        return yield* denied("The original attachment reader no longer permits this resource.");
+    });
+  const prepareViewer = (
+    sessionId: AuthSessionId,
+    peer: EnvironmentId,
+    generation: string,
+    input: DeviceViewerOpenInput | PreviewViewerOpenInput,
+  ) =>
+    Effect.gen(function* () {
+      const capability = input.resource.type;
+      const tool = capability === "device" ? "device_viewer" : "preview_viewer";
+      if (input.resource.environmentId !== peer || peer === here)
+        return yield* denied("The device viewer must address its exact linked environment.");
+      yield* nativeViewerSession(sessionId, input.operation === "view", capability);
+      const id = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+      const envelope: PeerAuthorityEnvelope = {
+        version: 1,
+        environmentId: here,
+        generation,
+        recordId: id,
+        actionId: id,
+        digest: yield* hash({ tool, args: input }),
+        route: [here],
+        descendant: false,
+      };
+      const record: Authority = {
+        id,
+        peer: { environmentId: peer, generation },
+        sessionId: null,
+        localThreadId: null,
+        originClientId: sessionId,
+        parentId: null,
+        requestActorThreadId: null,
+        ceiling: {
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          resourceScope: "environment-resources",
+          onward: false,
+          capabilities: [capability],
+        },
+        envelope,
+        tool,
+        readOnly: input.operation === "view",
+        originRunId: null,
+      };
+      yield* save(record);
+      yield* validate(record);
+      return envelope;
+    });
+  const recheckViewer = (
+    scope: Invocation.McpInvocationScope,
+    input: DeviceViewerOpenInput | PreviewViewerOpenInput,
+  ) =>
+    Effect.gen(function* () {
+      const capability = input.resource.type;
+      if (
+        scope.client?.linked !== true ||
+        scope.authority === undefined ||
+        input.resource.environmentId !== here
+      )
+        return yield* denied("Device viewing needs its authenticated original peer authority.");
+      const record = yield* read(scope.authority.id);
+      if (!("envelope" in record))
+        return yield* denied("Native resource access requires its original interactive authority.");
+      yield* checkPayload(
+        record,
+        capability === "device" ? "device_viewer" : "preview_viewer",
+        input,
+      );
+      const ceiling = intersect(scope.authority.ceiling, yield* validate(record));
+      if (!scope.capabilities.has(capability) || !ceiling.capabilities.includes(capability))
+        return yield* denied("The original device viewing capability was retired.");
+      const target = yield* loadResource({ type: "thread", threadId: input.resource.threadId });
+      if (target.type !== "thread" || target.thread.archivedAt !== null)
+        return yield* denied("The device viewing context is no longer available.");
+      yield* checkResource(record, ceiling, target);
+      if (
+        input.operation === "control" &&
+        exceededDispatchModeLimit(ceiling, target.thread) !== undefined
+      )
+        return yield* denied(
+          "Device control exceeds the current originating or destination modes.",
+        );
     });
   const accept: PeerAuthority["Service"]["accept"] = (scope, envelope) =>
     Effect.gen(function* () {
@@ -3046,9 +3306,7 @@ const make = Effect.gen(function* () {
         if (
           caller === null ||
           caller.deletedAt !== null ||
-          caller.archivedAt !== null ||
-          caller.activeRunId === null ||
-          caller.providerInstanceId !== scope.thread.providerInstanceId
+          !Invocation.isLiveCallerShell(caller, scope.thread.providerInstanceId)
         )
           return yield* denied("The original caller no longer owns a live run.");
         modes = Invocation.intersectModes(caller, modes);
@@ -3161,6 +3419,12 @@ const make = Effect.gen(function* () {
       };
     });
   return PeerAuthority.of({
+    prepareAttachmentRead,
+    recheckAttachmentRead,
+    prepareDeviceViewer: prepareViewer,
+    recheckDeviceViewer: recheckViewer,
+    preparePreviewViewer: prepareViewer,
+    recheckPreviewViewer: recheckViewer,
     nativePreflight,
     notifyAutomationChanges: wakeDisables,
     nextAutomationDisableDeadline: automation.nextDisableDeadline,

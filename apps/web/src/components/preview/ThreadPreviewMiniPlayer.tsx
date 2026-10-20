@@ -1,6 +1,11 @@
 "use client";
 
-import { FILL_PREVIEW_VIEWPORT, type ScopedThreadRef } from "@t3tools/contracts";
+import {
+  FILL_PREVIEW_VIEWPORT,
+  type ScopedThreadRef,
+  type DeviceViewerResource,
+  type PreviewViewerResource,
+} from "@t3tools/contracts";
 import { PanelRightIcon, PictureInPicture2, XIcon } from "lucide-react";
 import {
   type PointerEvent as ReactPointerEvent,
@@ -96,6 +101,24 @@ const RESIZE_HANDLES: ReadonlyArray<{
 
 export function ThreadPreviewMiniPlayer({ threadRef, miniPlayer }: Props) {
   const { source } = miniPlayer;
+  if (source.kind === "device" && source.resource !== undefined)
+    return (
+      <QualifiedDeviceMiniPlayer
+        key={previewMiniPlayerSourceKey(source)}
+        threadRef={threadRef}
+        miniPlayer={miniPlayer}
+        resource={source.resource}
+      />
+    );
+  if (source.kind === "browser" && source.resource !== undefined)
+    return (
+      <QualifiedBrowserMiniPlayer
+        key={previewMiniPlayerSourceKey(source)}
+        threadRef={threadRef}
+        miniPlayer={miniPlayer}
+        resource={source.resource}
+      />
+    );
   return source.kind === "browser" ? (
     <BrowserMiniPlayer
       key={source.tabId}
@@ -110,6 +133,89 @@ export function ThreadPreviewMiniPlayer({ threadRef, miniPlayer }: Props) {
       source={source}
       miniPlayer={miniPlayer}
     />
+  );
+}
+
+function QualifiedDeviceMiniPlayer({
+  threadRef,
+  miniPlayer,
+  resource,
+}: Props & { readonly resource: DeviceViewerResource }) {
+  const [screen, setScreen] = useState<DeviceScreenSize | null>(null);
+  const openInPanel = () => {
+    usePreviewMiniPlayerStore.getState().close(threadRef);
+    useRightPanelStore.getState().openDevice(threadRef, {
+      hostId: resource.hostId,
+      deviceId: resource.deviceId,
+      platform: resource.platform,
+      name: "Device",
+      resource,
+    });
+  };
+  return (
+    <MiniPlayerShell
+      threadRef={threadRef}
+      miniPlayer={miniPlayer}
+      label="Device"
+      sourceSize={resolveDeviceMiniPlayerSourceSize(resource.platform, screen)}
+      onOpenInPanel={openInPanel}
+    >
+      {() => (
+        <div className="pointer-events-auto absolute inset-0 overflow-hidden rounded-[inherit]">
+          <DeviceStreamView
+            environmentId={threadRef.environmentId}
+            resource={resource}
+            platform={resource.platform}
+            deviceId={resource.deviceId}
+            hostId={resource.hostId}
+            visible
+            onScreen={setScreen}
+          />
+        </div>
+      )}
+    </MiniPlayerShell>
+  );
+}
+
+function QualifiedBrowserMiniPlayer({
+  threadRef,
+  miniPlayer,
+  resource,
+}: Props & { readonly resource: PreviewViewerResource }) {
+  const [viewport, setViewport] = useState<PreviewStreamViewport | null>(null);
+  const openInPanel = () => {
+    usePreviewMiniPlayerStore.getState().close(threadRef);
+    useRightPanelStore.getState().openBrowser(threadRef, resource.tabId, resource);
+  };
+  return (
+    <MiniPlayerShell
+      threadRef={threadRef}
+      miniPlayer={miniPlayer}
+      label="Browser"
+      sourceSize={viewport ?? { width: 640, height: 400 }}
+      onOpenInPanel={openInPanel}
+    >
+      {() => (
+        <div className="pointer-events-auto absolute inset-0 overflow-hidden rounded-[inherit]">
+          <ServerBrowserSurface
+            environmentId={threadRef.environmentId}
+            resource={resource}
+            threadId={resource.threadId}
+            tabId={resource.tabId}
+            visible
+            followSize={false}
+            controlPosition="bottom"
+            onViewport={setViewport}
+            onPopup={(tabId, popup) => {
+              if (popup !== undefined)
+                usePreviewMiniPlayerStore
+                  .getState()
+                  .open(threadRef, { kind: "browser", tabId, resource: popup });
+            }}
+          />
+        </div>
+      )}
+    </MiniPlayerShell>
   );
 }
 
@@ -130,7 +236,8 @@ function BrowserMiniPlayer({ threadRef, tabId, miniPlayer }: Props & { readonly 
   const [streamViewport, setStreamViewport] = useState<PreviewStreamViewport | null>(null);
   const serverSurfaceRef = useRef<ServerBrowserHandle | null>(null);
   const serverPictureInPicture =
-    useServerPictureInPictureKey() === serverPictureInPictureKey(threadRef.threadId, tabId);
+    useServerPictureInPictureKey() ===
+    serverPictureInPictureKey(threadRef.threadId, tabId, threadRef.environmentId);
   const sourceSize =
     serverTab && streamViewport
       ? streamViewport

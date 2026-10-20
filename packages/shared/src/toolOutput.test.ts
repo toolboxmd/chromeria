@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   compactDynamicToolOutput,
+  resourcesFromToolItem,
   MAX_TOOL_OUTPUT_IMAGES,
   omitToolOutputImageData,
   toolOutputImages,
@@ -9,6 +10,254 @@ import {
 } from "./toolOutput.ts";
 
 describe("compactDynamicToolOutput", () => {
+  const previewResource = {
+    type: "preview",
+    environmentId: "environment-b",
+    threadId: "thread-b",
+    tabId: "tab-1",
+    serverEpoch: "epoch-1",
+  };
+  const deviceResource = {
+    type: "device",
+    environmentId: "environment-b",
+    threadId: "thread-b",
+    hostId: "local",
+    deviceId: "device-1",
+    platform: "ios",
+    toolSessionId: "12345678-1234-4234-8234-123456789abc",
+  };
+  const assetResource = {
+    _tag: "peer-attachment",
+    threadId: "thread-b",
+    reference: {
+      environmentId: "environment-b",
+      attachmentId: "attachment-1",
+      owner: "a".repeat(64),
+      digest: "b".repeat(64),
+      name: "capture.png",
+      mimeType: "image/png",
+      sizeBytes: 68,
+    },
+  };
+
+  const downloadResource = {
+    _tag: "native-browser-download",
+    resource: previewResource,
+    downloadId: "550e8400-e29b-41d4-a716-446655440000",
+    name: "report.txt",
+    mimeType: "application/octet-stream",
+    sizeBytes: 1024 * 1024 * 1024,
+    digest: "c".repeat(64),
+  };
+  it("keeps only canonical browser download metadata within the existing compaction budget", () => {
+    const output = {
+      downloads: [{ resource: downloadResource, path: "/private/b", url: "http://private/token" }],
+    };
+    expect(compactDynamicToolOutput(output)).toEqual({ resources: [downloadResource] });
+    expect(compactDynamicToolOutput(compactDynamicToolOutput(output))).toEqual({
+      resources: [downloadResource],
+    });
+    expect(resourcesFromToolItem({ status: "failed", output })).toEqual([]);
+    expect(
+      compactDynamicToolOutput({
+        downloads: [{ resource: { ...downloadResource, path: "/private/b" } }],
+      }),
+    ).toBeUndefined();
+  });
+
+  it("retains up to twenty bounded downloads, deduplicating the current tab across envelopes", () => {
+    const epoch = "550e8400-e29b-41d4-a716-446655440000";
+    const browser = {
+      ...previewResource,
+      environmentId: "b33f8400-e29b-41d4-a716-446655440000",
+      threadId:
+        "thread:delegated-task:command%3Amcp%3A85cbf26d-4b23-45fc-92db-01903bb425f1%3Adelegate-task%3A379-383-publication-authority-fix-sol-medium-v1",
+      tabId: `tab-1_${epoch}`,
+      serverEpoch: epoch,
+    };
+    for (let count = 1; count <= 20; count++) {
+      const downloads = Array.from({ length: count }, (_, index) => ({
+        ...downloadResource,
+        resource: browser,
+        downloadId: `550e8400-e29b-41d4-a716-${String(index).padStart(12, "0")}`,
+      }));
+      const expected = { resources: [browser, ...downloads] };
+      expect(new TextEncoder().encode(JSON.stringify(expected)).byteLength).toBeLessThanOrEqual(
+        16_384,
+      );
+      const status = {
+        resource: browser,
+        tabs: [{ resource: browser, path: "/private/tab" }],
+        downloads: downloads.map((resource) => ({ resource, path: "/private/download" })),
+      };
+      for (const output of [status, { structuredContent: status }, JSON.stringify(status)]) {
+        const compact = compactDynamicToolOutput(output);
+        expect(compact).toEqual(expected);
+        expect(compactDynamicToolOutput(compact)).toEqual(expected);
+        expect(resourcesFromToolItem({ status: "completed", output: compact })).toEqual(
+          expected.resources,
+        );
+      }
+    }
+  });
+
+  it("rejects malformed or private resources after a valid multi-download prefix", () => {
+    const valid = Array.from({ length: 20 }, () => downloadResource);
+    for (const invalid of [
+      { ...downloadResource, digest: "invalid" },
+      { ...downloadResource, ticket: "private" },
+      { ...downloadResource, resource: { ...previewResource, path: "/private" } },
+      { ...downloadResource, extra: { nested: { deeper: { value: "private" } } } },
+      { ...downloadResource, name: "x".repeat(16_385) },
+    ]) {
+      expect(compactDynamicToolOutput({ resources: [...valid, invalid] })).toBeUndefined();
+    }
+    expect(compactDynamicToolOutput({ resources: valid })).toEqual({
+      resources: [downloadResource],
+    });
+    expect(
+      compactDynamicToolOutput({ resources: Array.from({ length: 33 }, () => downloadResource) }),
+    ).toBeUndefined();
+    // Deduplication must not let repeated candidate scans escape the byte cap.
+    expect(
+      compactDynamicToolOutput({
+        resources: Array.from({ length: 32 }, () => ({
+          ...previewResource,
+          environmentId: "e".repeat(512),
+        })),
+      }),
+    ).toBeUndefined();
+  });
+
+  it("keeps canonical qualified resources through envelopes and repeated compaction", () => {
+    for (const resource of [previewResource, deviceResource, assetResource]) {
+      const metadata = { resources: [resource] };
+      for (const value of [
+        { resource, ticket: "private", response: "private" },
+        { structuredContent: { resource }, content: "private" },
+        { content: [{ text: JSON.stringify({ resource }) }] },
+        metadata,
+      ]) {
+        const compact = compactDynamicToolOutput(value);
+        expect(compact).toEqual(metadata);
+        expect(compactDynamicToolOutput(compact)).toEqual(metadata);
+      }
+    }
+    expect(compactDynamicToolOutput({ tabs: [{ resource: previewResource }] })).toEqual({
+      resources: [previewResource],
+    });
+    expect(
+      compactDynamicToolOutput({
+        type: "batch",
+        results: [
+          { type: "artifact", resource: assetResource },
+          { type: "artifacts", resources: [assetResource] },
+        ],
+      }),
+    ).toEqual({ resources: [assetResource] });
+    expect(
+      resourcesFromToolItem({ status: "completed", output: { resource: previewResource } }),
+    ).toEqual([previewResource]);
+    expect(
+      resourcesFromToolItem({ status: "failed", output: { resource: previewResource } }),
+    ).toEqual([]);
+    expect(
+      resourcesFromToolItem({ status: "cancelled", output: { resource: previewResource } }),
+    ).toEqual([]);
+  });
+
+  it("does not turn failed, malformed or unbounded resource output into navigation", () => {
+    for (const resource of [
+      { ...previewResource, tabId: "" },
+      { ...previewResource, ticket: "private" },
+      { ...deviceResource, toolSessionId: "guessed" },
+      { ...assetResource, reference: { ...assetResource.reference, digest: "invalid" } },
+      { ...previewResource, serverEpoch: "x".repeat(1_000_000) },
+    ])
+      expect(compactDynamicToolOutput({ resource })).toBeUndefined();
+    expect(compactDynamicToolOutput({ isError: true, resource: previewResource })).toEqual({
+      isError: true,
+    });
+    expect(
+      compactDynamicToolOutput({
+        content: [
+          { text: JSON.stringify({ resource: previewResource }) },
+          { text: JSON.stringify({ isError: true }) },
+        ],
+      }),
+    ).toEqual({ isError: true });
+    const cyclic = { ...assetResource, reference: { ...assetResource.reference, extra: {} } };
+    cyclic.reference.extra = cyclic;
+    expect(compactDynamicToolOutput({ resource: cyclic })).toBeUndefined();
+  });
+
+  it("bounds final metadata after resource extraction from structured objects", () => {
+    const resource = {
+      ...previewResource,
+      environmentId: "e".repeat(4_100),
+      threadId: "t".repeat(4_100),
+    };
+    expect(compactDynamicToolOutput({ taskId: "task-1", resource })).toEqual({
+      taskId: "task-1",
+      resources: [resource],
+    });
+    const resources = Array.from({ length: 32 }, (_, index) => ({
+      ...previewResource,
+      tabId: `tab-${index}`,
+      threadId: "t".repeat(256),
+      environmentId: "e".repeat(256),
+    }));
+    const output = compactDynamicToolOutput({ taskId: "task-1", resources });
+    expect(new TextEncoder().encode(JSON.stringify(output)).byteLength).toBeLessThanOrEqual(8_192);
+    // Dropping the whole list avoids suggesting that an incomplete list is complete.
+    expect(output).toEqual({ taskId: "task-1" });
+    expect(
+      compactDynamicToolOutput({ resources: Array.from({ length: 33 }, () => previewResource) }),
+    ).toBeUndefined();
+  });
+
+  it("enforces the exact resource metadata ceiling in serialized UTF-8 bytes", () => {
+    const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+    const empty = { resources: [{ ...previewResource, threadId: "" }] };
+    const remaining = 16_384 - bytes(empty);
+    const resource = {
+      ...previewResource,
+      threadId: "é".repeat(Math.floor(remaining / 2)) + "x".repeat(remaining % 2),
+    };
+    const metadata = { resources: [resource] };
+    expect(bytes(metadata)).toBe(16_384);
+    expect(compactDynamicToolOutput(metadata)).toEqual(metadata);
+    expect(compactDynamicToolOutput(JSON.stringify(metadata))).toEqual(metadata);
+    expect(compactDynamicToolOutput(compactDynamicToolOutput(metadata))).toEqual(metadata);
+    const beyond = { resources: [{ ...resource, threadId: resource.threadId + "x" }] };
+    expect(bytes(beyond)).toBe(16_385);
+    expect(compactDynamicToolOutput(beyond)).toBeUndefined();
+    expect(compactDynamicToolOutput(JSON.stringify(beyond))).toBeUndefined();
+    expect(compactDynamicToolOutput({ ...beyond, taskId: "retained" })).toEqual({
+      taskId: "retained",
+    });
+  });
+
+  it("keeps the exact non-resource metadata ceiling at 8192 UTF-8 bytes", () => {
+    const batch = (target: number) => {
+      const metadata = { threads: Array.from({ length: 32 }, () => ({ threadId: "x" })) };
+      let remaining = target - new TextEncoder().encode(JSON.stringify(metadata)).byteLength;
+      for (const entry of metadata.threads) {
+        const count = Math.min(remaining, 255);
+        entry.threadId += "x".repeat(count);
+        remaining -= count;
+      }
+      expect(remaining).toBe(0);
+      return metadata;
+    };
+    const atLimit = batch(8_192);
+    expect(new TextEncoder().encode(JSON.stringify(atLimit)).byteLength).toBe(8_192);
+    expect(compactDynamicToolOutput(atLimit)).toEqual(atLimit);
+    const beyond = batch(8_193);
+    expect(new TextEncoder().encode(JSON.stringify(beyond)).byteLength).toBe(8_193);
+    expect(compactDynamicToolOutput(beyond)).toBeUndefined();
+  });
+
   it("extracts IDs through the MCP result envelopes used by T3 summaries", () => {
     const metadata = { threadId: "thread-1", messageId: "message-1" };
     const json = JSON.stringify({ ...metadata, response: "Private response body" });
