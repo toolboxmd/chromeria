@@ -136,6 +136,21 @@ it.effect("busy admission reads only active V2 projections", () =>
   }).pipe(Effect.provide(Layer.orDie(SqlitePersistence.layerMemory))),
 );
 
+it.effect("held queued runs do not make a driver busy", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO orchestration_v2_projection_runs
+      (run_id, thread_id, ordinal, provider, status, requested_at, payload_json)
+      VALUES ('held', 'thread', 1, 'held-driver', 'queued', '2026-10-01', '{"queueHeld":true}'),
+             ('waiting', 'thread', 2, 'waiting-driver', 'queued', '2026-10-01', '{}'),
+             ('resumed', 'other', 1, 'resumed-driver', 'queued', '2026-10-01', '{"queueHeld":false}')`;
+    assert.deepEqual([...(yield* readBusyProviderDrivers)].sort(), [
+      "resumed-driver",
+      "waiting-driver",
+    ]);
+  }).pipe(Effect.provide(Layer.orDie(SqlitePersistence.layerMemory))),
+);
+
 it.effect("independent starts sharing a CLI are admitted concurrently", () =>
   Effect.gen(function* () {
     const gate = yield* make;
