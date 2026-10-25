@@ -1,3 +1,5 @@
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import type { BareReadGrant } from "./bareReadGrant.ts";
 import * as BareRuntime from "@t3tools/provider-core/server/bareLaunch";
 import { describe, expect, it } from "@effect/vitest";
@@ -35,6 +37,24 @@ const fixtures = (
   );
 
 it.layer(NodeServices.layer)("bare destination resolution", (it) => {
+  it.effect.each(["./ThreadLaunchService.ts", "../server.ts"])(
+    "loads %s through native Node without relying on another entry point's import order",
+    (entry) =>
+      Effect.gen(function* () {
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const node = yield* HostProcess.ExecutablePath;
+        const code = yield* spawner.exitCode(
+          ChildProcess.make(node, [
+            "--input-type=module",
+            "-e",
+            "await import(process.argv[1])",
+            new URL(entry, import.meta.url).href,
+          ]),
+        );
+        expect(code).toBe(0);
+      }),
+  );
+
   it.effect(
     "delivers skill body only, in order, with exact hashes and no dependency discovery",
     () =>

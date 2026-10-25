@@ -1,4 +1,3 @@
-import { canonicalT3ToolName } from "../mcp/t3ToolNames.ts";
 import type { BareReadGrant } from "./bareReadGrant.ts";
 import { BareLaunchError, unsupportedBare } from "@t3tools/provider-core/server/bareLaunch";
 import { sha256 } from "@noble/hashes/sha2";
@@ -61,6 +60,10 @@ export class BareLaunch extends Context.Service<
     readonly deliveryText: (bare: ThreadBare) => Effect.Effect<string, BareLaunchError>;
   }
 >()("t3/orchestration-v2/BareLaunch") {}
+
+// Tool declarations depend on launch services; load their catalog only after
+// module initialization, when a request actually names an individual tool.
+const t3ToolCatalog = Effect.promise(() => import("../mcp/t3ToolNames.ts"));
 
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
@@ -160,7 +163,7 @@ const make = Effect.gen(function* () {
       for (const addition of input.request.additions ?? []) {
         const tool =
           addition.type === "mcp" && addition.tool !== undefined
-            ? canonicalT3ToolName(addition.tool)
+            ? (yield* t3ToolCatalog).canonicalT3ToolName(addition.tool)
             : undefined;
         if (
           addition.type === "mcp" &&
@@ -213,7 +216,7 @@ const make = Effect.gen(function* () {
       for (const addition of input.request.additions ?? []) {
         const tool =
           addition.type === "mcp" && addition.tool !== undefined
-            ? canonicalT3ToolName(addition.tool)
+            ? (yield* t3ToolCatalog).canonicalT3ToolName(addition.tool)
             : undefined;
         if (
           addition.type === "mcp" &&

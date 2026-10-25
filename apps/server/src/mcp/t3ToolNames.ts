@@ -14,26 +14,25 @@ import { WebResearchToolkit } from "./toolkits/webResearch/tools.ts";
 import { PreviewToolkit } from "./toolkits/preview/tools.ts";
 import { SpectrumToolkit } from "../spectrum/mcpToolkit.ts";
 
-const toolNames = () =>
-  new Set([
-    ...Object.keys(OrchestratorToolkit.tools),
-    ...Object.keys(ThreadToolkit.tools),
-    ...Object.keys(ThreadMcpToolkit.tools),
-    ...Object.keys(AttachmentToolkit.tools),
-    ...Object.keys(ProjectToolkit.tools),
-    ...Object.keys(EnvironmentToolkit.tools),
-    ...Object.keys(PreviewControlsToolkit.tools),
-    ...Object.keys(WorktreeToolkit.tools),
-    ...Object.keys(PullRequestsToolkit.tools),
-    ...Object.keys(IssuesToolkit.tools),
-    ...Object.keys(DeviceToolkit.tools),
-    ...Object.keys(HtmlToolkit.tools),
-    ...Object.keys(WebResearchToolkit.tools),
-    ...Object.keys(PreviewToolkit.tools),
-    ...Object.keys(SpectrumToolkit.tools),
-  ]);
+const toolNames = new Set([
+  ...Object.keys(OrchestratorToolkit.tools),
+  ...Object.keys(ThreadToolkit.tools),
+  ...Object.keys(ThreadMcpToolkit.tools),
+  ...Object.keys(AttachmentToolkit.tools),
+  ...Object.keys(ProjectToolkit.tools),
+  ...Object.keys(EnvironmentToolkit.tools),
+  ...Object.keys(PreviewControlsToolkit.tools),
+  ...Object.keys(WorktreeToolkit.tools),
+  ...Object.keys(PullRequestsToolkit.tools),
+  ...Object.keys(IssuesToolkit.tools),
+  ...Object.keys(DeviceToolkit.tools),
+  ...Object.keys(HtmlToolkit.tools),
+  ...Object.keys(WebResearchToolkit.tools),
+  ...Object.keys(PreviewToolkit.tools),
+  ...Object.keys(SpectrumToolkit.tools),
+]);
 
 export const canonicalT3ToolName = (name: string) => {
   const canonical = name.replace(/^mcp__t3[-_]code__/, "");
-  return toolNames().has(canonical) ? canonical : undefined;
+  return toolNames.has(canonical) ? canonical : undefined;
 };
