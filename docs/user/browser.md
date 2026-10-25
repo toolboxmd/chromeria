@@ -20,6 +20,10 @@ then reaches your computer.
 For a page you want to use yourself, open it from the Browser menu on your local
 desktop. This gives you a native tab instead of an agent stream.
 
+Environment-hosted tabs cannot use passkeys or security keys. These requests fail
+promptly so sites can offer another sign-in method. Choose another method when
+offered, or use your local desktop's native tab for passkey sign-in.
+
 ## Profiles and logins
 
 A profile keeps a set of cookies, sign-ins and site storage. **Default**

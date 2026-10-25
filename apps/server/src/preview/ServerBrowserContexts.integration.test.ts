@@ -4,7 +4,7 @@ import * as NodeHttp from "node:http";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, INCOGNITO_BROWSER_PROFILE_ID } from "@t3tools/contracts";
 import { chromium, type BrowserContext } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -95,6 +95,80 @@ const sessionCookies = async (context: BrowserContext) =>
   (await context.cookies(origin)).map((cookie) => `${cookie.name}=${cookie.value}`);
 
 describe.skipIf(!testChromium)("ServerBrowserContexts on Chrome for Testing", () => {
+  it.each([
+    { name: "persistent", profile: "default" },
+    { name: "incognito", profile: INCOGNITO_BROWSER_PROFILE_ID },
+    { name: "isolated", profile: "default", isolation: "agent" },
+  ])(
+    "rejects WebAuthn in $name tabs on every navigation and in child frames",
+    async ({ name, profile, isolation }) => {
+      await withPool(`webauthn-${name}`, async (pool) => {
+        const context = await pool.contextFor(profile, isolation);
+        const document = `<!doctype html><script>
+        window.results = (async () => {
+          const start = performance.now();
+          const result = (promise) => Promise.race([
+            promise.then(() => "resolved", (error) => error instanceof DOMException ? error.name : "not a DOMException"),
+            new Promise((resolve) => setTimeout(() => resolve("pending"), 2000)),
+          ]);
+          const get = await result(navigator.credentials.get({publicKey: {challenge: new Uint8Array(32)}}));
+          const conditional = await result(navigator.credentials.get({mediation: "conditional", publicKey: {challenge: new Uint8Array(32)}}));
+          const create = await result(navigator.credentials.create({publicKey: {
+            challenge: new Uint8Array(32), rp: {name: "Test"},
+            user: {id: new Uint8Array([1]), name: "test", displayName: "Test"},
+            pubKeyCredParams: [{type: "public-key", alg: -7}],
+          }}));
+          return {
+            get, conditional, create, elapsed: performance.now() - start,
+            uvpaa: await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable(),
+            unsupported: await result(navigator.credentials.create({})),
+          };
+        })();
+      </script>`;
+        await context.route("https://**.test/**", (route) =>
+          route.fulfill({
+            contentType: "text/html",
+            body: document,
+          }),
+        );
+        const page = await context.newPage();
+        // An empty virtual environment reproduces an authenticator that never answers.
+        await (await context.newCDPSession(page)).send("WebAuthn.enable", { enableUI: false });
+        for (const path of ["first", "second"]) {
+          await page.goto(`https://main.example.test/${path}`);
+          await page.evaluate(`(() => {
+          for (const host of ["main.example", "child.other"]) {
+            const frame = document.createElement("iframe");
+            frame.allow = "publickey-credentials-get *; publickey-credentials-create *";
+            frame.src = "https://" + host + ".test/frame";
+            document.body.append(frame);
+          }
+        })()`);
+          await page.waitForLoadState("load");
+          // Frame results are published by their first page script, before any interaction.
+          await Promise.all(
+            page.frames().map(async (frame) => {
+              await frame.waitForFunction("window.results !== undefined");
+              const seen = await frame.evaluate<{ elapsed: number }>("window.results");
+              expect(seen).toMatchObject({
+                get: "NotAllowedError",
+                conditional: "NotAllowedError",
+                create: "NotAllowedError",
+                uvpaa: false,
+                unsupported: "NotSupportedError",
+              });
+              expect(seen.elapsed).toBeLessThan(2000);
+            }),
+          );
+          expect(page.frames()).toHaveLength(3);
+          expect(
+            await page.evaluate('navigator.credentials.get({password: true, mediation: "silent"})'),
+          ).toBeNull();
+        }
+      });
+    },
+  );
+
   it("presents one Chrome identity to the page, its workers and every request", async () => {
     await withPool("identity", async (pool) => {
       const context = await pool.contextFor("default");
