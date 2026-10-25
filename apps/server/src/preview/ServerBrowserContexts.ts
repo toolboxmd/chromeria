@@ -216,6 +216,32 @@ export class ServerBrowserContexts {
     const pending = cleared
       .then(() => this.createContext(profileId, isolationKey))
       .then(async (context) => {
+        try {
+          // No viewing client can answer a server tab's native authenticator prompt.
+          // A context init script reaches every navigation and child frame before site code.
+          await context.addInitScript(`(() => {
+            if (typeof CredentialsContainer !== "undefined") {
+              for (const method of ["get", "create"]) {
+                const original = CredentialsContainer.prototype[method];
+                CredentialsContainer.prototype[method] = function (...args) {
+                  if (args[0]?.publicKey !== undefined) {
+                    return Promise.reject(new DOMException(
+                      "Authenticators are unavailable in server browser tabs.", "NotAllowedError"
+                    ));
+                  }
+                  return Reflect.apply(original, this, args);
+                };
+              }
+            }
+            if (typeof PublicKeyCredential !== "undefined") {
+              PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = () => Promise.resolve(false);
+            }
+          })()`);
+        } catch (error) {
+          this.endingContexts.add(context);
+          await context.close().catch(constVoid);
+          throw error;
+        }
         context.on("close", () => {
           this.endingContexts.add(context);
           if (this.contexts.get(key) === pending) this.contexts.delete(key);
