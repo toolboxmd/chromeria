@@ -944,7 +944,8 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
           revision: 0,
           kind: "agent",
           command: null,
-          role: fields.role ?? null,
+          // The ui lane is worker work, so it never runs without Prism's ui Colors.
+          role: fields.role ?? (fields.lane === "ui" ? "worker" : null),
           lane: fields.lane ?? null,
           checks: [
             {
@@ -996,7 +997,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
       return yield* store(state, {
         ...state,
         checks,
-        role: fields.role ?? state.role,
+        role: fields.role ?? state.role ?? (fields.lane === "ui" ? "worker" : null),
         lane: fields.lane ?? state.lane,
       });
     });

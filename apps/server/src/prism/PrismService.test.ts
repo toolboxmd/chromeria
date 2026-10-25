@@ -486,6 +486,20 @@ describe("PrismService", () => {
         assert.include(error.message, "ui lane");
       }).pipe(withProviders(true, { worker: { lanes: { medium: [selection], ui: [] } } })),
     );
+    it.effect("accepts an explicit model only when it is one of the ui lane's Colors", () =>
+      Effect.gen(function* () {
+        const service = yield* Prism.PrismService;
+        const intent = { projectId, role: "worker" as const, lane: "ui" as const };
+        // Callers pass an inherited model as explicit, such as an empty delegate_task target.
+        const error = yield* Effect.flip(service.resolve({ ...intent, explicit: selection }));
+        assert.strictEqual(error.code, "invalid_request");
+        const chosen = yield* service.resolve({
+          ...intent,
+          explicit: { ...opus, options: [{ id: "effort", value: "high" }] },
+        });
+        assert.strictEqual(chosen.modelSelection.model, opus.model);
+      }).pipe(withProviders(true, { worker: { lanes: { ui: [opus] } } })),
+    );
     it.effect("is refused for roles other than worker", () =>
       Effect.gen(function* () {
         const service = yield* Prism.PrismService;

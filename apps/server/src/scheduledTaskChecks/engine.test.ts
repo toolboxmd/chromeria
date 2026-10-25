@@ -192,11 +192,15 @@ const harness = (options: { readonly role?: string } = {}) =>
                 kitText: "KIT",
               }),
     });
-    const save = (fields: Record<string, unknown>, actorThreadId: ThreadId | null = null) =>
+    const save = (
+      fields: Record<string, unknown>,
+      actorThreadId: ThreadId | null = null,
+      bound: ThreadId | null = threadId,
+    ) =>
       runs.save({
         taskId,
         projectId: ProjectId.make("project"),
-        threadId,
+        threadId: bound,
         schedule: { type: "interval" },
         fields,
         actor: "agent-thread",
@@ -553,6 +557,26 @@ it.effect("a ui-lane task cannot post into a bound thread, whose model is not th
     assert.include(error.message, "ui lane");
     yield* bound.save({ ...fields, lane: "medium" });
     assert.equal((yield* bound.state()).lane, "medium");
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("a ui-lane task without a role runs as a worker, so Prism places it", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    const created = yield* harness();
+    yield* created.save({ checkCommand: "check", checkReason: "outcome", lane: "ui" }, null, null);
+    assert.equal((yield* created.state()).role, "worker");
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("moving a task without a role to the ui lane makes it a worker", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    const h = yield* harness();
+    yield* h.save({ checkCommand: "check", checkReason: "outcome" }, null, null);
+    assert.isNull((yield* h.state()).role);
+    yield* h.save({ lane: "ui" }, null, null);
+    assert.equal((yield* h.state()).role, "worker");
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 

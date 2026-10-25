@@ -190,22 +190,31 @@ const make = Effect.gen(function* () {
           ]
             .filter(Boolean)
             .join("\n\n");
-      if (input.explicit !== undefined) {
-        const modelSelection = input.validate
-          ? yield* input.validate(input.explicit)
-          : input.explicit;
-        return { modelSelection, modelSelections: [modelSelection], kitText };
-      }
-      // UI work must land on a UI Color, so the ui lane never inherits the caller's model.
+      // UI work must land on a UI Color: the ui lane never inherits the caller's
+      // model, and callers often pass an inherited model as `explicit`.
       const ui = input.lane === "ui";
       if (ui && input.role !== "worker")
         return yield* new OrchestratorMcpFailure({
           code: "invalid_request",
           message: "The ui lane is only for the worker role.",
         });
+      const preferences = prismRoleModels(kits, input.role, input.lane ?? DEFAULT_PRISM_LANE);
+      if (input.explicit !== undefined) {
+        const explicit = input.explicit;
+        const modelSelection = input.validate ? yield* input.validate(explicit) : explicit;
+        const isUiColor = (selection: ModelSelection) =>
+          preferences.some(
+            (color) => color.instanceId === selection.instanceId && color.model === selection.model,
+          );
+        if (ui && !isUiColor(explicit) && !isUiColor(modelSelection))
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: `${modelSelection.instanceId}/${modelSelection.model} is not one of the worker's ui lane Colors. Omit the model to use them.`,
+          });
+        return { modelSelection, modelSelections: [modelSelection], kitText };
+      }
       const providers = yield* registry.getProviders;
       const now = DateTime.toEpochMillis(yield* DateTime.now);
-      const preferences = prismRoleModels(kits, input.role, input.lane ?? DEFAULT_PRISM_LANE);
       if (ui && preferences.length === 0)
         return yield* new OrchestratorMcpFailure({
           code: "provider_unavailable",

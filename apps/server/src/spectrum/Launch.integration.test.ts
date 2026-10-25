@@ -345,6 +345,17 @@ it.effect("a ui-lane Color is placed by the ui lane, never on the caller's model
       }),
     );
     assert.nestedPropertyVal(effortOnly, "cause.code", "invalid_request");
+    // An unnamed fallback would otherwise run on the caller's model.
+    const fallback = yield* Effect.flip(
+      launch.register({
+        ...input,
+        colors: [
+          { label: "Blue", selection },
+          { label: "UI", lane: "ui", fallbacks: [{}] },
+        ],
+      }),
+    );
+    assert.nestedPropertyVal(fallback, "cause.code", "invalid_request");
   }).pipe(Effect.provide(runtime)),
 );
 

@@ -195,7 +195,7 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   lane: Schema.optional(
     PrismLane.annotate({
       description:
-        "Worker lane: easy, medium (default) or hard for difficulty, or ui for UI and frontend work. A ui task runs only on the ui lane's Colors and fails visibly instead of falling back to another model.",
+        "Worker lane: easy, medium (default) or hard for difficulty, or ui for UI and frontend work. A ui task runs only on the ui lane's Colors, an explicit target must be one of them, and it fails visibly instead of falling back to another model.",
     }),
   ),
   prismRole: Schema.optional(
