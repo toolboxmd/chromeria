@@ -196,9 +196,21 @@ const make = Effect.gen(function* () {
           : input.explicit;
         return { modelSelection, modelSelections: [modelSelection], kitText };
       }
+      // UI work must land on a UI Color, so the ui lane never inherits the caller's model.
+      const ui = input.lane === "ui";
+      if (ui && input.role !== "worker")
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "The ui lane is only for the worker role.",
+        });
       const providers = yield* registry.getProviders;
       const now = DateTime.toEpochMillis(yield* DateTime.now);
       const preferences = prismRoleModels(kits, input.role, input.lane ?? DEFAULT_PRISM_LANE);
+      if (ui && preferences.length === 0)
+        return yield* new OrchestratorMcpFailure({
+          code: "provider_unavailable",
+          message: "The worker's ui lane has no Colors. Add one in Settings > Prism.",
+        });
       const candidates =
         preferences.length > 0 ? preferences : input.inherited ? [input.inherited] : [];
       const count = Math.max(1, input.count ?? 1);

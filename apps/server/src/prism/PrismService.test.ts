@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   OrchestratorMcpFailure,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
 } from "@t3tools/contracts";
@@ -424,6 +425,77 @@ describe("PrismService", () => {
       );
     }),
   );
+  describe("ui lane", () => {
+    const claudeId = ProviderInstanceId.make("claudeAgent");
+    const opus = { instanceId: claudeId, model: "claude-opus-5-5" };
+    const withProviders = (claudeEnabled: boolean, prismRoles: object) =>
+      Effect.provide(
+        Prism.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.unwrap(
+                Effect.map(provider, (p) =>
+                  registry([
+                    p,
+                    {
+                      ...p,
+                      instanceId: claudeId,
+                      driver: ProviderDriverKind.make("claudeAgent"),
+                      enabled: claudeEnabled,
+                      models: [
+                        { slug: opus.model, name: "Opus", isCustom: false, capabilities: null },
+                      ],
+                    },
+                  ]),
+                ),
+              ),
+              Settings.layerTest({ prismRoles: prismRoles as never }),
+            ),
+          ),
+        ),
+      );
+    const resolveUi = Effect.gen(function* () {
+      const service = yield* Prism.PrismService;
+      return yield* service.resolve({
+        projectId,
+        role: "worker",
+        lane: "ui",
+        inherited: selection,
+      });
+    });
+
+    it.effect("defaults to Claude Opus 5.5 at medium effort", () =>
+      Effect.gen(function* () {
+        const result = yield* resolveUi;
+        assert.deepStrictEqual(result.modelSelection, {
+          ...opus,
+          options: [{ id: "effort", value: "medium" }],
+        });
+      }).pipe(withProviders(true, { worker: { lanes: { medium: [selection] } } })),
+    );
+    it.effect("never falls back to another lane or the caller's model", () =>
+      Effect.gen(function* () {
+        const error = yield* Effect.flip(resolveUi);
+        assert.strictEqual(error.code, "provider_unavailable");
+      }).pipe(withProviders(false, { worker: { lanes: { medium: [selection], ui: [opus] } } })),
+    );
+    it.effect("fails visibly when the ui lane has no Colors", () =>
+      Effect.gen(function* () {
+        const error = yield* Effect.flip(resolveUi);
+        assert.strictEqual(error.code, "provider_unavailable");
+        assert.include(error.message, "ui lane");
+      }).pipe(withProviders(true, { worker: { lanes: { medium: [selection], ui: [] } } })),
+    );
+    it.effect("is refused for roles other than worker", () =>
+      Effect.gen(function* () {
+        const service = yield* Prism.PrismService;
+        const error = yield* Effect.flip(
+          service.resolve({ projectId, role: "reviewer", lane: "ui", inherited: selection }),
+        );
+        assert.strictEqual(error.code, "invalid_request");
+      }).pipe(withProviders(true, { reviewer: { models: [selection] } })),
+    );
+  });
   it("maps every upstream role to the fixed kit", () => {
     assert.strictEqual(Prism.delegatedPrismRole("implementation"), "worker");
     assert.strictEqual(Prism.delegatedPrismRole("test"), "worker");
