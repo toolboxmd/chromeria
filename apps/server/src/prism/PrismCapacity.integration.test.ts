@@ -131,7 +131,7 @@ describe("Prism capacity from durable run failures", () => {
             model: role === "computer-use" ? "small" : "fixed",
           });
         }
-      }).pipe(Effect.provide(Prism.layer.pipe(Layer.provide(deps))), Effect.provide(deps));
+      }).pipe(Effect.provide(Layer.mergeAll(deps, Prism.layer.pipe(Layer.provide(deps)))));
     },
   );
 
@@ -142,7 +142,7 @@ describe("Prism capacity from durable run failures", () => {
       return Effect.gen(function* () {
         yield* seed(failure, recoveryRun.rootNodeId, true);
         assert.deepStrictEqual((yield* resolve()).modelSelection, spare);
-      }).pipe(Effect.provide(Prism.layer.pipe(Layer.provide(deps))), Effect.provide(deps));
+      }).pipe(Effect.provide(Layer.mergeAll(deps, Prism.layer.pipe(Layer.provide(deps)))));
     },
   );
 
@@ -152,7 +152,7 @@ describe("Prism capacity from durable run failures", () => {
       yield* seed();
       const result = yield* Effect.flip(resolve());
       assert.strictEqual(result.code, "provider_unavailable");
-    }).pipe(Effect.provide(Prism.layer.pipe(Layer.provide(deps))), Effect.provide(deps));
+    }).pipe(Effect.provide(Layer.mergeAll(deps, Prism.layer.pipe(Layer.provide(deps)))));
   });
 
   it.effect("keeps explicit Colors and releases only the limited instance at expiry", () => {
@@ -169,7 +169,7 @@ describe("Prism capacity from durable run failures", () => {
       assert.deepStrictEqual((yield* resolve()).modelSelection, spare);
       yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe(resetAt)));
       assert.deepStrictEqual((yield* resolve()).modelSelection, limited);
-    }).pipe(Effect.provide(Prism.layer.pipe(Layer.provide(deps))), Effect.provide(deps));
+    }).pipe(Effect.provide(Layer.mergeAll(deps, Prism.layer.pipe(Layer.provide(deps)))));
   });
 
   it.effect.each([
@@ -182,7 +182,7 @@ describe("Prism capacity from durable run failures", () => {
     return Effect.gen(function* () {
       yield* seed(observed);
       assert.deepStrictEqual((yield* resolve()).modelSelection, limited);
-    }).pipe(Effect.provide(Prism.layer.pipe(Layer.provide(deps))), Effect.provide(deps));
+    }).pipe(Effect.provide(Layer.mergeAll(deps, Prism.layer.pipe(Layer.provide(deps)))));
   });
 
   it.effect("ignores nested errors that are not the executing run's root failure", () => {
@@ -190,7 +190,7 @@ describe("Prism capacity from durable run failures", () => {
     return Effect.gen(function* () {
       yield* seed(failure, NodeId.make("nested"));
       assert.deepStrictEqual((yield* resolve()).modelSelection, limited);
-    }).pipe(Effect.provide(Prism.layer.pipe(Layer.provide(deps))), Effect.provide(deps));
+    }).pipe(Effect.provide(Layer.mergeAll(deps, Prism.layer.pipe(Layer.provide(deps)))));
   });
 
   it.effect("uses the latest root failure rather than an earlier quota error", () => {
@@ -215,6 +215,6 @@ describe("Prism capacity from durable run failures", () => {
         effects: [],
       });
       assert.deepStrictEqual((yield* resolve()).modelSelection, limited);
-    }).pipe(Effect.provide(Prism.layer.pipe(Layer.provide(deps))), Effect.provide(deps));
+    }).pipe(Effect.provide(Layer.mergeAll(deps, Prism.layer.pipe(Layer.provide(deps)))));
   });
 });
