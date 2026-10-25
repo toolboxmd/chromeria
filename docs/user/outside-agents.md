@@ -179,8 +179,10 @@ Name additions in order, for example
 `bare: { additions: [{ type: "skillFile", path: "/project/library/testing/SKILL.md" }] }`.
 A skill contributes its body only. Its dependencies are not enabled. `skill` looks
 up a name in the destination's skill inventory; `file` includes a readable absolute
-path. Named `mcp` server `t3-code` is supported except on Grok; exact plugins, apps,
-other MCP servers and individual MCP tools currently return an unsupported reason.
+path. Named `mcp` server `t3-code` is supported except on Grok. To attach only
+specific tool descriptions, add one entry per tool, for example
+`{ type: "mcp", server: "t3-code", tool: "preview_open" }`. Omitting `tool` attaches
+the whole server. Exact plugins, apps and other MCP servers return an unsupported reason.
 Missing additions fail before inference. A changed addition fails when a new native
 context needs its body again.
 

@@ -234,3 +234,29 @@ it.effect("destination contexts use the latest unexpired credential and honor re
     expect(yield* registry.scopeForThread(threadId)).toBeUndefined();
   }),
 );
+
+it.effect("binds bare tool descriptions to the credential without narrowing other threads", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry(() => 1_000);
+    const request = {
+      threadId: ThreadId.make("bare-tools"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      bareToolNames: ["preview_open", "preview_snapshot"],
+    };
+    const credential = yield* registry.issue(request);
+    expect(
+      (yield* registry.resolve(credential.config.authorizationHeader.slice(7)))?.bareToolNames,
+    ).toEqual(request.bareToolNames);
+    const normal = yield* registry.issue({
+      ...request,
+      threadId: ThreadId.make("normal-tools"),
+      bareToolNames: undefined,
+    });
+    expect(
+      (yield* registry.resolve(normal.config.authorizationHeader.slice(7)))?.bareToolNames,
+    ).toBeUndefined();
+    expect((yield* registry.scopeForThread(request.threadId))?.bareToolNames).toEqual(
+      request.bareToolNames,
+    );
+  }),
+);

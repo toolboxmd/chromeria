@@ -14,7 +14,10 @@ import * as Git from "../git/GitWorkflowService.ts";
 const instanceId = ProviderInstanceId.make("codex");
 const registry = Layer.mock(Adapters.ProviderAdapterRegistryV2)({
   get: () =>
-    Effect.succeed({ driver: "codex", bareSupport: Effect.succeed({ supported: true }) } as never),
+    Effect.succeed({
+      driver: "claudeAgent",
+      bareSupport: Effect.succeed({ supported: true }),
+    } as never),
 });
 const fixtures = (
   inventory: Providers.ProviderRegistry["Service"]["refreshWorkspaceSnapshot"] = () =>
@@ -108,6 +111,44 @@ it.layer(NodeServices.layer)("bare destination resolution", (it) => {
       }).pipe(Effect.provide(fixtures())),
   );
 
+  it.effect(
+    "resolves per-tool t3-code additions and rejects unknown tools before preparation",
+    () =>
+      Effect.gen(function* () {
+        const bare = yield* BareLaunch.BareLaunch;
+        const request = {
+          additions: [
+            { type: "mcp", server: "t3-code", tool: "preview_open" },
+            { type: "mcp", server: "t3-code", tool: "mcp__t3-code__preview_snapshot" },
+          ],
+        } as const;
+        yield* bare.validate({ request, instanceId, readGrant: { type: "none" } });
+        expect(
+          yield* bare.resolve({ request, instanceId, cwd: "/unused", readGrant: { type: "none" } }),
+        ).toEqual({
+          additions: [
+            { type: "mcp", server: "t3-code", tool: "preview_open" },
+            { type: "mcp", server: "t3-code", tool: "preview_snapshot" },
+          ],
+        });
+        const invalid = {
+          additions: [{ type: "mcp", server: "t3-code", tool: "missing_tool" }],
+        } as const;
+        for (const operation of [
+          bare.validate({ request: invalid, instanceId }),
+          bare.resolve({
+            request: invalid,
+            instanceId,
+            cwd: "/unused",
+            readGrant: { type: "none" },
+          }),
+        ])
+          expect((yield* operation.pipe(Effect.flip)).message).toContain(
+            "Unknown t3-code MCP tool: missing_tool",
+          );
+      }).pipe(Effect.provide(fixtures())),
+  );
+
   it.effect("rejects unsupported integrations explicitly without reading their dependencies", () =>
     Effect.gen(function* () {
       const bare = yield* BareLaunch.BareLaunch;
@@ -115,7 +156,6 @@ it.layer(NodeServices.layer)("bare destination resolution", (it) => {
         { additions: [{ type: "plugin", name: "lint" }] },
         { additions: [{ type: "app", name: "docs" }] },
         { additions: [{ type: "mcp", server: "other" }] },
-        { additions: [{ type: "mcp", server: "t3-code", tool: "one" }] },
       ];
       for (const request of requests)
         expect(

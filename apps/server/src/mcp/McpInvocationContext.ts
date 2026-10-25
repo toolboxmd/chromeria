@@ -114,6 +114,7 @@ export const intersectModes = (
  * preview, worktree handoff) need `thread`.
  */
 export interface McpInvocationScope {
+  readonly bareToolNames?: ReadonlyArray<string>;
   /** Frozen migration ceiling for pre-protocol linked work, without invented remote provenance. */
   readonly legacyPeerCeiling?: import("@t3tools/contracts").PeerCeiling;
   /** Server-verified durable authority, absent for legacy and ordinary local callers. */

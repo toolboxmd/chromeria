@@ -1,3 +1,5 @@
+import { BareLaunchError } from "@t3tools/provider-core/server/bareLaunch";
+import { CommandId } from "@t3tools/contracts";
 import * as AdapterRegistry from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
 import { ProviderDriverKind } from "@t3tools/contracts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
@@ -600,6 +602,58 @@ it.effect("a client launches at its ceiling with the project's default model", (
     expect(untargeted.at(-1)?.result).toMatchObject({ code: "target_required" });
     expect(launched).toHaveLength(1);
   }),
+);
+
+it.effect(
+  "reports a rejected bare addition with its reason instead of a generic orchestration error",
+  () =>
+    Effect.gen(function* () {
+      const { projectId, dependencies } = clientLaunchHarness({
+        runtimeModeCeiling: "full-access",
+        launched: [],
+      });
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(prismDependencies),
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      const result = yield* toolkit
+        .handle("t3_thread_launch", {
+          title: "Invalid bare",
+          projectId,
+          bare: { additions: [{ type: "mcp", server: "other" }] },
+        })
+        .pipe(
+          Stream.unwrap,
+          Stream.runCollect,
+          Effect.provide(
+            Layer.mergeAll(
+              dependencies,
+              Layer.mock(ThreadLaunch.ThreadLaunchService)({
+                replayOrLaunch: (_input, launch) => launch,
+                launch: () =>
+                  Effect.fail(
+                    new ThreadLaunch.ThreadLaunchError({
+                      operation: "provision-worktree",
+                      commandId: CommandId.make("invalid-bare"),
+                      projectId,
+                      cause: new BareLaunchError({
+                        reason: "Bare addition MCP other is not supported.",
+                      }),
+                    }),
+                  ),
+              }),
+            ),
+          ),
+        );
+      expect(result[0]?.encodedResult).toMatchObject({
+        code: "invalid_request",
+        message: "Bare addition MCP other is not supported.",
+      });
+    }),
 );
 
 it.effect("an outside full-access client forwards bare and private HTTP MCP configuration", () =>

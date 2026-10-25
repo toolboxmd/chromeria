@@ -1,3 +1,4 @@
+import { canonicalT3ToolName } from "../mcp/t3ToolNames.ts";
 import type { BareReadGrant } from "./bareReadGrant.ts";
 import { BareLaunchError, unsupportedBare } from "@t3tools/provider-core/server/bareLaunch";
 import { sha256 } from "@noble/hashes/sha2";
@@ -157,6 +158,19 @@ const make = Effect.gen(function* () {
           reason: `Bare launch is not supported for ${adapter.driver}: ${support.reason}`,
         });
       for (const addition of input.request.additions ?? []) {
+        const tool =
+          addition.type === "mcp" && addition.tool !== undefined
+            ? canonicalT3ToolName(addition.tool)
+            : undefined;
+        if (
+          addition.type === "mcp" &&
+          addition.server === "t3-code" &&
+          addition.tool !== undefined &&
+          tool === undefined
+        )
+          return yield* new BareLaunchError({
+            reason: `Unknown t3-code MCP tool: ${addition.tool}.`,
+          });
         if (
           input.readGrant?.type === "none" &&
           (addition.type === "file" || addition.type === "skillFile")
@@ -167,10 +181,7 @@ const make = Effect.gen(function* () {
         if (
           addition.type === "plugin" ||
           addition.type === "app" ||
-          (addition.type === "mcp" &&
-            (addition.server !== "t3-code" ||
-              addition.tool !== undefined ||
-              adapter.driver === "grok"))
+          (addition.type === "mcp" && (addition.server !== "t3-code" || adapter.driver === "grok"))
         )
           return yield* new BareLaunchError({
             reason: `Bare addition ${addition.type} is not supported on ${adapter.driver}: no proven exact attach path.`,
@@ -200,16 +211,29 @@ const make = Effect.gen(function* () {
       const additions: Array<ThreadBare["additions"][number]> = [];
       let total = 0;
       for (const addition of input.request.additions ?? []) {
+        const tool =
+          addition.type === "mcp" && addition.tool !== undefined
+            ? canonicalT3ToolName(addition.tool)
+            : undefined;
+        if (
+          addition.type === "mcp" &&
+          addition.server === "t3-code" &&
+          addition.tool !== undefined &&
+          tool === undefined
+        )
+          return yield* new BareLaunchError({
+            reason: `Unknown t3-code MCP tool: ${addition.tool}.`,
+          });
         if (addition.type === "mcp") {
-          if (
-            addition.server !== "t3-code" ||
-            addition.tool !== undefined ||
-            adapter.driver === "grok"
-          )
+          if (addition.server !== "t3-code" || adapter.driver === "grok")
             return yield* new BareLaunchError({
               reason: `Bare addition MCP ${addition.server}${addition.tool ? `/${addition.tool}` : ""} is not supported on ${adapter.driver}: no proven exact attach path.`,
             });
-          additions.push({ type: "mcp", server: "t3-code" });
+          additions.push({
+            type: "mcp",
+            server: "t3-code",
+            ...(addition.tool === undefined ? {} : { tool }),
+          });
           continue;
         }
         if (addition.type === "app" || addition.type === "plugin")
