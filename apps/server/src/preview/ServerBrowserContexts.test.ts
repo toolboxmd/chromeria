@@ -30,6 +30,7 @@ const makeContext = (product = "HeadlessChrome/154.0.8037.92") => {
   let closed = false;
   return {
     opened: pages,
+    addInitScript: vi.fn(async () => {}),
     on: vi.fn((event: string, listener: () => void) => events.on(event, listener)),
     once: vi.fn((event: string, listener: () => void) => events.once(event, listener)),
     pages: vi.fn(() => [...pages]),
@@ -88,6 +89,20 @@ beforeEach(() => {
 });
 
 describe("ServerBrowserContexts", () => {
+  it("closes a context whose WebAuthn setup fails and retries on the next request", async () => {
+    const failed = makeContext();
+    failed.addInitScript.mockRejectedValueOnce(new Error("script registration failed"));
+    launches.persistent
+      .mockResolvedValueOnce(failed as unknown as BrowserContext)
+      .mockResolvedValue(makeContext() as unknown as BrowserContext);
+    const pool = new ServerBrowserContexts(options());
+    await expect(pool.contextFor("default")).rejects.toThrow("script registration failed");
+    expect(failed.close).toHaveBeenCalledTimes(1);
+    expect(failed.newPage).not.toHaveBeenCalled();
+    expect(await pool.contextFor("default")).not.toBe(failed);
+    await pool.close();
+  });
+
   it("lazily shares one browser across concurrent isolated sessions and reuses each context", async () => {
     const browser = makeBrowser();
     const launch = Promise.withResolvers<Browser>();

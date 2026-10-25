@@ -34,7 +34,7 @@ flowchart TD
     end
 
     PBI["Preview browser identity"]
-    %% PBI: #460 PR #470 PR #527 #572 PR #585 PR #603
+    %% PBI: #460 PR #470 PR #527 #572 PR #585 PR #603 #614
     T3C --> PBI
     BST["Settled thread browser cleanup"]
     %% BST: #601
