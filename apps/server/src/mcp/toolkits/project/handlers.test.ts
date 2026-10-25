@@ -4,6 +4,7 @@ import * as AdapterRegistry from "../../../orchestration-v2/ProviderAdapterRegis
 import { ProviderDriverKind } from "@t3tools/contracts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
+import * as Database from "../../../persistence/Sqlite.ts";
 import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
@@ -37,6 +38,7 @@ import { ProjectToolkit } from "./tools.ts";
 import { liveThreadShell } from "../../McpToolAccess.testkit.ts";
 
 const prismDependencies = Layer.mergeAll(
+  Database.layerMemory,
   Layer.mock(AdapterRegistry.ProviderAdapterRegistryV2)({
     get: (instanceId) =>
       Effect.succeed({

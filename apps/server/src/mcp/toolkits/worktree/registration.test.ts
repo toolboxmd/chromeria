@@ -1,3 +1,4 @@
+import * as Database from "../../../persistence/Sqlite.ts";
 import * as BareLaunch from "../../../orchestration-v2/BareLaunch.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
@@ -43,6 +44,7 @@ import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as PeerLinks from "../../../peer/PeerLinks.ts";
 
 const layerStubServices = Layer.mergeAll(
+  Database.layerMemory,
   Layer.mock(Orchestrator.OrchestratorV2)({}),
   Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
   Layer.mock(DeviceService.DeviceService)({}),

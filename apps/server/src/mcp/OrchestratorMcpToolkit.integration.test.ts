@@ -99,6 +99,7 @@ import { delegatedTaskRun, hasPendingChildRuns } from "./OrchestratorMcpService.
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
+  Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
   Layer.provide(PrismServerSettings.layerTest()),
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
@@ -598,6 +599,7 @@ describe("orchestrator MCP toolkit", () => {
         );
         const layers = Layer.merge(
           McpHttpServer.layerOrchestratorToolkit.pipe(
+            Layer.provide(SqlitePersistence.layerMemory),
             Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
           ),
           McpHttpServer.toolkitRegistration(AttachmentToolkit, AttachmentHandlers.layer),

@@ -1,3 +1,4 @@
+import * as Database from "../persistence/Sqlite.ts";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import { layerLaunchCatalog } from "./PeerLinks.testkit.ts";
 import * as Settings from "../serverSettings.ts";
@@ -206,6 +207,7 @@ const makeLaptop = Effect.gen(function* () {
     McpHttpServer.layerProjectRegistration,
   ).pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
+    Layer.provide(Database.layerMemory),
     Layer.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({})),
     Layer.provide(
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),

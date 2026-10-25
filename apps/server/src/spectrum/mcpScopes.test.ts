@@ -1,3 +1,4 @@
+import * as Database from "../persistence/Sqlite.ts";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -64,6 +65,7 @@ it.effect(
           activeRunId: live ? run.id : null,
         });
       const dependencies = Layer.mergeAll(
+        Database.layerMemory,
         NodeServices.layer,
         Settings.layerTest(),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
