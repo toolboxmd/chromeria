@@ -544,6 +544,18 @@ it.effect("a Prism pick selects the model of a new thread only and prefixes its 
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
+it.effect("a ui-lane task cannot post into a bound thread, whose model is not the ui kit's", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    const bound = yield* harness({ role: "picked-model" });
+    const fields = { checkCommand: "check", checkReason: "outcome", role: "worker" };
+    const error = yield* Effect.flip(bound.save({ ...fields, lane: "ui" }));
+    assert.include(error.message, "ui lane");
+    yield* bound.save({ ...fields, lane: "medium" });
+    assert.equal((yield* bound.state()).lane, "medium");
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
 it.effect("a resend after a crash repeats the pinned payload even after the task changed", () =>
   Effect.gen(function* () {
     yield* TestClock.setTime(NOW);

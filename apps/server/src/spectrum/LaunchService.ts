@@ -21,7 +21,7 @@ import {
   threadOwner,
   type ModelSelection,
   type OrchestrationV2AppThread,
-  type OrchestratorMcpFailure,
+  OrchestratorMcpFailure,
   type PrismLane,
   type PrismRole,
   type RunId,
@@ -240,8 +240,20 @@ const make = Effect.gen(function* () {
     });
     const resolveMember = (color: SpectrumColorSpec, threadId: ThreadId) =>
       Effect.gen(function* () {
+        // A ui Color without a named model is placed by the ui lane, never on the caller's model.
+        const uiRouted =
+          color.lane === "ui" &&
+          color.selection === undefined &&
+          color.instanceId === undefined &&
+          color.model === undefined;
+        if (uiRouted && color.effort !== undefined)
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: `Color ${color.label} sets an effort without a model; name a model or let the ui lane choose.`,
+          });
         const primary =
-          color.selection ?? (color.role === undefined ? caller.modelSelection : undefined);
+          color.selection ??
+          (color.role === undefined && !uiRouted ? caller.modelSelection : undefined);
         const explicit =
           primary === undefined &&
           color.instanceId === undefined &&

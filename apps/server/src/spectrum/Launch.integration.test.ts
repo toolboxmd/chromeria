@@ -320,6 +320,34 @@ it.effect("rebuilds outbox admission after restart and retains native retirement
   }).pipe(Effect.provide(runtime)),
 );
 
+it.effect("a ui-lane Color is placed by the ui lane, never on the caller's model", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    const launch = yield* Launch.SpectrumLaunchService;
+    // The fixture has only Codex, so the default Claude ui Color cannot start.
+    const error = yield* Effect.flip(
+      launch.register({
+        ...input,
+        colors: [
+          { label: "Blue", selection },
+          { label: "UI", lane: "ui" },
+        ],
+      }),
+    );
+    assert.nestedPropertyVal(error, "cause.code", "provider_unavailable");
+    const effortOnly = yield* Effect.flip(
+      launch.register({
+        ...input,
+        colors: [
+          { label: "Blue", selection },
+          { label: "UI", lane: "ui", effort: "high" },
+        ],
+      }),
+    );
+    assert.nestedPropertyVal(effortOnly, "cause.code", "invalid_request");
+  }).pipe(Effect.provide(runtime)),
+);
+
 it.effect("legacy Color instance and model overrides keep Prism role instructions", () =>
   Effect.gen(function* () {
     yield* setup;

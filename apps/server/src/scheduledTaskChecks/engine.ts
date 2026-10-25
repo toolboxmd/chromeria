@@ -906,6 +906,11 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
         );
       if (checkFields && commandField)
         return yield* fail("A command task runs a shell command and has no outcome check or role.");
+      // A post keeps its thread's model, so only a task that launches can honor the ui lane.
+      if ((fields.lane ?? state?.lane) === "ui" && input.threadId !== null)
+        return yield* fail(
+          "A ui lane task must launch its own thread on the ui lane's Colors. Set bindToCurrentThread to false.",
+        );
       if (!checkFields && !commandField) return state;
       const now = yield* Clock.currentTimeMillis;
       if (state === null) {
