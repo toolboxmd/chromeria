@@ -443,7 +443,13 @@ describe("PrismService", () => {
                       driver: ProviderDriverKind.make("claudeAgent"),
                       enabled: claudeEnabled,
                       models: [
-                        { slug: opus.model, name: "Opus", isCustom: false, capabilities: null },
+                        {
+                          slug: opus.model,
+                          name: "Opus",
+                          aliases: ["opus"],
+                          isCustom: false,
+                          capabilities: null,
+                        },
                       ],
                     },
                   ]),
@@ -499,6 +505,18 @@ describe("PrismService", () => {
         });
         assert.strictEqual(chosen.modelSelection.model, opus.model);
       }).pipe(withProviders(true, { worker: { lanes: { ui: [opus] } } })),
+    );
+    it.effect("matches an explicit model to a ui Color that names it by alias", () =>
+      Effect.gen(function* () {
+        const service = yield* Prism.PrismService;
+        const chosen = yield* service.resolve({
+          projectId,
+          role: "worker",
+          lane: "ui",
+          explicit: opus,
+        });
+        assert.strictEqual(chosen.modelSelection.model, opus.model);
+      }).pipe(withProviders(true, { worker: { lanes: { ui: [{ ...opus, model: "opus" }] } } })),
     );
     it.effect("is refused for roles other than worker", () =>
       Effect.gen(function* () {

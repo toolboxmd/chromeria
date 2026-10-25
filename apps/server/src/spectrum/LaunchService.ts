@@ -240,20 +240,14 @@ const make = Effect.gen(function* () {
     });
     const resolveMember = (color: SpectrumColorSpec, threadId: ThreadId) =>
       Effect.gen(function* () {
-        // A ui Color without a named model is placed by the ui lane, never on the caller's model.
-        const uiRouted =
-          color.lane === "ui" &&
-          color.selection === undefined &&
-          color.instanceId === undefined &&
-          color.model === undefined;
-        if (uiRouted && color.effort !== undefined)
+        // Slot fallbacks start later without Prism, so they could not keep a ui Color on the ui lane.
+        if (color.lane === "ui")
           return yield* new OrchestratorMcpFailure({
             code: "invalid_request",
-            message: `Color ${color.label} sets an effort without a model; name a model or let the ui lane choose.`,
+            message: `${color.label}: the ui lane is for worker delegations, not Spectrum members.`,
           });
         const primary =
-          color.selection ??
-          (color.role === undefined && !uiRouted ? caller.modelSelection : undefined);
+          color.selection ?? (color.role === undefined ? caller.modelSelection : undefined);
         const explicit =
           primary === undefined &&
           color.instanceId === undefined &&

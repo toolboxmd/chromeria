@@ -202,9 +202,17 @@ const make = Effect.gen(function* () {
       if (input.explicit !== undefined) {
         const explicit = input.explicit;
         const modelSelection = input.validate ? yield* input.validate(explicit) : explicit;
+        const providers = ui ? yield* registry.getProviders : [];
+        // A Color may name a model by an alias of the slug a selection carries.
+        const slug = (instanceId: string, model: string) =>
+          providers
+            .find((p) => p.instanceId === instanceId)
+            ?.models.find((m) => m.slug === model || m.aliases?.includes(model))?.slug ?? model;
         const isUiColor = (selection: ModelSelection) =>
           preferences.some(
-            (color) => color.instanceId === selection.instanceId && color.model === selection.model,
+            (color) =>
+              color.instanceId === selection.instanceId &&
+              slug(color.instanceId, color.model) === slug(selection.instanceId, selection.model),
           );
         if (ui && !isUiColor(explicit) && !isUiColor(modelSelection))
           return yield* new OrchestratorMcpFailure({

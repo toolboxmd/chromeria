@@ -1053,6 +1053,38 @@ it.effect(
     }).pipe(Effect.scoped),
 );
 
+it.effect("a direct upsert cannot bind a ui lane task to a thread", () =>
+  Effect.gen(function* () {
+    const database = yield* tempDatabase;
+    yield* TestClock.setTime(Date.parse(CANONICAL));
+    const id = ScheduledTaskId.make("scheduled-task:ui");
+    yield* Effect.gen(function* () {
+      yield* createThread;
+      yield* insertTask({ id, schedule: { type: "interval", everyMs: 3_600_000 }, next: null });
+      yield* writeCheckState(null, { ...checkState(id), role: "worker", lane: "ui" });
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const input = {
+        purposeIntent: { version: 1, intent: { type: "unscoped" } } as const,
+        id,
+        title: "UI work",
+        prompt: "Do the scheduled work",
+        enabled: true,
+        projectId,
+        schedule: { type: "interval" as const, everyMs: 3_600_000 },
+        workspaceStrategy: { type: "root" as const },
+        modelSelection: selection,
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+      };
+      const bound = yield* Effect.exit(service.upsert({ ...input, threadId }));
+      assert.isTrue(Exit.isFailure(bound));
+      assert.include(String(bound), "cannot be bound to a thread");
+      const unbound = yield* service.upsert({ ...input, threadId: null });
+      assert.isNull(unbound.task.threadId);
+    }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+  }).pipe(Effect.scoped),
+);
+
 it.effect(
   "a new-thread launch the orchestrator rejected before its thread existed is launched again after a restart, once",
   () =>

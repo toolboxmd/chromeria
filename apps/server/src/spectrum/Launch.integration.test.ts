@@ -320,42 +320,24 @@ it.effect("rebuilds outbox admission after restart and retains native retirement
   }).pipe(Effect.provide(runtime)),
 );
 
-it.effect("a ui-lane Color is placed by the ui lane, never on the caller's model", () =>
+it.effect("refuses the ui lane for Colors and White", () =>
   Effect.gen(function* () {
     yield* setup;
     const launch = yield* Launch.SpectrumLaunchService;
-    // The fixture has only Codex, so the default Claude ui Color cannot start.
-    const error = yield* Effect.flip(
-      launch.register({
+    const { moderator: _moderator, ...withoutModerator } = input;
+    for (const request of [
+      {
         ...input,
         colors: [
           { label: "Blue", selection },
-          { label: "UI", lane: "ui" },
+          { label: "UI", lane: "ui" as const },
         ],
-      }),
-    );
-    assert.nestedPropertyVal(error, "cause.code", "provider_unavailable");
-    const effortOnly = yield* Effect.flip(
-      launch.register({
-        ...input,
-        colors: [
-          { label: "Blue", selection },
-          { label: "UI", lane: "ui", effort: "high" },
-        ],
-      }),
-    );
-    assert.nestedPropertyVal(effortOnly, "cause.code", "invalid_request");
-    // An unnamed fallback would otherwise run on the caller's model.
-    const fallback = yield* Effect.flip(
-      launch.register({
-        ...input,
-        colors: [
-          { label: "Blue", selection },
-          { label: "UI", lane: "ui", fallbacks: [{}] },
-        ],
-      }),
-    );
-    assert.nestedPropertyVal(fallback, "cause.code", "invalid_request");
+      },
+      { ...withoutModerator, white: { selection, lane: "ui" as const } },
+    ]) {
+      const error = yield* Effect.flip(launch.register(request));
+      assert.nestedPropertyVal(error, "cause.code", "invalid_request");
+    }
   }).pipe(Effect.provide(runtime)),
 );
 
