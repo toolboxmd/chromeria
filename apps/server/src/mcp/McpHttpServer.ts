@@ -33,6 +33,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -126,6 +127,26 @@ import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import * as RequestReceipts from "./McpRequestReceipts.ts";
 import * as AttachmentStaging from "../assets/AttachmentStaging.ts";
+
+// EnabledWhen is synchronous, so read the request fiber rather than capturing
+// a credential when the shared tool catalog is registered.
+const bareToolAnnotations = (tool: {
+  readonly name: string;
+  readonly annotations: Context.Context<never>;
+}) => {
+  const enabled = Context.getOrUndefined(tool.annotations, McpSchema.EnabledWhen);
+  return Context.add(tool.annotations, McpSchema.EnabledWhen, (client) => {
+    const fiber = Fiber.getCurrent();
+    const scope =
+      fiber === undefined
+        ? undefined
+        : Context.getOrUndefined(fiber.context, McpInvocationContext.McpInvocationContext);
+    return (
+      (scope?.bareToolNames === undefined || scope.bareToolNames.includes(tool.name)) &&
+      (enabled?.(client) ?? true)
+    );
+  });
+};
 
 const mcpResourceMetadataUrl = (request: HttpServerRequest.HttpServerRequest) =>
   HttpServerRequest.toURL(request).pipe(
@@ -772,7 +793,7 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
         openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
       },
     }),
-    annotations: tool.annotations,
+    annotations: bareToolAnnotations(tool),
     handle: (payload) =>
       Effect.withFiber((fiber) => {
         const invocation = Context.getUnsafe(
@@ -1060,7 +1081,7 @@ const registerImageTool = Effect.fn("McpHttpServer.registerImageTool")(function*
         openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
       },
     }),
-    annotations: tool.annotations,
+    annotations: bareToolAnnotations(tool),
     handle: (payload) =>
       Effect.withFiber((fiber) => {
         const invocation = Context.getUnsafe(
@@ -1202,7 +1223,7 @@ const wireToolkit = <Tools extends Record<string, Tool.Any>>(toolkit: Toolkit.To
         ),
         failureMode: "return",
         needsApproval: tool.needsApproval,
-      }).annotateMerge(tool.annotations),
+      }).annotateMerge(bareToolAnnotations(tool)),
     ),
   ) as unknown as Toolkit.Toolkit<{ readonly [K in keyof Tools]: WireTool<Tools[K]> }>;
 
@@ -1504,7 +1525,7 @@ const registerWebResearch = Effect.fn("McpHttpServer.registerWebResearch")(funct
           openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
         },
       }),
-      annotations: tool.annotations,
+      annotations: bareToolAnnotations(tool),
       handle: (payload) =>
         Effect.withFiber((fiber) =>
           built.handle(name, payload).pipe(

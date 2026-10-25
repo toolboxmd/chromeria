@@ -20,6 +20,7 @@ export interface McpCredentialRequest {
   readonly providerInstanceId: ProviderInstanceId;
   /** False omits the preview capability wherever the token is honored. Defaults to full access. */
   readonly browserToolsAvailable?: boolean;
+  readonly bareToolNames?: ReadonlyArray<string> | undefined;
   readonly authority?: PeerAuthority.Authority;
   readonly capabilities?: ReadonlySet<McpInvocationContext.McpCapability>;
   readonly subagent?: boolean;
@@ -159,6 +160,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           ...(request.capabilities ?? (browserToolsAvailable ? (["preview"] as const) : [])),
         ]),
         issuedAt,
+        ...(request.bareToolNames === undefined ? {} : { bareToolNames: request.bareToolNames }),
       };
       const bounded = yield* currentScope(scope, request.authority);
       yield* SynchronizedRef.update(state, ({ records }) => {

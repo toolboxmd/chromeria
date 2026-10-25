@@ -878,6 +878,7 @@ it.effect("admits provider and OAuth client credentials and points only clients 
       const providerScope: McpInvocationContext.McpInvocationScope = {
         environmentId,
         requestNamespace: "provider-session",
+        bareToolNames: ["probe"],
         thread: {
           threadId: ThreadId.make("thread-provider"),
           providerSessionId: "provider-session",
@@ -897,6 +898,12 @@ it.effect("admits provider and OAuth client credentials and points only clients 
       };
       const seen: Array<McpInvocationContext.McpInvocationScope> = [];
       const ProbeToolkit = Toolkit.make(
+        Tool.make("unselected", {
+          description: "Unselected description must never reach the bare child.",
+          failure: OrchestratorMcpFailure,
+          failureMode: "return",
+          success: Schema.Void,
+        }),
         Tool.make("probe", {
           description: "Reports the caller.",
           success: Schema.Struct({ ok: Schema.Boolean }),
@@ -908,6 +915,7 @@ it.effect("admits provider and OAuth client credentials and points only clients 
       const serverLayer = McpHttpServer.toolkitRegistration(
         ProbeToolkit,
         McpToolAccess.toLayer(ProbeToolkit, {
+          unselected: McpToolAccess.reads(() => Effect.void),
           probe: McpToolAccess.reads(() =>
             McpInvocationContext.McpInvocationContext.pipe(
               Effect.tap((scope) => Effect.sync(() => seen.push(scope))),
@@ -942,7 +950,7 @@ it.effect("admits provider and OAuth client credentials and points only clients 
         Layer.build,
       );
       const httpClient = yield* HttpClient.HttpClient;
-      const call = (token: string | undefined) =>
+      const call = (token: string | undefined, method = "tools/call", name = "probe") =>
         Effect.gen(function* () {
           const headers = {
             accept: "application/json, text/event-stream",
@@ -963,7 +971,12 @@ it.effect("admits provider and OAuth client credentials and points only clients 
               "mcp-protocol-version": "2025-06-18",
             },
             body: HttpBody.text(
-              `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"probe","arguments":{}}}`,
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id: 2,
+                method,
+                params: method === "tools/list" ? {} : { name, arguments: {} },
+              }),
               "application/json",
             ),
           });
@@ -975,6 +988,15 @@ it.effect("admits provider and OAuth client credentials and points only clients 
         "provider-session",
         "client:session-1",
       ]);
+
+      const bareListing = yield* (yield* call(providerToken, "tools/list")).text;
+      expect(bareListing).toContain("Reports the caller.");
+      expect(bareListing).not.toContain("Unselected description");
+      expect(bareListing).not.toContain('"name":"unselected"');
+      const normalListing = yield* (yield* call(clientToken, "tools/list")).text;
+      expect(normalListing).toContain("Unselected description");
+      const denied = yield* (yield* call(providerToken, "tools/call", "unselected")).text;
+      expect(denied).toContain("error");
 
       const missing = yield* call(undefined);
       expect(missing.status).toBe(401);

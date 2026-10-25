@@ -3826,9 +3826,9 @@ it.effect("ProviderSessionManagerV2 gives a delegated child its project's device
   }),
 );
 
-it.effect.each([false, true])(
-  "bare sessions issue T3 MCP credentials only when named (named=%s)",
-  (named) =>
+it.effect.each(["none", "server", "tools"] as const)(
+  "bare sessions issue scoped T3 MCP credentials when named (%s)",
+  (selection) =>
     Effect.gen(function* () {
       const state = yield* Ref.make(emptyState);
       const mcpConfigs = yield* Ref.make<
@@ -3848,7 +3848,16 @@ it.effect.each([false, true])(
           threadId,
         });
         const bare = {
-          additions: named ? [{ type: "mcp" as const, server: "t3-code" as const }] : [],
+          additions:
+            selection === "none"
+              ? []
+              : [
+                  {
+                    type: "mcp" as const,
+                    server: "t3-code" as const,
+                    ...(selection === "tools" ? { tool: "preview_open" } : {}),
+                  },
+                ],
         };
         yield* manager.open({
           threadId,
@@ -3858,8 +3867,16 @@ it.effect.each([false, true])(
         });
         const captured = yield* Ref.get(mcpConfigs);
         assert.equal(captured.length, 1);
-        assert.equal(captured[0] !== undefined, named);
-        if (named) assert.equal(captured[0]?.threadId, threadId);
+        assert.equal(captured[0] !== undefined, selection !== "none");
+        if (selection !== "none") {
+          assert.equal(captured[0]?.threadId, threadId);
+          const registry = yield* McpSessionRegistry.McpSessionRegistry;
+          const scope = yield* registry.resolve(captured[0]!.authorizationHeader.slice(7));
+          assert.deepEqual(
+            scope?.bareToolNames,
+            selection === "tools" ? ["preview_open"] : undefined,
+          );
+        }
         yield* manager.close(providerSessionId);
       }).pipe(
         Effect.provide(

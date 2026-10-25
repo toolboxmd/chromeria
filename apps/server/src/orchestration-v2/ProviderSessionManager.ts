@@ -4,6 +4,7 @@ import { AgentScope } from "@t3tools/shared/AgentScope";
 import {
   BareLaunchError,
   namesT3Mcp,
+  bareT3ToolNames,
   unsupportedBare,
 } from "@t3tools/provider-core/server/bareLaunch";
 import { applyProviderStartAdmission } from "../provider/forkProviderStartAdmission.ts";
@@ -505,6 +506,7 @@ export const layerWithOptions = (
                   threadId,
                   providerInstanceId,
                   browserToolsAvailable,
+                  bareToolNames: bareT3ToolNames(bare),
                   capabilities,
                   subagent,
                   ...(frozenAuthority === undefined ? {} : { authority: frozenAuthority }),

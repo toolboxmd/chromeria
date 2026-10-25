@@ -92,6 +92,31 @@ it("Claude replaces discovery and system content while preserving a restrictive 
   expect(normal).not.toHaveProperty("strictMcpConfig");
 });
 
+it("Claude attaches the scoped T3 endpoint alongside explicitly configured private servers", () => {
+  const t3 = {
+    type: "http" as const,
+    url: "http://127.0.0.1/mcp",
+    headers: { Authorization: "Bearer fake-bare-credential" },
+  };
+  const options = makeClaudeQueryOptions({
+    bare: { additions: [{ type: "mcp", server: "t3-code", tool: "preview_open" }] },
+    modelSelection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-opus" },
+    permissionMode: "bypassPermissions",
+    nativeThreadId: "bare-tools",
+    resume: false,
+    cwd: "/workspace",
+    mcpServers: { "t3-code": t3 },
+    toolPolicy: {
+      allow: ["mcp:t3-code:preview_open", "mcp:outreach:submit"],
+      mcpConfigId: "private",
+    },
+    threadMcpServers: { outreach: { type: "http", url: "http://127.0.0.1/outreach" } },
+  });
+  expect(options.strictMcpConfig).toBe(true);
+  expect(options.mcpServers?.["t3-code"]).toEqual(t3);
+  expect(options.mcpServers?.outreach).toBeDefined();
+});
+
 it.effect(
   "Codex clears context at the thread and turn seams without raising approvals or sandbox",
   () =>
