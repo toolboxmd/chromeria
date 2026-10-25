@@ -24,6 +24,7 @@ export interface McpCredentialRequest {
    * token is honored (#7083). Defaults to full access.
    */
   readonly browserToolsAvailable?: boolean;
+  readonly bareToolNames?: ReadonlyArray<string> | undefined;
   readonly authority?: PeerAuthority.Authority;
   readonly capabilities?: ReadonlySet<McpInvocationContext.McpCapability>;
 }
@@ -170,6 +171,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           ...(request.capabilities ?? (browserToolsAvailable ? (["preview"] as const) : [])),
         ]),
         issuedAt,
+        ...(request.bareToolNames === undefined ? {} : { bareToolNames: request.bareToolNames }),
       };
       const bounded = yield* currentScope(scope, request.authority);
       yield* SynchronizedRef.update(state, ({ records }) => {

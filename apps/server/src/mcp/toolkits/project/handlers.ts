@@ -1,3 +1,6 @@
+import { BareLaunchError } from "@t3tools/provider-core/server/bareLaunch";
+import { ToolPolicyError } from "@t3tools/provider-core/server/toolPolicy";
+import * as Schema from "effect/Schema";
 import { executionPurposeOf, executionPurposeWarnings } from "@t3tools/contracts";
 import * as AttachmentStaging from "../../../assets/AttachmentStaging.ts";
 import { CurrentRequest } from "../../McpRequestReceipts.ts";
@@ -30,6 +33,19 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { newCommandId, readCaller, resolveProjectId, unavailable } from "../../threadAccess.ts";
 import { ProjectToolkit } from "./tools.ts";
+
+const isBareLaunchError = Schema.is(BareLaunchError);
+const isToolPolicyError = Schema.is(ToolPolicyError);
+
+function launchFailure(error: ThreadLaunch.ThreadLaunchError) {
+  return new OrchestratorMcpFailure({
+    code:
+      isBareLaunchError(error.cause) || isToolPolicyError(error.cause)
+        ? "invalid_request"
+        : "orchestration_error",
+    message: error.message,
+  });
+}
 
 function projectFailure(error: Project.ProjectServiceError) {
   if (error._tag === "ProjectOperationError") return unavailable();
@@ -313,6 +329,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                       message: error.message,
                     });
                   }
+                  if (error._tag === "ThreadLaunchError") return launchFailure(error);
                   return unavailable();
                 }),
               );
@@ -320,7 +337,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           )
           .pipe(
             Effect.mapError((error) =>
-              error._tag === "ThreadLaunchError" ? unavailable() : error,
+              error._tag === "ThreadLaunchError" ? launchFailure(error) : error,
             ),
           );
         const thread = result.projection.thread;

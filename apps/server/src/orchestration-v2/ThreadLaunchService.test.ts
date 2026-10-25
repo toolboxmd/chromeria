@@ -3844,6 +3844,30 @@ it.effect(
     }).pipe(Effect.provide(NodeServices.layer)),
 );
 
+it.effect("bare launch persists selected t3-code tools through replay", () => {
+  const h = makeHarness({ bare: true });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const input = {
+      ...launchInput({ command: "bare-selected-tools", thread: "thread:bare-selected-tools" }),
+      bare: {
+        additions: [
+          { type: "mcp" as const, server: "t3-code", tool: "preview_open" },
+          { type: "mcp" as const, server: "t3-code", tool: "mcp__t3-code__preview_snapshot" },
+        ],
+      },
+    };
+    const result = yield* launches.launch(input);
+    expect(result.projection.thread.bare?.additions).toEqual([
+      { type: "mcp", server: "t3-code", tool: "preview_open" },
+      { type: "mcp", server: "t3-code", tool: "preview_snapshot" },
+    ]);
+    expect((yield* launches.launch(input)).projection.thread.bare).toEqual(
+      result.projection.thread.bare,
+    );
+  }).pipe(Effect.provide(h.layer));
+});
+
 it.effect(
   "invalid bare additions and native imports create no thread and normal launches stay normal",
   () => {
