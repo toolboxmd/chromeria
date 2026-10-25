@@ -35,7 +35,11 @@ export const ResolvedBareAddition = Schema.Union([
     sha256: Schema.String,
     byteCount: NonNegativeInt,
   }),
-  Schema.Struct({ type: Schema.Literal("mcp"), server: Schema.Literal("t3-code") }),
+  Schema.Struct({
+    type: Schema.Literal("mcp"),
+    server: Schema.Literal("t3-code"),
+    tool: Schema.optional(TrimmedNonEmptyString),
+  }),
 ]);
 export type ResolvedBareAddition = typeof ResolvedBareAddition.Type;
 export const ThreadBare = Schema.Struct({

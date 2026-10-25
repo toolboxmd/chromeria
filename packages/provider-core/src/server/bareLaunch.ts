@@ -31,6 +31,14 @@ export function unsupportedBare(driver: ProviderDriverKind) {
 export const namesT3Mcp = (bare: ThreadBare) =>
   bare.additions.some((addition) => addition.type === "mcp" && addition.server === "t3-code");
 
+export function bareT3ToolNames(bare: ThreadBare | undefined): ReadonlyArray<string> | undefined {
+  if (bare === undefined) return undefined;
+  const additions = bare.additions.filter((addition) => addition.type === "mcp");
+  return additions.some((addition) => addition.tool === undefined)
+    ? undefined
+    : additions.flatMap((addition) => (addition.tool === undefined ? [] : [addition.tool]));
+}
+
 /** Reconcile only files owned by the bare runtime. Never copy credentials. */
 export const writeBareConfig = Effect.fn("BareLaunch.writeConfig")(function* (
   file: string,
