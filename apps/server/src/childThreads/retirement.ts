@@ -125,12 +125,25 @@ export function humanMessage(
 }
 
 /** The constructor captures immutable admission data only, resolves projection inside the transaction. */
+/** Stop disarms auto-resume, so an armed request on a Stopped thread was re-armed after it. */
+export function armedAfterStop(
+  thread: Pick<OrchestrationV2AppThread, "limitRecovery">,
+  requestId: CommandId | undefined,
+) {
+  return (
+    requestId !== undefined &&
+    thread.limitRecovery?.autoResume === true &&
+    thread.limitRecovery.requestId === requestId
+  );
+}
+
 export function retirementAdmission(input: {
   readonly threadId: ThreadId;
   readonly expectedTokens?: ReadonlyArray<CommandId>;
   readonly resume?: boolean;
   readonly humanOverride?: boolean;
   readonly admittedHumanRunId?: RunId;
+  readonly limitRecoveryRequestId?: CommandId;
 }): ForkCommitPlan {
   return {
     guards: [
@@ -167,7 +180,7 @@ export function retirementAdmission(input: {
             threadId: input.threadId,
             kind: "state_conflict",
           });
-        if (state.retired && !input.resume)
+        if (state.retired && !input.resume && !armedAfterStop(thread, input.limitRecoveryRequestId))
           return yield* new ForkCommitGuardRejected({ threadId: input.threadId, kind: "retired" });
       }),
     ],
