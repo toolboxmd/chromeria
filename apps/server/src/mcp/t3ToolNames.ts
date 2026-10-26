@@ -11,7 +11,7 @@ import { IssuesToolkit } from "./toolkits/issues/tools.ts";
 import { DeviceToolkit } from "./toolkits/device/tools.ts";
 import { HtmlToolkit } from "./toolkits/html/tools.ts";
 import { WebResearchToolkit } from "./toolkits/webResearch/tools.ts";
-import { PreviewToolkit } from "./toolkits/preview/tools.ts";
+import { PreviewToolkit, PreviewWatchToolkit } from "./toolkits/preview/tools.ts";
 import { SpectrumToolkit } from "../spectrum/mcpToolkit.ts";
 
 const toolNames = new Set([
@@ -29,6 +29,7 @@ const toolNames = new Set([
   ...Object.keys(HtmlToolkit.tools),
   ...Object.keys(WebResearchToolkit.tools),
   ...Object.keys(PreviewToolkit.tools),
+  ...Object.keys(PreviewWatchToolkit.tools),
   ...Object.keys(SpectrumToolkit.tools),
 ]);
 

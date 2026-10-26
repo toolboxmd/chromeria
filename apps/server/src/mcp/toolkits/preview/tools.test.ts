@@ -2,7 +2,7 @@ import { expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 import { Tool } from "effect/ai";
 
-import { PreviewToolkit } from "./tools.ts";
+import { PreviewToolkit, PreviewWatchToolkit } from "./tools.ts";
 
 const schemaHasMultipleAllOfDescriptions = (schema: unknown): boolean => {
   if (!schema || typeof schema !== "object") return false;
@@ -18,7 +18,7 @@ const schemaHasMultipleAllOfDescriptions = (schema: unknown): boolean => {
 };
 
 it("exports provider-compatible object schemas", () => {
-  for (const tool of Object.values(PreviewToolkit.tools)) {
+  for (const tool of Object.values({ ...PreviewToolkit.tools, ...PreviewWatchToolkit.tools })) {
     const schema = Tool.getJsonSchema(tool) as {
       readonly type?: unknown;
       readonly properties?: Readonly<Record<string, unknown>>;

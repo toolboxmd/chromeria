@@ -16,12 +16,15 @@ const Target = Schema.Struct({
   environmentId: Schema.optionalKey(Schema.String),
   contextThreadId: Schema.optionalKey(Schema.String),
   action: Schema.optionalKey(Schema.String),
+  watchId: Schema.optionalKey(Schema.String),
+  epoch: Schema.optionalKey(Schema.String),
 });
 const decodeTarget = Schema.decodeUnknownOption(Target);
 const operations: Readonly<Record<string, AuthMcpOperation>> = {
   t3_thread_launch: "launch",
   t3_thread_send: "send",
   t3_thread_read: "read",
+  preview_watch_read: "read",
   t3_thread_wait: "read",
   t3_project_read: "read",
   orchestrator_capabilities: "read",
@@ -51,6 +54,11 @@ export const checkOutsideGrant = Effect.fn("outsideGrant.checkOutsideGrant")(fun
   if (target.environmentId !== undefined || target.contextThreadId !== undefined)
     return yield* denied();
   if (tool === "t3_thread_organize" && target.action !== "settle") return yield* denied();
+  if (
+    tool === "preview_watch_read" &&
+    (limits.projectId === undefined || !target.watchId || !target.epoch)
+  )
+    return yield* denied();
   if (limits.projectId === undefined || tool === "orchestrator_capabilities") return;
   if (tool === "t3_thread_launch" || tool === "t3_project_read") {
     if (target.projectId !== limits.projectId) return yield* denied();

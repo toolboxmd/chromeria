@@ -2,6 +2,7 @@
 
 import {
   type BrowserRecordingFrameRate,
+  PreviewWatchError,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   type PreviewAutomationClickInput,
   type PreviewAutomationConsoleEntry,
@@ -18,6 +19,7 @@ import {
   type PreviewAutomationUploadInput,
   type PreviewAutomationWaitForInput,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import { constVoid } from "effect/Function";
 import * as Schema from "effect/Schema";
 import type { CDPSession, ConsoleMessage, Frame, Locator, Page } from "playwright-core";
@@ -44,10 +46,12 @@ export class ServerBrowserOperationError extends Schema.TaggedError<ServerBrowse
 
 const isServerBrowserOperationError = Schema.is(ServerBrowserOperationError);
 
+const isWatchError = Schema.is(PreviewWatchError);
 export const toOperationError = (
   cause: unknown,
   timeoutMs?: number,
 ): ServerBrowserOperationError => {
+  if (isWatchError(cause)) return new ServerBrowserOperationError({ tag: "PreviewWatchError", message: cause.message, detail: { reason: cause.reason } });
   if (isBrowserControlInterrupted(cause))
     return new ServerBrowserOperationError({
       tag: "PreviewAutomationControlInterruptedError",

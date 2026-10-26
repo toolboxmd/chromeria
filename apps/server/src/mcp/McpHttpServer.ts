@@ -93,6 +93,8 @@ import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import * as OrchestratorHandlers from "./toolkits/orchestrator/handlers.ts";
 import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
+import * as PreviewWatchHandlers from "./toolkits/preview/watchHandlers.ts";
+import { PreviewWatchToolkit } from "./toolkits/preview/tools.ts";
 import * as PreviewHandlers from "./toolkits/preview/handlers.ts";
 import {
   PreviewSnapshotTool,
@@ -1794,6 +1796,7 @@ export const layerPreviewToolkit = Layer.mergeAll(
   layerPreviewViewerAuthorization,
   layerSavedPreviewAuthorization,
   layerPreviewStandardToolkitRegistration,
+  toolkitRegistration(PreviewWatchToolkit, PreviewWatchHandlers.layer),
   layerPreviewSnapshotRegistration,
 );
 
