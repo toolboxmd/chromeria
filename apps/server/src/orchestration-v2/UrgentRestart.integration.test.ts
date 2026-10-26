@@ -1801,10 +1801,13 @@ const codexIncompleteStop = (
               .providerTurns[0]?.status,
             "running",
           );
+          // A failed root settles at once while its children continue (upstream #21366).
           assert.isFalse(
             boundary.nativeEvents.some(
               (event) => event.type === "turn.terminal" && event.providerTurnId === oldTurn.id,
-            ) && rootEnd !== "completed",
+            ) &&
+              rootEnd !== "completed" &&
+              rootEnd !== "failed",
           );
 
           if (finish === "stop-before-retry") {

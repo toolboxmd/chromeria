@@ -1227,6 +1227,8 @@ interface DeferredCodexRootTerminal {
   readonly event: CodexRootTerminalEvent;
   /** A governed root's native end, withheld together with its terminal. */
   readonly providerTurn?: OrchestrationV2ProviderTurn;
+  /** Fork: a failed root already settled; the entry keeps its lineage reachable for Stop. */
+  readonly terminalEmitted?: true;
 }
 
 /** The native cohort an explicit cut-in has not yet confirmed stopped. */
@@ -6068,7 +6070,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             // Failed roots leave native children working and must settle without them.
             // Interrupted roots wait for descendants because Stop interrupts the whole lineage.
             if (event.status === "failed" && hasActiveDescendants) {
-              yield* emitRootTerminal(input.context, { ...event, childTurnsContinue: true });
+              const settled = { ...event, childTurnsContinue: true as const };
+              yield* Ref.update(deferredRootTerminals, (current) =>
+                new Map(current).set(input.nativeTurnId, {
+                  context: input.context,
+                  event: settled,
+                  terminalEmitted: true,
+                }),
+              );
+              yield* emitRootTerminal(input.context, settled);
               return;
             }
             if (event.status !== "completed" && hasActiveDescendants) {
@@ -6209,6 +6219,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             });
             for (const ready of readyEvents) {
               yield* dropCommandTracking(ready.context.nativeTurnId);
+              if (ready.terminalEmitted === true) continue;
               if (ready.providerTurn !== undefined)
                 yield* emitProviderEvent({
                   type: "provider_turn.updated",

@@ -39,6 +39,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
@@ -7022,18 +7023,22 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         assert.isNull((yield* orchestrator.getThreadProjection(threadId)).thread.snoozedUntil);
       }
       assert.isNull(limitRecoveryCommand(armedShell, true, DateTime.toEpochMillis(now)));
-      yield* orchestrator.dispatch({
-        type: "message.dispatch",
-        commandId: CommandId.make(`recovery:early:${scenario}`),
-        messageId: MessageId.make(`recovery:early:${scenario}`),
-        threadId,
-        usageLimitContinuationOfRunId: run.id,
-        text: "Continue where you left off.",
-        attachments: [],
-        dispatchMode: { type: "start_immediately" },
-        createdBy: "user",
-        creationSource: "server",
-      });
+      const early = yield* Effect.exit(
+        orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`recovery:early:${scenario}`),
+          messageId: MessageId.make(`recovery:early:${scenario}`),
+          threadId,
+          usageLimitContinuationOfRunId: run.id,
+          text: "Continue where you left off.",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "server",
+        }),
+      );
+      // Fork: a Stopped thread refuses any continuation but the one its user re-armed.
+      assert.equal(Exit.isFailure(early), stopBeforeArm);
       assert.lengthOf(
         (yield* orchestrator.getThreadProjection(threadId)).runs,
         scenario === "queued-resume" ? 2 : 1,
@@ -7161,8 +7166,11 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
       }
       const before = yield* orchestrator.getThreadProjection(threadId);
       if (resume !== null) {
-        yield* orchestrator.dispatch(resume);
-        yield* orchestrator.dispatch(resume);
+        // Fork: Stop leaves the earlier arm stale, so its continuation is refused, not run.
+        for (const attempt of [resume, resume]) {
+          const exit = yield* Effect.exit(orchestrator.dispatch(attempt));
+          assert.equal(Exit.isFailure(exit), scenario === "stop");
+        }
       }
       const after = yield* orchestrator.getThreadProjection(threadId);
       assert.lengthOf(
@@ -7207,7 +7215,12 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         const freshResume = limitRecoveryCommand(rearmed, true, DateTime.toEpochMillis(sweep.now));
         assert.isNotNull(freshResume);
         yield* orchestrator.dispatch(freshResume!);
-        assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runs, 2);
+        const resumedAfterStop = yield* orchestrator.getThreadProjection(threadId);
+        assert.lengthOf(resumedAfterStop.runs, 2);
+        assert.include(
+          resumedAfterStop.thread.forkResumedRetirements ?? [],
+          CommandId.make(`recovery:stop:${scenario}`),
+        );
       }
       if (scenario === "queued-resume") {
         const held = after.runs[1]!;

@@ -491,9 +491,14 @@ const consumeCompletion = (request: ProviderContinuationRequests.ProviderContinu
     });
   });
 
-// A held completion is pending visible work, not a lost result. Only the
-// ordinary queue.resume command releases it; replay cannot start it twice.
-const resumeHeldCompletion = (threadId: ThreadId, messageId: MessageId) =>
+// A parked completion is pending visible work, not a lost result. A user's
+// message releases a Stop hold; a restart hold waits for queue.resume. Replay
+// cannot start the wake twice.
+const resumeHeldCompletion = (
+  threadId: ThreadId,
+  messageId: MessageId,
+  hold: "released-by-message" | "held-until-resume",
+) =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const before = yield* orchestrator.getThreadProjection(threadId);
@@ -501,7 +506,7 @@ const resumeHeldCompletion = (threadId: ThreadId, messageId: MessageId) =>
       (run) => run.userMessageId === messageId && run.status === "queued",
     )!;
     assert.isDefined(wake);
-    assert.isTrue(wake.queueHeld);
+    assert.equal(wake.queueHeld === true, hold === "held-until-resume");
     assert.isTrue(
       before.runs.some(
         (run) =>
@@ -509,16 +514,18 @@ const resumeHeldCompletion = (threadId: ThreadId, messageId: MessageId) =>
           run.delegatedCompletion.delivery.taskIds.length > 0,
       ),
     );
-    yield* orchestrator.resumeQueuedRuns;
-    assert.equal(
-      (yield* orchestrator.getThreadProjection(threadId)).runs.find((run) => run.id === wake.id)!
-        .status,
-      "queued",
-    );
     const sql = yield* SqlClient.SqlClient;
     const starts = () =>
       sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE effect_type = 'provider-turn.start' AND json_extract(payload_json, '$.runId') = ${wake.id} AND status IN ('pending', 'running')`;
-    assert.lengthOf(yield* starts(), 0);
+    yield* orchestrator.resumeQueuedRuns;
+    if (hold === "held-until-resume") {
+      assert.equal(
+        (yield* orchestrator.getThreadProjection(threadId)).runs.find((run) => run.id === wake.id)!
+          .status,
+        "queued",
+      );
+      assert.lengthOf(yield* starts(), 0);
+    }
     const command = {
       type: "queue.resume" as const,
       threadId,
@@ -526,6 +533,7 @@ const resumeHeldCompletion = (threadId: ThreadId, messageId: MessageId) =>
     };
     yield* orchestrator.dispatch(command);
     yield* orchestrator.dispatch(command);
+    yield* orchestrator.resumeQueuedRuns;
     const after = yield* orchestrator.getThreadProjection(threadId);
     assert.lengthOf(
       after.runs.filter((run) => run.userMessageId === messageId && run.status === "starting"),
@@ -580,7 +588,8 @@ it.effect.each(["queued", "starting"] as const)(
           (run) => run.userMessageId === MessageId.make(`message:${parentId}:resume unread result`),
         )!;
         yield* completeRunWithoutProvider(parentId, resumeRun.id, `resume-finished-${phase}`);
-        if (phase === "queued") yield* resumeHeldCompletion(parentId, pending!.messageId);
+        if (phase === "queued")
+          yield* resumeHeldCompletion(parentId, pending!.messageId, "released-by-message");
         else yield* orchestrator.resumeQueuedRuns;
         const scheduled = yield* orchestrator.getThreadProjection(parentId);
         assert.equal(
@@ -651,7 +660,11 @@ it.effect("retries the same unread mailbox identity when finalization follows re
         (run) => run.userMessageId === MessageId.make(`message:${parentId}:resume unread result`),
       )!;
       yield* completeRunWithoutProvider(parentId, resumeRun.id, "late-resume-finished");
-      yield* resumeHeldCompletion(parentId, successor.delegatedCompletion!.messageId);
+      yield* resumeHeldCompletion(
+        parentId,
+        successor.delegatedCompletion!.messageId,
+        "released-by-message",
+      );
       const scheduled = yield* orchestrator.getThreadProjection(parentId);
       assert.equal(
         scheduled.runs.find(
@@ -987,7 +1000,7 @@ it.effect.each(["before-stop", "after-stop", "after-resume"] as const)(
             },
           ],
         });
-        yield* resumeHeldCompletion(parentId, delivery.messageId);
+        yield* resumeHeldCompletion(parentId, delivery.messageId, "released-by-message");
         const scheduled = yield* orchestrator.getThreadProjection(parentId);
         assert.equal(
           scheduled.runs.find((run) => run.userMessageId === delivery.messageId)?.status,
@@ -1178,7 +1191,8 @@ it.effect.each([
           status: "running",
         },
       });
-      const runAtStart = child.runs[0]!;
+      // Fork: the delegate stamps the original task; a follow-up turn's snapshot does not carry it.
+      const { delegatedTaskId: _originalTask, ...runAtStart } = child.runs[0]!;
       const childRunStatus =
         childState === "running" || childState === "queued" || childState === "waiting"
           ? childState
@@ -1355,9 +1369,10 @@ it.effect.each([
       assert.equal(after.subagents.find((task) => task.id === taskId)?.status, expected);
       assert.equal(after.nodes.find((node) => node.id === taskId)?.status, expected);
       assert.equal(after.turnItems.find((item) => item.id === itemId)?.status, expected);
+      // Fork: Stop parks a live task's completion until resume instead of disposing it.
       assert.equal(
         after.subagents.find((task) => task.id === taskId)?.completionDelivery?.state,
-        type === "subagent.stop" && expected === "running" ? undefined : "disposed",
+        expected === "running" ? undefined : "disposed",
       );
       assert.equal(
         after.subagents.find((task) => task.id === original.id)?.result,
@@ -1534,14 +1549,22 @@ it.effect("a repeated Stop that changes nothing still stops the delegated tasks"
       threadId: parentThreadId,
     });
 
-    // The first Stop already disposed the delivery and ended the watch, so this one writes no
-    // events, like Stop on a thread an older server stopped without stopping its children.
+    // The first Stop already disposed the delivery and ended the watch, like Stop on a thread an
+    // older server stopped without stopping its children. Fork: each Stop still records a fresh
+    // retirement token so descendants resumed from the earlier one stop again.
     const again = yield* orchestrator.dispatch({
       type: "thread.stop",
       commandId: CommandId.make("stop-again:second"),
       threadId: parentThreadId,
     });
-    assert.lengthOf(again.storedEvents, 0);
+    assert.deepEqual(
+      again.storedEvents.map(({ event }) =>
+        event.type === "thread.metadata-updated"
+          ? String(event.payload.forkRetirement?.token)
+          : event.type,
+      ),
+      ["stop-again:second"],
+    );
     const walks = yield* sql<{ readonly command_id: string }>`
       SELECT command_id FROM orchestration_v2_effect_outbox
       WHERE effect_type = 'delegated-tasks.stop'
@@ -2767,7 +2790,11 @@ it.effect.each(["before settlement", "after reservation", "after queue"] as cons
           (run) => run.userMessageId === MessageId.make(`message:${parentId}:resume unread result`),
         )!;
         yield* completeRunWithoutProvider(parentId, resumeRun.id, "late-resume-finished");
-        yield* resumeHeldCompletion(parentId, successor.delegatedCompletion!.messageId);
+        yield* resumeHeldCompletion(
+          parentId,
+          successor.delegatedCompletion!.messageId,
+          "released-by-message",
+        );
         const scheduled = yield* orchestrator.getThreadProjection(parentId);
         assert.equal(
           scheduled.runs.find(
@@ -3001,7 +3028,11 @@ it.effect("a queued completion survives startup held until queue.resume", () =>
         yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE effect_type = 'provider-turn.start' AND json_extract(payload_json, '$.runId') = ${wake.id} AND status IN ('pending', 'running')`;
       assert.lengthOf(startEffects, 0);
       assert.isTrue(wake.queueHeld);
-      yield* resumeHeldCompletion(parentId, successor.delegatedCompletion!.messageId);
+      yield* resumeHeldCompletion(
+        parentId,
+        successor.delegatedCompletion!.messageId,
+        "held-until-resume",
+      );
       const released = yield* orchestrator.getThreadProjection(parentId);
       assert.equal(
         released.runs.find((run) => run.userMessageId === successor.delegatedCompletion!.messageId)

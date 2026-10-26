@@ -161,6 +161,7 @@ import {
   type SteeringRequester,
 } from "./SteeringInterruption.ts";
 import {
+  armedAfterStop,
   explicitMessage,
   humanMessage,
   propagatedStopAdmission,
@@ -15010,7 +15011,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ),
         )
       : undefined;
-    const resume = command.type === "message.dispatch" && explicitMessage(command);
+    // Fork: a usage-limit continuation the user re-armed after Stop resumes that thread.
+    const limitRecoveryRequestId =
+      command.type === "message.dispatch" && command.usageLimitContinuationOfRunId !== undefined
+        ? command.usageLimitRecoveryRequestId
+        : undefined;
+    const armedContinuation =
+      state?.retired === true &&
+      limitRecoveryRequestId !== undefined &&
+      armedAfterStop(
+        yield* projectionStore
+          .getThread(admissionThreadId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new OrchestratorProjectionError({ threadId: admissionThreadId, cause }),
+            ),
+          ),
+        limitRecoveryRequestId,
+      );
+    const explicitResume = command.type === "message.dispatch" && explicitMessage(command);
+    const resume = explicitResume || armedContinuation;
     const humanOverride = command.type === "message.dispatch" && humanMessage(command);
     const retirementPlan =
       state === undefined
@@ -15018,8 +15038,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         : retirementAdmission({
             threadId: admissionThreadId,
             expectedTokens: state.tokens,
-            resume,
+            resume: explicitResume,
             humanOverride,
+            ...(limitRecoveryRequestId === undefined ? {} : { limitRecoveryRequestId }),
             ...(command.type === "prepared-run.release"
               ? { admittedHumanRunId: command.runId }
               : {}),
@@ -15357,7 +15378,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
     }
-    if (resume && state?.retired) {
+    if (command.type === "message.dispatch" && resume && state?.retired) {
       yield* mapDispatchError(command)(offerDelegatedCompletionDeliveries(command.threadId));
     }
     // The wake takes ancestor locks, so it cannot run under ours.

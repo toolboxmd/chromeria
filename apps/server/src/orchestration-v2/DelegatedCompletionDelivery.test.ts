@@ -1481,35 +1481,18 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
         const active = before.runs.find((run) => run.ordinal === 2)!;
         const queued = before.runs.find((run) => run.ordinal === 3)!;
         assert.equal(queued.status, "queued");
-        const waitForStatus = (afterSequence: number, status: string) =>
-          eventSink.stream({ afterSequence, eventType: "subagent.updated" }).pipe(
-            Stream.filter(
-              (stored) =>
-                stored.event.type === "subagent.updated" &&
-                stored.event.payload.id === queued.delegatedTaskId &&
-                stored.event.payload.status === status,
-            ),
-            Stream.take(1),
-            Stream.runHead,
-          );
-        const afterSequence = yield* eventSink.latestSequence();
+        // Fork: follow-ups continue the original task, which keeps its first result, so Stop
+        // holds the queued follow-up run rather than pausing a separate card.
+        assert.equal(active.delegatedTaskId, child.taskId);
+        assert.equal(queued.delegatedTaskId, child.taskId);
+        const original = (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
+          (row) => row.id === child.taskId,
+        )!;
         yield* orchestrator.dispatch({
           type: "thread.stop",
           threadId: child.childThreadId,
           commandId: CommandId.make("command:held-followup:stop"),
         });
-        yield* waitForStatus(afterSequence, "idle");
-        const paused = yield* orchestrator.getThreadProjection(parentThreadId);
-        const task = paused.subagents.find((row) => row.id === queued.delegatedTaskId)!;
-        assert.equal(task.status, "idle");
-        assert.isNull(task.result);
-        assert.equal(paused.nodes.find((row) => row.id === task.id)?.status, "idle");
-        assert.equal(
-          paused.turnItems.find((row) => row.type === "subagent" && row.subagentId === task.id)
-            ?.status,
-          "idle",
-        );
-        const endedSequence = yield* eventSink.latestSequence();
         yield* eventSink.write({
           events: [
             {
@@ -1522,37 +1505,29 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
             },
           ],
         });
-        const activeTask = (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
-          (row) => row.id === active.delegatedTaskId,
+        const stopped = yield* orchestrator.getThreadProjection(child.childThreadId);
+        assert.isTrue(stopped.runs.find((run) => run.id === queued.id)?.queueHeld);
+        const paused = (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
+          (row) => row.id === child.taskId,
         )!;
-        if (activeTask.result === null) {
-          yield* eventSink
-            .stream({ afterSequence: endedSequence, eventType: "subagent.updated" })
-            .pipe(
-              Stream.filter(
-                (stored) =>
-                  stored.event.type === "subagent.updated" &&
-                  stored.event.payload.id === active.delegatedTaskId &&
-                  stored.event.payload.status === "interrupted",
-              ),
-              Stream.take(1),
-              Stream.runHead,
-            );
-        }
-        const shell = (yield* orchestrator.getShellSnapshot()).threads.find(
-          (row) => row.id === parentThreadId,
-        )!;
-        assert.isFalse((shell.pendingBackgroundTasks ?? []).some((row) => row.taskId === task.id));
-        const resumeSequence = yield* eventSink.latestSequence();
+        assert.equal(paused.status, original.status);
+        assert.equal(paused.result, original.result);
+        // Fork: an explicit message lifts the durable Stop; queue.resume then releases the hold.
+        yield* send("lift-stop");
         yield* orchestrator.dispatch({
           type: "queue.resume",
           threadId: child.childThreadId,
           commandId: CommandId.make("command:held-followup:resume"),
         });
-        yield* waitForStatus(resumeSequence, "running");
-        const resumed = yield* orchestrator.getThreadProjection(parentThreadId);
-        assert.equal(resumed.subagents.find((row) => row.id === task.id)?.status, "running");
-        assert.isNull(resumed.subagents.find((row) => row.id === task.id)?.result);
+        const released = (yield* orchestrator.getThreadProjection(child.childThreadId)).runs.find(
+          (run) => run.id === queued.id,
+        )!;
+        assert.isNotTrue(released.queueHeld);
+        assert.equal(released.delegatedTaskId, child.taskId);
+        const resumed = (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
+          (row) => row.id === child.taskId,
+        )!;
+        assert.equal(resumed.result, original.result);
       }),
     );
 
@@ -1635,7 +1610,11 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
         const run = (yield* orchestrator.getThreadProjection(child.childThreadId)).runs.find(
           (row) => row.userMessageId === wakeMessageId,
         )!;
-        assert.isDefined(run.delegatedTaskId);
+        // Fork: a native follow-up continues the original task.
+        assert.equal(run.delegatedTaskId, child.taskId);
+        const original = (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
+          (task) => task.id === child.taskId,
+        )!;
         yield* eventSink.write({
           commandId: reconcileCommandId("background-wake-finished"),
           events: [
@@ -1671,11 +1650,19 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
           ],
         });
         yield* orchestrator.recoverDelegatedTasks;
-        const followup = (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
-          (task) => task.id === run.delegatedTaskId,
-        )!;
+        const finished = yield* orchestrator.getThreadProjection(parentThreadId);
+        const followup = finished.subagents.find((task) => task.id === run.delegatedTaskId)!;
         assert.equal(followup.status, "completed");
-        assert.equal(followup.result, "The background command finished cleanly.");
+        // The task keeps its first result; the wake's result travels as its own transfer.
+        assert.equal(followup.result, original.result);
+        assert.isTrue(
+          finished.contextTransfers.some(
+            (transfer) =>
+              transfer.type === "subagent_result" &&
+              transfer.sourceThreadId === child.childThreadId &&
+              transfer.sourcePoint.runId === run.id,
+          ),
+        );
         assert.equal(followup.completionDelivery?.state, "claimed");
         let wake = yield* requests.take;
         while (
