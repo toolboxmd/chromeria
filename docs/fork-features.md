@@ -332,7 +332,13 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "packages/source-control-github/src/server/pullRequestBatches.graphql",
     "packages/source-control-github/src/server/pullRequestBatches.graphql.ts",
     "packages/source-control-github/src/server/pullRequestListings.graphql",
-    "packages/source-control-github/src/server/pullRequestListings.graphql.ts"
+    "packages/source-control-github/src/server/pullRequestListings.graphql.ts",
+    "apps/web/src/components/device/DeviceSetup.test.ts",
+    "apps/web/src/components/device/DeviceSetup.tsx",
+    "packages/ssh/src/tunnel.test.ts",
+    "apps/server/src/device/DeviceService.ts",
+    "apps/web/src/components/device/DevicePanel.tsx",
+    "packages/contracts/src/device.ts"
   ],
   "sharedFiles": [],
   "keywords": [
@@ -571,7 +577,9 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/server/src/serverSettings.test.ts",
     "packages/contracts/src/settings.ts",
     "apps/server/src/persistence/Migrations/063_DropUnusedV1Projections.ts",
-    "apps/server/src/persistence/Migrations/063_DropUnusedV1Projections.test.ts"
+    "apps/server/src/persistence/Migrations/063_DropUnusedV1Projections.test.ts",
+    "apps/server/src/serverRuntimeStartup.test.ts",
+    "apps/server/src/ws.test.ts"
   ],
   "sharedFiles": [],
   "keywords": [
@@ -641,7 +649,9 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "packages/contracts/src/rpc.ts",
     "packages/source-control-github/package.json",
     "apps/server/src/sourceControl/builtInDrivers.ts",
-    "apps/web/src/components/chat/RightPanelSurfaceContent.tsx"
+    "apps/web/src/components/chat/RightPanelSurfaceContent.tsx",
+    "apps/web/src/components/pullRequest/PullRequestsColumn.tsx",
+    "apps/web/src/components/pullRequest/usePullRequestListView.ts"
   ],
   "sharedFiles": [
     "apps/server/src/server.ts",
@@ -891,7 +901,10 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/web/test/environmentHttpTest.ts",
     "docs/README.md",
     "packages/contracts/src/auth.ts",
-    "packages/contracts/src/environmentHttp.ts"
+    "packages/contracts/src/environmentHttp.ts",
+    "apps/web/src/components/settings/AuthorizedClientsSettings.tsx",
+    "apps/web/src/components/sidebar/SidebarDraftBlock.tsx",
+    "apps/web/src/components/sidebar/SidebarThreadRow.tsx"
   ],
   "sharedFiles": [
     "packages/contracts/src/index.ts",
@@ -1516,7 +1529,11 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/web/src/components/chat/ChatComposer.tsx",
     "apps/web/src/session-logic.ts",
     "packages/client-runtime/src/operations/commands.test.ts",
-    "packages/client-runtime/src/operations/commands.ts"
+    "packages/client-runtime/src/operations/commands.ts",
+    "apps/web/src/components/chat/TimelineAssistantRows.tsx",
+    "apps/web/src/components/chat/TimelineUserMessageRow.tsx",
+    "apps/web/src/components/chat/TimelineWorkGroupRows.tsx",
+    "apps/web/src/components/chat/useComposerSend.ts"
   ],
   "sharedFiles": [
     "apps/server/src/observability/RpcInstrumentation.ts",
@@ -1751,7 +1768,8 @@ sources and reasons.
   "newFiles": [],
   "upstreamFiles": [
     "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts",
-    "apps/server/src/relay/AgentAwarenessRelay.test.ts"
+    "apps/server/src/relay/AgentAwarenessRelay.test.ts",
+    "apps/server/src/orchestration-v2/testkit/AcpRegistryReplayFixtures.integration.test.ts"
   ],
   "sharedFiles": [
     "apps/server/src/orchestration-v2/EventSink.ts",
@@ -2080,7 +2098,12 @@ sources and reasons.
     "packages/contracts/src/preview.test.ts",
     "packages/contracts/src/preview.ts",
     "packages/shared/src/toolOutput.test.ts",
-    "packages/shared/src/toolOutput.ts"
+    "packages/shared/src/toolOutput.ts",
+    "apps/server/src/cli/thread.ts",
+    "apps/web/src/components/chat/ThreadActivityBanners.tsx",
+    "apps/web/src/components/chat/TimelineWorkEntryRow.tsx",
+    "apps/web/src/components/chat/timelineRowContext.ts",
+    "apps/web/src/components/chat/useThreadLifecycle.tsx"
   ],
   "sharedFiles": [
     "vite.config.ts",
@@ -2097,9 +2120,6 @@ sources and reasons.
     "apps/server/src/spectrum/state.ts",
     "apps/server/src/spectrum/store.ts",
     "packages/client-runtime/src/state/threadDetail.ts",
-    "apps/server/src/device/DeviceService.ts",
-    "apps/web/src/components/device/DevicePanel.tsx",
-    "packages/contracts/src/device.ts",
     "packages/ssh/src/tunnel.test.ts",
     "apps/mobile/src/features/threads/ThreadDetailScreen.tsx",
     "packages/client-runtime/src/state/models.ts",
@@ -2183,7 +2203,10 @@ sources and reasons.
     "apps/server/src/mcp/PreviewAutomationBroker.ts",
     "apps/server/src/mcp/toolkits/preview/handlers.ts",
     "apps/server/src/preview/ServerBrowserPage.ts",
-    "packages/contracts/src/previewAutomation.ts"
+    "packages/contracts/src/previewAutomation.ts",
+    "apps/server/src/device/DeviceService.ts",
+    "apps/web/src/components/device/DevicePanel.tsx",
+    "packages/contracts/src/device.ts"
   ],
   "keywords": [
     "peer_environment_links",
@@ -2352,7 +2375,8 @@ sources and reasons.
     "packages/provider-opencode/src/server/OpenCodeRuntime.ts",
     "packages/provider-opencode/src/server/adapter.test.ts",
     "packages/provider-opencode/src/server/adapter.ts",
-    "packages/provider-opencode/src/server/driver.ts"
+    "packages/provider-opencode/src/server/driver.ts",
+    "apps/server/src/scheduledTasks/ScheduledTaskService.interval.test.ts"
   ],
   "sharedFiles": [
     "GLOSSARY.md",
@@ -2469,7 +2493,9 @@ sources and reasons.
     "apps/web/src/components/Sidebar.drag.test.ts",
     "apps/web/src/components/Sidebar.drag.ts",
     "apps/web/src/components/Sidebar.logic.test.ts",
-    "apps/web/src/components/Sidebar.logic.ts"
+    "apps/web/src/components/Sidebar.logic.ts",
+    "apps/mobile/src/features/threads/useThreadListV2.ts",
+    "apps/web/src/components/sidebar/SidebarListMarkers.tsx"
   ],
   "sharedFiles": ["apps/web/src/components/Sidebar.tsx"],
   "keywords": ["noProjectShelfExpanded", "no-project-header", "No project"]
@@ -2490,7 +2516,8 @@ sources and reasons.
   "newFiles": [],
   "upstreamFiles": [
     "apps/server/src/cloud/CloudLink.lifecycle.test.ts",
-    "apps/server/src/cloud/CloudLink.ts"
+    "apps/server/src/cloud/CloudLink.ts",
+    "docs/user/t3-connect-troubleshooting.md"
   ],
   "sharedFiles": ["packages/contracts/src/environmentHttp.ts"],
   "keywords": ["cloud-link-revoked", "dropRevokedCloudLink", "linkRevoked"]
@@ -2534,7 +2561,9 @@ sources and reasons.
     "packages/client-runtime/src/connection/registry.ts",
     "packages/client-runtime/src/relay/discovery.test.ts",
     "packages/client-runtime/src/relay/discovery.ts",
-    "packages/client-runtime/src/state/threads-atoms.test.ts"
+    "packages/client-runtime/src/state/threads-atoms.test.ts",
+    "apps/web/src/components/settings/AddEnvironmentDialog.tsx",
+    "packages/client-runtime/src/relay/errorPresentation.ts"
   ],
   "sharedFiles": [
     "docs/user/remote-access.md",
