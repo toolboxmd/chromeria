@@ -81,15 +81,15 @@ An authorized agent can call `preview_watch_start` with an existing owned server
 runs once in the main page and returns a synchronous cleanup function. It can
 listen to page events, observe elements or subscribe to an accessible application
 store. Chromeria does not poll, refresh the page or start a model. The caller
-emits its own initial baseline, for example:
+emits its own initial baseline. For example, pass this string as `subscription`:
 
 ```js
-(emit) => {
+const subscription = `(emit) => {
   const listener = () => emit({ selected: window.appStore.selected });
   const unsubscribe = window.appStore.subscribe(listener);
   listener();
   return unsubscribe;
-};
+}`;
 ```
 
 Save the returned `watchId` and `epoch`. The start `cursor` is always zero, before
