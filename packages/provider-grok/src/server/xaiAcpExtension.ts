@@ -114,6 +114,8 @@ export interface XAiAcpSubagentEndNotice {
 }
 
 const XAI_UUID_RE = "[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}";
+// Fork: Grok names a command it backgrounds after its timeout `call-<uuid>-<n>`.
+const XAI_TASK_ID_RE = `(?:${XAI_UUID_RE}|call-${XAI_UUID_RE}-\\d+)`;
 
 function unknownRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -314,6 +316,23 @@ export function extractXAiBackgroundTaskCompletion(toolCall: AcpToolCallState): 
 }> {
   const rawInput = unknownRecord(toolCall.data.rawInput);
   if (!isXAiGetSubagentOutputTool(toolCall, rawInput)) return [];
+  // Fork: a poll of several tasks reports each one in `MultiResult.results`.
+  const multiResults = unknownRecord(unknownRecord(toolCall.data.rawOutput)?.MultiResult)?.results;
+  if (Array.isArray(multiResults)) {
+    return multiResults.flatMap((value) => {
+      const result = unknownRecord(value);
+      const taskId = nonEmptyString(result?.task_id) ?? nonEmptyString(result?.taskId);
+      if (result === undefined || taskId === undefined) return [];
+      if (!new RegExp(`^${XAI_TASK_ID_RE}$`, "i").test(taskId)) return [];
+      return [
+        {
+          taskId,
+          status: statusFromGetOutputTool(toolCall, undefined, result),
+          appendOutput: resultFromGetOutputTool(toolCall, undefined, result) ?? "",
+        },
+      ];
+    });
+  }
   const text = xAiToolOutputText(toolCall);
   const status = statusFromGetOutputTool(toolCall, text);
   const appendOutput = resultFromGetOutputTool(toolCall, text) ?? "";
@@ -768,9 +787,8 @@ function resultTaskIdFromGetOutputTool(
 function resultFromGetOutputTool(
   toolCall: AcpToolCallState,
   output: string | undefined,
+  result = getOutputResult(toolCall),
 ): string | null {
-  const rawOutput = unknownRecord(toolCall.data.rawOutput);
-  const result = unknownRecord(rawOutput?.Result) ?? unknownRecord(rawOutput?.result);
   const structured =
     nonEmptyString(result?.output) ??
     nonEmptyString(result?.text) ??
@@ -789,13 +807,17 @@ function resultFromGetOutputTool(
   return body.length > 0 ? body : null;
 }
 
+function getOutputResult(toolCall: AcpToolCallState): Record<string, unknown> | undefined {
+  const rawOutput = unknownRecord(toolCall.data.rawOutput);
+  return unknownRecord(rawOutput?.Result) ?? unknownRecord(rawOutput?.result);
+}
+
 function statusFromGetOutputTool(
   toolCall: AcpToolCallState,
   output: string | undefined,
+  result = getOutputResult(toolCall),
 ): "running" | "completed" | "failed" {
   if (toolCall.status === "failed") return "failed";
-  const rawOutput = unknownRecord(toolCall.data.rawOutput);
-  const result = unknownRecord(rawOutput?.Result) ?? unknownRecord(rawOutput?.result);
   const structuredStatus = nonEmptyString(result?.status)?.toLowerCase();
   if (structuredStatus === "completed" || structuredStatus === "success") return "completed";
   if (structuredStatus === "failed" || structuredStatus === "error") return "failed";

@@ -4135,6 +4135,18 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             // monitor-event chatter cannot resurrect the running set after the
             // task truly ended. A still-running poll keeps the id running.
             yield* applyBackgroundTaskMutationRunning(backgroundCompletion);
+            // Fork: settlement replays a recorded end; an end without output takes the poll's.
+            const recordedEnd = context.backgroundCommands.get(backgroundCompletion.taskId);
+            if (
+              recordedEnd != null &&
+              (recordedEnd.output ?? "").trim().length === 0 &&
+              backgroundCompletion.status !== "running" &&
+              backgroundCompletion.appendOutput.length > 0
+            )
+              context.backgroundCommands.set(backgroundCompletion.taskId, {
+                ...recordedEnd,
+                output: backgroundCompletion.appendOutput,
+              });
             if (backgroundCompletion.status !== "running") {
               yield* Ref.update(handledBackgroundTaskIdsInActiveTurn, (current) =>
                 new Set(current).add(backgroundCompletion.taskId),
@@ -4638,15 +4650,18 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           const ownsActiveTurn =
             context !== undefined &&
             (record === undefined || context.input.runId === record.identity.runId);
-          // The active turn records an end until its prompt settles, then applies it.
-          if (ownsActiveTurn && (context.finalized || !context.promptSettled)) return;
+          // Fork: an out-of-band end applies at once; endReportedOutOfBand keeps it unhandled.
+          if (ownsActiveTurn && context.finalized) return;
           const toolCallId = context?.toolCallIdsByBackgroundTaskId.get(mutation.taskId);
+          const ownedTool =
+            ownsActiveTurn && toolCallId !== undefined ? context.tools.get(toolCallId) : undefined;
           const tool =
-            record !== undefined
+            ownedTool ??
+            (record !== undefined
               ? backgroundToolState(key, record)
               : toolCallId === undefined
                 ? undefined
-                : context?.tools.get(toolCallId);
+                : context?.tools.get(toolCallId));
           if (tool === undefined) return;
           const status = record?.status ?? toolStatus(tool.status);
           if (
