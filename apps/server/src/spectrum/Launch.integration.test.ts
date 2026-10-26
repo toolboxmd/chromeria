@@ -74,6 +74,7 @@ const registry = Layer.mock(Providers.ProviderRegistry)({
 const prism = Prism.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
+      database,
       registry,
       Settings.layerTest({
         prismRoles: { reviewer: { instructions: "Use the reviewer kit.", models: [selection] } },

@@ -410,6 +410,7 @@ const withParent = <A, E>(
         ),
       );
       const layerTest = McpHttpServer.layerOrchestratorToolkit.pipe(
+        Layer.provide(SqlitePersistence.layerMemory),
         Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
         Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
         Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),

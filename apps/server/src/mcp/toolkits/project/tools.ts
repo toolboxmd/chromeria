@@ -4,6 +4,7 @@ import * as McpRouting from "../../McpRouting.ts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import { ProviderAdapterRegistryV2 } from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
+import * as SqlClient from "effect/sql/SqlClient";
 import { PrismLane, PrismRole } from "@t3tools/contracts";
 import { McpAttachmentInput } from "../attachment/input.ts";
 import {
@@ -183,6 +184,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     ProviderRegistry.ProviderRegistry,
     ProviderAdapterRegistryV2,
     ServerSettings.ServerSettingsService,
+    SqlClient.SqlClient,
     ManagedProjectFolders.ManagedProjectFolders,
     GitVcsDriver.GitVcsDriver,
     FileSystem.FileSystem,

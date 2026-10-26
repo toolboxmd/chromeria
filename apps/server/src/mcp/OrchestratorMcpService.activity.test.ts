@@ -1,3 +1,4 @@
+import * as Database from "../persistence/Sqlite.ts";
 import {
   EnvironmentId,
   NodeId,
@@ -35,6 +36,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 
 const layerOrchestratorService = OrchestratorMcpService.layer.pipe(
+  Layer.provide(Database.layerMemory),
   Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
   Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),

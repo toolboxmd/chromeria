@@ -8,6 +8,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Database from "../persistence/Sqlite.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { buildUnavailableProviderSnapshot } from "../provider/unavailableProviderSnapshot.ts";
 import * as Settings from "../serverSettings.ts";
@@ -17,7 +18,10 @@ const instanceId = ProviderInstanceId.make("codex");
 const projectId = ProjectId.make("project:prism");
 const selection = { instanceId, model: "configured" };
 const registry = (providers: readonly ServerProvider[]) =>
-  Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed(providers) });
+  Layer.mergeAll(
+    Database.layerMemory,
+    Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed(providers) }),
+  );
 const provider = Effect.map(
   buildUnavailableProviderSnapshot({
     driverKind: "codex",

@@ -1,4 +1,5 @@
 import * as DocumentText from "../../provider/DocumentText.ts";
+import * as Database from "../../persistence/Sqlite.ts";
 import * as BareLaunch from "../../orchestration-v2/BareLaunch.ts";
 import * as PrismServerSettings from "../../serverSettings.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
@@ -63,6 +64,7 @@ import * as PeerLinkRequests from "../../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../../peer/PeerLinks.ts";
 
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
+  Layer.provide(Database.layerMemory),
   Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
   Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
   Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),

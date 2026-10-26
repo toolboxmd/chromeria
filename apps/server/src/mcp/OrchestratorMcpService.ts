@@ -114,6 +114,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Result from "effect/Result";
 import * as Layer from "effect/Layer";
+import type * as SqlClient from "effect/sql/SqlClient";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -4394,4 +4395,5 @@ export const layer: Layer.Layer<
   | SecretRequests.SecretRequests
   | ServerSettings.ServerSettingsService
   | RemoteDelegation.RemoteDelegation
+  | SqlClient.SqlClient
 > = Layer.effect(OrchestratorMcpService, make).pipe(Layer.provide(Prism.layer));

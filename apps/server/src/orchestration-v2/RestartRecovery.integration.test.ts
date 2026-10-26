@@ -316,6 +316,7 @@ it.live(
         );
         const services = Layer.mergeAll(
           OrchestratorMcpService.layer.pipe(
+            Layer.provide(SqlitePersistence.layerMemory),
             Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
             Layer.provideMerge(runtime),
             Layer.provide(registry),

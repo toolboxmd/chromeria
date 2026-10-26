@@ -1,3 +1,4 @@
+import * as Database from "../persistence/Sqlite.ts";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -158,7 +159,7 @@ const registrations = Layer.mergeAll(
   McpHttpServer.layerDeviceToolkit,
   McpHttpServer.toolkitRegistration(HtmlPreviewToolkit, HtmlHandlers.layerPreview),
   McpHttpServer.toolkitRegistration(HtmlRenderToolkit, HtmlHandlers.layerRender),
-);
+).pipe(Layer.provide(Database.layerMemory));
 
 type Seen = { operation: string; environmentId: string; threadId?: string; input?: unknown };
 const makeFixture = (realHtml = false) =>

@@ -1,4 +1,5 @@
 import * as DocumentText from "../provider/DocumentText.ts";
+import * as Database from "../persistence/Sqlite.ts";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import { layerLaunchCatalog } from "./PeerLinks.testkit.ts";
 import * as Settings from "../serverSettings.ts";
@@ -276,6 +277,7 @@ const makeLaptop = Effect.gen(function* () {
     Layer.provide(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
     Layer.provideMerge(McpServer.McpServer.layer),
     Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
+    Layer.provide(Database.layerMemory),
     Layer.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({})),
     Layer.provide(
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),

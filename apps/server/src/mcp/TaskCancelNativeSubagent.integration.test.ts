@@ -44,6 +44,7 @@ import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 
 const layerOrchestratorService = OrchestratorMcpService.layer.pipe(
+  Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
   Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
