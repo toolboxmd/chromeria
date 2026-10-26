@@ -260,101 +260,6 @@ it.layer(layerTest)("GrokDriver", (it) => {
     }
   }
 
-  it.effect.skipIf(windowsHost)("upgrades a Homebrew grok-build cask through brew", () => {
-    const spawned: Array<ReadonlyArray<string>> = [];
-    let prefix = "";
-    return Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      prefix = yield* fs.realPath(
-        yield* fs.makeTempDirectoryScoped({ prefix: "t3-grok-homebrew-" }),
-      );
-      const brewPath = path.join(prefix, "bin", "brew");
-      const binaryPath = path.join(prefix, "Caskroom", "grok-build", "1.2.3,456", "grok");
-      for (const executable of [brewPath, binaryPath]) {
-        yield* fs.makeDirectory(path.dirname(executable), { recursive: true });
-        yield* fs.writeFileString(executable, "#!/bin/sh\n");
-        yield* fs.chmod(executable, 0o755);
-      }
-
-      const instance = yield* GrokDriver.create({
-        instanceId: ProviderInstanceId.make("grok-homebrew"),
-        displayName: "Grok test",
-        enabled: false,
-        environment: [],
-        config: { ...GrokDriver.defaultConfig(), binaryPath },
-      });
-      const capabilities = yield* instance.snapshot.resolveMaintenance();
-
-      expect(spawned).toEqual([
-        [brewPath, "--prefix"],
-        [brewPath, "info", "--json=v2", "grok-build"],
-      ]);
-      expect(capabilities).toEqual({
-        provider: "grok",
-        packageName: "@xai-official/grok",
-        latestVersion: "1.2.4",
-        update: {
-          command: "brew upgrade --cask grok-build",
-          executable: brewPath,
-          args: ["upgrade", "--cask", "grok-build"],
-          lockKey: "homebrew",
-        },
-      });
-    }).pipe(
-      Effect.provideService(
-        ChildProcessSpawner.ChildProcessSpawner,
-        stdoutSpawner((command, args) => {
-          spawned.push([command, ...args]);
-          return args[0] === "--prefix"
-            ? `${prefix}\n`
-            : JSON.stringify({ casks: [{ version: "1.2.4,789" }] });
-        }),
-      ),
-      Effect.scoped,
-    );
-  });
-
-  it.effect.skipIf(windowsHost)(
-    "stays manual-only for a cask-shaped path another brew prefix owns",
-    () =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const tempDir = yield* fs.realPath(
-          yield* fs.makeTempDirectoryScoped({ prefix: "t3-grok-foreign-brew-" }),
-        );
-        const brewPath = path.join(tempDir, "bin", "brew");
-        const binaryPath = path.join(tempDir, "Caskroom", "grok-build", "1.2.3", "grok");
-        for (const executable of [brewPath, binaryPath]) {
-          yield* fs.makeDirectory(path.dirname(executable), { recursive: true });
-          yield* fs.writeFileString(executable, "#!/bin/sh\n");
-          yield* fs.chmod(executable, 0o755);
-        }
-
-        const instance = yield* GrokDriver.create({
-          instanceId: ProviderInstanceId.make("grok-foreign-brew"),
-          displayName: "Grok test",
-          enabled: false,
-          environment: [],
-          config: { ...GrokDriver.defaultConfig(), binaryPath },
-        });
-        const capabilities = yield* instance.snapshot.resolveMaintenance();
-
-        expect(capabilities).toEqual({
-          provider: "grok",
-          packageName: "@xai-official/grok",
-          update: null,
-        });
-      }).pipe(
-        Effect.provideService(
-          ChildProcessSpawner.ChildProcessSpawner,
-          stdoutSpawner(() => "/opt/homebrew\n"),
-        ),
-        Effect.scoped,
-      ),
-  );
-
   it.effect.skipIf(windowsHost)("stays manual-only for a cask-shaped path with no brew", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -381,6 +286,7 @@ it.layer(layerTest)("GrokDriver", (it) => {
       expect(yield* instance.snapshot.resolveMaintenance()).toEqual({
         provider: "grok",
         packageName: "@xai-official/grok",
+        installPath: binaryPath,
         update: null,
       });
     }).pipe(

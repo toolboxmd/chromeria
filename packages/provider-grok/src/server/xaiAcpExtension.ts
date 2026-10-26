@@ -368,11 +368,21 @@ export function extractXAiKilledBackgroundTasks(toolCall: AcpToolCallState): Rea
     const id = nonEmptyString(value);
     if (id !== undefined) taskIds.push(id);
   };
-  if (Array.isArray(rawInput?.task_ids)) {
-    for (const entry of rawInput.task_ids) push(entry);
+  // Fork: a multi-task kill names each outcome; only confirmed ends count.
+  const multiResults = unknownRecord(rawOutput?.MultiResult)?.results;
+  if (Array.isArray(multiResults)) {
+    for (const value of multiResults) {
+      const result = unknownRecord(value);
+      const resultOutcome = nonEmptyString(result?.outcome)?.toLowerCase();
+      if (resultOutcome === "killed" || resultOutcome === "already_exited") push(result?.task_id);
+    }
+  } else {
+    if (Array.isArray(rawInput?.task_ids)) {
+      for (const entry of rawInput.task_ids) push(entry);
+    }
+    push(rawInput?.task_id);
+    push(rawInput?.taskId);
   }
-  push(rawInput?.task_id);
-  push(rawInput?.taskId);
   return [...new Set(taskIds)].map((taskId) => ({
     taskId,
     status: "completed" as const,

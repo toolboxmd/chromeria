@@ -173,7 +173,7 @@ it.effect.each(["cookie", "bearer", "cookie-download", "bearer-download"] as con
             ? []
             : [
                 {
-                  url: "https://a.test/api/auth/websocket-ticket",
+                  url: "https://a.test/api/auth/websocket-ticket/media",
                   authorization: "Bearer ISOLATED_A_TOKEN",
                 },
               ],

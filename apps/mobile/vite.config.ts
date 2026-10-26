@@ -31,6 +31,8 @@ const reactTests = [
   "src/features/threads/use-thread-list-now.test.tsx",
   "src/features/home/home-list-options.test.tsx",
   "src/features/connection/ConnectionsNewRouteScreen.test.tsx",
+  // Fork (toolboxmd/chromeria#584).
+  "src/features/browser/BrowserPreviewRouteScreen.test.tsx",
 ];
 
 const sourceRoot = `${normalizePath(NodeURL.fileURLToPath(new URL("./src", import.meta.url)))}/`;

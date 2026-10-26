@@ -111,7 +111,7 @@ describe("No project shelf", () => {
       opens: null,
     }));
     expect(visibleSidebarShelfThreads(searchable, false, null)).toEqual([]);
-    expect(searchSidebarThreads(searchable, "Remote test")).toEqual([searchable[1]]);
+    expect(searchSidebarThreads(searchable, "Remote test").titleMatches).toEqual([searchable[1]]);
   });
 
   it("does not treat the shelf as a lifecycle drop destination or include its rows in active ordering", () => {
@@ -278,13 +278,13 @@ describe("sidebar thread lineage helpers", () => {
     const scope = new Set([`${environmentId}:${projectId}`]);
     expect(filterSidebarV2VisibleThreads(all, scope)).toEqual([ordinary]);
     const searchable = filterSidebarV2VisibleThreads(all, scope, "Remote audit");
-    expect(searchSidebarThreads(searchable, "Remote audit")).toEqual([child]);
+    expect(searchSidebarThreads(searchable, "Remote audit").titleMatches).toEqual([child]);
     expect(
       searchSidebarThreads(
         filterSidebarV2VisibleThreads(all, scope, "contents"),
         "contents",
         new Set([threadSearchMatchKey({ environmentId, threadId: child.id })]),
-      ),
+      ).contentMatches,
     ).toEqual([child]);
     expect(filterSidebarV2VisibleThreads(all, scope, "  ")).toEqual([ordinary]);
     expect(all).toHaveLength(5);
@@ -322,9 +322,9 @@ describe("sidebar thread lineage helpers", () => {
     expect(isSidebarSubagentThread(fork)).toBe(false);
     expect(fork.delegatedFrom).toBe(child.delegatedFrom);
     const searchable = filterSidebarV2VisibleThreads(all, null, "User fork");
-    expect(searchSidebarThreads(searchable, "User fork")).toEqual([fork]);
+    expect(searchSidebarThreads(searchable, "User fork").titleMatches).toEqual([fork]);
     expect(searchable.filter(isSidebarSubagentThread)).toEqual([child]);
-    expect(searchSidebarThreads(searchable, "Remote child")).toEqual([child]);
+    expect(searchSidebarThreads(searchable, "Remote child").titleMatches).toEqual([child]);
     expect(filterSidebarV2VisibleThreads(all, null, " ")).toEqual([fork]);
   });
   it("maps an open subagent to its nearest visible ancestor's sidebar row", () => {
