@@ -33,6 +33,8 @@ layer("066_RepairClientSettlementTimestamps", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations({ toMigrationInclusive: 64 });
+      // Fork: 063 retains legacy projections; 066 must work without them.
+      yield* sql`DROP TABLE IF EXISTS projection_turns`;
       assert.deepEqual(
         yield* sql`SELECT name FROM sqlite_master WHERE name = 'projection_turns'`,
         [],

@@ -8,7 +8,7 @@ profile, or **Incognito**. Each tab belongs to the thread where it was opened.
 In the desktop app's own environment, tabs you open use the app's built-in
 browser. They display natively and use the panel's own logins. Tabs an agent
 opens use the environment's agent browser and appear in the panel as a live
-stream. The agent browser runs pinned Chrome for Testing 154 in new headless
+stream. The agent browser runs pinned Chrome for Testing 156 in new headless
 mode with hardware GPU rendering.
 
 In a thread on another environment, such as a server, tabs stream from that

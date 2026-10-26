@@ -57,28 +57,28 @@ effectIt.effect("hydrates PATH when the desktop handoff is absent", () =>
           Effect.provide(NodeServices.layer),
         );
 
-        effectIt.effect("hydrates PATH when desktop preparation failed", () =>
-          Effect.acquireUseRelease(
-            Effect.sync(() =>
-              vi
-                .spyOn(NodeChildProcess, "execFileSync")
-                .mockReturnValue("__T3CODE_ENV_PATH_START__\n/opt/tools/bin\n__T3CODE_ENV_PATH_END__\n"),
-            ),
-            (probe) =>
-              Effect.gen(function* () {
-                const env: NodeJS.ProcessEnv = { SHELL: "/bin/bash", PATH: "/usr/bin" };
+        assert.equal(probe.mock.calls.length, 1);
+        assert.equal(env.PATH, "/opt/tools/bin:/usr/bin");
+      }),
+    (probe) => Effect.sync(() => probe.mockRestore()),
+  ),
+);
 
-                yield* fixPath({ shellEnvironmentPrepared: false }).pipe(
-                  Effect.provideService(HostProcess.Platform, "linux"),
-                  Effect.provideService(HostProcess.Environment, env),
-                  Effect.provide(NodeServices.layer),
-                );
+effectIt.effect("hydrates PATH when desktop preparation failed", () =>
+  Effect.acquireUseRelease(
+    Effect.sync(() =>
+      vi
+        .spyOn(NodeChildProcess, "execFileSync")
+        .mockReturnValue("__T3CODE_ENV_PATH_START__\n/opt/tools/bin\n__T3CODE_ENV_PATH_END__\n"),
+    ),
+    (probe) =>
+      Effect.gen(function* () {
+        const env: NodeJS.ProcessEnv = { SHELL: "/bin/bash", PATH: "/usr/bin" };
 
-                assert.equal(probe.mock.calls.length, 1);
-                assert.equal(env.PATH, "/opt/tools/bin:/usr/bin");
-              }),
-            (probe) => Effect.sync(() => probe.mockRestore()),
-          ),
+        yield* fixPath({ shellEnvironmentPrepared: false }).pipe(
+          Effect.provideService(HostProcess.Platform, "linux"),
+          Effect.provideService(HostProcess.Environment, env),
+          Effect.provide(NodeServices.layer),
         );
 
         assert.equal(probe.mock.calls.length, 1);

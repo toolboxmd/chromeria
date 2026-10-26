@@ -309,6 +309,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/server/src/forkWsRpc.ts"
   ],
   "upstreamFiles": [
+    "apps/web/src/components/device/DevicePanel.browser.test.tsx",
     ".github/workflows/ci.yml",
     ".github/workflows/pr-size.yml",
     ".github/workflows/pr-vouch.yml",
@@ -578,6 +579,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "packages/contracts/src/settings.ts",
     "apps/server/src/persistence/Migrations/063_DropUnusedV1Projections.ts",
     "apps/server/src/persistence/Migrations/063_DropUnusedV1Projections.test.ts",
+    "apps/server/src/persistence/Migrations/066_RepairClientSettlementTimestamps.test.ts",
     "apps/server/src/serverRuntimeStartup.test.ts",
     "apps/server/src/ws.test.ts"
   ],
@@ -1968,6 +1970,7 @@ sources and reasons.
     "packages/client-runtime/src/state/deviceHubAccess.test.ts"
   ],
   "upstreamFiles": [
+    "apps/web/src/components/CommandPalette.logic.ts",
     "packages/client-runtime/src/device/screenshot.ts",
     "packages/client-runtime/src/device/screenshot.test.ts",
     "apps/web/src/state/entities.ts",
@@ -3207,6 +3210,7 @@ sources and reasons.
     "apps/server/src/preview/ServerCookieMirror.test.ts"
   ],
   "upstreamFiles": [
+    "scripts/lib/cached-tests.ts",
     "apps/server/src/htmlRender/headlessChrome.ts",
     "apps/server/src/preview/PreviewBrowser.test.ts",
     "apps/server/src/preview/PreviewBrowser.ts",

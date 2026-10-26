@@ -694,3 +694,7 @@ packages/client-runtime/src/relay/errorPresentation.ts
 packages/contracts/src/device.ts
 apps/mobile/vite.config.ts
 apps/server/src/provider/CodexDeveloperInstructions.test.ts
+apps/web/src/components/CommandPalette.logic.ts
+apps/web/src/components/device/DevicePanel.browser.test.tsx
+apps/server/src/persistence/Migrations/066_RepairClientSettlementTimestamps.test.ts
+scripts/lib/cached-tests.ts

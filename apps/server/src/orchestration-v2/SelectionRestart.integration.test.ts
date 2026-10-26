@@ -290,6 +290,166 @@ function makeRestartAdapter(
   };
 }
 
+it.live.each(["unchanged", "messageId", "mode", "legacy"] as const)(
+  "replays an accepted restart while replacement startup is held: %s",
+  (changedField) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const cwd = yield* checkpointWorkspace("restart-receipt-replay");
+        const threadId = ThreadId.make("thread:restart-receipt-replay");
+        const projectId = ProjectId.make("project:restart-receipt-replay");
+        const state = yield* Ref.make<RestartAdapterState>({
+          activeTurn: null,
+          opened: [],
+          started: [],
+          closedSessionCount: 0,
+          failedReplacementOpen: false,
+        });
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const database = Persistence.layerMemory;
+        const layer = Layer.mergeAll(
+          ProviderReplayHarness.layerWithRegistry(
+            { name: "restart-receipt-replay" },
+            ProviderAdapterRegistry.layerSingle(
+              makeRestartAdapter(state, pooledCapabilities, initialSelection.instanceId, {
+                entered,
+                release,
+              }),
+            ),
+            { databaseLayer: database },
+          ),
+          CommandReceiptStore.layer.pipe(Layer.provide(database)),
+          database,
+        );
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const threads = yield* ThreadManagement.ThreadManagementService;
+          const sink = yield* EventSink.EventSinkV2;
+          const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+          const outbox = yield* EffectOutbox.EffectOutboxV2;
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make("restart-receipt:create"),
+            threadId,
+            projectId,
+            title: "Receipt replay",
+            modelSelection: initialSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: cwd,
+            createdBy: "user",
+            creationSource: "web",
+          });
+          const running = yield* sink
+            .stream({
+              threadId,
+              afterSequence: yield* sink.latestSequence({ threadId }),
+            })
+            .pipe(
+              Stream.filter(
+                ({ event }) =>
+                  event.type === "provider-turn.updated" && event.payload.status === "running",
+              ),
+              Stream.take(1),
+              Stream.runDrain,
+              Effect.forkScoped,
+            );
+          yield* threads.sendToThread({
+            projectId,
+            threadId,
+            commandId: CommandId.make("restart-receipt:first"),
+            messageId: MessageId.make("restart-receipt:first"),
+            text: "First",
+            attachments: [],
+            mode: "auto",
+            createdBy: "agent",
+            creationSource: "mcp",
+          });
+          yield* Fiber.join(running);
+          yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
+          const input = {
+            projectId,
+            threadId,
+            commandId: CommandId.make("restart-receipt:restart"),
+            messageId: MessageId.make("restart-receipt:restart"),
+            text: "Restart",
+            attachments: [],
+            mode: "restart" as const,
+            createdBy: "agent" as const,
+            creationSource: "mcp" as const,
+          };
+          const accepted = yield* threads.sendToThread(input);
+          assert.equal(accepted.delivery, "restarted");
+          yield* Deferred.await(entered);
+          const before = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(before.runs[0]?.status, "starting");
+          const receipt = yield* receipts.getByCommandId(input.commandId);
+          assert.equal(receipt._tag, "Some");
+          const effects = yield* outbox.listByCommandId(input.commandId);
+          if (changedField === "legacy") {
+            const sql = yield* SqlClient.SqlClient;
+            // Recreate an accepted pre-upgrade event in this private SQLite fixture.
+            const changed = yield* sql`
+              UPDATE orchestration_events
+              SET payload_json = json_remove(payload_json, '$.deliveryIntent')
+              WHERE command_id = ${input.commandId} AND event_type = 'run-attempt.created'
+              RETURNING sequence
+            `;
+            assert.lengthOf(changed, 1);
+          }
+          const originalEvents = yield* sink
+            .readByCommandId({ commandId: input.commandId })
+            .pipe(Stream.runCollect);
+          if (changedField === "legacy") {
+            assert.isTrue(
+              originalEvents.some(
+                ({ event }) =>
+                  event.type === "run-attempt.created" &&
+                  event.payload.deliveryIntent === undefined,
+              ),
+            );
+          } else {
+            assert.deepEqual(originalEvents, accepted.dispatch.storedEvents);
+          }
+          const replay = yield* threads.sendToThread({
+            ...input,
+            ...(changedField === "messageId"
+              ? { messageId: MessageId.make("restart-receipt:changed"), text: "Changed retry" }
+              : changedField === "mode"
+                ? { mode: "auto" as const }
+                : {}),
+          });
+          // The replay records nothing new and reports the first dispatch's sequence and events.
+          assert.equal(replay.dispatch.sequence, accepted.dispatch.sequence);
+          assert.deepEqual(replay.dispatch.storedEvents, originalEvents);
+          // A changed message id names no stored message, so it admits no run.
+          assert.deepEqual(
+            replay.dispatch.admittedRun,
+            changedField === "messageId" ? undefined : accepted.dispatch.admittedRun,
+          );
+          assert.deepEqual(replay.message, accepted.message);
+          assert.equal(replay.delivery, accepted.delivery);
+          assert.equal(replay.run.id, accepted.run.id);
+          const refused = yield* threads
+            .sendToThread({
+              ...input,
+              commandId: CommandId.make("restart-receipt:new"),
+              messageId: MessageId.make("restart-receipt:new"),
+            })
+            .pipe(Effect.flip);
+          assert.instanceOf(refused, ThreadManagement.ThreadManagementNoSteerableRunError);
+          assert.deepEqual(yield* receipts.getByCommandId(input.commandId), receipt);
+          assert.deepEqual(yield* orchestrator.getThreadProjection(threadId), before);
+          assert.deepEqual(yield* outbox.listByCommandId(input.commandId), effects);
+          assert.lengthOf((yield* Ref.get(state)).started, 1);
+          yield* Deferred.succeed(release, undefined);
+        }).pipe(Effect.provide(layer));
+      }),
+    ),
+);
+
 it.live("retries a failed selection restart session open before completing", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -358,166 +518,6 @@ it.live("retries a failed selection restart session open before completing", () 
         if (activeRunId === undefined) {
           return yield* Effect.die("active restart test run is missing");
         }
-
-        it.live.each(["unchanged", "messageId", "mode", "legacy"] as const)(
-          "replays an accepted restart while replacement startup is held: %s",
-          (changedField) =>
-            Effect.scoped(
-              Effect.gen(function* () {
-                const cwd = yield* checkpointWorkspace("restart-receipt-replay");
-                const threadId = ThreadId.make("thread:restart-receipt-replay");
-                const projectId = ProjectId.make("project:restart-receipt-replay");
-                const state = yield* Ref.make<RestartAdapterState>({
-                  activeTurn: null,
-                  opened: [],
-                  started: [],
-                  closedSessionCount: 0,
-                  failedReplacementOpen: false,
-                });
-                const entered = yield* Deferred.make<void>();
-                const release = yield* Deferred.make<void>();
-                const database = Persistence.layerMemory;
-                const layer = Layer.mergeAll(
-                  ProviderReplayHarness.layerWithRegistry(
-                    { name: "restart-receipt-replay" },
-                    ProviderAdapterRegistry.layerSingle(
-                      makeRestartAdapter(state, pooledCapabilities, initialSelection.instanceId, {
-                        entered,
-                        release,
-                      }),
-                    ),
-                    { databaseLayer: database },
-                  ),
-                  CommandReceiptStore.layer.pipe(Layer.provide(database)),
-                  database,
-                );
-                yield* Effect.gen(function* () {
-                  const orchestrator = yield* Orchestrator.OrchestratorV2;
-                  const threads = yield* ThreadManagement.ThreadManagementService;
-                  const sink = yield* EventSink.EventSinkV2;
-                  const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
-                  const outbox = yield* EffectOutbox.EffectOutboxV2;
-                  yield* orchestrator.dispatch({
-                    type: "thread.create",
-                    commandId: CommandId.make("restart-receipt:create"),
-                    threadId,
-                    projectId,
-                    title: "Receipt replay",
-                    modelSelection: initialSelection,
-                    runtimeMode: "full-access",
-                    interactionMode: "default",
-                    branch: null,
-                    worktreePath: cwd,
-                    createdBy: "user",
-                    creationSource: "web",
-                  });
-                  const running = yield* sink
-                    .stream({
-                      threadId,
-                      afterSequence: yield* sink.latestSequence({ threadId }),
-                    })
-                    .pipe(
-                      Stream.filter(
-                        ({ event }) =>
-                          event.type === "provider-turn.updated" && event.payload.status === "running",
-                      ),
-                      Stream.take(1),
-                      Stream.runDrain,
-                      Effect.forkScoped,
-                    );
-                  yield* threads.sendToThread({
-                    projectId,
-                    threadId,
-                    commandId: CommandId.make("restart-receipt:first"),
-                    messageId: MessageId.make("restart-receipt:first"),
-                    text: "First",
-                    attachments: [],
-                    mode: "auto",
-                    createdBy: "agent",
-                    creationSource: "mcp",
-                  });
-                  yield* Fiber.join(running);
-                  yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
-                  const input = {
-                    projectId,
-                    threadId,
-                    commandId: CommandId.make("restart-receipt:restart"),
-                    messageId: MessageId.make("restart-receipt:restart"),
-                    text: "Restart",
-                    attachments: [],
-                    mode: "restart" as const,
-                    createdBy: "agent" as const,
-                    creationSource: "mcp" as const,
-                  };
-                  const accepted = yield* threads.sendToThread(input);
-                  assert.equal(accepted.delivery, "restarted");
-                  yield* Deferred.await(entered);
-                  const before = yield* orchestrator.getThreadProjection(threadId);
-                  assert.equal(before.runs[0]?.status, "starting");
-                  const receipt = yield* receipts.getByCommandId(input.commandId);
-                  assert.equal(receipt._tag, "Some");
-                  const effects = yield* outbox.listByCommandId(input.commandId);
-                  if (changedField === "legacy") {
-                    const sql = yield* SqlClient.SqlClient;
-                    // Recreate an accepted pre-upgrade event in this private SQLite fixture.
-                    const changed = yield* sql`
-                      UPDATE orchestration_events
-                      SET payload_json = json_remove(payload_json, '$.deliveryIntent')
-                      WHERE command_id = ${input.commandId} AND event_type = 'run-attempt.created'
-                      RETURNING sequence
-                    `;
-                    assert.lengthOf(changed, 1);
-                  }
-                  const originalEvents = yield* sink
-                    .readByCommandId({ commandId: input.commandId })
-                    .pipe(Stream.runCollect);
-                  if (changedField === "legacy") {
-                    assert.isTrue(
-                      originalEvents.some(
-                        ({ event }) =>
-                          event.type === "run-attempt.created" &&
-                          event.payload.deliveryIntent === undefined,
-                      ),
-                    );
-                  } else {
-                    assert.deepEqual(originalEvents, accepted.dispatch.storedEvents);
-                  }
-                  const replay = yield* threads.sendToThread({
-                    ...input,
-                    ...(changedField === "messageId"
-                      ? { messageId: MessageId.make("restart-receipt:changed"), text: "Changed retry" }
-                      : changedField === "mode"
-                        ? { mode: "auto" as const }
-                        : {}),
-                  });
-                  // The replay records nothing new and reports the first dispatch's sequence and events.
-                  assert.equal(replay.dispatch.sequence, accepted.dispatch.sequence);
-                  assert.deepEqual(replay.dispatch.storedEvents, originalEvents);
-                  // A changed message id names no stored message, so it admits no run.
-                  assert.deepEqual(
-                    replay.dispatch.admittedRun,
-                    changedField === "messageId" ? undefined : accepted.dispatch.admittedRun,
-                  );
-                  assert.deepEqual(replay.message, accepted.message);
-                  assert.equal(replay.delivery, accepted.delivery);
-                  assert.equal(replay.run.id, accepted.run.id);
-                  const refused = yield* threads
-                    .sendToThread({
-                      ...input,
-                      commandId: CommandId.make("restart-receipt:new"),
-                      messageId: MessageId.make("restart-receipt:new"),
-                    })
-                    .pipe(Effect.flip);
-                  assert.instanceOf(refused, ThreadManagement.ThreadManagementNoSteerableRunError);
-                  assert.deepEqual(yield* receipts.getByCommandId(input.commandId), receipt);
-                  assert.deepEqual(yield* orchestrator.getThreadProjection(threadId), before);
-                  assert.deepEqual(yield* outbox.listByCommandId(input.commandId), effects);
-                  assert.lengthOf((yield* Ref.get(state)).started, 1);
-                  yield* Deferred.succeed(release, undefined);
-                }).pipe(Effect.provide(layer));
-              }),
-            ),
-        );
 
         const completed = yield* eventSink
           .stream({

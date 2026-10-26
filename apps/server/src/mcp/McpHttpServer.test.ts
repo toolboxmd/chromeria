@@ -435,9 +435,12 @@ it.effect("decodes null optional arguments the way it decodes omitted ones", () 
     expect(calls[3]).toEqual(calls[2]);
     expect(calls[4]).toStrictEqual({ projectId: "project-1", projectIcon: null });
   }).pipe(
-    Effect.provide(layerRecordingTools(calls)),
     // Recorded calls stay local; no linked environment is selected.
-    Effect.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+    Effect.provide(
+      layerRecordingTools(calls).pipe(
+        Layer.provideMerge(Layer.mock(PeerForwarding.PeerForwarding)({})),
+      ),
+    ),
   );
 });
 
@@ -468,9 +471,12 @@ it.effect(
         { ...thread, limit: 7, runLimit: 1, maxCharsPerItem: 1 },
       ]);
     }).pipe(
-      Effect.provide(layerRecordingTools(calls)),
       // Recorded calls stay local; no linked environment is selected.
-      Effect.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+      Effect.provide(
+        layerRecordingTools(calls).pipe(
+          Layer.provideMerge(Layer.mock(PeerForwarding.PeerForwarding)({})),
+        ),
+      ),
     );
   },
 );
@@ -597,9 +603,12 @@ it.effect.each(["limit", "runLimit", "maxCharsPerItem"])(
       expect(String(rejected)).toContain("greater than or equal to 1");
       expect(calls).toEqual([]);
     }).pipe(
-      Effect.provide(layerRecordingTools(calls)),
       // Recorded calls stay local; no linked environment is selected.
-      Effect.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+      Effect.provide(
+        layerRecordingTools(calls).pipe(
+          Layer.provideMerge(Layer.mock(PeerForwarding.PeerForwarding)({})),
+        ),
+      ),
     );
   },
 );
