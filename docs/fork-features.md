@@ -1379,7 +1379,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "packages/provider-core/src/server/runtimeInstructions.ts",
     "packages/provider-core/src/server/orchestrationInstructions.ts",
     "packages/provider-core/src/server/orchestrationInstructions.test.ts",
-    "apps/server/src/orchestration-v2/testkit/ReplayRuntimeInstructions.ts"
+    "apps/server/src/orchestration-v2/testkit/ReplayRuntimeInstructions.ts",
+    "apps/server/src/provider/CodexDeveloperInstructions.test.ts"
   ],
   "sharedFiles": [
     "apps/server/src/mcp/toolkits/project/tools.ts",
