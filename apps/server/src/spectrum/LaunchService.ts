@@ -39,6 +39,7 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderAdapters from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Prism from "../prism/PrismService.ts";
+import { colorModelSelection } from "../prism/modelOptions.ts";
 import { resolveSchedulerRun, schedulerRunOpenGuard } from "../scheduledTaskChecks/handoff.ts";
 import { spectrumTaskEvent, spectrumTaskId, spectrumTaskRow } from "./delegatedTask.ts";
 import { spectrumRegistrationPlan } from "./registrationPlan.ts";
@@ -223,20 +224,15 @@ const make = Effect.gen(function* () {
       const provider = (yield* providers.getProviders).find(
         (provider) => provider.instanceId === instanceId,
       );
-      const effortOption =
-        provider?.driver === "codex" || provider?.driver === "grok"
-          ? "reasoningEffort"
-          : provider?.driver === "opencode"
-            ? "variant"
-            : "effort";
-      return {
-        ...base,
-        instanceId,
-        model: spec.model ?? base.model,
-        ...(spec.effort === undefined
-          ? {}
-          : { options: [{ id: effortOption, value: spec.effort }] }),
-      } satisfies ModelSelection;
+      return colorModelSelection(
+        {
+          ...base,
+          instanceId,
+          model: spec.model ?? base.model,
+          ...(spec.effort === undefined ? {} : { effort: spec.effort }),
+        },
+        provider?.driver,
+      );
     });
     const resolveMember = (color: SpectrumColorSpec, threadId: ThreadId) =>
       Effect.gen(function* () {

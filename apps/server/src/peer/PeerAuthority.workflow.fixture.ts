@@ -2182,6 +2182,7 @@ export const makeNode = (
         };
       });
     const restartSchedulerTransport = restartSchedulerTransportWith(attachmentRequests);
+    const launchValidation = yield* layerLaunchCatalog.pipe(Layer.build);
     return {
       ...peer,
       pendingRequests: Context.get(pendingRequests, PendingRequests.PendingRequests),
@@ -2209,7 +2210,7 @@ export const makeNode = (
       databasePath: Context.get(databaseConfig, Config.ServerConfig).dbPath,
       lifecycleRecovery,
       signals,
-      runtime,
+      runtime: Context.merge(runtime, launchValidation),
       requestContext,
       secretOwners,
       secretRequestClock,

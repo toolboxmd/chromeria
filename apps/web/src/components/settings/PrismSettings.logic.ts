@@ -31,7 +31,7 @@ export function movePrismPreference<T extends Color>(
 /** A list row while editing; `entryId` keeps drag identity stable across saves. */
 export type PrismDraftPreference = Color & { entryId: number };
 
-const samePreference = (a: Color, b: Color) => colorKey(a) === colorKey(b) && a.effort === b.effort;
+const samePreference = (a: Color, b: Color) => colorKey(a) === colorKey(b);
 
 /** Row ids only need to be unique within their list. */
 export const nextPrismEntryId = (draft: readonly PrismDraftPreference[]) =>

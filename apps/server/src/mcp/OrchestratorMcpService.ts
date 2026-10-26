@@ -23,6 +23,7 @@ import { callerLinkOrigin, assertSameLink } from "./linkOrigin.ts";
 import { SpectrumMcpInterrupt } from "../spectrum/mcpInterrupt.ts";
 import { SpectrumMcpSend } from "../spectrum/mcpSend.ts";
 import * as Prism from "../prism/PrismService.ts";
+import { invalidOptionSelections } from "../prism/modelOptions.ts";
 import {
   CommandId,
   type RunId,
@@ -76,8 +77,6 @@ import {
   type OrchestratorMcpThreadWaitInput,
   type OrchestratorMcpThreadWaitResult,
   type ProviderInteractionMode,
-  type ProviderOptionDescriptor,
-  type ProviderOptionSelection,
   type RuntimeMode,
   type ScheduledTask,
   type ScheduledTaskError,
@@ -375,45 +374,6 @@ function providerConstraints(
     constraints.push("Provider is not authenticated.");
   }
   return constraints;
-}
-
-/**
- * Models without descriptors skip the descriptor checks (mirroring how model slugs are only
- * validated when the provider advertises models), but duplicate ids always fail: downstream
- * consumers disagree on whether the first or last value of a duplicated id wins.
- */
-function invalidOptionSelections(
-  selections: ReadonlyArray<ProviderOptionSelection>,
-  descriptors: ReadonlyArray<ProviderOptionDescriptor> | undefined,
-): ReadonlyArray<string> {
-  const problems: Array<string> = [];
-  const seen = new Set<string>();
-  for (const selection of selections) {
-    if (seen.has(selection.id)) {
-      problems.push(`Option ${selection.id} was specified more than once.`);
-      continue;
-    }
-    seen.add(selection.id);
-    if (descriptors === undefined) continue;
-    const descriptor = descriptors.find((candidate) => candidate.id === selection.id);
-    if (descriptor === undefined) {
-      const known = descriptors.map((candidate) => candidate.id).join(", ");
-      problems.push(`Unknown option ${selection.id}; supported options: ${known || "none"}.`);
-      continue;
-    }
-    if (descriptor.type === "boolean" && typeof selection.value !== "boolean") {
-      problems.push(`Option ${selection.id} expects a boolean value.`);
-      continue;
-    }
-    if (
-      descriptor.type === "select" &&
-      !descriptor.options.some((choice) => choice.id === selection.value)
-    ) {
-      const choices = descriptor.options.map((choice) => choice.id).join(", ");
-      problems.push(`Option ${selection.id} must be one of: ${choices}.`);
-    }
-  }
-  return problems;
 }
 
 function taskStatusForRun(
