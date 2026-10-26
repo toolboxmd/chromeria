@@ -103,6 +103,6 @@ it("preserves the interruption explanation before a native Claude skill block", 
     `${note}\n\n$review changed recipients`,
     new Map([["review", { path: "/home/me/.claude/skills/review/SKILL.md" }]]),
   );
-  assert.equal(dispatch?.leadingText, note);
+  assert.equal(dispatch?.leadingText, `${note}\n\n/review changed recipients`);
   assert.equal(dispatch?.commandText, "/review changed recipients");
 });

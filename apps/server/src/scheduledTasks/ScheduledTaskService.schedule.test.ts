@@ -157,6 +157,7 @@ it.effect("keeps the task list order when a toggle or edit rewrites updated_at",
     yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const input = (id: string) => ({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         id,
         title: id,
         prompt: "Review the open pull requests.",

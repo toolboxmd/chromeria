@@ -166,20 +166,22 @@ const layerRecordingTools = (calls: Array<unknown>) => {
     OrchestratorToolkit.tools.t3_thread_wait,
     ProjectToolkit.tools.t3_project_update,
   );
-  const record = McpToolAccess.reads((params: unknown) =>
+  const recordCall = (params: unknown) =>
     Effect.sync(() => calls.push(params)).pipe(
       Effect.andThen(
         Effect.fail(new OrchestratorMcpFailure({ code: "thread_not_found", message: "Recorded." })),
       ),
-    ),
-  );
+    );
+  const record = McpToolAccess.reads(recordCall);
+  // Fork: a tool's effect class is global, so writes keep the class their real handlers declare.
+  const recordOwned = McpToolAccess.readsAsCaller(recordCall, { effect: "owned" });
   return McpHttpServer.toolkitRegistration(
     RecordingToolkit,
     McpToolAccess.toLayer(RecordingToolkit, {
-      delegate_task: record,
+      delegate_task: recordOwned,
       t3_thread_read: record,
       t3_thread_wait: record,
-      t3_project_update: record,
+      t3_project_update: recordOwned,
     }),
   ).pipe(
     Layer.provideMerge(McpServer.McpServer.layer),

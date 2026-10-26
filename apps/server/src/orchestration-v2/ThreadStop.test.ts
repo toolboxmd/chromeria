@@ -252,16 +252,14 @@ it.effect(
 
 it.effect("client commands cannot forge internal propagated Stop provenance", () =>
   Effect.gen(function* () {
-    assert.isTrue(
-      Exit.isFailure(
-        yield* decodeClientCommand({
-          type: "thread.stop",
-          commandId: "forged",
-          threadId: "target",
-          forkRetirementStop: { ancestorThreadId: "root", originalToken: "old" },
-        }).pipe(Effect.exit),
-      ),
-    );
+    // Clients may stop a thread, but the trusted propagation field is stripped.
+    const stop = yield* decodeClientCommand({
+      type: "thread.stop",
+      commandId: "forged",
+      threadId: "target",
+      forkRetirementStop: { ancestorThreadId: "root", originalToken: "old" },
+    });
+    assert.notProperty(stop, "forkRetirementStop");
     const parsed = yield* decodeClientCommand({
       type: "message.dispatch",
       commandId: "client",

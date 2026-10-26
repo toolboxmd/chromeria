@@ -860,7 +860,6 @@ it.live("reports a pending dialog without evaluating the page and resolves it ex
   ).pipe(Effect.provide(layer)),
 );
 
-
 it.live("a person's popup from an agent's tab stays a server page the desktop cannot host", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -1198,7 +1197,6 @@ it.live("only the current controller can answer a file picker", () =>
     }),
   ).pipe(Effect.provide(layer)),
 );
-
 
 it.live("an agent's tab runs in the server browser without waiting for the desktop", () =>
   Effect.scoped(
@@ -1819,7 +1817,7 @@ it.effect("a login holds every related tab until preview_end_login closes them",
           operation: "snapshot",
           input: {},
         })).screenshot.data,
-      ).toBe("ZnJhbWU=");
+      ).toBe(PNG_HEADER);
       expect(
         yield* broker.invoke<{ closed: Array<string> }>({
           scope,

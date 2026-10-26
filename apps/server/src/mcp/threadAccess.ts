@@ -16,7 +16,6 @@ import type { OrchestratorV2Error } from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
-import * as OrchestrationMcp from "./OrchestratorMcpService.ts";
 import { CurrentRequest, CommandIndex } from "./McpRequestReceipts.ts";
 import * as Ref from "effect/Ref";
 
@@ -185,6 +184,24 @@ const resolveThreadId = (context: Caller, threadId: ThreadId | undefined) =>
             message: "Pass threadId: this MCP client is not running inside a T3 thread.",
           }),
         );
+
+// Mirrors OrchestratorMcpService.threadNotFound; importing it here closes a module cycle
+// through McpRouting and RemoteDelegation.
+const threadNotFound = Effect.fn("mcp.threadNotFound")(function* (
+  threads: Pick<ThreadManagement.ThreadManagementService["Service"], "getThreadShell">,
+  threadId: ThreadId,
+  message: string,
+) {
+  const prefixed = ThreadId.make(`mcp:${threadId}`);
+  const shell = yield* threads.getThreadShell(prefixed).pipe(Effect.orElseSucceed(() => null));
+  return yield* new OrchestratorMcpFailure({
+    code: "thread_not_found",
+    message:
+      shell === null || shell.deletedAt !== null
+        ? message
+        : `${message} Did you mean \`${prefixed}\`?`,
+  });
+});
 
 export const readThread = Effect.fn("mcp.readThread")(function* <
   K extends ProjectionRecordField = never,

@@ -453,6 +453,7 @@ it.effect(
       const tasks = yield* ScheduledTasks.ScheduledTaskService;
       const threadId = ThreadId.make("thread:missing");
       const { task } = yield* tasks.upsert({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         title: "Daily audit",
         prompt: "Audit performance and crashes.",
         enabled: false,
@@ -495,6 +496,7 @@ it.effect("runs a thread-bound automation on the provider the thread uses now", 
       launchInput({ command: "command:switched", thread: "thread:switched" }),
     );
     const { task } = yield* tasks.upsert({
+      purposeIntent: { version: 1, intent: { type: "unscoped" } },
       id: ScheduledTaskId.make("scheduled-task:switched"),
       title: "Hourly check",
       prompt: "Check on the delegated workers.",
@@ -981,6 +983,7 @@ const preparationSettled = (threadId: ThreadId) =>
 
 function scheduledTaskInput(id: string, targetProjectId: ProjectId) {
   return {
+    purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
     id: ScheduledTaskId.make(id),
     title: "Daily summary",
     prompt: "Summarize the day.",

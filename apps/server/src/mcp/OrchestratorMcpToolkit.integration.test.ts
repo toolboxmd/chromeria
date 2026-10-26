@@ -1285,9 +1285,10 @@ describe("orchestrator MCP toolkit", () => {
               (task) => task.childThreadId === delegated.childThreadId,
             ),
           ).toHaveLength(1);
+          // Fork: the task keeps its first result; follow-up results arrive as their own transfers.
           expect(finishedTask).toMatchObject({
             status: "completed",
-            result,
+            result: delegatedResult,
           });
           expect(
             finishedParent.contextTransfers.filter(

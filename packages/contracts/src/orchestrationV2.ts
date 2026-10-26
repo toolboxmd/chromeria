@@ -3131,13 +3131,6 @@ export const OrchestrationV2Command = Schema.Union([
      * do under their caller's dispatch limit. Otherwise Stop also stops every task under the thread.
      */
     stopDelegatedTasks: Schema.optional(Schema.Boolean),
-    /** Trusted durable Stop propagation only, never accepted from client commands. */
-    forkRetirementStop: Schema.optional(
-      Schema.Struct({
-        ancestorThreadId: ThreadId,
-        originalToken: CommandId,
-      }),
-    ),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.create"),
@@ -3652,6 +3645,18 @@ export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
 
 // Excluded from dispatchCommand so only the server can send these.
 const OrchestrationV2InternalCommand = Schema.Union([
+  // Fork: trusted durable Stop propagation; client thread.stop never carries it.
+  Schema.Struct({
+    type: Schema.Literal("thread.stop"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    reason: Schema.optional(Schema.String),
+    stopDelegatedTasks: Schema.optional(Schema.Boolean),
+    forkRetirementStop: Schema.Struct({
+      ancestorThreadId: ThreadId,
+      originalToken: CommandId,
+    }),
+  }),
   // Guest share commands the server issues after checking T3 Connect and the guest token.
   Schema.Struct({
     type: Schema.Literal("thread.guest-share.open"),

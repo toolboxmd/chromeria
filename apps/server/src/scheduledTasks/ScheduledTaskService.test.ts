@@ -370,6 +370,7 @@ it.effect("thread cleanup notifies subscribers and a finishing run cannot recrea
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const threadId = ThreadId.make("thread:deleted-during-run");
       const { task } = yield* service.upsert({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         id: ScheduledTaskId.make("task:deleted-during-run"),
         title: "Check orchestration",
         prompt: "Check progress",

@@ -74,7 +74,11 @@ const prismDependencies = Layer.mergeAll(
         status: "ready",
         auth: { status: "authenticated" },
         checkedAt: "2026-10-08T00:00:00Z",
-        models: [{ slug: "gpt-5", name: "test", isCustom: false, capabilities: null }],
+        models: [
+          { slug: "gpt-5", name: "test", isCustom: false, capabilities: null },
+          // The project default a Settings override names.
+          { slug: "gpt-settings", name: "test", isCustom: false, capabilities: null },
+        ],
         skills: [],
         slashCommands: [],
       },
@@ -159,6 +163,7 @@ it.effect.each(["full-access", "approval-required"] as const)(
                 thread: {
                   id: input.threadId,
                   projectId: destination,
+                  title: input.title ?? "New thread",
                   modelSelection: caller.modelSelection,
                 },
                 runs: [],
@@ -248,7 +253,7 @@ it.effect("attributes a launched thread's first message to the calling thread", 
           return Effect.succeed({
             threadId: input.threadId,
             projection: {
-              thread: { id: input.threadId, projectId, modelSelection },
+              thread: { id: input.threadId, projectId, title: "New thread", modelSelection },
               runs: [],
             },
             resumed: false,
@@ -334,7 +339,12 @@ it.effect("launches a scratch thread into the Scratch project", () =>
           return Effect.succeed({
             threadId: input.threadId,
             projection: {
-              thread: { id: input.threadId, projectId: input.projectId, modelSelection },
+              thread: {
+                id: input.threadId,
+                projectId: input.projectId,
+                title: "New thread",
+                modelSelection,
+              },
               runs: [],
             },
             resumed: false,
@@ -581,7 +591,8 @@ const clientLaunchHarness = (input: {
             thread: {
               id: launch.threadId,
               projectId: launch.projectId,
-              title: launch.title,
+              // A launched projection always has a title; untitled launches get the default.
+              title: launch.title ?? "New thread",
               modelSelection: launch.modelSelection,
             },
             runs: [],

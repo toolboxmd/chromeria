@@ -2797,14 +2797,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const offerAndWait = Effect.fnUntraced(function* (
         message: SDKMessage,
         offered?: Deferred.Deferred<void>,
-        messages = sdkMessages,
+        messages?: Queue.Queue<SDKMessage>,
       ) {
         const processed = yield* Deferred.make<void>();
         processedMessages.set(message, processed);
-        yield* Queue.offer(
-          messages === sdkMessages ? (processQueues.at(-1) ?? sdkMessages) : messages,
-          message,
-        );
+        yield* Queue.offer(messages ?? processQueues.at(-1) ?? sdkMessages, message);
         if (offered !== undefined) yield* Deferred.succeed(offered, undefined);
         yield* Deferred.await(processed);
         // Drain the event collector scheduled by this frame before observing it.
@@ -5763,7 +5760,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* Queue.take(harness.terminalReceipts);
 
         const providerTurn = lastProviderTurn(harness.events);
-        assert.equal(providerTurn.nativeTurnRef?.nativeId, mainUuid);
+        // Fork: the turn ref names the prompt; the conversation head carries the message cursor.
+        assert.equal(providerTurn.nativeConversationHeadRef?.nativeId, mainUuid);
         const rolledBack = yield* harness.runtime.rollbackThread({
           providerThread: harness.providerThread,
           target: {
@@ -8060,7 +8058,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.equal(terminal.status, "failed");
           if (terminal.status !== "failed") return;
           assert.isNotEmpty(terminal.failure.message);
-          assert.equal(terminal.failure.class, "provider_error");
+          // Fork (#580): an API error without a status is a retryable transport failure.
+          assert.equal(
+            terminal.failure.class,
+            terminalReason === "api_error" ? "transport_error" : "provider_error",
+          );
+          if (terminalReason === "api_error") assert.equal(terminal.failure.retryable, true);
           assert.isFalse(
             harness.events.some(
               (event) =>
@@ -11348,6 +11351,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           );
           yield* harness.offerAndWait(
             makeResultFrame({ uuid: "late-old-query-result", result: "Old process output." }),
+            undefined,
+            harness.processQueues[0]!,
           );
           assert.lengthOf(harness.terminalEvents(), 2);
           assert.isFalse(

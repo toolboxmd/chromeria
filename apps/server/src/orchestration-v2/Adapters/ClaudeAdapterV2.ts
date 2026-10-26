@@ -7540,6 +7540,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 message.task_id === taskId,
             );
             if (lifecycle?.type === "system" && lifecycle.subtype === "task_notification") continue;
+            // Stop cancels the stopped run's own agents; earlier runs' agents are only detached.
+            const subagentStatus =
+              status === "interrupted" && subagent.task.runId === context.input.runId
+                ? "cancelled"
+                : status;
             if (active === context && subagent.task.runId === active.input.runId) {
               const now = yield* DateTime.now;
               yield* endToolCalls({
@@ -7558,11 +7563,21 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   ? current
                   : new Map(current).set(taskId, {
                       ...subagent,
-                      task: { ...subagent.task, status, completedAt: now, updatedAt: now },
+                      task: {
+                        ...subagent.task,
+                        status: subagentStatus,
+                        completedAt: now,
+                        updatedAt: now,
+                      },
                     }),
               );
             } else {
-              yield* updateClaudeSubagentNode({ context, taskId, status, onlyIf: subagent });
+              yield* updateClaudeSubagentNode({
+                context,
+                taskId,
+                status: subagentStatus,
+                onlyIf: subagent,
+              });
             }
           }
         });

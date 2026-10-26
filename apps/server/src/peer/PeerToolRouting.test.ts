@@ -265,6 +265,7 @@ const makeFixture = (realHtml = false) =>
         }),
         Layer.mock(ThreadSearch.ThreadSearch)({
           search: (input) => record("search", { matches: [] }, input),
+          searchThreads: (input) => record("search", { matches: [] }, input),
         }),
         Layer.mock(Projects.ProjectService)({
           getById: () => record("project-read", Option.some(project)),

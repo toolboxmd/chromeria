@@ -140,6 +140,9 @@ const fixture = Effect.gen(function* () {
     }),
   );
   const run: DeviceHost.DeviceHostReady["run"] = (command, args) => {
+    // Opening an Android device probes the host's ffmpeg encoders before streaming.
+    if (args[0] === "-e" && args[1]?.includes('"-encoders"'))
+      return Effect.succeed({ code: 0, stdout: " V....D libx264  H.264\n", stderr: "" });
     expect([command, ...args]).toEqual(["emulator", "-list-avds"]);
     return Effect.succeed({ code: 0, stdout: "Isolated\n", stderr: "" });
   };

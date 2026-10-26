@@ -36,6 +36,7 @@ const dependencies = Layer.mergeAll(
 const serviceLayer = ScheduledTaskService.layer.pipe(Layer.provide(dependencies));
 const decodeInput = Schema.decodeUnknownEffect(ScheduledTaskUpsertInput);
 const input = {
+  purposeIntent: { version: 1, intent: { type: "unscoped" } },
   commandId: "interval-duration",
   title: "Interval review",
   prompt: "Review the open pull requests.",
