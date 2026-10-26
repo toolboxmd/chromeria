@@ -72,6 +72,9 @@ describe("063_DropUnusedV1Projections", () => {
           [63, "DropUnusedV1Projections"],
         ]);
         assert.deepEqual(yield* snapshot, before);
+        // Later migrations leave the legacy data alone, and a repeat run is a no-op.
+        yield* runMigrations();
+        assert.deepEqual(yield* snapshot, before);
         assert.deepEqual(yield* runMigrations(), []);
         assert.deepEqual(yield* snapshot, before);
         assert.deepEqual(

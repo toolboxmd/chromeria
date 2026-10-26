@@ -10,6 +10,7 @@ interface CachedTestTask {
   cache:
     | false
     | {
+        untrackedEnv?: Array<string>;
         input: Array<string | { auto: true }>;
         output: Array<string>;
       };
@@ -100,6 +101,12 @@ export function cachedTestTasks(
         cache: uncached.includes(group[0]!)
           ? false
           : {
+              // Fork: cached tasks see only declared env; browser tests need their pinned browsers.
+              untrackedEnv: [
+                "CHROMERIA_TEST_CHROMIUM",
+                "CHROMERIA_TEST_HEADLESS_SHELL",
+                "T3CODE_TEST_HEADLESS_SHELL",
+              ],
               // Vitest reads and rewrites these caches while running otherwise unchanged tests.
               input: [
                 { auto: true },
