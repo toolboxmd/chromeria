@@ -183,7 +183,7 @@ export async function installPageWatch(input: {
         .catch(() => {});
     return cleanup;
   } catch (cause) {
-    await cleanup();
+    await cleanup().catch(() => {});
     throw cause;
   }
 }

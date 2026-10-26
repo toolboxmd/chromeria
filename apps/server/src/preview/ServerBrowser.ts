@@ -2818,6 +2818,19 @@ const make = Effect.gen(function* () {
         const cdp = await tab.page.context().newCDPSession(tab.page);
         const watchId = NodeCrypto.randomUUID();
         let cleanup: (() => Promise<void>) | undefined;
+        const installed = Promise.withResolvers<void>();
+        let cleanupTask: Promise<void> | undefined;
+        const dispose = () =>
+          (cleanupTask ??= (async () => {
+            // A synchronous baseline can terminate before registration returns its disposer.
+            await installed.promise;
+            try {
+              await cleanup?.();
+            } finally {
+              tab.watches.delete(watchId);
+              await cdp.detach().catch(constVoid);
+            }
+          })());
         let started: ReturnType<PageWatchStore["register"]>;
         try {
           started = watches.register(
@@ -2826,14 +2839,7 @@ const make = Effect.gen(function* () {
             {
               authorize: resourceAuthorization,
               fence,
-              cleanup: async () => {
-                tab.watches.delete(watchId);
-                try {
-                  await cleanup?.();
-                } finally {
-                  await cdp.detach().catch(constVoid);
-                }
-              },
+              cleanup: dispose,
             },
             request.agentSessionId,
           );
@@ -2843,18 +2849,23 @@ const make = Effect.gen(function* () {
         }
         tab.watches.add(watchId);
         try {
-          cleanup = await installPageWatch({
-            cdp,
-            watchId,
-            subscription: input.subscription,
-            store: watches,
-            authorize: resourceAuthorization,
-          });
+          try {
+            cleanup = await installPageWatch({
+              cdp,
+              watchId,
+              subscription: input.subscription,
+              store: watches,
+              authorize: resourceAuthorization,
+            });
+          } finally {
+            installed.resolve();
+          }
           await authorize();
           await watches.flush(watchId);
           return started;
         } catch (cause) {
           await watches.terminate(watchId, "subscription_failed").catch(constVoid);
+          await dispose().catch(constVoid);
           throw cause;
         }
       }
