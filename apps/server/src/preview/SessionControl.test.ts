@@ -253,6 +253,7 @@ describe("SessionControl", () => {
     const action = control.agent(
       "agent",
       async () => effects.push("click"),
+      undefined,
       async () => {
         if (!current) throw new BrowserControlInterrupted("Invocation retired");
       },
@@ -266,6 +267,7 @@ describe("SessionControl", () => {
       control.agent(
         "agent",
         async () => "lawful",
+        undefined,
         async () => {},
       ),
     ).resolves.toBe("lawful");

@@ -7,6 +7,7 @@ import {
   type RepositoryIdentity,
   ThreadId,
   type ThreadPullRequestLink,
+  SourceControlProviderKind,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -35,7 +36,7 @@ export function gitHubIdentity(repository: string, origin?: string): RepositoryI
       remoteName: "origin",
       remoteUrl: `git@github.com:${repository}.git`,
     },
-    provider: "github",
+    provider: SourceControlProviderKind.make("github"),
     displayName: repository,
     ...(owner ? { owner } : {}),
     ...(name ? { name } : {}),

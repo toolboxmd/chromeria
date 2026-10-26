@@ -37,6 +37,9 @@ import * as ServerSettings from "../serverSettings.ts";
 
 const threadId = ThreadId.make("thread:effect-worker-restart");
 const oldSessionId = ProviderSessionId.make("provider-session:effect-worker-restart:old");
+const replacementSessionId = ProviderSessionId.make(
+  "provider-session:effect-worker-restart:replacement",
+);
 const providerThreadId = ProviderThreadId.make("provider-thread:effect-worker-restart");
 const providerTurnId = ProviderTurnId.make("provider-turn:effect-worker-restart");
 const attemptId = RunAttemptId.make("run-attempt:effect-worker-restart");

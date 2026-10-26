@@ -17,6 +17,7 @@ import {
 import { useState } from "react";
 
 import { useOpenChangeRequestLink } from "~/lib/openPullRequestLink";
+import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { cn } from "~/lib/utils";
 import { PULL_REQUESTS_PANEL_REF } from "~/rightPanelStore";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
@@ -84,8 +85,12 @@ export function IssueDetailPanel({
 }) {
   const result = useIssueDetail(environmentId, reference);
   const detail = AsyncResult.isSuccess(result) ? result.value : null;
+  // Issues are GitHub's, so GitHub's reference autolinks resolve against the Issue's repository.
+  const findAutolinks = sourceControlClients.get("github").referenceAutolinks;
+  const repositoryUrl = `https://${reference.host}/${reference.repository}`;
   const markdownContext = {
-    repositoryUrl: `https://${reference.host}/${reference.repository}`,
+    autolinks:
+      findAutolinks === undefined ? null : (text: string) => findAutolinks(text, repositoryUrl),
     threadRef: null,
   };
   return (

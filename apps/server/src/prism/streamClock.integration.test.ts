@@ -37,6 +37,7 @@ import type {
   ProviderAdapterV2SessionRuntime,
 } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as RunExecution from "../orchestration-v2/RunExecutionService.ts";
+import * as TurnItemPositionStore from "../orchestration-v2/TurnItemPositionStore.ts";
 import * as ThreadCommands from "../orchestration-v2/ThreadCommandExecutor.ts";
 import * as Decorator from "./ProviderEventIngestor.ts";
 import * as Stats from "./StreamStatsStore.ts";
@@ -164,6 +165,7 @@ it.effect.each([
             ingestor,
             hooks,
             sink,
+            TurnItemPositionStore.layer.pipe(Layer.provide(database)),
             IdAllocator.layer,
             AppModelContext.layerEmpty,
             Settings.layerTest({ responseStreamingMode: mode }),

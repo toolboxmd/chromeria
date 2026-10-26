@@ -559,7 +559,7 @@ function taskStatusForRun(
   }
 }
 
-function delegatedTaskRun(
+export function delegatedTaskRun(
   childProjection: Pick<OrchestrationV2ThreadProjection, "runs" | "contextTransfers"> &
     Partial<Pick<OrchestrationV2ThreadProjection, "thread">>,
   task: OrchestrationV2Subagent,
@@ -588,7 +588,7 @@ function delegatedTaskRun(
     : childProjection.runs.find((run) => run.id === spawnTransfer.targetRunId);
 }
 
-function hasPendingChildRuns(
+export function hasPendingChildRuns(
   childProjection: Pick<OrchestrationV2ThreadProjection, "runs"> &
     Partial<Pick<OrchestrationV2ThreadProjection, "messages">>,
   delegatedRun: OrchestrationV2Run | undefined,
@@ -2061,6 +2061,8 @@ const make = Effect.gen(function* () {
               request.kind !== "dynamic_tool_call",
           ) ??
             false),
+        // Destination request ids are not local; remoteObservation routes the approval.
+        pendingApproval: null,
         // Question counts come from qualified destination observations.
         hasPendingQuestion: (task.remoteChild?.snapshot?.pendingQuestions ?? 0) > 0,
         providerInstanceId: task.providerInstanceId,
@@ -2659,9 +2661,7 @@ const make = Effect.gen(function* () {
 
       const remoteHandle =
         input.schedule?.type === "webhook" ? input.schedule.signature?.secretRequest : undefined;
-      const remoteSecrets = yield* Effect.serviceOption(
-        RemoteSecretRequests.RemoteSecretRequests,
-      );
+      const remoteSecrets = yield* Effect.serviceOption(RemoteSecretRequests.RemoteSecretRequests);
       if (
         remoteHandle !== undefined &&
         (request === undefined || Option.isNone(remoteSecrets) || scope.client?.linked !== true)
@@ -3383,7 +3383,8 @@ const make = Effect.gen(function* () {
         input.prismRole === undefined
           ? Prism.delegatedPrismRole(input.role)
           : admitDelegateRole(input.prismRole, isRetryOfAcceptedDelegation);
-      if (prismRole === undefined) return yield* failure("invalid_request", PRISM_DELEGATE_ROLE_ERROR);
+      if (prismRole === undefined)
+        return yield* failure("invalid_request", PRISM_DELEGATE_ROLE_ERROR);
       const explicitTarget =
         input.target === undefined
           ? undefined
@@ -3475,9 +3476,12 @@ const make = Effect.gen(function* () {
           })
           .pipe(
             Effect.mapError(() =>
+              failure(
+                "invalid_request",
                 sameProject
                   ? "Unable to resolve the parent checkout commit."
                   : "Unable to resolve the destination project checkout commit. Worktree isolation requires a Git repository with a HEAD commit.",
+              ),
             ),
           );
         // Launch preparation creates the worktree from the project root, so a

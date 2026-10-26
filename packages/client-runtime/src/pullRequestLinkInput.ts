@@ -9,7 +9,7 @@ import {
   type ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import { canonicalizeGitCafePullRequestUrl } from "@t3tools/source-control-definitions/registry";
-import { threadPullRequestKeysEqual } from "@t3tools/shared/threadPullRequests";
+import { threadPullRequestKeysEqual } from "./threadPullRequests.ts";
 
 import { sourceControlClients, type ChangeRequestTerminology } from "./sourceControlClients.ts";
 

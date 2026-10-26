@@ -25,15 +25,15 @@ import { Route as ThreadsEnvironmentIdThreadIdRouteImport } from './routes/threa
 import { Route as ChatSettingsWorktreesRouteImport } from './routes/_chat.settings.worktrees'
 import { Route as ChatSettingsThreadsRouteImport } from './routes/_chat.settings.threads'
 import { Route as ChatSettingsStorageRouteImport } from './routes/_chat.settings.storage'
+import { Route as ChatSettingsSpectrumRouteImport } from './routes/_chat.settings.spectrum'
 import { Route as ChatSettingsSourceControlRouteImport } from './routes/_chat.settings.source-control'
 import { Route as ChatSettingsSnapShotRouteImport } from './routes/_chat.settings.snap-shot'
 import { Route as ChatSettingsSecretsRouteImport } from './routes/_chat.settings.secrets'
 import { Route as ChatSettingsScheduledTasksRouteImport } from './routes/_chat.settings.scheduled-tasks'
 import { Route as ChatSettingsProvidersRouteImport } from './routes/_chat.settings.providers'
 import { Route as ChatSettingsPromachosRouteImport } from './routes/_chat.settings.promachos'
-import { Route as ChatSettingsSpectrumRouteImport } from './routes/_chat.settings.spectrum'
-import { Route as ChatSettingsPrismRouteImport } from './routes/_chat.settings.prism'
 import { Route as ChatSettingsProjectsRouteImport } from './routes/_chat.settings.projects'
+import { Route as ChatSettingsPrismRouteImport } from './routes/_chat.settings.prism'
 import { Route as ChatSettingsOpenSourceLicensesRouteImport } from './routes/_chat.settings.open-source-licenses'
 import { Route as ChatSettingsMaintenanceRouteImport } from './routes/_chat.settings.maintenance'
 import { Route as ChatSettingsLabsRouteImport } from './routes/_chat.settings.labs'
@@ -134,6 +134,11 @@ const ChatSettingsStorageRoute = ChatSettingsStorageRouteImport.update({
   path: '/storage',
   getParentRoute: () => ChatSettingsRoute,
 } as any)
+const ChatSettingsSpectrumRoute = ChatSettingsSpectrumRouteImport.update({
+  id: '/spectrum',
+  path: '/spectrum',
+  getParentRoute: () => ChatSettingsRoute,
+} as any)
 const ChatSettingsSourceControlRoute =
   ChatSettingsSourceControlRouteImport.update({
     id: '/source-control',
@@ -166,19 +171,14 @@ const ChatSettingsPromachosRoute = ChatSettingsPromachosRouteImport.update({
   path: '/promachos',
   getParentRoute: () => ChatSettingsRoute,
 } as any)
-const ChatSettingsSpectrumRoute = ChatSettingsSpectrumRouteImport.update({
-  id: '/spectrum',
-  path: '/spectrum',
+const ChatSettingsProjectsRoute = ChatSettingsProjectsRouteImport.update({
+  id: '/projects',
+  path: '/projects',
   getParentRoute: () => ChatSettingsRoute,
 } as any)
 const ChatSettingsPrismRoute = ChatSettingsPrismRouteImport.update({
   id: '/prism',
   path: '/prism',
-  getParentRoute: () => ChatSettingsRoute,
-} as any)
-const ChatSettingsProjectsRoute = ChatSettingsProjectsRouteImport.update({
-  id: '/projects',
-  path: '/projects',
   getParentRoute: () => ChatSettingsRoute,
 } as any)
 const ChatSettingsOpenSourceLicensesRoute =
@@ -311,15 +311,15 @@ export interface FileRoutesByFullPath {
   '/settings/labs': typeof ChatSettingsLabsRoute
   '/settings/maintenance': typeof ChatSettingsMaintenanceRoute
   '/settings/open-source-licenses': typeof ChatSettingsOpenSourceLicensesRoute
-  '/settings/promachos': typeof ChatSettingsPromachosRoute
-  '/settings/spectrum': typeof ChatSettingsSpectrumRoute
   '/settings/prism': typeof ChatSettingsPrismRoute
   '/settings/projects': typeof ChatSettingsProjectsRoute
+  '/settings/promachos': typeof ChatSettingsPromachosRoute
   '/settings/providers': typeof ChatSettingsProvidersRoute
   '/settings/scheduled-tasks': typeof ChatSettingsScheduledTasksRoute
   '/settings/secrets': typeof ChatSettingsSecretsRoute
   '/settings/snap-shot': typeof ChatSettingsSnapShotRoute
   '/settings/source-control': typeof ChatSettingsSourceControlRoute
+  '/settings/spectrum': typeof ChatSettingsSpectrumRoute
   '/settings/storage': typeof ChatSettingsStorageRoute
   '/settings/threads': typeof ChatSettingsThreadsRoute
   '/settings/worktrees': typeof ChatSettingsWorktreesRoute
@@ -356,15 +356,15 @@ export interface FileRoutesByTo {
   '/settings/labs': typeof ChatSettingsLabsRoute
   '/settings/maintenance': typeof ChatSettingsMaintenanceRoute
   '/settings/open-source-licenses': typeof ChatSettingsOpenSourceLicensesRoute
-  '/settings/promachos': typeof ChatSettingsPromachosRoute
-  '/settings/spectrum': typeof ChatSettingsSpectrumRoute
   '/settings/prism': typeof ChatSettingsPrismRoute
   '/settings/projects': typeof ChatSettingsProjectsRoute
+  '/settings/promachos': typeof ChatSettingsPromachosRoute
   '/settings/providers': typeof ChatSettingsProvidersRoute
   '/settings/scheduled-tasks': typeof ChatSettingsScheduledTasksRoute
   '/settings/secrets': typeof ChatSettingsSecretsRoute
   '/settings/snap-shot': typeof ChatSettingsSnapShotRoute
   '/settings/source-control': typeof ChatSettingsSourceControlRoute
+  '/settings/spectrum': typeof ChatSettingsSpectrumRoute
   '/settings/storage': typeof ChatSettingsStorageRoute
   '/settings/threads': typeof ChatSettingsThreadsRoute
   '/settings/worktrees': typeof ChatSettingsWorktreesRoute
@@ -403,15 +403,15 @@ export interface FileRoutesById {
   '/_chat/settings/labs': typeof ChatSettingsLabsRoute
   '/_chat/settings/maintenance': typeof ChatSettingsMaintenanceRoute
   '/_chat/settings/open-source-licenses': typeof ChatSettingsOpenSourceLicensesRoute
-  '/_chat/settings/promachos': typeof ChatSettingsPromachosRoute
-  '/_chat/settings/spectrum': typeof ChatSettingsSpectrumRoute
   '/_chat/settings/prism': typeof ChatSettingsPrismRoute
   '/_chat/settings/projects': typeof ChatSettingsProjectsRoute
+  '/_chat/settings/promachos': typeof ChatSettingsPromachosRoute
   '/_chat/settings/providers': typeof ChatSettingsProvidersRoute
   '/_chat/settings/scheduled-tasks': typeof ChatSettingsScheduledTasksRoute
   '/_chat/settings/secrets': typeof ChatSettingsSecretsRoute
   '/_chat/settings/snap-shot': typeof ChatSettingsSnapShotRoute
   '/_chat/settings/source-control': typeof ChatSettingsSourceControlRoute
+  '/_chat/settings/spectrum': typeof ChatSettingsSpectrumRoute
   '/_chat/settings/storage': typeof ChatSettingsStorageRoute
   '/_chat/settings/threads': typeof ChatSettingsThreadsRoute
   '/_chat/settings/worktrees': typeof ChatSettingsWorktreesRoute
@@ -541,15 +541,15 @@ export interface FileRouteTypes {
     | '/_chat/settings/labs'
     | '/_chat/settings/maintenance'
     | '/_chat/settings/open-source-licenses'
-    | '/_chat/settings/promachos'
-    | '/_chat/settings/spectrum'
     | '/_chat/settings/prism'
     | '/_chat/settings/projects'
+    | '/_chat/settings/promachos'
     | '/_chat/settings/providers'
     | '/_chat/settings/scheduled-tasks'
     | '/_chat/settings/secrets'
     | '/_chat/settings/snap-shot'
     | '/_chat/settings/source-control'
+    | '/_chat/settings/spectrum'
     | '/_chat/settings/storage'
     | '/_chat/settings/threads'
     | '/_chat/settings/worktrees'
@@ -681,6 +681,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatSettingsStorageRouteImport
       parentRoute: typeof ChatSettingsRoute
     }
+    '/_chat/settings/spectrum': {
+      id: '/_chat/settings/spectrum'
+      path: '/spectrum'
+      fullPath: '/settings/spectrum'
+      preLoaderRoute: typeof ChatSettingsSpectrumRouteImport
+      parentRoute: typeof ChatSettingsRoute
+    }
     '/_chat/settings/source-control': {
       id: '/_chat/settings/source-control'
       path: '/source-control'
@@ -723,11 +730,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatSettingsPromachosRouteImport
       parentRoute: typeof ChatSettingsRoute
     }
-    '/_chat/settings/spectrum': {
-      id: '/_chat/settings/spectrum'
-      path: '/spectrum'
-      fullPath: '/settings/spectrum'
-      preLoaderRoute: typeof ChatSettingsSpectrumRouteImport
+    '/_chat/settings/projects': {
+      id: '/_chat/settings/projects'
+      path: '/projects'
+      fullPath: '/settings/projects'
+      preLoaderRoute: typeof ChatSettingsProjectsRouteImport
       parentRoute: typeof ChatSettingsRoute
     }
     '/_chat/settings/prism': {
@@ -735,13 +742,6 @@ declare module '@tanstack/react-router' {
       path: '/prism'
       fullPath: '/settings/prism'
       preLoaderRoute: typeof ChatSettingsPrismRouteImport
-      parentRoute: typeof ChatSettingsRoute
-    }
-    '/_chat/settings/projects': {
-      id: '/_chat/settings/projects'
-      path: '/projects'
-      fullPath: '/settings/projects'
-      preLoaderRoute: typeof ChatSettingsProjectsRouteImport
       parentRoute: typeof ChatSettingsRoute
     }
     '/_chat/settings/open-source-licenses': {
@@ -898,15 +898,15 @@ interface ChatSettingsRouteChildren {
   ChatSettingsLabsRoute: typeof ChatSettingsLabsRoute
   ChatSettingsMaintenanceRoute: typeof ChatSettingsMaintenanceRoute
   ChatSettingsOpenSourceLicensesRoute: typeof ChatSettingsOpenSourceLicensesRoute
-  ChatSettingsPromachosRoute: typeof ChatSettingsPromachosRoute
-  ChatSettingsSpectrumRoute: typeof ChatSettingsSpectrumRoute
   ChatSettingsPrismRoute: typeof ChatSettingsPrismRoute
   ChatSettingsProjectsRoute: typeof ChatSettingsProjectsRoute
+  ChatSettingsPromachosRoute: typeof ChatSettingsPromachosRoute
   ChatSettingsProvidersRoute: typeof ChatSettingsProvidersRoute
   ChatSettingsScheduledTasksRoute: typeof ChatSettingsScheduledTasksRoute
   ChatSettingsSecretsRoute: typeof ChatSettingsSecretsRoute
   ChatSettingsSnapShotRoute: typeof ChatSettingsSnapShotRoute
   ChatSettingsSourceControlRoute: typeof ChatSettingsSourceControlRoute
+  ChatSettingsSpectrumRoute: typeof ChatSettingsSpectrumRoute
   ChatSettingsStorageRoute: typeof ChatSettingsStorageRoute
   ChatSettingsThreadsRoute: typeof ChatSettingsThreadsRoute
   ChatSettingsWorktreesRoute: typeof ChatSettingsWorktreesRoute
@@ -930,15 +930,15 @@ const ChatSettingsRouteChildren: ChatSettingsRouteChildren = {
   ChatSettingsLabsRoute: ChatSettingsLabsRoute,
   ChatSettingsMaintenanceRoute: ChatSettingsMaintenanceRoute,
   ChatSettingsOpenSourceLicensesRoute: ChatSettingsOpenSourceLicensesRoute,
-  ChatSettingsPromachosRoute: ChatSettingsPromachosRoute,
-  ChatSettingsSpectrumRoute: ChatSettingsSpectrumRoute,
   ChatSettingsPrismRoute: ChatSettingsPrismRoute,
   ChatSettingsProjectsRoute: ChatSettingsProjectsRoute,
+  ChatSettingsPromachosRoute: ChatSettingsPromachosRoute,
   ChatSettingsProvidersRoute: ChatSettingsProvidersRoute,
   ChatSettingsScheduledTasksRoute: ChatSettingsScheduledTasksRoute,
   ChatSettingsSecretsRoute: ChatSettingsSecretsRoute,
   ChatSettingsSnapShotRoute: ChatSettingsSnapShotRoute,
   ChatSettingsSourceControlRoute: ChatSettingsSourceControlRoute,
+  ChatSettingsSpectrumRoute: ChatSettingsSpectrumRoute,
   ChatSettingsStorageRoute: ChatSettingsStorageRoute,
   ChatSettingsThreadsRoute: ChatSettingsThreadsRoute,
   ChatSettingsWorktreesRoute: ChatSettingsWorktreesRoute,

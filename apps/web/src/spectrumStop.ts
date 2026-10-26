@@ -1,4 +1,4 @@
-import type { ThreadRuntimeSummary } from "@t3tools/client-runtime/state/shell";
+import type { ThreadStructureRuntime } from "@t3tools/client-runtime/state/shell";
 
 import { deriveCanInterruptRunningThread } from "./session-logic";
 
@@ -11,7 +11,7 @@ export { isForkSpectrumRunning } from "@t3tools/client-runtime/spectrum-stop";
  */
 export function deriveCanStopThread(
   hasActiveThread: boolean,
-  runtime: ThreadRuntimeSummary | null,
+  runtime: ThreadStructureRuntime | null,
   forkSpectrumRunning: boolean,
 ): boolean {
   return (

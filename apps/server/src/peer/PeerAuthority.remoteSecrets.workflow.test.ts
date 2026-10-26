@@ -167,7 +167,7 @@ const privateClient = (a: import("./PeerAuthority.workflow.fixture.ts").Node) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
         const authenticated = yield* a.auth
-          .authenticateWebSocketUpgrade(request)
+          .authenticateWebSocketUpgrade(request, "rpc")
           .pipe(Effect.result);
         if (authenticated._tag === "Failure") return HttpServerResponse.empty({ status: 403 });
         const { protocol, httpEffect } = yield* RpcServer.makeProtocolWithHttpEffectWebsocket;

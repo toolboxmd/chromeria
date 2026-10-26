@@ -32,6 +32,7 @@ import {
   createProjectFaviconUrlAtomFamily,
   makeRevisionedAssetUrlFamily,
 } from "./assets.ts";
+import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 
 describe("project favicon URL cache", () => {
   it("does not reuse another environment, workspace, or selected icon's cached URL", () => {

@@ -51,6 +51,7 @@ import * as Queue from "effect/Queue";
 import * as Path from "effect/Path";
 import * as NativeDevices from "../device/DeviceService.ts";
 import * as DeviceHost from "../device/DeviceHost.ts";
+import { makeDeviceHubOperations } from "../device/DeviceHubOperations.ts";
 import { agentDeviceConfigPath } from "../device/AgentDeviceTarget.ts";
 import { AGENT_DEVICE_VERSION, DEVICE_HUB_VERSION } from "../device/DeviceToolchain.ts";
 import * as Net from "@t3tools/shared/Net";
@@ -152,6 +153,7 @@ import * as Adapters from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as Projects from "../project/ProjectService.ts";
 import * as RepositoryIdentity from "../project/RepositoryIdentityResolver.ts";
+import * as BuiltInDrivers from "../sourceControl/builtInDrivers.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
 import { OrchestratorToolkit } from "../mcp/toolkits/orchestrator/tools.ts";
@@ -463,6 +465,12 @@ export const automationReply = (
 
 const graphConnections = new WeakMap<Scope.Scope, Set<Scope.Closeable>>();
 
+const layerFixtureHostServices = Layer.merge(
+  McpProviderSessions.layer,
+  // Fixture repositories have no forge; pull request reads are mocked per test.
+  Layer.succeed(BuiltInDrivers.SourceControlDrivers, []),
+);
+
 export const makeNode = (
   descriptor: ExecutionEnvironmentDescriptor,
   storage: "memory" | "disk" = "memory",
@@ -511,6 +519,12 @@ export const makeNode = (
   } = {},
 ) =>
   Effect.gen(function* () {
+    // Closures rebuilt later reuse this node's instances; provider sessions keep per-thread state.
+    const hostServices = Layer.succeedContext(
+      yield* Effect.context<
+        McpProviderSessions.McpProviderSessions | BuiltInDrivers.SourceControlDrivers
+      >(),
+    );
     const graphScope = yield* Scope.Scope;
     const connectionScopes = graphConnections.get(graphScope) ?? new Set<Scope.Closeable>();
     graphConnections.set(graphScope, connectionScopes);
@@ -594,6 +608,7 @@ export const makeNode = (
           RepositoryIdentity.layer,
           Layer.succeed(ProjectFavicon.ProjectFaviconResolver, {
             resolvePath: () => Effect.succeed(null),
+            invalidate: () => Effect.void,
           }),
         ),
       ),
@@ -1003,6 +1018,7 @@ export const makeNode = (
           Layer.provide(nodeConfig),
           Layer.provide(projectLayer),
           Layer.provide(RepositoryIdentity.layer),
+          Layer.provide(hostServices),
           Layer.provide(environment),
           Layer.provide(peerHttp),
           Layer.fresh,
@@ -1278,6 +1294,7 @@ export const makeNode = (
       ),
       Layer.provide(ProjectStore.layer.pipe(Layer.provide(db))),
       Layer.provide(launchDependencies),
+      Layer.provide(hostServices),
     );
     const scheduleScope = yield* Scope.make();
     yield* Effect.addFinalizer(() => Scope.close(scheduleScope, Exit.void));
@@ -1604,14 +1621,24 @@ export const makeNode = (
               }),
           });
           const currentHub = yield* Ref.make<DeviceHost.DeviceHostReady | null>(null);
+          const run: DeviceHost.DeviceHostReady["run"] = () =>
+            Effect.succeed({ code: 0, stdout: "", stderr: "" });
           const ready: DeviceHost.DeviceHostReady = {
             nodePath: "/remote-host/node-must-never-execute",
             hub: { origin: viewerHubOrigin },
+            devices: makeDeviceHubOperations({
+              hostId: LOCAL_DEVICE_HOST_ID,
+              origin: viewerHubOrigin,
+              http: yield* HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer)),
+              run,
+              androidAvailable: Ref.get(devicePlatformAvailable),
+            }),
             helpers: { serveSimAxSettings: null, serveSimCli: null },
-            run: () => Effect.succeed({ code: 0, stdout: "", stderr: "" }),
+            run,
           };
           const host: DeviceHost.DeviceHost["Service"] = {
             id: LOCAL_DEVICE_HOST_ID,
+            label: "Isolated fixture",
             summary: Ref.get(devicePlatformAvailable).pipe(
               Effect.tap(() => Ref.get(deviceSummaryHook).pipe(Effect.flatten)),
               Effect.flatMap((available) =>
@@ -2051,7 +2078,7 @@ export const makeNode = (
             "/ws",
             Effect.gen(function* () {
               const request = yield* HttpServerRequest.HttpServerRequest;
-              const session = yield* peer.auth.authenticateWebSocketUpgrade(request);
+              const session = yield* peer.auth.authenticateWebSocketUpgrade(request, "rpc");
               const { protocol, httpEffect } = yield* RpcServer.makeProtocolWithHttpEffectWebsocket;
               yield* RpcServer.make(nativeOwnerRpcGroup, {
                 disableTracing: true,
@@ -2180,7 +2207,7 @@ export const makeNode = (
           scheduled: Context.get(rebuilt, ScheduledTasks.ScheduledTaskService),
           requestContext: requests,
         };
-      });
+      }).pipe(Effect.provide(hostServices));
     const restartSchedulerTransport = restartSchedulerTransportWith(attachmentRequests);
     return {
       ...peer,
@@ -2330,7 +2357,7 @@ export const makeNode = (
       forwarding: Context.get(services, PeerForwarding.PeerForwarding),
       remote: Context.get(services, RemoteDelegation.RemoteDelegation),
     };
-  }).pipe(Effect.provide(RepositoryIdentity.layer));
+  }).pipe(Effect.provide(Layer.merge(RepositoryIdentity.layer, layerFixtureHostServices)));
 
 export type Node = Effect.Success<ReturnType<typeof makeNode>>;
 

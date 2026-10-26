@@ -15,6 +15,7 @@ import * as Adapters from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import * as Git from "../git/GitWorkflowService.ts";
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as Providers from "../provider/ProviderRegistry.ts";
 import * as Secrets from "../secrets/SecretRequests.ts";
 import * as ScheduledTasks from "./ScheduledTaskService.ts";
@@ -38,6 +39,10 @@ it.effect(
         Scheduler.layer,
         Layer.mock(Threads.ThreadManagementService)({}),
         Layer.mock(Secrets.SecretRequests)({}),
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+          namedProjectsRoot: "/projects",
+          isScratchProject: () => Effect.succeed(false),
+        }),
         Layer.mock(Providers.ProviderRegistry)({}),
         Layer.mock(Git.GitWorkflowService)({}),
         Layer.mock(Adapters.ProviderAdapterRegistryV2)({ get: () => Effect.succeed(adapter) }),

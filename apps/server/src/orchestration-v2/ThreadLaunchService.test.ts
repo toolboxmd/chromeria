@@ -36,9 +36,11 @@ import {
   ScheduledTaskId,
   type ServerProvider,
   ThreadId,
+  EnvironmentId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -454,6 +456,7 @@ it.effect(
   () => {
     const harness = makeHarness();
     const layerScheduledTasks = ScheduledTasks.layer.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
       Layer.provide(
         Layer.mergeAll(
           harness.layer,
@@ -492,6 +495,7 @@ it.effect(
 it.effect("runs a thread-bound automation on the provider the thread uses now", () => {
   const harness = makeHarness({ adapters: [adapter, claudeAdapter] });
   const layerScheduledTasks = ScheduledTasks.layer.pipe(
+    Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
     Layer.provide(
       Layer.mergeAll(
         harness.layer,
@@ -959,6 +963,7 @@ function scratchHarness() {
           } as never),
   });
   const layerScheduledTasks = ScheduledTasks.layer.pipe(
+    Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
     Layer.provide(
       Layer.mergeAll(
         harness.layer,
@@ -2764,7 +2769,6 @@ it.effect("replays an accepted send after the project disables the instance", ()
     }
   }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerFiles)));
 });
-
 
 it.effect(
   "prepares an accepted delegated destination once through the existing workspace pipeline",

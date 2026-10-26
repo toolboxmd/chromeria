@@ -1,6 +1,7 @@
 export {
   GROK_DEFAULT_INSTANCE_ID,
   GROK_PROVIDER,
+  GrokProviderCapabilitiesV2,
   grokLaunchRuntimeMode,
   makeGrokAcpAdapterFlavor,
   makeGrokAdapterV2,
@@ -26,5 +27,6 @@ export {
   makeXAiPromptCompletionRuntime,
   normalizeXAiAcpToolCallState,
   registerXAiBackgroundTaskTracking,
+  xAiBackgroundTaskLifecycleMutation,
   xAiRateLimitedErrorCode,
 } from "./server/xaiAcpExtension.ts";

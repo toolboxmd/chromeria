@@ -613,21 +613,27 @@ const decoratedLayer = Layer.effect(
     const refused = (message: string, taskId: ScheduledTaskId | undefined) =>
       new ScheduledTaskError({ message, ...(taskId === undefined ? {} : { taskId }) });
 
+    type RunNowResult = ScheduledTaskRunNowResult & { readonly threadId: ThreadId | null };
     function runNow(
       input: ScheduledTaskRunNowInput,
-    ): Effect.Effect<ScheduledTaskRunNowResult, ScheduledTaskError>;
+    ): Effect.Effect<RunNowResult, ScheduledTaskError>;
     function runNow(
       input: ScheduledTaskRunNowInput,
       options: ScheduledTaskService.ManualOptions,
-    ): Effect.Effect<ScheduledTaskRunNowResult, ScheduledTaskError | OrchestratorMcpFailure>;
+    ): Effect.Effect<RunNowResult, ScheduledTaskError | OrchestratorMcpFailure>;
     function runNow(input: ScheduledTaskRunNowInput, options?: ScheduledTaskService.ManualOptions) {
       // A keyed result is the original owner's historical receipt. Decorating it
       // with current fork state would silently change that accepted intent.
       return options === undefined
-        ? inner.runNow(input).pipe(
-            Effect.flatMap((result) => attach(result.task)),
-            Effect.map((task) => ({ task })),
-          )
+        ? inner
+            .runNow(input)
+            .pipe(
+              Effect.flatMap((result) =>
+                attach(result.task).pipe(
+                  Effect.map((task) => ({ task, threadId: result.threadId })),
+                ),
+              ),
+            )
         : inner.runNow(input, options);
     }
 

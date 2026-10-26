@@ -1426,7 +1426,7 @@ const CODEX_T3_MCP_TOOL_TIMEOUT_SEC = 65 * 60;
 const CODEX_T3_DIRECT_MCP_SERVER = "t3-code-direct";
 const CODEX_DIRECT_ONLY_T3_TOOL = "t3_thread_wait";
 
-function codexThreadRuntimeParams(input: {
+export function codexThreadRuntimeParams(input: {
   readonly threadId: ThreadId | null;
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
   readonly modelSelection?: { readonly model: string };
@@ -7678,9 +7678,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const contexts = [
               ...(yield* Ref.get(activeTurns)).values(),
               ...(yield* Ref.get(settledTurns)).values(),
-              ...Array.from(cutIns.values()).flatMap((cutIn) =>
-                Array.from(cutIn.targets.values()),
-              ),
+              ...Array.from(cutIns.values()).flatMap((cutIn) => Array.from(cutIn.targets.values())),
             ];
             const roots = contexts.filter(
               (context) => context.providerThread.id === providerThread.id,
@@ -7697,26 +7695,26 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }
             return false;
           }),
-        endedTurnHold: (heldInput) =>
-          Effect.gen(function* () {
-            const cutIn = cutIns.get(heldInput.providerThread.id);
-            if (
-              cutInCalls.get(heldInput.providerThread.id)?.providerTurnId ===
-                heldInput.providerTurnId ||
-              (cutIn !== undefined &&
-                Array.from(cutIn.roots).some(
-                  (root) => root.providerTurnId === heldInput.providerTurnId,
-                ))
-            )
-              return "cut-in" as const;
-            for (const deferred of (yield* Ref.get(deferredRootTerminals)).values())
+          endedTurnHold: (heldInput) =>
+            Effect.gen(function* () {
+              const cutIn = cutIns.get(heldInput.providerThread.id);
               if (
-                deferred.context.providerThread.id === heldInput.providerThread.id &&
-                deferred.context.providerTurnId === heldInput.providerTurnId
+                cutInCalls.get(heldInput.providerThread.id)?.providerTurnId ===
+                  heldInput.providerTurnId ||
+                (cutIn !== undefined &&
+                  Array.from(cutIn.roots).some(
+                    (root) => root.providerTurnId === heldInput.providerTurnId,
+                  ))
               )
-                return "descendants" as const;
-            return undefined;
-          }),
+                return "cut-in" as const;
+              for (const deferred of (yield* Ref.get(deferredRootTerminals)).values())
+                if (
+                  deferred.context.providerThread.id === heldInput.providerThread.id &&
+                  deferred.context.providerTurnId === heldInput.providerTurnId
+                )
+                  return "descendants" as const;
+              return undefined;
+            }),
           ensureThread: (threadInput) =>
             ensureInitialized.pipe(
               Effect.andThen(mcpSessions.read(threadInput.threadId)),

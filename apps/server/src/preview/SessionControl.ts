@@ -191,7 +191,7 @@ export class SessionControl {
   }
 
   human<A>(viewerId: string, run: () => Promise<A>, authorize?: () => Promise<void>) {
-    return this.action(() => this.owner === viewerId, run, authorize);
+    return this.action(() => this.owner === viewerId, run, undefined, authorize);
   }
 
   /**

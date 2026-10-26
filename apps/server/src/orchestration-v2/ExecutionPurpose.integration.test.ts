@@ -22,6 +22,7 @@ import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as BareLaunch from "./BareLaunch.ts";
 import * as ThreadLaunch from "./ThreadLaunchService.ts";
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -526,6 +527,12 @@ it.effect(
           Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
           Layer.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({})),
           Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
+          Layer.provide(
+            Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+              namedProjectsRoot: "/projects",
+              isScratchProject: () => Effect.succeed(false),
+            }),
+          ),
           Layer.provide(Scheduler.layer),
           Layer.provide(NodeCrypto.layer),
           Layer.provideMerge(layerTest),

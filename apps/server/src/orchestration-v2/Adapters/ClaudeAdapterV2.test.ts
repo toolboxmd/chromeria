@@ -32,7 +32,6 @@ import {
   type ChatAttachment,
   ChatFileAttachment,
   ChatImageAttachment,
-  CheckpointId,
   ClaudeSettings,
   EnvironmentId,
   MessageId,

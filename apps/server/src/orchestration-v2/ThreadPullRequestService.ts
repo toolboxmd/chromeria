@@ -63,7 +63,7 @@ export function pullRequestMatchesProject(
   );
 }
 
-const resolveProjectForPullRequestDiscovery = Effect.fn(
+export const resolveProjectForPullRequestDiscovery = Effect.fn(
   "ThreadPullRequestServiceV2.resolveProject",
 )(function* (
   project: OrchestrationProjectShell,

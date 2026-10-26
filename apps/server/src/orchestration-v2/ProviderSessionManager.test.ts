@@ -1,6 +1,7 @@
 import * as CheckpointService from "./CheckpointService.ts";
 import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
+import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import * as PeerAuthority from "../peer/PeerAuthority.ts";
 import * as ForkProviderStartAdmission from "../provider/forkProviderStartAdmission.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
@@ -4249,6 +4250,7 @@ it.effect.each([
           }),
       });
       const layer = RunExecutionService.layer.pipe(
+        Layer.provideMerge(TurnItemPositionStore.layer.pipe(Layer.provide(layerTestDatabase))),
         Layer.provideMerge(
           Layer.mergeAll(
             base,
@@ -4448,6 +4450,7 @@ it.effect(
           }),
       });
       const layer = RunExecutionService.layer.pipe(
+        Layer.provideMerge(TurnItemPositionStore.layer.pipe(Layer.provide(layerTestDatabase))),
         Layer.provideMerge(
           Layer.mergeAll(
             base,

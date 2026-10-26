@@ -8,10 +8,9 @@ import {
 
 import {
   findProjectOnChangeRequestHost,
-  parseChangeRequestUrl,
-  pullRequestCandidateUrlFromReferenceAutolink,
   resolvePullRequestPreviewTarget,
-} from "~/lib/openPullRequestLink";
+} from "@t3tools/client-runtime/change-request-links";
+import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 
 /**
  * The pull request a GitHub `/issues/N` link would be if N is one, and where to read it, or null
@@ -42,7 +41,7 @@ export function issueLinkCandidate({
   readonly pullRequestTarget: { environmentId: EnvironmentId; input: PullRequestRef } | null;
 } | null {
   if (!issues || environmentId === null || parseIssueUrl(url) === null) return null;
-  const pullRequestUrl = pullRequestCandidateUrlFromReferenceAutolink(url);
+  const pullRequestUrl = sourceControlClients.changeRequestUrlFromReferenceAutolink(url);
   if (pullRequestUrl === null) return null;
   const exact = resolvePullRequestPreviewTarget({
     environmentId,
@@ -53,7 +52,7 @@ export function issueLinkCandidate({
   if (exact !== null || !pullRequests || !threadPullRequests || environmentId === null) {
     return { pullRequestUrl, pullRequestTarget: exact };
   }
-  const parsed = parseChangeRequestUrl(pullRequestUrl);
+  const parsed = sourceControlClients.parseChangeRequestUrl(pullRequestUrl)?.link ?? null;
   const project =
     parsed === null
       ? undefined

@@ -4576,6 +4576,7 @@ interface ClaudeSubagentProjectionTarget {
   readonly childRootNodeId: OrchestrationV2ExecutionNode["id"];
   readonly nextOrdinal: () => number;
   readonly toolCalls: Map<string, ActiveClaudeToolCall>;
+  readonly executionCause: ActiveClaudeToolCall["executionCause"];
 }
 
 /** Claude writes blocks separately with stop_reason null until the last.
@@ -4637,17 +4638,17 @@ const unknownClaudeCause = (
 });
 
 function claudeSubagentCause(
-  owner: ActiveClaudeSubagent,
+  task: Pick<OrchestrationV2Subagent, "id" | "threadId" | "nativeSegments">,
 ): Pick<NativeExecutionSegment, "source" | "purpose"> {
-  const segments = owner.task.nativeSegments ?? [];
+  const segments = task.nativeSegments ?? [];
   const segment = segments.at(-1);
   if (segment === undefined || (segments.length > 1 && segment.boundary.state === "unresolved"))
     return unknownClaudeCause("owning_child_segment_unresolved");
   return {
     source: {
       type: "native_segment",
-      threadId: owner.task.threadId,
-      subagentId: owner.task.id,
+      threadId: task.threadId,
+      subagentId: task.id,
       segmentId: segment.id,
     },
     purpose: segment.purpose,
@@ -4663,7 +4664,7 @@ function claudeNativeCause(
         source: { type: "app_run", threadId: context.input.threadId, runId: context.input.runId },
         purpose: executionPurposeOf(context.input),
       }
-    : claudeSubagentCause(owner);
+    : claudeSubagentCause(owner.task);
 }
 
 const PENDING_CLAUDE_SUBAGENT_CAP = 64;
@@ -6615,7 +6616,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               });
             }
 
-            const coordinatorCause = claudeSubagentCause(input.coordinator);
+            const coordinatorCause = claudeSubagentCause(input.coordinator.task);
             const nativeSegments: ReadonlyArray<NativeExecutionSegment> = [
               {
                 version: 1,
@@ -6710,6 +6711,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               childRootNodeId,
               nextOrdinal: () => ++nextItemOrdinal,
               toolCalls,
+              executionCause: claudeSubagentCause(task),
             };
             const endOpenToolCalls = Effect.fnUntraced(function* () {
               if (toolCalls.size === 0) return;
@@ -7610,6 +7612,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }
           return yield* startToolCall({
             ...call,
+            executionCause:
+              input.parentToolUseId === null
+                ? claudeNativeCause(input.context, undefined)
+                : unknownClaudeCause("owning_child_call_missing"),
             context: input.context,
             threadId: input.context.input.threadId,
             runId: input.context.input.runId,
@@ -7621,6 +7627,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
 
         const startToolCall = Effect.fnUntraced(function* (input: {
           readonly context: ActiveClaudeTurnContext | null;
+          readonly executionCause: ActiveClaudeToolCall["executionCause"];
           readonly nativeItemId: string;
           readonly toolName: string;
           readonly toolInput: ClaudeNativeToolInput;
@@ -7633,10 +7640,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           readonly registry: Map<string, ActiveClaudeToolCall>;
         }) {
           const toolCall: ActiveClaudeToolCall = {
-            executionCause:
-              input.parentToolUseId !== null && subagent === undefined
-                ? unknownClaudeCause("owning_child_call_missing")
-                : claudeNativeCause(input.context, subagent),
+            executionCause: input.executionCause,
             nativeItemId: input.nativeItemId,
             toolName: input.toolName,
             classification: classifyClaudeNativeTool(input.toolName),
@@ -7679,6 +7683,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           childRootNodeId: subagent.childRootNodeId,
           nextOrdinal: () => ++subagent.nextChildItemOrdinal,
           toolCalls: subagentToolCalls,
+          executionCause: claudeSubagentCause(subagent.task),
         });
 
         const startSubagentToolCall = (
@@ -7693,6 +7698,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         ) =>
           startToolCall({
             ...call,
+            executionCause: target.executionCause,
             context: null,
             threadId: target.childThreadId,
             runId: null,
