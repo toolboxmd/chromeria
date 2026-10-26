@@ -192,7 +192,12 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   tools: Schema.optional(ThreadToolsRequest),
   projectId: Schema.optional(ProjectId),
   workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
-  lane: Schema.optional(PrismLane),
+  lane: Schema.optional(
+    PrismLane.annotate({
+      description:
+        "Worker lane: easy, medium (default) or hard for difficulty, or ui for UI and frontend work. A ui task runs only on the ui lane's Colors, an explicit target must be one of them, and it fails visibly instead of falling back to another model.",
+    }),
+  ),
   prismRole: Schema.optional(
     PrismDelegateRoleInput.annotate({
       description: `Explicit Prism role kit: ${PRISM_DELEGATE_ROLE_GUIDE}. Omit to map role: review to reviewer, research to researcher, design to designer, and everything else to worker. dispatcher, retry and escalation are removed and work only to retry a request an older build accepted.`,

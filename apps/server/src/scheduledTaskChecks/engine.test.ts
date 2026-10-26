@@ -192,11 +192,15 @@ const harness = (options: { readonly role?: string } = {}) =>
                 kitText: "KIT",
               }),
     });
-    const save = (fields: Record<string, unknown>, actorThreadId: ThreadId | null = null) =>
+    const save = (
+      fields: Record<string, unknown>,
+      actorThreadId: ThreadId | null = null,
+      bound: ThreadId | null = threadId,
+    ) =>
       runs.save({
         taskId,
         projectId: ProjectId.make("project"),
-        threadId,
+        threadId: bound,
         schedule: { type: "interval" },
         fields,
         actor: "agent-thread",
@@ -541,6 +545,38 @@ it.effect("a Prism pick selects the model of a new thread only and prefixes its 
     assert.equal(bound.sent.length, 1);
     assert.isNull(bound.sent[0]!.modelSelection);
     assert.match(bound.sent[0]!.text, /KIT\n\nDo the work$/);
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("a ui-lane task cannot post into a bound thread, whose model is not the ui kit's", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    const bound = yield* harness({ role: "picked-model" });
+    const fields = { checkCommand: "check", checkReason: "outcome", role: "worker" };
+    const error = yield* Effect.flip(bound.save({ ...fields, lane: "ui" }));
+    assert.include(error.message, "ui lane");
+    yield* bound.save({ ...fields, lane: "medium" });
+    assert.equal((yield* bound.state()).lane, "medium");
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("a ui-lane task without a role runs as a worker, so Prism places it", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    const created = yield* harness();
+    yield* created.save({ checkCommand: "check", checkReason: "outcome", lane: "ui" }, null, null);
+    assert.equal((yield* created.state()).role, "worker");
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("moving a task without a role to the ui lane makes it a worker", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    const h = yield* harness();
+    yield* h.save({ checkCommand: "check", checkReason: "outcome" }, null, null);
+    assert.isNull((yield* h.state()).role);
+    yield* h.save({ lane: "ui" }, null, null);
+    assert.equal((yield* h.state()).role, "worker");
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 

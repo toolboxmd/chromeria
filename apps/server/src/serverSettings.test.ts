@@ -260,6 +260,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
                     effort: "xhigh",
                   },
                 ],
+                ui: [{ instanceId: ProviderInstanceId.make("claude"), model: "claude-opus-4-6" }],
               },
             },
           };
@@ -2321,7 +2322,12 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           >,
         )
           .filter(([role]) => role !== "computer-use")
-          .map(([role, { run: _run, ...kit }]) => [role, kit]),
+          // Builds before the ui lane stored only the three difficulty lanes.
+          .map(([role, { run: _run, ...kit }]) =>
+            role === "worker"
+              ? [role, { ...kit, lanes: { easy: [], medium: [], hard: [] } }]
+              : [role, kit],
+          ),
       );
       const tuned = ProjectId.make("project-tuned");
       const untouched = ProjectId.make("project-untouched");
@@ -2384,7 +2390,11 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       });
       const kits = resolveProjectSettings(changed, tuned).settings.prismRoles;
       assert.deepEqual(kits.reviewer.models, [grok]);
-      assert.deepEqual(kits.worker.lanes, { easy: [], medium: [luna], hard: [sol] });
+      assert.deepEqual(kits.worker.lanes, {
+        ...DEFAULT_PRISM_ROLE_KITS.worker.lanes,
+        medium: [luna],
+        hard: [sol],
+      });
       assert.deepEqual(
         resolveProjectSettings(changed, untouched).settings.prismRoles,
         changed.prismRoles,
