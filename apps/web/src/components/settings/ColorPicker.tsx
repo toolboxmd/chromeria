@@ -9,7 +9,7 @@ import {
   type ColorProviderChoice,
 } from "./ColorPicker.logic";
 
-function ProviderLabel({ provider }: { provider: ColorProviderChoice }) {
+export function ProviderLabel({ provider }: { provider: ColorProviderChoice }) {
   return (
     <span className="flex min-w-0 items-center gap-2">
       <ProviderInstanceIcon

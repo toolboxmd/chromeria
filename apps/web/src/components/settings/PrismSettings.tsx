@@ -4,7 +4,6 @@ import {
   PRISM_ROLE_LABELS,
   PrismLane,
 } from "@t3tools/contracts";
-import { Link } from "@tanstack/react-router";
 import { type ReactNode, useState } from "react";
 import { useEnvironmentProviders } from "../../state/environments";
 import {
@@ -23,7 +22,6 @@ import {
   deriveProviderInstanceEntries,
 } from "../../providerInstances";
 import { cn } from "../../lib/utils";
-import { useThreadShells } from "../../state/entities";
 import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
 import { Button } from "../ui/button";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
@@ -150,7 +148,7 @@ function RunControl({
 }
 
 export function PrismSettings() {
-  const { scope, target, targets, environments, connectedEnvironments } = useSettingsScope();
+  const { scope, target, targets, environments } = useSettingsScope();
   const settings = useScopedSettings();
   const { pendingWrite, saveError, setSaveError, savePlan, saveRole } = usePrismSettingsSave();
   const [selectedRole, setSelectedRole] = useState<PageRole>("planner");
@@ -167,16 +165,6 @@ export function PrismSettings() {
   const options = getCustomModelOptionsByInstance(settings, providers);
   const disabledReason = useScopedModelDisabledReason(settings, entries);
   const providerChoices = colorProviderChoices(entries, options, disabledReason);
-  const threads = useThreadShells();
-  const thread = threads
-    .filter((candidate) =>
-      targets.some(
-        (selected) =>
-          selected.environmentId === candidate.environmentId &&
-          (selected.projectId === null || selected.projectId === candidate.projectId),
-      ),
-    )
-    .toSorted((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
   return (
     <SettingsPageContainer width="wide" className="@container/prism gap-8">
       <SettingsSection
@@ -310,88 +298,6 @@ export function PrismSettings() {
             )}
           </div>
         </SettingsGroup>
-      </SettingsSection>
-      <SettingsSection id="prism-capacity" title="Live capacity">
-        <div className="space-y-4 px-3 sm:px-4">
-          {connectedEnvironments.map((env) => (
-            <div key={env.environmentId} className="space-y-3">
-              <h3 className="text-sm font-medium">{env.label}</h3>
-              {(providersByEnvironment.get(env.environmentId) ?? EMPTY_SERVER_PROVIDERS).map(
-                (provider) => (
-                  <div key={provider.instanceId} className="space-y-2 rounded-lg border p-3">
-                    <p className="text-sm">
-                      {provider.displayName ?? provider.instanceId}
-                      {!provider.enabled ? " (disabled)" : ""}
-                    </p>
-                    {provider.usageLimits?.checkedAt && (
-                      <p className="text-xs text-muted-foreground">
-                        Checked {new Date(provider.usageLimits.checkedAt).toLocaleString()}
-                      </p>
-                    )}
-                    {provider.usageLimits?.unavailable && (
-                      <p className="text-xs text-muted-foreground">
-                        {provider.usageLimits.unavailable.message ??
-                          (provider.usageLimits.unavailable.reason === "probeFailed"
-                            ? "Usage refresh failed; showing the last reading if available."
-                            : "Usage reporting is unsupported.")}
-                      </p>
-                    )}
-                    {!provider.usageLimits?.windows.length && (
-                      <p className="text-xs text-muted-foreground">No usage windows reported.</p>
-                    )}
-                    {provider.usageLimits?.windows.map((window) => (
-                      <div key={window.id} className="space-y-1">
-                        <div className="flex flex-wrap justify-between gap-2 text-xs">
-                          <span>
-                            {window.label}: {window.usedPercent}% used
-                          </span>
-                          <span className="text-muted-foreground">
-                            {window.resetsAt
-                              ? `Resets ${new Date(window.resetsAt).toLocaleString()}`
-                              : "Reset time not reported"}
-                          </span>
-                        </div>
-                        <meter
-                          className="h-2 w-full"
-                          aria-label={`${provider.displayName ?? provider.instanceId} ${window.label} used`}
-                          min={0}
-                          max={100}
-                          value={window.usedPercent}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                ),
-              )}
-            </div>
-          ))}
-          {connectedEnvironments.length === 0 && (
-            <p className="text-sm text-muted-foreground">
-              Connect an environment to see its capacity.
-            </p>
-          )}
-        </div>
-      </SettingsSection>
-      <SettingsSection id="prism-jobs" title="Recent Prism jobs">
-        <div className="space-y-2 px-3 text-sm text-muted-foreground sm:px-4">
-          <p>
-            Recent jobs are not included in this snapshot. Open a thread to see its delegated tasks
-            in Lineage.
-          </p>
-          {thread ? (
-            <Link
-              className="text-primary underline"
-              to="/$environmentId/$threadId"
-              params={{ environmentId: thread.environmentId, threadId: thread.id }}
-            >
-              Open thread
-            </Link>
-          ) : (
-            <Link className="text-primary underline" to="/">
-              Open a thread to view Lineage
-            </Link>
-          )}
-        </div>
       </SettingsSection>
     </SettingsPageContainer>
   );
