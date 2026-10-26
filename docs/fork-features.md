@@ -2282,6 +2282,7 @@ sources and reasons.
     "packages/shared/src/sessionRenewal.ts"
   ],
   "upstreamFiles": [
+    "apps/mobile/src/lib/protectedData.test.ts",
     "apps/desktop/src/ipc/DesktopIpcHandlers.ts",
     "apps/desktop/src/ipc/channels.ts",
     "apps/desktop/src/ipc/methods/connectionCatalog.ts",

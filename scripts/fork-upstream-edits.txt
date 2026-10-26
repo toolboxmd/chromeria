@@ -698,3 +698,4 @@ apps/web/src/components/CommandPalette.logic.ts
 apps/web/src/components/device/DevicePanel.browser.test.tsx
 apps/server/src/persistence/Migrations/066_RepairClientSettlementTimestamps.test.ts
 scripts/effect-budget.json
+apps/mobile/src/lib/protectedData.test.ts
