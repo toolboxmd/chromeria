@@ -19,6 +19,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { ProviderAdapterRegistryV2 } from "../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -165,6 +166,7 @@ function roleRun(kits: PrismRoleKits, role: PrismRole): number {
 const make = Effect.gen(function* () {
   const registry = yield* ProviderRegistry.ProviderRegistry;
   const settings = yield* ServerSettings.ServerSettingsService;
+  const sql = yield* SqlClient.SqlClient;
   const readKits = (projectId: ProjectId) =>
     settings.getSettings.pipe(
       Effect.mapError(
@@ -222,12 +224,41 @@ const make = Effect.gen(function* () {
         return { modelSelection, modelSelections: [modelSelection], kitText };
       }
       const providers = yield* registry.getProviders;
-      const now = DateTime.toEpochMillis(yield* DateTime.now);
       if (ui && preferences.length === 0)
         return yield* new OrchestratorMcpFailure({
           code: "provider_unavailable",
           message: "The worker's ui lane has no Colors. Add one in Settings > Prism.",
         });
+      const instant = yield* DateTime.now;
+      const now = DateTime.toEpochMillis(instant);
+      // Recovery preferences and stopping a child do not restore its subscription capacity.
+      // Use the executing run's instance, even if its thread has since changed Colors.
+      const limited = yield* sql<{ provider_instance_id: string }>`
+        SELECT DISTINCT r.provider_instance_id
+        FROM orchestration_v2_projection_turn_items item
+        INNER JOIN orchestration_v2_projection_runs r ON r.run_id = item.run_id
+        WHERE r.status = 'failed' AND r.provider_instance_id IS NOT NULL
+          AND item.type = 'error' AND item.status = 'failed'
+          AND item.turn_item_id = (
+            SELECT error.turn_item_id FROM orchestration_v2_projection_turn_items error
+            WHERE error.thread_id = r.thread_id AND error.run_id = r.run_id
+              AND error.type = 'error' AND error.status = 'failed'
+              AND error.node_id IS json_extract(r.payload_json, '$.rootNodeId')
+            ORDER BY error.updated_at DESC, error.ordinal DESC, error.turn_item_id DESC
+            LIMIT 1
+          )
+          AND json_extract(item.payload_json, '$.failure.class') = 'usage_limit'
+          AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(instant)})
+      `.pipe(
+        Effect.mapError(
+          () =>
+            new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: "Unable to read known provider capacity limits.",
+            }),
+        ),
+      );
+      const limitedInstances = new Set(limited.map((row) => row.provider_instance_id));
       const candidates =
         preferences.length > 0 ? preferences : input.inherited ? [input.inherited] : [];
       const count = Math.max(1, input.count ?? 1);
@@ -235,7 +266,12 @@ const make = Effect.gen(function* () {
       for (const candidate of candidates) {
         if (started.length >= count) break;
         const provider = providers.find((p) => p.instanceId === candidate.instanceId);
-        if (!provider?.enabled || blocked(provider, now)) continue;
+        if (
+          !provider?.enabled ||
+          limitedInstances.has(candidate.instanceId) ||
+          blocked(provider, now)
+        )
+          continue;
         // A validator can re-probe stale unavailable snapshots before refusing the candidate.
         const rechecking = provider.availability === "unavailable" && input.validate !== undefined;
         if (provider.availability === "unavailable" && !rechecking) continue;

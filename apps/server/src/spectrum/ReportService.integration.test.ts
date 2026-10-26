@@ -92,7 +92,7 @@ const base = Layer.mergeAll(
   database,
   adapters,
   registry,
-  Prism.layer.pipe(Layer.provide(Layer.mergeAll(registry, Settings.layerTest({})))),
+  Prism.layer.pipe(Layer.provide(Layer.mergeAll(database, registry, Settings.layerTest({})))),
   CommandReceipts.layer.pipe(Layer.provide(database)),
   RecoveryStore.layer.pipe(Layer.provide(database)),
   Harness.layerWithRegistry({ name: "spectrum-report" }, adapters, {

@@ -85,6 +85,7 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
+  Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
   Layer.provide(PrismServerSettings.layerTest()),
   Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
@@ -528,6 +529,7 @@ describe("orchestrator MCP toolkit", () => {
         );
         const layers = Layer.merge(
           McpHttpServer.layerOrchestratorToolkit.pipe(
+            Layer.provide(SqlitePersistence.layerMemory),
             Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
           ),
           McpHttpServer.toolkitRegistration(AttachmentToolkit, AttachmentHandlers.layer),
