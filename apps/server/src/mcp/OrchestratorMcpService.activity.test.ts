@@ -1,3 +1,4 @@
+import * as Database from "../persistence/Sqlite.ts";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
@@ -35,6 +36,7 @@ import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import { liveThreadShell } from "./McpToolAccess.testkit.ts";
 
 const layerOrchestratorService = OrchestratorMcpService.layer.pipe(
+  Layer.provide(Database.layerMemory),
   Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
   Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),

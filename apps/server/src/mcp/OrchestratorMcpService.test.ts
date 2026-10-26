@@ -1,3 +1,4 @@
+import * as Database from "../persistence/Sqlite.ts";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -55,6 +56,7 @@ import * as DelegatedTaskModes from "./delegatedTaskModes.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 const layerOrchestratorService = OrchestratorMcpService.layer.pipe(
+  Layer.provide(Database.layerMemory),
   Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
   Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
@@ -1390,7 +1392,14 @@ describe("OrchestratorMcpService provider resolution", () => {
           });
           assert.equal(selectedBase, expected.commitSha);
           assert.equal(childHead.commitSha, expected.commitSha);
-        }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(dependencies))));
+        }).pipe(
+          Effect.provide(
+            OrchestratorMcpService.layer.pipe(
+              Layer.provide(dependencies),
+              Layer.provide(Database.layerMemory),
+            ),
+          ),
+        );
       }).pipe(
         Effect.scoped,
         Effect.provide(
