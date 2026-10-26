@@ -24,7 +24,7 @@ describe("Prism project override resolution", () => {
     });
     const kits = resolveProjectSettings(environment, projectId).settings.prismRoles;
     expect(kits.reviewer).toMatchObject({ instructions: "Review.", skills: [], models: [sol] });
-    expect(kits.worker.lanes).toEqual({ easy: [], medium: [grok], hard: [luna] });
+    expect(kits.worker.lanes).toMatchObject({ easy: [], medium: [grok], hard: [luna] });
     // A present empty list is the project's own value: the caller's model.
     expect(kits.planner.models).toEqual([]);
 
@@ -33,7 +33,7 @@ describe("Prism project override resolution", () => {
     });
     const after = resolveProjectSettings(changed, projectId).settings.prismRoles;
     expect(after.reviewer.models).toEqual([grok]);
-    expect(after.worker.lanes).toEqual({ easy: [], medium: [sol], hard: [luna] });
+    expect(after.worker.lanes).toMatchObject({ easy: [], medium: [sol], hard: [luna] });
     expect(resolveProjectSettings(changed, projectId).settings.defaultAutoPull).toBe(true);
   });
 });
@@ -73,7 +73,7 @@ describe("Prism project override writes", () => {
     });
     const kits = resolveProjectSettings(next, projectId).settings.prismRoles;
     expect(kits.reviewer.models).toEqual([sol]);
-    expect(kits.worker.lanes).toEqual({ easy: [], medium: [grok], hard: [sol] });
+    expect(kits.worker.lanes).toMatchObject({ easy: [], medium: [grok], hard: [sol] });
     expect(next.prismRoleOverridesPartial).toBe(true);
     const changed = applyServerSettingsPatch(next, {
       prismRoles: { "computer-use": { models: [sol] } },

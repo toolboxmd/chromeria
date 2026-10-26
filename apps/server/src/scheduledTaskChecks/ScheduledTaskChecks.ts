@@ -487,7 +487,8 @@ const makeEngine = Effect.gen(function* () {
               bare: task.bare !== undefined,
               projectId: task.projectId,
               role: state.role,
-              lane: state.lane ?? undefined,
+              // A post keeps its thread's model; a ui task only posts into the thread it launched.
+              lane: launching ? (state.lane ?? undefined) : undefined,
               // A post keeps its thread's model, so only the kit is taken. A launch asks
               // Prism for a model and validates it like any unattended launch; with no
               // eligible model the run retries rather than using the task's own model.
@@ -677,6 +678,11 @@ const decoratedLayer = Layer.effect(
           if (state !== undefined && input.schedule.type === "webhook")
             return yield* refused(
               "Webhook tasks cannot have an outcome check, a Prism role or a shell command.",
+              input.id,
+            );
+          if (state?.lane === "ui" && (input.threadId ?? null) !== null)
+            return yield* refused(
+              "A ui lane task must launch its own thread on the ui lane's Colors, so it cannot be bound to a thread.",
               input.id,
             );
           // Only fork triggers need this; upstream handles its own schedule changes.

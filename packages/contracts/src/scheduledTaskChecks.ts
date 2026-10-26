@@ -171,7 +171,8 @@ const Role = PrismRole.annotate({
     "Prism role whose kit and model list start each run, such as planner or worker. A role that Prism cannot place makes the run retry; it never falls back to another model.",
 });
 const Lane = PrismLane.annotate({
-  description: "Difficulty lane for the worker role; defaults to medium.",
+  description:
+    "Lane for the worker role: easy, medium (default) or hard for difficulty, or ui for UI and frontend work, which runs only on the ui lane's Colors and so needs bindToCurrentThread false.",
 });
 const ShellCommand = TrimmedNonEmptyString.check(Schema.isMaxLength(8_000)).annotate({
   description:

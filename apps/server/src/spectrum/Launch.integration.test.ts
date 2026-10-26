@@ -320,6 +320,27 @@ it.effect("rebuilds outbox admission after restart and retains native retirement
   }).pipe(Effect.provide(runtime)),
 );
 
+it.effect("refuses the ui lane for Colors and White", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    const launch = yield* Launch.SpectrumLaunchService;
+    const { moderator: _moderator, ...withoutModerator } = input;
+    for (const request of [
+      {
+        ...input,
+        colors: [
+          { label: "Blue", selection },
+          { label: "UI", lane: "ui" as const },
+        ],
+      },
+      { ...withoutModerator, white: { selection, lane: "ui" as const } },
+    ]) {
+      const error = yield* Effect.flip(launch.register(request));
+      assert.nestedPropertyVal(error, "cause.code", "invalid_request");
+    }
+  }).pipe(Effect.provide(runtime)),
+);
+
 it.effect("legacy Color instance and model overrides keep Prism role instructions", () =>
   Effect.gen(function* () {
     yield* setup;

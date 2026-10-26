@@ -93,8 +93,9 @@ role's **Run** says how many Colors one delegation starts.
 _Avoid_: fan-out, batch, swarm
 
 **Lane**:
-The difficulty of a worker delegation, `easy`, `medium` or `hard`, which Prism
-uses to pick its Color.
+The kind of a worker delegation, which Prism uses to pick its Color: a
+difficulty, `easy`, `medium` or `hard`, or `ui` for UI work, which runs only on
+the `ui` lane's own Colors.
 _Avoid_: tier, track, matcher
 
 **Cue (intent detector)**:

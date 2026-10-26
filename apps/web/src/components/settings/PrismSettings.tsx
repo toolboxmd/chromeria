@@ -60,7 +60,12 @@ const ROLE_ICONS: Record<PageRole, ReactNode> = {
   judge: <ScaleIcon />,
 };
 
-const LANE_LABELS: Record<PrismLane, string> = { easy: "Easy", medium: "Medium", hard: "Hard" };
+const LANE_LABELS: Record<PrismLane, string> = {
+  easy: "Easy",
+  medium: "Medium",
+  hard: "Hard",
+  ui: "UI",
+};
 
 function RoleRow({
   role,
