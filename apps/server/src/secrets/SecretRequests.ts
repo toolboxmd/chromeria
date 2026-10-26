@@ -1,11 +1,9 @@
 import * as RemoteSecretRelay from "./RemoteSecretRelay.ts";
 import type { AuthSessionId } from "@t3tools/contracts";
 /**
- * The user's answer goes straight to private files on the server, one per
- * field, that the agent's tools can read by path; a single-field answer is
- * also kept under a one-use SecretRef for tools that take one. Orchestration
- * only records the request and its status, so the value never reaches the
- * transcript, projections, clients, or the tool result.
+ * The user's answer goes to private per-field files the agent reads by path, and a single-field
+ * answer also to a one-use SecretRef. Orchestration records only the request and its status, so the
+ * value never reaches the transcript, projections, clients or the tool result.
  */
 import { pipe } from "effect/Function";
 import {
@@ -111,37 +109,37 @@ const make = Effect.gen(function* () {
   const filesDir = (ref: SecretRef) => path.join(filesRoot, ref.slice(SECRET_REF_PREFIX.length));
 
   /**
-   * Writes one 0600 file per value into the request's 0700 directory. The
-   * files appear together by renaming a finished temp directory, so the agent
-   * never sees half a save. Answers run one at a time, so a directory already
-   * there is an earlier save of this request whose record failed; it is
-   * replaced, so the files always hold this save's values.
+   * Writes one 0600 file per value into the request's 0700 directory, renamed in from a finished temp
+   * directory so the agent never sees half a save. An existing directory is an earlier save whose
+   * record failed, so it is replaced.
    */
-  const writeFiles = (ref: SecretRef, values: Record<string, string>) =>
-    Effect.gen(function* () {
-      const target = filesDir(ref);
-      yield* fileSystem.makeDirectory(filesRoot, { recursive: true, mode: 0o700 });
-      yield* fileSystem.chmod(filesRoot, 0o700);
-      const temp = `${target}.tmp-${NodeCrypto.randomBytes(8).toString("hex")}`;
-      yield* Effect.gen(function* () {
-        yield* fileSystem.makeDirectory(temp, { mode: 0o700 });
-        yield* fileSystem.chmod(temp, 0o700);
-        for (const [name, value] of Object.entries(values)) {
-          const file = path.join(temp, name);
-          yield* fileSystem.writeFile(file, new TextEncoder().encode(value), {
-            flag: "wx",
-            mode: 0o600,
-          });
-          yield* fileSystem.chmod(file, 0o600);
-        }
-        yield* fileSystem.remove(target, { recursive: true, force: true });
-        yield* fileSystem.rename(temp, target);
-      }).pipe(
-        Effect.tapError(() =>
-          fileSystem.remove(temp, { recursive: true, force: true }).pipe(Effect.ignore),
-        ),
-      );
-    });
+  const writeFiles = Effect.fn("SecretRequests.writeFiles")(function* (
+    ref: SecretRef,
+    values: Record<string, string>,
+  ) {
+    const target = filesDir(ref);
+    yield* fileSystem.makeDirectory(filesRoot, { recursive: true, mode: 0o700 });
+    yield* fileSystem.chmod(filesRoot, 0o700);
+    const temp = `${target}.tmp-${NodeCrypto.randomBytes(8).toString("hex")}`;
+    yield* Effect.gen(function* () {
+      yield* fileSystem.makeDirectory(temp, { mode: 0o700 });
+      yield* fileSystem.chmod(temp, 0o700);
+      for (const [name, value] of Object.entries(values)) {
+        const file = path.join(temp, name);
+        yield* fileSystem.writeFile(file, new TextEncoder().encode(value), {
+          flag: "wx",
+          mode: 0o600,
+        });
+        yield* fileSystem.chmod(file, 0o600);
+      }
+      yield* fileSystem.remove(target, { recursive: true, force: true });
+      yield* fileSystem.rename(temp, target);
+    }).pipe(
+      Effect.tapError(() =>
+        fileSystem.remove(temp, { recursive: true, force: true }).pipe(Effect.ignore),
+      ),
+    );
+  });
 
   /** Removes a request's files; a failure is logged, and the sweep retries it. */
   const removeFiles = (ref: SecretRef) =>
@@ -158,19 +156,20 @@ const make = Effect.gen(function* () {
    * a time, so a value already there is an earlier save of this request whose
    * record failed, and this save's value replaces it to match the file.
    */
-  const storeSingle = (ref: SecretRef, projectId: string, value: string) =>
-    Effect.gen(function* () {
-      const encoded = yield* encodeStored({
-        projectId,
-        value,
-        savedAt: yield* Clock.currentTimeMillis,
-      }).pipe(Effect.orDie);
-      yield* store
-        .set(storeName(ref), new TextEncoder().encode(encoded))
-        .pipe(
-          Effect.mapError((cause) => new SecretRequestError({ reason: "store_failed", cause })),
-        );
-    });
+  const storeSingle = Effect.fn("SecretRequests.storeSingle")(function* (
+    ref: SecretRef,
+    projectId: string,
+    value: string,
+  ) {
+    const encoded = yield* encodeStored({
+      projectId,
+      value,
+      savedAt: yield* Clock.currentTimeMillis,
+    }).pipe(Effect.orDie);
+    yield* store
+      .set(storeName(ref), new TextEncoder().encode(encoded))
+      .pipe(Effect.mapError((cause) => new SecretRequestError({ reason: "store_failed", cause })));
+  });
 
   /** Every field's value from a save, or none when a field is missing or extra. */
   const answerValues = (
@@ -187,8 +186,8 @@ const make = Effect.gen(function* () {
   };
 
   const answerLock = yield* Semaphore.make(1);
-  const answer: SecretRequests["Service"]["answer"] = (input, clientSessionId) =>
-    Effect.gen(function* () {
+  const answer: SecretRequests["Service"]["answer"] = Effect.fn("SecretRequests.answer")(
+    function* (input, clientSessionId) {
       yield* Effect.annotateCurrentSpan({
         "orchestration_v2.thread_id": input.threadId,
         "secret_request.answer": input.answer.type,
@@ -288,17 +287,13 @@ const make = Effect.gen(function* () {
         }
         return yield* new SecretRequestError({ reason: "agent_stopped" });
       }
-    }).pipe(
-      // One answer at a time, across every request: two clients answering the
-      // same card see one answer win and the other already answered, and an
-      // answer's cleanup can never delete what another answer saved. Answers
-      // are rare human actions, so one lock costs nothing.
-      answerLock.withPermits(1),
-      Effect.withSpan("SecretRequests.answer"),
-    );
+    },
+    answerLock.withPermits(1),
+    Effect.withSpan("SecretRequests.answer"),
+  );
 
-  const saved: SecretRequests["Service"]["saved"] = (input) =>
-    Effect.gen(function* () {
+  const saved: SecretRequests["Service"]["saved"] = Effect.fn("SecretRequests.saved")(
+    function* (input) {
       const ref = refFor(salt, input.threadId, input.turnItemId);
       const stored = yield* store.get(storeName(ref)).pipe(Effect.orElseSucceed(Option.none));
       const dir = filesDir(ref);
@@ -313,7 +308,8 @@ const make = Effect.gen(function* () {
         files: Object.fromEntries(names.toSorted().map((name) => [name, path.join(dir, name)])),
         ...(Option.isSome(stored) ? { secretRef: ref } : {}),
       });
-    });
+    },
+  );
 
   const removeLogged = (name: string) =>
     store.remove(name).pipe(

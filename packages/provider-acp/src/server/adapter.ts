@@ -2031,12 +2031,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               "progress",
           );
         });
-        // Normalized tool statuses are not genuine: Grok Bash re-reports carry
-        // exit_code 0 mid-stream. A straggler monitor-event can land after the
-        // real end (the CLI keeps streaming while the agent already consumed
-        // the output via get_command_or_subagent_output); without the tombstone
-        // it would resurrect the running set and pin offers/idle-release
-        // forever.
+        // Normalized statuses are not genuine: Grok Bash re-reports carry exit_code 0 mid-stream, and a
+        // straggler monitor event can land after the real end. Without the tombstone it would resurrect
+        // the running set and pin offers and idle release forever.
         const endedBackgroundTaskIds = yield* Ref.make<ReadonlySet<string>>(new Set());
         const endedBackgroundTaskIdLimit = 128;
 
@@ -4058,29 +4055,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               backgroundTaskId,
               backgroundStatus === "pending" || backgroundStatus === "running",
             );
-            // Background tool that reaches a terminal status while the root
-            // prompt is still open (completed, failed, or interrupted) was
-            // consumed in-turn. Mark handled so late CLI re-reports and residual
-            // agent chatter do not open synthetic "Background task completed."
-            // runs. get_command TaskOutput still marks handled below.
-            // Only before promptSettled: after STARTED the deferred-finalize
-            // hold can let a monitor finish while the turn is still active;
-            // marking then would suppress the legitimate post-settle TaskOutput
-            // continuation (live: grok-post-settle-continuation-poll).
-            // Terminal statuses only after normalizeToolCall (start ACKs stay
-            // inProgress/running).
-            //
-            // Tradeoff: a pre-settle false "completed" normalization (Bash-
-            // shaped re-report with exit_code 0, or the hydration safety
-            // force-complete firing pre-settle) would permanently mark the task
-            // handled and suppress its injected report chatter. The deleted
-            // handled-id removal on late monitor-event mutations used to rescue
-            // that case; likelihood is low because mid-turn monitor ends
-            // normally arrive as reminder mutations that force inProgress, and
-            // re-reports are documented post-settle traffic.
-            //
-            // An end Grok reported out of band (`task_completed`) is not
-            // evidence the agent read it; only its own poll or kill is.
+            // A background tool that ends while the root prompt is open was consumed in-turn, so mark it
+            // handled before promptSettled; later, marking would suppress the post-settle TaskOutput wake.
+            // Only normalized terminal statuses count. An out-of-band end (`task_completed`) is not evidence the
+            // agent read it; only its own poll or kill is.
             if (
               !context.promptSettled &&
               options?.endReportedOutOfBand !== true &&

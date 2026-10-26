@@ -138,14 +138,16 @@ export const make = Effect.gen(function* PreviewManagerMake() {
   const eventsPubSub = yield* PubSub.unbounded<PreviewEvent>();
   const serverEventsPubSub = yield* PubSub.unbounded<ServerEvent>();
   const events: Stream.Stream<PreviewEvent> = Stream.fromPubSub(eventsPubSub);
-  const publish = (event: PreviewEvent, authorize?: Authorize) =>
-    Effect.gen(function* () {
-      yield* PubSub.publish(eventsPubSub, event);
-      yield* PubSub.publish(serverEventsPubSub, {
-        event,
-        ...(authorize === undefined ? {} : { authorize }),
-      });
+  const publish = Effect.fn("Manager.publish")(function* (
+    event: PreviewEvent,
+    authorize?: Authorize,
+  ) {
+    yield* PubSub.publish(eventsPubSub, event);
+    yield* PubSub.publish(serverEventsPubSub, {
+      event,
+      ...(authorize === undefined ? {} : { authorize }),
     });
+  });
 
   /** Publish inside the lock to preserve state-transition order. */
   const mutateExistingSession = <R, E>(

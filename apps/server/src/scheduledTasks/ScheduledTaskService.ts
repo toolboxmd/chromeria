@@ -830,54 +830,53 @@ export const layer = Layer.effect(
         ),
     );
 
-    const validateBinding = (
+    const validateBinding = Effect.fn("ScheduledTaskService.validateBinding")(function* (
       task: Pick<ScheduledTask, "id" | "threadId" | "linkOrigin" | "bare">,
       liveAcceptance = false,
-    ) =>
-      Effect.gen(function* () {
-        if (task.bare !== undefined && task.threadId !== null) {
-          const target = yield* threadManagement
-            .getThreadRecords(task.threadId, [])
-            .pipe(
-              Effect.mapError((cause) =>
-                taskError("Could not read the scheduled thread.", { taskId: task.id, cause }),
-              ),
-            );
-          if (target.thread.bare === undefined || (task.bare.additions?.length ?? 0) > 0)
-            return yield* taskError(
-              "A bound bare schedule needs a bare thread and no new additions.",
-              { taskId: task.id },
-            );
-        }
+    ) {
+      if (task.bare !== undefined && task.threadId !== null) {
+        const target = yield* threadManagement
+          .getThreadRecords(task.threadId, [])
+          .pipe(
+            Effect.mapError((cause) =>
+              taskError("Could not read the scheduled thread.", { taskId: task.id, cause }),
+            ),
+          );
+        if (target.thread.bare === undefined || (task.bare.additions?.length ?? 0) > 0)
+          return yield* taskError(
+            "A bound bare schedule needs a bare thread and no new additions.",
+            { taskId: task.id },
+          );
+      }
 
-        const accepted = yield* automation.current("schedule", task.id);
-        if (Option.isSome(accepted) && !liveAcceptance) {
-          yield* automation.claim(accepted.value.id);
-          if (task.threadId !== accepted.value.binding.threadId)
-            return yield* taskError("The accepted schedule binding changed.", { taskId: task.id });
-        }
-        if (
-          !liveAcceptance &&
-          Option.isNone(accepted) &&
-          task.linkOrigin !== undefined &&
-          task.threadId !== null
-        ) {
-          const target = yield* threadManagement
-            .getThreadShell(task.threadId)
-            .pipe(
-              Effect.mapError((cause) =>
-                taskError("Could not read the scheduled thread.", { taskId: task.id, cause }),
-              ),
-            );
-          if (target?.linkOrigin?.sessionId !== task.linkOrigin.sessionId)
-            return yield* taskError(
-              "A linked scheduled task may run only in a thread from its own link.",
-              { taskId: task.id },
-            );
-        }
-      });
+      const accepted = yield* automation.current("schedule", task.id);
+      if (Option.isSome(accepted) && !liveAcceptance) {
+        yield* automation.claim(accepted.value.id);
+        if (task.threadId !== accepted.value.binding.threadId)
+          return yield* taskError("The accepted schedule binding changed.", { taskId: task.id });
+      }
+      if (
+        !liveAcceptance &&
+        Option.isNone(accepted) &&
+        task.linkOrigin !== undefined &&
+        task.threadId !== null
+      ) {
+        const target = yield* threadManagement
+          .getThreadShell(task.threadId)
+          .pipe(
+            Effect.mapError((cause) =>
+              taskError("Could not read the scheduled thread.", { taskId: task.id, cause }),
+            ),
+          );
+        if (target?.linkOrigin?.sessionId !== task.linkOrigin.sessionId)
+          return yield* taskError(
+            "A linked scheduled task may run only in a thread from its own link.",
+            { taskId: task.id },
+          );
+      }
+    });
 
-    const dispatchTask = (
+    const dispatchTask = Effect.fn("ScheduledTaskService.dispatchTask")(function* (
       active: ScheduledTask,
       commandId: CommandId,
       messageId: MessageId,
@@ -886,37 +885,23 @@ export const layer = Layer.effect(
       stableThreadId?: ThreadId,
       bareReadGrantOverride?: BareReadGrant,
       acceptedAutomation?: { readonly certificateId: string | null },
-    ) =>
-      Effect.gen(function* () {
-        const acceptance = yield* automation.current("schedule", active.id);
-        if (acceptedAutomation?.certificateId === null && Option.isSome(acceptance))
-          return yield* taskError(
-            "An unstamped historical run cannot borrow a newer automation definition.",
-            { taskId: active.id },
-          );
-        const certificateId =
-          acceptedAutomation === undefined
-            ? Option.getOrUndefined(acceptance)?.id
-            : acceptedAutomation.certificateId;
-        if (certificateId !== null && certificateId !== undefined) {
-          if (Option.isNone(peerAuthority))
-            return yield* taskError("Native automation execution is unavailable.", {
-              taskId: active.id,
-            });
-          const execution = yield* peerAuthority.value.automationExecution(
-            certificateId,
-            commandId,
-          );
-          return yield* dispatchOwnedTask(
-            active,
-            commandId,
-            messageId,
-            prompt,
-            decision,
-            stableThreadId,
-            bareReadGrantOverride,
-          ).pipe(Effect.provideService(PeerAcceptedAutomation, execution.id));
-        }
+    ) {
+      const acceptance = yield* automation.current("schedule", active.id);
+      if (acceptedAutomation?.certificateId === null && Option.isSome(acceptance))
+        return yield* taskError(
+          "An unstamped historical run cannot borrow a newer automation definition.",
+          { taskId: active.id },
+        );
+      const certificateId =
+        acceptedAutomation === undefined
+          ? Option.getOrUndefined(acceptance)?.id
+          : acceptedAutomation.certificateId;
+      if (certificateId !== null && certificateId !== undefined) {
+        if (Option.isNone(peerAuthority))
+          return yield* taskError("Native automation execution is unavailable.", {
+            taskId: active.id,
+          });
+        const execution = yield* peerAuthority.value.automationExecution(certificateId, commandId);
         return yield* dispatchOwnedTask(
           active,
           commandId,
@@ -925,10 +910,20 @@ export const layer = Layer.effect(
           decision,
           stableThreadId,
           bareReadGrantOverride,
-        );
-      });
+        ).pipe(Effect.provideService(PeerAcceptedAutomation, execution.id));
+      }
+      return yield* dispatchOwnedTask(
+        active,
+        commandId,
+        messageId,
+        prompt,
+        decision,
+        stableThreadId,
+        bareReadGrantOverride,
+      );
+    });
 
-    const dispatchOwnedTask = (
+    const dispatchOwnedTask = Effect.fn("ScheduledTaskService.dispatchOwnedTask")(function* (
       active: ScheduledTask,
       commandId: CommandId,
       messageId: MessageId,
@@ -936,93 +931,92 @@ export const layer = Layer.effect(
       decision: import("../scheduledTaskChecks/DispatchPolicy.ts").ScheduledTaskDispatchDecision,
       stableThreadId?: ThreadId,
       bareReadGrantOverride?: BareReadGrant,
-    ) =>
-      Effect.gen(function* () {
-        const bareAuthority =
-          active.bare === undefined
-            ? undefined
-            : bareReadGrantOverride !== undefined
-              ? { readGrant: bareReadGrantOverride }
-              : yield* readScheduledBare(active.id).pipe(
-                  Effect.provideService(SqlClient.SqlClient, sql),
-                  Effect.mapError((cause) =>
-                    taskError("Could not read bare schedule authority.", {
-                      taskId: active.id,
-                      cause,
-                    }),
-                  ),
-                );
-        const resolvedPurpose = yield* PurposeAdmission.resolvePurposeIntent({
-          intent: active.purposeIntent,
-        }).pipe(
-          Effect.mapError((cause) =>
-            taskError("Could not resolve scheduled task purpose.", { taskId: active.id, cause }),
-          ),
-        );
-        const purposeSource: ExecutionPurpose =
-          active.purposeIntent === undefined
-            ? resolvedPurpose.purpose
-            : {
-                version: 1,
-                scope: resolvedPurpose.purpose.scope,
-                provenance: { type: "schedule", scheduledTaskId: active.id },
-              };
-        return active.threadId === null
-          ? yield* Effect.exit(
-              dispatchVia(
-                decision,
-                threadLaunch.launch,
-              )({
-                commandId,
-                purposeSource,
-                ...(stableThreadId === undefined ? {} : { threadId: stableThreadId }),
-                ...(active.bare === undefined
-                  ? {}
-                  : {
-                      bare: active.bare,
-                      ...(bareAuthority === undefined
-                        ? {}
-                        : { bareReadGrant: bareAuthority.readGrant }),
-                    }),
-                projectId: active.projectId,
-                title: active.title,
-                modelSelection: active.modelSelection,
-                runtimeMode: active.runtimeMode,
-                interactionMode: active.interactionMode,
-                workspaceStrategy: active.workspaceStrategy,
-                initialMessage: {
-                  messageId,
-                  scheduledTaskId: active.id,
-                  text: prompt,
-                  attachments: [],
-                },
-                createdBy: active.createdBy,
-                creationSource: active.creationSource,
-                ...(active.linkOrigin === undefined ? {} : { linkOrigin: active.linkOrigin }),
-              }).pipe(Effect.map((launched) => (launched ? launched.threadId : undefined))),
-            )
-          : yield* Effect.exit(
-              // The stored selection only seeds fresh threads. A bound run
-              // follows the thread's current provider, so it passes none.
-              dispatchVia(
-                decision,
-                threadManagement.sendToThread,
-              )({
-                projectId: active.projectId,
-                commandId,
-                purposeSource,
-                threadId: ThreadId.make(active.threadId),
+    ) {
+      const bareAuthority =
+        active.bare === undefined
+          ? undefined
+          : bareReadGrantOverride !== undefined
+            ? { readGrant: bareReadGrantOverride }
+            : yield* readScheduledBare(active.id).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.mapError((cause) =>
+                  taskError("Could not read bare schedule authority.", {
+                    taskId: active.id,
+                    cause,
+                  }),
+                ),
+              );
+      const resolvedPurpose = yield* PurposeAdmission.resolvePurposeIntent({
+        intent: active.purposeIntent,
+      }).pipe(
+        Effect.mapError((cause) =>
+          taskError("Could not resolve scheduled task purpose.", { taskId: active.id, cause }),
+        ),
+      );
+      const purposeSource: ExecutionPurpose =
+        active.purposeIntent === undefined
+          ? resolvedPurpose.purpose
+          : {
+              version: 1,
+              scope: resolvedPurpose.purpose.scope,
+              provenance: { type: "schedule", scheduledTaskId: active.id },
+            };
+      return active.threadId === null
+        ? yield* Effect.exit(
+            dispatchVia(
+              decision,
+              threadLaunch.launch,
+            )({
+              commandId,
+              purposeSource,
+              ...(stableThreadId === undefined ? {} : { threadId: stableThreadId }),
+              ...(active.bare === undefined
+                ? {}
+                : {
+                    bare: active.bare,
+                    ...(bareAuthority === undefined
+                      ? {}
+                      : { bareReadGrant: bareAuthority.readGrant }),
+                  }),
+              projectId: active.projectId,
+              title: active.title,
+              modelSelection: active.modelSelection,
+              runtimeMode: active.runtimeMode,
+              interactionMode: active.interactionMode,
+              workspaceStrategy: active.workspaceStrategy,
+              initialMessage: {
                 messageId,
                 scheduledTaskId: active.id,
                 text: prompt,
                 attachments: [],
-                // Scheduled prompts must not interrupt tools in the bound thread.
-                mode: "queue",
-                createdBy: active.createdBy,
-                creationSource: active.creationSource,
-              }).pipe(Effect.as(ThreadId.make(active.threadId))),
-            );
-      });
+              },
+              createdBy: active.createdBy,
+              creationSource: active.creationSource,
+              ...(active.linkOrigin === undefined ? {} : { linkOrigin: active.linkOrigin }),
+            }).pipe(Effect.map((launched) => (launched ? launched.threadId : undefined))),
+          )
+        : yield* Effect.exit(
+            // The stored selection only seeds fresh threads. A bound run
+            // follows the thread's current provider, so it passes none.
+            dispatchVia(
+              decision,
+              threadManagement.sendToThread,
+            )({
+              projectId: active.projectId,
+              commandId,
+              purposeSource,
+              threadId: ThreadId.make(active.threadId),
+              messageId,
+              scheduledTaskId: active.id,
+              text: prompt,
+              attachments: [],
+              // Scheduled prompts must not interrupt tools in the bound thread.
+              mode: "queue",
+              createdBy: active.createdBy,
+              creationSource: active.creationSource,
+            }).pipe(Effect.as(ThreadId.make(active.threadId))),
+          );
+    });
 
     const runTask = Effect.fn("ScheduledTaskService.runTask")(function* (
       task: ScheduledTask,
@@ -1342,8 +1336,10 @@ export const layer = Layer.effect(
         }),
       );
 
-    const upsert: ScheduledTaskService["Service"]["upsert"] = (input, options) =>
-      Effect.gen(function* () {
+    const upsert: ScheduledTaskService["Service"]["upsert"] = Effect.fn(
+      "ScheduledTaskService.upsert",
+    )(
+      function* (input, options) {
         if (input.purposeIntent === undefined) {
           return yield* taskError(
             "Choose an Issue, PR or deliberately unscoped purpose before saving this schedule.",
@@ -1639,19 +1635,21 @@ export const layer = Layer.effect(
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.tap(() => notifyAutomationChanges),
         );
-      }).pipe(
-        Effect.catchTags({
-          OrchestratorMcpFailure: (cause) => Effect.fail(taskError(cause.message, { cause })),
-          SqlError: (cause) =>
-            Effect.fail(taskError("Could not accept the schedule definition.", { cause })),
-        }),
-      );
+      },
+      Effect.catchTags({
+        OrchestratorMcpFailure: (cause) => Effect.fail(taskError(cause.message, { cause })),
+        SqlError: (cause) =>
+          Effect.fail(taskError("Could not accept the schedule definition.", { cause })),
+      }),
+    );
 
-    const applyEnabled = (input: {
+    const applyEnabled: (input: {
       readonly id: ScheduledTaskId;
       readonly enabled: boolean;
-    }): Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError> =>
-      Effect.gen(function* () {
+    }) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError> = Effect.fn(
+      "ScheduledTaskService.applyEnabled",
+    )(
+      function* (input: { readonly id: ScheduledTaskId; readonly enabled: boolean }) {
         const existing = yield* loadTask(input.id);
         if (existing.enabled === input.enabled) return { task: existing };
         if (input.enabled && existing.purposeIntent === undefined)
@@ -1688,18 +1686,21 @@ export const layer = Layer.effect(
         return {
           task: { ...existing, enabled: input.enabled, nextRunAt: next, updatedAt: iso(now) },
         };
-      }).pipe(
-        Effect.catchTags({
-          OrchestratorMcpFailure: (cause) => Effect.fail(taskError(cause.message, { cause })),
-          SqlError: (cause) =>
-            Effect.fail(
-              taskError("Could not atomically update schedule authority.", {
-                taskId: input.id,
-                cause,
-              }),
-            ),
-        }),
-      );
+      },
+      (effect, input) =>
+        effect.pipe(
+          Effect.catchTags({
+            OrchestratorMcpFailure: (cause) => Effect.fail(taskError(cause.message, { cause })),
+            SqlError: (cause) =>
+              Effect.fail(
+                taskError("Could not atomically update schedule authority.", {
+                  taskId: input.id,
+                  cause,
+                }),
+              ),
+          }),
+        ),
+    );
 
     const forgetWebhookTask = (id: ScheduledTaskId) =>
       Effect.all(
@@ -1733,8 +1734,10 @@ export const layer = Layer.effect(
         { discard: true },
       );
 
-    const setEnabled: ScheduledTaskService["Service"]["setEnabled"] = (input) =>
-      Effect.gen(function* () {
+    const setEnabled: ScheduledTaskService["Service"]["setEnabled"] = Effect.fn(
+      "ScheduledTaskService.setEnabled",
+    )(
+      function* (input) {
         const existing = yield* loadTask(input.id);
         // Re-accepting an automation records its own keyed receipt through upsert.
         const reaccept =
@@ -1747,11 +1750,11 @@ export const layer = Layer.effect(
           applyEnabled(input),
           loadTask(input.id).pipe(Effect.map((task) => ({ task }))),
         ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-      }).pipe(
-        Effect.catchTags({
-          OrchestratorMcpFailure: (cause) => Effect.fail(taskError(cause.message, { cause })),
-        }),
-      );
+      },
+      Effect.catchTags({
+        OrchestratorMcpFailure: (cause) => Effect.fail(taskError(cause.message, { cause })),
+      }),
+    );
 
     const deleteTask: ScheduledTaskService["Service"]["delete"] = (input) =>
       MutationReceipts.accept(
@@ -1859,331 +1862,332 @@ export const layer = Layer.effect(
           }),
         )
         .pipe(Effect.mapError(manualUnavailable), Effect.andThen(notifyChanged));
-    const validateManualRun = (task: ScheduledTask) =>
-      Effect.gen(function* () {
-        if (!task.enabled && Option.isSome(yield* automation.current("schedule", task.id)))
-          return yield* taskError("This schedule is paused. Resume it before running it now.", {
-            taskId: task.id,
-          });
-      });
-
-    const runManualNow = (input: ScheduledTaskRunNowInput, options: ManualOptions) =>
-      Effect.gen(function* () {
-        const request = options.request;
-        if (Option.isNone(nativeReceipts)) return yield* manualUnavailable(undefined);
-        const recheck = options.recheck ?? Effect.void;
-        const localFence = yield* MutationReceipts.captureResourceFence(input.id).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-        );
-        yield* recheck;
-        // The owner freezes this exact intent and admission before any dispatch.
-        const admission = yield* sql
-          .withTransaction(
-            Effect.gen(function* () {
-              yield* localFence;
-              const old = (yield* readManual(request))[0];
-              const current = yield* loadTask(input.id);
-              yield* sql`INSERT INTO scheduled_task_request_incarnations (task_id,incarnation)
-          SELECT task_id,lower(hex(randomblob(16))) FROM scheduled_tasks WHERE task_id=${input.id} ON CONFLICT DO NOTHING`;
-              const incarnation = (yield* sql<{
-                incarnation: string;
-                active_request_id: string | null;
-              }>`SELECT incarnation,active_request_id FROM scheduled_task_request_incarnations WHERE task_id=${input.id}`)[0];
-              if (incarnation === undefined) return yield* manualUnavailable(undefined);
-              if (old !== undefined) {
-                if (
-                  old.generation !== request.generation ||
-                  old.incarnation !== incarnation.incarnation
-                )
-                  return yield* new OrchestratorMcpFailure({
-                    code: "capability_denied",
-                    message:
-                      "This manual request belongs to its original grant and schedule incarnation.",
-                  });
-                if (old.input_digest !== request.inputDigest || old.task_id !== input.id)
-                  return yield* new OrchestratorMcpFailure({
-                    code: "invalid_request",
-                    message: "The manual request key was already bound to different input.",
-                  });
-                return { row: old, decision: undefined };
-              }
-              if (current.schedule.type === "webhook")
-                return yield* taskError("Webhook tasks run when their URL receives a request.", {
-                  taskId: input.id,
-                });
-              if (
-                incarnation.active_request_id !== null ||
-                (yield* Ref.get(activeRuns)).has(input.id)
-              )
-                return yield* taskError("Schedule task is already running.", { taskId: input.id });
-              yield* validateManualRun(current).pipe(
-                Effect.mapError((error) => manualFailed(error.message)),
-              );
-              yield* validateBinding(current);
-              const startedAt = yield* localNow;
-              const bareAuthority =
-                current.bare === undefined
-                  ? undefined
-                  : yield* readScheduledBare(current.id).pipe(
-                      Effect.provideService(SqlClient.SqlClient, sql),
-                      Effect.mapError(manualUnavailable),
-                    );
-              const acceptedAutomation = yield* automation.current("schedule", current.id);
-              const snapshot = {
-                task: current,
-                ...(Option.isSome(acceptedAutomation)
-                  ? { automationCertificateId: acceptedAutomation.value.id }
-                  : {}),
-                ...(bareAuthority === undefined ? {} : { bareReadGrant: bareAuthority.readGrant }),
-              };
-              const decision = yield* dispatchPolicy
-                .decide({
-                  task: current,
-                  trigger: "manual",
-                  startedAt,
-                  manualRequestId: request.id,
-                })
-                .pipe(Effect.mapError((error) => taskError(error.message, { taskId: current.id })));
-              if (decision._tag === "fork" && decision.manualReceipt?.requestId !== request.id)
-                return yield* new OrchestratorMcpFailure({
-                  code: "invalid_request",
-                  message:
-                    "This existing scheduled action has no verified keyed manual admission. Use its existing recovery operation.",
-                });
-              const stage =
-                decision._tag === "skip"
-                  ? "skipped"
-                  : decision._tag === "fork"
-                    ? "admitted"
-                    : "prepared";
-              const encodedSnapshot = yield* encodeManualSnapshot(snapshot).pipe(
-                Effect.mapError(manualUnavailable),
-              );
-              const reference =
-                decision._tag === "fork"
-                  ? yield* encodeManualReference(decision.manualReceipt!).pipe(
-                      Effect.mapError(manualUnavailable),
-                    )
-                  : null;
-              yield* sql`INSERT INTO scheduled_manual_requests VALUES (${request.id},${request.generation},${request.inputDigest},${input.id},${incarnation.incarnation},${encodedSnapshot},${iso(startedAt)},${stage},${reference},NULL)`;
-              if (decision._tag !== "skip") {
-                yield* markRunning(input.id, iso(startedAt));
-                yield* sql`UPDATE scheduled_task_request_incarnations SET active_request_id=${request.id} WHERE task_id=${input.id}`;
-              }
-              return { row: (yield* readManual(request))[0]!, decision };
-            }),
-          )
-          .pipe(
-            Effect.mapError((error) =>
-              error._tag === "OrchestratorMcpFailure" || error._tag === "ScheduledTaskError"
-                ? error
-                : manualUnavailable(error),
-            ),
-          );
-        const { row, decision } = admission;
-        const snapshot = yield* decodeManualSnapshot(row.snapshot_json).pipe(
-          Effect.mapError(manualUnavailable),
-        );
-        // A typed refusal before this key claims dispatch never reached a
-        // destination, so it is this key's outcome and releases the schedule.
-        const refuseBeforeDispatch = (refusal: OrchestratorMcpFailure) =>
-          failManual(request, input.id, row.incarnation, refusal.message, "prepared").pipe(
-            Effect.andThen(Effect.fail(refusal)),
-          );
-        yield* row.stage === "prepared" && row.result_json === null
-          ? recheck.pipe(Effect.catch(refuseBeforeDispatch))
-          : recheck;
-        const commandId = CommandId.make(`scheduled-task:manual:${request.id}`);
-        const messageId = MessageId.make(`scheduled-task-message:manual:${request.id}`);
-        const threadId = ThreadId.make(
-          snapshot.task.threadId ?? `scheduled-manual-thread:${request.id}`,
-        );
-        const readAccepted = Effect.gen(function* () {
-          const receipt = yield* nativeReceipts.value
-            .getByCommandId(
-              snapshot.task.threadId === null
-                ? CommandId.make(`${commandId}:initial-message`)
-                : commandId,
-            )
-            .pipe(Effect.mapError(manualUnavailable));
-          if (Option.isNone(receipt)) return false;
-          if (
-            receipt.value.status !== "accepted" ||
-            receipt.value.threadId !== threadId ||
-            receipt.value.commandType !== "message.dispatch"
-          )
-            return yield* manualUnknown(request);
-          return true;
+    const validateManualRun = Effect.fn("ScheduledTaskService.validateManualRun")(function* (
+      task: ScheduledTask,
+    ) {
+      if (!task.enabled && Option.isSome(yield* automation.current("schedule", task.id)))
+        return yield* taskError("This schedule is paused. Resume it before running it now.", {
+          taskId: task.id,
         });
-        if (row.stage === "failed") return yield* manualFailed(row.result_json ?? "");
-        const native = row.stage !== "admitted" && row.stage !== "skipped";
-        let accepted = native ? yield* readAccepted : false;
-        if (row.result_json !== null) {
-          if (native && !accepted) return yield* manualUnknown(request);
-          return yield* decodeManualResult(row.result_json).pipe(
-            Effect.mapError(manualUnavailable),
-          );
-        }
-        if (native && !accepted) {
-          yield* validateBinding(snapshot.task);
-          // A launch can allocate a workspace before its first native receipt.
-          // Missing evidence in that window must never allocate a second workspace.
-          if (row.stage === "dispatching" && snapshot.task.threadId === null) {
-            const create = yield* nativeReceipts.value
-              .getByCommandId(commandId)
-              .pipe(Effect.mapError(manualUnavailable));
-            if (
-              Option.isNone(create) ||
-              create.value.status !== "accepted" ||
-              create.value.threadId !== threadId ||
-              create.value.commandType !== "thread.create"
-            )
-              return yield* manualUnknown(request);
-          }
-          // The final live check precedes the claim: once dispatching, a same-key
-          // retry may already be sending, so a refusal is no longer this key's outcome.
-          yield* row.stage === "prepared"
-            ? recheck.pipe(Effect.catch(refuseBeforeDispatch))
-            : recheck;
-          const claimed =
-            yield* sql`UPDATE scheduled_manual_requests SET stage='dispatching' WHERE request_id=${request.id} AND stage='prepared' RETURNING request_id`.pipe(
-              Effect.mapError(manualUnavailable),
-            );
-          if (row.stage === "prepared" && claimed.length === 0)
-            return yield* manualUnknown(request);
-          const dispatched = yield* Effect.exit(
-            dispatchTask(
-              snapshot.task,
-              commandId,
-              messageId,
-              snapshot.task.prompt,
-              { _tag: "upstream" },
-              threadId,
-              snapshot.bareReadGrant,
-              { certificateId: snapshot.automationCertificateId ?? null },
-            ),
-          );
-          const failure: Cause.Cause<unknown> | undefined =
-            dispatched._tag === "Failure"
-              ? dispatched.cause
-              : dispatched.value._tag === "Failure"
-                ? dispatched.value.cause
-                : undefined;
-          accepted = yield* readAccepted;
-          if (!accepted) {
-            // A typed refusal with no native receipt never admitted anything:
-            // record it as this key's outcome so the schedule is not left running.
-            // Interruptions and defects stay unknown.
-            const refused =
-              failure !== undefined &&
-              !Cause.hasInterrupts(failure) &&
-              !Cause.hasDies(failure) &&
-              (snapshot.task.threadId !== null ||
-                Option.isNone(
-                  yield* nativeReceipts.value
-                    .getByCommandId(commandId)
-                    .pipe(Effect.mapError(manualUnavailable)),
-                ));
-            if (!refused) return yield* manualUnknown(request);
-            const message = errorMessage(Cause.squash(failure));
-            yield* failManual(request, input.id, row.incarnation, message, "dispatching");
-            return yield* manualFailed(message);
-          }
-        } else if (decision?._tag === "fork") {
-          // Exact policy admission is durable. A retry observes it without
-          // repeating a possibly external command; the policy owns its recovery.
-          yield* decision.dispatch.pipe(Effect.catch(() => Effect.void));
-        }
-        const receipt = {
-          requestId: request.clientRequestId,
-          operationId: request.id,
-          stage: native
-            ? ("native-accepted" as const)
-            : row.stage === "skipped"
-              ? ("skipped" as const)
-              : ("admitted" as const),
-        };
-        const result = yield* sql
-          .withTransaction(
-            Effect.gen(function* () {
-              const fresh = (yield* readManual(request))[0]!;
-              if (fresh.result_json !== null)
-                return yield* decodeManualResult(fresh.result_json).pipe(
-                  Effect.mapError(manualUnavailable),
-                );
-              const completedAt = yield* localNow;
-              const current = yield* loadTask(input.id);
-              const incarnation = (yield* sql<{
-                incarnation: string;
-                active_request_id: string | null;
-              }>`SELECT incarnation,active_request_id FROM scheduled_task_request_incarnations WHERE task_id=${input.id}`)[0];
-              if (incarnation?.incarnation !== row.incarnation)
+    });
+
+    const runManualNow = Effect.fn("ScheduledTaskService.runManualNow")(function* (
+      input: ScheduledTaskRunNowInput,
+      options: ManualOptions,
+    ) {
+      const request = options.request;
+      if (Option.isNone(nativeReceipts)) return yield* manualUnavailable(undefined);
+      const recheck = options.recheck ?? Effect.void;
+      const localFence = yield* MutationReceipts.captureResourceFence(input.id).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      yield* recheck;
+      // The owner freezes this exact intent and admission before any dispatch.
+      const admission = yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* localFence;
+            const old = (yield* readManual(request))[0];
+            const current = yield* loadTask(input.id);
+            yield* sql`INSERT INTO scheduled_task_request_incarnations (task_id,incarnation)
+          SELECT task_id,lower(hex(randomblob(16))) FROM scheduled_tasks WHERE task_id=${input.id} ON CONFLICT DO NOTHING`;
+            const incarnation = (yield* sql<{
+              incarnation: string;
+              active_request_id: string | null;
+            }>`SELECT incarnation,active_request_id FROM scheduled_task_request_incarnations WHERE task_id=${input.id}`)[0];
+            if (incarnation === undefined) return yield* manualUnavailable(undefined);
+            if (old !== undefined) {
+              if (
+                old.generation !== request.generation ||
+                old.incarnation !== incarnation.incarnation
+              )
                 return yield* new OrchestratorMcpFailure({
                   code: "capability_denied",
-                  message: "The original scheduled task was replaced.",
+                  message:
+                    "This manual request belongs to its original grant and schedule incarnation.",
                 });
-              if (row.stage !== "skipped") {
-                if (incarnation.active_request_id === request.id) {
-                  yield* sql`UPDATE scheduled_tasks SET run_count=run_count+1,last_run_status='succeeded',last_run_error=NULL,updated_at=${iso(completedAt)},next_run_at=${nextRunAt(current, completedAt)} WHERE task_id=${input.id}`;
-                  yield* sql`UPDATE scheduled_task_request_incarnations SET active_request_id=NULL WHERE task_id=${input.id} AND active_request_id=${request.id}`;
-                } else
-                  yield* sql`UPDATE scheduled_tasks SET run_count=run_count+1 WHERE task_id=${input.id}`;
-              }
-              const result = {
-                task: {
-                  ...snapshot.task,
-                  lastRunAt: row.started_at,
-                  ...(row.stage === "skipped"
-                    ? {}
-                    : {
-                        lastRunStatus: "succeeded" as const,
-                        lastRunError: null,
-                        runCount: snapshot.task.runCount + 1,
-                        updatedAt: iso(completedAt),
-                        nextRunAt: nextRunAt(snapshot.task, completedAt),
-                      }),
-                },
-                manualReceipt: receipt,
-              };
-              const encodedResult = yield* encodeManualResult(result).pipe(
+              if (old.input_digest !== request.inputDigest || old.task_id !== input.id)
+                return yield* new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message: "The manual request key was already bound to different input.",
+                });
+              return { row: old, decision: undefined };
+            }
+            if (current.schedule.type === "webhook")
+              return yield* taskError("Webhook tasks run when their URL receives a request.", {
+                taskId: input.id,
+              });
+            if (
+              incarnation.active_request_id !== null ||
+              (yield* Ref.get(activeRuns)).has(input.id)
+            )
+              return yield* taskError("Schedule task is already running.", { taskId: input.id });
+            yield* validateManualRun(current).pipe(
+              Effect.mapError((error) => manualFailed(error.message)),
+            );
+            yield* validateBinding(current);
+            const startedAt = yield* localNow;
+            const bareAuthority =
+              current.bare === undefined
+                ? undefined
+                : yield* readScheduledBare(current.id).pipe(
+                    Effect.provideService(SqlClient.SqlClient, sql),
+                    Effect.mapError(manualUnavailable),
+                  );
+            const acceptedAutomation = yield* automation.current("schedule", current.id);
+            const snapshot = {
+              task: current,
+              ...(Option.isSome(acceptedAutomation)
+                ? { automationCertificateId: acceptedAutomation.value.id }
+                : {}),
+              ...(bareAuthority === undefined ? {} : { bareReadGrant: bareAuthority.readGrant }),
+            };
+            const decision = yield* dispatchPolicy
+              .decide({
+                task: current,
+                trigger: "manual",
+                startedAt,
+                manualRequestId: request.id,
+              })
+              .pipe(Effect.mapError((error) => taskError(error.message, { taskId: current.id })));
+            if (decision._tag === "fork" && decision.manualReceipt?.requestId !== request.id)
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message:
+                  "This existing scheduled action has no verified keyed manual admission. Use its existing recovery operation.",
+              });
+            const stage =
+              decision._tag === "skip"
+                ? "skipped"
+                : decision._tag === "fork"
+                  ? "admitted"
+                  : "prepared";
+            const encodedSnapshot = yield* encodeManualSnapshot(snapshot).pipe(
+              Effect.mapError(manualUnavailable),
+            );
+            const reference =
+              decision._tag === "fork"
+                ? yield* encodeManualReference(decision.manualReceipt!).pipe(
+                    Effect.mapError(manualUnavailable),
+                  )
+                : null;
+            yield* sql`INSERT INTO scheduled_manual_requests VALUES (${request.id},${request.generation},${request.inputDigest},${input.id},${incarnation.incarnation},${encodedSnapshot},${iso(startedAt)},${stage},${reference},NULL)`;
+            if (decision._tag !== "skip") {
+              yield* markRunning(input.id, iso(startedAt));
+              yield* sql`UPDATE scheduled_task_request_incarnations SET active_request_id=${request.id} WHERE task_id=${input.id}`;
+            }
+            return { row: (yield* readManual(request))[0]!, decision };
+          }),
+        )
+        .pipe(
+          Effect.mapError((error) =>
+            error._tag === "OrchestratorMcpFailure" || error._tag === "ScheduledTaskError"
+              ? error
+              : manualUnavailable(error),
+          ),
+        );
+      const { row, decision } = admission;
+      const snapshot = yield* decodeManualSnapshot(row.snapshot_json).pipe(
+        Effect.mapError(manualUnavailable),
+      );
+      // A typed refusal before this key claims dispatch never reached a
+      // destination, so it is this key's outcome and releases the schedule.
+      const refuseBeforeDispatch = (refusal: OrchestratorMcpFailure) =>
+        failManual(request, input.id, row.incarnation, refusal.message, "prepared").pipe(
+          Effect.andThen(Effect.fail(refusal)),
+        );
+      yield* row.stage === "prepared" && row.result_json === null
+        ? recheck.pipe(Effect.catch(refuseBeforeDispatch))
+        : recheck;
+      const commandId = CommandId.make(`scheduled-task:manual:${request.id}`);
+      const messageId = MessageId.make(`scheduled-task-message:manual:${request.id}`);
+      const threadId = ThreadId.make(
+        snapshot.task.threadId ?? `scheduled-manual-thread:${request.id}`,
+      );
+      const readAccepted = Effect.gen(function* () {
+        const receipt = yield* nativeReceipts.value
+          .getByCommandId(
+            snapshot.task.threadId === null
+              ? CommandId.make(`${commandId}:initial-message`)
+              : commandId,
+          )
+          .pipe(Effect.mapError(manualUnavailable));
+        if (Option.isNone(receipt)) return false;
+        if (
+          receipt.value.status !== "accepted" ||
+          receipt.value.threadId !== threadId ||
+          receipt.value.commandType !== "message.dispatch"
+        )
+          return yield* manualUnknown(request);
+        return true;
+      });
+      if (row.stage === "failed") return yield* manualFailed(row.result_json ?? "");
+      const native = row.stage !== "admitted" && row.stage !== "skipped";
+      let accepted = native ? yield* readAccepted : false;
+      if (row.result_json !== null) {
+        if (native && !accepted) return yield* manualUnknown(request);
+        return yield* decodeManualResult(row.result_json).pipe(Effect.mapError(manualUnavailable));
+      }
+      if (native && !accepted) {
+        yield* validateBinding(snapshot.task);
+        // A launch can allocate a workspace before its first native receipt.
+        // Missing evidence in that window must never allocate a second workspace.
+        if (row.stage === "dispatching" && snapshot.task.threadId === null) {
+          const create = yield* nativeReceipts.value
+            .getByCommandId(commandId)
+            .pipe(Effect.mapError(manualUnavailable));
+          if (
+            Option.isNone(create) ||
+            create.value.status !== "accepted" ||
+            create.value.threadId !== threadId ||
+            create.value.commandType !== "thread.create"
+          )
+            return yield* manualUnknown(request);
+        }
+        // The final live check precedes the claim: once dispatching, a same-key
+        // retry may already be sending, so a refusal is no longer this key's outcome.
+        yield* row.stage === "prepared"
+          ? recheck.pipe(Effect.catch(refuseBeforeDispatch))
+          : recheck;
+        const claimed =
+          yield* sql`UPDATE scheduled_manual_requests SET stage='dispatching' WHERE request_id=${request.id} AND stage='prepared' RETURNING request_id`.pipe(
+            Effect.mapError(manualUnavailable),
+          );
+        if (row.stage === "prepared" && claimed.length === 0) return yield* manualUnknown(request);
+        const dispatched = yield* Effect.exit(
+          dispatchTask(
+            snapshot.task,
+            commandId,
+            messageId,
+            snapshot.task.prompt,
+            { _tag: "upstream" },
+            threadId,
+            snapshot.bareReadGrant,
+            { certificateId: snapshot.automationCertificateId ?? null },
+          ),
+        );
+        const failure: Cause.Cause<unknown> | undefined =
+          dispatched._tag === "Failure"
+            ? dispatched.cause
+            : dispatched.value._tag === "Failure"
+              ? dispatched.value.cause
+              : undefined;
+        accepted = yield* readAccepted;
+        if (!accepted) {
+          // A typed refusal with no native receipt never admitted anything:
+          // record it as this key's outcome so the schedule is not left running.
+          // Interruptions and defects stay unknown.
+          const refused =
+            failure !== undefined &&
+            !Cause.hasInterrupts(failure) &&
+            !Cause.hasDies(failure) &&
+            (snapshot.task.threadId !== null ||
+              Option.isNone(
+                yield* nativeReceipts.value
+                  .getByCommandId(commandId)
+                  .pipe(Effect.mapError(manualUnavailable)),
+              ));
+          if (!refused) return yield* manualUnknown(request);
+          const message = errorMessage(Cause.squash(failure));
+          yield* failManual(request, input.id, row.incarnation, message, "dispatching");
+          return yield* manualFailed(message);
+        }
+      } else if (decision?._tag === "fork") {
+        // Exact policy admission is durable. A retry observes it without
+        // repeating a possibly external command; the policy owns its recovery.
+        yield* decision.dispatch.pipe(Effect.catch(() => Effect.void));
+      }
+      const receipt = {
+        requestId: request.clientRequestId,
+        operationId: request.id,
+        stage: native
+          ? ("native-accepted" as const)
+          : row.stage === "skipped"
+            ? ("skipped" as const)
+            : ("admitted" as const),
+      };
+      const result = yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const fresh = (yield* readManual(request))[0]!;
+            if (fresh.result_json !== null)
+              return yield* decodeManualResult(fresh.result_json).pipe(
                 Effect.mapError(manualUnavailable),
               );
-              yield* sql`UPDATE scheduled_manual_requests SET result_json=${encodedResult} WHERE request_id=${request.id}`;
-              return result;
-            }),
-          )
-          .pipe(
-            Effect.mapError((error) =>
-              error._tag === "OrchestratorMcpFailure" || error._tag === "ScheduledTaskError"
-                ? error
-                : manualUnavailable(error),
-            ),
-          );
-        yield* notifyChanged;
-        return result;
-      });
+            const completedAt = yield* localNow;
+            const current = yield* loadTask(input.id);
+            const incarnation = (yield* sql<{
+              incarnation: string;
+              active_request_id: string | null;
+            }>`SELECT incarnation,active_request_id FROM scheduled_task_request_incarnations WHERE task_id=${input.id}`)[0];
+            if (incarnation?.incarnation !== row.incarnation)
+              return yield* new OrchestratorMcpFailure({
+                code: "capability_denied",
+                message: "The original scheduled task was replaced.",
+              });
+            if (row.stage !== "skipped") {
+              if (incarnation.active_request_id === request.id) {
+                yield* sql`UPDATE scheduled_tasks SET run_count=run_count+1,last_run_status='succeeded',last_run_error=NULL,updated_at=${iso(completedAt)},next_run_at=${nextRunAt(current, completedAt)} WHERE task_id=${input.id}`;
+                yield* sql`UPDATE scheduled_task_request_incarnations SET active_request_id=NULL WHERE task_id=${input.id} AND active_request_id=${request.id}`;
+              } else
+                yield* sql`UPDATE scheduled_tasks SET run_count=run_count+1 WHERE task_id=${input.id}`;
+            }
+            const result = {
+              task: {
+                ...snapshot.task,
+                lastRunAt: row.started_at,
+                ...(row.stage === "skipped"
+                  ? {}
+                  : {
+                      lastRunStatus: "succeeded" as const,
+                      lastRunError: null,
+                      runCount: snapshot.task.runCount + 1,
+                      updatedAt: iso(completedAt),
+                      nextRunAt: nextRunAt(snapshot.task, completedAt),
+                    }),
+              },
+              manualReceipt: receipt,
+            };
+            const encodedResult = yield* encodeManualResult(result).pipe(
+              Effect.mapError(manualUnavailable),
+            );
+            yield* sql`UPDATE scheduled_manual_requests SET result_json=${encodedResult} WHERE request_id=${request.id}`;
+            return result;
+          }),
+        )
+        .pipe(
+          Effect.mapError((error) =>
+            error._tag === "OrchestratorMcpFailure" || error._tag === "ScheduledTaskError"
+              ? error
+              : manualUnavailable(error),
+          ),
+        );
+      yield* notifyChanged;
+      return result;
+    });
 
-    const runLocalNow = (input: ScheduledTaskRunNowInput) =>
-      Effect.gen(function* () {
-        const task = yield* loadTask(input.id);
-        if (task.schedule.type === "webhook") {
-          return yield* taskError("Webhook tasks run when their URL receives a request.", {
-            taskId: input.id,
-          });
-        }
-        yield* validateManualRun(task).pipe(
-          Effect.mapError((cause) =>
-            cause._tag === "ScheduledTaskError"
-              ? cause
-              : taskError("Could not validate schedule task.", { taskId: input.id, cause }),
-          ),
-        );
-        return yield* runTask(task, "manual").pipe(
-          Effect.mapError((cause) =>
-            taskError("Could not run schedule task.", { taskId: input.id, cause }),
-          ),
-        );
-      });
+    const runLocalNow = Effect.fn("ScheduledTaskService.runLocalNow")(function* (
+      input: ScheduledTaskRunNowInput,
+    ) {
+      const task = yield* loadTask(input.id);
+      if (task.schedule.type === "webhook") {
+        return yield* taskError("Webhook tasks run when their URL receives a request.", {
+          taskId: input.id,
+        });
+      }
+      yield* validateManualRun(task).pipe(
+        Effect.mapError((cause) =>
+          cause._tag === "ScheduledTaskError"
+            ? cause
+            : taskError("Could not validate schedule task.", { taskId: input.id, cause }),
+        ),
+      );
+      return yield* runTask(task, "manual").pipe(
+        Effect.mapError((cause) =>
+          taskError("Could not run schedule task.", { taskId: input.id, cause }),
+        ),
+      );
+    });
 
     const deleteForThread = Effect.fn("ScheduledTaskService.deleteForThread")(function* (
       threadId: ThreadId,

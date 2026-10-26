@@ -31,11 +31,9 @@ const dependencies = [
 const DeviceToolFailure = Schema.Union([DeviceToolError, OrchestratorMcpFailure]);
 
 /**
- * Deliberately a small surface: lifecycle, visibility for the user, and one
- * image-returning verb. Driving the device (taps, typing, install, logs)
- * happens through the preconfigured `agent-device` CLI, which has the
- * semantic snapshot model agents need and stays current with its own
- * releases. Wrapping its commands here would only lag behind it.
+ * A deliberately small surface: lifecycle, visibility for the user, and one image verb. Agents drive
+ * the device through the preconfigured `agent-device` CLI, whose snapshot model they need and which
+ * releases on its own; wrapping its commands here would only lag behind it.
  */
 const DeviceListTool = Tool.make("device_list", {
   description:

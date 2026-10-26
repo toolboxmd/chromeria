@@ -49,7 +49,7 @@ export const layer = Layer.effect(
         code: "orchestration_error",
         message: "Unable to stop the Spectrum and its Drafters.",
       });
-    const stop = (
+    const stop = Effect.fn("mcpInterrupt.stop")(function* (
       threads: Pick<ThreadManagementServiceShape, "dispatch">,
       input: {
         readonly threadId: ThreadId;
@@ -57,45 +57,43 @@ export const layer = Layer.effect(
         readonly keepReported?: boolean | undefined;
       },
       commandId: CommandId,
-    ) =>
-      Effect.gen(function* () {
-        const found = yield* readSpectrum(input.threadId).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-        );
-        if (Option.isNone(found)) return null;
-        if (input.keepReported === true && found.value.report !== null) return "reported" as const;
-        yield* threads.dispatch({
-          type: "thread.stop",
-          commandId,
-          threadId: input.threadId,
-          ...(input.reason === undefined ? {} : { reason: input.reason }),
-        });
-        return "stopped" as const;
-      }).pipe(Effect.mapError(failure));
+    ) {
+      const found = yield* readSpectrum(input.threadId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      if (Option.isNone(found)) return null;
+      if (input.keepReported === true && found.value.report !== null) return "reported" as const;
+      yield* threads.dispatch({
+        type: "thread.stop",
+        commandId,
+        threadId: input.threadId,
+        ...(input.reason === undefined ? {} : { reason: input.reason }),
+      });
+      return "stopped" as const;
+    }, Effect.mapError(failure));
     return {
       stop,
-      interrupt: (
+      interrupt: Effect.fn("mcpInterrupt.interrupt")(function* (
         threads: Pick<ThreadManagementServiceShape, "dispatch">,
         input: OrchestratorMcpThreadInterruptInput,
         commandId: CommandId,
-      ) =>
-        Effect.gen(function* () {
-          if (input.runId !== undefined) {
-            const found = yield* readSpectrum(input.threadId).pipe(
-              Effect.provideService(SqlClient.SqlClient, sql),
-              Effect.mapError(failure),
-            );
-            if (Option.isNone(found)) return null;
-            return yield* new OrchestratorMcpFailure({
-              code: "invalid_request",
-              message:
-                "Spectrum transcript threads have no provider run. Omit runId to stop their Drafters.",
-            });
-          }
-          return (yield* stop(threads, { threadId: input.threadId }, commandId)) !== null
-            ? ({ threadId: input.threadId, runId: null, status: "interrupt_requested" } as const)
-            : null;
-        }),
+      ) {
+        if (input.runId !== undefined) {
+          const found = yield* readSpectrum(input.threadId).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.mapError(failure),
+          );
+          if (Option.isNone(found)) return null;
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message:
+              "Spectrum transcript threads have no provider run. Omit runId to stop their Drafters.",
+          });
+        }
+        return (yield* stop(threads, { threadId: input.threadId }, commandId)) !== null
+          ? ({ threadId: input.threadId, runId: null, status: "interrupt_requested" } as const)
+          : null;
+      }),
     };
   }),
 );

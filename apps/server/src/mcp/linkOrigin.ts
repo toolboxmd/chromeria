@@ -44,42 +44,42 @@ export const callerLinkOrigin = (
 };
 
 /** Apply the link's resource scope to destination thread mutations. */
-export const assertSameLink = <T extends Pick<OrchestrationV2ThreadShell, "linkOrigin">>(
+export const assertSameLink = Effect.fn("linkOrigin.assertSameLink")(function* <
+  T extends Pick<OrchestrationV2ThreadShell, "linkOrigin">,
+>(
   caller: Pick<Caller, "scope"> & {
     readonly caller: Pick<OrchestrationV2ThreadShell, "linkOrigin"> | undefined;
   },
   target: T,
-) => {
-  return Effect.gen(function* () {
-    const owner = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
-    if (Option.isSome(owner)) {
-      if (!("id" in target) || typeof target.id !== "string")
-        return yield* new OrchestratorMcpFailure({
-          code: "capability_denied",
-          message: "A canonical destination identity is required.",
-        });
-      yield* owner.value.checkTarget(
-        caller.scope,
-        "schedule" in target
-          ? { type: "schedule", taskId: ScheduledTaskId.make(target.id) }
-          : { type: "thread", threadId: ThreadId.make(target.id) },
-      );
-      return;
-    }
-    const origin = callerLinkOrigin(caller);
-    // Standalone legacy consumers have no durable modern authority service.
-    // A modern record must never fall back to one copied linkOrigin.
-    if (
-      caller.scope.authority === undefined &&
-      (origin === undefined || target.linkOrigin?.sessionId === origin.sessionId)
-    )
-      return;
-    return yield* new OrchestratorMcpFailure({
-      code: "capability_denied",
-      message: "The destination is outside the caller's verified resource scope.",
-    });
+) {
+  const owner = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+  if (Option.isSome(owner)) {
+    if (!("id" in target) || typeof target.id !== "string")
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "A canonical destination identity is required.",
+      });
+    yield* owner.value.checkTarget(
+      caller.scope,
+      "schedule" in target
+        ? { type: "schedule", taskId: ScheduledTaskId.make(target.id) }
+        : { type: "thread", threadId: ThreadId.make(target.id) },
+    );
+    return;
+  }
+  const origin = callerLinkOrigin(caller);
+  // Standalone legacy consumers have no durable modern authority service.
+  // A modern record must never fall back to one copied linkOrigin.
+  if (
+    caller.scope.authority === undefined &&
+    (origin === undefined || target.linkOrigin?.sessionId === origin.sessionId)
+  )
+    return;
+  return yield* new OrchestratorMcpFailure({
+    code: "capability_denied",
+    message: "The destination is outside the caller's verified resource scope.",
   });
-};
+});
 
 /** Direct peer calls may use the full access granted by the user.
  * Descendants retain their origin fence; narrowed/plan calls never qualify.

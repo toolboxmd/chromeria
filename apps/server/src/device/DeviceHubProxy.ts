@@ -245,261 +245,248 @@ export const layerViewers = Layer.effect(
           ),
         );
       });
-    const issue = (
+    const issue = Effect.fn("DeviceHubProxy.issue")(function* (
       sessionId: AuthSessionId,
       input: DeviceViewerOpenInput,
       generation: string,
       binding: DeviceViewerBinding,
-    ) =>
-      Effect.gen(function* () {
-        const issued = yield* sessions.issueViewerToken({ sessionId, ...input, generation }).pipe(
-          Effect.mapError(
-            (cause) =>
-              new DeviceHostUnavailableError({
-                hostId: input.resource.hostId,
-                reason: "The source viewer could not be created.",
-                cause,
-              }),
-          ),
-        );
-        bindings.set(issued.viewerId, {
-          binding,
-          sessionId,
-          retiring: false,
-          retired: yield* Deferred.make<boolean>(),
-        });
-        yield* Effect.forkIn(
-          sessions
-            .awaitViewerInvalidation(issued.viewerId)
-            .pipe(Effect.ignore, Effect.andThen(retire(issued.viewerId))),
-          lifetime,
-        );
-        return {
-          viewerId: issued.viewerId,
-          ticket: issued.token,
-          expiresAt: DateTime.formatIso(issued.expiresAt),
-          hubBasePath: DeviceService.DEVICE_HUB_ROUTE_PREFIX,
-        } satisfies DeviceViewerAccess;
+    ) {
+      const issued = yield* sessions.issueViewerToken({ sessionId, ...input, generation }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new DeviceHostUnavailableError({
+              hostId: input.resource.hostId,
+              reason: "The source viewer could not be created.",
+              cause,
+            }),
+        ),
+      );
+      bindings.set(issued.viewerId, {
+        binding,
+        sessionId,
+        retiring: false,
+        retired: yield* Deferred.make<boolean>(),
       });
-    const renew = (
+      yield* Effect.forkIn(
+        sessions
+          .awaitViewerInvalidation(issued.viewerId)
+          .pipe(Effect.ignore, Effect.andThen(retire(issued.viewerId))),
+        lifetime,
+      );
+      return {
+        viewerId: issued.viewerId,
+        ticket: issued.token,
+        expiresAt: DateTime.formatIso(issued.expiresAt),
+        hubBasePath: DeviceService.DEVICE_HUB_ROUTE_PREFIX,
+      } satisfies DeviceViewerAccess;
+    });
+    const renew = Effect.fn("DeviceHubProxy.renew")(function* (
       sessionId: AuthSessionId,
       input: DeviceViewerOpenInput,
       scope?: Invocation.McpInvocationScope,
-    ) =>
-      Effect.gen(function* () {
-        const entry = input.viewerId === undefined ? undefined : bindings.get(input.viewerId);
-        const binding = entry?.binding;
+    ) {
+      const entry = input.viewerId === undefined ? undefined : bindings.get(input.viewerId);
+      const binding = entry?.binding;
+      if (
+        entry === undefined ||
+        entry.retiring ||
+        entry.sessionId !== sessionId ||
+        binding === undefined ||
+        binding.input.resource.environmentId !== input.resource.environmentId ||
+        binding.input.resource.threadId !== input.resource.threadId ||
+        binding.input.resource.hostId !== input.resource.hostId ||
+        binding.input.resource.deviceId !== input.resource.deviceId ||
+        binding.input.resource.platform !== input.resource.platform ||
+        binding.input.resource.toolSessionId !== input.resource.toolSessionId ||
+        binding.input.operation !== input.operation ||
+        (scope !== undefined &&
+          (binding.type !== "incoming" || scope.authority?.id !== binding.scope.authority?.id))
+      )
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "The exact original device viewer cannot be renewed.",
+        });
+      const check = Effect.gen(function* () {
+        if (bindings.get(input.viewerId!) !== entry || entry.retiring || Option.isNone(authority))
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "The device viewer was retired.",
+          });
+        if (binding.type === "incoming") {
+          yield* authority.value.recheckDeviceViewer(binding.scope, binding.input);
+          yield* devices.authorizeViewer(binding.input.resource);
+          yield* authority.value.recheckDeviceViewer(binding.scope, binding.input);
+        } else yield* authority.value.checkRecord(binding.envelope.recordId);
+      });
+      yield* check;
+      if (binding.type === "outgoing") {
+        if (Option.isNone(peers) || peers.value.openDeviceViewer === undefined)
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "Current device admission is unsupported.",
+          });
+        const remote = yield* peers.value.openDeviceViewer({
+          request: { ...binding.input, viewerId: binding.access.viewerId },
+          authority: binding.envelope,
+        });
+        yield* check;
+        if (remote.access.viewerId !== binding.access.viewerId || remote.origin !== binding.origin)
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "The destination changed the original device viewer.",
+          });
+        binding.access = remote.access;
+      }
+      const issued = yield* sessions
+        .issueViewerToken({
+          sessionId,
+          ...binding.input,
+          viewerId: input.viewerId!,
+          generation:
+            binding.type === "incoming" ? binding.generation : binding.envelope.generation,
+        })
+        .pipe(
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "capability_denied",
+                message: "The active device viewer could not be renewed.",
+              }),
+          ),
+        );
+      yield* check;
+      return {
+        viewerId: issued.viewerId,
+        ticket: issued.token,
+        expiresAt: DateTime.formatIso(issued.expiresAt),
+        hubBasePath: DeviceService.DEVICE_HUB_ROUTE_PREFIX,
+      } satisfies DeviceViewerAccess;
+    });
+    return DeviceViewers.of({
+      open: Effect.fn("DeviceHubProxy.open")(function* (session, input) {
+        if (input.viewerId !== undefined && input.resource.environmentId !== here)
+          return yield* renew(session.sessionId, input);
+        if (input.resource.environmentId === here)
+          return yield* issueViewer(session, input).pipe(
+            Effect.provideService(DeviceService.DeviceService, devices),
+            Effect.provideService(SessionStore.SessionStore, sessions),
+            Effect.provideService(ServerEnvironment.ServerEnvironment, environment),
+          );
         if (
-          entry === undefined ||
-          entry.retiring ||
-          entry.sessionId !== sessionId ||
-          binding === undefined ||
-          binding.input.resource.environmentId !== input.resource.environmentId ||
-          binding.input.resource.threadId !== input.resource.threadId ||
-          binding.input.resource.hostId !== input.resource.hostId ||
-          binding.input.resource.deviceId !== input.resource.deviceId ||
-          binding.input.resource.platform !== input.resource.platform ||
-          binding.input.resource.toolSessionId !== input.resource.toolSessionId ||
-          binding.input.operation !== input.operation ||
-          (scope !== undefined &&
-            (binding.type !== "incoming" || scope.authority?.id !== binding.scope.authority?.id))
+          !session.scopes.includes(AuthOrchestrationReadScope) ||
+          (input.operation === "control" && !session.scopes.includes(AuthOrchestrationOperateScope))
         )
           return yield* new OrchestratorMcpFailure({
             code: "capability_denied",
-            message: "The exact original device viewer cannot be renewed.",
+            message: "This native client cannot perform that device viewer operation.",
           });
-        const check = Effect.gen(function* () {
-          if (bindings.get(input.viewerId!) !== entry || entry.retiring || Option.isNone(authority))
-            return yield* new OrchestratorMcpFailure({
-              code: "capability_denied",
-              message: "The device viewer was retired.",
-            });
-          if (binding.type === "incoming") {
-            yield* authority.value.recheckDeviceViewer(binding.scope, binding.input);
-            yield* devices.authorizeViewer(binding.input.resource);
-            yield* authority.value.recheckDeviceViewer(binding.scope, binding.input);
-          } else yield* authority.value.checkRecord(binding.envelope.recordId);
+        if (
+          Option.isNone(authority) ||
+          Option.isNone(links) ||
+          Option.isNone(peers) ||
+          peers.value.openDeviceViewer === undefined
+        )
+          return yield* new DeviceHostUnavailableError({
+            hostId: input.resource.hostId,
+            reason: "Authenticated peer device viewing is unsupported.",
+          });
+        const link = yield* links.value.get(input.resource.environmentId).pipe(
+          Effect.mapError(
+            () =>
+              new DeviceHostUnavailableError({
+                hostId: input.resource.hostId,
+                reason: "The device viewer link is unavailable.",
+              }),
+          ),
+        );
+        if (Option.isNone(link))
+          return yield* new DeviceHostUnavailableError({
+            hostId: input.resource.hostId,
+            reason: "The device viewer environment is not linked.",
+          });
+        const envelope = yield* authority.value.prepareDeviceViewer(
+          session.sessionId,
+          input.resource.environmentId,
+          link.value.launchIdentity,
+          input,
+        );
+        const remote = yield* peers.value.openDeviceViewer({
+          request: input,
+          authority: envelope,
         });
-        yield* check;
-        if (binding.type === "outgoing") {
-          if (Option.isNone(peers) || peers.value.openDeviceViewer === undefined)
-            return yield* new OrchestratorMcpFailure({
-              code: "invalid_request",
-              message: "Current device admission is unsupported.",
-            });
-          const remote = yield* peers.value.openDeviceViewer({
-            request: { ...binding.input, viewerId: binding.access.viewerId },
-            authority: binding.envelope,
+        const binding: DeviceViewerBinding = { type: "outgoing", ...remote, input, envelope };
+        return yield* authority.value.checkRecord(envelope.recordId).pipe(
+          Effect.andThen(issue(session.sessionId, input, envelope.generation, binding)),
+          Effect.onExit((exit) =>
+            Exit.isFailure(exit) ? closeRemote(binding).pipe(Effect.asVoid) : Effect.void,
+          ),
+        );
+      }),
+      close: Effect.fn("DeviceHubProxy.close")(function* (sessionId, viewerId) {
+        if (!(yield* sessions.closeViewer(sessionId, viewerId))) return false;
+        return yield* retire(viewerId);
+      }),
+      accept: Effect.fn("DeviceHubProxy.accept")(function* (scope, input) {
+        if (
+          Option.isNone(authority) ||
+          scope.client?.linked !== true ||
+          scope.authority === undefined ||
+          !("envelope" in scope.authority)
+        )
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "The device viewer needs its original authenticated peer authority.",
           });
-          yield* check;
-          if (
-            remote.access.viewerId !== binding.access.viewerId ||
-            remote.origin !== binding.origin
-          )
+        if (input.viewerId !== undefined)
+          return yield* renew(AuthSessionId.make(scope.client.sessionId), input, scope);
+        yield* authority.value.recheckDeviceViewer(scope, input);
+        yield* devices.authorizeViewer(input.resource);
+        yield* authority.value.recheckDeviceViewer(scope, input);
+        const generation = scope.authority.peer.generation;
+        return yield* issue(AuthSessionId.make(scope.client.sessionId), input, generation, {
+          type: "incoming",
+          scope,
+          input,
+          generation,
+        });
+      }),
+      resolve: Effect.fn("DeviceHubProxy.resolve")(function* (viewerId, input, generation) {
+        const binding = bindings.get(viewerId)?.binding;
+        if (binding === undefined) {
+          if (input.resource.environmentId !== here || generation !== input.resource.toolSessionId)
             return yield* new OrchestratorMcpFailure({
               code: "capability_denied",
-              message: "The destination changed the original device viewer.",
+              message: "The original device viewer binding is unavailable.",
             });
-          binding.access = remote.access;
+          return { origin: (yield* devices.authorizeViewer(input.resource)).hub.origin };
         }
-        const issued = yield* sessions
-          .issueViewerToken({
-            sessionId,
-            ...binding.input,
-            viewerId: input.viewerId!,
-            generation:
-              binding.type === "incoming" ? binding.generation : binding.envelope.generation,
-          })
-          .pipe(
-            Effect.mapError(
-              () =>
-                new OrchestratorMcpFailure({
-                  code: "capability_denied",
-                  message: "The active device viewer could not be renewed.",
-                }),
-            ),
-          );
-        yield* check;
-        return {
-          viewerId: issued.viewerId,
-          ticket: issued.token,
-          expiresAt: DateTime.formatIso(issued.expiresAt),
-          hubBasePath: DeviceService.DEVICE_HUB_ROUTE_PREFIX,
-        } satisfies DeviceViewerAccess;
-      });
-    return DeviceViewers.of({
-      open: (session, input) =>
-        Effect.gen(function* () {
-          if (input.viewerId !== undefined && input.resource.environmentId !== here)
-            return yield* renew(session.sessionId, input);
-          if (input.resource.environmentId === here)
-            return yield* issueViewer(session, input).pipe(
-              Effect.provideService(DeviceService.DeviceService, devices),
-              Effect.provideService(SessionStore.SessionStore, sessions),
-              Effect.provideService(ServerEnvironment.ServerEnvironment, environment),
-            );
-          if (
-            !session.scopes.includes(AuthOrchestrationReadScope) ||
-            (input.operation === "control" &&
-              !session.scopes.includes(AuthOrchestrationOperateScope))
-          )
-            return yield* new OrchestratorMcpFailure({
-              code: "capability_denied",
-              message: "This native client cannot perform that device viewer operation.",
-            });
-          if (
-            Option.isNone(authority) ||
-            Option.isNone(links) ||
-            Option.isNone(peers) ||
-            peers.value.openDeviceViewer === undefined
-          )
-            return yield* new DeviceHostUnavailableError({
-              hostId: input.resource.hostId,
-              reason: "Authenticated peer device viewing is unsupported.",
-            });
-          const link = yield* links.value.get(input.resource.environmentId).pipe(
-            Effect.mapError(
-              () =>
-                new DeviceHostUnavailableError({
-                  hostId: input.resource.hostId,
-                  reason: "The device viewer link is unavailable.",
-                }),
-            ),
-          );
-          if (Option.isNone(link))
-            return yield* new DeviceHostUnavailableError({
-              hostId: input.resource.hostId,
-              reason: "The device viewer environment is not linked.",
-            });
-          const envelope = yield* authority.value.prepareDeviceViewer(
-            session.sessionId,
-            input.resource.environmentId,
-            link.value.launchIdentity,
-            input,
-          );
-          const remote = yield* peers.value.openDeviceViewer({
-            request: input,
-            authority: envelope,
+        if (Option.isNone(authority))
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "Current device viewer authority is unavailable.",
           });
-          const binding: DeviceViewerBinding = { type: "outgoing", ...remote, input, envelope };
-          return yield* authority.value.checkRecord(envelope.recordId).pipe(
-            Effect.andThen(issue(session.sessionId, input, envelope.generation, binding)),
-            Effect.onExit((exit) =>
-              Exit.isFailure(exit) ? closeRemote(binding).pipe(Effect.asVoid) : Effect.void,
-            ),
-          );
-        }),
-      close: (sessionId, viewerId) =>
-        Effect.gen(function* () {
-          if (!(yield* sessions.closeViewer(sessionId, viewerId))) return false;
-          return yield* retire(viewerId);
-        }),
-      accept: (scope, input) =>
-        Effect.gen(function* () {
-          if (
-            Option.isNone(authority) ||
-            scope.client?.linked !== true ||
-            scope.authority === undefined ||
-            !("envelope" in scope.authority)
-          )
-            return yield* new OrchestratorMcpFailure({
-              code: "capability_denied",
-              message: "The device viewer needs its original authenticated peer authority.",
-            });
-          if (input.viewerId !== undefined)
-            return yield* renew(AuthSessionId.make(scope.client.sessionId), input, scope);
-          yield* authority.value.recheckDeviceViewer(scope, input);
-          yield* devices.authorizeViewer(input.resource);
-          yield* authority.value.recheckDeviceViewer(scope, input);
-          const generation = scope.authority.peer.generation;
-          return yield* issue(AuthSessionId.make(scope.client.sessionId), input, generation, {
-            type: "incoming",
-            scope,
-            input,
-            generation,
-          });
-        }),
-      resolve: (viewerId, input, generation) =>
-        Effect.gen(function* () {
-          const binding = bindings.get(viewerId)?.binding;
-          if (binding === undefined) {
-            if (
-              input.resource.environmentId !== here ||
-              generation !== input.resource.toolSessionId
-            )
-              return yield* new OrchestratorMcpFailure({
-                code: "capability_denied",
-                message: "The original device viewer binding is unavailable.",
-              });
-            return { origin: (yield* devices.authorizeViewer(input.resource)).hub.origin };
-          }
-          if (Option.isNone(authority))
-            return yield* new OrchestratorMcpFailure({
-              code: "capability_denied",
-              message: "Current device viewer authority is unavailable.",
-            });
-          if (binding.type === "incoming") {
-            if (generation !== binding.generation)
-              return yield* new OrchestratorMcpFailure({
-                code: "capability_denied",
-                message: "The device viewer generation changed.",
-              });
-            yield* authority.value.recheckDeviceViewer(binding.scope, binding.input);
-            const ready = yield* devices.authorizeViewer(binding.input.resource);
-            yield* authority.value.recheckDeviceViewer(binding.scope, binding.input);
-            return { origin: ready.hub.origin };
-          }
-          if (generation !== binding.envelope.generation)
+        if (binding.type === "incoming") {
+          if (generation !== binding.generation)
             return yield* new OrchestratorMcpFailure({
               code: "capability_denied",
               message: "The device viewer generation changed.",
             });
-          yield* authority.value.checkRecord(binding.envelope.recordId);
-          return {
-            origin: `${binding.origin}${DeviceService.DEVICE_HUB_ROUTE_PREFIX}`,
-            ticket: binding.access.ticket,
-          };
-        }),
+          yield* authority.value.recheckDeviceViewer(binding.scope, binding.input);
+          const ready = yield* devices.authorizeViewer(binding.input.resource);
+          yield* authority.value.recheckDeviceViewer(binding.scope, binding.input);
+          return { origin: ready.hub.origin };
+        }
+        if (generation !== binding.envelope.generation)
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "The device viewer generation changed.",
+          });
+        yield* authority.value.checkRecord(binding.envelope.recordId);
+        return {
+          origin: `${binding.origin}${DeviceService.DEVICE_HUB_ROUTE_PREFIX}`,
+          ticket: binding.access.ticket,
+        };
+      }),
     });
   }),
 );

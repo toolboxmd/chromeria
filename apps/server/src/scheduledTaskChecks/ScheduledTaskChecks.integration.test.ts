@@ -189,7 +189,7 @@ const runtime = (
     Layer.succeed(ProcessRunner, {
       run: () => (options.check ?? Effect.succeed(1)).pipe(Effect.map(checkResult)),
     }),
-    // #169's recovery history and controller tables, as production starts them.
+    // Prism's recovery history and controller tables, as production starts them.
     RecoveryStore.layer.pipe(Layer.provide(database)),
     ...(options.spectra === undefined
       ? []

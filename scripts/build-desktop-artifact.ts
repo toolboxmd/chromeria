@@ -2801,11 +2801,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     ],
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
-  // Chromeria (toolboxmd fork) never embeds a GitHub update feed: the feed
-  // resolves to upstream T3 Code releases, and electron-updater would replace
-  // Chromeria with upstream. A null publish config ships no app-update.yml, so
-  // DesktopUpdates reports automatic updates as unavailable; it also stops
-  // electron-builder inferring a GitHub feed from tokens.
+  // Chromeria never embeds a GitHub update feed: it resolves to upstream T3 Code releases, which
+  // electron-updater would install over Chromeria. A null publish config ships no app-update.yml, so
+  // automatic updates report unavailable and electron-builder infers no GitHub feed.
   buildConfig.publish = null;
   if (!isDesktopPreviewVersion(version)) {
     if (mockUpdates) {

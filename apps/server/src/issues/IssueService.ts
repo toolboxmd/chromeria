@@ -286,196 +286,195 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const list: IssueService["Service"]["list"] = (input) =>
-    Effect.gen(function* () {
-      const { repositories, unsupported } = yield* workspace;
-      const wanted =
-        input.repositories === undefined
-          ? repositories
-          : repositories.filter((repository) =>
-              input.repositories!.some(
-                (key) =>
-                  key.toLowerCase() === `${repository.host} ${repository.repository}`.toLowerCase(),
-              ),
-            );
-      const byHost = new Map<string, Array<WorkspaceRepository>>();
-      for (const repository of wanted) {
-        const group = byHost.get(repository.host) ?? [];
-        group.push(repository);
-        byHost.set(repository.host, group);
-      }
-      const searches = [...byHost].flatMap(([host, group]) => {
-        const chunks: Array<Search> = [];
-        for (let start = 0; start < group.length; start += REPOSITORY_SEARCH_CHUNK) {
-          const chunk = group.slice(start, start + REPOSITORY_SEARCH_CHUNK);
-          chunks.push({ key: `${host}#${start / REPOSITORY_SEARCH_CHUNK}`, host, chunk });
-        }
-        return chunks;
-      });
-      // A continuation reads only the searches it names.
-      const reads =
-        input.cursors === undefined
-          ? searches
-          : searches.filter((search) => input.cursors![search.key] !== undefined);
-      const limit = Math.min(input.limit ?? DEFAULT_LIMIT, ISSUE_SEARCH_MAX_ROWS);
-      // A server whose repositories the list does not search still reads its thread-linked pull
-      // requests: an Issue another server lists can be linked to a thread here.
-      const searchedHosts = new Set(searches.map((search) => search.host));
-      const linkedOnlyHosts =
-        input.cursors === undefined
-          ? [...new Set(repositories.map((repository) => repository.host))].filter(
-              (host) => !searchedHosts.has(host),
-            )
-          : [];
-      const pinned = yield* pinnedCredentials([
-        ...new Set([...reads.map((search) => search.host), ...linkedOnlyHosts]),
-      ]);
-      const answers = yield* Effect.forEach(
-        reads,
-        (search): Effect.Effect<SearchAnswer> => {
-          const q = issueSearchQuery({
-            repositories: search.chunk.map((repository) => repository.repository),
-            state: input.state,
-            sort: input.sort,
-            query: input.query,
-            labels: input.labels,
-            milestone: input.milestone,
-          });
-          if (q === null) return Effect.succeed({ search, rows: null, linked: [], error: null });
-          const after = input.cursors?.[search.key];
-          // A host's thread-linked pull requests ride along with its first search's first page.
-          const withLinked = after === undefined && search.key === `${search.host}#0`;
-          return (withLinked ? linkedPullRequestCandidates(search.host) : Effect.succeed([])).pipe(
-            Effect.flatMap((candidates) =>
-              pinned(
-                search.host,
-                // One page per call, from the client's cursor: "Load more" asks for the next.
-                readGraphQlPages(
-                  (from) =>
-                    graphqlRead({
-                      host: search.host,
-                      operation: "searchIssues",
-                      document: issueSearchGraphQlDocument({
-                        rows: limit,
-                        q,
-                        after: from ?? undefined,
-                        linkedPullRequests: candidates,
-                        host: search.host,
-                      }),
-                      decode: (raw) =>
-                        Result.map(decodeIssueSearchJson(raw), (rows) => ({
-                          rows,
-                          linked:
-                            candidates.length === 0 ? [] : linkedPullRequestsOf(search.host, raw),
-                        })),
-                    }),
-                  {
-                    from: after ?? null,
-                    maxPages: 1,
-                    nextCursor: ({ rows }) =>
-                      rows.data.search.pageInfo.hasNextPage
-                        ? rows.data.search.pageInfo.endCursor
-                        : null,
-                  },
-                ).pipe(Effect.map(({ pages }) => pages[0]!)),
-              ),
+  const list: IssueService["Service"]["list"] = Effect.fn("IssueService.list")(function* (input) {
+    const { repositories, unsupported } = yield* workspace;
+    const wanted =
+      input.repositories === undefined
+        ? repositories
+        : repositories.filter((repository) =>
+            input.repositories!.some(
+              (key) =>
+                key.toLowerCase() === `${repository.host} ${repository.repository}`.toLowerCase(),
             ),
-            Effect.map(({ rows, linked }) => ({ search, rows, linked, error: null })),
-            Effect.catch((error) => Effect.succeed({ search, rows: null, linked: [], error })),
           );
-        },
-        { concurrency: SEARCH_CONCURRENCY },
-      );
-      const linkedOnly = yield* Effect.forEach(
-        linkedOnlyHosts,
-        (host) =>
-          linkedPullRequestCandidates(host).pipe(
-            Effect.flatMap((candidates) =>
-              candidates.length === 0
-                ? Effect.succeed(null)
-                : pinned(
-                    host,
-                    graphqlRead({
-                      host,
-                      operation: "readLinkedPullRequests",
-                      document: linkedPullRequestsGraphQlDocument(candidates, host),
-                      decode: (raw) =>
-                        Result.map(decodeViewerJson(raw), (answer) => ({
-                          host,
-                          viewer: answer.data.viewer.login,
-                          linked: linkedPullRequestsOf(host, raw),
-                        })),
+    const byHost = new Map<string, Array<WorkspaceRepository>>();
+    for (const repository of wanted) {
+      const group = byHost.get(repository.host) ?? [];
+      group.push(repository);
+      byHost.set(repository.host, group);
+    }
+    const searches = [...byHost].flatMap(([host, group]) => {
+      const chunks: Array<Search> = [];
+      for (let start = 0; start < group.length; start += REPOSITORY_SEARCH_CHUNK) {
+        const chunk = group.slice(start, start + REPOSITORY_SEARCH_CHUNK);
+        chunks.push({ key: `${host}#${start / REPOSITORY_SEARCH_CHUNK}`, host, chunk });
+      }
+      return chunks;
+    });
+    // A continuation reads only the searches it names.
+    const reads =
+      input.cursors === undefined
+        ? searches
+        : searches.filter((search) => input.cursors![search.key] !== undefined);
+    const limit = Math.min(input.limit ?? DEFAULT_LIMIT, ISSUE_SEARCH_MAX_ROWS);
+    // A server whose repositories the list does not search still reads its thread-linked pull
+    // requests: an Issue another server lists can be linked to a thread here.
+    const searchedHosts = new Set(searches.map((search) => search.host));
+    const linkedOnlyHosts =
+      input.cursors === undefined
+        ? [...new Set(repositories.map((repository) => repository.host))].filter(
+            (host) => !searchedHosts.has(host),
+          )
+        : [];
+    const pinned = yield* pinnedCredentials([
+      ...new Set([...reads.map((search) => search.host), ...linkedOnlyHosts]),
+    ]);
+    const answers = yield* Effect.forEach(
+      reads,
+      (search): Effect.Effect<SearchAnswer> => {
+        const q = issueSearchQuery({
+          repositories: search.chunk.map((repository) => repository.repository),
+          state: input.state,
+          sort: input.sort,
+          query: input.query,
+          labels: input.labels,
+          milestone: input.milestone,
+        });
+        if (q === null) return Effect.succeed({ search, rows: null, linked: [], error: null });
+        const after = input.cursors?.[search.key];
+        // A host's thread-linked pull requests ride along with its first search's first page.
+        const withLinked = after === undefined && search.key === `${search.host}#0`;
+        return (withLinked ? linkedPullRequestCandidates(search.host) : Effect.succeed([])).pipe(
+          Effect.flatMap((candidates) =>
+            pinned(
+              search.host,
+              // One page per call, from the client's cursor: "Load more" asks for the next.
+              readGraphQlPages(
+                (from) =>
+                  graphqlRead({
+                    host: search.host,
+                    operation: "searchIssues",
+                    document: issueSearchGraphQlDocument({
+                      rows: limit,
+                      q,
+                      after: from ?? undefined,
+                      linkedPullRequests: candidates,
+                      host: search.host,
                     }),
-                  ),
-            ),
-            // Only status inputs are missing then; the list itself is complete.
-            Effect.catch((error) =>
-              Effect.logWarning("Could not read thread-linked pull requests", error).pipe(
-                Effect.as(null),
-              ),
+                    decode: (raw) =>
+                      Result.map(decodeIssueSearchJson(raw), (rows) => ({
+                        rows,
+                        linked:
+                          candidates.length === 0 ? [] : linkedPullRequestsOf(search.host, raw),
+                      })),
+                  }),
+                {
+                  from: after ?? null,
+                  maxPages: 1,
+                  nextCursor: ({ rows }) =>
+                    rows.data.search.pageInfo.hasNextPage
+                      ? rows.data.search.pageInfo.endCursor
+                      : null,
+                },
+              ).pipe(Effect.map(({ pages }) => pages[0]!)),
             ),
           ),
-        { concurrency: SEARCH_CONCURRENCY },
-      );
-
-      const entries: Array<IssueListEntry> = [];
-      const errors: Array<{ host: string; message: string }> = [];
-      const nextCursors: Record<string, string> = {};
-      const viewers = new Map<string, string>();
-      const linkedPullRequests: Array<IssuePullRequest> = [];
-      for (const { search, rows, linked, error } of answers) {
-        if (error !== null) errors.push({ host: search.host, message: error.detail });
-        if (rows === null) continue;
-        const page = rows.data.search;
-        viewers.set(search.host, rows.data.viewer.login);
-        linkedPullRequests.push(...linked);
-        if (page.pageInfo.hasNextPage && page.pageInfo.endCursor !== null) {
-          nextCursors[search.key] = page.pageInfo.endCursor;
-        }
-        for (const node of page.nodes) {
-          const owner = search.chunk.find(
-            (repository) =>
-              repository.repository.toLowerCase() === node.repository.nameWithOwner.toLowerCase(),
-          );
-          if (owner === undefined) continue;
-          entries.push({
-            ...issueLinkOf(search.host, node),
-            projectId: owner.projectId,
-            projectTitle: owner.projectTitle,
-            author: node.author?.login || null,
-            labels: node.labels.nodes.filter((label) => label.name.trim().length > 0),
-            milestone: node.milestone?.title.trim() || null,
-            commentCount: node.comments.totalCount,
-            createdAt: node.createdAt,
-            updatedAt: node.updatedAt,
-            parent: node.parent === null ? null : issueLinkOf(search.host, node.parent),
-            subIssues: node.subIssues.nodes.map((child) => issueLinkOf(search.host, child)),
-            subIssueCount: node.subIssues.totalCount,
-            openBlockerCount: node.issueDependenciesSummary.blockedBy,
-            closingPullRequests: node.closedByPullRequestsReferences.nodes.flatMap((pullRequest) =>
-              pullRequest === null ? [] : [pullRequestOf(search.host, pullRequest)],
+          Effect.map(({ rows, linked }) => ({ search, rows, linked, error: null })),
+          Effect.catch((error) => Effect.succeed({ search, rows: null, linked: [], error })),
+        );
+      },
+      { concurrency: SEARCH_CONCURRENCY },
+    );
+    const linkedOnly = yield* Effect.forEach(
+      linkedOnlyHosts,
+      (host) =>
+        linkedPullRequestCandidates(host).pipe(
+          Effect.flatMap((candidates) =>
+            candidates.length === 0
+              ? Effect.succeed(null)
+              : pinned(
+                  host,
+                  graphqlRead({
+                    host,
+                    operation: "readLinkedPullRequests",
+                    document: linkedPullRequestsGraphQlDocument(candidates, host),
+                    decode: (raw) =>
+                      Result.map(decodeViewerJson(raw), (answer) => ({
+                        host,
+                        viewer: answer.data.viewer.login,
+                        linked: linkedPullRequestsOf(host, raw),
+                      })),
+                  }),
+                ),
+          ),
+          // Only status inputs are missing then; the list itself is complete.
+          Effect.catch((error) =>
+            Effect.logWarning("Could not read thread-linked pull requests", error).pipe(
+              Effect.as(null),
             ),
-          });
-        }
-      }
-      for (const answer of linkedOnly) {
-        if (answer === null) continue;
-        viewers.set(answer.host, answer.viewer);
-        linkedPullRequests.push(...answer.linked);
-      }
-      return {
-        repositories,
-        unsupported,
-        errors,
-        entries,
-        viewers: [...viewers].map(([host, login]) => ({ host, login })),
-        linkedPullRequests,
-        nextCursors,
-      };
-    });
+          ),
+        ),
+      { concurrency: SEARCH_CONCURRENCY },
+    );
 
-  const detail: IssueService["Service"]["detail"] = (input) =>
-    Effect.gen(function* () {
+    const entries: Array<IssueListEntry> = [];
+    const errors: Array<{ host: string; message: string }> = [];
+    const nextCursors: Record<string, string> = {};
+    const viewers = new Map<string, string>();
+    const linkedPullRequests: Array<IssuePullRequest> = [];
+    for (const { search, rows, linked, error } of answers) {
+      if (error !== null) errors.push({ host: search.host, message: error.detail });
+      if (rows === null) continue;
+      const page = rows.data.search;
+      viewers.set(search.host, rows.data.viewer.login);
+      linkedPullRequests.push(...linked);
+      if (page.pageInfo.hasNextPage && page.pageInfo.endCursor !== null) {
+        nextCursors[search.key] = page.pageInfo.endCursor;
+      }
+      for (const node of page.nodes) {
+        const owner = search.chunk.find(
+          (repository) =>
+            repository.repository.toLowerCase() === node.repository.nameWithOwner.toLowerCase(),
+        );
+        if (owner === undefined) continue;
+        entries.push({
+          ...issueLinkOf(search.host, node),
+          projectId: owner.projectId,
+          projectTitle: owner.projectTitle,
+          author: node.author?.login || null,
+          labels: node.labels.nodes.filter((label) => label.name.trim().length > 0),
+          milestone: node.milestone?.title.trim() || null,
+          commentCount: node.comments.totalCount,
+          createdAt: node.createdAt,
+          updatedAt: node.updatedAt,
+          parent: node.parent === null ? null : issueLinkOf(search.host, node.parent),
+          subIssues: node.subIssues.nodes.map((child) => issueLinkOf(search.host, child)),
+          subIssueCount: node.subIssues.totalCount,
+          openBlockerCount: node.issueDependenciesSummary.blockedBy,
+          closingPullRequests: node.closedByPullRequestsReferences.nodes.flatMap((pullRequest) =>
+            pullRequest === null ? [] : [pullRequestOf(search.host, pullRequest)],
+          ),
+        });
+      }
+    }
+    for (const answer of linkedOnly) {
+      if (answer === null) continue;
+      viewers.set(answer.host, answer.viewer);
+      linkedPullRequests.push(...answer.linked);
+    }
+    return {
+      repositories,
+      unsupported,
+      errors,
+      entries,
+      viewers: [...viewers].map(([host, login]) => ({ host, login })),
+      linkedPullRequests,
+      nextCursors,
+    };
+  });
+
+  const detail: IssueService["Service"]["detail"] = Effect.fn("IssueService.detail")(
+    function* (input) {
       const host = yield* requireHost(input.host, "issueDetail");
       const { owner, name } = repositoryParts(input.repository);
       const answer = yield* graphqlRead({
@@ -495,10 +494,11 @@ const make = Effect.gen(function* () {
         });
       }
       return issueDetailOf(host, issue);
-    });
+    },
+  );
 
-  const states: IssueService["Service"]["states"] = (input) =>
-    Effect.gen(function* () {
+  const states: IssueService["Service"]["states"] = Effect.fn("IssueService.states")(
+    function* (input) {
       const byHost = new Map<string, Array<IssueRef>>();
       for (const issue of input.issues) {
         const host = issue.host.toLowerCase();
@@ -521,7 +521,8 @@ const make = Effect.gen(function* () {
         { concurrency: SEARCH_CONCURRENCY },
       );
       return { issues: read.flat() };
-    });
+    },
+  );
 
   /** A user's change to one Issue, through GitHub's REST API. */
   const issueWrite = (
@@ -582,115 +583,115 @@ const make = Effect.gen(function* () {
    * repository's open Issues, under one pinned credential. The file is read by commit, so a push
    * between the reads cannot pair one version's parts with another's file.
    */
-  const readFeatureMap: IssueService["Service"]["readFeatureMap"] = (input) =>
-    Effect.gen(function* () {
-      const shells = yield* projects
-        .listShells()
-        .pipe(
-          Effect.mapError((cause) =>
-            failure("listProjects", cause, "The project list could not be read."),
-          ),
-        );
-      const shell = shells.find((candidate) => candidate.id === input.projectId);
-      const identity =
-        shell === undefined
-          ? null
-          : (shell.repositoryIdentity ??
-            (yield* repositoryIdentities.resolve(shell.workspaceRoot)));
-      const gitHub = identity ? gitHubRepositoryOf(identity) : null;
-      if (gitHub === null) {
-        return yield* new IssueOperationError({
-          operation: "readFeatureMap",
-          detail: "This project has no GitHub repository to read a map from.",
+  const readFeatureMap: IssueService["Service"]["readFeatureMap"] = Effect.fn(
+    "IssueService.readFeatureMap",
+  )(function* (input) {
+    const shells = yield* projects
+      .listShells()
+      .pipe(
+        Effect.mapError((cause) =>
+          failure("listProjects", cause, "The project list could not be read."),
+        ),
+      );
+    const shell = shells.find((candidate) => candidate.id === input.projectId);
+    const identity =
+      shell === undefined
+        ? null
+        : (shell.repositoryIdentity ?? (yield* repositoryIdentities.resolve(shell.workspaceRoot)));
+    const gitHub = identity ? gitHubRepositoryOf(identity) : null;
+    if (gitHub === null) {
+      return yield* new IssueOperationError({
+        operation: "readFeatureMap",
+        detail: "This project has no GitHub repository to read a map from.",
+      });
+    }
+    const { host, repository } = gitHub;
+    const { owner, name } = repositoryParts(repository);
+    const pinned = yield* pinnedCredentials([host]);
+    return yield* pinned(
+      host,
+      Effect.gen(function* () {
+        const headAnswer = yield* graphqlRead({
+          host,
+          operation: "featureMapHead",
+          document: { query: FEATURE_MAP_HEAD_QUERY, variables: { owner, name } },
+          decode: decodeFeatureMapHeadJson,
         });
-      }
-      const { host, repository } = gitHub;
-      const { owner, name } = repositoryParts(repository);
-      const pinned = yield* pinnedCredentials([host]);
-      return yield* pinned(
-        host,
-        Effect.gen(function* () {
-          const headAnswer = yield* graphqlRead({
-            host,
-            operation: "featureMapHead",
-            document: { query: FEATURE_MAP_HEAD_QUERY, variables: { owner, name } },
-            decode: decodeFeatureMapHeadJson,
+        const head = headAnswer.data.repository?.defaultBranchRef ?? null;
+        if (head === null) {
+          return yield* new IssueOperationError({
+            operation: "readFeatureMap",
+            detail: `${repository} has no default branch GitHub can read.`,
           });
-          const head = headAnswer.data.repository?.defaultBranchRef ?? null;
-          if (head === null) {
-            return yield* new IssueOperationError({
-              operation: "readFeatureMap",
-              detail: `${repository} has no default branch GitHub can read.`,
-            });
-          }
-          const location = {
-            host,
-            repository,
-            branch: head.name,
-            commit: head.target.oid,
-          };
-          const fileAnswer = yield* graphqlRead({
-            host,
-            operation: "featureMapFile",
-            document: {
-              query: FEATURE_MAP_FILE_QUERY,
-              variables: { owner, name, expression: `${head.target.oid}:${FEATURE_MAP_PATH}` },
-            },
-            decode: decodeFeatureMapFileJson,
-          });
-          const text = fileAnswer.data.repository?.object?.text ?? null;
-          const parsed = text === null ? null : parseFeatureMapFile(text, { host, repository });
-          if (parsed === null) {
-            return {
-              _tag: "NoMap" as const,
-              ...location,
-              reason: text === null ? ("missing" as const) : ("no-diagram" as const),
-              fetchedAt: DateTime.formatIso(yield* DateTime.now),
-            };
-          }
-
-          const refs = featureMapRefsOf(parsed.parts);
-          const facts: Array<FeatureMapRefFact> = [];
-          const openIssues: Array<{ number: number; title: string; url: string }> = [];
-          let after: string | null = null;
-          let issuePages = 0;
-          let moreIssues = true;
-          // Each request carries the next refs and the next open-Issue page, until both run out.
-          for (
-            let start = 0;
-            start < refs.length || (moreIssues && issuePages < FEATURE_MAP_OPEN_ISSUE_PAGES);
-            start += FEATURE_MAP_REFS_PER_READ
-          ) {
-            const chunk = refs.slice(start, start + FEATURE_MAP_REFS_PER_READ);
-            const answer: {
-              readonly openIssues: OpenIssuePage | null;
-              readonly aliases: Readonly<Record<string, unknown>>;
-            } = yield* graphqlRead({
-              host,
-              operation: "featureMapFacts",
-              document: featureMapFactsDocument({ refs: chunk, repository, after }),
-              decode: decodeFeatureMapFactsJson,
-            });
-            facts.push(...featureMapFactsOf(chunk, answer.aliases));
-            if (!moreIssues || issuePages >= FEATURE_MAP_OPEN_ISSUE_PAGES) continue;
-            issuePages++;
-            const page = answer.openIssues;
-            for (const issue of page?.nodes ?? []) if (issue !== null) openIssues.push(issue);
-            after = page?.pageInfo.endCursor ?? null;
-            moreIssues = page?.pageInfo.hasNextPage === true && after !== null;
-          }
+        }
+        const location = {
+          host,
+          repository,
+          branch: head.name,
+          commit: head.target.oid,
+        };
+        const fileAnswer = yield* graphqlRead({
+          host,
+          operation: "featureMapFile",
+          document: {
+            query: FEATURE_MAP_FILE_QUERY,
+            variables: { owner, name, expression: `${head.target.oid}:${FEATURE_MAP_PATH}` },
+          },
+          decode: decodeFeatureMapFileJson,
+        });
+        const text = fileAnswer.data.repository?.object?.text ?? null;
+        const parsed = text === null ? null : parseFeatureMapFile(text, { host, repository });
+        if (parsed === null) {
           return {
-            _tag: "Map" as const,
+            _tag: "NoMap" as const,
             ...location,
-            ...parsed,
-            facts,
-            openIssues,
-            openIssuesPartial: moreIssues,
+            reason: text === null ? ("missing" as const) : ("no-diagram" as const),
             fetchedAt: DateTime.formatIso(yield* DateTime.now),
           };
-        }),
-      );
-    });
+        }
+
+        const refs = featureMapRefsOf(parsed.parts);
+        const facts: Array<FeatureMapRefFact> = [];
+        const openIssues: Array<{ number: number; title: string; url: string }> = [];
+        let after: string | null = null;
+        let issuePages = 0;
+        let moreIssues = true;
+        // Each request carries the next refs and the next open-Issue page, until both run out.
+        for (
+          let start = 0;
+          start < refs.length || (moreIssues && issuePages < FEATURE_MAP_OPEN_ISSUE_PAGES);
+          start += FEATURE_MAP_REFS_PER_READ
+        ) {
+          const chunk = refs.slice(start, start + FEATURE_MAP_REFS_PER_READ);
+          const answer: {
+            readonly openIssues: OpenIssuePage | null;
+            readonly aliases: Readonly<Record<string, unknown>>;
+          } = yield* graphqlRead({
+            host,
+            operation: "featureMapFacts",
+            document: featureMapFactsDocument({ refs: chunk, repository, after }),
+            decode: decodeFeatureMapFactsJson,
+          });
+          facts.push(...featureMapFactsOf(chunk, answer.aliases));
+          if (!moreIssues || issuePages >= FEATURE_MAP_OPEN_ISSUE_PAGES) continue;
+          issuePages++;
+          const page = answer.openIssues;
+          for (const issue of page?.nodes ?? []) if (issue !== null) openIssues.push(issue);
+          after = page?.pageInfo.endCursor ?? null;
+          moreIssues = page?.pageInfo.hasNextPage === true && after !== null;
+        }
+        return {
+          _tag: "Map" as const,
+          ...location,
+          ...parsed,
+          facts,
+          openIssues,
+          openIssuesPartial: moreIssues,
+          fetchedAt: DateTime.formatIso(yield* DateTime.now),
+        };
+      }),
+    );
+  });
 
   return IssueService.of({ list, detail, states, comment, setState, readFeatureMap });
 });

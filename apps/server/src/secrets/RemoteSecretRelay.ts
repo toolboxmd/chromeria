@@ -113,38 +113,37 @@ const make = Effect.gen(function* () {
       Effect.mapError(unavailable),
     );
   return RemoteSecretRelay.of({
-    recover: (scope, raw) =>
-      Effect.gen(function* () {
-        const decoded = decodeSchedule(raw);
-        if (
-          Option.isNone(decoded) ||
-          scope.thread === undefined ||
-          !scope.capabilities.has("orchestration")
-        )
-          return Option.none();
-        const input = decoded.value;
-        if (
-          input.schedule?.type !== "webhook" ||
-          input.schedule.signature?.secretRequest === undefined ||
-          input.clientRequestId === undefined
-        )
-          return Option.none();
-        const row = (yield* sql<{
-          input_digest: string;
-          environment_id: EnvironmentId;
-          generation: string;
-          query_json: string;
-        }>`SELECT * FROM remote_secret_consumers WHERE namespace=${requestNamespace(scope)} AND client_key=${input.clientRequestId}`.pipe(
-          Effect.mapError(unavailable),
-        ))[0];
-        if (row === undefined) return Option.none();
-        if (row.input_digest !== requestInputDigest(raw)) return yield* denied();
-        if (peers.remoteSecretReceipt === undefined) return yield* unavailable();
-        const query = yield* decodeReceiptQuery(row.query_json).pipe(Effect.mapError(unavailable));
-        return yield* peers.remoteSecretReceipt(row.environment_id, row.generation, query);
-      }),
-    create: (scope, destination, input, turnItemId, limits) =>
-      Effect.gen(function* () {
+    recover: Effect.fn("RemoteSecretRelay.recover")(function* (scope, raw) {
+      const decoded = decodeSchedule(raw);
+      if (
+        Option.isNone(decoded) ||
+        scope.thread === undefined ||
+        !scope.capabilities.has("orchestration")
+      )
+        return Option.none();
+      const input = decoded.value;
+      if (
+        input.schedule?.type !== "webhook" ||
+        input.schedule.signature?.secretRequest === undefined ||
+        input.clientRequestId === undefined
+      )
+        return Option.none();
+      const row = (yield* sql<{
+        input_digest: string;
+        environment_id: EnvironmentId;
+        generation: string;
+        query_json: string;
+      }>`SELECT * FROM remote_secret_consumers WHERE namespace=${requestNamespace(scope)} AND client_key=${input.clientRequestId}`.pipe(
+        Effect.mapError(unavailable),
+      ))[0];
+      if (row === undefined) return Option.none();
+      if (row.input_digest !== requestInputDigest(raw)) return yield* denied();
+      if (peers.remoteSecretReceipt === undefined) return yield* unavailable();
+      const query = yield* decodeReceiptQuery(row.query_json).pipe(Effect.mapError(unavailable));
+      return yield* peers.remoteSecretReceipt(row.environment_id, row.generation, query);
+    }),
+    create: Effect.fn("RemoteSecretRelay.create")(
+      function* (scope, destination, input, turnItemId, limits) {
         const link = yield* links.get(destination).pipe(Effect.mapError(unavailable));
         if (Option.isNone(link) || scope.thread === undefined) return yield* denied();
         yield* control(destination, link.value.launchIdentity);
@@ -185,56 +184,54 @@ const make = Effect.gen(function* () {
         }
         yield* authority.notifyAutomationChanges;
         return { ...reply.handle, environmentLabel: link.value.label, projectId: input.projectId };
-      }),
-    answer: (input, sessionId) =>
-      Effect.gen(function* () {
-        const row = yield* owned(input.threadId, input.turnItemId);
-        if (row === undefined) return false;
-        if (row.pending !== 0 || row.ack_json !== null) return yield* denied();
-        const values =
-          input.answer.type === "decline"
-            ? []
-            : "secret" in input.answer
-              ? [input.answer.secret]
-              : Object.values(input.answer.secrets);
-        if (input.answer.type === "save" && values.length !== 1) return yield* denied();
-        const body: RemoteSecretControl = {
-          type: "answer",
-          requestId: row.request_id,
-          attemptId: row.attempt_id,
-          answer: input.answer.type,
-          ...(values[0] === undefined ? {} : { value: values[0] }),
-        };
-        const envelope = yield* authority.prepareSecretAnswer(
-          sessionId,
-          row.environment_id,
-          row.generation,
-          body,
-        );
-        const reply = yield* control(row.environment_id, row.generation, {
-          authority: envelope,
-          body,
-        });
-        if (
-          reply === undefined ||
-          !["saved", "reserved", "consumed", "declined"].includes(reply.status)
-        )
-          return yield* denied();
-        return true;
-      }),
-    retire: (threadId, turnItemId) =>
-      Effect.gen(function* () {
-        yield* sql`UPDATE remote_secret_obligations SET pending=1 WHERE thread_id=${threadId} AND turn_item_id=${turnItemId} AND ack_json IS NULL`.pipe(
-          Effect.mapError(unavailable),
-        );
-        yield* authority.notifyAutomationChanges;
-      }),
-    handle: (threadId, turnItemId) =>
-      Effect.gen(function* () {
-        const row = yield* owned(threadId, turnItemId);
-        if (row === undefined || row.pending !== 0) return yield* denied();
-        return { environmentId: row.environment_id, requestId: row.request_id };
-      }),
+      },
+    ),
+    answer: Effect.fn("RemoteSecretRelay.answer")(function* (input, sessionId) {
+      const row = yield* owned(input.threadId, input.turnItemId);
+      if (row === undefined) return false;
+      if (row.pending !== 0 || row.ack_json !== null) return yield* denied();
+      const values =
+        input.answer.type === "decline"
+          ? []
+          : "secret" in input.answer
+            ? [input.answer.secret]
+            : Object.values(input.answer.secrets);
+      if (input.answer.type === "save" && values.length !== 1) return yield* denied();
+      const body: RemoteSecretControl = {
+        type: "answer",
+        requestId: row.request_id,
+        attemptId: row.attempt_id,
+        answer: input.answer.type,
+        ...(values[0] === undefined ? {} : { value: values[0] }),
+      };
+      const envelope = yield* authority.prepareSecretAnswer(
+        sessionId,
+        row.environment_id,
+        row.generation,
+        body,
+      );
+      const reply = yield* control(row.environment_id, row.generation, {
+        authority: envelope,
+        body,
+      });
+      if (
+        reply === undefined ||
+        !["saved", "reserved", "consumed", "declined"].includes(reply.status)
+      )
+        return yield* denied();
+      return true;
+    }),
+    retire: Effect.fn("RemoteSecretRelay.retire")(function* (threadId, turnItemId) {
+      yield* sql`UPDATE remote_secret_obligations SET pending=1 WHERE thread_id=${threadId} AND turn_item_id=${turnItemId} AND ack_json IS NULL`.pipe(
+        Effect.mapError(unavailable),
+      );
+      yield* authority.notifyAutomationChanges;
+    }),
+    handle: Effect.fn("RemoteSecretRelay.handle")(function* (threadId, turnItemId) {
+      const row = yield* owned(threadId, turnItemId);
+      if (row === undefined || row.pending !== 0) return yield* denied();
+      return { environmentId: row.environment_id, requestId: row.request_id };
+    }),
   });
 });
 export const layer = Layer.effect(RemoteSecretRelay, make);

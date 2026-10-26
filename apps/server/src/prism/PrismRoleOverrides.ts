@@ -1,10 +1,8 @@
 import { type ServerSettings, withoutUnsetPrismRoles } from "@t3tools/contracts";
 
 /**
- * One-time rewrite of project `prismRoles` overrides saved as whole kits.
- * Those builds filled every role the project never set with empty lists and
- * blank fields, so the roles ran on the caller's model instead of the
- * environment kit (#395). Empty lists, blank instructions and the default
+ * One-time rewrite of project `prismRoles` overrides saved as whole kits, whose empty lists and blank
+ * fields made roles run on the caller's model. Empty lists, blank instructions and the default
  * `enabled` are dropped so those roles inherit again; set values are kept.
  */
 export function migratePrismRoleOverrides(settings: ServerSettings): ServerSettings {

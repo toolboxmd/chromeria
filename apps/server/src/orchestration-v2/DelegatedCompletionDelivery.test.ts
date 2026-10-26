@@ -3506,7 +3506,7 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
     }),
   );
 
-  // #214: a Stop that catches the task running disposes it; task_cancel must
+  // A Stop that catches the task running disposes it; task_cancel must
   // still win over that Stop.
   const stopWhileRunningThenFollowUp = (input: {
     readonly name: string;

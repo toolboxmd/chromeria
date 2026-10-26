@@ -106,50 +106,51 @@ export const waitForRecovery = <E>(
         return { threadId: input.threadId, run: null, timedOut: false };
       }
       let selectedRunId = selected.id;
-      const resolve = (snapshot?: ReadonlyArray<OrchestrationV2Run>) =>
-        Effect.gen(function* () {
-          let current = snapshot ?? (yield* input.readRuns);
-          const seen = new Set<RunId>();
-          for (;;) {
-            let run = current.find((candidate) => candidate.id === selectedRunId);
-            if (run === undefined) return yield* Effect.fail(input.missing(selectedRunId));
-            run = restart?.latest(current, run) ?? run;
-            selectedRunId = run.id;
-            if (restart !== undefined && terminal(run) && (yield* restart.pending(run)))
-              return { type: "native-continuation-pending" as const, run };
-            if (run.status !== "failed" && run.status !== "interrupted")
-              return { type: terminal(run) ? ("done" as const) : ("pending" as const), run };
-            const state = yield* recovery
-              .read(input.threadId, run.id)
-              .pipe(Effect.mapError(input.loadError));
-            const successor =
-              state.admittedContinuations.find((entry) => entry.threadId === input.threadId)
-                ?.successorRunId ??
-              (state.decision?.status === "decided" && state.decision.outcome === "retried"
-                ? state.decision.successorRunId
-                : undefined);
-            if (successor !== undefined) {
-              if (seen.has(successor))
-                return yield* Effect.fail(input.loadError("Recovery successor cycle"));
-              seen.add(run.id);
-              let next = current.find((candidate) => candidate.id === successor);
-              if (next === undefined) {
-                current = yield* input.readRuns;
-                next = current.find((candidate) => candidate.id === successor);
-              }
-              if (next === undefined) return yield* Effect.fail(input.missing(successor));
-              selectedRunId = next.id;
-              continue;
+      const resolve = Effect.fn("recoveryWait.resolve")(function* (
+        snapshot?: ReadonlyArray<OrchestrationV2Run>,
+      ) {
+        let current = snapshot ?? (yield* input.readRuns);
+        const seen = new Set<RunId>();
+        for (;;) {
+          let run = current.find((candidate) => candidate.id === selectedRunId);
+          if (run === undefined) return yield* Effect.fail(input.missing(selectedRunId));
+          run = restart?.latest(current, run) ?? run;
+          selectedRunId = run.id;
+          if (restart !== undefined && terminal(run) && (yield* restart.pending(run)))
+            return { type: "native-continuation-pending" as const, run };
+          if (run.status !== "failed" && run.status !== "interrupted")
+            return { type: terminal(run) ? ("done" as const) : ("pending" as const), run };
+          const state = yield* recovery
+            .read(input.threadId, run.id)
+            .pipe(Effect.mapError(input.loadError));
+          const successor =
+            state.admittedContinuations.find((entry) => entry.threadId === input.threadId)
+              ?.successorRunId ??
+            (state.decision?.status === "decided" && state.decision.outcome === "retried"
+              ? state.decision.successorRunId
+              : undefined);
+          if (successor !== undefined) {
+            if (seen.has(successor))
+              return yield* Effect.fail(input.loadError("Recovery successor cycle"));
+            seen.add(run.id);
+            let next = current.find((candidate) => candidate.id === successor);
+            if (next === undefined) {
+              current = yield* input.readRuns;
+              next = current.find((candidate) => candidate.id === successor);
             }
-            return {
-              run,
-              type:
-                state.pendingRecovery === null && state.decision?.status !== "pending"
-                  ? ("done" as const)
-                  : ("pending" as const),
-            };
+            if (next === undefined) return yield* Effect.fail(input.missing(successor));
+            selectedRunId = next.id;
+            continue;
           }
-        });
+          return {
+            run,
+            type:
+              state.pendingRecovery === null && state.decision?.status !== "pending"
+                ? ("done" as const)
+                : ("pending" as const),
+          };
+        }
+      });
       const initial = yield* resolve(runs);
       if (initial.type === "done")
         return { threadId: input.threadId, run: initial.run, timedOut: false };

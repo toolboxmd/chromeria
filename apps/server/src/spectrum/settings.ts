@@ -19,7 +19,7 @@ const colorCandidate = (color: Color) => ({
 });
 
 /**
- * Settings decode already turns a saved White slot label into White's Colors (#525);
+ * Settings decode already turns a saved White slot label into White's Colors;
  * this tells the trusted load to write that result back once.
  */
 export function savesSpectrumWhiteLabel(raw: string): boolean {

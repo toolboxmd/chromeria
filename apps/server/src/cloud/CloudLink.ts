@@ -1253,12 +1253,9 @@ const make = Effect.gen(function* () {
     if (!response.ok) {
       return false;
     }
-    // Keep the config as startup's recovery identity: registration discovers
-    // the released tunnel and replaces it with the environment credential.
-    // Dropping it would require CLI relinking, which a headless service without
-    // public OAuth config cannot do. Only clear this config's confirmed origin
-    // so startup registers before trying the dead connector token. A fast
-    // restart's replacement config and marker must survive this finalizer.
+    // Keep the config as startup's recovery identity: registration finds the released tunnel and
+    // replaces it, and dropping it would need CLI relinking a headless service cannot do. Clear only
+    // the confirmed origin so startup re-registers; a fast restart's config and marker must survive.
     const storedConfig = yield* secrets.get(CLOUD_ENDPOINT_RUNTIME_CONFIG);
     if (
       Option.isSome(storedConfig) &&

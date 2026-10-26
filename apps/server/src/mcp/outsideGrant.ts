@@ -35,31 +35,31 @@ const denied = () =>
   });
 
 /** Fail closed before any handler, including reads and remote forwarding. */
-export const checkOutsideGrant = (tool: string, params: unknown) =>
-  Effect.gen(function* () {
-    const context = yield* Effect.serviceOption(Invocation.McpInvocationContext);
-    const limits = Option.isSome(context) ? context.value.client?.limits : undefined;
-    if (limits === undefined) return;
-    const operation = operations[tool];
-    const decoded = decodeTarget(params);
-    if (operation === undefined || !limits.operations.includes(operation) || Option.isNone(decoded))
-      return yield* denied();
-    const target = decoded.value;
-    // A project id is local to this environment. Never let forwarding or a borrowed caller escape it.
-    if (target.environmentId !== undefined || target.contextThreadId !== undefined)
-      return yield* denied();
-    if (tool === "t3_thread_organize" && target.action !== "settle") return yield* denied();
-    if (limits.projectId === undefined || tool === "orchestrator_capabilities") return;
-    if (tool === "t3_thread_launch" || tool === "t3_project_read") {
-      if (target.projectId !== limits.projectId) return yield* denied();
-      return;
-    }
-    if (target.threadId === undefined) return yield* denied();
-    const threads = yield* Effect.serviceOption(ThreadManagement.ThreadManagementService);
-    if (Option.isNone(threads)) return yield* denied();
-    const shell = yield* threads.value
-      .getThreadShell(target.threadId)
-      .pipe(Effect.mapError(denied));
-    if (shell === null || shell.deletedAt !== null || shell.projectId !== limits.projectId)
-      return yield* denied();
-  });
+export const checkOutsideGrant = Effect.fn("outsideGrant.checkOutsideGrant")(function* (
+  tool: string,
+  params: unknown,
+) {
+  const context = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+  const limits = Option.isSome(context) ? context.value.client?.limits : undefined;
+  if (limits === undefined) return;
+  const operation = operations[tool];
+  const decoded = decodeTarget(params);
+  if (operation === undefined || !limits.operations.includes(operation) || Option.isNone(decoded))
+    return yield* denied();
+  const target = decoded.value;
+  // A project id is local to this environment. Never let forwarding or a borrowed caller escape it.
+  if (target.environmentId !== undefined || target.contextThreadId !== undefined)
+    return yield* denied();
+  if (tool === "t3_thread_organize" && target.action !== "settle") return yield* denied();
+  if (limits.projectId === undefined || tool === "orchestrator_capabilities") return;
+  if (tool === "t3_thread_launch" || tool === "t3_project_read") {
+    if (target.projectId !== limits.projectId) return yield* denied();
+    return;
+  }
+  if (target.threadId === undefined) return yield* denied();
+  const threads = yield* Effect.serviceOption(ThreadManagement.ThreadManagementService);
+  if (Option.isNone(threads)) return yield* denied();
+  const shell = yield* threads.value.getThreadShell(target.threadId).pipe(Effect.mapError(denied));
+  if (shell === null || shell.deletedAt !== null || shell.projectId !== limits.projectId)
+    return yield* denied();
+});

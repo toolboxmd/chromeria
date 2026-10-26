@@ -729,7 +729,7 @@ export const OrchestrationV2DelegatedCompletionTaskDelivery = Schema.Union([
   Schema.Struct({
     state: Schema.Literal("disposed"),
     observedByRunId: Schema.NullOr(RunId),
-    // Fork (#214): a Stop of the delegating turn disposed it, so a later
+    // Fork: a Stop of the delegating turn disposed it, so a later
     // requested follow-up may wake the parent again. Absent means task_cancel,
     // archive or deletion, which stay quiet.
     disposedBy: Schema.optional(Schema.Literal("stop")),
@@ -1034,11 +1034,9 @@ export const OrchestrationV2RemoteTaskChild = Schema.Struct({
   /** The run there that carries the task; absent on tasks recorded before it was kept. */
   runId: Schema.optional(RunId),
   /**
-   * Nothing is left to stop there: a stop from here reached the thread there,
-   * the other side refused it for good, or the thread or its link is gone. A
-   * task's run that ended there by itself also sets it, unless the task here
-   * was cancelled or stopped, which still owes a stop for whatever runs on the
-   * thread there now. Its follower keeps sending that stop, across restarts.
+   * Nothing is left to stop there: a stop reached the remote thread, was refused for good, or the
+   * thread or link is gone. A run that ended there by itself also sets it, unless the task here was
+   * cancelled or stopped, which still owes a stop that its follower keeps sending across restarts.
    */
   stoppedThere: Schema.optional(Schema.Boolean),
 });
@@ -1109,7 +1107,7 @@ export const OrchestrationV2Subagent = Schema.Struct({
    */
   runGroupId: Schema.optional(NodeId),
   /**
-   * Fork (#377): the whole-group `task_cancel` that gives up this member's
+   * Fork: the whole-group `task_cancel` that gives up this member's
    * wake. It is recorded for every member before any is stopped, so a member
    * ending in any order stays quiet; a member whose stop is refused has it
    * cleared and wakes the parent normally.
@@ -3306,7 +3304,7 @@ export const OrchestrationV2Command = Schema.Union([
     expectedEmpty: Schema.optional(Schema.Boolean),
     limitRecovery: Schema.optional(Schema.NullOr(OrchestrationV2LimitRecoveryUpdate)),
     transportRecovery: Schema.optional(Schema.NullOr(OrchestrationV2TransportRecovery)),
-    /** Link (object) or unlink (null) a pull request (#8160); absent leaves it unchanged. */
+    /** Link (object) or unlink (null) a pull request; absent leaves it unchanged. */
     linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
     purposeSelection: Schema.optional(
       Schema.Struct({ expectedRevision: NonNegativeInt, scope: ExecutionPurposeScope }),

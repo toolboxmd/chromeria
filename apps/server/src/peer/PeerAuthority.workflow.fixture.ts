@@ -300,170 +300,167 @@ export const automationAdapter = (
   driver,
   getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
-  openSession: (input) =>
-    Effect.gen(function* () {
-      opened.push(input);
-      const events = yield* Queue.unbounded<Adapter.ProviderAdapterV2Event>();
-      const now = yield* DateTime.now;
-      const providerSession = {
-        id: input.providerSessionId,
-        driver,
-        providerInstanceId: instanceId,
-        status: "ready" as const,
-        cwd: input.runtimePolicy.cwd ?? process.cwd(),
-        model: selection.model,
-        capabilities: CodexProviderCapabilitiesV2,
-        createdAt: now,
-        updatedAt: now,
-        lastError: null,
-      };
-      return {
-        instanceId,
-        driver,
-        providerSessionId: input.providerSessionId,
-        providerSession,
-        events: Stream.fromQueue(events),
-        ensureThread: (thread) =>
-          Effect.succeed({
-            id: ProviderThreadId.make(`external-384:${thread.threadId}`),
+  openSession: Effect.fn("PeerAuthority.openSession")(function* (input) {
+    opened.push(input);
+    const events = yield* Queue.unbounded<Adapter.ProviderAdapterV2Event>();
+    const now = yield* DateTime.now;
+    const providerSession = {
+      id: input.providerSessionId,
+      driver,
+      providerInstanceId: instanceId,
+      status: "ready" as const,
+      cwd: input.runtimePolicy.cwd ?? process.cwd(),
+      model: selection.model,
+      capabilities: CodexProviderCapabilitiesV2,
+      createdAt: now,
+      updatedAt: now,
+      lastError: null,
+    };
+    return {
+      instanceId,
+      driver,
+      providerSessionId: input.providerSessionId,
+      providerSession,
+      events: Stream.fromQueue(events),
+      ensureThread: (thread) =>
+        Effect.succeed({
+          id: ProviderThreadId.make(`external-384:${thread.threadId}`),
+          driver,
+          providerInstanceId: instanceId,
+          providerSessionId: input.providerSessionId,
+          appThreadId: thread.threadId,
+          ownerNodeId: null,
+          nativeThreadRef: {
             driver,
-            providerInstanceId: instanceId,
-            providerSessionId: input.providerSessionId,
-            appThreadId: thread.threadId,
-            ownerNodeId: null,
-            nativeThreadRef: {
+            nativeId: `external-384:${thread.threadId}`,
+            strength: "strong" as const,
+          },
+          nativeConversationHeadRef: null,
+          status: "idle" as const,
+          firstRunOrdinal: null,
+          lastRunOrdinal: null,
+          handoffIds: [],
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+        }),
+      resumeThread: (thread) => Effect.succeed(thread.providerThread),
+      startTurn: Effect.fn("PeerAuthority.startTurn")(function* (turn) {
+        started.push(turn);
+        const now = yield* DateTime.now;
+        yield* Queue.offer(events, {
+          type: "provider_turn.updated",
+          driver,
+          threadId: turn.threadId,
+          providerTurn: {
+            id: ProviderTurnId.make(`external-384:${turn.runId}`),
+            providerThreadId: turn.providerThread.id,
+            nodeId: turn.rootNodeId,
+            runAttemptId: turn.attemptId,
+            nativeTurnRef: {
               driver,
-              nativeId: `external-384:${thread.threadId}`,
-              strength: "strong" as const,
+              nativeId: `external-384:${turn.runId}`,
+              strength: "strong",
             },
-            nativeConversationHeadRef: null,
-            status: "idle" as const,
-            firstRunOrdinal: null,
-            lastRunOrdinal: null,
-            handoffIds: [],
-            forkedFrom: null,
-            createdAt: now,
-            updatedAt: now,
-          }),
-        resumeThread: (thread) => Effect.succeed(thread.providerThread),
-        startTurn: (turn) =>
-          Effect.gen(function* () {
-            started.push(turn);
-            const now = yield* DateTime.now;
-            yield* Queue.offer(events, {
-              type: "provider_turn.updated",
-              driver,
-              threadId: turn.threadId,
-              providerTurn: {
-                id: ProviderTurnId.make(`external-384:${turn.runId}`),
-                providerThreadId: turn.providerThread.id,
-                nodeId: turn.rootNodeId,
-                runAttemptId: turn.attemptId,
-                nativeTurnRef: {
-                  driver,
-                  nativeId: `external-384:${turn.runId}`,
-                  strength: "strong",
-                },
-                ordinal: turn.providerTurnOrdinal,
-                status: "running",
-                startedAt: now,
-                completedAt: null,
-              },
-            });
-            if (onStart !== undefined) yield* onStart(turn, events);
-          }),
-        steerTurn: () =>
-          Effect.sync(() => {
-            onSteer?.();
-          }),
-        interruptTurn: () => Effect.void,
-        respondToRuntimeRequest: () => Effect.void,
-        readThreadSnapshot: () => Effect.die("No external snapshot in this proof"),
-        rollbackThread: () => Effect.die("No external rollback in this proof"),
-        forkThread: () => Effect.die("No external fork in this proof"),
-      } satisfies Adapter.ProviderAdapterV2SessionRuntime;
-    }),
+            ordinal: turn.providerTurnOrdinal,
+            status: "running",
+            startedAt: now,
+            completedAt: null,
+          },
+        });
+        if (onStart !== undefined) yield* onStart(turn, events);
+      }),
+      steerTurn: () =>
+        Effect.sync(() => {
+          onSteer?.();
+        }),
+      interruptTurn: () => Effect.void,
+      respondToRuntimeRequest: () => Effect.void,
+      readThreadSnapshot: () => Effect.die("No external snapshot in this proof"),
+      rollbackThread: () => Effect.die("No external rollback in this proof"),
+      forkThread: () => Effect.die("No external fork in this proof"),
+    } satisfies Adapter.ProviderAdapterV2SessionRuntime;
+  }),
 });
 
-export const automationReply = (
+export const automationReply = Effect.fn("PeerAuthority.automationReply")(function* (
   turn: Adapter.ProviderAdapterV2TurnInput,
   events: Queue.Queue<Adapter.ProviderAdapterV2Event>,
   text: string,
-) =>
-  Effect.gen(function* () {
-    const now = yield* DateTime.now;
-    const providerTurnId = ProviderTurnId.make(`external-384:${turn.runId}`);
-    yield* Queue.offerAll(events, [
-      {
-        type: "provider_turn.updated",
-        driver,
+) {
+  const now = yield* DateTime.now;
+  const providerTurnId = ProviderTurnId.make(`external-384:${turn.runId}`);
+  yield* Queue.offerAll(events, [
+    {
+      type: "provider_turn.updated",
+      driver,
+      threadId: turn.threadId,
+      providerTurn: {
+        id: providerTurnId,
+        providerThreadId: turn.providerThread.id,
+        nodeId: turn.rootNodeId,
+        runAttemptId: turn.attemptId,
+        nativeTurnRef: { driver, nativeId: `external-384:${turn.runId}`, strength: "strong" },
+        ordinal: turn.providerTurnOrdinal,
+        status: "completed",
+        startedAt: now,
+        completedAt: now,
+      },
+    },
+    {
+      type: "message.updated",
+      driver,
+      message: {
+        id: MessageId.make(`external-384:${turn.runId}:answer`),
         threadId: turn.threadId,
-        providerTurn: {
-          id: providerTurnId,
-          providerThreadId: turn.providerThread.id,
-          nodeId: turn.rootNodeId,
-          runAttemptId: turn.attemptId,
-          nativeTurnRef: { driver, nativeId: `external-384:${turn.runId}`, strength: "strong" },
-          ordinal: turn.providerTurnOrdinal,
-          status: "completed",
-          startedAt: now,
-          completedAt: now,
-        },
+        runId: turn.runId,
+        nodeId: turn.rootNodeId,
+        createdBy: "agent",
+        creationSource: "provider",
+        role: "assistant",
+        text,
+        attachments: [],
+        streaming: false,
+        createdAt: now,
+        updatedAt: now,
       },
-      {
-        type: "message.updated",
-        driver,
-        message: {
-          id: MessageId.make(`external-384:${turn.runId}:answer`),
-          threadId: turn.threadId,
-          runId: turn.runId,
-          nodeId: turn.rootNodeId,
-          createdBy: "agent",
-          creationSource: "provider",
-          role: "assistant",
-          text,
-          attachments: [],
-          streaming: false,
-          createdAt: now,
-          updatedAt: now,
-        },
-      },
-      {
-        type: "turn_item.updated",
-        driver,
-        turnItem: {
-          id: TurnItemId.make(`external-384:${turn.runId}:answer`),
-          threadId: turn.threadId,
-          runId: turn.runId,
-          nodeId: turn.rootNodeId,
-          providerThreadId: turn.providerThread.id,
-          providerTurnId,
-          nativeItemRef: null,
-          parentItemId: null,
-          ordinal: turn.runOrdinal * 100 + 1,
-          status: "completed",
-          title: null,
-          startedAt: now,
-          completedAt: now,
-          updatedAt: now,
-          type: "assistant_message",
-          messageId: MessageId.make(`external-384:${turn.runId}:answer`),
-          text,
-          streaming: false,
-        },
-      },
-      {
-        type: "turn.terminal",
-        driver,
+    },
+    {
+      type: "turn_item.updated",
+      driver,
+      turnItem: {
+        id: TurnItemId.make(`external-384:${turn.runId}:answer`),
+        threadId: turn.threadId,
+        runId: turn.runId,
+        nodeId: turn.rootNodeId,
         providerThreadId: turn.providerThread.id,
         providerTurnId,
-        runOrdinal: turn.runOrdinal,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: turn.runOrdinal * 100 + 1,
         status: "completed",
-        failure: null,
-        threadDisposition: "reusable",
+        title: null,
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+        type: "assistant_message",
+        messageId: MessageId.make(`external-384:${turn.runId}:answer`),
+        text,
+        streaming: false,
       },
-    ]);
-  });
+    },
+    {
+      type: "turn.terminal",
+      driver,
+      providerThreadId: turn.providerThread.id,
+      providerTurnId,
+      runOrdinal: turn.runOrdinal,
+      status: "completed",
+      failure: null,
+      threadDisposition: "reusable",
+    },
+  ]);
+});
 
 const graphConnections = new WeakMap<Scope.Scope, Set<Scope.Closeable>>();
 
@@ -473,54 +470,54 @@ const layerFixtureHostServices = Layer.merge(
   Layer.succeed(BuiltInDrivers.SourceControlDrivers, []),
 );
 
-export const makeNode = (
-  descriptor: ExecutionEnvironmentDescriptor,
-  storage: "memory" | "disk" = "memory",
-  {
-    productionKernel = false,
-    attachmentRequests = false,
-    remoteSecrets = false,
-    preferencesOwner = false,
-    nativeOwners = false,
-    deviceOwner = false,
-    viewerOwner = false,
-    browserOwner = false,
-    previewControlsOwner = false,
-    viewerSocketOwner = false,
-    legacyDeviceDomain = false,
-    legacyAutomationPeer = false,
-    captureReplyTransform,
-    captureReplyGate,
-    htmlImageReadGate,
-    commandSpawner,
-    ownerWorkspace,
-    providerAdapter = adapter,
-    manualScheduler,
-  }: {
-    readonly productionKernel?: boolean;
-    readonly attachmentRequests?: boolean;
-    readonly remoteSecrets?: boolean;
-    readonly preferencesOwner?: boolean;
-    readonly nativeOwners?: boolean;
-    readonly deviceOwner?: boolean;
-    readonly viewerOwner?: boolean;
-    readonly browserOwner?: boolean;
-    readonly previewControlsOwner?: boolean;
-    readonly viewerSocketOwner?: boolean;
-    readonly legacyDeviceDomain?: boolean;
-    readonly legacyAutomationPeer?: boolean;
-    readonly captureReplyGate?: Effect.Effect<void>;
-    readonly htmlImageReadGate?: Effect.Effect<void>;
-    readonly captureReplyTransform?: (
-      graph: AutomationAuthority.AcceptedGraph,
-    ) => AutomationAuthority.AcceptedGraph;
-    readonly commandSpawner?: ChildProcessSpawner.ChildProcessSpawner["Service"];
-    readonly ownerWorkspace?: string;
-    readonly providerAdapter?: Adapter.ProviderAdapterV2["Service"];
-    readonly manualScheduler?: Scheduler.Scheduler["Service"];
-  } = {},
-) =>
-  Effect.gen(function* () {
+export const makeNode = Effect.fn("PeerAuthority.makeNode")(
+  function* (
+    descriptor: ExecutionEnvironmentDescriptor,
+    storage: "memory" | "disk" = "memory",
+    {
+      productionKernel = false,
+      attachmentRequests = false,
+      remoteSecrets = false,
+      preferencesOwner = false,
+      nativeOwners = false,
+      deviceOwner = false,
+      viewerOwner = false,
+      browserOwner = false,
+      previewControlsOwner = false,
+      viewerSocketOwner = false,
+      legacyDeviceDomain = false,
+      legacyAutomationPeer = false,
+      captureReplyTransform,
+      captureReplyGate,
+      htmlImageReadGate,
+      commandSpawner,
+      ownerWorkspace,
+      providerAdapter = adapter,
+      manualScheduler,
+    }: {
+      readonly productionKernel?: boolean;
+      readonly attachmentRequests?: boolean;
+      readonly remoteSecrets?: boolean;
+      readonly preferencesOwner?: boolean;
+      readonly nativeOwners?: boolean;
+      readonly deviceOwner?: boolean;
+      readonly viewerOwner?: boolean;
+      readonly browserOwner?: boolean;
+      readonly previewControlsOwner?: boolean;
+      readonly viewerSocketOwner?: boolean;
+      readonly legacyDeviceDomain?: boolean;
+      readonly legacyAutomationPeer?: boolean;
+      readonly captureReplyGate?: Effect.Effect<void>;
+      readonly htmlImageReadGate?: Effect.Effect<void>;
+      readonly captureReplyTransform?: (
+        graph: AutomationAuthority.AcceptedGraph,
+      ) => AutomationAuthority.AcceptedGraph;
+      readonly commandSpawner?: ChildProcessSpawner.ChildProcessSpawner["Service"];
+      readonly ownerWorkspace?: string;
+      readonly providerAdapter?: Adapter.ProviderAdapterV2["Service"];
+      readonly manualScheduler?: Scheduler.Scheduler["Service"];
+    } = {},
+  ) {
     // Closures rebuilt later reuse this node's instances; provider sessions keep per-thread state.
     // Pick only these two: the ambient context also holds an HttpClient that would shadow peerHttp.
     const hostServices = Layer.succeedContext(
@@ -654,8 +651,8 @@ export const makeNode = (
         Layer.fresh,
       );
     const authorityInfrastructure = yield* automationInfrastructure(database).pipe(Layer.build);
-    const reconstructAutomationWith = (httpLayer: Layer.Layer<HttpClient.HttpClient>) =>
-      Effect.gen(function* () {
+    const reconstructAutomationWith = Effect.fn("PeerAuthority.reconstructAutomationWith")(
+      function* (httpLayer: Layer.Layer<HttpClient.HttpClient>) {
         const reopened = yield* reopenDatabase;
         const infrastructure = yield* automationInfrastructure(reopened).pipe(Layer.build);
         const client = yield* PeerMcpClient.layer.pipe(
@@ -674,7 +671,8 @@ export const makeNode = (
           linkEvents: Context.get(infrastructure, PeerLinkEvents.PeerLinkEvents),
           sql: Context.get(reopened, SqlClient.SqlClient),
         };
-      });
+      },
+    );
     const sourceHttp = HttpServer.layerTestClient.pipe(
       Layer.provide(
         FetchHttpClient.layer.pipe(
@@ -902,42 +900,36 @@ export const makeNode = (
         return {
           ...peers,
           call,
-          taskLifecycle: (...args: Parameters<NonNullable<typeof peers.taskLifecycle>>) =>
-            Effect.gen(function* () {
-              const operation = args[2].operation;
-              if (
-                (operation.type === "observe" || operation.type === "snapshot") &&
-                operation.wait === true &&
-                (yield* Ref.get(quietWaits)).has(args[2].pair.taskId)
-              ) {
-                yield* Queue.offer(quietWaitsHeld, args[2].pair.taskId);
-                return yield* Effect.never;
-              }
-            }).pipe(
-              Effect.andThen(peers.taskLifecycle!(...args)),
-              Effect.flatMap((result) =>
-                Effect.gen(function* () {
-                  if (args[2].operation.type === "resultText" && (yield* Ref.get(holdResultPage))) {
-                    yield* Deferred.succeed(resultPageStarted, undefined);
-                    yield* Deferred.await(releaseResultPage);
-                  }
-                  if (
-                    (args[2].operation.type === "acknowledge" ||
-                      args[2].operation.type === "stop") &&
-                    (yield* Ref.get(dropAckResponses)) > 0
-                  ) {
-                    yield* Ref.update(dropAckResponses, (count) => count - 1);
-                    yield* Deferred.succeed(ackResponseLost, undefined);
-                    return yield* new OrchestratorMcpFailure({
-                      code: "orchestration_error",
-                      message:
-                        "Fixture dropped the acknowledgement response after destination commit.",
-                    });
-                  }
-                  return result;
-                }),
-              ),
-            ),
+          taskLifecycle: Effect.fn("PeerAuthorityFixture.taskLifecycle")(function* (
+            ...args: Parameters<NonNullable<typeof peers.taskLifecycle>>
+          ) {
+            const operation = args[2].operation;
+            if (
+              (operation.type === "observe" || operation.type === "snapshot") &&
+              operation.wait === true &&
+              (yield* Ref.get(quietWaits)).has(args[2].pair.taskId)
+            ) {
+              yield* Queue.offer(quietWaitsHeld, args[2].pair.taskId);
+              return yield* Effect.never;
+            }
+            const result = yield* peers.taskLifecycle!(...args);
+            if (args[2].operation.type === "resultText" && (yield* Ref.get(holdResultPage))) {
+              yield* Deferred.succeed(resultPageStarted, undefined);
+              yield* Deferred.await(releaseResultPage);
+            }
+            if (
+              (args[2].operation.type === "acknowledge" || args[2].operation.type === "stop") &&
+              (yield* Ref.get(dropAckResponses)) > 0
+            ) {
+              yield* Ref.update(dropAckResponses, (count) => count - 1);
+              yield* Deferred.succeed(ackResponseLost, undefined);
+              return yield* new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "Fixture dropped the acknowledgement response after destination commit.",
+              });
+            }
+            return result;
+          }),
         };
       }),
     ).pipe(Layer.provide(PeerMcpClient.layer));
@@ -1016,39 +1008,38 @@ export const makeNode = (
             ),
           ).pipe(Layer.provide(FetchHttpClient.layer))
         : FetchHttpClient.layer;
-    const connect = () =>
-      Effect.gen(function* () {
-        const lifetime = yield* Scope.make();
-        connectionScopes.add(lifetime);
-        yield* Effect.addFinalizer(() =>
-          Scope.close(lifetime, Exit.void).pipe(
-            Effect.ensuring(Effect.sync(() => connectionScopes.delete(lifetime))),
-          ),
-        );
-        const services = yield* RemoteDelegation.layer.pipe(
-          Layer.provideMerge(
-            attachmentRequests ? RequestRuntime.layerForwarding : PeerForwarding.layer,
-          ),
-          Layer.provideMerge(faultablePeers),
-          Layer.provideMerge(Layer.succeedContext(baseServices)),
-          Layer.provideMerge(Layer.succeedContext(requestContext)),
-          Layer.provide(Layer.succeedContext(runtime)),
-          Layer.provide(db),
-          Layer.provide(nodeConfig),
-          Layer.provide(projectLayer),
-          Layer.provide(RepositoryIdentity.layer),
-          Layer.provide(hostServices),
-          Layer.provide(environment),
-          Layer.provide(peerHttp),
-          Layer.fresh,
-          Layer.buildWithScope(lifetime),
-        );
-        return {
-          services,
-          stop: Scope.close(lifetime, Exit.void),
-          peers: Context.get(services, PeerMcpClient.PeerMcpClient),
-        };
-      });
+    const connect = Effect.fn("PeerAuthority.connect")(function* () {
+      const lifetime = yield* Scope.make();
+      connectionScopes.add(lifetime);
+      yield* Effect.addFinalizer(() =>
+        Scope.close(lifetime, Exit.void).pipe(
+          Effect.ensuring(Effect.sync(() => connectionScopes.delete(lifetime))),
+        ),
+      );
+      const services = yield* RemoteDelegation.layer.pipe(
+        Layer.provideMerge(
+          attachmentRequests ? RequestRuntime.layerForwarding : PeerForwarding.layer,
+        ),
+        Layer.provideMerge(faultablePeers),
+        Layer.provideMerge(Layer.succeedContext(baseServices)),
+        Layer.provideMerge(Layer.succeedContext(requestContext)),
+        Layer.provide(Layer.succeedContext(runtime)),
+        Layer.provide(db),
+        Layer.provide(nodeConfig),
+        Layer.provide(projectLayer),
+        Layer.provide(RepositoryIdentity.layer),
+        Layer.provide(hostServices),
+        Layer.provide(environment),
+        Layer.provide(peerHttp),
+        Layer.fresh,
+        Layer.buildWithScope(lifetime),
+      );
+      return {
+        services,
+        stop: Scope.close(lifetime, Exit.void),
+        peers: Context.get(services, PeerMcpClient.PeerMcpClient),
+      };
+    });
     const connection = yield* connect();
     const services = connection.services;
     const remoteSecretFault = yield* Ref.make<"after-save" | "hold-save" | "cleanup" | undefined>(
@@ -1082,17 +1073,18 @@ export const makeNode = (
         const actual = yield* PeerAuthority.PeerAuthority;
         return {
           ...actual,
-          checkInteractiveRecord: (id: string) =>
-            Effect.gen(function* () {
-              const clock = yield* Ref.get(secretValidationClock);
-              return yield* actual.checkInteractiveRecord(id).pipe(
-                (effect) =>
-                  clock === undefined ? effect : Effect.provideService(effect, Clock.Clock, clock),
-                Effect.tapError((error) =>
-                  Queue.offer(secretValidationErrors, { id, code: error.code }),
-                ),
-              );
-            }),
+          checkInteractiveRecord: Effect.fn("PeerAuthority.checkInteractiveRecord")(function* (
+            id: string,
+          ) {
+            const clock = yield* Ref.get(secretValidationClock);
+            return yield* actual.checkInteractiveRecord(id).pipe(
+              (effect) =>
+                clock === undefined ? effect : Effect.provideService(effect, Clock.Clock, clock),
+              Effect.tapError((error) =>
+                Queue.offer(secretValidationErrors, { id, code: error.code }),
+              ),
+            );
+          }),
         };
       }),
     ).pipe(Layer.provide(Layer.succeedContext(baseServices)));
@@ -1124,8 +1116,8 @@ export const makeNode = (
             }),
           ),
         ),
-      remove: (name) =>
-        Effect.gen(function* () {
+      remove: Effect.fn("PeerAuthority.remove")(
+        function* (name) {
           if (
             name.startsWith("secret-remote-") &&
             (yield* Ref.get(remoteSecretFault)) === "cleanup" &&
@@ -1138,10 +1130,13 @@ export const makeNode = (
             });
           }
           return yield* actualSecretStore.remove(name);
-        }).pipe(
-          Effect.tapError(() => Queue.offer(secretRemovals, { name, failed: true })),
-          Effect.tap(() => Queue.offer(secretRemovals, { name, failed: false })),
-        ),
+        },
+        (effect, name) =>
+          effect.pipe(
+            Effect.tapError(() => Queue.offer(secretRemovals, { name, failed: true })),
+            Effect.tap(() => Queue.offer(secretRemovals, { name, failed: false })),
+          ),
+      ),
     });
     const secretOwners = remoteSecrets
       ? yield* Layer.mergeAll(RemoteSecretRequests.layer, RemoteSecretRelay.layer).pipe(
@@ -1239,17 +1234,16 @@ export const makeNode = (
     // Holds a keyed manual send to an existing thread before native acceptance.
     const scheduledThreads = Layer.succeed(Threads.ThreadManagementService, {
       ...actualThreads,
-      sendToThread: (input) =>
-        Effect.gen(function* () {
-          if (
-            input.commandId.startsWith("scheduled-task:manual:") &&
-            (yield* Ref.get(holdManualSend))
-          ) {
-            yield* Deferred.succeed(manualSendHeld, undefined);
-            yield* Deferred.await(releaseManualSend);
-          }
-          return yield* actualThreads.sendToThread(input);
-        }),
+      sendToThread: Effect.fn("PeerAuthority.sendToThread")(function* (input) {
+        if (
+          input.commandId.startsWith("scheduled-task:manual:") &&
+          (yield* Ref.get(holdManualSend))
+        ) {
+          yield* Deferred.succeed(manualSendHeld, undefined);
+          yield* Deferred.await(releaseManualSend);
+        }
+        return yield* actualThreads.sendToThread(input);
+      }),
     });
     const secretConsumes = yield* Ref.make(0);
     const loseSecretConfirmation = yield* Ref.make(false);
@@ -1267,21 +1261,22 @@ export const makeNode = (
             const actual = yield* SecretRequests.SecretRequests;
             return {
               ...actual,
-              consume: (input: Parameters<typeof actual.consume>[0]) =>
-                Effect.gen(function* () {
-                  const rows = yield* Context.get(
-                    database,
-                    SqlClient.SqlClient,
-                  )`SELECT request_id FROM scheduled_mutation_receipts WHERE stage='secret-started'`.pipe(
-                    Effect.orDie,
-                  );
-                  expect(rows.length).toBeGreaterThan(0);
-                  yield* Ref.update(secretConsumes, (n) => n + 1);
-                  const secret = yield* actual.consume(input);
-                  if (yield* Ref.getAndSet(loseSecretConfirmation, false))
-                    return yield* new SecretRequestError({ reason: "consume_failed" });
-                  return secret;
-                }),
+              consume: Effect.fn("PeerAuthority.consume")(function* (
+                input: Parameters<typeof actual.consume>[0],
+              ) {
+                const rows = yield* Context.get(
+                  database,
+                  SqlClient.SqlClient,
+                )`SELECT request_id FROM scheduled_mutation_receipts WHERE stage='secret-started'`.pipe(
+                  Effect.orDie,
+                );
+                expect(rows.length).toBeGreaterThan(0);
+                yield* Ref.update(secretConsumes, (n) => n + 1);
+                const secret = yield* actual.consume(input);
+                if (yield* Ref.getAndSet(loseSecretConfirmation, false))
+                  return yield* new SecretRequestError({ reason: "consume_failed" });
+                return secret;
+              }),
             };
           }),
         ).pipe(Layer.provide(nativeSecrets))
@@ -1572,82 +1567,81 @@ export const makeNode = (
             },
           };
           const runner = ProcessRunner.ProcessRunner.of({
-            run: (input) =>
-              Effect.gen(function* () {
-                yield* assertStarted;
-                const observed = yield* Effect.serviceOption(Invocation.McpInvocationContext);
-                if (Option.isSome(observed) && observed.value.thread !== undefined)
-                  yield* Ref.set(
-                    deviceObservedScope,
-                    Option.some({ ...observed.value, thread: observed.value.thread }),
-                  );
-                deviceProcessCalls.push(input);
-                yield* (yield* Ref.get(deviceProcessHook))(input);
-                const family = input.args[1];
-                let data: unknown =
-                  family === "capabilities"
-                    ? yield* Ref.get(deviceCapabilities)
-                    : family === "snapshot"
-                      ? {
-                          nodes: [
-                            {
-                              index: 1,
-                              ref: "e1",
-                              role: "button",
-                              label: "Continue",
-                              privatePath: "/host/private",
-                            },
-                          ],
-                          config: "/host/private",
-                          token: "ISOLATED_DEVICE_TOKEN_382",
-                        }
-                      : {};
-                if (family === "record" || family === "trace") {
-                  const flags = input.args.slice(0, input.args.indexOf("--"));
-                  const positionals = input.args.slice(input.args.indexOf("--") + 1);
-                  const key = `${flags[flags.indexOf("--session") + 1]}:${family}`;
-                  if (positionals[0] === "start") deviceMediaPaths.set(key, positionals[1]!);
-                  const outPath = deviceMediaPaths.get(key)!;
-                  if (positionals[0] === "stop") {
-                    if (family === "record") {
-                      const bytes = new Uint8Array(24);
-                      new DataView(bytes.buffer).setUint32(4, 0x66747970);
-                      yield* fs.writeFile(outPath, bytes).pipe(Effect.orDie);
-                    } else
-                      yield* fs
-                        .writeFileString(
-                          outPath,
-                          "trace ISOLATED_DEVICE_TOKEN_382 http://device-agent382.invalid",
-                        )
-                        .pipe(Effect.orDie);
-                  }
-                  data = {
-                    [family === "record" ? "recording" : "trace"]:
-                      positionals[0] === "start" ? "started" : "stopped",
-                    outPath,
-                    artifacts: [
-                      {
-                        field: "outPath",
-                        localPath: (yield* Ref.get(deviceMediaOutside)) ? entryPath : outPath,
-                      },
-                    ],
-                    durationMs: 200,
-                    capturedDurationMs: 150,
-                    recorder: "unconfirmed",
-                    nativePathDisposition: "pending",
-                  };
+            run: Effect.fn("PeerAuthority.run")(function* (input) {
+              yield* assertStarted;
+              const observed = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+              if (Option.isSome(observed) && observed.value.thread !== undefined)
+                yield* Ref.set(
+                  deviceObservedScope,
+                  Option.some({ ...observed.value, thread: observed.value.thread }),
+                );
+              deviceProcessCalls.push(input);
+              yield* (yield* Ref.get(deviceProcessHook))(input);
+              const family = input.args[1];
+              let data: unknown =
+                family === "capabilities"
+                  ? yield* Ref.get(deviceCapabilities)
+                  : family === "snapshot"
+                    ? {
+                        nodes: [
+                          {
+                            index: 1,
+                            ref: "e1",
+                            role: "button",
+                            label: "Continue",
+                            privatePath: "/host/private",
+                          },
+                        ],
+                        config: "/host/private",
+                        token: "ISOLATED_DEVICE_TOKEN_382",
+                      }
+                    : {};
+              if (family === "record" || family === "trace") {
+                const flags = input.args.slice(0, input.args.indexOf("--"));
+                const positionals = input.args.slice(input.args.indexOf("--") + 1);
+                const key = `${flags[flags.indexOf("--session") + 1]}:${family}`;
+                if (positionals[0] === "start") deviceMediaPaths.set(key, positionals[1]!);
+                const outPath = deviceMediaPaths.get(key)!;
+                if (positionals[0] === "stop") {
+                  if (family === "record") {
+                    const bytes = new Uint8Array(24);
+                    new DataView(bytes.buffer).setUint32(4, 0x66747970);
+                    yield* fs.writeFile(outPath, bytes).pipe(Effect.orDie);
+                  } else
+                    yield* fs
+                      .writeFileString(
+                        outPath,
+                        "trace ISOLATED_DEVICE_TOKEN_382 http://device-agent382.invalid",
+                      )
+                      .pipe(Effect.orDie);
                 }
-                return {
-                  code: ChildProcessSpawner.ExitCode(0),
-                  stdout: json({ success: true, data }),
-                  stderr: "",
-                  timedOut: false,
-                  stdoutTruncated: false,
-                  stderrTruncated: false,
-                  stdoutInvalidUtf8: false,
-                  stderrInvalidUtf8: false,
+                data = {
+                  [family === "record" ? "recording" : "trace"]:
+                    positionals[0] === "start" ? "started" : "stopped",
+                  outPath,
+                  artifacts: [
+                    {
+                      field: "outPath",
+                      localPath: (yield* Ref.get(deviceMediaOutside)) ? entryPath : outPath,
+                    },
+                  ],
+                  durationMs: 200,
+                  capturedDurationMs: 150,
+                  recorder: "unconfirmed",
+                  nativePathDisposition: "pending",
                 };
-              }),
+              }
+              return {
+                code: ChildProcessSpawner.ExitCode(0),
+                stdout: json({ success: true, data }),
+                stderr: "",
+                timedOut: false,
+                stdoutTruncated: false,
+                stderrTruncated: false,
+                stdoutInvalidUtf8: false,
+                stderrInvalidUtf8: false,
+              };
+            }),
           });
           const currentHub = yield* Ref.make<DeviceHost.DeviceHostReady | null>(null);
           // Opening an Android device probes the host's ffmpeg encoders before streaming.
@@ -1702,25 +1696,25 @@ export const makeNode = (
               ),
             ),
             platformAvailability: (platform) => Effect.succeed({ platform, available: true }),
-            ensureReady: () =>
-              Effect.gen(function* () {
+            ensureReady: Effect.fn("PeerAuthority.ensureReady")(
+              function* () {
                 yield* yield* Ref.get(deviceReadinessHook);
                 // A direct native UI setup call has no MCP request identity.
                 // Every registered action must be started before preparation.
                 if ((yield* RequestReceipts.CurrentRequest) !== undefined) yield* assertStarted;
-              }).pipe(
-                Effect.andThen(Ref.update(deviceHostStarts, (n) => n + 1)),
-                Effect.andThen(
-                  fs
-                    .writeFileString(
-                      `${config.stateDir}/fixture-device-host-started`,
-                      "Isolated native preparation footprint",
-                    )
-                    .pipe(Effect.orDie),
-                ),
-                Effect.tap(() => Ref.set(currentHub, ready)),
-                Effect.as(ready),
+              },
+              Effect.andThen(Ref.update(deviceHostStarts, (n) => n + 1)),
+              Effect.andThen(
+                fs
+                  .writeFileString(
+                    `${config.stateDir}/fixture-device-host-started`,
+                    "Isolated native preparation footprint",
+                  )
+                  .pipe(Effect.orDie),
               ),
+              Effect.tap(() => Ref.set(currentHub, ready)),
+              Effect.as(ready),
+            ),
             ensureAgentReady: () =>
               assertStarted.pipe(
                 Effect.andThen(Ref.update(deviceAgentStarts, (n) => n + 1)),
@@ -1924,22 +1918,23 @@ export const makeNode = (
         const actual = yield* OrchestratorService.OrchestratorMcpService;
         return {
           ...actual,
-          requestSecret: (...args: Parameters<typeof actual.requestSecret>) =>
-            Effect.gen(function* () {
-              const clock = yield* Ref.get(secretRequestClock);
-              const abort = yield* Ref.get(secretRequestAbort);
-              const actualCall = actual.requestSecret(...args);
-              const effect =
-                abort === undefined
-                  ? actualCall
-                  : Effect.raceFirst(
-                      actualCall,
-                      Deferred.await(abort).pipe(Effect.andThen(Effect.interrupt)),
-                    );
-              return yield* (
-                clock === undefined ? effect : Effect.provideService(effect, Clock.Clock, clock)
-              ).pipe(Effect.onExit(() => Queue.offer(secretRequestExits, undefined)));
-            }),
+          requestSecret: Effect.fn("PeerAuthority.requestSecret")(function* (
+            ...args: Parameters<typeof actual.requestSecret>
+          ) {
+            const clock = yield* Ref.get(secretRequestClock);
+            const abort = yield* Ref.get(secretRequestAbort);
+            const actualCall = actual.requestSecret(...args);
+            const effect =
+              abort === undefined
+                ? actualCall
+                : Effect.raceFirst(
+                    actualCall,
+                    Deferred.await(abort).pipe(Effect.andThen(Effect.interrupt)),
+                  );
+            return yield* (
+              clock === undefined ? effect : Effect.provideService(effect, Clock.Clock, clock)
+            ).pipe(Effect.onExit(() => Queue.offer(secretRequestExits, undefined)));
+          }),
         };
       }),
     ).pipe(Layer.provide(OrchestratorService.layer));
@@ -2182,8 +2177,8 @@ export const makeNode = (
     const rebuildScheduler = Scope.close(scheduleScope, Exit.void).pipe(
       Effect.andThen(scheduleLayer.pipe(Layer.fresh, Layer.build)),
     );
-    const restartSchedulerTransportWith = (durableRequests: boolean) =>
-      Effect.gen(function* () {
+    const restartSchedulerTransportWith = Effect.fn("PeerAuthority.restartSchedulerTransportWith")(
+      function* (durableRequests: boolean) {
         const rebuilt = yield* rebuildScheduler;
         const requests = durableRequests
           ? yield* RequestRuntime.layer.pipe(
@@ -2242,7 +2237,9 @@ export const makeNode = (
           scheduled: Context.get(rebuilt, ScheduledTasks.ScheduledTaskService),
           requestContext: requests,
         };
-      }).pipe(Effect.provide(hostServices));
+      },
+      Effect.provide(hostServices),
+    );
     const restartSchedulerTransport = restartSchedulerTransportWith(attachmentRequests);
     return {
       ...peer,
@@ -2392,19 +2389,22 @@ export const makeNode = (
       forwarding: Context.get(services, PeerForwarding.PeerForwarding),
       remote: Context.get(services, RemoteDelegation.RemoteDelegation),
     };
-  }).pipe(Effect.provide(Layer.merge(RepositoryIdentity.layer, layerFixtureHostServices)));
+  },
+  Effect.provide(Layer.merge(RepositoryIdentity.layer, layerFixtureHostServices)),
+);
 
 export type Node = Effect.Success<ReturnType<typeof makeNode>>;
 
-export const traceAutomationValidation = (node: Node) =>
-  Effect.gen(function* () {
+export const traceAutomationValidation = Effect.fn("PeerAuthority.traceAutomationValidation")(
+  function* (node: Node) {
     const sql = Context.get(node.database, SqlClient.SqlClient);
     yield* sql`CREATE TABLE fixture_automation_validation_attempts (frame_type TEXT NOT NULL)`;
     yield* sql`CREATE TRIGGER fixture_automation_validation_trace AFTER INSERT ON peer_control_frames
     WHEN json_extract(NEW.frame_json,'$.body.type') IN ('validate','capture-automation','capture-legacy-automation')
     BEGIN INSERT INTO fixture_automation_validation_attempts VALUES (json_extract(NEW.frame_json,'$.body.type')); END`;
     return sql`SELECT * FROM fixture_automation_validation_attempts`;
-  });
+  },
+);
 
 export const automationWorkspace = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -2432,29 +2432,32 @@ export const automationWorkspace = Effect.gen(function* () {
   return root;
 });
 
-export const finishAutomationRun = (node: Node, threadId: ThreadId, runId?: RunId) =>
-  Effect.gen(function* () {
-    const milestone = (statuses: ReadonlyArray<string>) =>
-      node.threads
-        .streamStoredEventsFrom({ threadId, afterSequence: 0, eventType: "run.updated" })
-        .pipe(
-          Stream.filter(
-            (stored) =>
-              stored.event.type === "run.updated" &&
-              (runId === undefined || stored.event.payload.id === runId) &&
-              statuses.includes(stored.event.payload.status),
-          ),
-          Stream.runHead,
-          Effect.flatMap(Effect.fromOption),
-        );
-    const ended = yield* milestone(["waiting", "completed", "failed", "cancelled", "interrupted"]);
-    if (ended.event.type === "run.updated" && ended.event.payload.status === "waiting")
-      yield* Context.get(node.runtime, EffectWorker.OrchestrationEffectWorkerV2).drain();
-    return yield* milestone(["completed", "failed", "cancelled", "interrupted"]);
-  });
+export const finishAutomationRun = Effect.fn("PeerAuthority.finishAutomationRun")(function* (
+  node: Node,
+  threadId: ThreadId,
+  runId?: RunId,
+) {
+  const milestone = (statuses: ReadonlyArray<string>) =>
+    node.threads
+      .streamStoredEventsFrom({ threadId, afterSequence: 0, eventType: "run.updated" })
+      .pipe(
+        Stream.filter(
+          (stored) =>
+            stored.event.type === "run.updated" &&
+            (runId === undefined || stored.event.payload.id === runId) &&
+            statuses.includes(stored.event.payload.status),
+        ),
+        Stream.runHead,
+        Effect.flatMap(Effect.fromOption),
+      );
+  const ended = yield* milestone(["waiting", "completed", "failed", "cancelled", "interrupted"]);
+  if (ended.event.type === "run.updated" && ended.event.payload.status === "waiting")
+    yield* Context.get(node.runtime, EffectWorker.OrchestrationEffectWorkerV2).drain();
+  return yield* milestone(["completed", "failed", "cancelled", "interrupted"]);
+});
 
-export const awaitAutomationPrepared = (node: Node, threadId: ThreadId) =>
-  Effect.gen(function* () {
+export const awaitAutomationPrepared = Effect.fn("PeerAuthority.awaitAutomationPrepared")(
+  function* (node: Node, threadId: ThreadId) {
     const run = (yield* node.threads.getThreadRecords(threadId, ["runs"])).runs.at(-1);
     if (run?.status === "preparing")
       yield* node.threads
@@ -2469,47 +2472,49 @@ export const awaitAutomationPrepared = (node: Node, threadId: ThreadId) =>
           Stream.runHead,
           Effect.flatMap(Effect.fromOption),
         );
-  });
+  },
+);
 
-export const awaitAutomationRunning = (node: Node, threadId: ThreadId) =>
-  Effect.gen(function* () {
-    yield* awaitAutomationPrepared(node, threadId);
-    yield* Context.get(node.runtime, EffectWorker.OrchestrationEffectWorkerV2).drain();
+export const awaitAutomationRunning = Effect.fn("PeerAuthority.awaitAutomationRunning")(function* (
+  node: Node,
+  threadId: ThreadId,
+) {
+  yield* awaitAutomationPrepared(node, threadId);
+  yield* Context.get(node.runtime, EffectWorker.OrchestrationEffectWorkerV2).drain();
+  yield* node.threads
+    .streamStoredEventsFrom({ threadId, afterSequence: 0, eventType: "provider-turn.updated" })
+    .pipe(
+      Stream.filter(
+        (stored) =>
+          stored.event.type === "provider-turn.updated" &&
+          stored.event.payload.status === "running",
+      ),
+      Stream.runHead,
+      Effect.flatMap(Effect.fromOption),
+    );
+});
+
+export const drainAutomationRun = Effect.fn("PeerAuthority.drainAutomationRun")(function* (
+  node: Node,
+  threadId: ThreadId,
+  run: { readonly id: RunId; readonly status: string },
+) {
+  if (run.status === "preparing")
     yield* node.threads
-      .streamStoredEventsFrom({ threadId, afterSequence: 0, eventType: "provider-turn.updated" })
+      .streamStoredEventsFrom({ threadId, afterSequence: 0, eventType: "run.updated" })
       .pipe(
         Stream.filter(
-          (stored) =>
-            stored.event.type === "provider-turn.updated" &&
-            stored.event.payload.status === "running",
+          (event) =>
+            event.event.type === "run.updated" &&
+            event.event.payload.id === run.id &&
+            event.event.payload.status !== "preparing",
         ),
         Stream.runHead,
         Effect.flatMap(Effect.fromOption),
       );
-  });
-
-export const drainAutomationRun = (
-  node: Node,
-  threadId: ThreadId,
-  run: { readonly id: RunId; readonly status: string },
-) =>
-  Effect.gen(function* () {
-    if (run.status === "preparing")
-      yield* node.threads
-        .streamStoredEventsFrom({ threadId, afterSequence: 0, eventType: "run.updated" })
-        .pipe(
-          Stream.filter(
-            (event) =>
-              event.event.type === "run.updated" &&
-              event.event.payload.id === run.id &&
-              event.event.payload.status !== "preparing",
-          ),
-          Stream.runHead,
-          Effect.flatMap(Effect.fromOption),
-        );
-    yield* Context.get(node.runtime, EffectWorker.OrchestrationEffectWorkerV2).drain();
-    return yield* finishAutomationRun(node, threadId, run.id);
-  });
+  yield* Context.get(node.runtime, EffectWorker.OrchestrationEffectWorkerV2).drain();
+  return yield* finishAutomationRun(node, threadId, run.id);
+});
 
 export const decodeTyped383Open = Schema.decodeUnknownEffect(
   Schema.Struct({
@@ -2522,11 +2527,12 @@ export const decodeTyped383Open = Schema.decodeUnknownEffect(
   }),
 );
 
-export const typed383Digest = (bytes: Uint8Array) =>
-  Effect.gen(function* () {
-    const crypto = yield* Crypto.Crypto;
-    return Hex.encode(yield* crypto.digest("SHA-256", bytes));
-  }).pipe(Effect.orDie);
+export const typed383Digest = Effect.fn("PeerAuthority.typed383Digest")(function* (
+  bytes: Uint8Array,
+) {
+  const crypto = yield* Crypto.Crypto;
+  return Hex.encode(yield* crypto.digest("SHA-256", bytes));
+}, Effect.orDie);
 
 export const decodeTyped383Command = Schema.decodeUnknownEffect(DeviceCommandResult);
 
@@ -2543,17 +2549,18 @@ export const decodeTyped383Artifact = Schema.decodeUnknownEffect(
   }),
 );
 
-export const assertTyped383SourceIdle = (source: Node) =>
-  Effect.gen(function* () {
+export const assertTyped383SourceIdle = Effect.fn("PeerAuthority.assertTyped383SourceIdle")(
+  function* (source: Node) {
     expect(yield* Ref.get(source.deviceHostStarts)).toBe(0);
     expect(yield* Ref.get(source.deviceAgentStarts)).toBe(0);
     expect(yield* Ref.get(source.deviceConfigurations)).toBe(0);
     expect(yield* Ref.get(source.deviceScreenshotCalls)).toBe(0);
     expect(yield* Ref.get(source.deviceShutdownCalls)).toBe(0);
     expect(source.deviceProcessCalls).toHaveLength(0);
-  });
+  },
+);
 
-export const typed383Pair = (
+export const typed383Pair = Effect.fn("PeerAuthority.typed383Pair")(function* (
   id: string,
   legacyDeviceDomain = false,
   sourcePreferencesOwner = false,
@@ -2565,69 +2572,67 @@ export const typed383Pair = (
         readonly destinationSocket?: boolean;
         readonly destinationBrowser?: boolean;
       } = false,
-) =>
-  Effect.gen(function* () {
-    const a = yield* makeNode(descriptorOf(`${id}-a`, "A", { peerAuthority: 1 }), "disk", {
-      productionKernel: true,
-      attachmentRequests: true,
-      preferencesOwner: sourcePreferencesOwner,
-      deviceOwner: true,
-      viewerOwner: typeof viewerOwner === "boolean" ? viewerOwner : viewerOwner.source,
-      previewControlsOwner:
-        typeof viewerOwner !== "boolean" && viewerOwner.destinationBrowser === true,
-    });
-    yield* Effect.addFinalizer(() => assertTyped383SourceIdle(a));
-    const b = yield* makeNode(descriptorOf(`${id}-b`, "B", { peerAuthority: 1 }), "disk", {
-      productionKernel: true,
-      attachmentRequests: true,
-      preferencesOwner: true,
-      legacyDeviceDomain,
-      deviceOwner: true,
-      viewerOwner: typeof viewerOwner === "boolean" ? viewerOwner : viewerOwner.destination,
-      viewerSocketOwner: typeof viewerOwner !== "boolean" && viewerOwner.destinationSocket === true,
-      browserOwner: typeof viewerOwner !== "boolean" && viewerOwner.destinationBrowser === true,
-    });
-    yield* linkTo(a.links, b, "full-access");
-    const parent = ThreadId.make(`${id}-parent`);
-    yield* seedParent(a, parent);
-    const launched = yield* nativeCall(a, parent, "t3_thread_launch", {
-      environmentId: b.environmentId,
-      projectId: b.project.id,
-      title: id,
-      message: "Wait",
-      modelSelection: selection,
-      clientRequestId: `${id}-child`,
-    });
-    expect(launched.isError, json(launched)).not.toBe(true);
-    const child = (yield* decodeLaunchReceipt(launched.structuredContent)).threadId;
-    yield* activate(b, child);
-    const grant = (yield* b.authority.grants)[0]!;
-    yield* b.authority.setGrant({ ...grant, device: true });
-    const route = { environmentId: b.environmentId, contextThreadId: child };
-    const open = (key: string) =>
-      nativeCall(a, parent, "device_open", {
-        ...route,
-        deviceId: "fixture-device382",
-        platform: "android",
-        clientRequestId: key,
-      });
-    const footprint = () =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const file = yield* agentDeviceConfigPath(b.config.stateDir, LOCAL_DEVICE_HOST_ID, path);
-        return {
-          host: yield* Ref.get(b.deviceHostStarts),
-          agent: yield* Ref.get(b.deviceAgentStarts),
-          config: yield* Ref.get(b.deviceConfigurations),
-          process: b.deviceProcessCalls.length,
-          screenshots: yield* Ref.get(b.deviceScreenshotCalls),
-          sessions: yield* b.fixtureDevice!.sessionsForThread(child),
-          configuration: (yield* fs.exists(file)) ? yield* fs.readFileString(file) : null,
-        };
-      });
-    return { a, b, parent, child, route, open, footprint };
+) {
+  const a = yield* makeNode(descriptorOf(`${id}-a`, "A", { peerAuthority: 1 }), "disk", {
+    productionKernel: true,
+    attachmentRequests: true,
+    preferencesOwner: sourcePreferencesOwner,
+    deviceOwner: true,
+    viewerOwner: typeof viewerOwner === "boolean" ? viewerOwner : viewerOwner.source,
+    previewControlsOwner:
+      typeof viewerOwner !== "boolean" && viewerOwner.destinationBrowser === true,
   });
+  yield* Effect.addFinalizer(() => assertTyped383SourceIdle(a));
+  const b = yield* makeNode(descriptorOf(`${id}-b`, "B", { peerAuthority: 1 }), "disk", {
+    productionKernel: true,
+    attachmentRequests: true,
+    preferencesOwner: true,
+    legacyDeviceDomain,
+    deviceOwner: true,
+    viewerOwner: typeof viewerOwner === "boolean" ? viewerOwner : viewerOwner.destination,
+    viewerSocketOwner: typeof viewerOwner !== "boolean" && viewerOwner.destinationSocket === true,
+    browserOwner: typeof viewerOwner !== "boolean" && viewerOwner.destinationBrowser === true,
+  });
+  yield* linkTo(a.links, b, "full-access");
+  const parent = ThreadId.make(`${id}-parent`);
+  yield* seedParent(a, parent);
+  const launched = yield* nativeCall(a, parent, "t3_thread_launch", {
+    environmentId: b.environmentId,
+    projectId: b.project.id,
+    title: id,
+    message: "Wait",
+    modelSelection: selection,
+    clientRequestId: `${id}-child`,
+  });
+  expect(launched.isError, json(launched)).not.toBe(true);
+  const child = (yield* decodeLaunchReceipt(launched.structuredContent)).threadId;
+  yield* activate(b, child);
+  const grant = (yield* b.authority.grants)[0]!;
+  yield* b.authority.setGrant({ ...grant, device: true });
+  const route = { environmentId: b.environmentId, contextThreadId: child };
+  const open = (key: string) =>
+    nativeCall(a, parent, "device_open", {
+      ...route,
+      deviceId: "fixture-device382",
+      platform: "android",
+      clientRequestId: key,
+    });
+  const footprint = Effect.fn("PeerAuthority.footprint")(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const file = yield* agentDeviceConfigPath(b.config.stateDir, LOCAL_DEVICE_HOST_ID, path);
+    return {
+      host: yield* Ref.get(b.deviceHostStarts),
+      agent: yield* Ref.get(b.deviceAgentStarts),
+      config: yield* Ref.get(b.deviceConfigurations),
+      process: b.deviceProcessCalls.length,
+      screenshots: yield* Ref.get(b.deviceScreenshotCalls),
+      sessions: yield* b.fixtureDevice!.sessionsForThread(child),
+      configuration: (yield* fs.exists(file)) ? yield* fs.readFileString(file) : null,
+    };
+  });
+  return { a, b, parent, child, route, open, footprint };
+});
 
 export const decodeTyped383Example = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
@@ -2668,114 +2673,114 @@ export const drainStops = (node: Node) =>
     ),
   );
 
-export const restoreAuthority = (node: Node) =>
-  Effect.gen(function* () {
-    const reopened = yield* node.reopenDatabase;
-    return yield* PeerAuthority.PeerAuthority.pipe(
-      Effect.provide(
-        PeerAuthority.layer.pipe(
-          Layer.provide(Layer.succeed(PeerLinks.PeerLinks, node.links)),
-          Layer.provide(Layer.succeedContext(node.runtime)),
-          Layer.provide(Layer.succeedContext(reopened)),
-          Layer.provide(
-            Layer.succeed(Environment.ServerEnvironment, {
-              getEnvironmentId: Effect.succeed(node.environmentId),
-              getDescriptor: Ref.get(node.descriptor),
-            }),
-          ),
-          Layer.fresh,
+export const restoreAuthority = Effect.fn("PeerAuthority.restoreAuthority")(function* (node: Node) {
+  const reopened = yield* node.reopenDatabase;
+  return yield* PeerAuthority.PeerAuthority.pipe(
+    Effect.provide(
+      PeerAuthority.layer.pipe(
+        Layer.provide(Layer.succeed(PeerLinks.PeerLinks, node.links)),
+        Layer.provide(Layer.succeedContext(node.runtime)),
+        Layer.provide(Layer.succeedContext(reopened)),
+        Layer.provide(
+          Layer.succeed(Environment.ServerEnvironment, {
+            getEnvironmentId: Effect.succeed(node.environmentId),
+            getDescriptor: Ref.get(node.descriptor),
+          }),
         ),
+        Layer.fresh,
       ),
-    );
-  });
+    ),
+  );
+});
 
-export const activate = (node: Node, threadId: ThreadId) =>
-  Effect.gen(function* () {
-    const records = yield* node.threads.getThreadRecords(threadId, ["runs"]);
-    const run = records.runs.at(-1);
-    if (!run) return yield* Effect.die("Expected a persisted launch run");
-    const now = yield* DateTime.now;
-    const root = NodeId.make(`fixture-root:${run.id}`);
-    yield* node.sink.write({
-      events: [
-        {
-          id: EventId.make(`fixture-node:${run.id}`),
-          type: "node.updated",
+export const activate = Effect.fn("PeerAuthority.activate")(function* (
+  node: Node,
+  threadId: ThreadId,
+) {
+  const records = yield* node.threads.getThreadRecords(threadId, ["runs"]);
+  const run = records.runs.at(-1);
+  if (!run) return yield* Effect.die("Expected a persisted launch run");
+  const now = yield* DateTime.now;
+  const root = NodeId.make(`fixture-root:${run.id}`);
+  yield* node.sink.write({
+    events: [
+      {
+        id: EventId.make(`fixture-node:${run.id}`),
+        type: "node.updated",
+        threadId,
+        runId: run.id,
+        nodeId: root,
+        driver,
+        providerInstanceId: instanceId,
+        occurredAt: now,
+        payload: {
+          id: root,
           threadId,
           runId: run.id,
-          nodeId: root,
-          driver,
-          providerInstanceId: instanceId,
-          occurredAt: now,
-          payload: {
-            id: root,
-            threadId,
-            runId: run.id,
-            parentNodeId: null,
-            rootNodeId: root,
-            kind: "root_turn",
-            status: "running",
-            countsForRun: true,
-            providerThreadId: null,
-            providerTurnId: null,
-            nativeItemRef: null,
-            runtimeRequestId: null,
-            checkpointScopeId: null,
-            startedAt: now,
-            completedAt: null,
-          },
+          parentNodeId: null,
+          rootNodeId: root,
+          kind: "root_turn",
+          status: "running",
+          countsForRun: true,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          runtimeRequestId: null,
+          checkpointScopeId: null,
+          startedAt: now,
+          completedAt: null,
         },
-        {
-          id: EventId.make(`fixture-run:${run.id}`),
-          type: "run.updated",
-          threadId,
-          runId: run.id,
-          nodeId: root,
-          providerInstanceId: instanceId,
-          occurredAt: now,
-          payload: { ...run, rootNodeId: root, status: "running", startedAt: now },
-        },
-      ],
-    });
-    return run.id;
+      },
+      {
+        id: EventId.make(`fixture-run:${run.id}`),
+        type: "run.updated",
+        threadId,
+        runId: run.id,
+        nodeId: root,
+        providerInstanceId: instanceId,
+        occurredAt: now,
+        payload: { ...run, rootNodeId: root, status: "running", startedAt: now },
+      },
+    ],
   });
+  return run.id;
+});
 
-export const seedParent = (
+export const seedParent = Effect.fn("PeerAuthority.seedParent")(function* (
   node: Node,
   threadId: ThreadId,
   linkOrigin?: OrchestrationV2LinkOrigin,
   prismRole?: "promachos",
-) =>
-  Effect.gen(function* () {
-    yield* node.threads.dispatch({
-      type: "thread.create",
-      commandId: CommandId.make(`create:${threadId}`),
-      threadId,
-      projectId: node.project.id,
-      title: threadId,
-      modelSelection: selection,
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      branch: null,
-      worktreePath: null,
-      createdBy: "user",
-      creationSource: "web",
-      ...(linkOrigin === undefined ? {} : { linkOrigin }),
-      ...(prismRole === undefined ? {} : { prismRole }),
-    });
-    yield* node.threads.dispatch({
-      type: "message.dispatch",
-      commandId: CommandId.make(`send:${threadId}`),
-      threadId,
-      messageId: MessageId.make(`message:${threadId}`),
-      text: "Work",
-      attachments: [],
-      dispatchMode: { type: "start_immediately" },
-      createdBy: "user",
-      creationSource: "web",
-    });
-    yield* activate(node, threadId);
+) {
+  yield* node.threads.dispatch({
+    type: "thread.create",
+    commandId: CommandId.make(`create:${threadId}`),
+    threadId,
+    projectId: node.project.id,
+    title: threadId,
+    modelSelection: selection,
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    createdBy: "user",
+    creationSource: "web",
+    ...(linkOrigin === undefined ? {} : { linkOrigin }),
+    ...(prismRole === undefined ? {} : { prismRole }),
   });
+  yield* node.threads.dispatch({
+    type: "message.dispatch",
+    commandId: CommandId.make(`send:${threadId}`),
+    threadId,
+    messageId: MessageId.make(`message:${threadId}`),
+    text: "Work",
+    attachments: [],
+    dispatchMode: { type: "start_immediately" },
+    createdBy: "user",
+    creationSource: "web",
+  });
+  yield* activate(node, threadId);
+});
 
 export const caller = (node: Node, threadId: ThreadId): McpThreadInvocationScope => ({
   environmentId: node.environmentId,
@@ -2812,7 +2817,7 @@ export const decodeLaunchReceipt = Schema.decodeUnknownEffect(
   ProjectToolkit.tools.t3_thread_launch.successSchema,
 );
 
-export const nativeRpcCall = (
+export const nativeRpcCall = Effect.fn("PeerAuthority.nativeRpcCall")(function* (
   node: Node,
   threadId: ThreadId,
   tool: string,
@@ -2823,52 +2828,51 @@ export const nativeRpcCall = (
     "device",
   ]),
   credential?: Effect.Success<ReturnType<Node["registry"]["issue"]>>,
-) =>
-  Effect.gen(function* () {
-    const issued =
-      credential ??
-      (yield* node.registry.issue({
-        threadId,
-        providerInstanceId: instanceId,
-        capabilities,
-      }));
-    const http = yield* HttpClient.HttpClient;
-    const post = (body: unknown, sessionId?: string) =>
-      http.execute(
-        HttpClientRequest.post(issued.config.endpoint).pipe(
-          HttpClientRequest.setHeaders({
-            authorization: issued.config.authorizationHeader,
-            accept: "application/json, text/event-stream",
-            ...(sessionId === undefined
-              ? {}
-              : { "mcp-session-id": sessionId, "mcp-protocol-version": "2025-06-18" }),
-          }),
-          HttpClientRequest.setBody(HttpBody.text(json(body), "application/json")),
-        ),
-      );
-    const initialized = yield* post({
-      jsonrpc: "2.0",
-      id: 0,
-      method: "initialize",
-      params: {
-        protocolVersion: "2025-06-18",
-        capabilities: {},
-        clientInfo: { name: "isolated-native-agent", version: "1" },
-      },
-    });
-    const sessionId = initialized.headers["mcp-session-id"];
-    if (sessionId === undefined)
-      return yield* Effect.die(
-        `Native initialization failed: ${initialized.status}; credential origin=${new URL(issued.config.endpoint).origin}; bound origin=${node.url}`,
-      );
-    yield* post({ jsonrpc: "2.0", method: "notifications/initialized" }, sessionId);
-    const result = yield* post(
-      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: args } },
-      sessionId,
+) {
+  const issued =
+    credential ??
+    (yield* node.registry.issue({
+      threadId,
+      providerInstanceId: instanceId,
+      capabilities,
+    }));
+  const http = yield* HttpClient.HttpClient;
+  const post = (body: unknown, sessionId?: string) =>
+    http.execute(
+      HttpClientRequest.post(issued.config.endpoint).pipe(
+        HttpClientRequest.setHeaders({
+          authorization: issued.config.authorizationHeader,
+          accept: "application/json, text/event-stream",
+          ...(sessionId === undefined
+            ? {}
+            : { "mcp-session-id": sessionId, "mcp-protocol-version": "2025-06-18" }),
+        }),
+        HttpClientRequest.setBody(HttpBody.text(json(body), "application/json")),
+      ),
     );
-    const text = yield* result.text;
-    return text.startsWith("data:") ? text.slice(5).trim() : text;
-  }).pipe(Effect.provide(FetchHttpClient.layer));
+  const initialized = yield* post({
+    jsonrpc: "2.0",
+    id: 0,
+    method: "initialize",
+    params: {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "isolated-native-agent", version: "1" },
+    },
+  });
+  const sessionId = initialized.headers["mcp-session-id"];
+  if (sessionId === undefined)
+    return yield* Effect.die(
+      `Native initialization failed: ${initialized.status}; credential origin=${new URL(issued.config.endpoint).origin}; bound origin=${node.url}`,
+    );
+  yield* post({ jsonrpc: "2.0", method: "notifications/initialized" }, sessionId);
+  const result = yield* post(
+    { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: args } },
+    sessionId,
+  );
+  const text = yield* result.text;
+  return text.startsWith("data:") ? text.slice(5).trim() : text;
+}, Effect.provide(FetchHttpClient.layer));
 
 export const nativeCall = (...input: Parameters<typeof nativeRpcCall>) =>
   nativeRpcCall(...input).pipe(
@@ -2897,25 +2901,24 @@ export const decodeSend = Schema.decodeUnknownEffect(
   OrchestratorToolkit.tools.t3_thread_send.successSchema,
 );
 
-export const sendNotice = (
+export const sendNotice = Effect.fn("PeerAuthority.sendNotice")(function* (
   node: Node,
   threadId: ThreadId,
   environmentId: Node["environmentId"],
   parent: ThreadId,
   message: string,
   key: string,
-) =>
-  Effect.gen(function* () {
-    const result = yield* nativeCall(node, threadId, "t3_thread_send", {
-      environmentId,
-      threadId: parent,
-      message,
-      mode: "auto",
-      clientRequestId: key,
-    });
-    expect(result.isError, json(result.content)).not.toBe(true);
-    return yield* decodeSend(result.structuredContent);
+) {
+  const result = yield* nativeCall(node, threadId, "t3_thread_send", {
+    environmentId,
+    threadId: parent,
+    message,
+    mode: "auto",
+    clientRequestId: key,
   });
+  expect(result.isError, json(result.content)).not.toBe(true);
+  return yield* decodeSend(result.structuredContent);
+});
 
 export const awaitNotice = (node: Node, threadId: ThreadId, text: string) =>
   node.orchestrator
@@ -2952,166 +2955,168 @@ export const attachedChild = (node: Node, parentThreadId: ThreadId, taskId: Node
       ),
     );
 
-export const delegate = (source: Node, destination: Node, parentId: ThreadId, key: string) =>
-  Effect.gen(function* () {
-    const { taskId } = yield* source.remote.delegate(caller(source, parentId), {
-      task: "Return evidence",
-      target: {
-        environmentId: destination.environmentId,
-        projectId: destination.project.id,
-        providerInstanceId: instanceId,
-        model: "gpt-5.4",
-      },
-      mode: "async",
-      clientRequestId: key,
-    });
-    return { taskId, childId: yield* attachedChild(source, parentId, taskId) };
+export const delegate = Effect.fn("PeerAuthority.delegate")(function* (
+  source: Node,
+  destination: Node,
+  parentId: ThreadId,
+  key: string,
+) {
+  const { taskId } = yield* source.remote.delegate(caller(source, parentId), {
+    task: "Return evidence",
+    target: {
+      environmentId: destination.environmentId,
+      projectId: destination.project.id,
+      providerInstanceId: instanceId,
+      model: "gpt-5.4",
+    },
+    mode: "async",
+    clientRequestId: key,
   });
+  return { taskId, childId: yield* attachedChild(source, parentId, taskId) };
+});
 
-export const activeProvider = (
+export const activeProvider = Effect.fn("PeerAuthority.activeProvider")(function* (
   node: Node,
   target: ThreadId,
   capabilities: Adapter.ProviderAdapterV2SessionRuntime["providerSession"]["capabilities"] = CodexProviderCapabilitiesV2,
-) =>
-  Effect.gen(function* () {
-    const projection = yield* node.orchestrator.getThreadProjection(target);
-    const run = projection.runs[0]!;
-    const providerThread = projection.providerThreads[0]!;
-    const now = yield* DateTime.now;
-    const providerSession = {
-      id: providerThread.providerSessionId!,
-      driver,
-      providerInstanceId: instanceId,
-      status: "running" as const,
-      cwd: process.cwd(),
-      model: selection.model,
-      capabilities,
-      createdAt: now,
-      updatedAt: now,
-      lastError: null,
-    };
-    yield* node.sink.write({
-      events: [
-        {
-          id: EventId.make(`${target}-${run.activeAttemptId}-attached`),
-          type: "provider-session.attached",
-          threadId: target,
-          occurredAt: now,
-          payload: providerSession,
+) {
+  const projection = yield* node.orchestrator.getThreadProjection(target);
+  const run = projection.runs[0]!;
+  const providerThread = projection.providerThreads[0]!;
+  const now = yield* DateTime.now;
+  const providerSession = {
+    id: providerThread.providerSessionId!,
+    driver,
+    providerInstanceId: instanceId,
+    status: "running" as const,
+    cwd: process.cwd(),
+    model: selection.model,
+    capabilities,
+    createdAt: now,
+    updatedAt: now,
+    lastError: null,
+  };
+  yield* node.sink.write({
+    events: [
+      {
+        id: EventId.make(`${target}-${run.activeAttemptId}-attached`),
+        type: "provider-session.attached",
+        threadId: target,
+        occurredAt: now,
+        payload: providerSession,
+      },
+      {
+        id: EventId.make(`${target}-${run.activeAttemptId}-turn`),
+        type: "provider-turn.updated",
+        threadId: target,
+        runId: run.id,
+        occurredAt: now,
+        payload: {
+          id: ProviderTurnId.make(`${target}-${run.activeAttemptId}-turn`),
+          providerThreadId: providerThread.id,
+          nodeId: run.rootNodeId!,
+          runAttemptId: run.activeAttemptId,
+          nativeTurnRef: null,
+          ordinal: 1,
+          status: "running",
+          startedAt: now,
+          completedAt: null,
         },
-        {
-          id: EventId.make(`${target}-${run.activeAttemptId}-turn`),
-          type: "provider-turn.updated",
-          threadId: target,
-          runId: run.id,
-          occurredAt: now,
-          payload: {
-            id: ProviderTurnId.make(`${target}-${run.activeAttemptId}-turn`),
-            providerThreadId: providerThread.id,
-            nodeId: run.rootNodeId!,
-            runAttemptId: run.activeAttemptId,
-            nativeTurnRef: null,
-            ordinal: 1,
-            status: "running",
-            startedAt: now,
-            completedAt: null,
-          },
-        },
-      ],
-    });
-    const sessions = Context.get(node.runtime, ProviderSessionManager.ProviderSessionManagerV2);
-    const spy = vi
-      .spyOn(sessions, "get")
-      .mockReturnValue(
-        Effect.succeed(Option.some({ providerSession } as Adapter.ProviderAdapterV2SessionRuntime)),
-      );
-    yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()));
-
-    return run;
+      },
+    ],
   });
+  const sessions = Context.get(node.runtime, ProviderSessionManager.ProviderSessionManagerV2);
+  const spy = vi
+    .spyOn(sessions, "get")
+    .mockReturnValue(
+      Effect.succeed(Option.some({ providerSession } as Adapter.ProviderAdapterV2SessionRuntime)),
+    );
+  yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()));
 
-export const finishLifecycleRun = (
+  return run;
+});
+
+export const finishLifecycleRun = Effect.fn("PeerAuthority.finishLifecycleRun")(function* (
   node: Node,
   childId: ThreadId,
   label: string,
   status: "completed" | "failed" = "completed",
   text = label,
-) =>
-  Effect.gen(function* () {
-    const runId = yield* activate(node, childId);
-    const projection = yield* node.threads.getThreadRecords(childId, ["runs", "messages"]);
-    const run = projection.runs.find((run) => run.id === runId)!;
-    const now = yield* DateTime.now;
-    yield* node.sink.write({
-      commandId: CommandId.make(`fixture:finish:${label}`),
-      events: [
-        {
-          id: EventId.make(`fixture:reply:${label}`),
-          type: "message.updated",
-          threadId: childId,
-          runId,
-          occurredAt: now,
-          payload: {
-            ...projection.messages[0]!,
-            id: MessageId.make(`message:${label}`),
-            runId,
-            role: "assistant",
-            text,
-            streaming: false,
-            createdAt: now,
-            updatedAt: now,
-          },
-        },
-        {
-          id: EventId.make(`fixture:item:${label}`),
-          type: "turn-item.updated",
-          threadId: childId,
-          runId,
-          occurredAt: now,
-          payload: {
-            id: TurnItemId.make(`item:${label}`),
-            type: "assistant_message",
-            threadId: childId,
-            runId,
-            nodeId: run.rootNodeId,
-            providerThreadId: null,
-            providerTurnId: null,
-            nativeItemRef: null,
-            parentItemId: null,
-            ordinal: run.ordinal * 100,
-            status: "completed",
-            title: null,
-            startedAt: now,
-            completedAt: now,
-            updatedAt: now,
-            messageId: MessageId.make(`message:${label}`),
-            text,
-            streaming: false,
-          },
-        },
-        {
-          id: EventId.make(`fixture:terminal:${label}`),
-          type: "run.updated",
-          threadId: childId,
-          runId,
-          occurredAt: now,
-          payload: { ...run, status, completedAt: now },
-        },
-      ],
-    });
-    if (status === "failed")
-      yield* RecoveryHistory.writeRecoveryOutcome({
-        sourceRunId: runId,
+) {
+  const runId = yield* activate(node, childId);
+  const projection = yield* node.threads.getThreadRecords(childId, ["runs", "messages"]);
+  const run = projection.runs.find((run) => run.id === runId)!;
+  const now = yield* DateTime.now;
+  yield* node.sink.write({
+    commandId: CommandId.make(`fixture:finish:${label}`),
+    events: [
+      {
+        id: EventId.make(`fixture:reply:${label}`),
+        type: "message.updated",
         threadId: childId,
-        status: "decided",
-        outcome: "not_retryable",
-        reason: "non_retryable",
-      }).pipe(
-        Effect.provide(Layer.succeedContext(node.database)),
-        Effect.provideService(RecoverySignals.RecoveryWaitSignals, node.signals),
-      );
-    return runId;
+        runId,
+        occurredAt: now,
+        payload: {
+          ...projection.messages[0]!,
+          id: MessageId.make(`message:${label}`),
+          runId,
+          role: "assistant",
+          text,
+          streaming: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      },
+      {
+        id: EventId.make(`fixture:item:${label}`),
+        type: "turn-item.updated",
+        threadId: childId,
+        runId,
+        occurredAt: now,
+        payload: {
+          id: TurnItemId.make(`item:${label}`),
+          type: "assistant_message",
+          threadId: childId,
+          runId,
+          nodeId: run.rootNodeId,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: run.ordinal * 100,
+          status: "completed",
+          title: null,
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          messageId: MessageId.make(`message:${label}`),
+          text,
+          streaming: false,
+        },
+      },
+      {
+        id: EventId.make(`fixture:terminal:${label}`),
+        type: "run.updated",
+        threadId: childId,
+        runId,
+        occurredAt: now,
+        payload: { ...run, status, completedAt: now },
+      },
+    ],
   });
+  if (status === "failed")
+    yield* RecoveryHistory.writeRecoveryOutcome({
+      sourceRunId: runId,
+      threadId: childId,
+      status: "decided",
+      outcome: "not_retryable",
+      reason: "non_retryable",
+    }).pipe(
+      Effect.provide(Layer.succeedContext(node.database)),
+      Effect.provideService(RecoverySignals.RecoveryWaitSignals, node.signals),
+    );
+  return runId;
+});
 
 export const decodeDiscardUpload = Schema.decodeUnknownEffect(PeerAttachmentUploadResult);
 
@@ -3125,81 +3130,84 @@ export const decodePending369LocalTask = Schema.decodeUnknownEffect(
   OrchestratorToolkit.tools.delegate_task.successSchema,
 );
 
-export const seedPending369 = (node: Node, threadId: ThreadId, suffix = "question") =>
-  Effect.gen(function* () {
-    const now = yield* DateTime.now;
-    const requestId = RuntimeRequestId.make(`pending369:${threadId}:${suffix}`);
-    const nodeId = NodeId.make(`node:${requestId}`);
-    const common = { threadId, nodeId, occurredAt: now };
-    yield* node.sink.write({
-      events: [
-        {
-          ...common,
-          id: EventId.make(`node:${requestId}`),
-          type: "node.updated",
-          payload: {
-            id: nodeId,
-            threadId,
-            runId: null,
-            parentNodeId: null,
-            rootNodeId: nodeId,
-            kind: "user_input_request",
-            status: "waiting",
-            countsForRun: false,
-            providerThreadId: null,
-            providerTurnId: null,
-            nativeItemRef: null,
-            runtimeRequestId: requestId,
-            checkpointScopeId: null,
-            startedAt: now,
-            completedAt: null,
-          },
+export const seedPending369 = Effect.fn("PeerAuthority.seedPending369")(function* (
+  node: Node,
+  threadId: ThreadId,
+  suffix = "question",
+) {
+  const now = yield* DateTime.now;
+  const requestId = RuntimeRequestId.make(`pending369:${threadId}:${suffix}`);
+  const nodeId = NodeId.make(`node:${requestId}`);
+  const common = { threadId, nodeId, occurredAt: now };
+  yield* node.sink.write({
+    events: [
+      {
+        ...common,
+        id: EventId.make(`node:${requestId}`),
+        type: "node.updated",
+        payload: {
+          id: nodeId,
+          threadId,
+          runId: null,
+          parentNodeId: null,
+          rootNodeId: nodeId,
+          kind: "user_input_request",
+          status: "waiting",
+          countsForRun: false,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          runtimeRequestId: requestId,
+          checkpointScopeId: null,
+          startedAt: now,
+          completedAt: null,
         },
-        {
-          ...common,
-          id: EventId.make(`request:${requestId}`),
-          type: "runtime-request.updated",
-          payload: {
-            id: requestId,
-            nodeId,
-            providerTurnId: null,
-            nativeRequestRef: null,
-            kind: "user_input",
-            status: "pending",
-            responseCapability: { type: "message" },
-            createdAt: now,
-            resolvedAt: null,
-          },
+      },
+      {
+        ...common,
+        id: EventId.make(`request:${requestId}`),
+        type: "runtime-request.updated",
+        payload: {
+          id: requestId,
+          nodeId,
+          providerTurnId: null,
+          nativeRequestRef: null,
+          kind: "user_input",
+          status: "pending",
+          responseCapability: { type: "message" },
+          createdAt: now,
+          resolvedAt: null,
         },
-        {
-          ...common,
-          id: EventId.make(`item:${requestId}`),
-          type: "turn-item.updated",
-          payload: {
-            id: TurnItemId.make(`item:${requestId}`),
-            type: "user_input_request",
-            threadId,
-            runId: null,
-            nodeId,
-            providerThreadId: null,
-            providerTurnId: null,
-            nativeItemRef: null,
-            parentItemId: null,
-            ordinal: 0,
-            status: "waiting",
-            title: null,
-            startedAt: now,
-            completedAt: null,
-            updatedAt: now,
-            requestId,
-            responseMode: "message",
-            questions: [{ id: "color", header: "Color", question: "Which color?", options: [] }],
-          },
+      },
+      {
+        ...common,
+        id: EventId.make(`item:${requestId}`),
+        type: "turn-item.updated",
+        payload: {
+          id: TurnItemId.make(`item:${requestId}`),
+          type: "user_input_request",
+          threadId,
+          runId: null,
+          nodeId,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 0,
+          status: "waiting",
+          title: null,
+          startedAt: now,
+          completedAt: null,
+          updatedAt: now,
+          requestId,
+          responseMode: "message",
+          questions: [{ id: "color", header: "Color", question: "Which color?", options: [] }],
         },
-      ],
-    });
-    return requestId;
+      },
+    ],
   });
+  return requestId;
+});
 
 export const decodePendingWsReply = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
@@ -3350,194 +3358,190 @@ export const makeNativePromiseBridge = Effect.gen(function* () {
     });
 });
 
-export const idleResource383Pair = (
+export const idleResource383Pair = Effect.fn("PeerAuthority.idleResource383Pair")(function* (
   id: string,
   destinationInstance = ProviderInstanceId.make("idle-resource-destination-provider"),
-) =>
-  Effect.gen(function* () {
-    const a = yield* makeNode(descriptorOf(`${id}-a`, "A", { peerAuthority: 1 }), "disk", {
-      productionKernel: true,
-      attachmentRequests: true,
-      deviceOwner: true,
-      previewControlsOwner: true,
-    });
-    yield* Effect.addFinalizer(() => assertTyped383SourceIdle(a));
-    const b = yield* makeNode(descriptorOf(`${id}-b`, "B", { peerAuthority: 1 }), "disk", {
-      productionKernel: true,
-      attachmentRequests: true,
-      preferencesOwner: true,
-      browserOwner: true,
-      deviceOwner: true,
-      previewControlsOwner: true,
-    });
-    yield* linkTo(a.links, b, "full-access");
-    const parent = ThreadId.make(`${id}-source`);
-    const child = ThreadId.make(`${id}-existing-idle`);
-    yield* seedParent(a, parent);
-    yield* b.threads.dispatch({
-      type: "thread.create",
-      commandId: CommandId.make(`${id}-create`),
-      threadId: child,
-      projectId: b.project.id,
-      title: "Existing idle resource context",
-      modelSelection: {
-        ...selection,
-        instanceId: destinationInstance,
-      },
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      branch: null,
-      worktreePath: null,
-      createdBy: "user",
-      creationSource: "web",
-    });
-    const enrolled = yield* nativeCall(a, parent, "orchestrator_capabilities", {
-      environmentId: b.environmentId,
-    });
-    expect(enrolled.isError, json(enrolled)).not.toBe(true);
-    const grant = (yield* b.authority.grants)[0]!;
-    yield* b.authority.setGrant({
-      ...grant,
-      resourceScope: "environment-resources",
-      preview: true,
-      device: true,
-      onward: false,
-    });
-    const caps = new Set(["orchestration", "preview", "device"] as const);
-    const credential = yield* a.registry.issue({
-      threadId: parent,
-      providerInstanceId: instanceId,
-      capabilities: caps,
-    });
-    const route = { environmentId: b.environmentId, contextThreadId: child };
-    const call = (name: string, input: Record<string, unknown> = {}, token = credential) =>
-      nativeCall(a, parent, name, { ...route, ...input }, caps, token);
-    const assertIdle = Effect.gen(function* () {
-      expect((yield* b.threads.getThreadShell(child))?.activeRunId).toBeNull();
-      expect((yield* b.threads.getThreadShell(child))?.providerInstanceId).toBe(
-        destinationInstance,
-      );
-      expect(yield* b.registry.scopeForThread(child)).toBeUndefined();
-    });
-    yield* assertIdle;
-    return { a, b, parent, child, grant, caps, credential, route, call, assertIdle };
+) {
+  const a = yield* makeNode(descriptorOf(`${id}-a`, "A", { peerAuthority: 1 }), "disk", {
+    productionKernel: true,
+    attachmentRequests: true,
+    deviceOwner: true,
+    previewControlsOwner: true,
   });
+  yield* Effect.addFinalizer(() => assertTyped383SourceIdle(a));
+  const b = yield* makeNode(descriptorOf(`${id}-b`, "B", { peerAuthority: 1 }), "disk", {
+    productionKernel: true,
+    attachmentRequests: true,
+    preferencesOwner: true,
+    browserOwner: true,
+    deviceOwner: true,
+    previewControlsOwner: true,
+  });
+  yield* linkTo(a.links, b, "full-access");
+  const parent = ThreadId.make(`${id}-source`);
+  const child = ThreadId.make(`${id}-existing-idle`);
+  yield* seedParent(a, parent);
+  yield* b.threads.dispatch({
+    type: "thread.create",
+    commandId: CommandId.make(`${id}-create`),
+    threadId: child,
+    projectId: b.project.id,
+    title: "Existing idle resource context",
+    modelSelection: {
+      ...selection,
+      instanceId: destinationInstance,
+    },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    createdBy: "user",
+    creationSource: "web",
+  });
+  const enrolled = yield* nativeCall(a, parent, "orchestrator_capabilities", {
+    environmentId: b.environmentId,
+  });
+  expect(enrolled.isError, json(enrolled)).not.toBe(true);
+  const grant = (yield* b.authority.grants)[0]!;
+  yield* b.authority.setGrant({
+    ...grant,
+    resourceScope: "environment-resources",
+    preview: true,
+    device: true,
+    onward: false,
+  });
+  const caps = new Set(["orchestration", "preview", "device"] as const);
+  const credential = yield* a.registry.issue({
+    threadId: parent,
+    providerInstanceId: instanceId,
+    capabilities: caps,
+  });
+  const route = { environmentId: b.environmentId, contextThreadId: child };
+  const call = (name: string, input: Record<string, unknown> = {}, token = credential) =>
+    nativeCall(a, parent, name, { ...route, ...input }, caps, token);
+  const assertIdle = Effect.gen(function* () {
+    expect((yield* b.threads.getThreadShell(child))?.activeRunId).toBeNull();
+    expect((yield* b.threads.getThreadShell(child))?.providerInstanceId).toBe(destinationInstance);
+    expect(yield* b.registry.scopeForThread(child)).toBeUndefined();
+  });
+  yield* assertIdle;
+  return { a, b, parent, child, grant, caps, credential, route, call, assertIdle };
+});
 
-export const backgroundRoster383 = (
+export const backgroundRoster383 = Effect.fn("PeerAuthority.backgroundRoster383")(function* (
   node: Effect.Success<ReturnType<typeof makeNode>>,
   threadId: ThreadId,
   pending: boolean,
   completeForeground = false,
-) =>
-  Effect.gen(function* () {
-    const projection = yield* node.orchestrator.getThreadProjection(threadId);
-    const providerThread = projection.providerThreads[0]!;
-    const now = yield* DateTime.now;
+) {
+  const projection = yield* node.orchestrator.getThreadProjection(threadId);
+  const providerThread = projection.providerThreads[0]!;
+  const now = yield* DateTime.now;
+  yield* node.sink.write({
+    events: [
+      {
+        id: EventId.make(
+          `background383-${pending}-${yield* Crypto.Crypto.pipe(Effect.flatMap((c) => c.randomUUIDv4()))}`,
+        ),
+        type: "provider-thread.updated",
+        threadId,
+        occurredAt: now,
+        payload: {
+          ...providerThread,
+          status: "idle",
+          updatedAt: now,
+          pendingBackgroundTasks: pending
+            ? [
+                {
+                  taskId: "native-background",
+                  kind: "subagent",
+                  description: "Native background resource task",
+                },
+              ]
+            : [],
+        },
+      },
+    ],
+  });
+  if (completeForeground) {
+    const run = projection.runs.at(-1)!;
     yield* node.sink.write({
       events: [
         {
-          id: EventId.make(
-            `background383-${pending}-${yield* Crypto.Crypto.pipe(Effect.flatMap((c) => c.randomUUIDv4()))}`,
-          ),
-          type: "provider-thread.updated",
+          id: EventId.make(`background383-complete-${run.id}`),
+          type: "run.updated",
           threadId,
+          runId: run.id,
           occurredAt: now,
-          payload: {
-            ...providerThread,
-            status: "idle",
-            updatedAt: now,
-            pendingBackgroundTasks: pending
-              ? [
-                  {
-                    taskId: "native-background",
-                    kind: "subagent",
-                    description: "Native background resource task",
-                  },
-                ]
-              : [],
-          },
+          payload: { ...run, status: "completed", completedAt: now },
         },
       ],
     });
-    if (completeForeground) {
-      const run = projection.runs.at(-1)!;
-      yield* node.sink.write({
-        events: [
-          {
-            id: EventId.make(`background383-complete-${run.id}`),
-            type: "run.updated",
-            threadId,
-            runId: run.id,
-            occurredAt: now,
-            payload: { ...run, status: "completed", completedAt: now },
-          },
-        ],
-      });
-    }
-  });
+  }
+});
 
-export const localBackground383 = (id: string) =>
-  Effect.gen(function* () {
-    const node = yield* makeNode(descriptorOf(id, "local", { peerAuthority: 1 }), "disk", {
-      productionKernel: true,
-      attachmentRequests: true,
-      preferencesOwner: true,
-      browserOwner: true,
-      deviceOwner: true,
-      previewControlsOwner: true,
-    });
-    const threadId = ThreadId.make(id);
-    yield* seedParent(node, threadId);
-    const caps = new Set(["orchestration", "preview", "device"] as const);
-    const credential = yield* node.registry.issue({
-      threadId,
-      providerInstanceId: instanceId,
-      capabilities: caps,
-    });
-    const call = (name: string, input: Record<string, unknown> = {}, token = credential) =>
-      nativeCall(node, threadId, name, input, caps, token);
-    return { node, threadId, caps, credential, call };
+export const localBackground383 = Effect.fn("PeerAuthority.localBackground383")(function* (
+  id: string,
+) {
+  const node = yield* makeNode(descriptorOf(id, "local", { peerAuthority: 1 }), "disk", {
+    productionKernel: true,
+    attachmentRequests: true,
+    preferencesOwner: true,
+    browserOwner: true,
+    deviceOwner: true,
+    previewControlsOwner: true,
   });
+  const threadId = ThreadId.make(id);
+  yield* seedParent(node, threadId);
+  const caps = new Set(["orchestration", "preview", "device"] as const);
+  const credential = yield* node.registry.issue({
+    threadId,
+    providerInstanceId: instanceId,
+    capabilities: caps,
+  });
+  const call = (name: string, input: Record<string, unknown> = {}, token = credential) =>
+    nativeCall(node, threadId, name, input, caps, token);
+  return { node, threadId, caps, credential, call };
+});
 
-export const stageInput383 = (
+export const stageInput383 = Effect.fn("PeerAuthority.stageInput383")(function* (
   call: (name: string, input: Record<string, unknown>) => ReturnType<typeof nativeCall>,
   origin: string,
   name: string,
   bytes: Uint8Array,
   key: string,
-) =>
-  Effect.gen(function* () {
-    const upload = {
-      type: "file" as const,
-      name,
-      mimeType: name.endsWith(".apk") ? "application/vnd.android.package-archive" : "text/plain",
-      sizeBytes: bytes.length,
-    };
-    const prepared = yield* call("t3_attachment_prepare_upload", {
-      upload,
-      digest: yield* typed383Digest(bytes),
-      clientRequestId: key,
-    });
-    expect(prepared.isError, json(prepared)).not.toBe(true);
-    const issued = yield* decodeTyped383Upload(prepared.structuredContent);
-    const http = yield* HttpClient.HttpClient;
-    expect(
-      (yield* http.execute(
-        HttpClientRequest.post(`${origin}${issued.relativeUrl}`).pipe(
-          HttpClientRequest.setBody(HttpBody.uint8Array(bytes)),
-        ),
-      )).status,
-    ).toBe(204);
-    const inspected = yield* call("t3_attachment_inspect", {
-      source: { type: "upload", attachmentId: issued.attachmentId, upload },
-    });
-    expect(inspected.isError, json(inspected)).not.toBe(true);
-    return (yield* Schema.decodeUnknownEffect(
-      Schema.Struct({
-        inspection: Schema.Struct({
-          stage: Schema.Literal("staged"),
-          reference: PeerAttachmentReference,
-        }),
-      }),
-    )(inspected.structuredContent)).inspection.reference;
+) {
+  const upload = {
+    type: "file" as const,
+    name,
+    mimeType: name.endsWith(".apk") ? "application/vnd.android.package-archive" : "text/plain",
+    sizeBytes: bytes.length,
+  };
+  const prepared = yield* call("t3_attachment_prepare_upload", {
+    upload,
+    digest: yield* typed383Digest(bytes),
+    clientRequestId: key,
   });
+  expect(prepared.isError, json(prepared)).not.toBe(true);
+  const issued = yield* decodeTyped383Upload(prepared.structuredContent);
+  const http = yield* HttpClient.HttpClient;
+  expect(
+    (yield* http.execute(
+      HttpClientRequest.post(`${origin}${issued.relativeUrl}`).pipe(
+        HttpClientRequest.setBody(HttpBody.uint8Array(bytes)),
+      ),
+    )).status,
+  ).toBe(204);
+  const inspected = yield* call("t3_attachment_inspect", {
+    source: { type: "upload", attachmentId: issued.attachmentId, upload },
+  });
+  expect(inspected.isError, json(inspected)).not.toBe(true);
+  return (yield* Schema.decodeUnknownEffect(
+    Schema.Struct({
+      inspection: Schema.Struct({
+        stage: Schema.Literal("staged"),
+        reference: PeerAttachmentReference,
+      }),
+    }),
+  )(inspected.structuredContent)).inspection.reference;
+});

@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { expect, it, vi } from "vite-plus/test";
 import { start, stop, updateAccess } from "./preview-stream.browser";
 

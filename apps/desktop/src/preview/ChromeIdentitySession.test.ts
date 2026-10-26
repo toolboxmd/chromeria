@@ -83,7 +83,7 @@ const harness = (
 
 describe("preview main-frame identity lifecycle", () => {
   it("resumes main-frame requests while Chromium queues the identity reply behind the navigation", async () => {
-    // Chromium answers Emulation.setUserAgentOverride only after the navigation finishes (#524).
+    // Chromium answers Emulation.setUserAgentOverride only after the navigation finishes.
     const finishNavigation: Array<() => void> = [];
     const test = harness(
       vi.fn(() => new Promise<void>((resolve) => finishNavigation.push(resolve))),

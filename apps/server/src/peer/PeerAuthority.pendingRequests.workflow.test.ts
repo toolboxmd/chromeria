@@ -1421,467 +1421,447 @@ it.live(
     ).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it.live(
-  "pending369 R1: read content and revision describe one snapshot",
-  () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const a = yield* makeNode(descriptorOf("r1-read-a", "A", { peerAuthority: 1 }), "disk", {
-          attachmentRequests: true,
-          productionKernel: true,
-        });
-        const b = yield* makeNode(descriptorOf("r1-read-b", "B", { peerAuthority: 1 }), "disk", {
-          attachmentRequests: true,
-          productionKernel: true,
-        });
-        yield* linkTo(a.links, b, "full-access");
-        const parent = ThreadId.make("r1-read-parent");
-        yield* seedParent(a, parent);
-        const child = yield* delegate(a, b, parent, "r1-read-child");
-        yield* activate(b, child.childId);
-        const requestId = yield* seedPending369(b, child.childId);
-        const args = { environmentId: b.environmentId, threadId: child.childId, requestId };
-        const entered = yield* Deferred.make<void>();
-        const release = yield* Deferred.make<void>();
-        const original = b.threads.getProjectThreadRecords;
-        let once = true;
-        // Scheduling barrier only: the real native owner executes and its exact result is retained.
-        // No authority decision, projection value or SQL operation is replaced.
-        const barrier = vi
-          .spyOn(b.threads, "getProjectThreadRecords")
-          .mockImplementation((...input) =>
-            original(...input).pipe(
-              Effect.flatMap((records) => {
-                if (
-                  !once ||
-                  input[0].threadId !== child.childId ||
-                  !input[1]?.includes("turnItems")
-                )
-                  return Effect.succeed(records);
-                once = false;
-                return Deferred.succeed(entered, undefined).pipe(
-                  Effect.andThen(Deferred.await(release)),
-                  Effect.as(records),
-                );
-              }),
-            ),
-          );
-        yield* Effect.addFinalizer(() => Effect.sync(() => barrier.mockRestore()));
-        const reading = yield* nativeCall(a, parent, "t3_pending_request_read", args).pipe(
-          Effect.forkScoped,
+it.live("pending369 R1: read content and revision describe one snapshot", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const a = yield* makeNode(descriptorOf("r1-read-a", "A", { peerAuthority: 1 }), "disk", {
+        attachmentRequests: true,
+        productionKernel: true,
+      });
+      const b = yield* makeNode(descriptorOf("r1-read-b", "B", { peerAuthority: 1 }), "disk", {
+        attachmentRequests: true,
+        productionKernel: true,
+      });
+      yield* linkTo(a.links, b, "full-access");
+      const parent = ThreadId.make("r1-read-parent");
+      yield* seedParent(a, parent);
+      const child = yield* delegate(a, b, parent, "r1-read-child");
+      yield* activate(b, child.childId);
+      const requestId = yield* seedPending369(b, child.childId);
+      const args = { environmentId: b.environmentId, threadId: child.childId, requestId };
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const original = b.threads.getProjectThreadRecords;
+      let once = true;
+      // Scheduling barrier only: the real native owner executes and its exact result is retained.
+      // No authority decision, projection value or SQL operation is replaced.
+      const barrier = vi
+        .spyOn(b.threads, "getProjectThreadRecords")
+        .mockImplementation((...input) =>
+          original(...input).pipe(
+            Effect.flatMap((records) => {
+              if (!once || input[0].threadId !== child.childId || !input[1]?.includes("turnItems"))
+                return Effect.succeed(records);
+              once = false;
+              return Deferred.succeed(entered, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+                Effect.as(records),
+              );
+            }),
+          ),
         );
-        yield* Deferred.await(entered);
-        const records = yield* b.threads.getThreadRecords(child.childId, ["turnItems"]);
-        const item = records.turnItems.find(
-          (i) => i.type === "user_input_request" && i.requestId === requestId,
-        );
-        if (item?.type !== "user_input_request") return yield* Effect.die("Missing native item");
-        const changed = "Which UPDATED color?";
-        yield* b.sink.write({
-          events: [
-            {
-              id: EventId.make("r1-read-change"),
-              type: "turn-item.updated",
-              threadId: child.childId,
-              occurredAt: yield* DateTime.now,
-              payload: {
-                ...item,
-                questions: item.questions.map((q) => ({ ...q, question: changed })),
-              },
+      yield* Effect.addFinalizer(() => Effect.sync(() => barrier.mockRestore()));
+      const reading = yield* nativeCall(a, parent, "t3_pending_request_read", args).pipe(
+        Effect.forkScoped,
+      );
+      yield* Deferred.await(entered);
+      const records = yield* b.threads.getThreadRecords(child.childId, ["turnItems"]);
+      const item = records.turnItems.find(
+        (i) => i.type === "user_input_request" && i.requestId === requestId,
+      );
+      if (item?.type !== "user_input_request") return yield* Effect.die("Missing native item");
+      const changed = "Which UPDATED color?";
+      yield* b.sink.write({
+        events: [
+          {
+            id: EventId.make("r1-read-change"),
+            type: "turn-item.updated",
+            threadId: child.childId,
+            occurredAt: yield* DateTime.now,
+            payload: {
+              ...item,
+              questions: item.questions.map((q) => ({ ...q, question: changed })),
             },
-          ],
-        });
-        yield* Deferred.succeed(release, undefined);
-        const result = yield* Fiber.join(reading);
-        expect(result.isError, json(result)).not.toBe(true);
-        const content = yield* decodePending369Content(result.structuredContent);
-        const accepted = yield* nativeCall(a, parent, "t3_pending_request_respond", {
-          ...args,
-          expectedRevision: content.revision,
-          answers: { color: "Blue" },
-          clientRequestId: "r1-old-content-answer",
-        });
-        const after = yield* b.threads.getThreadRecords(child.childId, [
-          "messages",
-          "runtimeRequests",
-        ]);
-        yield* Effect.log(
-          "R1 READ RACE EVIDENCE",
-          json({
-            content,
-            accepted,
-            updatedMessage: after.messages.find((m) => m.text.includes(changed)),
-            status: after.runtimeRequests.find((r) => r.id === requestId)?.status,
-          }),
-        );
-        // Either read must return updated content, or its stale revision must reject the answer.
-        expect(
-          (content.kind === "user-input" && content.questions[0]?.question === changed) ||
-            accepted.isError === true,
-        ).toBe(true);
-      }),
-    ).pipe(Effect.provide(NodeServices.layer)),
-  30000,
+          },
+        ],
+      });
+      yield* Deferred.succeed(release, undefined);
+      const result = yield* Fiber.join(reading);
+      expect(result.isError, json(result)).not.toBe(true);
+      const content = yield* decodePending369Content(result.structuredContent);
+      const accepted = yield* nativeCall(a, parent, "t3_pending_request_respond", {
+        ...args,
+        expectedRevision: content.revision,
+        answers: { color: "Blue" },
+        clientRequestId: "r1-old-content-answer",
+      });
+      const after = yield* b.threads.getThreadRecords(child.childId, [
+        "messages",
+        "runtimeRequests",
+      ]);
+      yield* Effect.log(
+        "R1 READ RACE EVIDENCE",
+        json({
+          content,
+          accepted,
+          updatedMessage: after.messages.find((m) => m.text.includes(changed)),
+          status: after.runtimeRequests.find((r) => r.id === requestId)?.status,
+        }),
+      );
+      // Either read must return updated content, or its stale revision must reject the answer.
+      expect(
+        (content.kind === "user-input" && content.questions[0]?.question === changed) ||
+          accepted.isError === true,
+      ).toBe(true);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it.live(
-  "pending369 R1: advertised empty live option retains local-equivalent response",
-  () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const a = yield* makeNode(descriptorOf("r1-empty-a", "A", { peerAuthority: 1 }), "disk", {
-          attachmentRequests: true,
-          productionKernel: true,
-        });
-        const b = yield* makeNode(descriptorOf("r1-empty-b", "B", { peerAuthority: 1 }), "disk", {
-          attachmentRequests: true,
-          productionKernel: true,
-        });
-        yield* linkTo(a.links, b, "full-access");
-        const parent = ThreadId.make("r1-empty-parent");
-        yield* seedParent(a, parent);
-        const child = yield* delegate(a, b, parent, "r1-empty-child");
-        yield* activate(b, child.childId);
-        const requestId = yield* seedPending369(b, child.childId);
-        const projection = yield* b.orchestrator.getThreadProjection(child.childId);
-        const providerSessionId = projection.providerThreads[0]!.providerSessionId!;
-        const now = yield* DateTime.now;
-        const request = projection.runtimeRequests.find((r) => r.id === requestId)!;
-        const item = projection.turnItems.find(
-          (i) => i.type === "user_input_request" && i.requestId === requestId,
-        );
-        if (item?.type !== "user_input_request")
-          return yield* Effect.die("Missing real pending item");
-        // This is the exact input/select empty-value shape produced by piQuestion
-        // in packages/provider-pi/src/server/adapter.ts. No invented optional flag.
-        yield* b.sink.write({
-          events: [
-            {
-              id: EventId.make("r1-empty-session"),
-              type: "provider-session.attached",
-              threadId: child.childId,
-              occurredAt: now,
-              payload: {
-                id: providerSessionId,
-                driver,
-                providerInstanceId: instanceId,
-                status: "running",
-                cwd: process.cwd(),
-                model: selection.model,
-                capabilities: CodexProviderCapabilitiesV2,
-                createdAt: now,
-                updatedAt: now,
-                lastError: null,
-              },
+it.live("pending369 R1: advertised empty live option retains local-equivalent response", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const a = yield* makeNode(descriptorOf("r1-empty-a", "A", { peerAuthority: 1 }), "disk", {
+        attachmentRequests: true,
+        productionKernel: true,
+      });
+      const b = yield* makeNode(descriptorOf("r1-empty-b", "B", { peerAuthority: 1 }), "disk", {
+        attachmentRequests: true,
+        productionKernel: true,
+      });
+      yield* linkTo(a.links, b, "full-access");
+      const parent = ThreadId.make("r1-empty-parent");
+      yield* seedParent(a, parent);
+      const child = yield* delegate(a, b, parent, "r1-empty-child");
+      yield* activate(b, child.childId);
+      const requestId = yield* seedPending369(b, child.childId);
+      const projection = yield* b.orchestrator.getThreadProjection(child.childId);
+      const providerSessionId = projection.providerThreads[0]!.providerSessionId!;
+      const now = yield* DateTime.now;
+      const request = projection.runtimeRequests.find((r) => r.id === requestId)!;
+      const item = projection.turnItems.find(
+        (i) => i.type === "user_input_request" && i.requestId === requestId,
+      );
+      if (item?.type !== "user_input_request")
+        return yield* Effect.die("Missing real pending item");
+      // This is the exact input/select empty-value shape produced by piQuestion
+      // in packages/provider-pi/src/server/adapter.ts. No invented optional flag.
+      yield* b.sink.write({
+        events: [
+          {
+            id: EventId.make("r1-empty-session"),
+            type: "provider-session.attached",
+            threadId: child.childId,
+            occurredAt: now,
+            payload: {
+              id: providerSessionId,
+              driver,
+              providerInstanceId: instanceId,
+              status: "running",
+              cwd: process.cwd(),
+              model: selection.model,
+              capabilities: CodexProviderCapabilitiesV2,
+              createdAt: now,
+              updatedAt: now,
+              lastError: null,
             },
-            {
-              id: EventId.make("r1-empty-request"),
-              type: "runtime-request.updated",
-              threadId: child.childId,
-              nodeId: request.nodeId,
-              occurredAt: now,
-              payload: { ...request, responseCapability: { type: "live", providerSessionId } },
-            },
-            {
-              id: EventId.make("r1-empty-item"),
-              type: "turn-item.updated",
-              threadId: child.childId,
-              nodeId: request.nodeId,
-              occurredAt: now,
-              payload: {
-                ...item,
-                responseMode: undefined,
-                questions: [
-                  {
-                    id: "color",
-                    header: "Input",
-                    question: "Value?",
-                    options: [
-                      {
-                        label: "Submit empty value",
-                        description: "Send an empty string to the extension.",
-                        value: "",
-                      },
-                    ],
-                  },
-                ],
-              },
-            },
-          ],
-        });
-        const args = { environmentId: b.environmentId, threadId: child.childId, requestId };
-        const read = yield* decodePending369Content(
-          (yield* nativeCall(a, parent, "t3_pending_request_read", args)).structuredContent,
-        );
-        for (const [index, answers] of [{}, { color: [""] }].entries()) {
-          const rejected = yield* nativeCall(a, parent, "t3_pending_request_respond", {
-            ...args,
-            expectedRevision: read.revision,
-            answers,
-            clientRequestId: `r1-empty-invalid-${index}`,
-          });
-          expect(rejected.isError).toBe(true);
-        }
-        const remote = yield* nativeCall(a, parent, "t3_pending_request_respond", {
-          ...args,
-          expectedRevision: read.revision,
-          answers: { color: "" },
-          clientRequestId: "r1-empty-answer",
-        });
-        const after = yield* b.threads.getThreadRecords(child.childId, ["runtimeRequests"]);
-        expect(remote.isError, json(remote)).not.toBe(true);
-        expect(after.runtimeRequests.find((r) => r.id === requestId)).toMatchObject({
-          status: "resolved",
-          answers: { color: "" },
-        });
-        const fixedId = yield* seedPending369(b, child.childId, "fixed-choice-control");
-        const fixedItem = (yield* b.threads.getThreadRecords(child.childId, [
-          "turnItems",
-        ])).turnItems.find(
-          (entry) => entry.type === "user_input_request" && entry.requestId === fixedId,
-        );
-        if (fixedItem?.type !== "user_input_request")
-          return yield* Effect.die("Missing fixed choice control");
-        yield* b.sink.write({
-          events: [
-            {
-              id: EventId.make("r1-fixed-shape"),
-              type: "turn-item.updated",
-              threadId: child.childId,
-              occurredAt: yield* DateTime.now,
-              payload: {
-                ...fixedItem,
-                questions: [
-                  {
-                    id: "color",
-                    header: "Choice",
-                    question: "Choose?",
-                    allowCustomAnswer: false,
-                    options: [{ label: "Blue", description: "Allowed" }],
-                  },
-                ],
-              },
-            },
-          ],
-        });
-        const fixedArgs = { ...args, requestId: fixedId };
-        const fixedRead = yield* decodePending369Content(
-          (yield* nativeCall(a, parent, "t3_pending_request_read", fixedArgs)).structuredContent,
-        );
-        const invalidOption = yield* nativeCall(a, parent, "t3_pending_request_respond", {
-          ...fixedArgs,
-          expectedRevision: fixedRead.revision,
-          answers: { color: "not offered" },
-          clientRequestId: "r1-fixed-invalid",
-        });
-        expect(invalidOption.isError).toBe(true);
-        expect(
-          (yield* b.threads.getThreadRecords(child.childId, [
-            "runtimeRequests",
-          ])).runtimeRequests.find((entry) => entry.id === fixedId)?.status,
-        ).toBe("pending");
-      }),
-    ).pipe(Effect.provide(NodeServices.layer)),
-  30000,
-);
-
-it.live(
-  "pending584: a remote answer may leave an optional choice-only question blank",
-  () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const a = yield* makeNode(descriptorOf("p584-a", "A", { peerAuthority: 1 }), "disk", {
-          attachmentRequests: true,
-          productionKernel: true,
-        });
-        const b = yield* makeNode(descriptorOf("p584-b", "B", { peerAuthority: 1 }), "disk", {
-          attachmentRequests: true,
-          productionKernel: true,
-        });
-        yield* linkTo(a.links, b, "full-access");
-        const parent = ThreadId.make("p584-parent");
-        yield* seedParent(a, parent);
-        const child = yield* delegate(a, b, parent, "p584-child");
-        yield* activate(b, child.childId);
-        const seedOptional = (suffix: string) =>
-          Effect.gen(function* () {
-            const requestId = yield* seedPending369(b, child.childId, suffix);
-            const item = (yield* b.threads.getThreadRecords(child.childId, [
-              "turnItems",
-            ])).turnItems.find(
-              (entry) => entry.type === "user_input_request" && entry.requestId === requestId,
-            );
-            if (item?.type !== "user_input_request")
-              return yield* Effect.die("Missing optional question item");
-            yield* b.sink.write({
-              events: [
+          },
+          {
+            id: EventId.make("r1-empty-request"),
+            type: "runtime-request.updated",
+            threadId: child.childId,
+            nodeId: request.nodeId,
+            occurredAt: now,
+            payload: { ...request, responseCapability: { type: "live", providerSessionId } },
+          },
+          {
+            id: EventId.make("r1-empty-item"),
+            type: "turn-item.updated",
+            threadId: child.childId,
+            nodeId: request.nodeId,
+            occurredAt: now,
+            payload: {
+              ...item,
+              responseMode: undefined,
+              questions: [
                 {
-                  id: EventId.make(`p584-shape-${suffix}`),
-                  type: "turn-item.updated",
-                  threadId: child.childId,
-                  occurredAt: yield* DateTime.now,
-                  payload: {
-                    ...item,
-                    questions: [
-                      {
-                        id: "color",
-                        header: "Color",
-                        question: "Color?",
-                        allowCustomAnswer: false,
-                        options: [{ label: "Blue", description: "Required choice" }],
-                      },
-                      {
-                        id: "size",
-                        header: "Size",
-                        question: "Size?",
-                        required: false,
-                        allowCustomAnswer: false,
-                        options: [{ label: "Small", description: "Optional choice" }],
-                      },
-                    ],
-                  },
+                  id: "color",
+                  header: "Input",
+                  question: "Value?",
+                  options: [
+                    {
+                      label: "Submit empty value",
+                      description: "Send an empty string to the extension.",
+                      value: "",
+                    },
+                  ],
                 },
               ],
-            });
-            const args = { environmentId: b.environmentId, threadId: child.childId, requestId };
-            const read = yield* decodePending369Content(
-              (yield* nativeCall(a, parent, "t3_pending_request_read", args)).structuredContent,
-            );
-            return { args, revision: read.revision };
-          });
-        const status = (requestId: string) =>
-          b.threads
-            .getThreadRecords(child.childId, ["runtimeRequests"])
-            .pipe(
-              Effect.map(
-                (records) =>
-                  records.runtimeRequests.find((entry) => entry.id === requestId)?.status,
-              ),
-            );
+            },
+          },
+        ],
+      });
+      const args = { environmentId: b.environmentId, threadId: child.childId, requestId };
+      const read = yield* decodePending369Content(
+        (yield* nativeCall(a, parent, "t3_pending_request_read", args)).structuredContent,
+      );
+      for (const [index, answers] of [{}, { color: [""] }].entries()) {
+        const rejected = yield* nativeCall(a, parent, "t3_pending_request_respond", {
+          ...args,
+          expectedRevision: read.revision,
+          answers,
+          clientRequestId: `r1-empty-invalid-${index}`,
+        });
+        expect(rejected.isError).toBe(true);
+      }
+      const remote = yield* nativeCall(a, parent, "t3_pending_request_respond", {
+        ...args,
+        expectedRevision: read.revision,
+        answers: { color: "" },
+        clientRequestId: "r1-empty-answer",
+      });
+      const after = yield* b.threads.getThreadRecords(child.childId, ["runtimeRequests"]);
+      expect(remote.isError, json(remote)).not.toBe(true);
+      expect(after.runtimeRequests.find((r) => r.id === requestId)).toMatchObject({
+        status: "resolved",
+        answers: { color: "" },
+      });
+      const fixedId = yield* seedPending369(b, child.childId, "fixed-choice-control");
+      const fixedItem = (yield* b.threads.getThreadRecords(child.childId, [
+        "turnItems",
+      ])).turnItems.find(
+        (entry) => entry.type === "user_input_request" && entry.requestId === fixedId,
+      );
+      if (fixedItem?.type !== "user_input_request")
+        return yield* Effect.die("Missing fixed choice control");
+      yield* b.sink.write({
+        events: [
+          {
+            id: EventId.make("r1-fixed-shape"),
+            type: "turn-item.updated",
+            threadId: child.childId,
+            occurredAt: yield* DateTime.now,
+            payload: {
+              ...fixedItem,
+              questions: [
+                {
+                  id: "color",
+                  header: "Choice",
+                  question: "Choose?",
+                  allowCustomAnswer: false,
+                  options: [{ label: "Blue", description: "Allowed" }],
+                },
+              ],
+            },
+          },
+        ],
+      });
+      const fixedArgs = { ...args, requestId: fixedId };
+      const fixedRead = yield* decodePending369Content(
+        (yield* nativeCall(a, parent, "t3_pending_request_read", fixedArgs)).structuredContent,
+      );
+      const invalidOption = yield* nativeCall(a, parent, "t3_pending_request_respond", {
+        ...fixedArgs,
+        expectedRevision: fixedRead.revision,
+        answers: { color: "not offered" },
+        clientRequestId: "r1-fixed-invalid",
+      });
+      expect(invalidOption.isError).toBe(true);
+      expect(
+        (yield* b.threads.getThreadRecords(child.childId, [
+          "runtimeRequests",
+        ])).runtimeRequests.find((entry) => entry.id === fixedId)?.status,
+      ).toBe("pending");
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
 
-        const blank = yield* seedOptional("optional-blank");
-        for (const [index, answers] of [
-          { color: "", size: "" },
-          { color: "Blue", size: "Huge" },
-        ].entries()) {
-          const rejected = yield* nativeCall(a, parent, "t3_pending_request_respond", {
-            ...blank.args,
-            expectedRevision: blank.revision,
-            answers,
-            clientRequestId: `p584-invalid-${index}`,
+it.live("pending584: a remote answer may leave an optional choice-only question blank", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const a = yield* makeNode(descriptorOf("p584-a", "A", { peerAuthority: 1 }), "disk", {
+        attachmentRequests: true,
+        productionKernel: true,
+      });
+      const b = yield* makeNode(descriptorOf("p584-b", "B", { peerAuthority: 1 }), "disk", {
+        attachmentRequests: true,
+        productionKernel: true,
+      });
+      yield* linkTo(a.links, b, "full-access");
+      const parent = ThreadId.make("p584-parent");
+      yield* seedParent(a, parent);
+      const child = yield* delegate(a, b, parent, "p584-child");
+      yield* activate(b, child.childId);
+      const seedOptional = (suffix: string) =>
+        Effect.gen(function* () {
+          const requestId = yield* seedPending369(b, child.childId, suffix);
+          const item = (yield* b.threads.getThreadRecords(child.childId, [
+            "turnItems",
+          ])).turnItems.find(
+            (entry) => entry.type === "user_input_request" && entry.requestId === requestId,
+          );
+          if (item?.type !== "user_input_request")
+            return yield* Effect.die("Missing optional question item");
+          yield* b.sink.write({
+            events: [
+              {
+                id: EventId.make(`p584-shape-${suffix}`),
+                type: "turn-item.updated",
+                threadId: child.childId,
+                occurredAt: yield* DateTime.now,
+                payload: {
+                  ...item,
+                  questions: [
+                    {
+                      id: "color",
+                      header: "Color",
+                      question: "Color?",
+                      allowCustomAnswer: false,
+                      options: [{ label: "Blue", description: "Required choice" }],
+                    },
+                    {
+                      id: "size",
+                      header: "Size",
+                      question: "Size?",
+                      required: false,
+                      allowCustomAnswer: false,
+                      options: [{ label: "Small", description: "Optional choice" }],
+                    },
+                  ],
+                },
+              },
+            ],
           });
-          expect(rejected.isError, json(rejected)).toBe(true);
-        }
-        expect(yield* status(blank.args.requestId)).toBe("pending");
-        const blankAnswer = yield* nativeCall(a, parent, "t3_pending_request_respond", {
+          const args = { environmentId: b.environmentId, threadId: child.childId, requestId };
+          const read = yield* decodePending369Content(
+            (yield* nativeCall(a, parent, "t3_pending_request_read", args)).structuredContent,
+          );
+          return { args, revision: read.revision };
+        });
+      const status = (requestId: string) =>
+        b.threads
+          .getThreadRecords(child.childId, ["runtimeRequests"])
+          .pipe(
+            Effect.map(
+              (records) => records.runtimeRequests.find((entry) => entry.id === requestId)?.status,
+            ),
+          );
+
+      const blank = yield* seedOptional("optional-blank");
+      for (const [index, answers] of [
+        { color: "", size: "" },
+        { color: "Blue", size: "Huge" },
+      ].entries()) {
+        const rejected = yield* nativeCall(a, parent, "t3_pending_request_respond", {
           ...blank.args,
           expectedRevision: blank.revision,
-          answers: { color: "Blue", size: "" },
-          clientRequestId: "p584-blank",
+          answers,
+          clientRequestId: `p584-invalid-${index}`,
         });
-        expect(blankAnswer.isError, json(blankAnswer)).not.toBe(true);
-        expect(yield* status(blank.args.requestId)).toBe("resolved");
+        expect(rejected.isError, json(rejected)).toBe(true);
+      }
+      expect(yield* status(blank.args.requestId)).toBe("pending");
+      const blankAnswer = yield* nativeCall(a, parent, "t3_pending_request_respond", {
+        ...blank.args,
+        expectedRevision: blank.revision,
+        answers: { color: "Blue", size: "" },
+        clientRequestId: "p584-blank",
+      });
+      expect(blankAnswer.isError, json(blankAnswer)).not.toBe(true);
+      expect(yield* status(blank.args.requestId)).toBe("resolved");
 
-        const omitted = yield* seedOptional("optional-omitted");
-        const omittedAnswer = yield* nativeCall(a, parent, "t3_pending_request_respond", {
-          ...omitted.args,
-          expectedRevision: omitted.revision,
-          answers: { color: "Blue" },
-          clientRequestId: "p584-omitted",
-        });
-        expect(omittedAnswer.isError, json(omittedAnswer)).not.toBe(true);
-        expect(yield* status(omitted.args.requestId)).toBe("resolved");
-      }),
-    ).pipe(Effect.provide(NodeServices.layer)),
-  30000,
+      const omitted = yield* seedOptional("optional-omitted");
+      const omittedAnswer = yield* nativeCall(a, parent, "t3_pending_request_respond", {
+        ...omitted.args,
+        expectedRevision: omitted.revision,
+        answers: { color: "Blue" },
+        clientRequestId: "p584-omitted",
+      });
+      expect(omittedAnswer.isError, json(omittedAnswer)).not.toBe(true);
+      expect(yield* status(omitted.args.requestId)).toBe("resolved");
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it.live(
-  "review383-read-capture: readonly capture rechecks after external readiness",
-  () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const { a, b, parent, route, open } = yield* typed383Pair("review383-read-capture");
-        const opened = yield* open("read-capture-open");
-        expect(opened.isError, json(opened)).not.toBe(true);
-        const { target } = yield* decodeTyped383Open(opened.structuredContent);
-        const held = yield* Deferred.make<void>();
-        const release = yield* Deferred.make<void>();
-        yield* Ref.set(b.deviceProcessHook, (call) =>
-          call.args[1] === "click"
-            ? Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(release)))
-            : Effect.void,
+it.live("review383-read-capture: readonly capture rechecks after external readiness", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { a, b, parent, route, open } = yield* typed383Pair("review383-read-capture");
+      const opened = yield* open("read-capture-open");
+      expect(opened.isError, json(opened)).not.toBe(true);
+      const { target } = yield* decodeTyped383Open(opened.structuredContent);
+      const held = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      yield* Ref.set(b.deviceProcessHook, (call) =>
+        call.args[1] === "click"
+          ? Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(release)))
+          : Effect.void,
+      );
+      const running = yield* nativeCall(a, parent, "device_execute", {
+        ...route,
+        target,
+        command: { type: "click", ref: "@e1" },
+        clientRequestId: "held-click",
+      }).pipe(Effect.forkChild);
+      yield* Deferred.await(held);
+      yield* Effect.gen(function* () {
+        const input = { ...route, hostId: "local", deviceId: "fixture-device382" };
+        const lawful = yield* nativeCall(a, parent, "device_screenshot", input);
+        expect(lawful.isError, json(lawful)).not.toBe(true);
+        const before = yield* Ref.get(b.deviceScreenshotCalls);
+        const grant = (yield* b.authority.grants)[0]!;
+        const armed = yield* Ref.make(true);
+        yield* Ref.set(
+          b.deviceReadinessHook,
+          Effect.gen(function* () {
+            if (!(yield* Ref.getAndSet(armed, false))) return;
+            yield* b.authority.setGrant({ ...grant, device: false }).pipe(Effect.orDie);
+          }),
         );
-        const running = yield* nativeCall(a, parent, "device_execute", {
-          ...route,
-          target,
-          command: { type: "click", ref: "@e1" },
-          clientRequestId: "held-click",
-        }).pipe(Effect.forkChild);
-        yield* Deferred.await(held);
-        yield* Effect.gen(function* () {
-          const input = { ...route, hostId: "local", deviceId: "fixture-device382" };
-          const lawful = yield* nativeCall(a, parent, "device_screenshot", input);
-          expect(lawful.isError, json(lawful)).not.toBe(true);
-          const before = yield* Ref.get(b.deviceScreenshotCalls);
-          const grant = (yield* b.authority.grants)[0]!;
-          const armed = yield* Ref.make(true);
-          yield* Ref.set(
-            b.deviceReadinessHook,
-            Effect.gen(function* () {
-              if (!(yield* Ref.getAndSet(armed, false))) return;
-              yield* b.authority.setGrant({ ...grant, device: false }).pipe(Effect.orDie);
-            }),
-          );
-          const revoked = yield* nativeCall(a, parent, "device_screenshot", input);
-          expect(yield* Ref.get(armed)).toBe(false);
-          expect((yield* b.authority.grants)[0]!.device).toBe(false);
-          expect(revoked.isError, "revoked read must deny before capture").toBe(true);
-          expect(yield* Ref.get(b.deviceScreenshotCalls)).toBe(before);
-        }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
-        yield* Fiber.join(running);
-      }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
+        const revoked = yield* nativeCall(a, parent, "device_screenshot", input);
+        expect(yield* Ref.get(armed)).toBe(false);
+        expect((yield* b.authority.grants)[0]!.device).toBe(false);
+        expect(revoked.isError, "revoked read must deny before capture").toBe(true);
+        expect(yield* Ref.get(b.deviceScreenshotCalls)).toBe(before);
+      }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
+      yield* Fiber.join(running);
+    }),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );
 
-it.live(
-  "review383-local-auto: keyed local opening preserves existing capability policy",
-  () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const n = yield* makeNode(
-          descriptorOf("review383-local", "local", { peerAuthority: 1 }),
-          "disk",
-          {
-            productionKernel: true,
-            attachmentRequests: true,
-            preferencesOwner: true,
-            deviceOwner: true,
-          },
-        );
-        const parent = ThreadId.make("review383-local-parent");
-        yield* seedParent(n, parent);
-        const args = { deviceId: "fixture-device382", platform: "android" };
-        const full = yield* nativeCall(n, parent, "device_open", {
-          ...args,
-          clientRequestId: "full",
-        });
-        expect(full.isError, json(full)).not.toBe(true);
-        yield* n.threads.dispatch({
-          type: "thread.runtime-mode.set",
-          commandId: CommandId.make("review383-auto"),
-          threadId: parent,
-          runtimeMode: "auto",
-        });
-        const keyed = yield* nativeCall(n, parent, "device_open", {
-          ...args,
-          clientRequestId: "auto",
-        });
-        expect(keyed.isError, json(keyed)).not.toBe(true);
-      }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
+it.live("review383-local-auto: keyed local opening preserves existing capability policy", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const n = yield* makeNode(
+        descriptorOf("review383-local", "local", { peerAuthority: 1 }),
+        "disk",
+        {
+          productionKernel: true,
+          attachmentRequests: true,
+          preferencesOwner: true,
+          deviceOwner: true,
+        },
+      );
+      const parent = ThreadId.make("review383-local-parent");
+      yield* seedParent(n, parent);
+      const args = { deviceId: "fixture-device382", platform: "android" };
+      const full = yield* nativeCall(n, parent, "device_open", {
+        ...args,
+        clientRequestId: "full",
+      });
+      expect(full.isError, json(full)).not.toBe(true);
+      yield* n.threads.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("review383-auto"),
+        threadId: parent,
+        runtimeMode: "auto",
+      });
+      const keyed = yield* nativeCall(n, parent, "device_open", {
+        ...args,
+        clientRequestId: "auto",
+      });
+      expect(keyed.isError, json(keyed)).not.toBe(true);
+    }),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );
 
 it.live(
@@ -1943,7 +1923,6 @@ it.live(
         expect(yield* footprint()).toEqual(beforeInvalid);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live.each(["android", "ios"] as const)(
@@ -2023,7 +2002,6 @@ it.live.each(["android", "ios"] as const)(
         expect(click.isError, json(click)).not.toBe(true);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -2133,5 +2111,4 @@ it.live(
         ).not.toBe(true);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );

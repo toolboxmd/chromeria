@@ -219,7 +219,7 @@ const makeEngine = Effect.gen(function* () {
   const prism = yield* Prism.PrismService;
   const adapters = yield* ProviderAdapterRegistryV2;
   const providers = yield* ProviderRegistry.ProviderRegistry;
-  // #176 provides its Spectra here once Spectrum is wired; without it no run has any.
+  // Spectrum provides its Spectra here once wired; without it no run has any.
   const spectra = yield* ScheduledTaskSpectra;
   const changes = yield* PubSub.sliding<void>(1);
   yield* ensureCheckSchema;
@@ -227,80 +227,83 @@ const makeEngine = Effect.gen(function* () {
   const shellOf = (threadId: ThreadId) =>
     projections.getThreadShell(threadId).pipe(Effect.mapError(checkError("Could not read thread")));
 
-  const dispatchCheckedSend = (taskId: ScheduledTaskId, run: CheckedRun, send: RunSend) =>
-    Effect.gen(function* () {
-      const payload = send.payload;
-      if (payload === undefined)
-        return yield* new ScheduledTaskCheckError({
-          message: "The recorded send lost its payload and cannot be repeated.",
-        });
-      const threadId = run.threadId!;
-      // Automatic sends are server messages: they never acknowledge a retirement.
-      const provenance = { createdBy: "system", creationSource: "server" } as const;
-      const launch = payload.launch;
-      const target = payload.linkOrigin === undefined ? null : yield* shellOf(threadId);
-      if (
-        payload.automationCertificateId === undefined &&
-        payload.linkOrigin !== undefined &&
-        target !== null &&
-        target.linkOrigin?.sessionId !== payload.linkOrigin.sessionId
-      )
-        return yield* new ScheduledTaskCheckError({
-          message: "A linked scheduled send may target only its own link's thread.",
-        });
-      if (launch !== null && (launch.bare !== undefined || (yield* shellOf(threadId)) === null)) {
-        const start = threadLaunch.launch({
-          purposeSource: payload.purposeSource,
-          commandId: send.commandId,
-          threadId,
-          ...launch,
-          ...(payload.bareReadGrant === undefined ? {} : { bareReadGrant: payload.bareReadGrant }),
-          ...(payload.linkOrigin === undefined ? {} : { linkOrigin: payload.linkOrigin }),
-          initialMessage: {
-            messageId: send.messageId,
-            scheduledTaskId: taskId,
-            text: payload.text,
-            attachments: [],
-          },
-          ...provenance,
-        });
-        yield* (
-          launch.bare === undefined
-            ? start
-            : threadLaunch.replayOrLaunch(
-                {
-                  commandId: send.commandId,
-                  purposeSource: payload.purposeSource,
-                  threadId,
-                  projectId: launch.projectId,
-                  ...(launch.bare === undefined ? {} : { bare: launch.bare }),
-                  runtimeMode: launch.runtimeMode,
-                  interactionMode: launch.interactionMode,
-                  createdBy: "agent",
-                  ...(payload.linkOrigin === undefined ? {} : { linkOrigin: payload.linkOrigin }),
-                  messageId: send.messageId,
-                },
-                start,
-              )
-        ).pipe(Effect.mapError(checkError("Could not start the scheduled thread")));
-        return;
-      }
-      yield* threads
-        .sendToThread({
-          purposeSource: payload.purposeSource,
-          projectId: payload.projectId,
-          commandId: send.commandId,
-          threadId,
+  const dispatchCheckedSend = Effect.fn("ScheduledTaskChecks.dispatchCheckedSend")(function* (
+    taskId: ScheduledTaskId,
+    run: CheckedRun,
+    send: RunSend,
+  ) {
+    const payload = send.payload;
+    if (payload === undefined)
+      return yield* new ScheduledTaskCheckError({
+        message: "The recorded send lost its payload and cannot be repeated.",
+      });
+    const threadId = run.threadId!;
+    // Automatic sends are server messages: they never acknowledge a retirement.
+    const provenance = { createdBy: "system", creationSource: "server" } as const;
+    const launch = payload.launch;
+    const target = payload.linkOrigin === undefined ? null : yield* shellOf(threadId);
+    if (
+      payload.automationCertificateId === undefined &&
+      payload.linkOrigin !== undefined &&
+      target !== null &&
+      target.linkOrigin?.sessionId !== payload.linkOrigin.sessionId
+    )
+      return yield* new ScheduledTaskCheckError({
+        message: "A linked scheduled send may target only its own link's thread.",
+      });
+    if (launch !== null && (launch.bare !== undefined || (yield* shellOf(threadId)) === null)) {
+      const start = threadLaunch.launch({
+        purposeSource: payload.purposeSource,
+        commandId: send.commandId,
+        threadId,
+        ...launch,
+        ...(payload.bareReadGrant === undefined ? {} : { bareReadGrant: payload.bareReadGrant }),
+        ...(payload.linkOrigin === undefined ? {} : { linkOrigin: payload.linkOrigin }),
+        initialMessage: {
           messageId: send.messageId,
           scheduledTaskId: taskId,
           text: payload.text,
           attachments: [],
-          // Never interrupt the thread; its stored model and effort are kept.
-          mode: "queue",
-          ...provenance,
-        })
-        .pipe(Effect.mapError(checkError("Could not send the scheduled message")));
-    });
+        },
+        ...provenance,
+      });
+      yield* (
+        launch.bare === undefined
+          ? start
+          : threadLaunch.replayOrLaunch(
+              {
+                commandId: send.commandId,
+                purposeSource: payload.purposeSource,
+                threadId,
+                projectId: launch.projectId,
+                ...(launch.bare === undefined ? {} : { bare: launch.bare }),
+                runtimeMode: launch.runtimeMode,
+                interactionMode: launch.interactionMode,
+                createdBy: "agent",
+                ...(payload.linkOrigin === undefined ? {} : { linkOrigin: payload.linkOrigin }),
+                messageId: send.messageId,
+              },
+              start,
+            )
+      ).pipe(Effect.mapError(checkError("Could not start the scheduled thread")));
+      return;
+    }
+    yield* threads
+      .sendToThread({
+        purposeSource: payload.purposeSource,
+        projectId: payload.projectId,
+        commandId: send.commandId,
+        threadId,
+        messageId: send.messageId,
+        scheduledTaskId: taskId,
+        text: payload.text,
+        attachments: [],
+        // Never interrupt the thread; its stored model and effort are kept.
+        mode: "queue",
+        ...provenance,
+      })
+      .pipe(Effect.mapError(checkError("Could not send the scheduled message")));
+  });
 
   const runs = yield* makeCheckedRuns({
     changed: PubSub.publish(changes, undefined).pipe(Effect.asVoid),
@@ -318,8 +321,8 @@ const makeEngine = Effect.gen(function* () {
         Effect.provideService(ScheduledTaskSpectra, spectra),
         Effect.mapError(checkError("Could not read the run's bound reports")),
       ),
-    observe: (task, run) =>
-      Effect.gen(function* () {
+    observe: Effect.fn("ScheduledTaskChecks.observe")(
+      function* (task, run) {
         const threadId = run.threadId!;
         const shell = yield* shellOf(threadId);
         if (shell === null) {
@@ -397,64 +400,68 @@ const makeEngine = Effect.gen(function* () {
             : null,
           runError: shell.status === "failed" ? (shell.lastError ?? "The run failed.") : null,
         };
-      }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
-    dispatch: ({ taskId, run, send }) =>
-      Effect.gen(function* () {
-        if (run.automationCertificateId === undefined)
-          return yield* dispatchCheckedSend(taskId, run, send);
-        if (send.payload?.automationCertificateId !== run.automationCertificateId)
-          return yield* new ScheduledTaskCheckError({
-            message: "The stored send does not match its accepted automation run.",
-          });
-        if (Option.isNone(authority))
-          return yield* new ScheduledTaskCheckError({
-            message: "Native automation execution is unavailable.",
-          });
-        const record = yield* authority.value
-          .automationExecution(run.automationCertificateId, send.commandId)
-          .pipe(
-            Effect.mapError((cause) => new ScheduledTaskCheckError({ message: cause.message })),
-          );
-        return yield* dispatchCheckedSend(taskId, run, send).pipe(
-          Effect.provideService(PeerDispatchAuthority, record.id),
-        );
-      }),
-    runCheck: ({ command, cwd, taskId, runId, date }) =>
-      Effect.gen(function* () {
-        if (runId.endsWith(":creation")) {
-          const scope = yield* Effect.serviceOption(Invocation.McpInvocationContext);
-          if (Option.isSome(scope) && scope.value.authority !== undefined) {
-            if (Option.isNone(authority))
-              return yield* new ScheduledTaskCheckError({
-                message: "Live creation-check authority is unavailable.",
-              });
-            yield* authority.value
-              .checkInteractiveRecord(scope.value.authority.id)
-              .pipe(
-                Effect.mapError((cause) => new ScheduledTaskCheckError({ message: cause.message })),
-              );
-          }
+      },
+      Effect.provideService(SqlClient.SqlClient, sql),
+    ),
+    dispatch: Effect.fn("ScheduledTaskChecks.dispatch")(function* ({ taskId, run, send }) {
+      if (run.automationCertificateId === undefined)
+        return yield* dispatchCheckedSend(taskId, run, send);
+      if (send.payload?.automationCertificateId !== run.automationCertificateId)
+        return yield* new ScheduledTaskCheckError({
+          message: "The stored send does not match its accepted automation run.",
+        });
+      if (Option.isNone(authority))
+        return yield* new ScheduledTaskCheckError({
+          message: "Native automation execution is unavailable.",
+        });
+      const record = yield* authority.value
+        .automationExecution(run.automationCertificateId, send.commandId)
+        .pipe(Effect.mapError((cause) => new ScheduledTaskCheckError({ message: cause.message })));
+      return yield* dispatchCheckedSend(taskId, run, send).pipe(
+        Effect.provideService(PeerDispatchAuthority, record.id),
+      );
+    }),
+    runCheck: Effect.fn("ScheduledTaskChecks.runCheck")(function* ({
+      command,
+      cwd,
+      taskId,
+      runId,
+      date,
+    }) {
+      if (runId.endsWith(":creation")) {
+        const scope = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+        if (Option.isSome(scope) && scope.value.authority !== undefined) {
+          if (Option.isNone(authority))
+            return yield* new ScheduledTaskCheckError({
+              message: "Live creation-check authority is unavailable.",
+            });
+          yield* authority.value
+            .checkInteractiveRecord(scope.value.authority.id)
+            .pipe(
+              Effect.mapError((cause) => new ScheduledTaskCheckError({ message: cause.message })),
+            );
         }
-        return yield* expandCheckCommand(command, { taskId, runId, date }).pipe(
-          Effect.flatMap((expanded) =>
-            processes
-              .run({
-                command: "/bin/sh",
-                args: ["-c", expanded],
-                cwd,
-                timeout: "30 seconds",
-                maxOutputBytes: CHECK_OUTPUT_BYTES,
-                outputMode: "truncate",
-                timeoutBehavior: "timedOutResult",
-              })
-              .pipe(Effect.mapError(checkError("Outcome check could not run"))),
-          ),
-          Effect.map((result) => ({
-            passed: result.code === 0 && !result.timedOut,
-            output: `${result.stdout}${result.stderr}${result.timedOut ? "\nOutcome check timed out." : ""}`,
-          })),
-        );
-      }),
+      }
+      return yield* expandCheckCommand(command, { taskId, runId, date }).pipe(
+        Effect.flatMap((expanded) =>
+          processes
+            .run({
+              command: "/bin/sh",
+              args: ["-c", expanded],
+              cwd,
+              timeout: "30 seconds",
+              maxOutputBytes: CHECK_OUTPUT_BYTES,
+              outputMode: "truncate",
+              timeoutBehavior: "timedOutResult",
+            })
+            .pipe(Effect.mapError(checkError("Outcome check could not run"))),
+        ),
+        Effect.map((result) => ({
+          passed: result.code === 0 && !result.timedOut,
+          output: `${result.stdout}${result.stderr}${result.timedOut ? "\nOutcome check timed out." : ""}`,
+        })),
+      );
+    }),
     start: ({ command, cwd, taskId, runId, date }) =>
       expandCheckCommand(command, { taskId, runId, date }).pipe(
         Effect.flatMap((expanded) =>
@@ -462,17 +469,16 @@ const makeEngine = Effect.gen(function* () {
         ),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       ),
-    workspace: ({ projectId, threadId }) =>
-      Effect.gen(function* () {
-        const shell = threadId === null ? null : yield* shellOf(threadId);
-        if (shell?.worktreePath) return shell.worktreePath;
-        const project = yield* projects
-          .get(projectId)
-          .pipe(Effect.mapError(checkError("Could not read project")));
-        if (Option.isNone(project))
-          return yield* new ScheduledTaskCheckError({ message: "Target project not found." });
-        return project.value.workspaceRoot;
-      }),
+    workspace: Effect.fn("ScheduledTaskChecks.workspace")(function* ({ projectId, threadId }) {
+      const shell = threadId === null ? null : yield* shellOf(threadId);
+      if (shell?.worktreePath) return shell.worktreePath;
+      const project = yield* projects
+        .get(projectId)
+        .pipe(Effect.mapError(checkError("Could not read project")));
+      if (Option.isNone(project))
+        return yield* new ScheduledTaskCheckError({ message: "Target project not found." });
+      return project.value.workspaceRoot;
+    }),
     role: (state, task, launching) =>
       state.role === null
         ? Effect.succeed(null)
@@ -648,8 +654,8 @@ const decoratedLayer = Layer.effect(
           Stream.mapEffect(attachList),
           Stream.map((result) => ({ ...result, tasks: result.tasks.map(withoutCommandOutput) })),
         ),
-      upsert: (input, options) =>
-        Effect.gen(function* () {
+      upsert: Effect.fn("ScheduledTaskChecks.upsert")(
+        function* (input, options) {
           const mutation = yield* MutationReceipts.CurrentMutation;
           if (
             mutation !== undefined &&
@@ -694,20 +700,20 @@ const decoratedLayer = Layer.effect(
           }
           const result = yield* inner.upsert({ ...input, schedule }, options);
           return { task: yield* attach(result.task) };
-        }).pipe(
-          Effect.catchTags({
-            OrchestratorMcpFailure: (cause) =>
-              Effect.fail(new ScheduledTaskError({ message: cause.message, cause })),
-          }),
-        ),
+        },
+        Effect.catchTags({
+          OrchestratorMcpFailure: (cause) =>
+            Effect.fail(new ScheduledTaskError({ message: cause.message, cause })),
+        }),
+      ),
       setEnabled: (input) =>
         inner.setEnabled(input).pipe(
           Effect.flatMap((result) => attach(result.task)),
           Effect.map((task) => ({ task })),
         ),
       // The guard, upstream's delete and the fork state share the task's lock and one transaction.
-      delete: (input) =>
-        Effect.gen(function* () {
+      delete: Effect.fn("ScheduledTaskChecks.delete")(
+        function* (input) {
           const mutation = yield* MutationReceipts.CurrentMutation;
           if (
             mutation !== undefined &&
@@ -720,14 +726,21 @@ const decoratedLayer = Layer.effect(
             return { id: input.id };
           const actorThreadId = yield* ScheduledTaskDeleteActor;
           return yield* runs.removeTask(input.id, actorThreadId, inner.delete(input));
-        }).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-          Effect.mapError((error) =>
-            error._tag === "ScheduledTaskError"
-              ? error
-              : new ScheduledTaskError({ message: error.message, taskId: input.id, cause: error }),
+        },
+        (effect, input) =>
+          effect.pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.mapError((error) =>
+              error._tag === "ScheduledTaskError"
+                ? error
+                : new ScheduledTaskError({
+                    message: error.message,
+                    taskId: input.id,
+                    cause: error,
+                  }),
+            ),
           ),
-        ),
+      ),
       runNow,
       rotateWebhookToken: (input) =>
         inner.rotateWebhookToken(input).pipe(

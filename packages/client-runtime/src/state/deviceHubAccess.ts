@@ -1,15 +1,7 @@
 /**
- * Credentials for the Device panel's media requests.
- *
- * The panel reaches simulator streams through `/api/device-hub/*` on the
- * environment origin. `<img>`, `EventSource`, and `WebSocket` cannot set
- * bearer or DPoP headers, so bearer and DPoP connections mint a
- * short-lived WebSocket ticket and pass it as `wsTicket`, the same way the
- * app's own `/ws` upgrade authenticates. Cookie sessions send the cookie.
- *
- * Legacy local panels use a session ticket. Resource viewers receive an exact
- * opening ticket from the guarded device viewer command on the source connection.
- * Callers obtain fresh access when reconnecting.
+ * Credentials for the Device panel's media requests via `/api/device-hub/*`. `<img>`, `EventSource`
+ * and `WebSocket` cannot send bearer or DPoP headers, so those connections pass a short-lived
+ * `wsTicket`; cookie sessions send the cookie. Callers obtain fresh access when reconnecting.
  */
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";

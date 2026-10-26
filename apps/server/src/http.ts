@@ -407,55 +407,54 @@ const layerUntracedRequests = Layer.succeed(HttpMiddleware.TracerDisabledWhen)((
 export const withUntracedRequests = Layer.provide(layerUntracedRequests);
 
 /** Shared native download response for source assets and resource-bound viewer downloads. */
-export const nativeDownloadResponse = (
+export const nativeDownloadResponse = Effect.fn("Http.nativeDownloadResponse")(function* (
   reference: NativeBrowserDownloadAssetResource,
   admitted: Parameters<typeof nativeDownloadStream>[0],
   method: string,
   rangeHeader?: string,
   ifRange?: string,
-) =>
-  Effect.gen(function* () {
-    const headers = assetResponseHeaders(reference.name, {
-      fileName: reference.name,
-      mimeType: reference.mimeType,
-      download: true,
-    });
-    const etag = `"sha256-${reference.digest}"`;
-    headers["Cache-Control"] = "private, no-store";
-    headers.ETag = etag;
-    headers["Accept-Ranges"] = "bytes";
-    headers["Content-Length"] = String(reference.sizeBytes);
-    yield* admitted.authorize;
-    if (method === "HEAD") return HttpServerResponse.empty({ status: 200, headers });
-    const range =
-      rangeHeader && (ifRange === undefined || ifRange === etag)
-        ? assetByteRange(rangeHeader, BigInt(reference.sizeBytes))
-        : null;
-    if (range?._tag === "Unsatisfiable") {
-      delete headers["Content-Length"];
-      return HttpServerResponse.empty({
-        status: 416,
-        headers: { ...headers, "Content-Range": `bytes */${reference.sizeBytes}` },
-      });
-    }
-    if (range?._tag === "Range") {
-      headers["Content-Range"] = range.contentRange;
-      headers["Content-Length"] = String(range.bytesToRead);
-      return HttpServerResponse.stream(
-        nativeDownloadStream(
-          admitted,
-          reference.sizeBytes,
-          Number(range.offset),
-          Number(range.bytesToRead),
-        ),
-        { status: 206, headers },
-      );
-    }
-    return HttpServerResponse.stream(nativeDownloadStream(admitted, reference.sizeBytes), {
-      status: 200,
-      headers,
-    });
+) {
+  const headers = assetResponseHeaders(reference.name, {
+    fileName: reference.name,
+    mimeType: reference.mimeType,
+    download: true,
   });
+  const etag = `"sha256-${reference.digest}"`;
+  headers["Cache-Control"] = "private, no-store";
+  headers.ETag = etag;
+  headers["Accept-Ranges"] = "bytes";
+  headers["Content-Length"] = String(reference.sizeBytes);
+  yield* admitted.authorize;
+  if (method === "HEAD") return HttpServerResponse.empty({ status: 200, headers });
+  const range =
+    rangeHeader && (ifRange === undefined || ifRange === etag)
+      ? assetByteRange(rangeHeader, BigInt(reference.sizeBytes))
+      : null;
+  if (range?._tag === "Unsatisfiable") {
+    delete headers["Content-Length"];
+    return HttpServerResponse.empty({
+      status: 416,
+      headers: { ...headers, "Content-Range": `bytes */${reference.sizeBytes}` },
+    });
+  }
+  if (range?._tag === "Range") {
+    headers["Content-Range"] = range.contentRange;
+    headers["Content-Length"] = String(range.bytesToRead);
+    return HttpServerResponse.stream(
+      nativeDownloadStream(
+        admitted,
+        reference.sizeBytes,
+        Number(range.offset),
+        Number(range.bytesToRead),
+      ),
+      { status: 206, headers },
+    );
+  }
+  return HttpServerResponse.stream(nativeDownloadStream(admitted, reference.sizeBytes), {
+    status: 200,
+    headers,
+  });
+});
 
 export const layerAssetRoute = Layer.unwrap(
   Effect.gen(function* () {

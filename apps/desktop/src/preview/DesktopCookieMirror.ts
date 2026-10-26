@@ -157,10 +157,10 @@ const make = Effect.gen(function* () {
     }),
   );
 
-  const synchronize = (force = false) =>
-    Effect.gen(function* () {
+  const synchronize = Effect.fn("DesktopCookieMirror.synchronize")(
+    function* (force?: boolean) {
       const now = yield* Clock.currentTimeMillis;
-      const scan = force || now >= nextChromeRead;
+      const scan = force === true || now >= nextChromeRead;
       if (scan) {
         nextChromeRead = now + CHROME_POLL_MS;
         const current = Option.getOrElse(yield* settings.get, () => DEFAULT_CLIENT_SETTINGS);
@@ -342,7 +342,7 @@ const make = Effect.gen(function* () {
           }
         }
       }
-      if (force || now >= nextFullRead) {
+      if (force === true || now >= nextFullRead) {
         nextFullRead = now + DESKTOP_FULL_SCAN_MS;
         for (const partition of stores.keys()) dirty.add(partition);
       }
@@ -359,7 +359,9 @@ const make = Effect.gen(function* () {
           yield* warn("desktop-read-or-apply");
         }
       }
-    }).pipe(Effect.provide(sourceServices));
+    },
+    (effect, _force?: boolean) => effect.pipe(Effect.provide(sourceServices)),
+  );
   const tick = lock
     .withPermits(1)(synchronize())
     .pipe(Effect.catchCause(() => warn("desktop-observation")));

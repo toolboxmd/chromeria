@@ -1272,7 +1272,7 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:scheduled-task:webhook-delivery",
       tag: WS_METHODS.scheduledTasksGetWebhookDelivery,
     }),
-    /** Full scheduled-task list, with command output the live list leaves out (#174). */
+    /** Full scheduled-task list, with command output the live list leaves out. */
     scheduledTasksList: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:scheduled-tasks:list",
       tag: WS_METHODS.scheduledTasksList,

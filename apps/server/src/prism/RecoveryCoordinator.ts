@@ -24,7 +24,7 @@ export type RecoveryProjection = Pick<
   "thread" | "runs" | "turnItems" | "runtimeRequests"
 >;
 
-/** Retirement is observed by the caller and admitted atomically by #168's commit guard. */
+/** Retirement is observed by the caller and admitted atomically by the retirement commit guard. */
 export class RecoveryCoordinator extends Context.Service<
   RecoveryCoordinator,
   {

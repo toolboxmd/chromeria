@@ -299,7 +299,6 @@ it.live.each([false, true])(
         ).toHaveLength(0);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  45_000,
 );
 
 it.live(
@@ -379,7 +378,6 @@ it.live(
         expect(yield* sql`SELECT 1 FROM orchestration_v2_effect_outbox`).toHaveLength(0);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -486,7 +484,6 @@ it.live(
         expect(yield* sql`SELECT 1 FROM orchestration_v2_effect_outbox`).toHaveLength(0);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -652,7 +649,6 @@ it.live(
         ).toHaveLength(0);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
-  30_000,
 );
 
 it.live(
@@ -700,7 +696,6 @@ it.live(
         expect(yield* sql`SELECT * FROM scheduled_tasks WHERE task_id=${task.id}`).toEqual(before);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
-  30_000,
 );
 
 it.live(
@@ -805,7 +800,6 @@ it.live(
         expect(offline.isError, json(offline)).toBe(true);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  40_000,
 );
 
 it.live(
@@ -976,7 +970,6 @@ it.live(
         expect(offline.isError, json(offline)).toBe(true);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  40_000,
 );
 
 it.live(
@@ -1165,7 +1158,6 @@ it.live(
         ).toHaveLength(0);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
-  30_000,
 );
 
 it.live(
@@ -1231,49 +1223,45 @@ it.live(
         );
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
-  30_000,
 );
 
-it.live(
-  "scheduler-replay382: replayed creation preserves later independent schedule edits",
-  () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const node = yield* makeNode(
-          descriptorOf("scheduler-replay382", "Scheduler", { peerAuthority: 1 }),
-          "disk",
-          { productionKernel: true, attachmentRequests: true },
-        );
-        const parent = ThreadId.make("scheduler-replay382-parent");
-        yield* seedParent(node, parent);
-        const input = {
-          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
-          prompt: "Original isolated schedule intent",
-          title: "Original title",
-          schedule: { type: "interval", everyMs: 60_000 },
-          clientRequestId: "scheduler-replay382-create",
-        };
-        const first = yield* nativeCall(node, parent, "schedule_task", input);
-        expect(first.isError, json(first)).not.toBe(true);
-        const result = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ scheduledTaskId: Schema.String }),
-        )(first.structuredContent);
-        const later = yield* nativeCall(node, parent, "update_scheduled_task", {
-          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
-          scheduledTaskId: result.scheduledTaskId,
-          title: "Later independent title",
-          clientRequestId: "scheduler-replay382-later-edit",
-        });
-        expect(later.isError, json(later)).not.toBe(true);
-        const replay = yield* nativeCall(node, parent, "schedule_task", input);
-        expect(replay.isError, json(replay)).not.toBe(true);
-        expect(
-          (yield* node.scheduled.list()).tasks.find((task) => task.id === result.scheduledTaskId)
-            ?.title,
-        ).toBe("Later independent title");
-      }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
+it.live("scheduler-replay382: replayed creation preserves later independent schedule edits", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const node = yield* makeNode(
+        descriptorOf("scheduler-replay382", "Scheduler", { peerAuthority: 1 }),
+        "disk",
+        { productionKernel: true, attachmentRequests: true },
+      );
+      const parent = ThreadId.make("scheduler-replay382-parent");
+      yield* seedParent(node, parent);
+      const input = {
+        purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
+        prompt: "Original isolated schedule intent",
+        title: "Original title",
+        schedule: { type: "interval", everyMs: 60_000 },
+        clientRequestId: "scheduler-replay382-create",
+      };
+      const first = yield* nativeCall(node, parent, "schedule_task", input);
+      expect(first.isError, json(first)).not.toBe(true);
+      const result = yield* Schema.decodeUnknownEffect(
+        Schema.Struct({ scheduledTaskId: Schema.String }),
+      )(first.structuredContent);
+      const later = yield* nativeCall(node, parent, "update_scheduled_task", {
+        purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
+        scheduledTaskId: result.scheduledTaskId,
+        title: "Later independent title",
+        clientRequestId: "scheduler-replay382-later-edit",
+      });
+      expect(later.isError, json(later)).not.toBe(true);
+      const replay = yield* nativeCall(node, parent, "schedule_task", input);
+      expect(replay.isError, json(replay)).not.toBe(true);
+      expect(
+        (yield* node.scheduled.list()).tasks.find((task) => task.id === result.scheduledTaskId)
+          ?.title,
+      ).toBe("Later independent title");
+    }),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );
 
 it.live(
@@ -1465,7 +1453,6 @@ it.live(
         expect(nativeRows[0]?.incarnation).not.toBe(acceptedRows[0]?.incarnation);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -1598,7 +1585,6 @@ it.live(
         expect(yield* Ref.get(b.secretConsumes)).toBe(2);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -1668,7 +1654,6 @@ it.live(
         }
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -1770,7 +1755,6 @@ it.live(
         ).toHaveLength(2);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -1860,5 +1844,4 @@ it.live(
         expect(current.runCount).toBe(1);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );

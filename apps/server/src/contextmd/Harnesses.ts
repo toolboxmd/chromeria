@@ -48,7 +48,7 @@ export interface Harness {
   /** Where the module can see what the model was shown for a denied call. */
   readonly denyEvidence: "projection" | "none";
   readonly shownEvidence: "claude_request_replay" | "codex_rollout" | "none";
-  /** A deny reason the harness shows only up to this many bytes (Grok cuts at 256, #229). */
+  /** A deny reason the harness shows only up to this many bytes (Grok cuts at 256). */
   readonly denyLimitBytes?: number;
   /** A shorter deny head where the reason is that short. */
   readonly denyHead?: string;
@@ -221,7 +221,7 @@ export const HARNESSES: Readonly<Record<string, Harness>> = {
   },
 };
 
-/** Threaded records restore logical messages and cannot prove the sent body (#245 B1).
+/** Threaded records restore logical messages and cannot prove the sent body.
  * Explicit provider or inherited values win over these agent-session defaults. */
 export const withClaudeRequestRecords = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => ({
   ...env,

@@ -119,47 +119,45 @@ const make = Effect.gen(function* () {
       message: "The delegated lifecycle observation is unavailable.",
     });
   // Result pages belong to a terminal commit, not today's mutable message projection.
-  const resultAt = (
+  const resultAt = Effect.fn("PeerTaskLifecycle.resultAt")(function* (
     threadId: ThreadId,
     runId: OrchestrationV2Run["id"],
     sequence: number,
     commandId: string | null,
-  ) =>
-    Effect.gen(function* () {
-      const committed =
-        commandId === null
-          ? sequence
-          : ((yield* sql<{
-              through: number;
-            }>`SELECT COALESCE(MAX(sequence),${sequence}) AS through FROM orchestration_events WHERE command_id=${commandId}`)[0]
-              ?.through ?? sequence);
-      const runs = new Map<string, OrchestrationV2Run>();
-      const messages = new Map<string, OrchestrationV2ConversationMessage>();
-      const turnItems = new Map<string, OrchestrationV2TurnItem>();
-      yield* events.read({ threadId, throughSequence: committed }).pipe(
-        Stream.runForEach((stored) =>
-          Effect.sync(() => {
-            const event = stored.event;
-            if (event.type === "run.created" || event.type === "run.updated")
-              runs.set(event.payload.id, event.payload);
-            else if (event.type === "message.updated")
-              messages.set(event.payload.id, event.payload);
-            else if (event.type === "turn-item.updated")
-              turnItems.set(event.payload.id, event.payload);
-          }),
-        ),
-      );
-      const run = runs.get(runId);
-      if (run === undefined) return yield* unavailable();
-      return subagentResultForRun(
-        {
-          runs: [...runs.values()],
-          messages: [...messages.values()],
-          turnItems: [...turnItems.values()],
-        },
-        run,
-      ).text;
-    });
+  ) {
+    const committed =
+      commandId === null
+        ? sequence
+        : ((yield* sql<{
+            through: number;
+          }>`SELECT COALESCE(MAX(sequence),${sequence}) AS through FROM orchestration_events WHERE command_id=${commandId}`)[0]
+            ?.through ?? sequence);
+    const runs = new Map<string, OrchestrationV2Run>();
+    const messages = new Map<string, OrchestrationV2ConversationMessage>();
+    const turnItems = new Map<string, OrchestrationV2TurnItem>();
+    yield* events.read({ threadId, throughSequence: committed }).pipe(
+      Stream.runForEach((stored) =>
+        Effect.sync(() => {
+          const event = stored.event;
+          if (event.type === "run.created" || event.type === "run.updated")
+            runs.set(event.payload.id, event.payload);
+          else if (event.type === "message.updated") messages.set(event.payload.id, event.payload);
+          else if (event.type === "turn-item.updated")
+            turnItems.set(event.payload.id, event.payload);
+        }),
+      ),
+    );
+    const run = runs.get(runId);
+    if (run === undefined) return yield* unavailable();
+    return subagentResultForRun(
+      {
+        runs: [...runs.values()],
+        messages: [...messages.values()],
+        turnItems: [...turnItems.values()],
+      },
+      run,
+    ).text;
+  });
   const execute: PeerTaskLifecycle["Service"]["execute"] = (scope, input) =>
     Effect.scoped(
       Effect.gen(function* () {

@@ -178,254 +178,248 @@ export const layerViewers = Layer.effect(
           Effect.ensuring(Effect.sync(() => bindings.delete(id))),
         );
       });
-    const resource = (input: PreviewViewerOpenInput) =>
-      Effect.gen(function* () {
-        if (Option.isNone(browser) || browser.value.authorizeViewer === undefined)
-          return yield* viewerUnsupported();
-        yield* browser.value
-          .authorizeViewer(input.resource)
-          .pipe(
-            Effect.mapError(() =>
-              viewerRefused("This exact browser opening is no longer available."),
-            ),
-          );
-      });
-    const issue = (sessionId: AuthSessionId, binding: PreviewViewerBinding) =>
-      Effect.gen(function* () {
-        const issued = yield* sessions
-          .issueViewerToken({ sessionId, ...binding.input, generation: binding.generation })
-          .pipe(
-            Effect.mapError(() => viewerRefused("The source browser viewer could not be created.")),
-          );
-        bindings.set(issued.viewerId, {
-          binding,
-          sessionId,
-          retiring: false,
-          retired: yield* Deferred.make<boolean>(),
-        });
-        yield* Effect.forkIn(
-          sessions
-            .awaitViewerInvalidation(issued.viewerId)
-            .pipe(Effect.ignore, Effect.andThen(retire(issued.viewerId))),
-          lifetime,
+    const resource = Effect.fn("ServerBrowserStream.resource")(function* (
+      input: PreviewViewerOpenInput,
+    ) {
+      if (Option.isNone(browser) || browser.value.authorizeViewer === undefined)
+        return yield* viewerUnsupported();
+      yield* browser.value
+        .authorizeViewer(input.resource)
+        .pipe(
+          Effect.mapError(() =>
+            viewerRefused("This exact browser opening is no longer available."),
+          ),
         );
-        const expiresAt =
-          binding.type === "outgoing" &&
-          binding.access.expiresAt < DateTime.formatIso(issued.expiresAt)
-            ? binding.access.expiresAt
-            : DateTime.formatIso(issued.expiresAt);
-        return {
-          viewerId: issued.viewerId,
-          ticket: issued.token,
-          expiresAt,
-          streamBasePath: PREVIEW_STREAM_ROUTE_PREFIX,
-        } satisfies PreviewViewerAccess;
+    });
+    const issue = Effect.fn("ServerBrowserStream.issue")(function* (
+      sessionId: AuthSessionId,
+      binding: PreviewViewerBinding,
+    ) {
+      const issued = yield* sessions
+        .issueViewerToken({ sessionId, ...binding.input, generation: binding.generation })
+        .pipe(
+          Effect.mapError(() => viewerRefused("The source browser viewer could not be created.")),
+        );
+      bindings.set(issued.viewerId, {
+        binding,
+        sessionId,
+        retiring: false,
+        retired: yield* Deferred.make<boolean>(),
       });
-    const renew = (
+      yield* Effect.forkIn(
+        sessions
+          .awaitViewerInvalidation(issued.viewerId)
+          .pipe(Effect.ignore, Effect.andThen(retire(issued.viewerId))),
+        lifetime,
+      );
+      const expiresAt =
+        binding.type === "outgoing" &&
+        binding.access.expiresAt < DateTime.formatIso(issued.expiresAt)
+          ? binding.access.expiresAt
+          : DateTime.formatIso(issued.expiresAt);
+      return {
+        viewerId: issued.viewerId,
+        ticket: issued.token,
+        expiresAt,
+        streamBasePath: PREVIEW_STREAM_ROUTE_PREFIX,
+      } satisfies PreviewViewerAccess;
+    });
+    const renew = Effect.fn("ServerBrowserStream.renew")(function* (
       sessionId: AuthSessionId,
       input: PreviewViewerOpenInput,
       scope?: Invocation.McpInvocationScope,
-    ) =>
-      Effect.gen(function* () {
-        const entry = input.viewerId === undefined ? undefined : bindings.get(input.viewerId);
-        const binding = entry?.binding;
-        if (
-          entry === undefined ||
-          entry.retiring ||
-          entry.sessionId !== sessionId ||
-          binding === undefined ||
-          binding.input.resource.environmentId !== input.resource.environmentId ||
-          binding.input.resource.threadId !== input.resource.threadId ||
-          binding.input.resource.tabId !== input.resource.tabId ||
-          binding.input.resource.serverEpoch !== input.resource.serverEpoch ||
-          binding.input.operation !== input.operation ||
-          (scope !== undefined &&
-            (binding.type !== "incoming" || scope.authority?.id !== binding.scope.authority?.id))
-        )
-          return yield* viewerRefused("The exact original browser viewer cannot be renewed.");
-        const check = Effect.gen(function* () {
-          if (bindings.get(input.viewerId!) !== entry || entry.retiring)
-            return yield* viewerRefused("The browser viewer was retired.");
-          if (binding.type === "native")
-            yield* binding.authorize.pipe(
-              Effect.mapError(() => viewerRefused("The original native client was retired.")),
-            );
-          else {
-            if (Option.isNone(authority)) return yield* viewerUnsupported();
-            if (binding.type === "incoming")
-              yield* authority.value.recheckPreviewViewer(binding.scope, binding.input);
-            else yield* authority.value.checkRecord(binding.envelope.recordId);
-          }
-          if (binding.type !== "outgoing") yield* resource(binding.input);
+    ) {
+      const entry = input.viewerId === undefined ? undefined : bindings.get(input.viewerId);
+      const binding = entry?.binding;
+      if (
+        entry === undefined ||
+        entry.retiring ||
+        entry.sessionId !== sessionId ||
+        binding === undefined ||
+        binding.input.resource.environmentId !== input.resource.environmentId ||
+        binding.input.resource.threadId !== input.resource.threadId ||
+        binding.input.resource.tabId !== input.resource.tabId ||
+        binding.input.resource.serverEpoch !== input.resource.serverEpoch ||
+        binding.input.operation !== input.operation ||
+        (scope !== undefined &&
+          (binding.type !== "incoming" || scope.authority?.id !== binding.scope.authority?.id))
+      )
+        return yield* viewerRefused("The exact original browser viewer cannot be renewed.");
+      const check = Effect.gen(function* () {
+        if (bindings.get(input.viewerId!) !== entry || entry.retiring)
+          return yield* viewerRefused("The browser viewer was retired.");
+        if (binding.type === "native")
+          yield* binding.authorize.pipe(
+            Effect.mapError(() => viewerRefused("The original native client was retired.")),
+          );
+        else {
+          if (Option.isNone(authority)) return yield* viewerUnsupported();
+          if (binding.type === "incoming")
+            yield* authority.value.recheckPreviewViewer(binding.scope, binding.input);
+          else yield* authority.value.checkRecord(binding.envelope.recordId);
+        }
+        if (binding.type !== "outgoing") yield* resource(binding.input);
+      });
+      yield* check;
+      if (binding.type === "outgoing") {
+        if (Option.isNone(peers) || peers.value.openPreviewViewer === undefined)
+          return yield* viewerUnsupported();
+        const remote = yield* peers.value.openPreviewViewer({
+          request: { ...binding.input, viewerId: binding.access.viewerId },
+          authority: binding.envelope,
         });
         yield* check;
-        if (binding.type === "outgoing") {
-          if (Option.isNone(peers) || peers.value.openPreviewViewer === undefined)
-            return yield* viewerUnsupported();
-          const remote = yield* peers.value.openPreviewViewer({
-            request: { ...binding.input, viewerId: binding.access.viewerId },
-            authority: binding.envelope,
-          });
-          yield* check;
-          if (
-            remote.access.viewerId !== binding.access.viewerId ||
-            remote.origin !== binding.origin
-          )
-            return yield* viewerRefused("The destination changed the original browser viewer.");
-          binding.access = remote.access;
-        }
-        const issued = yield* sessions
-          .issueViewerToken({
-            sessionId,
-            ...binding.input,
-            viewerId: input.viewerId!,
-            generation: binding.generation,
-          })
-          .pipe(
-            Effect.mapError(() => viewerRefused("The active browser viewer could not be renewed.")),
-          );
-        yield* check;
-        return {
-          viewerId: issued.viewerId,
-          ticket: issued.token,
-          expiresAt:
-            binding.type === "outgoing" &&
-            binding.access.expiresAt < DateTime.formatIso(issued.expiresAt)
-              ? binding.access.expiresAt
-              : DateTime.formatIso(issued.expiresAt),
-          streamBasePath: PREVIEW_STREAM_ROUTE_PREFIX,
-        } satisfies PreviewViewerAccess;
-      });
+        if (remote.access.viewerId !== binding.access.viewerId || remote.origin !== binding.origin)
+          return yield* viewerRefused("The destination changed the original browser viewer.");
+        binding.access = remote.access;
+      }
+      const issued = yield* sessions
+        .issueViewerToken({
+          sessionId,
+          ...binding.input,
+          viewerId: input.viewerId!,
+          generation: binding.generation,
+        })
+        .pipe(
+          Effect.mapError(() => viewerRefused("The active browser viewer could not be renewed.")),
+        );
+      yield* check;
+      return {
+        viewerId: issued.viewerId,
+        ticket: issued.token,
+        expiresAt:
+          binding.type === "outgoing" &&
+          binding.access.expiresAt < DateTime.formatIso(issued.expiresAt)
+            ? binding.access.expiresAt
+            : DateTime.formatIso(issued.expiresAt),
+        streamBasePath: PREVIEW_STREAM_ROUTE_PREFIX,
+      } satisfies PreviewViewerAccess;
+    });
     return PreviewViewers.of({
-      open: (session, untrusted) =>
-        Effect.gen(function* () {
-          const input = yield* decodeViewerInput(untrusted).pipe(
-            Effect.mapError(() => viewerRefused("Invalid browser viewer resource.")),
-          );
-          if (input.viewerId !== undefined) return yield* renew(session.sessionId, input);
-          const read = yield* EnvironmentAuth.nativeSessionAuthorization(
-            session,
-            AuthOrchestrationReadScope,
-          ).pipe(Effect.provideService(AuthSessions.AuthSessionRepository, nativeSessions));
-          const operate =
-            input.operation === "control"
-              ? yield* EnvironmentAuth.nativeSessionAuthorization(
-                  session,
-                  AuthPreviewOperateScope,
-                ).pipe(Effect.provideService(AuthSessions.AuthSessionRepository, nativeSessions))
-              : Effect.void;
-          const authorize = read.pipe(Effect.andThen(operate));
-          yield* authorize.pipe(
-            Effect.mapError(() =>
-              viewerRefused("The original native client no longer permits this browser operation."),
-            ),
-          );
-          if (input.resource.environmentId === here) {
-            yield* resource(input);
-            return yield* issue(session.sessionId, {
-              type: "native",
-              input,
-              generation: input.resource.serverEpoch,
-              authorize,
-            });
-          }
-          if (
-            Option.isNone(authority) ||
-            Option.isNone(peers) ||
-            Option.isNone(links) ||
-            peers.value.openPreviewViewer === undefined
-          )
-            return yield* viewerUnsupported();
-          const link = yield* links.value
-            .get(input.resource.environmentId)
-            .pipe(Effect.mapError(() => viewerRefused("The browser environment is not linked.")));
-          if (Option.isNone(link))
-            return yield* viewerRefused("The browser environment is not linked.");
-          const envelope = yield* authority.value.preparePreviewViewer(
-            session.sessionId,
-            input.resource.environmentId,
-            link.value.launchIdentity,
-            input,
-          );
-          const remote = yield* peers.value.openPreviewViewer({
-            request: input,
-            authority: envelope,
-          });
-          const binding: PreviewViewerBinding = {
-            type: "outgoing",
-            input,
-            generation: envelope.generation,
-            envelope,
-            ...remote,
-          };
-          return yield* authority.value.checkRecord(envelope.recordId).pipe(
-            Effect.andThen(issue(session.sessionId, binding)),
-            Effect.onExit((exit) =>
-              Exit.isFailure(exit) ? closeRemote(binding).pipe(Effect.asVoid) : Effect.void,
-            ),
-          );
-        }),
-      accept: (scope, input) =>
-        Effect.gen(function* () {
-          if (
-            Option.isNone(authority) ||
-            scope.client?.linked !== true ||
-            scope.authority === undefined ||
-            !("envelope" in scope.authority)
-          )
-            return yield* viewerRefused(
-              "Browser viewing needs its original authenticated peer authority.",
-            );
-          if (input.viewerId !== undefined)
-            return yield* renew(AuthSessionId.make(scope.client.sessionId), input, scope);
-          yield* authority.value.recheckPreviewViewer(scope, input);
+      open: Effect.fn("ServerBrowserStream.open")(function* (session, untrusted) {
+        const input = yield* decodeViewerInput(untrusted).pipe(
+          Effect.mapError(() => viewerRefused("Invalid browser viewer resource.")),
+        );
+        if (input.viewerId !== undefined) return yield* renew(session.sessionId, input);
+        const read = yield* EnvironmentAuth.nativeSessionAuthorization(
+          session,
+          AuthOrchestrationReadScope,
+        ).pipe(Effect.provideService(AuthSessions.AuthSessionRepository, nativeSessions));
+        const operate =
+          input.operation === "control"
+            ? yield* EnvironmentAuth.nativeSessionAuthorization(
+                session,
+                AuthPreviewOperateScope,
+              ).pipe(Effect.provideService(AuthSessions.AuthSessionRepository, nativeSessions))
+            : Effect.void;
+        const authorize = read.pipe(Effect.andThen(operate));
+        yield* authorize.pipe(
+          Effect.mapError(() =>
+            viewerRefused("The original native client no longer permits this browser operation."),
+          ),
+        );
+        if (input.resource.environmentId === here) {
           yield* resource(input);
-          yield* authority.value.recheckPreviewViewer(scope, input);
-          return yield* issue(AuthSessionId.make(scope.client.sessionId), {
-            type: "incoming",
+          return yield* issue(session.sessionId, {
+            type: "native",
             input,
-            generation: scope.authority.peer.generation,
-            scope,
+            generation: input.resource.serverEpoch,
+            authorize,
           });
-        }),
+        }
+        if (
+          Option.isNone(authority) ||
+          Option.isNone(peers) ||
+          Option.isNone(links) ||
+          peers.value.openPreviewViewer === undefined
+        )
+          return yield* viewerUnsupported();
+        const link = yield* links.value
+          .get(input.resource.environmentId)
+          .pipe(Effect.mapError(() => viewerRefused("The browser environment is not linked.")));
+        if (Option.isNone(link))
+          return yield* viewerRefused("The browser environment is not linked.");
+        const envelope = yield* authority.value.preparePreviewViewer(
+          session.sessionId,
+          input.resource.environmentId,
+          link.value.launchIdentity,
+          input,
+        );
+        const remote = yield* peers.value.openPreviewViewer({
+          request: input,
+          authority: envelope,
+        });
+        const binding: PreviewViewerBinding = {
+          type: "outgoing",
+          input,
+          generation: envelope.generation,
+          envelope,
+          ...remote,
+        };
+        return yield* authority.value.checkRecord(envelope.recordId).pipe(
+          Effect.andThen(issue(session.sessionId, binding)),
+          Effect.onExit((exit) =>
+            Exit.isFailure(exit) ? closeRemote(binding).pipe(Effect.asVoid) : Effect.void,
+          ),
+        );
+      }),
+      accept: Effect.fn("ServerBrowserStream.accept")(function* (scope, input) {
+        if (
+          Option.isNone(authority) ||
+          scope.client?.linked !== true ||
+          scope.authority === undefined ||
+          !("envelope" in scope.authority)
+        )
+          return yield* viewerRefused(
+            "Browser viewing needs its original authenticated peer authority.",
+          );
+        if (input.viewerId !== undefined)
+          return yield* renew(AuthSessionId.make(scope.client.sessionId), input, scope);
+        yield* authority.value.recheckPreviewViewer(scope, input);
+        yield* resource(input);
+        yield* authority.value.recheckPreviewViewer(scope, input);
+        return yield* issue(AuthSessionId.make(scope.client.sessionId), {
+          type: "incoming",
+          input,
+          generation: scope.authority.peer.generation,
+          scope,
+        });
+      }),
       close: (sessionId, id) =>
         sessions
           .closeViewer(sessionId, id)
           .pipe(Effect.flatMap((closed) => (closed ? retire(id) : Effect.succeed(false)))),
-      resolve: (id, input, generation) =>
-        Effect.gen(function* () {
-          const binding = bindings.get(id)?.binding;
-          if (
-            binding === undefined ||
-            binding.generation !== generation ||
-            binding.input.resource.environmentId !== input.resource.environmentId ||
-            binding.input.resource.threadId !== input.resource.threadId ||
-            binding.input.resource.tabId !== input.resource.tabId ||
-            binding.input.resource.serverEpoch !== input.resource.serverEpoch ||
-            binding.input.operation !== input.operation
-          )
-            return yield* viewerRefused("The exact browser viewer binding is unavailable.");
-          if (binding.type === "native") {
-            yield* binding.authorize.pipe(
-              Effect.mapError(() =>
-                viewerRefused(
-                  "The original native client no longer permits this browser operation.",
-                ),
-              ),
-            );
-            yield* resource(input);
-            return { type: "local" as const };
-          }
-          if (Option.isNone(authority)) return yield* viewerUnsupported();
-          if (binding.type === "incoming") {
-            yield* authority.value.recheckPreviewViewer(binding.scope, input);
-            yield* resource(input);
-            yield* authority.value.recheckPreviewViewer(binding.scope, input);
-            return { type: "local" as const };
-          }
-          yield* authority.value.checkRecord(binding.envelope.recordId);
-          return { type: "peer" as const, origin: binding.origin, ticket: binding.access.ticket };
-        }),
+      resolve: Effect.fn("ServerBrowserStream.resolve")(function* (id, input, generation) {
+        const binding = bindings.get(id)?.binding;
+        if (
+          binding === undefined ||
+          binding.generation !== generation ||
+          binding.input.resource.environmentId !== input.resource.environmentId ||
+          binding.input.resource.threadId !== input.resource.threadId ||
+          binding.input.resource.tabId !== input.resource.tabId ||
+          binding.input.resource.serverEpoch !== input.resource.serverEpoch ||
+          binding.input.operation !== input.operation
+        )
+          return yield* viewerRefused("The exact browser viewer binding is unavailable.");
+        if (binding.type === "native") {
+          yield* binding.authorize.pipe(
+            Effect.mapError(() =>
+              viewerRefused("The original native client no longer permits this browser operation."),
+            ),
+          );
+          yield* resource(input);
+          return { type: "local" as const };
+        }
+        if (Option.isNone(authority)) return yield* viewerUnsupported();
+        if (binding.type === "incoming") {
+          yield* authority.value.recheckPreviewViewer(binding.scope, input);
+          yield* resource(input);
+          yield* authority.value.recheckPreviewViewer(binding.scope, input);
+          return { type: "local" as const };
+        }
+        yield* authority.value.checkRecord(binding.envelope.recordId);
+        return { type: "peer" as const, origin: binding.origin, ticket: binding.access.ticket };
+      }),
     });
   }),
 );
@@ -462,14 +456,14 @@ type NativeRecheck = Effect.Success<ReturnType<typeof EnvironmentAuth.nativeSess
 type PreviewRecheck = Effect.Effect<void, OrchestratorMcpFailure | Effect.Error<NativeRecheck>>;
 type PreviewInvalidation = Effect.Effect<void, SessionStore.SessionCredentialVerificationError>;
 
-const relaySocket = (
-  request: HttpServerRequest.HttpServerRequest,
-  endpoint: string,
-  recheck: PreviewRecheck,
-  invalidated: PreviewInvalidation,
-  canOperate: boolean,
-) =>
-  Effect.gen(function* () {
+const relaySocket = Effect.fn("ServerBrowserStream.relaySocket")(
+  function* (
+    request: HttpServerRequest.HttpServerRequest,
+    endpoint: string,
+    recheck: PreviewRecheck,
+    invalidated: PreviewInvalidation,
+    canOperate: boolean,
+  ) {
     yield* recheck;
     const incoming = NodeHttpServerRequest.toIncomingMessage(request);
     delete incoming.headers["sec-websocket-extensions"];
@@ -514,27 +508,26 @@ const relaySocket = (
           ),
         );
       });
-    const pump = (
+    const pump = Effect.fn("ServerBrowserStream.pump")(function* (
       reader: Socket.Reader,
       write: (chunk: string | Uint8Array) => Effect.Effect<void, Socket.SocketError>,
       buffered: () => number,
       input: boolean,
-    ) =>
-      Effect.gen(function* () {
-        while (true) {
-          const chunks = yield* reader.pull;
-          for (const chunk of chunks) {
-            const bytes = typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength;
-            if (
-              buffered() + bytes + 14 > MAX_SOCKET_BUFFER_BYTES ||
-              (input && !validViewerMessage(chunk, canOperate))
-            )
-              return yield* Effect.interrupt;
-            yield* recheck;
-            yield* write(chunk);
-          }
+    ) {
+      while (true) {
+        const chunks = yield* reader.pull;
+        for (const chunk of chunks) {
+          const bytes = typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength;
+          if (
+            buffered() + bytes + 14 > MAX_SOCKET_BUFFER_BYTES ||
+            (input && !validViewerMessage(chunk, canOperate))
+          )
+            return yield* Effect.interrupt;
+          yield* recheck;
+          yield* write(chunk);
         }
-      });
+      }
+    });
     yield* Effect.raceFirst(
       invalidated,
       Effect.raceFirst(
@@ -557,113 +550,110 @@ const relaySocket = (
       ),
     );
     return HttpServerResponse.empty();
-  }).pipe(
-    Effect.scoped,
-    Effect.catchCause(() => Effect.succeed(HttpServerResponse.empty())),
-  );
+  },
+  Effect.scoped,
+  Effect.catchCause(() => Effect.succeed(HttpServerResponse.empty())),
+);
 
-const relayFile = (
+const relayFile = Effect.fn("ServerBrowserStream.relayFile")(function* (
   request: HttpServerRequest.HttpServerRequest,
   endpoint: string,
   recheck: PreviewRecheck,
   invalidated: PreviewInvalidation,
-) =>
-  Effect.gen(function* () {
-    yield* recheck;
-    const clientOwner = yield* Effect.serviceOption(HttpClient.HttpClient);
-    if (Option.isNone(clientOwner)) return yield* viewerUnsupported();
-    const client = HttpClient.withScope(clientOwner.value);
-    const headers: Record<string, string> = {};
-    for (const key of ["range", "if-range", "content-type"])
-      if (request.headers[key] !== undefined) headers[key] = request.headers[key];
-    let bytes = 0;
-    const body = request.stream.pipe(
-      Stream.tap((chunk) => {
-        bytes += chunk.byteLength;
-        return bytes > UPLOAD_MAX_FILE_BYTES
-          ? Effect.fail(viewerRefused("The browser upload exceeds its byte limit."))
-          : recheck;
-      }),
-      Stream.interruptWhen(invalidated),
-    );
-    const response = yield* client
-      .execute(
-        HttpClientRequest.make(request.method)(endpoint).pipe(
-          HttpClientRequest.setHeaders(headers),
-          request.method === "POST"
-            ? HttpClientRequest.bodyStream(body, { contentType: request.headers["content-type"] })
-            : (self) => self,
-        ),
-      )
-      .pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
-    if (response.status >= 300 && response.status < 400)
-      return HttpServerResponse.text("Browser redirect refused", { status: 502 });
-    const outgoing: Record<string, string> = { "cache-control": "no-store, no-transform" };
-    for (const key of [
-      "content-type",
-      "etag",
-      "content-length",
-      "content-range",
-      "accept-ranges",
-      "content-disposition",
-      "content-security-policy",
-      "x-content-type-options",
-    ])
-      if (response.headers[key] !== undefined) outgoing[key] = response.headers[key];
-    yield* recheck;
-    return HttpServerResponse.stream(
-      response.stream.pipe(
-        Stream.tap(() => recheck),
-        Stream.interruptWhen(invalidated),
+) {
+  yield* recheck;
+  const clientOwner = yield* Effect.serviceOption(HttpClient.HttpClient);
+  if (Option.isNone(clientOwner)) return yield* viewerUnsupported();
+  const client = HttpClient.withScope(clientOwner.value);
+  const headers: Record<string, string> = {};
+  for (const key of ["range", "if-range", "content-type"])
+    if (request.headers[key] !== undefined) headers[key] = request.headers[key];
+  let bytes = 0;
+  const body = request.stream.pipe(
+    Stream.tap((chunk) => {
+      bytes += chunk.byteLength;
+      return bytes > UPLOAD_MAX_FILE_BYTES
+        ? Effect.fail(viewerRefused("The browser upload exceeds its byte limit."))
+        : recheck;
+    }),
+    Stream.interruptWhen(invalidated),
+  );
+  const response = yield* client
+    .execute(
+      HttpClientRequest.make(request.method)(endpoint).pipe(
+        HttpClientRequest.setHeaders(headers),
+        request.method === "POST"
+          ? HttpClientRequest.bodyStream(body, { contentType: request.headers["content-type"] })
+          : (self) => self,
       ),
-      { status: response.status, headers: outgoing },
-    );
-  });
-
-const viewerRequest = (url: URL) =>
-  Effect.gen(function* () {
-    const sessionOwner = yield* Effect.serviceOption(SessionStore.SessionStore);
-    const viewerOwner = yield* Effect.serviceOption(PreviewViewers);
-    if (Option.isNone(sessionOwner) || Option.isNone(viewerOwner))
-      return yield* viewerUnsupported();
-    const sessions = sessionOwner.value;
-    const viewers = viewerOwner.value;
-    const ticket = url.searchParams.get("viewerTicket")!;
-    const authenticate = sessions
-      .admitViewerToken(ticket)
-      .pipe(Effect.mapError(() => viewerRefused("The browser viewer expired or was retired.")));
-    const viewer = yield* authenticate;
-    if (
-      viewer.resource.type !== "preview" ||
-      url.searchParams.get("threadId") !== viewer.resource.threadId ||
-      url.searchParams.get("tabId") !== viewer.resource.tabId
     )
-      return yield* viewerRefused("The browser viewer names another resource.");
-    const allowed = new Set(["viewerTicket", "threadId", "tabId"]);
-    if (url.pathname.endsWith("/ws"))
-      for (const key of ["maxWidth", "maxHeight", "quality", "interactive"]) allowed.add(key);
-    if (url.pathname.endsWith("/download")) allowed.add("id");
-    if (url.pathname.endsWith("/upload")) allowed.add("chooser");
-    for (const key of url.searchParams.keys())
-      if (!allowed.has(key) || url.searchParams.getAll(key).length !== 1)
-        return yield* viewerRefused("Invalid browser resource selector.");
-    if (url.pathname.endsWith("/upload") && viewer.operation !== "control")
-      return yield* viewerRefused("This browser viewer is read-only.");
-    const input = { resource: viewer.resource, operation: viewer.operation };
-    const resolve = viewers.resolve(viewer.viewerId, input, viewer.generation);
-    const resolved = yield* resolve;
-    return {
-      viewerId: viewer.viewerId,
-      resolved,
-      canOperate: viewer.operation === "control" && url.searchParams.get("interactive") !== "false",
-      recheck: viewer.recheck.pipe(
-        Effect.mapError(() => viewerRefused("The admitted browser viewer was retired.")),
-        Effect.andThen(resolve),
-        Effect.asVoid,
-      ),
-      invalidated: sessions.awaitViewerInvalidation(viewer.viewerId),
-    };
-  });
+    .pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
+  if (response.status >= 300 && response.status < 400)
+    return HttpServerResponse.text("Browser redirect refused", { status: 502 });
+  const outgoing: Record<string, string> = { "cache-control": "no-store, no-transform" };
+  for (const key of [
+    "content-type",
+    "etag",
+    "content-length",
+    "content-range",
+    "accept-ranges",
+    "content-disposition",
+    "content-security-policy",
+    "x-content-type-options",
+  ])
+    if (response.headers[key] !== undefined) outgoing[key] = response.headers[key];
+  yield* recheck;
+  return HttpServerResponse.stream(
+    response.stream.pipe(
+      Stream.tap(() => recheck),
+      Stream.interruptWhen(invalidated),
+    ),
+    { status: response.status, headers: outgoing },
+  );
+});
+
+const viewerRequest = Effect.fn("ServerBrowserStream.viewerRequest")(function* (url: URL) {
+  const sessionOwner = yield* Effect.serviceOption(SessionStore.SessionStore);
+  const viewerOwner = yield* Effect.serviceOption(PreviewViewers);
+  if (Option.isNone(sessionOwner) || Option.isNone(viewerOwner)) return yield* viewerUnsupported();
+  const sessions = sessionOwner.value;
+  const viewers = viewerOwner.value;
+  const ticket = url.searchParams.get("viewerTicket")!;
+  const authenticate = sessions
+    .admitViewerToken(ticket)
+    .pipe(Effect.mapError(() => viewerRefused("The browser viewer expired or was retired.")));
+  const viewer = yield* authenticate;
+  if (
+    viewer.resource.type !== "preview" ||
+    url.searchParams.get("threadId") !== viewer.resource.threadId ||
+    url.searchParams.get("tabId") !== viewer.resource.tabId
+  )
+    return yield* viewerRefused("The browser viewer names another resource.");
+  const allowed = new Set(["viewerTicket", "threadId", "tabId"]);
+  if (url.pathname.endsWith("/ws"))
+    for (const key of ["maxWidth", "maxHeight", "quality", "interactive"]) allowed.add(key);
+  if (url.pathname.endsWith("/download")) allowed.add("id");
+  if (url.pathname.endsWith("/upload")) allowed.add("chooser");
+  for (const key of url.searchParams.keys())
+    if (!allowed.has(key) || url.searchParams.getAll(key).length !== 1)
+      return yield* viewerRefused("Invalid browser resource selector.");
+  if (url.pathname.endsWith("/upload") && viewer.operation !== "control")
+    return yield* viewerRefused("This browser viewer is read-only.");
+  const input = { resource: viewer.resource, operation: viewer.operation };
+  const resolve = viewers.resolve(viewer.viewerId, input, viewer.generation);
+  const resolved = yield* resolve;
+  return {
+    viewerId: viewer.viewerId,
+    resolved,
+    canOperate: viewer.operation === "control" && url.searchParams.get("interactive") !== "false",
+    recheck: viewer.recheck.pipe(
+      Effect.mapError(() => viewerRefused("The admitted browser viewer was retired.")),
+      Effect.andThen(resolve),
+      Effect.asVoid,
+    ),
+    invalidated: sessions.awaitViewerInvalidation(viewer.viewerId),
+  };
+});
 
 const intParam = (params: URLSearchParams, name: string, fallback: number, max: number) => {
   const value = Number(params.get(name));
@@ -683,8 +673,8 @@ const parseMessage = (chunk: Uint8Array | string): unknown => {
   }
 };
 
-const makeHandler = (browser: ServerBrowser.ServerBrowser["Service"] | undefined) =>
-  Effect.gen(function* () {
+const makeHandler = Effect.fn("ServerBrowserStream.makeHandler")(
+  function* (browser: ServerBrowser.ServerBrowser["Service"] | undefined) {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const url = HttpServerRequest.toURL(request);
     if (Option.isNone(url)) return HttpServerResponse.text("Bad Request", { status: 400 });
@@ -905,14 +895,14 @@ const makeHandler = (browser: ServerBrowser.ServerBrowser["Service"] | undefined
       }),
       Effect.catch(() => Effect.succeed(HttpServerResponse.empty())),
     );
-  }).pipe(
-    Effect.catchTags({
-      OrchestratorMcpFailure: () =>
-        Effect.succeed(
-          HttpServerResponse.text("Current browser viewer authority refused", { status: 403 }),
-        ),
-    }),
-  );
+  },
+  Effect.catchTags({
+    OrchestratorMcpFailure: () =>
+      Effect.succeed(
+        HttpServerResponse.text("Current browser viewer authority refused", { status: 403 }),
+      ),
+  }),
+);
 
 const hostSetup = (cause: unknown): PreviewStreamHostSetup | undefined =>
   isSandboxError(cause)
@@ -925,88 +915,84 @@ const isLibrariesError = Schema.is(PreviewBrowserHost.PreviewBrowserLibrariesErr
 const encodeHostSetup = Schema.encodeSync(Schema.fromJsonString(PreviewStreamHostSetup));
 
 /** `GET /api/preview-stream/download?threadId&tabId&id`: a file a server tab downloaded. */
-const serveDownload = (
+const serveDownload = Effect.fn("ServerBrowserStream.serveDownload")(function* (
   browser: ServerBrowser.ServerBrowser["Service"],
   params: URLSearchParams,
   authorization?: PreviewRecheck,
   invalidated: PreviewInvalidation = Effect.never,
-) =>
-  Effect.gen(function* () {
-    const recheck =
-      authorization ??
-      (yield* Effect.gen(function* () {
-        const session = yield* authenticateMediaRequest(AuthOrchestrationReadScope);
-        return yield* EnvironmentAuth.nativeSessionAuthorization(
-          session,
-          AuthOrchestrationReadScope,
-        );
-      }));
-    yield* recheck;
-    const download = yield* browser.openDownload({
-      threadId: params.get("threadId") ?? "",
-      tabId: params.get("tabId") ?? "",
-      downloadId: params.get("id") ?? "",
-    });
-    if (Option.isNone(download)) return HttpServerResponse.text("Not Found", { status: 404 });
-    yield* recheck;
-    if (download.value.resource !== undefined) {
-      if (browser.inspectDownload === undefined || browser.readDownloadBlock === undefined)
-        return yield* viewerUnsupported();
-      const resource = download.value.resource;
-      const current = recheck.pipe(
-        Effect.mapError(() => viewerRefused("The native download reader was retired.")),
-      );
-      const authorize = browser.inspectDownload(resource, current);
-      const read = browser.readDownloadBlock;
-      const request = yield* HttpServerRequest.HttpServerRequest;
-      const response = yield* nativeDownloadResponse(
-        resource,
-        { authorize, readBlock: (offset) => read(resource, offset, current) },
-        request.method,
-        request.headers.range,
-        request.headers["if-range"],
-      );
-      return response.body._tag === "Stream"
-        ? HttpServerResponse.setBody(
-            response,
-            HttpBody.stream(
-              response.body.stream.pipe(Stream.interruptWhen(invalidated)),
-              response.body.contentType,
-              response.body.contentLength,
-            ),
-          )
-        : response;
-    }
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    // Canonicalize parent aliases while retaining the final entry's no-follow check.
-    const directory = yield* fs.realPath(path.dirname(download.value.path));
-    const filePath = path.join(directory, path.basename(download.value.path));
-    yield* recheck;
-    const file = yield* openMediaFile(filePath);
-    if (file === null) return HttpServerResponse.text("Not Found", { status: 404 });
+) {
+  const recheck =
+    authorization ??
+    (yield* Effect.gen(function* () {
+      const session = yield* authenticateMediaRequest(AuthOrchestrationReadScope);
+      return yield* EnvironmentAuth.nativeSessionAuthorization(session, AuthOrchestrationReadScope);
+    }));
+  yield* recheck;
+  const download = yield* browser.openDownload({
+    threadId: params.get("threadId") ?? "",
+    tabId: params.get("tabId") ?? "",
+    downloadId: params.get("id") ?? "",
+  });
+  if (Option.isNone(download)) return HttpServerResponse.text("Not Found", { status: 404 });
+  yield* recheck;
+  if (download.value.resource !== undefined) {
+    if (browser.inspectDownload === undefined || browser.readDownloadBlock === undefined)
+      return yield* viewerUnsupported();
+    const resource = download.value.resource;
+    const current = recheck.pipe(
+      Effect.mapError(() => viewerRefused("The native download reader was retired.")),
+    );
+    const authorize = browser.inspectDownload(resource, current);
+    const read = browser.readDownloadBlock;
     const request = yield* HttpServerRequest.HttpServerRequest;
-    const response = yield* assetFileResponse(
-      { ...download.value, path: filePath, file, download: true },
+    const response = yield* nativeDownloadResponse(
+      resource,
+      { authorize, readBlock: (offset) => read(resource, offset, current) },
+      request.method,
       request.headers.range,
       request.headers["if-range"],
-      request.method === "HEAD" ? "HEAD" : "GET",
     );
-    yield* recheck;
     return response.body._tag === "Stream"
       ? HttpServerResponse.setBody(
           response,
           HttpBody.stream(
-            response.body.stream.pipe(
-              Stream.tap(() => recheck),
-              Stream.interruptWhen(invalidated),
-            ),
+            response.body.stream.pipe(Stream.interruptWhen(invalidated)),
             response.body.contentType,
             response.body.contentLength,
           ),
         )
       : response;
-  });
+  }
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  // Canonicalize parent aliases while retaining the final entry's no-follow check.
+  const directory = yield* fs.realPath(path.dirname(download.value.path));
+  const filePath = path.join(directory, path.basename(download.value.path));
+  yield* recheck;
+  const file = yield* openMediaFile(filePath);
+  if (file === null) return HttpServerResponse.text("Not Found", { status: 404 });
+  const request = yield* HttpServerRequest.HttpServerRequest;
+  const response = yield* assetFileResponse(
+    { ...download.value, path: filePath, file, download: true },
+    request.headers.range,
+    request.headers["if-range"],
+    request.method === "HEAD" ? "HEAD" : "GET",
+  );
+  yield* recheck;
+  return response.body._tag === "Stream"
+    ? HttpServerResponse.setBody(
+        response,
+        HttpBody.stream(
+          response.body.stream.pipe(
+            Stream.tap(() => recheck),
+            Stream.interruptWhen(invalidated),
+          ),
+          response.body.contentType,
+          response.body.contentLength,
+        ),
+      )
+    : response;
+});
 
 const UPLOAD_MAX_FILE_BYTES = 100 * 1024 * 1024;
 const UPLOAD_MAX_FILES = 20;
@@ -1015,60 +1001,59 @@ const UPLOAD_MAX_FILES = 20;
  * `POST /api/preview-stream/upload?threadId&tabId&chooser` with multipart `file`
  * parts: answers the page's open file picker. No parts cancels it.
  */
-const receiveUpload = (
+const receiveUpload = Effect.fn("ServerBrowserStream.receiveUpload")(function* (
   browser: ServerBrowser.ServerBrowser["Service"],
   params: URLSearchParams,
   authorization?: PreviewRecheck,
   resourceViewerId?: string,
-) =>
-  Effect.gen(function* () {
-    const recheck =
-      authorization ??
-      (yield* Effect.gen(function* () {
-        const session = yield* authenticateMediaRequest(AuthPreviewOperateScope);
-        resourceViewerId = session.sessionId;
-        return yield* EnvironmentAuth.nativeSessionAuthorization(session, AuthPreviewOperateScope);
-      }));
-    yield* recheck;
-    const request = yield* HttpServerRequest.HttpServerRequest;
-    const fs = yield* FileSystem.FileSystem;
-    const parts = yield* request.multipart.pipe(
-      Effect.provideContext(
-        Multipart.limitsServices({
-          maxParts: UPLOAD_MAX_FILES,
-          maxFileSize: UPLOAD_MAX_FILE_BYTES,
-          maxTotalSize: UPLOAD_MAX_FILE_BYTES,
-        }),
+) {
+  const recheck =
+    authorization ??
+    (yield* Effect.gen(function* () {
+      const session = yield* authenticateMediaRequest(AuthPreviewOperateScope);
+      resourceViewerId = session.sessionId;
+      return yield* EnvironmentAuth.nativeSessionAuthorization(session, AuthPreviewOperateScope);
+    }));
+  yield* recheck;
+  const request = yield* HttpServerRequest.HttpServerRequest;
+  const fs = yield* FileSystem.FileSystem;
+  const parts = yield* request.multipart.pipe(
+    Effect.provideContext(
+      Multipart.limitsServices({
+        maxParts: UPLOAD_MAX_FILES,
+        maxFileSize: UPLOAD_MAX_FILE_BYTES,
+        maxTotalSize: UPLOAD_MAX_FILE_BYTES,
+      }),
+    ),
+  );
+  yield* recheck;
+  const files = yield* Effect.forEach(
+    Object.values(parts).flatMap((value) =>
+      Array.isArray(value) ? value.filter(Multipart.isPersistedFile) : [],
+    ),
+    (file) =>
+      fs.readFile(file.path).pipe(
+        Effect.tap(() => recheck),
+        Effect.map((bytes) => ({
+          name: file.name,
+          mimeType: file.contentType,
+          buffer: Buffer.from(bytes),
+        })),
       ),
-    );
-    yield* recheck;
-    const files = yield* Effect.forEach(
-      Object.values(parts).flatMap((value) =>
-        Array.isArray(value) ? value.filter(Multipart.isPersistedFile) : [],
-      ),
-      (file) =>
-        fs.readFile(file.path).pipe(
-          Effect.tap(() => recheck),
-          Effect.map((bytes) => ({
-            name: file.name,
-            mimeType: file.contentType,
-            buffer: Buffer.from(bytes),
-          })),
-        ),
-    );
-    const answered = yield* browser.answerFileChooser({
-      threadId: params.get("threadId") ?? "",
-      tabId: params.get("tabId") ?? "",
-      chooserId: params.get("chooser") ?? "",
-      files,
-      authorize: () => Effect.runPromise(recheck),
-      ...(resourceViewerId === undefined ? {} : { resourceViewerId }),
-    });
-    yield* recheck;
-    return answered
-      ? HttpServerResponse.empty({ status: 204 })
-      : HttpServerResponse.text("The page's file picker is no longer open.", { status: 409 });
-  }).pipe(Effect.scoped);
+  );
+  const answered = yield* browser.answerFileChooser({
+    threadId: params.get("threadId") ?? "",
+    tabId: params.get("tabId") ?? "",
+    chooserId: params.get("chooser") ?? "",
+    files,
+    authorize: () => Effect.runPromise(recheck),
+    ...(resourceViewerId === undefined ? {} : { resourceViewerId }),
+  });
+  yield* recheck;
+  return answered
+    ? HttpServerResponse.empty({ status: 204 })
+    : HttpServerResponse.text("The page's file picker is no longer open.", { status: 409 });
+}, Effect.scoped);
 
 export const routeLayer = HttpRouter.use((router) =>
   Effect.gen(function* () {

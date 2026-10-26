@@ -6,7 +6,7 @@ import {
 } from "@t3tools/contracts";
 
 /**
- * Run groups (#402): one Run N delegation starts several Colors of a
+ * Run groups: one Run N delegation starts several Colors of a
  * read-only role as tasks of one group. The group is the set of tasks that
  * share a `runGroupId`, all recorded by one `delegated_task.group.request`
  * command, so its membership never changes after that command commits.

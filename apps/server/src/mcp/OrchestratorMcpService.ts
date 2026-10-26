@@ -214,7 +214,7 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     input: OrchestratorMcpTaskCancelInput,
   ) => Effect.Effect<OrchestratorMcpTaskCancelResult, OrchestratorMcpFailure>;
-  /** `delegate_task`: one task, or a Run group when the role's Run is above 1 (#402). */
+  /** `delegate_task`: one task, or a Run group when the role's Run is above 1. */
   readonly delegateTaskOrRunGroup: (
     scope: McpInvocationScope,
     input: OrchestratorMcpDelegateTaskInput,
@@ -1117,7 +1117,7 @@ const make = Effect.gen(function* () {
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
-  // Fork (#174): outcome checks and command tasks; refused where the service is absent.
+  // Fork: outcome checks and command tasks; refused where the service is absent.
   const forkTasks = ScheduledTaskChecks.orRefuse(
     yield* Effect.serviceOption(ScheduledTaskChecks.ScheduledTaskChecks),
   );
@@ -1916,42 +1916,32 @@ const make = Effect.gen(function* () {
               "orchestration_error",
               `Unable to acknowledge delegated task ${task.id}: ${errorMessage(error)}`,
             ),
-          );
-      }
-      return {
-        taskId: task.id,
-        childThreadId: null,
-        ...(task.remoteChild === undefined
+          ),
+        );
+    }
+    return {
+      taskId: task.id,
+      childThreadId: null,
+      ...(task.remoteChild === undefined
+        ? {}
+        : {
+            remoteChild: {
+              environmentId: task.remoteChild.environmentId,
+              label: task.remoteChild.label,
+              ...(task.remoteChild.launchError === undefined
+                ? {}
+                : { launchError: task.remoteChild.launchError }),
+              ...(task.remoteChild.threadId === undefined
+                ? {}
+                : { threadId: task.remoteChild.threadId }),
+            },
+          }),
+      remoteObservation: {
+        availability: task.remoteChild?.availability ?? "stale",
+        ...(task.remoteChild?.snapshot === undefined
           ? {}
-          : {
-              remoteChild: {
-                environmentId: task.remoteChild.environmentId,
-                label: task.remoteChild.label,
-                ...(task.remoteChild.launchError === undefined
-                  ? {}
-                  : { launchError: task.remoteChild.launchError }),
-                ...(task.remoteChild.threadId === undefined
-                  ? {}
-                  : { threadId: task.remoteChild.threadId }),
-              },
-            }),
-        remoteObservation: {
-          availability: task.remoteChild?.availability ?? "stale",
-          ...(task.remoteChild?.snapshot === undefined
-            ? {}
-            : { snapshot: task.remoteChild.snapshot }),
-          ...(task.remoteChild?.originalResult === undefined
-            ? {}
-            : { originalRunId: task.remoteChild.originalResult.runId }),
-          ...(task.remoteChild?.latestResult === undefined
-            ? {}
-            : { latestResult: task.remoteChild.latestResult }),
-          ...(task.remoteChild?.stop === undefined ? {} : { stop: task.remoteChild.stop }),
-        },
-        childRunId: null,
-        purpose: executionPurposeOf(task),
-        warnings: executionPurposeWarnings(executionPurposeOf(task)),
-        ...(task.completionSource === undefined
+          : { snapshot: task.remoteChild.snapshot }),
+        ...(task.remoteChild?.originalResult === undefined
           ? {}
           : { latestTerminalPurpose: task.completionSource.purpose }),
         childNodeId: task.id,
@@ -2065,41 +2055,40 @@ const make = Effect.gen(function* () {
    * blocking question, or the budget runs out. A wait that ends early leaves
    * the group to wake the parent once it finishes, as for one task.
    */
-  const awaitRunGroup = (
+  const awaitRunGroup = Effect.fn("OrchestratorMcpService.awaitRunGroup")(function* (
     scope: McpThreadInvocationScope,
     groupId: NodeId,
     members: ReadonlyArray<OrchestrationV2Subagent>,
     requestedTimeoutMs: number | undefined,
-  ) =>
-    Effect.gen(function* () {
-      const timeoutMs = Math.min(
-        MAX_WAIT_TIMEOUT_MS,
-        Math.max(1, requestedTimeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS),
-      );
-      const deadline = (yield* Clock.currentTimeMillis) + timeoutMs;
-      for (const member of members) {
-        const remaining = deadline - (yield* Clock.currentTimeMillis);
-        const waited =
-          remaining <= 0 ? Option.none() : yield* waitForTask(scope, member.id, remaining);
-        if (Option.isSome(waited) && isTerminalTaskStatus(waited.value.status)) continue;
-        for (const pending of members)
-          yield* threadManagement
-            .dispatch({
-              type: "delegated_task.wake-policy",
-              commandId: stableCommandId({
-                scope,
-                requestKey: pending.id,
-                operation: "delegate-task-wake-policy",
-              }),
-              parentThreadId: scope.thread.threadId,
-              taskId: pending.id,
-              completionWake: "always",
-            })
-            .pipe(Effect.ignoreCause({ log: true }));
-        return yield* readRunGroup(scope, groupId, members, Option.isNone(waited));
-      }
-      return yield* readRunGroup(scope, groupId, members);
-    });
+  ) {
+    const timeoutMs = Math.min(
+      MAX_WAIT_TIMEOUT_MS,
+      Math.max(1, requestedTimeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS),
+    );
+    const deadline = (yield* Clock.currentTimeMillis) + timeoutMs;
+    for (const member of members) {
+      const remaining = deadline - (yield* Clock.currentTimeMillis);
+      const waited =
+        remaining <= 0 ? Option.none() : yield* waitForTask(scope, member.id, remaining);
+      if (Option.isSome(waited) && isTerminalTaskStatus(waited.value.status)) continue;
+      for (const pending of members)
+        yield* threadManagement
+          .dispatch({
+            type: "delegated_task.wake-policy",
+            commandId: stableCommandId({
+              scope,
+              requestKey: pending.id,
+              operation: "delegate-task-wake-policy",
+            }),
+            parentThreadId: scope.thread.threadId,
+            taskId: pending.id,
+            completionWake: "always",
+          })
+          .pipe(Effect.ignoreCause({ log: true }));
+      return yield* readRunGroup(scope, groupId, members, Option.isNone(waited));
+    }
+    return yield* readRunGroup(scope, groupId, members);
+  });
 
   const scheduledTaskRunModes = Effect.fn("OrchestratorMcpService.scheduledTaskRunModes")(
     function* (task: ScheduledTask) {
@@ -2192,14 +2181,14 @@ const make = Effect.gen(function* () {
   type RunGroupMethods = "delegateTaskOrRunGroup" | "taskOrRunGroupStatus" | "cancelTaskOrRunGroup";
 
   /**
-   * Run groups (#402): a read-only role whose Run is above 1 starts that many
+   * Run groups: a read-only role whose Run is above 1 starts that many
    * of its Colors on one task. Everything else is the single-task method.
    */
   const runGroupMethods = (
     single: Omit<OrchestratorMcpServiceShape, RunGroupMethods>,
   ): Pick<OrchestratorMcpServiceShape, RunGroupMethods> => ({
-    delegateTaskOrRunGroup: (callerScope, input) =>
-      Effect.gen(function* () {
+    delegateTaskOrRunGroup: Effect.fn("OrchestratorMcpService.delegateTaskOrRunGroup")(
+      function* (callerScope, input) {
         const role =
           input.prismRole === undefined
             ? Prism.delegatedPrismRole(input.role)
@@ -2343,17 +2332,19 @@ const make = Effect.gen(function* () {
         return yield* input.mode === "wait"
           ? awaitRunGroup(scope, groupId, members, input.timeoutMs)
           : readRunGroup(scope, groupId, members);
-      }),
-    taskOrRunGroupStatus: (callerScope, taskId) =>
-      Effect.gen(function* () {
+      },
+    ),
+    taskOrRunGroupStatus: Effect.fn("OrchestratorMcpService.taskOrRunGroupStatus")(
+      function* (callerScope, taskId) {
         const scope = yield* requireThreadScope(callerScope, "task_status");
         const members = yield* loadRunGroup(scope, taskId);
         return members.length === 0
           ? yield* single.taskStatus(callerScope, taskId)
           : yield* readRunGroup(scope, taskId, members);
-      }),
-    cancelTaskOrRunGroup: (callerScope, input) =>
-      Effect.gen(function* () {
+      },
+    ),
+    cancelTaskOrRunGroup: Effect.fn("OrchestratorMcpService.cancelTaskOrRunGroup")(
+      function* (callerScope, input) {
         const scope = yield* requireThreadScope(callerScope, "task_cancel");
         const members = yield* loadRunGroup(scope, input.taskId);
         if (members.length === 0) return yield* single.cancelTask(callerScope, input);
@@ -2443,25 +2434,27 @@ const make = Effect.gen(function* () {
           tasks.push(outcome.success);
         }
         return { groupId: input.taskId, tasks };
-      }),
+      },
+    ),
   });
 
-  const scheduleRequest = (scope: McpInvocationScope) =>
-    Effect.gen(function* () {
-      const identity = yield* RequestReceipts.CurrentRequest;
-      if (
-        identity === undefined ||
-        (scope.client?.linked === true &&
-          interactiveAuthority(scope.authority)?.envelope.requestOwner === undefined)
-      )
-        return undefined;
-      if (scheduledTasks.mutationReceipt === undefined)
-        return yield* failure(
-          "capability_denied",
-          "This environment does not support durable scheduler mutations.",
-        );
-      return identity;
-    });
+  const scheduleRequest = Effect.fn("OrchestratorMcpService.scheduleRequest")(function* (
+    scope: McpInvocationScope,
+  ) {
+    const identity = yield* RequestReceipts.CurrentRequest;
+    if (
+      identity === undefined ||
+      (scope.client?.linked === true &&
+        interactiveAuthority(scope.authority)?.envelope.requestOwner === undefined)
+    )
+      return undefined;
+    if (scheduledTasks.mutationReceipt === undefined)
+      return yield* failure(
+        "capability_denied",
+        "This environment does not support durable scheduler mutations.",
+      );
+    return identity;
+  });
   const scheduleReceipt = (request: RequestReceipts.RequestIdentity) =>
     scheduledTasks.mutationReceipt === undefined
       ? Effect.fail(
@@ -2484,17 +2477,19 @@ const make = Effect.gen(function* () {
             "Historical scheduler authority is unavailable; automatic replay is unsupported.",
           ),
         );
-  const scheduleRecheck = (scope: McpInvocationScope, taskId?: ScheduledTask["id"]) =>
-    Effect.gen(function* () {
-      const caller = yield* loadCaller(scope);
-      if (Option.isSome(peerAuthority) && scope.thread !== undefined)
-        yield* peerAuthority.value.checkThread(scope.thread.threadId);
-      if (taskId !== undefined) {
-        const task = yield* loadScheduledTask(taskId, caller.limits);
-        yield* assertSameLink({ scope, caller: caller.parent?.thread }, task);
-        yield* assertLiveCallerForOtherProject(scope, caller.parent, task.projectId);
-      }
-    });
+  const scheduleRecheck = Effect.fn("OrchestratorMcpService.scheduleRecheck")(function* (
+    scope: McpInvocationScope,
+    taskId?: ScheduledTask["id"],
+  ) {
+    const caller = yield* loadCaller(scope);
+    if (Option.isSome(peerAuthority) && scope.thread !== undefined)
+      yield* peerAuthority.value.checkThread(scope.thread.threadId);
+    if (taskId !== undefined) {
+      const task = yield* loadScheduledTask(taskId, caller.limits);
+      yield* assertSameLink({ scope, caller: caller.parent?.thread }, task);
+      yield* assertLiveCallerForOtherProject(scope, caller.parent, task.projectId);
+    }
+  });
   const scheduleError = (error: ScheduledTaskError | OrchestratorMcpFailure) =>
     error._tag === "OrchestratorMcpFailure"
       ? error

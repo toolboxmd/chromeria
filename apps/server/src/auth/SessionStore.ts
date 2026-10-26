@@ -1055,114 +1055,107 @@ const make = Effect.gen(function* () {
   const decodeRefresh = Schema.decodeUnknownEffect(Schema.fromJsonString(RefreshClaims));
   const encodeRefresh = Schema.encodeEffect(Schema.fromJsonString(RefreshClaims));
   const signRefresh = (payload: string) => signPayload(`mcp-refresh.${payload}`, signingSecret);
-  const accessTokens = (
+  const accessTokens = Effect.fn("SessionStore.accessTokens")(function* (
     claims: SessionClaims,
     clientId: string,
     resource: string,
     nextNonce?: string,
-  ) =>
-    Effect.gen(function* () {
-      const now = yield* DateTime.now;
-      const expiresAt = DateTime.add(now, { hours: 1 });
-      const payload = yield* encodeClaims({
-        ...claims,
-        iat: now.epochMilliseconds,
-        exp: expiresAt.epochMilliseconds,
-      }).pipe(
-        Effect.map(base64UrlEncode),
-        Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
-      );
-      const nonce =
-        nextNonce ??
-        (yield* crypto
-          .randomUUIDv4()
-          .pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ cause }))));
-      const refreshPayload = yield* encodeRefresh({ claims, clientId, resource, nonce }).pipe(
-        Effect.map(base64UrlEncode),
-        Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
-      );
-      const refreshToken = `${refreshPayload}.${signRefresh(refreshPayload)}`;
-      return {
-        token: `${payload}.${signPayload(payload, signingSecret)}`,
-        refreshToken,
-        expiresAt,
-      };
-    });
+  ) {
+    const now = yield* DateTime.now;
+    const expiresAt = DateTime.add(now, { hours: 1 });
+    const payload = yield* encodeClaims({
+      ...claims,
+      iat: now.epochMilliseconds,
+      exp: expiresAt.epochMilliseconds,
+    }).pipe(
+      Effect.map(base64UrlEncode),
+      Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
+    );
+    const nonce =
+      nextNonce ??
+      (yield* crypto
+        .randomUUIDv4()
+        .pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ cause }))));
+    const refreshPayload = yield* encodeRefresh({ claims, clientId, resource, nonce }).pipe(
+      Effect.map(base64UrlEncode),
+      Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
+    );
+    const refreshToken = `${refreshPayload}.${signRefresh(refreshPayload)}`;
+    return {
+      token: `${payload}.${signPayload(payload, signingSecret)}`,
+      refreshToken,
+      expiresAt,
+    };
+  });
   const tokenHash = (token: string) => signPayload(`mcp-refresh-hash.${token}`, signingSecret);
-  const issueMcpOAuthTokens: SessionStore["Service"]["issueMcpOAuthTokens"] = (
-    token,
-    clientId,
-    resource,
-  ) =>
-    Effect.gen(function* () {
-      const verified = yield* verify(token);
-      if (verified.subject !== "mcp-client") return yield* new MalformedSessionTokenError({});
-      const claims = yield* decodeSessionClaims(base64UrlDecodeUtf8(token.split(".")[0]!)).pipe(
-        Effect.mapError((cause) => new InvalidSessionTokenPayloadError({ cause })),
-      );
-      const result = yield* accessTokens(claims, clientId, resource);
-      yield* sql`INSERT INTO auth_mcp_refresh (session_id, token_hash) VALUES (${claims.sid}, ${tokenHash(result.refreshToken)})`.pipe(
-        Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
-      );
-      return result;
-    });
-  const refreshMcpOAuthToken: SessionStore["Service"]["refreshMcpOAuthToken"] = (
-    token,
-    clientId,
-    resource,
-  ) =>
-    Effect.gen(function* () {
-      const [payload, signature, extra] = token.split(".");
-      if (
-        !payload ||
-        !signature ||
-        extra !== undefined ||
-        !timingSafeEqualBase64Url(signature, signRefresh(payload))
-      )
-        return yield* new MalformedSessionTokenError({});
-      const refresh = yield* decodeRefresh(base64UrlDecodeUtf8(payload)).pipe(
-        Effect.mapError((cause) => new InvalidSessionTokenPayloadError({ cause })),
-      );
-      if (
-        refresh.clientId !== clientId ||
-        refresh.resource !== resource ||
-        refresh.claims.sub !== "mcp-client"
-      )
-        return yield* new MalformedSessionTokenError({});
-      const authorityPayload = yield* encodeClaims(refresh.claims).pipe(
-        Effect.map(base64UrlEncode),
-        Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
-      );
-      yield* verify(`${authorityPayload}.${signPayload(authorityPayload, signingSecret)}`);
-      // A concurrent SDK request or a lost response must get the same successor,
-      // without persisting the refresh secret. Only the immediate predecessor can retry.
-      const result = yield* accessTokens(
-        refresh.claims,
-        clientId,
-        resource,
-        signPayload(`mcp-refresh-nonce.${token}`, signingSecret),
-      );
-      const now = (yield* DateTime.now).epochMilliseconds;
-      const updated =
-        yield* sql`UPDATE auth_mcp_refresh SET token_hash = ${tokenHash(result.refreshToken)},
+  const issueMcpOAuthTokens: SessionStore["Service"]["issueMcpOAuthTokens"] = Effect.fn(
+    "SessionStore.issueMcpOAuthTokens",
+  )(function* (token, clientId, resource) {
+    const verified = yield* verify(token);
+    if (verified.subject !== "mcp-client") return yield* new MalformedSessionTokenError({});
+    const claims = yield* decodeSessionClaims(base64UrlDecodeUtf8(token.split(".")[0]!)).pipe(
+      Effect.mapError((cause) => new InvalidSessionTokenPayloadError({ cause })),
+    );
+    const result = yield* accessTokens(claims, clientId, resource);
+    yield* sql`INSERT INTO auth_mcp_refresh (session_id, token_hash) VALUES (${claims.sid}, ${tokenHash(result.refreshToken)})`.pipe(
+      Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
+    );
+    return result;
+  });
+  const refreshMcpOAuthToken: SessionStore["Service"]["refreshMcpOAuthToken"] = Effect.fn(
+    "SessionStore.refreshMcpOAuthToken",
+  )(function* (token, clientId, resource) {
+    const [payload, signature, extra] = token.split(".");
+    if (
+      !payload ||
+      !signature ||
+      extra !== undefined ||
+      !timingSafeEqualBase64Url(signature, signRefresh(payload))
+    )
+      return yield* new MalformedSessionTokenError({});
+    const refresh = yield* decodeRefresh(base64UrlDecodeUtf8(payload)).pipe(
+      Effect.mapError((cause) => new InvalidSessionTokenPayloadError({ cause })),
+    );
+    if (
+      refresh.clientId !== clientId ||
+      refresh.resource !== resource ||
+      refresh.claims.sub !== "mcp-client"
+    )
+      return yield* new MalformedSessionTokenError({});
+    const authorityPayload = yield* encodeClaims(refresh.claims).pipe(
+      Effect.map(base64UrlEncode),
+      Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
+    );
+    yield* verify(`${authorityPayload}.${signPayload(authorityPayload, signingSecret)}`);
+    // A concurrent SDK request or a lost response must get the same successor,
+    // without persisting the refresh secret. Only the immediate predecessor can retry.
+    const result = yield* accessTokens(
+      refresh.claims,
+      clientId,
+      resource,
+      signPayload(`mcp-refresh-nonce.${token}`, signingSecret),
+    );
+    const now = (yield* DateTime.now).epochMilliseconds;
+    const updated =
+      yield* sql`UPDATE auth_mcp_refresh SET token_hash = ${tokenHash(result.refreshToken)},
           previous_hash = ${tokenHash(token)}, previous_valid_until = ${now + 5_000}
         WHERE session_id = ${refresh.claims.sid} AND token_hash = ${tokenHash(token)} RETURNING session_id`.pipe(
-          Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
-        );
-      if (updated.length !== 1) {
-        const retry = yield* sql`SELECT session_id FROM auth_mcp_refresh
+        Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
+      );
+    if (updated.length !== 1) {
+      const retry = yield* sql`SELECT session_id FROM auth_mcp_refresh
           WHERE session_id = ${refresh.claims.sid} AND token_hash = ${tokenHash(result.refreshToken)}
             AND previous_hash = ${tokenHash(token)} AND previous_valid_until > ${now}`.pipe(
-          Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
-        );
-        if (retry.length !== 1) {
-          // Valid bound authority reused after the retry window, or after another rotation.
-          yield* revoke(refresh.claims.sid);
-          return yield* new MalformedSessionTokenError({});
-        }
+        Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
+      );
+      if (retry.length !== 1) {
+        // Valid bound authority reused after the retry window, or after another rotation.
+        yield* revoke(refresh.claims.sid);
+        return yield* new MalformedSessionTokenError({});
       }
-      return { ...result, scopes: refresh.claims.scopes };
-    });
+    }
+    return { ...result, scopes: refresh.claims.scopes };
+  });
 
   const encodeWsClaims = Schema.encodeEffect(Schema.fromJsonString(WebSocketClaims));
   const issueWebSocketToken: SessionStore["Service"]["issueWebSocketToken"] = Effect.fn(
@@ -1287,60 +1280,64 @@ const make = Effect.gen(function* () {
       readonly generation: string;
     }
   >();
-  const closeViewer: SessionStore["Service"]["closeViewer"] = (sessionId, viewerId) =>
-    Effect.gen(function* () {
+  const closeViewer: SessionStore["Service"]["closeViewer"] = Effect.fn("SessionStore.closeViewer")(
+    function* (sessionId, viewerId) {
       const viewer = viewers.get(viewerId);
       if (!viewer || viewer.sessionId !== sessionId) return false;
       viewers.delete(viewerId);
       yield* Deferred.succeed(viewer.closed, undefined);
       return true;
-    });
-  const awaitViewerInvalidation: SessionStore["Service"]["awaitViewerInvalidation"] = (viewerId) =>
-    Effect.gen(function* () {
-      const viewer = viewers.get(viewerId);
-      if (!viewer) return;
-      const now = yield* DateTime.now;
-      const admissionExpired = Effect.sleep(
-        Duration.millis(Math.max(0, viewer.expiresAt.epochMilliseconds - now.epochMilliseconds)),
-      ).pipe(
-        Effect.andThen(
-          Effect.suspend(() =>
-            viewer.active.size === 0 ? Effect.void : Deferred.await(viewer.closed),
-          ),
+    },
+  );
+  const awaitViewerInvalidation: SessionStore["Service"]["awaitViewerInvalidation"] = Effect.fn(
+    "SessionStore.awaitViewerInvalidation",
+  )(function* (viewerId) {
+    const viewer = viewers.get(viewerId);
+    if (!viewer) return;
+    const now = yield* DateTime.now;
+    const admissionExpired = Effect.sleep(
+      Duration.millis(Math.max(0, viewer.expiresAt.epochMilliseconds - now.epochMilliseconds)),
+    ).pipe(
+      Effect.andThen(
+        Effect.suspend(() =>
+          viewer.active.size === 0 ? Effect.void : Deferred.await(viewer.closed),
         ),
+      ),
+    );
+    yield* Effect.raceFirst(
+      awaitInvalidation(viewer.sessionId),
+      Effect.raceFirst(Deferred.await(viewer.closed), admissionExpired),
+    );
+  });
+  const viewerSession = Effect.fn("SessionStore.viewerSession")(function* (
+    sessionId: AuthSessionId,
+    token: string,
+  ) {
+    const row = yield* authSessions
+      .getById({ sessionId })
+      .pipe(
+        Effect.mapError((cause) => new SessionCredentialVerificationError({ sessionId, cause })),
       );
-      yield* Effect.raceFirst(
-        awaitInvalidation(viewer.sessionId),
-        Effect.raceFirst(Deferred.await(viewer.closed), admissionExpired),
-      );
-    });
-  const viewerSession = (sessionId: AuthSessionId, token: string) =>
-    Effect.gen(function* () {
-      const row = yield* authSessions
-        .getById({ sessionId })
-        .pipe(
-          Effect.mapError((cause) => new SessionCredentialVerificationError({ sessionId, cause })),
-        );
-      if (Option.isNone(row)) return yield* new UnknownSessionTokenError({ sessionId });
-      if (row.value.revokedAt !== null)
-        return yield* new SessionTokenRevokedError({ sessionId, revokedAt: row.value.revokedAt });
-      const observedAt = yield* DateTime.now;
-      if (row.value.expiresAt.epochMilliseconds <= observedAt.epochMilliseconds)
-        return yield* new SessionTokenExpiredError({
-          sessionId,
-          expiresAt: row.value.expiresAt,
-          observedAt,
-        });
-      return {
+    if (Option.isNone(row)) return yield* new UnknownSessionTokenError({ sessionId });
+    if (row.value.revokedAt !== null)
+      return yield* new SessionTokenRevokedError({ sessionId, revokedAt: row.value.revokedAt });
+    const observedAt = yield* DateTime.now;
+    if (row.value.expiresAt.epochMilliseconds <= observedAt.epochMilliseconds)
+      return yield* new SessionTokenExpiredError({
         sessionId,
-        token,
-        method: row.value.method,
-        client: toClientMetadata(row.value.client),
         expiresAt: row.value.expiresAt,
-        subject: row.value.subject,
-        scopes: row.value.scopes,
-      } satisfies VerifiedSession;
-    });
+        observedAt,
+      });
+    return {
+      sessionId,
+      token,
+      method: row.value.method,
+      client: toClientMetadata(row.value.client),
+      expiresAt: row.value.expiresAt,
+      subject: row.value.subject,
+      scopes: row.value.scopes,
+    } satisfies VerifiedSession;
+  });
   const issueViewerToken: SessionStore["Service"]["issueViewerToken"] = Effect.fn(
     "SessionStore.issueViewerToken",
   )(function* (input) {

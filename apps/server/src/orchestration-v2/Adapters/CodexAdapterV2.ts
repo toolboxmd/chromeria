@@ -7289,58 +7289,59 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ...(input.runtimePolicy.bare === undefined
             ? {}
             : {
-                getBareReceipt: (thread: OrchestrationV2ProviderThread) =>
-                  Effect.gen(function* () {
-                    const nativeId = thread.nativeThreadRef?.nativeId;
-                    const evidence: Array<import("@t3tools/contracts").BareEvidence> = [];
-                    if (nativeId !== undefined) {
-                      const status = yield* client
-                        .request("mcpServerStatus/list", { threadId: nativeId })
-                        .pipe(Effect.option);
-                      if (Option.isSome(status))
-                        evidence.push(
-                          bareInventoryEvidence(
-                            "mcp",
-                            status.value.data.map((server) => server.name),
-                            namesT3Mcp(input.runtimePolicy.bare!) ? ["t3-code"] : [],
-                            `Codex mcpServerStatus/list ${nativeId}`,
-                          ),
-                        );
-                      const skills = yield* client
-                        .request("skills/list", {
-                          cwds: input.runtimePolicy.cwd === null ? [] : [input.runtimePolicy.cwd],
-                        })
-                        .pipe(Effect.option);
-                      if (Option.isSome(skills))
-                        evidence.push({
-                          category: "skills",
-                          status: "unobserved",
-                          identities: skills.value.data.flatMap((entry) =>
-                            entry.skills.map((skill) => skill.name),
-                          ),
-                          source: `Codex skills/list ${nativeId}; discovery inventory does not certify prompt inclusion`,
-                        });
-                    }
-                    return bareReceipt({
-                      driver: CODEX_PROVIDER,
-                      bare: input.runtimePolicy.bare!,
-                      mode: input.runtimePolicy.runtimeMode,
-                      effective: `Codex ${input.runtimePolicy.runtimeMode}`,
-                      controls: [
-                        "own CODEX_HOME and app-server",
-                        "native forks retain the initialized native home owner",
-                        "strict-config",
-                        "empty base/developer instructions",
-                        "skills.include_instructions=false",
-                        "skip_host_skill_discovery",
-                        "tools.update_plan.enabled=false",
-                      ],
-                      retained: ["native shell/file tool schemas"],
-                      root: `${home}/sessions`,
-                      sessionId: nativeId ?? null,
-                      evidence,
-                    });
-                  }),
+                getBareReceipt: Effect.fn("CodexAdapterV2.getBareReceipt")(function* (
+                  thread: OrchestrationV2ProviderThread,
+                ) {
+                  const nativeId = thread.nativeThreadRef?.nativeId;
+                  const evidence: Array<import("@t3tools/contracts").BareEvidence> = [];
+                  if (nativeId !== undefined) {
+                    const status = yield* client
+                      .request("mcpServerStatus/list", { threadId: nativeId })
+                      .pipe(Effect.option);
+                    if (Option.isSome(status))
+                      evidence.push(
+                        bareInventoryEvidence(
+                          "mcp",
+                          status.value.data.map((server) => server.name),
+                          namesT3Mcp(input.runtimePolicy.bare!) ? ["t3-code"] : [],
+                          `Codex mcpServerStatus/list ${nativeId}`,
+                        ),
+                      );
+                    const skills = yield* client
+                      .request("skills/list", {
+                        cwds: input.runtimePolicy.cwd === null ? [] : [input.runtimePolicy.cwd],
+                      })
+                      .pipe(Effect.option);
+                    if (Option.isSome(skills))
+                      evidence.push({
+                        category: "skills",
+                        status: "unobserved",
+                        identities: skills.value.data.flatMap((entry) =>
+                          entry.skills.map((skill) => skill.name),
+                        ),
+                        source: `Codex skills/list ${nativeId}; discovery inventory does not certify prompt inclusion`,
+                      });
+                  }
+                  return bareReceipt({
+                    driver: CODEX_PROVIDER,
+                    bare: input.runtimePolicy.bare!,
+                    mode: input.runtimePolicy.runtimeMode,
+                    effective: `Codex ${input.runtimePolicy.runtimeMode}`,
+                    controls: [
+                      "own CODEX_HOME and app-server",
+                      "native forks retain the initialized native home owner",
+                      "strict-config",
+                      "empty base/developer instructions",
+                      "skills.include_instructions=false",
+                      "skip_host_skill_discovery",
+                      "tools.update_plan.enabled=false",
+                    ],
+                    retained: ["native shell/file tool schemas"],
+                    root: `${home}/sessions`,
+                    sessionId: nativeId ?? null,
+                    evidence,
+                  });
+                }),
               }),
           instanceId: adapterOptions.instanceId,
           driver: CODEX_PROVIDER,
@@ -7393,26 +7394,25 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }
             return false;
           }),
-          endedTurnHold: (heldInput) =>
-            Effect.gen(function* () {
-              const cutIn = cutIns.get(heldInput.providerThread.id);
+          endedTurnHold: Effect.fn("CodexAdapterV2.endedTurnHold")(function* (heldInput) {
+            const cutIn = cutIns.get(heldInput.providerThread.id);
+            if (
+              cutInCalls.get(heldInput.providerThread.id)?.providerTurnId ===
+                heldInput.providerTurnId ||
+              (cutIn !== undefined &&
+                Array.from(cutIn.roots).some(
+                  (root) => root.providerTurnId === heldInput.providerTurnId,
+                ))
+            )
+              return "cut-in" as const;
+            for (const deferred of (yield* Ref.get(deferredRootTerminals)).values())
               if (
-                cutInCalls.get(heldInput.providerThread.id)?.providerTurnId ===
-                  heldInput.providerTurnId ||
-                (cutIn !== undefined &&
-                  Array.from(cutIn.roots).some(
-                    (root) => root.providerTurnId === heldInput.providerTurnId,
-                  ))
+                deferred.context.providerThread.id === heldInput.providerThread.id &&
+                deferred.context.providerTurnId === heldInput.providerTurnId
               )
-                return "cut-in" as const;
-              for (const deferred of (yield* Ref.get(deferredRootTerminals)).values())
-                if (
-                  deferred.context.providerThread.id === heldInput.providerThread.id &&
-                  deferred.context.providerTurnId === heldInput.providerTurnId
-                )
-                  return "descendants" as const;
-              return undefined;
-            }),
+                return "descendants" as const;
+            return undefined;
+          }),
           ensureThread: (threadInput) =>
             ensureInitialized.pipe(
               Effect.andThen(mcpSessions.read(threadInput.threadId)),
@@ -7660,8 +7660,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ),
               ),
           ),
-          interruptTurn: (requestedInput) =>
-            Effect.gen(function* () {
+          interruptTurn: Effect.fn("CodexAdapterV2.interruptTurn")(
+            function* (requestedInput) {
               const cutInCall = requestedInput.replacementFollows === true;
               const threadKey = requestedInput.providerThread.id;
               const exit = yield* Deferred.make<void>();
@@ -8086,35 +8086,36 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                         return trackedTerminals;
                       }),
                     );
-                  const terminateTrackedTerminals = () =>
-                    Effect.gen(function* () {
-                      const trackedTerminals = yield* collectTrackedTerminals();
-                      const pendingTerminals = Array.from(trackedTerminals.entries())
-                        .filter(([key]) => !containedTerminalKeys.has(key))
-                        .sort(
-                          ([leftKey], [rightKey]) =>
-                            Number(attemptedTerminalKeys.has(leftKey)) -
-                            Number(attemptedTerminalKeys.has(rightKey)),
-                        );
-                      return yield* Effect.forEach(
-                        pendingTerminals,
-                        ([key, { nativeThreadId, processId }]) =>
-                          Effect.gen(function* () {
-                            attemptedTerminalKeys.add(key);
-                            yield* terminateBackgroundTerminal(nativeThreadId, processId);
-                            yield* turnTerminalizationPermit.withPermits(1)(
-                              Effect.sync(() => {
-                                containedTerminalKeys.add(key);
-                              }),
-                            );
-                          }).pipe(
-                            Effect.as({ success: true as const }),
-                            Effect.catch((error) =>
-                              Effect.succeed({ success: false as const, error }),
-                            ),
-                          ),
+                  const terminateTrackedTerminals = Effect.fn(
+                    "CodexAdapterV2.terminateTrackedTerminals",
+                  )(function* () {
+                    const trackedTerminals = yield* collectTrackedTerminals();
+                    const pendingTerminals = Array.from(trackedTerminals.entries())
+                      .filter(([key]) => !containedTerminalKeys.has(key))
+                      .sort(
+                        ([leftKey], [rightKey]) =>
+                          Number(attemptedTerminalKeys.has(leftKey)) -
+                          Number(attemptedTerminalKeys.has(rightKey)),
                       );
-                    });
+                    return yield* Effect.forEach(
+                      pendingTerminals,
+                      ([key, { nativeThreadId, processId }]) =>
+                        Effect.gen(function* () {
+                          attemptedTerminalKeys.add(key);
+                          yield* terminateBackgroundTerminal(nativeThreadId, processId);
+                          yield* turnTerminalizationPermit.withPermits(1)(
+                            Effect.sync(() => {
+                              containedTerminalKeys.add(key);
+                            }),
+                          );
+                        }).pipe(
+                          Effect.as({ success: true as const }),
+                          Effect.catch((error) =>
+                            Effect.succeed({ success: false as const, error }),
+                          ),
+                        ),
+                    );
+                  });
 
                   const [, completed] = yield* Effect.all(
                     [
@@ -8192,17 +8193,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   }),
                 ),
               );
-            }).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProviderAdapter.ProviderAdapterInterruptError({
-                    driver: CODEX_PROVIDER,
-                    providerThreadId: requestedInput.providerThread.id,
-                    providerTurnId: requestedInput.providerTurnId,
-                    cause,
-                  }),
+            },
+            (effect, requestedInput) =>
+              effect.pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapter.ProviderAdapterInterruptError({
+                      driver: CODEX_PROVIDER,
+                      providerThreadId: requestedInput.providerThread.id,
+                      providerTurnId: requestedInput.providerTurnId,
+                      cause,
+                    }),
+                ),
               ),
-            ),
+          ),
           respondToRuntimeRequest: Effect.fn("CodexAdapterV2.respondToRuntimeRequest")(
             function* (requestInput) {
               const pending = (yield* Ref.get(pendingRuntimeRequests)).get(

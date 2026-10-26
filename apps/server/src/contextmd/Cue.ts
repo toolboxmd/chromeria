@@ -1,19 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off - the Cue client times the TCP connect apart from the reply, which fetch cannot, and runs outside Effect beside the synchronous serving state.
 /**
- * Cue client: asks the Cue service on the GPU serving host to score a moment's window against the Cue
- * entries, without ever holding a local lane up.
- *
- * - A `pre_tool` moment only starts a request; the call's `tool_result` collects it (latency hidden behind the
- *   tool run). A `user_message` or a failed call scores at once and waits what is left of the moment's budget.
- * - A connect failure marks the service unavailable for this whole environment (the machine); later moments
- *   skip Cue (`not_called`) until a probe every `PROBE_SECONDS` gets the Cue health document (`ok` and
- *   `adapter`). A slow reply is `timeout` for that call only.
- * - A 4xx reply is `rejected`: the service refused this request (its reason is logged), the service stays
- *   available.
- * - A collect with no request for that call is `lost` (a restart dropped it), or `not_called` while the
- *   service is unavailable.
- *
- * The window text is built by the service from the items sent here; nothing about it is stored on either side.
+ * Asks the Cue service to score a moment's window without holding a local lane: `pre_tool` starts a
+ * request its `tool_result` collects; others score at once. A connect failure skips Cue machine-wide
+ * until a health probe passes; timeouts, 4xx rejections and lost collects affect one call only.
  */
 import * as NodeHttp from "node:http";
 

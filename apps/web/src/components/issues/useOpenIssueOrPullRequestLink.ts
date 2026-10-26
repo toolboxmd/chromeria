@@ -55,11 +55,9 @@ function useOpenIssueInIssuesView() {
 }
 
 /**
- * Opens a GitHub `/issues/N` link in the app: the pull request panel when N is a pull request,
- * the thread's right panel when it is an Issue (the Issues page without a thread), the browser
- * otherwise. Returns null, doing nothing, for any other link and wherever the server reads no
- * Issues, so the link opens as it would without them. Both reads happen on click, never on
- * render.
+ * Opens a GitHub `/issues/N` link in the app: the pull request panel for a pull request, the right
+ * panel (or Issues page) for an Issue, else the browser. Null, doing nothing, for other links or
+ * when the server reads no Issues. Both reads happen on click, never on render.
  */
 export function useOpenIssueOrPullRequestLink(
   openChangeRequestLink: (

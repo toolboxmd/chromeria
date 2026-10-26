@@ -1801,7 +1801,7 @@ const codexIncompleteStop = (
               .providerTurns[0]?.status,
             "running",
           );
-          // A failed root settles at once while its children continue (upstream #21366).
+          // A failed root settles at once while its children continue (pingdotgg/t3code#21366).
           assert.isFalse(
             boundary.nativeEvents.some(
               (event) => event.type === "turn.terminal" && event.providerTurnId === oldTurn.id,

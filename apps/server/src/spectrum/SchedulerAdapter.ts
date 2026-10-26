@@ -19,7 +19,7 @@ const unreadable: BoundSpectrum = {
 };
 
 /**
- * #174's port over Spectrum's own rows (D32, D40). Reads through the caller's
+ * The scheduled-task checker's port over Spectrum's own rows (D32, D40). Reads through the caller's
  * SqlClient, so the scheduler's fence sees one transaction; needs-you is derived
  * from the current attempt, never stored.
  */

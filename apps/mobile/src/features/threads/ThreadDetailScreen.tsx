@@ -314,6 +314,24 @@ export interface ThreadDetailScreenProps {
   readonly showContent?: boolean;
 }
 
+function waitsForTransportRetry(thread: {
+  readonly transportRecovery?: { readonly runId: string } | null | undefined;
+  readonly latestRun?: { readonly runId: string } | null | undefined;
+  readonly runtime?: { readonly status: string } | null | undefined;
+  readonly archivedAt?: string | null | undefined;
+  readonly deletedAt?: string | null | undefined;
+  readonly settledOverride?: string | null | undefined;
+}): boolean {
+  if (!thread.transportRecovery || thread.transportRecovery.runId !== thread.latestRun?.runId)
+    return false;
+  return (
+    thread.runtime?.status === "failed" &&
+    !thread.archivedAt &&
+    !thread.deletedAt &&
+    thread.settledOverride !== "settled"
+  );
+}
+
 const USAGE_LIMITS_PANEL_GAP = 12;
 const USAGE_LIMITS_PANEL_MIN_HEIGHT = 44;
 
@@ -1584,13 +1602,8 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
                     threadRef={props.selectedThreadDetailRef}
                     canOperateThread={props.canOperateThread}
                   />
-                  {props.selectedThread.transportRecovery?.runId ===
-                    props.selectedThread.latestRun?.runId &&
-                  props.selectedThread.transportRecovery &&
-                  props.selectedThread.runtime?.status === "failed" &&
-                  !props.selectedThread.archivedAt &&
-                  !props.selectedThread.deletedAt &&
-                  props.selectedThread.settledOverride !== "settled" ? (
+                  {props.selectedThread.transportRecovery &&
+                  waitsForTransportRetry(props.selectedThread) ? (
                     <View className="mx-3 mb-2 rounded-xl border border-warning-foreground/25 bg-screen p-3">
                       <Text accessibilityRole="alert" className="text-sm text-warning-foreground">
                         {`Waiting to retry the connection. Next retry ${new Date(props.selectedThread.transportRecovery.retryAt).toLocaleString()}. Send a message or press Stop to cancel.`}

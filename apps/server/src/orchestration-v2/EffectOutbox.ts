@@ -497,13 +497,12 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           cancellationDrains.set(effectId, Deferred.makeUnsafe<void>());
         return Deferred.await(cancellationSignal(effectId));
       },
-      clearCancellation: (effectId) =>
-        Effect.gen(function* () {
-          const drained = cancellationDrains.get(effectId);
-          cancellationSignals.delete(effectId);
-          cancellationDrains.delete(effectId);
-          if (drained !== undefined) yield* Deferred.succeed(drained, undefined);
-        }),
+      clearCancellation: Effect.fn("EffectOutbox.clearCancellation")(function* (effectId) {
+        const drained = cancellationDrains.get(effectId);
+        cancellationSignals.delete(effectId);
+        cancellationDrains.delete(effectId);
+        if (drained !== undefined) yield* Deferred.succeed(drained, undefined);
+      }),
       awaitSettled: Effect.fn("EffectOutbox.awaitSettled")(function* (effectId) {
         // Registered before the read, so a settle right after it still resolves.
         const signal = settledSignals.get(effectId) ?? Deferred.makeUnsafe<void>();

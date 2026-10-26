@@ -40,7 +40,7 @@ export const ensureSpectrumSchema = Effect.gen(function* () {
   yield* sql`CREATE INDEX IF NOT EXISTS fork_spectra_caller ON fork_spectra(caller_thread_id, scheduler_run_id)`;
   // The wake tick's only read while no Spectrum is active.
   yield* sql`CREATE INDEX IF NOT EXISTS fork_spectra_status ON fork_spectra(json_extract(payload_json, '$.status'))`;
-  // Version 2 advances on events (#404), so the version 1 event cursor is dropped once.
+  // Version 2 advances on events, so the version 1 event cursor is dropped once.
   yield* sql`UPDATE fork_spectra
     SET payload_json = json_set(json_remove(payload_json, '$.cursor'), '$.version', 2)
     WHERE json_extract(payload_json, '$.version') = 1`;

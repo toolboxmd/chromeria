@@ -190,7 +190,9 @@ it("retains a cut explanation when awaited work changes the reported outcome", (
   const cut: OrchestrationV2Run = {
     ...run,
     status: "cancelled",
-    restartCancelledBackgroundWork: [{ kind: "monitor", label: "Waiting for a result" }],
+    restartCancelledBackgroundWork: [
+      { kind: "monitor", label: "Waiting for a result", awaited: true },
+    ],
     restartCut: {
       continuation: "declined",
       cutAt: childCreatedAt,

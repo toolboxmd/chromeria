@@ -129,7 +129,7 @@ export interface ServerClientSessionRecord {
   readonly lastConnectedAt: string | null;
   readonly connected: boolean;
   readonly current: boolean;
-  /** Fork: the client's person label; unset means the default person (#121). */
+  /** Fork: the client's person label; unset means the default person. */
   readonly person?: string;
 }
 

@@ -147,166 +147,167 @@ const make = Effect.gen(function* () {
       record.peer.generation === row.generation
     );
   };
-  const eligible = (row: Row) =>
-    Effect.gen(function* () {
-      if (row.expires_at <= (yield* Clock.currentTimeMillis)) {
-        yield* sql`UPDATE remote_secret_requests SET status='retired' WHERE request_id=${row.request_id} AND status NOT IN ('consumed','declined','retired')`.pipe(
-          Effect.mapError(unavailable),
-        );
-        yield* remove(row);
-        return yield* denied();
-      }
-      yield* authority
-        .checkInteractiveRecord(row.source_record_id)
-        .pipe(
-          Effect.tapError((error) =>
-            error.code === "capability_denied"
-              ? sql`UPDATE remote_secret_requests SET status='retired' WHERE request_id=${row.request_id} AND status NOT IN ('consumed','declined','retired')`.pipe(
-                  Effect.mapError(unavailable),
-                  Effect.andThen(remove(row)),
-                )
-              : Effect.void,
-          ),
-        );
-    });
+  const eligible = Effect.fn("RemoteSecretRequests.eligible")(function* (row: Row) {
+    if (row.expires_at <= (yield* Clock.currentTimeMillis)) {
+      yield* sql`UPDATE remote_secret_requests SET status='retired' WHERE request_id=${row.request_id} AND status NOT IN ('consumed','declined','retired')`.pipe(
+        Effect.mapError(unavailable),
+      );
+      yield* remove(row);
+      return yield* denied();
+    }
+    yield* authority
+      .checkInteractiveRecord(row.source_record_id)
+      .pipe(
+        Effect.tapError((error) =>
+          error.code === "capability_denied"
+            ? sql`UPDATE remote_secret_requests SET status='retired' WHERE request_id=${row.request_id} AND status NOT IN ('consumed','declined','retired')`.pipe(
+                Effect.mapError(unavailable),
+                Effect.andThen(remove(row)),
+              )
+            : Effect.void,
+        ),
+      );
+  });
   const result = (row: Row): RemoteSecretResult => ({
     handle: { environmentId: here, requestId: row.request_id },
     status: row.status,
   });
-  const control: RemoteSecretRequests["Service"]["control"] = (scope, input) =>
-    Effect.gen(function* () {
-      const record = interactiveAuthority(scope.authority);
-      if (record === undefined || record.sessionId === null || scope.client?.linked !== true)
+  const control: RemoteSecretRequests["Service"]["control"] = Effect.fn(
+    "RemoteSecretRequests.control",
+  )(function* (scope, input) {
+    const record = interactiveAuthority(scope.authority);
+    if (record === undefined || record.sessionId === null || scope.client?.linked !== true)
+      return yield* denied();
+    yield* authority.checkPayload(record, "remote_secret", remoteSecretIntent(input));
+    if (input.type === "create") {
+      yield* authority.checkTarget(scope, { type: "environment" });
+      if (
+        record.ceiling.runtimeMode !== "full-access" ||
+        record.ceiling.interactionMode !== "default" ||
+        record.ceiling.resourceScope !== "environment-resources" ||
+        !record.ceiling.capabilities.includes("orchestration")
+      )
         return yield* denied();
-      yield* authority.checkPayload(record, "remote_secret", remoteSecretIntent(input));
-      if (input.type === "create") {
-        yield* authority.checkTarget(scope, { type: "environment" });
-        if (
-          record.ceiling.runtimeMode !== "full-access" ||
-          record.ceiling.interactionMode !== "default" ||
-          record.ceiling.resourceScope !== "environment-resources" ||
-          !record.ceiling.capabilities.includes("orchestration")
-        )
-          return yield* denied();
-        const projects =
-          yield* sql`SELECT 1 FROM projection_projects WHERE project_id=${input.projectId} AND deleted_at IS NULL`.pipe(
-            Effect.mapError(unavailable),
-          );
-        if (projects.length !== 1) return yield* denied();
-        const origin = yield* authority.secretOrigin(record.id);
-        const inputDigest = requestDigest(input);
-        const keyDigest = requestDigest(input.key);
-        const existing =
-          (yield* sql<Row>`SELECT * FROM remote_secret_requests WHERE environment_id=${record.peer.environmentId} AND generation=${record.peer.generation} AND namespace=${origin.namespace} AND key_digest=${keyDigest}`.pipe(
-            Effect.mapError(unavailable),
-          ))[0];
-        if (existing !== undefined) {
-          if (
-            existing.input_digest !== inputDigest ||
-            existing.origin_json !== canonicalRequest(origin)
-          )
-            return yield* denied();
-          return result(existing);
-        }
-        const channel = (yield* sql<{
-          credential_identity: string | null;
-        }>`SELECT credential_identity FROM peer_authority_sessions WHERE session_id=${record.sessionId}`.pipe(
+      const projects =
+        yield* sql`SELECT 1 FROM projection_projects WHERE project_id=${input.projectId} AND deleted_at IS NULL`.pipe(
+          Effect.mapError(unavailable),
+        );
+      if (projects.length !== 1) return yield* denied();
+      const origin = yield* authority.secretOrigin(record.id);
+      const inputDigest = requestDigest(input);
+      const keyDigest = requestDigest(input.key);
+      const existing =
+        (yield* sql<Row>`SELECT * FROM remote_secret_requests WHERE environment_id=${record.peer.environmentId} AND generation=${record.peer.generation} AND namespace=${origin.namespace} AND key_digest=${keyDigest}`.pipe(
           Effect.mapError(unavailable),
         ))[0];
-        if (channel?.credential_identity == null) return yield* denied();
-        const id = `rsr_${Hex.encode(yield* crypto.randomBytes(16).pipe(Effect.mapError(unavailable)))}`;
-        const expiry = (yield* Clock.currentTimeMillis) + 24 * 60 * 60 * 1000;
-        yield* sql`INSERT INTO remote_secret_requests (request_id,environment_id,generation,namespace,origin_json,source_record_id,session_id,credential_identity,key_digest,input_digest,project_id,family,status,expires_at) VALUES (${id},${record.peer.environmentId},${record.peer.generation},${origin.namespace},${canonicalRequest(origin)},${record.id},${record.sessionId},${channel.credential_identity},${keyDigest},${inputDigest},${input.projectId},${input.family},'pending',${expiry})`.pipe(
-          Effect.mapError(unavailable),
-        );
-        const created = yield* read(id);
-        if (created === undefined) return yield* unavailable();
-        if (Option.isSome(linkEvents)) yield* linkEvents.value.automationChanged;
-        return result(created);
+      if (existing !== undefined) {
+        if (
+          existing.input_digest !== inputDigest ||
+          existing.origin_json !== canonicalRequest(origin)
+        )
+          return yield* denied();
+        return result(existing);
       }
-      const row = yield* read(input.requestId);
-      if (row === undefined || !owned(scope, row)) return yield* denied();
-      if (input.type === "status") {
-        if (requestNamespace(scope) !== row.namespace) return yield* denied();
-        yield* eligible(row);
-        return result(row);
-      }
-      yield* authority.secretClient(record.id);
-      yield* eligible(row);
-      if (input.answer === "decline") {
-        const changed =
-          yield* sql`UPDATE remote_secret_requests SET status='declined' WHERE request_id=${row.request_id} AND status='pending' RETURNING request_id`.pipe(
-            Effect.mapError(unavailable),
-          );
-        if (changed.length === 0 && row.status !== "declined") return yield* denied();
-        return { ...result(row), status: "declined" as const };
-      }
-      if (input.value === undefined || input.value.trim().length === 0) return yield* denied();
-      // Durable attempt before filesystem publication. No attempt ever replaces another's bytes.
-      if (row.status === "pending") {
-        const won =
-          yield* sql`UPDATE remote_secret_requests SET status='saving',attempt_id=${input.attemptId} WHERE request_id=${row.request_id} AND status='pending' RETURNING request_id`.pipe(
-            Effect.mapError(unavailable),
-          );
-        if (won.length !== 1) return yield* denied();
-      } else if (
-        row.attempt_id !== input.attemptId ||
-        !["saving", "saved", "reserved", "consumed"].includes(row.status)
-      )
-        return yield* denied();
-      const attempt = { ...row, attempt_id: input.attemptId };
-      const bytes = new TextEncoder().encode(input.value);
-      const prior = yield* store.get(nameFor(attempt)).pipe(Effect.mapError(unavailable));
-      if (Option.isSome(prior)) {
-        if (new TextDecoder().decode(prior.value) !== input.value) return yield* denied();
-      } else {
-        if (row.status !== "pending" && row.status !== "saving") return yield* denied();
-        yield* store.create(nameFor(attempt), bytes).pipe(Effect.mapError(unavailable));
-      }
-      yield* eligible(attempt);
-      yield* sql`UPDATE remote_secret_requests SET status='saved' WHERE request_id=${row.request_id} AND status='saving' AND attempt_id=${input.attemptId}`.pipe(
+      const channel = (yield* sql<{
+        credential_identity: string | null;
+      }>`SELECT credential_identity FROM peer_authority_sessions WHERE session_id=${record.sessionId}`.pipe(
+        Effect.mapError(unavailable),
+      ))[0];
+      if (channel?.credential_identity == null) return yield* denied();
+      const id = `rsr_${Hex.encode(yield* crypto.randomBytes(16).pipe(Effect.mapError(unavailable)))}`;
+      const expiry = (yield* Clock.currentTimeMillis) + 24 * 60 * 60 * 1000;
+      yield* sql`INSERT INTO remote_secret_requests (request_id,environment_id,generation,namespace,origin_json,source_record_id,session_id,credential_identity,key_digest,input_digest,project_id,family,status,expires_at) VALUES (${id},${record.peer.environmentId},${record.peer.generation},${origin.namespace},${canonicalRequest(origin)},${record.id},${record.sessionId},${channel.credential_identity},${keyDigest},${inputDigest},${input.projectId},${input.family},'pending',${expiry})`.pipe(
         Effect.mapError(unavailable),
       );
-      const current = yield* read(row.request_id);
-      if (current === undefined || !["saved", "reserved", "consumed"].includes(current.status)) {
-        yield* remove(attempt);
-        return yield* denied();
-      }
-      return result(current);
-    }).pipe(lock.withPermits(1));
-  const reserve: RemoteSecretRequests["Service"]["reserve"] = (scope, handle, projectId, request) =>
-    Effect.gen(function* () {
-      if (handle.environmentId !== here) return yield* denied();
-      const row = yield* read(handle.requestId);
-      const record = interactiveAuthority(scope.authority);
-      if (
-        row === undefined ||
-        record === undefined ||
-        !owned(scope, row) ||
-        row.namespace !== requestNamespace(scope) ||
-        row.project_id !== projectId ||
-        row.family !== "schedule.webhook-signature"
-      )
-        return yield* denied();
-      const currentOrigin = yield* authority.secretOrigin(record.id);
-      if (canonicalRequest(currentOrigin) !== row.origin_json) return yield* denied();
+      const created = yield* read(id);
+      if (created === undefined) return yield* unavailable();
+      if (Option.isSome(linkEvents)) yield* linkEvents.value.automationChanged;
+      return result(created);
+    }
+    const row = yield* read(input.requestId);
+    if (row === undefined || !owned(scope, row)) return yield* denied();
+    if (input.type === "status") {
+      if (requestNamespace(scope) !== row.namespace) return yield* denied();
       yield* eligible(row);
-      const identity = canonicalRequest({
-        request,
-        namespace: row.namespace,
-        origin: currentOrigin,
-        projectId,
-        family: row.family,
-      });
-      if (row.status === "reserved" && row.consumer_json === identity) return;
+      return result(row);
+    }
+    yield* authority.secretClient(record.id);
+    yield* eligible(row);
+    if (input.answer === "decline") {
       const changed =
-        yield* sql`UPDATE remote_secret_requests SET status='reserved',consumer_json=${identity} WHERE request_id=${row.request_id} AND status='saved' AND expires_at>${yield* Clock.currentTimeMillis} RETURNING request_id`.pipe(
+        yield* sql`UPDATE remote_secret_requests SET status='declined' WHERE request_id=${row.request_id} AND status='pending' RETURNING request_id`.pipe(
           Effect.mapError(unavailable),
         );
-      if (changed.length !== 1) return yield* denied();
-    }).pipe(lock.withPermits(1));
-  const take: RemoteSecretRequests["Service"]["take"] = (handle, request) =>
-    Effect.gen(function* () {
+      if (changed.length === 0 && row.status !== "declined") return yield* denied();
+      return { ...result(row), status: "declined" as const };
+    }
+    if (input.value === undefined || input.value.trim().length === 0) return yield* denied();
+    // Durable attempt before filesystem publication. No attempt ever replaces another's bytes.
+    if (row.status === "pending") {
+      const won =
+        yield* sql`UPDATE remote_secret_requests SET status='saving',attempt_id=${input.attemptId} WHERE request_id=${row.request_id} AND status='pending' RETURNING request_id`.pipe(
+          Effect.mapError(unavailable),
+        );
+      if (won.length !== 1) return yield* denied();
+    } else if (
+      row.attempt_id !== input.attemptId ||
+      !["saving", "saved", "reserved", "consumed"].includes(row.status)
+    )
+      return yield* denied();
+    const attempt = { ...row, attempt_id: input.attemptId };
+    const bytes = new TextEncoder().encode(input.value);
+    const prior = yield* store.get(nameFor(attempt)).pipe(Effect.mapError(unavailable));
+    if (Option.isSome(prior)) {
+      if (new TextDecoder().decode(prior.value) !== input.value) return yield* denied();
+    } else {
+      if (row.status !== "pending" && row.status !== "saving") return yield* denied();
+      yield* store.create(nameFor(attempt), bytes).pipe(Effect.mapError(unavailable));
+    }
+    yield* eligible(attempt);
+    yield* sql`UPDATE remote_secret_requests SET status='saved' WHERE request_id=${row.request_id} AND status='saving' AND attempt_id=${input.attemptId}`.pipe(
+      Effect.mapError(unavailable),
+    );
+    const current = yield* read(row.request_id);
+    if (current === undefined || !["saved", "reserved", "consumed"].includes(current.status)) {
+      yield* remove(attempt);
+      return yield* denied();
+    }
+    return result(current);
+  }, lock.withPermits(1));
+  const reserve: RemoteSecretRequests["Service"]["reserve"] = Effect.fn(
+    "RemoteSecretRequests.reserve",
+  )(function* (scope, handle, projectId, request) {
+    if (handle.environmentId !== here) return yield* denied();
+    const row = yield* read(handle.requestId);
+    const record = interactiveAuthority(scope.authority);
+    if (
+      row === undefined ||
+      record === undefined ||
+      !owned(scope, row) ||
+      row.namespace !== requestNamespace(scope) ||
+      row.project_id !== projectId ||
+      row.family !== "schedule.webhook-signature"
+    )
+      return yield* denied();
+    const currentOrigin = yield* authority.secretOrigin(record.id);
+    if (canonicalRequest(currentOrigin) !== row.origin_json) return yield* denied();
+    yield* eligible(row);
+    const identity = canonicalRequest({
+      request,
+      namespace: row.namespace,
+      origin: currentOrigin,
+      projectId,
+      family: row.family,
+    });
+    if (row.status === "reserved" && row.consumer_json === identity) return;
+    const changed =
+      yield* sql`UPDATE remote_secret_requests SET status='reserved',consumer_json=${identity} WHERE request_id=${row.request_id} AND status='saved' AND expires_at>${yield* Clock.currentTimeMillis} RETURNING request_id`.pipe(
+        Effect.mapError(unavailable),
+      );
+    if (changed.length !== 1) return yield* denied();
+  }, lock.withPermits(1));
+  const take: RemoteSecretRequests["Service"]["take"] = Effect.fn("RemoteSecretRequests.take")(
+    function* (handle, request) {
       if (handle.environmentId !== here) return yield* denied();
       const row = yield* read(handle.requestId);
       if (
@@ -335,51 +336,55 @@ const make = Effect.gen(function* () {
         );
       if (changed.length !== 1) return yield* denied();
       return new TextDecoder().decode(value.value);
-    });
-  const finalize: RemoteSecretRequests["Service"]["finalize"] = (handle) =>
-    Effect.gen(function* () {
-      if (handle.environmentId !== here) return yield* denied();
-      const row = yield* read(handle.requestId);
-      if (row !== undefined && ["consumed", "declined", "retired"].includes(row.status))
-        yield* remove(row);
-    });
-  const reconcileConsumer = (row: Row) =>
-    Effect.gen(function* () {
-      if (row.consumer_json === null) return false;
-      const consumer = yield* decodeConsumer(row.consumer_json).pipe(Effect.mapError(unavailable));
-      const confirmed = yield* MutationReceipts.acceptance(consumer.request).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
-      );
-      if (Option.isNone(confirmed)) return false;
-      if (
-        confirmed.value.resource.owner !== row.namespace ||
-        confirmed.value.resource.projectId !== row.project_id
-      )
-        return yield* denied();
-      yield* sql`UPDATE remote_secret_requests SET status='consumed' WHERE request_id=${row.request_id} AND consumer_json=${row.consumer_json}`.pipe(
-        Effect.mapError(unavailable),
-      );
-      return true;
-    });
-  const retire: RemoteSecretRequests["Service"]["retire"] = (input, credentialIdentity) =>
-    Effect.gen(function* () {
-      const row = yield* read(input.requestId);
-      if (
-        row === undefined ||
-        input.environmentId !== row.environment_id ||
-        input.generation !== row.generation ||
-        canonicalRequest(input.origin) !== row.origin_json ||
-        credentialIdentity !== row.credential_identity
-      )
-        return yield* denied();
-      yield* reconcileConsumer(row);
-      // Receipt reconciliation precedes retirement; recovery cannot authorize a missing operation.
-      yield* sql`UPDATE remote_secret_requests SET status='retired' WHERE request_id=${row.request_id} AND status NOT IN ('consumed','declined','retired')`.pipe(
-        Effect.mapError(unavailable),
-      );
+    },
+  );
+  const finalize: RemoteSecretRequests["Service"]["finalize"] = Effect.fn(
+    "RemoteSecretRequests.finalize",
+  )(function* (handle) {
+    if (handle.environmentId !== here) return yield* denied();
+    const row = yield* read(handle.requestId);
+    if (row !== undefined && ["consumed", "declined", "retired"].includes(row.status))
       yield* remove(row);
-      return { ...input, retired: true as const };
-    }).pipe(lock.withPermits(1));
+  });
+  const reconcileConsumer = Effect.fn("RemoteSecretRequests.reconcileConsumer")(function* (
+    row: Row,
+  ) {
+    if (row.consumer_json === null) return false;
+    const consumer = yield* decodeConsumer(row.consumer_json).pipe(Effect.mapError(unavailable));
+    const confirmed = yield* MutationReceipts.acceptance(consumer.request).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+    if (Option.isNone(confirmed)) return false;
+    if (
+      confirmed.value.resource.owner !== row.namespace ||
+      confirmed.value.resource.projectId !== row.project_id
+    )
+      return yield* denied();
+    yield* sql`UPDATE remote_secret_requests SET status='consumed' WHERE request_id=${row.request_id} AND consumer_json=${row.consumer_json}`.pipe(
+      Effect.mapError(unavailable),
+    );
+    return true;
+  });
+  const retire: RemoteSecretRequests["Service"]["retire"] = Effect.fn(
+    "RemoteSecretRequests.retire",
+  )(function* (input, credentialIdentity) {
+    const row = yield* read(input.requestId);
+    if (
+      row === undefined ||
+      input.environmentId !== row.environment_id ||
+      input.generation !== row.generation ||
+      canonicalRequest(input.origin) !== row.origin_json ||
+      credentialIdentity !== row.credential_identity
+    )
+      return yield* denied();
+    yield* reconcileConsumer(row);
+    // Receipt reconciliation precedes retirement; recovery cannot authorize a missing operation.
+    yield* sql`UPDATE remote_secret_requests SET status='retired' WHERE request_id=${row.request_id} AND status NOT IN ('consumed','declined','retired')`.pipe(
+      Effect.mapError(unavailable),
+    );
+    yield* remove(row);
+    return { ...input, retired: true as const };
+  }, lock.withPermits(1));
   const reconcileBatch = Effect.gen(function* () {
     let cleanupPending = false;
     yield* sql`UPDATE remote_secret_requests SET status='retired' WHERE status NOT IN ('consumed','declined','retired') AND session_id IN (SELECT session_id FROM auth_sessions WHERE revoked_at IS NOT NULL OR round(unixepoch(expires_at,'subsec')*1000)<=${yield* Clock.currentTimeMillis})`.pipe(
@@ -475,65 +480,62 @@ const make = Effect.gen(function* () {
     finalize,
     retire,
     reconcile,
-    receipt: (scope, query) =>
-      Effect.gen(function* () {
-        if (scope.client?.linked !== true || query.handle.environmentId !== here)
-          return yield* denied();
-        const row = yield* read(query.handle.requestId);
-        if (
-          row === undefined ||
-          row.session_id !== scope.client.sessionId ||
-          row.project_id !== query.projectId ||
-          query.envelope.environmentId !== row.environment_id ||
-          query.envelope.generation !== row.generation ||
-          query.envelope.requestOwner?.namespace !== row.namespace ||
-          query.envelope.requestOwner.generation !== query.request.generation
-        )
-          return yield* denied();
-        // No fresh action, source validation, capture or reservation is possible on this route.
-        const acceptance = yield* MutationReceipts.acceptance(query.request).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-        );
-        if (Option.isNone(acceptance)) return Option.none();
-        const { resource, receipt } = acceptance.value;
-        const recordId = `in:${row.session_id}:${query.envelope.recordId}`;
-        if (
-          resource.owner !== row.namespace ||
-          resource.projectId !== query.projectId ||
-          resource.authorityRecordId !== recordId ||
-          row.status !== "consumed"
-        )
-          return yield* denied();
-        const original = (yield* sql<{
-          record_json: string;
-        }>`SELECT record_json FROM peer_authority_records WHERE id=${recordId}`.pipe(
-          Effect.mapError(unavailable),
-        ))[0];
-        if (original === undefined) return yield* denied();
-        const saved = yield* decodeEnvelope(original.record_json).pipe(
-          Effect.mapError(unavailable),
-        );
-        if (canonicalRequest(saved.envelope) !== canonicalRequest(query.envelope))
-          return yield* denied();
-        const current = (yield* sql<{
-          generation: string;
-          grant_json: string;
-          revoked_at: string | null;
-          expires_at: string;
-        }>`SELECT p.generation,p.grant_json,a.revoked_at,a.expires_at FROM peer_authority_sessions p JOIN auth_sessions a ON a.session_id=p.session_id WHERE p.session_id=${row.session_id}`.pipe(
-          Effect.mapError(unavailable),
-        ))[0];
-        if (
-          current === undefined ||
-          current.generation !== row.generation ||
-          current.revoked_at !== null ||
-          Date.parse(current.expires_at) <= (yield* Clock.currentTimeMillis)
-        )
-          return yield* denied();
-        const grant = yield* decodeGrant(current.grant_json).pipe(Effect.mapError(unavailable));
-        if (grant.resourceScope !== "environment-resources") return yield* denied();
-        return Option.some(receipt);
-      }),
+    receipt: Effect.fn("RemoteSecretRequests.receipt")(function* (scope, query) {
+      if (scope.client?.linked !== true || query.handle.environmentId !== here)
+        return yield* denied();
+      const row = yield* read(query.handle.requestId);
+      if (
+        row === undefined ||
+        row.session_id !== scope.client.sessionId ||
+        row.project_id !== query.projectId ||
+        query.envelope.environmentId !== row.environment_id ||
+        query.envelope.generation !== row.generation ||
+        query.envelope.requestOwner?.namespace !== row.namespace ||
+        query.envelope.requestOwner.generation !== query.request.generation
+      )
+        return yield* denied();
+      // No fresh action, source validation, capture or reservation is possible on this route.
+      const acceptance = yield* MutationReceipts.acceptance(query.request).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      if (Option.isNone(acceptance)) return Option.none();
+      const { resource, receipt } = acceptance.value;
+      const recordId = `in:${row.session_id}:${query.envelope.recordId}`;
+      if (
+        resource.owner !== row.namespace ||
+        resource.projectId !== query.projectId ||
+        resource.authorityRecordId !== recordId ||
+        row.status !== "consumed"
+      )
+        return yield* denied();
+      const original = (yield* sql<{
+        record_json: string;
+      }>`SELECT record_json FROM peer_authority_records WHERE id=${recordId}`.pipe(
+        Effect.mapError(unavailable),
+      ))[0];
+      if (original === undefined) return yield* denied();
+      const saved = yield* decodeEnvelope(original.record_json).pipe(Effect.mapError(unavailable));
+      if (canonicalRequest(saved.envelope) !== canonicalRequest(query.envelope))
+        return yield* denied();
+      const current = (yield* sql<{
+        generation: string;
+        grant_json: string;
+        revoked_at: string | null;
+        expires_at: string;
+      }>`SELECT p.generation,p.grant_json,a.revoked_at,a.expires_at FROM peer_authority_sessions p JOIN auth_sessions a ON a.session_id=p.session_id WHERE p.session_id=${row.session_id}`.pipe(
+        Effect.mapError(unavailable),
+      ))[0];
+      if (
+        current === undefined ||
+        current.generation !== row.generation ||
+        current.revoked_at !== null ||
+        Date.parse(current.expires_at) <= (yield* Clock.currentTimeMillis)
+      )
+        return yield* denied();
+      const grant = yield* decodeGrant(current.grant_json).pipe(Effect.mapError(unavailable));
+      if (grant.resourceScope !== "environment-resources") return yield* denied();
+      return Option.some(receipt);
+    }),
   });
 });
 export const layer = Layer.effect(RemoteSecretRequests, make);

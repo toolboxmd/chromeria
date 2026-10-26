@@ -468,7 +468,7 @@ export const resolvePackageManagedProviderMaintenance = Effect.fn(
     !(yield* isMiseWrapperScript(context))
   ) {
     // Only these native updater kinds have completed mid-turn update proof
-    // on Linux and macOS (#276). A native-looking link is not enough: its
+    // on Linux and macOS. A native-looking link is not enough: its
     // resolved target must also belong to the native installer.
     if (
       native.update &&

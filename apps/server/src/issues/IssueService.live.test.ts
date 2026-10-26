@@ -1,12 +1,7 @@
 /**
- * Live suite: the real GitHub API with the GitHub CLI's credential, nothing faked between them.
- * Skipped unless `T3CODE_ISSUES_LIVE=1` and `gh` is signed in to github.com.
- *
- *   T3CODE_ISSUES_LIVE=1 vp test run src/issues/IssueService.live.test.ts
- *
- * Reads use existing toolboxmd Issues and pull requests. Comment and close/reopen run only when
- * `T3CODE_ISSUES_LIVE_FIXTURE` names a disposable Issue number in toolboxmd/chromeria (labelled
- * `test-fixture`); the suite leaves it closed as completed.
+ * Live suite against the real GitHub API with `gh`'s credential; runs only with
+ * `T3CODE_ISSUES_LIVE=1`. Comment and close/reopen run only when `T3CODE_ISSUES_LIVE_FIXTURE` names a
+ * disposable `test-fixture` Issue in toolboxmd/chromeria, which the suite leaves closed.
  */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";

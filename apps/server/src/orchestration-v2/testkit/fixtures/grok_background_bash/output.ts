@@ -12,11 +12,9 @@ import {
 } from "../shared.ts";
 import { GROK_BACKGROUND_BASH_PROMPT, GROK_BACKGROUND_BASH_TICKS } from "./input.ts";
 
-// Grok completes a background shell command's tool call with a
-// `BackgroundTaskStarted` acknowledgement while the process keeps running,
-// streams its output afterwards, and ends it only with `x.ai/task_completed`.
-// The command stays in the run that started it after that run settles;
-// Grok's reply to its completion is a continuation run.
+// Grok completes a background command's tool call with `BackgroundTaskStarted` while the process
+// runs, streams output later and ends it only with `x.ai/task_completed`. The command stays in the
+// run that started it after that run settles; Grok's reply is a continuation run.
 export function assertGrokBackgroundBashOutput(
   result: OrchestratorV2ScenarioResult,
   transcript: ProviderReplayTranscript,

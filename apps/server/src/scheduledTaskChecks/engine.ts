@@ -198,8 +198,8 @@ const ORPHANED_COMMAND =
 export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps) {
   const sql = yield* SqlClient.SqlClient;
   yield* AutomationAuthority.ensureAutomationAuthoritySchema;
-  const claimRun = (taskId: ScheduledTaskId, run: CheckedRun) =>
-    Effect.gen(function* () {
+  const claimRun = Effect.fn("ScheduledTaskChecksEngine.claimRun")(
+    function* (taskId: ScheduledTaskId, run: CheckedRun) {
       const current = yield* AutomationAuthority.currentAutomationCertificate("schedule", taskId);
       if (run.automationCertificateId === undefined) {
         if (current !== undefined)
@@ -213,7 +213,9 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
       );
       if (certificate.binding.kind !== "schedule" || certificate.binding.resourceId !== taskId)
         return yield* fail("The run belongs to another accepted automation definition.");
-    }).pipe(Effect.mapError((error) => fail(error.message)));
+    },
+    Effect.mapError((error) => fail(error.message)),
+  );
   const locks = new Map<string, Semaphore.Semaphore>();
   const locked = <A, E, R>(taskId: string, body: Effect.Effect<A, E, R>) =>
     Effect.suspend(() => {
@@ -227,13 +229,9 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
   // Command processes run outside their task lock; closing the engine's scope stops them.
   const commands = yield* FiberSet.make();
   /**
-   * Each run a fire or Run now admitted in this process, by run id: set when
-   * the run is admitted, under the task's lock, and ended by a successful
-   * delete. A run admitted again under the same id, as a recreated task's run
-   * for the same instant or slot is, gets a new admission, so an older
-   * admission's deferred send or command never goes out, starts or records
-   * into it. A step recovers a run from its stored state and needs none.
-   * `launched` is set once a command's dispatch ran.
+   * Each run a fire or Run now admitted in this process, by run id, set under the task's lock.
+   * Re-admitting the same id replaces it, so an older admission's deferred send or command never
+   * reaches the new run. A recovered step needs none; `launched` marks a dispatched command.
    */
   const admissions = new Map<string, { launched: boolean }>();
   const store = (previous: CheckState, next: CheckState) =>
@@ -287,79 +285,78 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
    * server. Prism's pick and the text are fixed here; a role that cannot be
    * honored becomes a delayed retry and records no send.
    */
-  const startSend = (
+  const startSend = Effect.fn("ScheduledTaskChecksEngine.startSend")(function* (
     task: ScheduledTask,
     state: CheckState,
     run: CheckedRun,
     now: number,
     threadMissing = false,
-  ) =>
-    Effect.gen(function* () {
-      const index = run.sends.length;
-      const kind = run.hasWork ? "continue" : "start";
-      // A new-thread run launches until its thread exists, each time as a new send.
-      const launching = task.threadId === null && (index === 0 || threadMissing);
-      const picked = yield* deps.role(state, task, launching).pipe(Effect.result);
-      if (picked._tag === "Failure") {
-        const failed = yield* retry(state, run, picked.failure.message, now);
-        return { _tag: "refused", state: failed, error: picked.failure } as const;
-      }
-      const role = picked.success;
-      const launch = launching
-        ? {
-            ...(task.bare === undefined ? {} : { bare: task.bare }),
-            projectId: task.projectId,
-            title: task.title,
-            modelSelection: role?.modelSelection ?? task.modelSelection,
-            runtimeMode: task.runtimeMode,
-            interactionMode: task.interactionMode,
-            workspaceStrategy: task.workspaceStrategy,
-          }
-        : null;
-      const bareAuthority =
-        task.bare === undefined || !launching
-          ? undefined
-          : yield* readScheduledBare(task.id).pipe(
-              Effect.mapError(
-                () =>
-                  new ScheduledTaskCheckError({
-                    message: "Could not read bare schedule authority.",
-                  }),
-              ),
-            );
-      const send: RunSend = {
-        index,
-        ...sendIdentity(run, index),
-        kind,
-        createdAt: iso(now),
-        payload: {
-          ...(run.automationCertificateId === undefined
-            ? {}
-            : { automationCertificateId: run.automationCertificateId }),
-          purposeSource: run.purpose ?? LEGACY_EXECUTION_PURPOSE,
-          ...(bareAuthority === undefined ? {} : { bareReadGrant: bareAuthority.readGrant }),
+  ) {
+    const index = run.sends.length;
+    const kind = run.hasWork ? "continue" : "start";
+    // A new-thread run launches until its thread exists, each time as a new send.
+    const launching = task.threadId === null && (index === 0 || threadMissing);
+    const picked = yield* deps.role(state, task, launching).pipe(Effect.result);
+    if (picked._tag === "Failure") {
+      const failed = yield* retry(state, run, picked.failure.message, now);
+      return { _tag: "refused", state: failed, error: picked.failure } as const;
+    }
+    const role = picked.success;
+    const launch = launching
+      ? {
           ...(task.bare === undefined ? {} : { bare: task.bare }),
-          ...(task.linkOrigin === undefined ? {} : { linkOrigin: task.linkOrigin }),
-          text: sendText(
-            task,
-            run,
-            { kind },
-            kind === "start" && task.bare === undefined ? (role?.kitText ?? null) : null,
-          ),
-          modelSelection: launch === null ? null : launch.modelSelection,
-          launch,
           projectId: task.projectId,
-        },
-      };
-      const next: CheckedRun = {
-        ...run,
-        stage: "running",
-        retryAt: null,
-        sends: [...run.sends, send],
-      };
-      const stored = yield* store(state, replaceRun(state, next));
-      return { _tag: "recorded", state: stored, run: next, send } as const;
-    });
+          title: task.title,
+          modelSelection: role?.modelSelection ?? task.modelSelection,
+          runtimeMode: task.runtimeMode,
+          interactionMode: task.interactionMode,
+          workspaceStrategy: task.workspaceStrategy,
+        }
+      : null;
+    const bareAuthority =
+      task.bare === undefined || !launching
+        ? undefined
+        : yield* readScheduledBare(task.id).pipe(
+            Effect.mapError(
+              () =>
+                new ScheduledTaskCheckError({
+                  message: "Could not read bare schedule authority.",
+                }),
+            ),
+          );
+    const send: RunSend = {
+      index,
+      ...sendIdentity(run, index),
+      kind,
+      createdAt: iso(now),
+      payload: {
+        ...(run.automationCertificateId === undefined
+          ? {}
+          : { automationCertificateId: run.automationCertificateId }),
+        purposeSource: run.purpose ?? LEGACY_EXECUTION_PURPOSE,
+        ...(bareAuthority === undefined ? {} : { bareReadGrant: bareAuthority.readGrant }),
+        ...(task.bare === undefined ? {} : { bare: task.bare }),
+        ...(task.linkOrigin === undefined ? {} : { linkOrigin: task.linkOrigin }),
+        text: sendText(
+          task,
+          run,
+          { kind },
+          kind === "start" && task.bare === undefined ? (role?.kitText ?? null) : null,
+        ),
+        modelSelection: launch === null ? null : launch.modelSelection,
+        launch,
+        projectId: task.projectId,
+      },
+    };
+    const next: CheckedRun = {
+      ...run,
+      stage: "running",
+      retryAt: null,
+      sends: [...run.sends, send],
+    };
+    const stored = yield* store(state, replaceRun(state, next));
+    return { _tag: "recorded", state: stored, run: next, send } as const;
+  });
 
   /** Records a command run's result, but only for the admission this process started. */
   const finishCommand = (
@@ -402,69 +399,65 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
     );
 
   /**
-   * Starts a command run's process detached, so a long command never holds
-   * upstream's poll. Its workspace is found first; a fresh ownership check and
-   * the spawn then share the task's lock, so a task deleted meanwhile, or a run
-   * that moved on, starts nothing. It runs the command admitted with the run,
-   * never an edit made since. The lock is released once the process has
-   * spawned, never held while it runs.
+   * Starts a command run's process detached so it never holds upstream's poll. The ownership check
+   * and spawn share the task's lock, so a deleted task or moved-on run starts nothing, and only the
+   * admitted command runs. The lock is released once the process has spawned.
    */
-  const launchCommand = (
+  const launchCommand = Effect.fn("ScheduledTaskChecksEngine.launchCommand")(function* (
     task: ScheduledTask,
     run: CheckedRun,
     command: string,
     admission: { launched: boolean },
-  ) =>
-    Effect.gen(function* () {
-      const runId = run.id;
-      admission.launched = true;
-      yield* FiberSet.run(
-        commands,
-        Effect.scoped(
-          Effect.gen(function* () {
-            const cwd = yield* deps.workspace({ projectId: task.projectId, threadId: null });
-            const started = yield* locked(
-              task.id,
-              Effect.gen(function* () {
-                if (admissions.get(runId) !== admission) return null;
-                const state = yield* readCheckState(task.id);
-                const owned = state?.runs.find((entry) => entry.id === runId);
-                if (owned === undefined || owned.stage !== "running") return null;
-                yield* claimRun(task.id, owned);
-                return yield* deps.start({
-                  command,
-                  cwd,
-                  taskId: task.id,
-                  runId,
-                  date: run.slot.slice(0, 10),
-                });
-              }),
-            );
-            return started === null ? null : yield* started;
-          }),
-        ).pipe(
-          Effect.catch((error) =>
-            Effect.succeed({ exitCode: null, output: "", timedOut: false, failure: error.message }),
-          ),
-          Effect.flatMap((outcome) =>
-            outcome === null ? Effect.void : finishCommand(task.id, runId, admission, outcome),
-          ),
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Scheduled command result was not recorded", {
-              taskId: task.id,
-              runId,
-              cause,
+  ) {
+    const runId = run.id;
+    admission.launched = true;
+    yield* FiberSet.run(
+      commands,
+      Effect.scoped(
+        Effect.gen(function* () {
+          const cwd = yield* deps.workspace({ projectId: task.projectId, threadId: null });
+          const started = yield* locked(
+            task.id,
+            Effect.gen(function* () {
+              if (admissions.get(runId) !== admission) return null;
+              const state = yield* readCheckState(task.id);
+              const owned = state?.runs.find((entry) => entry.id === runId);
+              if (owned === undefined || owned.stage !== "running") return null;
+              yield* claimRun(task.id, owned);
+              return yield* deps.start({
+                command,
+                cwd,
+                taskId: task.id,
+                runId,
+                date: run.slot.slice(0, 10),
+              });
             }),
-          ),
-          // Ends only its own admission, never a later one under the same run id.
-          Effect.ensuring(
-            Effect.sync(() => {
-              if (admissions.get(runId) === admission) admissions.delete(runId);
-            }),
-          ),
+          );
+          return started === null ? null : yield* started;
+        }),
+      ).pipe(
+        Effect.catch((error) =>
+          Effect.succeed({ exitCode: null, output: "", timedOut: false, failure: error.message }),
         ),
-      );
-    });
+        Effect.flatMap((outcome) =>
+          outcome === null ? Effect.void : finishCommand(task.id, runId, admission, outcome),
+        ),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Scheduled command result was not recorded", {
+            taskId: task.id,
+            runId,
+            cause,
+          }),
+        ),
+        // Ends only its own admission, never a later one under the same run id.
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (admissions.get(runId) === admission) admissions.delete(runId);
+          }),
+        ),
+      ),
+    );
+  });
 
   /**
    * Every send goes out through here, and only if the task still owns it when
@@ -472,26 +465,29 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
    * bound report that needs you makes the run need you, and one still waiting
    * keeps the recorded send until it releases (D40). Callers hold the task's lock.
    */
-  const deliverIfOwned = (taskId: ScheduledTaskId, runId: string, send: RunSend) =>
-    Effect.gen(function* () {
-      const state = yield* readCheckState(taskId);
-      const run = state?.runs.find((entry) => entry.id === runId);
-      if (
-        state === null ||
-        run === undefined ||
-        run.stage !== "running" ||
-        run.sends.at(-1)?.commandId !== send.commandId
-      )
-        return;
-      const fence = yield* sql.withTransaction(
-        Effect.gen(function* () {
-          const fence = yield* deps.reportsFence(run.id);
-          if (fence.kind === "needs-you") yield* reportNeedsYou(state, run, fence.reason);
-          return fence;
-        }),
-      );
-      if (fence.kind === "released") yield* deliver(taskId, state, run, send);
-    });
+  const deliverIfOwned = Effect.fn("ScheduledTaskChecksEngine.deliverIfOwned")(function* (
+    taskId: ScheduledTaskId,
+    runId: string,
+    send: RunSend,
+  ) {
+    const state = yield* readCheckState(taskId);
+    const run = state?.runs.find((entry) => entry.id === runId);
+    if (
+      state === null ||
+      run === undefined ||
+      run.stage !== "running" ||
+      run.sends.at(-1)?.commandId !== send.commandId
+    )
+      return;
+    const fence = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const fence = yield* deps.reportsFence(run.id);
+        if (fence.kind === "needs-you") yield* reportNeedsYou(state, run, fence.reason);
+        return fence;
+      }),
+    );
+    if (fence.kind === "released") yield* deliver(taskId, state, run, send);
+  });
 
   /** A new admission for a run, replacing any earlier one. Callers hold the task's lock. */
   const admit = (runId: string) => {
@@ -702,30 +698,34 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
           }),
         );
 
-  const check = (task: ScheduledTask, state: CheckState, run: CheckedRun, now: number) =>
-    Effect.gen(function* () {
-      const version = state.checks.find((entry) => entry.version === run.checkVersion)!;
-      const cwd =
-        run.checkCwd ??
-        (yield* deps.workspace({ projectId: task.projectId, threadId: run.threadId }));
-      yield* claimRun(task.id, run);
-      const verdict = yield* deps
-        .runCheck({
-          command: version.command,
-          cwd,
-          taskId: task.id,
-          runId: run.id,
-          date: run.slot.slice(0, 10),
-        })
-        .pipe(Effect.catch((error) => Effect.succeed({ passed: false, output: error.message })));
-      const result: CheckResult = {
-        version: version.version,
-        passed: verdict.passed,
-        output: truncateOutput(verdict.output),
-        checkedAt: iso(now),
-      };
-      return { result, cwd };
-    });
+  const check = Effect.fn("ScheduledTaskChecksEngine.check")(function* (
+    task: ScheduledTask,
+    state: CheckState,
+    run: CheckedRun,
+    now: number,
+  ) {
+    const version = state.checks.find((entry) => entry.version === run.checkVersion)!;
+    const cwd =
+      run.checkCwd ??
+      (yield* deps.workspace({ projectId: task.projectId, threadId: run.threadId }));
+    yield* claimRun(task.id, run);
+    const verdict = yield* deps
+      .runCheck({
+        command: version.command,
+        cwd,
+        taskId: task.id,
+        runId: run.id,
+        date: run.slot.slice(0, 10),
+      })
+      .pipe(Effect.catch((error) => Effect.succeed({ passed: false, output: error.message })));
+    const result: CheckResult = {
+      version: version.version,
+      passed: verdict.passed,
+      output: truncateOutput(verdict.output),
+      checkedAt: iso(now),
+    };
+    return { result, cwd };
+  });
 
   /** One reconciliation step for a task's unfinished run, serialized per task. */
   const drive = (task: ScheduledTask) =>
@@ -874,7 +874,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
    * Agent-tool writes: refuses webhook tasks, kind changes and a judged
    * thread's own task. Callers hold the task's lock (see `withTaskLock`).
    */
-  const commitSaveUnlocked = (
+  const commitSaveUnlocked = Effect.fn("ScheduledTaskChecksEngine.commitSaveUnlocked")(function* (
     input: {
       readonly taskId: ScheduledTaskId;
       readonly projectId: ScheduledTask["projectId"];
@@ -886,71 +886,38 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
     },
     expectedState: CheckState | null,
     creationChecked: boolean,
-  ) =>
-    Effect.gen(function* () {
-      const { fields } = input;
-      const state = yield* readCheckState(input.taskId);
-      if (requestDigest(state) !== requestDigest(expectedState))
-        return yield* fail("The check definition changed during live authorization.");
-      yield* judgedGuard(state, input.actorThreadId);
-      const checkFields =
-        fields.checkCommand !== undefined ||
-        fields.checkReason !== undefined ||
-        fields.revertCheckVersion !== undefined ||
-        fields.role !== undefined ||
-        fields.lane !== undefined;
-      const commandField = fields.command !== undefined;
-      if (input.schedule.type === "webhook" && (checkFields || commandField || state !== null))
-        return yield* fail(
-          "Webhook tasks cannot have an outcome check, a Prism role or a shell command.",
-        );
-      if (checkFields && commandField)
-        return yield* fail("A command task runs a shell command and has no outcome check or role.");
-      if (!checkFields && !commandField) return state;
-      const now = yield* Clock.currentTimeMillis;
-      if (state === null) {
-        if (commandField) {
-          const stored = yield* writeCheckState(null, {
-            version: 1,
-            taskId: input.taskId,
-            revision: 0,
-            kind: "command",
-            command: fields.command!,
-            role: null,
-            lane: null,
-            checks: [],
-            runs: [],
-            failureStreak: 0,
-            lastError: null,
-            lastSuccessfulRunId: null,
-          });
-          yield* deps.changed;
-          return stored;
-        }
-        if (fields.revertCheckVersion !== undefined)
-          return yield* fail("This task has no outcome check to revert.");
-        if (fields.checkCommand === undefined || fields.checkReason === undefined)
-          return yield* fail("An outcome check needs both checkCommand and checkReason.");
-        if (!creationChecked)
-          return yield* fail("The creation-time check has no matching live admission.");
+  ) {
+    const { fields } = input;
+    const state = yield* readCheckState(input.taskId);
+    if (requestDigest(state) !== requestDigest(expectedState))
+      return yield* fail("The check definition changed during live authorization.");
+    yield* judgedGuard(state, input.actorThreadId);
+    const checkFields =
+      fields.checkCommand !== undefined ||
+      fields.checkReason !== undefined ||
+      fields.revertCheckVersion !== undefined ||
+      fields.role !== undefined ||
+      fields.lane !== undefined;
+    const commandField = fields.command !== undefined;
+    if (input.schedule.type === "webhook" && (checkFields || commandField || state !== null))
+      return yield* fail(
+        "Webhook tasks cannot have an outcome check, a Prism role or a shell command.",
+      );
+    if (checkFields && commandField)
+      return yield* fail("A command task runs a shell command and has no outcome check or role.");
+    if (!checkFields && !commandField) return state;
+    const now = yield* Clock.currentTimeMillis;
+    if (state === null) {
+      if (commandField) {
         const stored = yield* writeCheckState(null, {
           version: 1,
           taskId: input.taskId,
           revision: 0,
-          kind: "agent",
-          command: null,
-          role: fields.role ?? null,
-          lane: fields.lane ?? null,
-          checks: [
-            {
-              version: 1,
-              command: fields.checkCommand,
-              actor: input.actor,
-              reason: fields.checkReason,
-              createdAt: iso(now),
-              revertedFrom: null,
-            },
-          ],
+          kind: "command",
+          command: fields.command!,
+          role: null,
+          lane: null,
+          checks: [],
           runs: [],
           failureStreak: 0,
           lastError: null,
@@ -959,71 +926,102 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
         yield* deps.changed;
         return stored;
       }
-      if (state.kind === "command") {
-        if (checkFields)
-          return yield* fail("Command tasks have no outcome check. Change the command instead.");
-        return yield* store(state, { ...state, command: fields.command! });
-      }
-      if (commandField)
-        return yield* fail("A task's kind cannot change. Create a new task instead.");
-      let checks = state.checks;
-      if (fields.checkCommand !== undefined || fields.revertCheckVersion !== undefined) {
-        if (fields.checkReason === undefined)
-          return yield* fail("Check edits and reverts require checkReason.");
-        if (fields.checkCommand !== undefined && fields.revertCheckVersion !== undefined)
-          return yield* fail("Choose a new check or a revert, not both.");
-        const command =
-          fields.checkCommand ??
-          state.checks.find((entry) => entry.version === fields.revertCheckVersion)?.command;
-        if (command === undefined) return yield* fail("Check version not found.");
-        checks = [
-          ...checks,
+      if (fields.revertCheckVersion !== undefined)
+        return yield* fail("This task has no outcome check to revert.");
+      if (fields.checkCommand === undefined || fields.checkReason === undefined)
+        return yield* fail("An outcome check needs both checkCommand and checkReason.");
+      if (!creationChecked)
+        return yield* fail("The creation-time check has no matching live admission.");
+      const stored = yield* writeCheckState(null, {
+        version: 1,
+        taskId: input.taskId,
+        revision: 0,
+        kind: "agent",
+        command: null,
+        role: fields.role ?? null,
+        lane: fields.lane ?? null,
+        checks: [
           {
-            version: activeCheck(state).version + 1,
-            command,
+            version: 1,
+            command: fields.checkCommand,
             actor: input.actor,
             reason: fields.checkReason,
             createdAt: iso(now),
-            revertedFrom: fields.revertCheckVersion ?? null,
+            revertedFrom: null,
           },
-        ];
-      }
-      return yield* store(state, {
-        ...state,
-        checks,
-        role: fields.role ?? state.role,
-        lane: fields.lane ?? state.lane,
+        ],
+        runs: [],
+        failureStreak: 0,
+        lastError: null,
+        lastSuccessfulRunId: null,
       });
+      yield* deps.changed;
+      return stored;
+    }
+    if (state.kind === "command") {
+      if (checkFields)
+        return yield* fail("Command tasks have no outcome check. Change the command instead.");
+      return yield* store(state, { ...state, command: fields.command! });
+    }
+    if (commandField) return yield* fail("A task's kind cannot change. Create a new task instead.");
+    let checks = state.checks;
+    if (fields.checkCommand !== undefined || fields.revertCheckVersion !== undefined) {
+      if (fields.checkReason === undefined)
+        return yield* fail("Check edits and reverts require checkReason.");
+      if (fields.checkCommand !== undefined && fields.revertCheckVersion !== undefined)
+        return yield* fail("Choose a new check or a revert, not both.");
+      const command =
+        fields.checkCommand ??
+        state.checks.find((entry) => entry.version === fields.revertCheckVersion)?.command;
+      if (command === undefined) return yield* fail("Check version not found.");
+      checks = [
+        ...checks,
+        {
+          version: activeCheck(state).version + 1,
+          command,
+          actor: input.actor,
+          reason: fields.checkReason,
+          createdAt: iso(now),
+          revertedFrom: fields.revertCheckVersion ?? null,
+        },
+      ];
+    }
+    return yield* store(state, {
+      ...state,
+      checks,
+      role: fields.role ?? state.role,
+      lane: fields.lane ?? state.lane,
     });
+  });
 
-  const prepareSave = (input: Parameters<typeof commitSaveUnlocked>[0]) =>
-    Effect.gen(function* () {
-      const state = yield* readCheckState(input.taskId);
-      yield* judgedGuard(state, input.actorThreadId);
-      let creationChecked = false;
-      const fields = input.fields;
-      if (
-        state === null &&
-        fields.command === undefined &&
-        input.schedule.type !== "webhook" &&
-        fields.revertCheckVersion === undefined &&
-        fields.checkCommand !== undefined &&
-        fields.checkReason !== undefined
-      ) {
-        const cwd = yield* deps.workspace({ projectId: input.projectId, threadId: input.threadId });
-        const tested = yield* deps.runCheck({
-          command: fields.checkCommand,
-          cwd,
-          taskId: input.taskId,
-          runId: `${input.taskId}:creation`,
-          date: iso(yield* Clock.currentTimeMillis).slice(0, 10),
-        });
-        if (tested.passed)
-          return yield* fail("Outcome check already passes. Task creation refused.");
-        creationChecked = true;
-      }
-      return commitSaveUnlocked(input, state, creationChecked);
-    });
+  const prepareSave = Effect.fn("ScheduledTaskChecksEngine.prepareSave")(function* (
+    input: Parameters<typeof commitSaveUnlocked>[0],
+  ) {
+    const state = yield* readCheckState(input.taskId);
+    yield* judgedGuard(state, input.actorThreadId);
+    let creationChecked = false;
+    const fields = input.fields;
+    if (
+      state === null &&
+      fields.command === undefined &&
+      input.schedule.type !== "webhook" &&
+      fields.revertCheckVersion === undefined &&
+      fields.checkCommand !== undefined &&
+      fields.checkReason !== undefined
+    ) {
+      const cwd = yield* deps.workspace({ projectId: input.projectId, threadId: input.threadId });
+      const tested = yield* deps.runCheck({
+        command: fields.checkCommand,
+        cwd,
+        taskId: input.taskId,
+        runId: `${input.taskId}:creation`,
+        date: iso(yield* Clock.currentTimeMillis).slice(0, 10),
+      });
+      if (tested.passed) return yield* fail("Outcome check already passes. Task creation refused.");
+      creationChecked = true;
+    }
+    return commitSaveUnlocked(input, state, creationChecked);
+  });
   const saveUnlocked = (input: Parameters<typeof commitSaveUnlocked>[0]) =>
     prepareSave(input).pipe(Effect.flatMap((commit) => commit));
 

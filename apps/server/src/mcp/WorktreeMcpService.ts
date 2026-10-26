@@ -127,30 +127,31 @@ const make = Effect.gen(function* () {
     asOperationFailed("Unable to read server settings"),
   );
 
-  const handoffIds = (scope: McpThreadInvocationScope) =>
-    Effect.gen(function* () {
-      const request = yield* CurrentRequest;
-      if (request !== undefined)
+  const handoffIds = Effect.fn("WorktreeMcpService.handoffIds")(function* (
+    scope: McpThreadInvocationScope,
+  ) {
+    const request = yield* CurrentRequest;
+    if (request !== undefined)
+      return {
+        commandId: CommandId.make(`worktree-handoff:${request.id}`),
+        continuationCommandId: CommandId.make(`worktree-continuation:${request.id}`),
+        continuationMessageId: MessageId.make(`worktree-continuation:${request.id}`),
+      };
+    return yield* crypto.randomUUIDv4().pipe(
+      Effect.map((uuid) => {
+        const part = (kind: string, operation: string) =>
+          [kind, "mcp", encodeURIComponent(scope.thread.providerSessionId), operation, uuid].join(
+            ":",
+          );
         return {
-          commandId: CommandId.make(`worktree-handoff:${request.id}`),
-          continuationCommandId: CommandId.make(`worktree-continuation:${request.id}`),
-          continuationMessageId: MessageId.make(`worktree-continuation:${request.id}`),
+          commandId: CommandId.make(part("command", "worktree-handoff")),
+          continuationCommandId: CommandId.make(part("command", "worktree-continuation")),
+          continuationMessageId: MessageId.make(part("message", "worktree-continuation")),
         };
-      return yield* crypto.randomUUIDv4().pipe(
-        Effect.map((uuid) => {
-          const part = (kind: string, operation: string) =>
-            [kind, "mcp", encodeURIComponent(scope.thread.providerSessionId), operation, uuid].join(
-              ":",
-            );
-          return {
-            commandId: CommandId.make(part("command", "worktree-handoff")),
-            continuationCommandId: CommandId.make(part("command", "worktree-continuation")),
-            continuationMessageId: MessageId.make(part("message", "worktree-continuation")),
-          };
-        }),
-        Effect.orDie,
-      );
-    });
+      }),
+      Effect.orDie,
+    );
+  });
 
   const performHandoff = Effect.fn("WorktreeMcpService.performHandoff")(function* (
     scope: McpThreadInvocationScope,
@@ -224,37 +225,37 @@ const make = Effect.gen(function* () {
     const startFromOrigin = input.startFromOrigin ?? (yield* readDefaultStartFromOrigin);
 
     const dispatch = Effect.gen(function* () {
-    let worktreeBaseRef = baseRef;
-    let baseRefName = baseRef;
-    let startedFromOrigin = false;
-    if (startFromOrigin) {
-      const resolvedRemoteBase = yield* gitWorkflow
-        .fetchWorktreeBaseCommit({ cwd: projectCwd, refName: baseRef })
-        .pipe(asOperationFailed(`Unable to fetch the remote base of '${baseRef}'`));
-      if (resolvedRemoteBase !== null) {
-        worktreeBaseRef = resolvedRemoteBase.commitSha;
-        baseRefName = `refs/remotes/${resolvedRemoteBase.remoteRefName}`;
-        startedFromOrigin = true;
+      let worktreeBaseRef = baseRef;
+      let baseRefName = baseRef;
+      let startedFromOrigin = false;
+      if (startFromOrigin) {
+        const resolvedRemoteBase = yield* gitWorkflow
+          .fetchWorktreeBaseCommit({ cwd: projectCwd, refName: baseRef })
+          .pipe(asOperationFailed(`Unable to fetch the remote base of '${baseRef}'`));
+        if (resolvedRemoteBase !== null) {
+          worktreeBaseRef = resolvedRemoteBase.commitSha;
+          baseRefName = `refs/remotes/${resolvedRemoteBase.remoteRefName}`;
+          startedFromOrigin = true;
+        }
       }
-    }
 
       const ids = yield* handoffIds(scope);
 
-    // Mask interruption after worktree creation through setup; binding can detach and interrupt the caller.
-    return yield* Effect.uninterruptibleMask((restore) =>
-      Effect.gen(function* () {
-        const worktree = yield* restore(
-          gitWorkflow
-            .createWorktree({
-              cwd: projectCwd,
-              refName: worktreeBaseRef,
-              newRefName: input.branch,
-              baseRefName,
-              path: null,
-            })
-            .pipe(asOperationFailed("Unable to create the worktree")),
-        );
-        const worktreePath = worktree.worktree.path;
+      // Mask interruption after worktree creation through setup; binding can detach and interrupt the caller.
+      return yield* Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const worktree = yield* restore(
+            gitWorkflow
+              .createWorktree({
+                cwd: projectCwd,
+                refName: worktreeBaseRef,
+                newRefName: input.branch,
+                baseRefName,
+                path: null,
+              })
+              .pipe(asOperationFailed("Unable to create the worktree")),
+          );
+          const worktreePath = worktree.worktree.path;
 
           // Shared shape for "the handoff already succeeded, so report the failure
           // in the result instead of failing the call" (continuation, setup script).
@@ -331,12 +332,9 @@ const make = Effect.gen(function* () {
                 ),
               );
           }).pipe(
-            // onError: the worktree was already created, so any failure between
-            // here and the committed binding (recheck read, recheck race,
-            // dispatch typed failure or defect) must remove it again so a failed
-            // handoff leaves nothing behind on disk. Interrupt-only causes skip
-            // the removal: the binding may have committed, and force-deleting a
-            // worktree the thread now points at would be worse than leaking one.
+            // onError: the worktree exists, so any failure before the binding commits removes it again.
+            // Interrupt-only causes skip removal: the binding may have committed, and deleting a worktree the
+            // thread now uses is worse than leaking one.
             Effect.onError((cause) =>
               Cause.hasInterruptsOnly(cause)
                 ? Effect.void
@@ -355,14 +353,9 @@ const make = Effect.gen(function* () {
             ),
           );
 
-          // Queue the continuation right after the binding commits: the detach
-          // that the metadata update schedules will terminate the calling
-          // session, and a durably queued message is what guarantees the thread
-          // re-launches inside the worktree. When the dying run reaches a
-          // terminal state the orchestrator promotes the queued run, which
-          // derives its cwd from the updated projection.
-          // suspend: build the send effect only when the binding has succeeded,
-          // so a failed dispatch never even constructs the continuation call.
+          // Queue the continuation right after the binding commits: the scheduled detach kills this session,
+          // and the durably queued message relaunches the thread in the worktree once the run ends. Suspend
+          // builds the send only after the binding succeeded.
           const queueContinuation: Effect.Effect<
             WorktreeMcpContinuationStatus,
             WorktreeMcpFailure
@@ -428,21 +421,21 @@ const make = Effect.gen(function* () {
               );
           }
 
-        const result: WorktreeMcpHandoffResult = {
-          worktreePath,
-          branch: worktree.worktree.refName,
-          baseRef,
-          startedFromOrigin,
-          setupScript,
-          continuation,
-          note:
-            continuation.status === "scheduled"
-              ? "Handoff recorded. Changing the workspace detaches this provider session, so the current turn ends shortly after this call; the queued continuation prompt then starts the next turn inside the worktree with the conversation preserved. The worktree is not removed automatically when the thread is deleted."
-              : "Handoff recorded. Changing the workspace detaches this provider session, so the current turn ends shortly after this call; the conversation continues inside the worktree when the thread receives its next message. Pass continuationPrompt to resume automatically. The worktree is not removed automatically when the thread is deleted.",
-        };
-        return result;
-      }),
-    );
+          const result: WorktreeMcpHandoffResult = {
+            worktreePath,
+            branch: worktree.worktree.refName,
+            baseRef,
+            startedFromOrigin,
+            setupScript,
+            continuation,
+            note:
+              continuation.status === "scheduled"
+                ? "Handoff recorded. Changing the workspace detaches this provider session, so the current turn ends shortly after this call; the queued continuation prompt then starts the next turn inside the worktree with the conversation preserved. The worktree is not removed automatically when the thread is deleted."
+                : "Handoff recorded. Changing the workspace detaches this provider session, so the current turn ends shortly after this call; the conversation continues inside the worktree when the thread receives its next message. Pass continuationPrompt to resume automatically. The worktree is not removed automatically when the thread is deleted.",
+          };
+          return result;
+        }),
+      );
     });
     return yield* externalDispatch(dispatch);
   });
@@ -488,11 +481,8 @@ const make = Effect.gen(function* () {
         ),
       );
       if (Option.isSome(previous)) return previous.value;
-      // uninterruptibleMask: the guard acquisition and the registration of the
-      // releasing finalizer happen with no interruptible gap in between. An
-      // interrupt landing between a bare add() and the start of an ensured
-      // effect would otherwise leak the guard entry and block every future
-      // handoff for this thread until restart.
+      // uninterruptibleMask: acquire the guard and register its releasing finalizer with no gap, or an
+      // interrupt between them leaks the entry and blocks every handoff for this thread until restart.
       return yield* Effect.uninterruptibleMask((restore) =>
         Effect.suspend(() => {
           if (handoffThreadsInFlight.has(scope.thread.threadId)) {

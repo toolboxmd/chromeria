@@ -9,16 +9,9 @@ export interface GraphQlDocument {
 }
 
 /**
- * One document asking the same field for many items, each under its own alias: the prefix and
- * the item's position (`s0`, `s1`, …), or its `key` when the answer is easier read by one. GitHub
- * has no bulk form of most lookups, so aliases are how a batch travels in one request.
- *
- * Every value travels as a variable renamed per alias (`$s0_owner`), and `field` is handed those
- * placeholders rather than the values: nothing an item holds is written into the document.
- * `shared` variables are declared once and referenced by their own name; `within` nests the aliased
- * fields inside one parent selection, such as a single repository.
- *
- * Null for no items, since a document with no selection is not a document.
+ * One GraphQL document asking the same field for many items, each under its own alias, since GitHub
+ * lacks bulk lookups. Values travel only as per-alias variables, never written into the document;
+ * `shared` variables are declared once and `within` nests the fields. Null for no items.
  */
 export function aliasedGraphQlDocument<Item, Variables extends GraphQlVariables>(input: {
   readonly operation: "query" | "mutation";
@@ -62,14 +55,11 @@ export function aliasedGraphQlDocument<Item, Variables extends GraphQlVariables>
 }
 
 /**
- * The pages of a GraphQL connection, read one after another from `from` (the first page by
- * default) until GitHub has no more, `until` is satisfied, or `maxPages` have been read. `read` is
- * handed the pages so far, for reads that size or check the next page by what has already arrived.
- *
- * `truncated` says pages remained when reading stopped. A cursor GitHub hands back a second time
- * would page forever, so it stops the read as truncated too.
+ * Reads a GraphQL connection's pages from `from` until none remain, `until` holds or `maxPages` is
+ * reached; `read` sees the pages so far. `truncated` says pages remained, including when GitHub
+ * repeats a cursor, which would otherwise page forever.
  */
-export const readGraphQlPages = <Page, E, R>(
+export const readGraphQlPages: <Page, E, R>(
   read: (after: string | null, pages: ReadonlyArray<Page>) => Effect.Effect<Page, E, R>,
   options: {
     readonly nextCursor: (page: NoInfer<Page>) => string | null;
@@ -77,8 +67,16 @@ export const readGraphQlPages = <Page, E, R>(
     readonly maxPages?: number;
     readonly until?: (pages: ReadonlyArray<NoInfer<Page>>) => boolean;
   },
-): Effect.Effect<{ readonly pages: ReadonlyArray<Page>; readonly truncated: boolean }, E, R> =>
-  Effect.gen(function* () {
+) => Effect.Effect<{ readonly pages: ReadonlyArray<Page>; readonly truncated: boolean }, E, R> =
+  Effect.fn("gitHubDocuments.readGraphQlPages")(function* <Page, E, R>(
+    read: (after: string | null, pages: ReadonlyArray<Page>) => Effect.Effect<Page, E, R>,
+    options: {
+      readonly nextCursor: (page: NoInfer<Page>) => string | null;
+      readonly from?: string | null;
+      readonly maxPages?: number;
+      readonly until?: (pages: ReadonlyArray<NoInfer<Page>>) => boolean;
+    },
+  ) {
     const pages: Page[] = [];
     const seen = new Set<string>();
     let after = options.from ?? null;

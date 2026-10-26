@@ -773,42 +773,41 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
 
   const requestAuthorization: NonNullable<
     PreviewAutomationBroker["Service"]["requestAuthorization"]
-  > = (input) =>
-    Effect.gen(function* () {
-      const current = yield* SynchronizedRef.get(state);
-      const pending = current.pending.get(input.requestId);
-      const connection = current.clients.get(input.clientId);
-      if (
-        pending === undefined ||
-        connection === undefined ||
-        pending.context.clientId !== input.clientId ||
-        pending.context.connectionId !== input.connectionId ||
-        connection.connectionId !== input.connectionId ||
-        connection.queue !== pending.queue
-      )
-        return yield* new OrchestratorMcpFailure({
-          code: "capability_denied",
-          message: "The original preview request or execution host is no longer current.",
-        });
-      yield* recheckScope(pending.scope);
-      return {
-        resource: recheckScope(pending.scope),
-        dispatch: Effect.gen(function* () {
-          const latest = yield* SynchronizedRef.get(state);
-          const host = latest.clients.get(input.clientId);
-          if (
-            latest.pending.get(input.requestId) !== pending ||
-            host?.connectionId !== input.connectionId ||
-            host.queue !== pending.queue
-          )
-            return yield* new OrchestratorMcpFailure({
-              code: "capability_denied",
-              message: "The original preview request or execution host was retired.",
-            });
-          yield* recheckScope(pending.scope);
-        }),
-      };
-    });
+  > = Effect.fn("PreviewAutomationBroker.requestAuthorization")(function* (input) {
+    const current = yield* SynchronizedRef.get(state);
+    const pending = current.pending.get(input.requestId);
+    const connection = current.clients.get(input.clientId);
+    if (
+      pending === undefined ||
+      connection === undefined ||
+      pending.context.clientId !== input.clientId ||
+      pending.context.connectionId !== input.connectionId ||
+      connection.connectionId !== input.connectionId ||
+      connection.queue !== pending.queue
+    )
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "The original preview request or execution host is no longer current.",
+      });
+    yield* recheckScope(pending.scope);
+    return {
+      resource: recheckScope(pending.scope),
+      dispatch: Effect.gen(function* () {
+        const latest = yield* SynchronizedRef.get(state);
+        const host = latest.clients.get(input.clientId);
+        if (
+          latest.pending.get(input.requestId) !== pending ||
+          host?.connectionId !== input.connectionId ||
+          host.queue !== pending.queue
+        )
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "The original preview request or execution host was retired.",
+          });
+        yield* recheckScope(pending.scope);
+      }),
+    };
+  });
   return PreviewAutomationBroker.of({ connect, focusHost, respond, invoke, requestAuthorization });
 }).pipe(Effect.withSpan("PreviewAutomationBroker.make"));
 

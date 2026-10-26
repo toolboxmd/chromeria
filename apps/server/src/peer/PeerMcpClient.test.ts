@@ -64,7 +64,7 @@ it.effect("delegation over the server runtime names this environment to the peer
     );
     const peers = Context.get(services, PeerMcpClient.PeerMcpClient);
 
-    // The first call `delegate_task` makes to a linked environment (#605).
+    // The first call `delegate_task` makes to a linked environment.
     yield* peers.requireTaskLifecycle!(peer, "generation");
 
     expect(requests).toEqual(["https://peer.test/mcp/peer-control/tasks"]);

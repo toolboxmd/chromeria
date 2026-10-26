@@ -324,81 +324,74 @@ const describeTree = async (root: string) => {
 
 // Set CHROMERIA_TEST_CFT_ARCHIVE to a downloaded chrome-mac-arm64.zip of the pinned
 // version to prove the real bundle unpacks with its links intact and still runs.
-it.live(
-  "installs the pinned mac-arm64 Chrome for Testing with a valid signature",
-  (ctx) =>
-    Effect.gen(function* () {
-      const archivePath = (yield* HostProcess.Environment).CHROMERIA_TEST_CFT_ARCHIVE;
-      if (!archivePath || HostProcess.Platform.defaultValue() !== "darwin") {
-        return ctx.skip("Set CHROMERIA_TEST_CFT_ARCHIVE to chrome-mac-arm64.zip on macOS.");
-      }
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-preview-browser-real-" });
-      const release = PreviewBrowser.previewBrowserRelease("darwin", "arm64")!;
-      const browser = yield* PreviewBrowser.makePreviewBrowser({
-        baseDir,
-        wait: "5 minutes",
-      }).pipe(
-        Effect.provideService(HostProcess.Platform, "darwin"),
-        Effect.provideService(HostProcess.Architecture, "arm64"),
-        Effect.provideService(
-          HttpClient.HttpClient,
-          HttpClient.make((request) =>
-            Effect.sync(() =>
-              Object.defineProperty(
-                HttpClientResponse.fromWeb(request, new Response(null)),
-                "stream",
-                { value: fs.stream(archivePath).pipe(Stream.orDie) },
-              ),
+it.live("installs the pinned mac-arm64 Chrome for Testing with a valid signature", (ctx) =>
+  Effect.gen(function* () {
+    const archivePath = (yield* HostProcess.Environment).CHROMERIA_TEST_CFT_ARCHIVE;
+    if (!archivePath || HostProcess.Platform.defaultValue() !== "darwin") {
+      return ctx.skip("Set CHROMERIA_TEST_CFT_ARCHIVE to chrome-mac-arm64.zip on macOS.");
+    }
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-preview-browser-real-" });
+    const release = PreviewBrowser.previewBrowserRelease("darwin", "arm64")!;
+    const browser = yield* PreviewBrowser.makePreviewBrowser({
+      baseDir,
+      wait: "5 minutes",
+    }).pipe(
+      Effect.provideService(HostProcess.Platform, "darwin"),
+      Effect.provideService(HostProcess.Architecture, "arm64"),
+      Effect.provideService(
+        HttpClient.HttpClient,
+        HttpClient.make((request) =>
+          Effect.sync(() =>
+            Object.defineProperty(
+              HttpClientResponse.fromWeb(request, new Response(null)),
+              "stream",
+              { value: fs.stream(archivePath).pipe(Stream.orDie) },
             ),
           ),
         ),
-      );
+      ),
+    );
 
-      const executable = yield* browser.executable;
+    const executable = yield* browser.executable;
 
-      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const app = path.join(
-        baseDir,
-        "tools",
-        "chrome-for-testing",
-        "mac-arm64",
-        release.version,
-        "Google Chrome for Testing.app",
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const app = path.join(
+      baseDir,
+      "tools",
+      "chrome-for-testing",
+      "mac-arm64",
+      release.version,
+      "Google Chrome for Testing.app",
+    );
+    expect(executable.startsWith(`${app}${path.sep}`)).toBe(true);
+    // Apple's own extractor is the reference: every path, type, mode, link
+    // target and file hash must match it.
+    const reference = path.join(baseDir, "reference");
+    yield* spawner.exitCode(
+      ChildProcess.make("ditto", ["-x", "-k", archivePath, reference], { stdin: "ignore" }),
+    );
+    const referenceApp = path.join(reference, "chrome-mac-arm64", "Google Chrome for Testing.app");
+    const [ours, theirs] = yield* Effect.promise(() =>
+      Promise.all([describeTree(app), describeTree(referenceApp)]),
+    );
+    expect(ours.length).toBeGreaterThan(600);
+    expect(ours).toEqual(theirs);
+    // CfT is only ad-hoc linker-signed without sealed resources, so the bundle
+    // never passes codesign; unpacking must not change codesign's verdict.
+    const verify = (bundle: string) =>
+      spawner.exitCode(
+        ChildProcess.make("codesign", ["--verify", "--deep", "--strict", bundle], {
+          stdin: "ignore",
+          stderr: "ignore",
+        }),
       );
-      expect(executable.startsWith(`${app}${path.sep}`)).toBe(true);
-      // Apple's own extractor is the reference: every path, type, mode, link
-      // target and file hash must match it.
-      const reference = path.join(baseDir, "reference");
-      yield* spawner.exitCode(
-        ChildProcess.make("ditto", ["-x", "-k", archivePath, reference], { stdin: "ignore" }),
-      );
-      const referenceApp = path.join(
-        reference,
-        "chrome-mac-arm64",
-        "Google Chrome for Testing.app",
-      );
-      const [ours, theirs] = yield* Effect.promise(() =>
-        Promise.all([describeTree(app), describeTree(referenceApp)]),
-      );
-      expect(ours.length).toBeGreaterThan(600);
-      expect(ours).toEqual(theirs);
-      // CfT is only ad-hoc linker-signed without sealed resources, so the bundle
-      // never passes codesign; unpacking must not change codesign's verdict.
-      const verify = (bundle: string) =>
-        spawner.exitCode(
-          ChildProcess.make("codesign", ["--verify", "--deep", "--strict", bundle], {
-            stdin: "ignore",
-            stderr: "ignore",
-          }),
-        );
-      expect(yield* verify(app)).toBe(yield* verify(referenceApp));
-      expect(
-        (yield* spawner.string(
-          ChildProcess.make(executable, ["--version"], { stdin: "ignore" }),
-        )).trim(),
-      ).toBe(`Google Chrome for Testing ${release.version}`);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-  { timeout: 300_000 },
+    expect(yield* verify(app)).toBe(yield* verify(referenceApp));
+    expect(
+      (yield* spawner.string(
+        ChildProcess.make(executable, ["--version"], { stdin: "ignore" }),
+      )).trim(),
+    ).toBe(`Google Chrome for Testing ${release.version}`);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

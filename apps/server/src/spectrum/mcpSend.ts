@@ -29,14 +29,14 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     return {
-      send: (
-        threads: Pick<ThreadManagementServiceShape, "dispatch">,
-        input: OrchestratorMcpThreadSendInput,
-        commandId: CommandId,
-        messageId: MessageId,
-        senderThreadId?: ThreadId,
-      ) =>
-        Effect.gen(function* () {
+      send: Effect.fn("mcpSend.send")(
+        function* (
+          threads: Pick<ThreadManagementServiceShape, "dispatch">,
+          input: OrchestratorMcpThreadSendInput,
+          commandId: CommandId,
+          messageId: MessageId,
+          senderThreadId?: ThreadId,
+        ) {
           const found = yield* readSpectrum(input.threadId).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
           );
@@ -68,16 +68,16 @@ export const layer = Layer.effect(
             status: "idle",
             delivery: "transcript",
           } as const;
-        }).pipe(
-          Effect.mapError((error) =>
-            error._tag === "OrchestratorMcpFailure"
-              ? error
-              : new OrchestratorMcpFailure({
-                  code: "orchestration_error",
-                  message: "Unable to append to the Spectrum transcript.",
-                }),
-          ),
+        },
+        Effect.mapError((error) =>
+          error._tag === "OrchestratorMcpFailure"
+            ? error
+            : new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "Unable to append to the Spectrum transcript.",
+              }),
         ),
+      ),
     };
   }),
 );

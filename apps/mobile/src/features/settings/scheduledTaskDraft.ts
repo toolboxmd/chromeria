@@ -53,7 +53,7 @@ export function scheduledTaskDefaultModel(
 }
 
 export type ScheduleDraft = {
-  /** `preserved`: a fork trigger (#174) the editor shows but never edits or converts. */
+  /** `preserved`: a fork trigger the editor shows but never edits or converts. */
   readonly mode: "fixed_time" | "interval" | "webhook" | "preserved";
   readonly timeOfDay: string;
   readonly weekdays: ReadonlyArray<number>;

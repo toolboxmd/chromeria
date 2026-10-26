@@ -128,12 +128,9 @@ type Outcome =
   | { readonly outcome: "unsupported"; readonly kind: string; readonly reason: string };
 
 /**
- * Copies Chromeria v1 scheduled tasks into upstream's `scheduled_tasks` and
- * the fork's task state (toolboxmd/chromeria#174). V1 keeps running them until
- * the user switches, so every imported task is disabled and its runs are inert
- * history. A task that cannot be mapped keeps its full v1 payload privately in
- * `fork_scheduled_task_v1_imports`; logs carry only its id and a bounded kind.
- * One marker per v1 task makes reruns and partial failures converge.
+ * Copies Chromeria v1 scheduled tasks into `scheduled_tasks` and fork task state, disabled, since
+ * v1 keeps running them until the user switches. Unmappable tasks keep their v1 payload privately in
+ * `fork_scheduled_task_v1_imports`; one marker per task makes reruns and partial failures converge.
  */
 export const backfillScheduledTasks = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -268,111 +265,111 @@ const v1Stage = (status: string): CheckedRun["stage"] =>
     ? status
     : "needs-you";
 
-function importTask(sql: SqlClient.SqlClient, task: V1Task, payload: string) {
-  return Effect.gen(function* () {
-    const kind = kindOf(task);
-    const unsupported = (reason: string) =>
-      record(sql, task.id, { outcome: "unsupported", kind, reason }, payload);
-    if (task.deleted) return yield* record(sql, task.id, { outcome: "deleted", kind }, null);
-    if (kind === "unknown") return yield* unsupported("task kind is not recognized");
-    const command = task.definition.kind === "command";
-    const definition = task.definition;
-    const complete = command
-      ? definition.command !== undefined && definition.projectId !== undefined
-      : definition.prompt !== undefined &&
-        definition.target !== undefined &&
-        task.checks.length > 0;
-    if (!complete) return yield* unsupported("task definition is incomplete");
-    let projectId = definition.projectId ?? "";
-    let threadId: string | null = null;
-    let selection: ModelSelection | null = null;
-    let runtimeMode: ScheduledTask["runtimeMode"] = DEFAULT_RUNTIME_MODE;
-    let interactionMode: ScheduledTask["interactionMode"] = "default";
-    const target = command ? undefined : definition.target;
-    if (target?.kind === "thread") {
-      const threads = yield* sql<{ readonly payload_json: string }>`
+const importTask = Effect.fn("v1Import.importTask")(function* (
+  sql: SqlClient.SqlClient,
+  task: V1Task,
+  payload: string,
+) {
+  const kind = kindOf(task);
+  const unsupported = (reason: string) =>
+    record(sql, task.id, { outcome: "unsupported", kind, reason }, payload);
+  if (task.deleted) return yield* record(sql, task.id, { outcome: "deleted", kind }, null);
+  if (kind === "unknown") return yield* unsupported("task kind is not recognized");
+  const command = task.definition.kind === "command";
+  const definition = task.definition;
+  const complete = command
+    ? definition.command !== undefined && definition.projectId !== undefined
+    : definition.prompt !== undefined && definition.target !== undefined && task.checks.length > 0;
+  if (!complete) return yield* unsupported("task definition is incomplete");
+  let projectId = definition.projectId ?? "";
+  let threadId: string | null = null;
+  let selection: ModelSelection | null = null;
+  let runtimeMode: ScheduledTask["runtimeMode"] = DEFAULT_RUNTIME_MODE;
+  let interactionMode: ScheduledTask["interactionMode"] = "default";
+  const target = command ? undefined : definition.target;
+  if (target?.kind === "thread") {
+    const threads = yield* sql<{ readonly payload_json: string }>`
         SELECT payload_json FROM orchestration_v2_projection_threads
         WHERE thread_id = ${target.threadId}
       `;
-      const thread =
-        threads[0] === undefined ? Option.none() : decodeThread(threads[0].payload_json);
-      if (Option.isNone(thread) || thread.value.deletedAt !== null)
-        return yield* unsupported("its thread was not imported");
-      projectId = thread.value.projectId;
-      threadId = thread.value.id;
-      selection = thread.value.modelSelection;
-      runtimeMode = thread.value.runtimeMode;
-      interactionMode = thread.value.interactionMode;
-    } else {
-      if (target !== undefined) projectId = target.projectId;
-      const projects = yield* sql<{ readonly default_model_selection_json: string | null }>`
+    const thread = threads[0] === undefined ? Option.none() : decodeThread(threads[0].payload_json);
+    if (Option.isNone(thread) || thread.value.deletedAt !== null)
+      return yield* unsupported("its thread was not imported");
+    projectId = thread.value.projectId;
+    threadId = thread.value.id;
+    selection = thread.value.modelSelection;
+    runtimeMode = thread.value.runtimeMode;
+    interactionMode = thread.value.interactionMode;
+  } else {
+    if (target !== undefined) projectId = target.projectId;
+    const projects = yield* sql<{ readonly default_model_selection_json: string | null }>`
         SELECT default_model_selection_json FROM projection_projects
         WHERE project_id = ${projectId} AND deleted_at IS NULL
       `;
-      if (projects[0] === undefined) return yield* unsupported("its project was not imported");
-      const stored = projects[0].default_model_selection_json;
-      selection = stored === null ? null : Option.getOrNull(decodeSelection(stored));
-    }
-    if (selection === null) return yield* unsupported("no model selection to store");
-    const upstream = yield* decodeTask({
-      id: task.id,
-      title: definition.title,
-      // A command task's prompt only describes it; the command runs from the fork state.
-      prompt: command ? definition.title : definition.prompt,
-      enabled: false,
-      schedule: scheduleOf(task),
-      projectId,
-      threadId,
-      workspaceStrategy: { type: "root" },
-      modelSelection: selection,
-      runtimeMode,
-      interactionMode,
-      createdBy: (task.createdBy ?? task.checks[0]?.actor ?? "").startsWith("user:")
-        ? "user"
-        : "agent",
-      creationSource: "server",
-      createdAt: task.createdAt,
-      updatedAt: task.updatedAt,
-      nextRunAt: null,
-      lastRunAt: null,
-      lastRunStatus: "never",
-      lastRunError: null,
-      runCount: 0,
-    }).pipe(Effect.option);
-    if (Option.isNone(upstream)) return yield* unsupported("its fields do not fit a v2 task");
-    const state = yield* decodeState({
-      version: 1,
-      taskId: ScheduledTaskId.make(task.id),
-      revision: 1,
-      kind: command ? "command" : "agent",
-      command: command ? definition.command : null,
-      role: command ? null : (definition.role ?? null),
-      lane: command ? null : (definition.lane ?? null),
-      checks: command ? [] : task.checks,
-      runs: task.runs.map((run) => ({
-        id: run.id,
-        slot: run.slot,
-        checkVersion: command ? null : (run.checkVersion ?? task.checks.at(-1)!.version),
-        threadId: run.threadId,
-        checkCwd: run.checkCwd,
-        stage: v1Stage(run.status),
-        attempt: run.attempt,
-        retryAt: null,
-        hasWork: run.hasWork,
-        sends: [],
-        error: run.error,
-        check: run.check,
-        ...(run.commandResult === undefined ? {} : { commandResult: run.commandResult }),
-        imported: { from: "v1", status: run.status },
-      })),
-      failureStreak: task.failureStreak,
-      lastError: task.lastError,
-      lastSuccessfulRunId: task.lastSuccessfulRunId ?? null,
-    }).pipe(Effect.option);
-    if (Option.isNone(state)) return yield* unsupported("its run history does not fit v2");
-    const row = upstream.value;
-    const schedule: ScheduledTaskSchedule = row.schedule;
-    const inserted = yield* sql<{ readonly task_id: string }>`
+    if (projects[0] === undefined) return yield* unsupported("its project was not imported");
+    const stored = projects[0].default_model_selection_json;
+    selection = stored === null ? null : Option.getOrNull(decodeSelection(stored));
+  }
+  if (selection === null) return yield* unsupported("no model selection to store");
+  const upstream = yield* decodeTask({
+    id: task.id,
+    title: definition.title,
+    // A command task's prompt only describes it; the command runs from the fork state.
+    prompt: command ? definition.title : definition.prompt,
+    enabled: false,
+    schedule: scheduleOf(task),
+    projectId,
+    threadId,
+    workspaceStrategy: { type: "root" },
+    modelSelection: selection,
+    runtimeMode,
+    interactionMode,
+    createdBy: (task.createdBy ?? task.checks[0]?.actor ?? "").startsWith("user:")
+      ? "user"
+      : "agent",
+    creationSource: "server",
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+    nextRunAt: null,
+    lastRunAt: null,
+    lastRunStatus: "never",
+    lastRunError: null,
+    runCount: 0,
+  }).pipe(Effect.option);
+  if (Option.isNone(upstream)) return yield* unsupported("its fields do not fit a v2 task");
+  const state = yield* decodeState({
+    version: 1,
+    taskId: ScheduledTaskId.make(task.id),
+    revision: 1,
+    kind: command ? "command" : "agent",
+    command: command ? definition.command : null,
+    role: command ? null : (definition.role ?? null),
+    lane: command ? null : (definition.lane ?? null),
+    checks: command ? [] : task.checks,
+    runs: task.runs.map((run) => ({
+      id: run.id,
+      slot: run.slot,
+      checkVersion: command ? null : (run.checkVersion ?? task.checks.at(-1)!.version),
+      threadId: run.threadId,
+      checkCwd: run.checkCwd,
+      stage: v1Stage(run.status),
+      attempt: run.attempt,
+      retryAt: null,
+      hasWork: run.hasWork,
+      sends: [],
+      error: run.error,
+      check: run.check,
+      ...(run.commandResult === undefined ? {} : { commandResult: run.commandResult }),
+      imported: { from: "v1", status: run.status },
+    })),
+    failureStreak: task.failureStreak,
+    lastError: task.lastError,
+    lastSuccessfulRunId: task.lastSuccessfulRunId ?? null,
+  }).pipe(Effect.option);
+  if (Option.isNone(state)) return yield* unsupported("its run history does not fit v2");
+  const row = upstream.value;
+  const schedule: ScheduledTaskSchedule = row.schedule;
+  const inserted = yield* sql<{ readonly task_id: string }>`
       INSERT INTO scheduled_tasks (
         task_id, title, prompt, enabled, schedule_json, project_id, thread_id,
         workspace_strategy_json, model_selection_json, runtime_mode, interaction_mode,
@@ -388,12 +385,11 @@ function importTask(sql: SqlClient.SqlClient, task: V1Task, payload: string) {
       ON CONFLICT (task_id) DO NOTHING
       RETURNING task_id
     `;
-    // A v2 task already using this id wins; the v1 task stays recoverable instead.
-    if (inserted.length === 0) return yield* unsupported("a v2 task already uses its id");
-    yield* sql`
+  // A v2 task already using this id wins; the v1 task stays recoverable instead.
+  if (inserted.length === 0) return yield* unsupported("a v2 task already uses its id");
+  yield* sql`
       INSERT INTO fork_scheduled_task_checks (task_id, revision, state_json)
       VALUES (${row.id}, 1, ${yield* encodeState(state.value)})
     `;
-    return yield* record(sql, task.id, { outcome: "imported", kind }, null);
-  });
-}
+  return yield* record(sql, task.id, { outcome: "imported", kind }, null);
+});

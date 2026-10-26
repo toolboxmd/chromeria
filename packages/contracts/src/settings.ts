@@ -1036,17 +1036,9 @@ export const ProjectProviderInstanceOverride = Schema.Struct({
 export type ProjectProviderInstanceOverride = typeof ProjectProviderInstanceOverride.Type;
 
 /**
- * An absent key inherits the environment value; `null` is a real value where
- * the environment type is nullable (no default model, no dedicated writer
- * model, never auto-settle).
- *
- * `prismRoles` is a partial role map that overlays the environment kits
- * (see `PrismProjectRoleKits`); every other scoped key replaces its
- * `ServerSettings` field whole.
- *
- * `providerInstances` sits outside `PROJECT_SCOPED_SERVER_SETTING_KEYS`:
- * it keeps the settings.json shape but overrides field by field, per
- * `ProviderInstanceId`.
+ * An absent key inherits the environment value; `null` is a real value where the type is nullable.
+ * `prismRoles` overlays the environment kits partially; other scoped keys replace their field whole.
+ * `providerInstances` keeps the settings.json shape but overrides per `ProviderInstanceId`.
  */
 export const ProjectSettingsOverrides = Schema.Struct({
   ...forkOpaqueSettingsFields,
@@ -1234,11 +1226,9 @@ export const ServerSettings = Schema.Struct({
   /** Fold once so restarts cannot undo later UI resets. */
   projectSettingsFolded: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /**
-   * Whether project `prismRoles` overrides are partial role maps. Earlier
-   * builds stored a whole kit whose unset roles were empty lists, which ran
-   * those roles on the caller's model; the one-time rewrite drops them so
-   * the roles inherit the environment again. A write that declares partial
-   * overrides also sets it, so a later deliberate empty list is never rewritten.
+   * Whether project `prismRoles` overrides are partial role maps. Earlier builds stored whole kits
+   * whose empty lists ran unset roles on the caller's model; the one-time rewrite drops those. A write
+   * declaring partial overrides sets it too, so a later deliberate empty list is never rewritten.
    */
   prismRoleOverridesPartial: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
 
@@ -1613,12 +1603,9 @@ export const ServerSettingsPatch = Schema.Struct({
     ),
   ),
   /**
-   * The writer stores partial Prism project overrides. Clients built before
-   * that decode an override as whole kits and send unset roles back as empty
-   * lists, so a write without this flag drops empty Prism lists from its
-   * entries; only a declared write can store an empty list (the caller's
-   * model). Client runtime sets it on every project override write; it
-   * never clears the stored marker.
+   * The writer stores partial Prism project overrides. Older clients send unset roles back as empty
+   * lists, so an undeclared write drops empty Prism lists; only a declared write stores one. Client
+   * runtime sets it on every project override write and never clears the stored marker.
    */
   prismRoleOverridesPartial: Schema.optionalKey(Schema.Boolean),
   enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),

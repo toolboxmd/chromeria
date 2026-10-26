@@ -107,34 +107,33 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       .digest("SHA-256", new TextEncoder().encode(token))
       .pipe(Effect.map(bytesToHex), Effect.orDie);
 
-  const currentScope = (
+  const currentScope = Effect.fn("McpSessionRegistry.currentScope")(function* (
     scope: McpInvocationContext.McpThreadInvocationScope,
     fallback?: PeerAuthority.Authority,
-  ) =>
-    Effect.gen(function* () {
-      const frozen = Option.isSome(authority)
-        ? yield* authority.value.forThread(scope.thread.threadId).pipe(Effect.orDie)
-        : (fallback ?? scope.authority);
-      const legacy =
-        frozen === undefined && Option.isSome(authority)
-          ? yield* authority.value.legacyCeiling(scope.thread.threadId).pipe(Effect.orDie)
-          : undefined;
-      const ceiling = frozen?.ceiling ?? legacy;
-      const { authority: _oldAuthority, legacyPeerCeiling: _oldLegacy, ...credential } = scope;
-      return {
-        ...credential,
-        ...(frozen === undefined ? {} : { authority: frozen }),
-        ...(legacy === undefined ? {} : { legacyPeerCeiling: legacy }),
-        capabilities:
-          ceiling === undefined
-            ? scope.capabilities
-            : new Set(
-                [...scope.capabilities].filter((capability) =>
-                  ceiling.capabilities.includes(capability),
-                ),
+  ) {
+    const frozen = Option.isSome(authority)
+      ? yield* authority.value.forThread(scope.thread.threadId).pipe(Effect.orDie)
+      : (fallback ?? scope.authority);
+    const legacy =
+      frozen === undefined && Option.isSome(authority)
+        ? yield* authority.value.legacyCeiling(scope.thread.threadId).pipe(Effect.orDie)
+        : undefined;
+    const ceiling = frozen?.ceiling ?? legacy;
+    const { authority: _oldAuthority, legacyPeerCeiling: _oldLegacy, ...credential } = scope;
+    return {
+      ...credential,
+      ...(frozen === undefined ? {} : { authority: frozen }),
+      ...(legacy === undefined ? {} : { legacyPeerCeiling: legacy }),
+      capabilities:
+        ceiling === undefined
+          ? scope.capabilities
+          : new Set(
+              [...scope.capabilities].filter((capability) =>
+                ceiling.capabilities.includes(capability),
               ),
-      };
-    });
+            ),
+    };
+  });
 
   const issue: McpSessionRegistryShape["issue"] = Effect.fn("McpSessionRegistry.issue")(
     function* (request) {
@@ -224,17 +223,16 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   return McpSessionRegistry.of({
     issue,
     resolve,
-    scopeForThread: (threadId) =>
-      Effect.gen(function* () {
-        const timestamp = yield* currentTimeMillis;
-        const { records } = yield* SynchronizedRef.get(state);
-        const scope = Array.from(records.values()).findLast(
-          (record) =>
-            record.scope.thread.threadId === threadId &&
-            timestamp - record.lastAliveAt <= livenessWindowMs,
-        )?.scope;
-        return scope === undefined ? undefined : yield* currentScope(scope);
-      }),
+    scopeForThread: Effect.fn("McpSessionRegistry.scopeForThread")(function* (threadId) {
+      const timestamp = yield* currentTimeMillis;
+      const { records } = yield* SynchronizedRef.get(state);
+      const scope = Array.from(records.values()).findLast(
+        (record) =>
+          record.scope.thread.threadId === threadId &&
+          timestamp - record.lastAliveAt <= livenessWindowMs,
+      )?.scope;
+      return scope === undefined ? undefined : yield* currentScope(scope);
+    }),
     touch,
     revokeProviderSession: Effect.fn("McpSessionRegistry.revokeProviderSession")(
       function* (providerSessionId) {

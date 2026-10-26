@@ -174,7 +174,6 @@ it.live(
         );
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
-  30_000,
 );
 
 it.live.each(["council", "free"] as const)(
@@ -345,7 +344,6 @@ it.live.each(["council", "free"] as const)(
         }
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
-  30_000,
 );
 
 it.live.each(["council", "free"] as const)(
@@ -501,7 +499,6 @@ it.live.each(["council", "free"] as const)(
         ).toHaveLength(0);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
-  30_000,
 );
 
 it.live.each(
@@ -746,7 +743,6 @@ it.live.each(
         );
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
-  60_000,
 );
 
 it.live.each(["council", "free"] as const)(
@@ -934,7 +930,6 @@ it.live.each(["council", "free"] as const)(
         ).toHaveLength(0);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
-  30_000,
 );
 
 it.live.each(["council", "free"] as const)(
@@ -1234,5 +1229,4 @@ it.live.each(["council", "free"] as const)(
         expect((yield* c.scheduled.list()).tasks).toEqual(before);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
-  90_000,
 );

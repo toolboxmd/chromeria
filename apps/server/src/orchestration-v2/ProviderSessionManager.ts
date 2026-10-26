@@ -434,12 +434,9 @@ export const layerWithOptions = (
           : mcpPrepareLock.withLock(
               threadId,
               Effect.gen(function* () {
-                // Reuse a still-valid credential for this thread instead of
-                // rotating: long-lived provider processes (codex app-server)
-                // build their MCP client once per conversation and keep using
-                // the credential it started with, so a thread that detaches and
-                // re-attaches across a workspace handoff must come back to the
-                // same token or the process's tool calls fail auth.
+                // Reuse a still-valid credential instead of rotating: long-lived provider processes build their
+                // MCP client once per conversation, so a thread re-attaching after a workspace handoff must get
+                // the same token or its tool calls fail auth.
                 const accessSettings = yield* agentAccessSettings(threadId);
                 const frozenAuthority = Option.isSome(peerAuthority)
                   ? yield* peerAuthority.value.forThread(threadId).pipe(Effect.orDie)
@@ -488,7 +485,9 @@ export const layerWithOptions = (
                     resolved.thread.threadId === threadId &&
                     resolved.thread.providerInstanceId === providerInstanceId &&
                     resolved.capabilities.size === capabilities.size &&
-                    [...capabilities].every((capability) => resolved.capabilities.has(capability)) &&
+                    [...capabilities].every((capability) =>
+                      resolved.capabilities.has(capability),
+                    ) &&
                     // A credential issued while the lineage read failed is replaced once it works.
                     (resolved.thread.subagent === true) === subagent
                   ) {

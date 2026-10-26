@@ -227,11 +227,9 @@ export const make = Effect.fn("RelayEnvironmentDiscovery.make")(function* () {
         error: Option.none(),
       });
 
-      // Signed out is the idle state, not a failure: the proactive refresh on
-      // credentials-changed also runs on sign-out and must settle back to a
-      // clean empty list. Only the session-level "no credentials" error is
-      // benign — relay-side auth failures (expired/invalid tokens) happen
-      // after this point and must surface as errors.
+      // Signed out is idle, not a failure: the refresh on credentials-changed also runs on sign-out and
+      // must settle to an empty list. Only the session-level "no credentials" error is benign; relay
+      // auth failures happen later and must surface.
       const listingSession = yield* session.identity;
       const tokenResult = yield* Effect.result(session.clerkToken);
       if (tokenResult._tag === "Failure") {

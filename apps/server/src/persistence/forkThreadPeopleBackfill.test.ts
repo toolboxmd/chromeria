@@ -269,39 +269,37 @@ it.effect("leaves threads untouched when the v1 database never had people", () =
 );
 
 const realSource = process.env.CHROMERIA_V1_SNAPSHOT_SOURCE;
-(realSource ? it.effect : it.effect.skip)(
-  "carries every frozen owner of a read-only real V1 snapshot",
-  () =>
-    Effect.gen(function* () {
-      const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "chromeria-people-"));
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true })),
-      );
-      const snapshotPath = NodePath.join(directory, "chromeria-v2.sqlite");
-      yield* Effect.promise(() =>
-        vacuumForkV1Snapshot({ sourcePath: realSource!, destinationPath: snapshotPath }),
-      );
-      yield* Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
-        yield* importer.reconcileShells;
-        yield* runForkV1Backfills();
-        const count = (rows: ReadonlyArray<{ readonly count: number }>) => rows[0]?.count ?? 0;
-        const imported = count(
-          yield* sql<{ readonly count: number }>`
+it.effect.skipIf(!realSource)("carries every frozen owner of a read-only real V1 snapshot", () =>
+  Effect.gen(function* () {
+    const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "chromeria-people-"));
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true })),
+    );
+    const snapshotPath = NodePath.join(directory, "chromeria-v2.sqlite");
+    yield* Effect.promise(() =>
+      vacuumForkV1Snapshot({ sourcePath: realSource!, destinationPath: snapshotPath }),
+    );
+    yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
+      yield* importer.reconcileShells;
+      yield* runForkV1Backfills();
+      const count = (rows: ReadonlyArray<{ readonly count: number }>) => rows[0]?.count ?? 0;
+      const imported = count(
+        yield* sql<{ readonly count: number }>`
             SELECT COUNT(*) AS count FROM orchestration_v2_legacy_imports`,
-        );
-        const missing = count(
-          yield* sql<{ readonly count: number }>`
+      );
+      const missing = count(
+        yield* sql<{ readonly count: number }>`
             SELECT COUNT(*) AS count FROM orchestration_v2_legacy_imports AS legacy_import
             INNER JOIN orchestration_v2_projection_threads AS projection
               ON projection.thread_id = legacy_import.thread_id
             WHERE json_type(projection.payload_json, '$.owner') IS NULL
                OR json_type(projection.payload_json, '$.coOwners') IS NULL`,
-        );
-        // Independent oracle: the payload equals the frozen v1 columns for every recorded-clean thread.
-        const mismatched = count(
-          yield* sql<{ readonly count: number }>`
+      );
+      // Independent oracle: the payload equals the frozen v1 columns for every recorded-clean thread.
+      const mismatched = count(
+        yield* sql<{ readonly count: number }>`
             SELECT COUNT(*) AS count FROM orchestration_v2_legacy_imports AS legacy_import
             INNER JOIN projection_threads AS thread ON thread.thread_id = legacy_import.thread_id
             INNER JOIN orchestration_v2_projection_threads AS projection
@@ -315,45 +313,45 @@ const realSource = process.env.CHROMERIA_V1_SNAPSHOT_SOURCE;
                 OR json(json_extract(projection.payload_json, '$.coOwners'))
                   IS NOT json(thread.co_owners_json)
               )`,
-        );
-        const unresolved = count(
-          yield* sql<{ readonly count: number }>`
+      );
+      const unresolved = count(
+        yield* sql<{ readonly count: number }>`
             SELECT COUNT(DISTINCT thread_id) AS count FROM fork_thread_people_backfill_issues`,
-        );
-        const hydrated = count(
-          yield* sql<{ readonly count: number }>`
+      );
+      const hydrated = count(
+        yield* sql<{ readonly count: number }>`
             SELECT COUNT(*) AS count FROM orchestration_v2_legacy_imports
             WHERE transcript_imported_at IS NOT NULL`,
-        );
-        const before = count(
-          yield* sql<{
-            readonly count: number;
-          }>`SELECT COUNT(*) AS count FROM orchestration_events`,
-        );
-        yield* runForkV1Backfills();
-        const after = count(
-          yield* sql<{
-            readonly count: number;
-          }>`SELECT COUNT(*) AS count FROM orchestration_events`,
-        );
-        // Counts only: no thread ids, titles or payloads leave the snapshot. The test
-        // runtime swallows Console output, so this proof line uses the real console.
-        yield* Console.info(
-          JSON.stringify({
-            imported,
-            missing,
-            mismatched,
-            unresolved,
-            hydrated,
-            rerunEvents: after - before,
-          }),
-        ).pipe(Effect.provideService(Console.Console, globalThis.console));
-        assert.isAbove(imported, 0);
-        assert.equal(yield* markerCount, imported);
-        assert.equal(missing, 0);
-        assert.equal(mismatched, 0);
-        assert.equal(hydrated, 0);
-        assert.equal(after, before);
-      }).pipe(Effect.provide(forkV1SnapshotLayer(snapshotPath)));
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      );
+      const before = count(
+        yield* sql<{
+          readonly count: number;
+        }>`SELECT COUNT(*) AS count FROM orchestration_events`,
+      );
+      yield* runForkV1Backfills();
+      const after = count(
+        yield* sql<{
+          readonly count: number;
+        }>`SELECT COUNT(*) AS count FROM orchestration_events`,
+      );
+      // Counts only: no thread ids, titles or payloads leave the snapshot. The test
+      // runtime swallows Console output, so this proof line uses the real console.
+      yield* Console.info(
+        JSON.stringify({
+          imported,
+          missing,
+          mismatched,
+          unresolved,
+          hydrated,
+          rerunEvents: after - before,
+        }),
+      ).pipe(Effect.provideService(Console.Console, globalThis.console));
+      assert.isAbove(imported, 0);
+      assert.equal(yield* markerCount, imported);
+      assert.equal(missing, 0);
+      assert.equal(mismatched, 0);
+      assert.equal(hydrated, 0);
+      assert.equal(after, before);
+    }).pipe(Effect.provide(forkV1SnapshotLayer(snapshotPath)));
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

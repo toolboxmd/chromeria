@@ -21,10 +21,10 @@ import { listCheckStates } from "./store.ts";
 /**
  * Exact run handoffs for scheduled tasks (toolboxmd/chromeria#174, D32/D38).
  * The scheduler follows a run only through links persisted on runs and the
- * recovery state #169 records; it never guesses by thread or time.
+ * recovery state Prism records; it never guesses by thread or time.
  */
 
-/** A Spectrum bound to a scheduler run, as #176's Spectrum state reports it (D32, D40). */
+/** A Spectrum bound to a scheduler run, as Spectrum's state reports it (D32, D40). */
 export interface BoundSpectrum {
   readonly status: "active" | "settled" | "retired";
   /** The identity of the current report's `message.dispatch`; null while none was written. */
@@ -52,7 +52,7 @@ export type ReportFence =
   | { readonly kind: "waiting" }
   | { readonly kind: "needs-you"; readonly reason: string };
 
-/** #176 provides the Spectrums bound to a scheduler run; without Spectrum there are none. */
+/** Spectrum provides the Spectrums bound to a scheduler run; without Spectrum there are none. */
 export class ScheduledTaskSpectra extends Context.Reference<{
   readonly boundTo: (
     schedulerRunId: string,
@@ -141,7 +141,7 @@ export const followRun = Effect.fn("ScheduledTaskChecks.followRun")(function* (r
       status: decodeRunStatus(run.status),
       ...decodeRestartWork(run.payload_json),
     });
-    // #169's recovery state for this run (D38). An admitted continuation, linked
+    // Prism's recovery state for this run (D38). An admitted continuation, linked
     // from the successor run itself, is followed first; the index admits at most
     // one, so more is never chosen between. Pending recovery, such as a
     // re-enabled reset, holds even over a recorded opt-out, as does no decision.
@@ -207,11 +207,9 @@ export const followSend = Effect.fn("ScheduledTaskChecks.followSend")(function* 
 });
 
 /**
- * The completion fence (D32, D40): where the Spectra bound to a scheduler run
- * leave it. Each releases only when its current report's turn completed through
- * its exact continuations, or the user abandoned that report; Spectrum owns
- * delivery and its bounded new attempts. A report that needs the user makes the
- * run need the user. The caller runs its check only once every Spectrum released.
+ * The completion fence (D32, D40): the scheduler run releases once each bound Spectrum's
+ * current report completed through its exact continuations or the user abandoned it.
+ * A report that needs the user makes the run need the user.
  */
 export const reportsFence = Effect.fn("ScheduledTaskChecks.reportsFence")(function* (
   schedulerRunId: string,
@@ -291,12 +289,12 @@ export const resolveSchedulerRun = Effect.fn("ScheduledTaskChecks.resolveSchedul
  * still be unfinished and bound to the caller's thread. Spectrum registers
  * unbound when it rejects.
  */
-export const schedulerRunOpenGuard = (input: {
-  readonly scheduledTaskId: ScheduledTaskId;
-  readonly schedulerRunId: string;
-  readonly callerThreadId: ThreadId;
-}) =>
-  Effect.gen(function* () {
+export const schedulerRunOpenGuard = Effect.fn("ScheduledTaskCheckHandoff.schedulerRunOpenGuard")(
+  function* (input: {
+    readonly scheduledTaskId: ScheduledTaskId;
+    readonly schedulerRunId: string;
+    readonly callerThreadId: ThreadId;
+  }) {
     const states = yield* listCheckStates();
     const state = states.find((entry) => entry.taskId === input.scheduledTaskId);
     const run = state?.runs.find((entry) => entry.id === input.schedulerRunId);
@@ -310,15 +308,24 @@ export const schedulerRunOpenGuard = (input: {
         threadId: input.callerThreadId,
         kind: "state_conflict",
       });
-  }).pipe(
-    Effect.catchTags({
-      SqlError: () =>
-        Effect.fail(
-          new ForkCommitGuardRejected({ threadId: input.callerThreadId, kind: "storage_failure" }),
-        ),
-      SchemaError: () =>
-        Effect.fail(
-          new ForkCommitGuardRejected({ threadId: input.callerThreadId, kind: "storage_failure" }),
-        ),
-    }),
-  );
+  },
+  (effect, input) =>
+    effect.pipe(
+      Effect.catchTags({
+        SqlError: () =>
+          Effect.fail(
+            new ForkCommitGuardRejected({
+              threadId: input.callerThreadId,
+              kind: "storage_failure",
+            }),
+          ),
+        SchemaError: () =>
+          Effect.fail(
+            new ForkCommitGuardRejected({
+              threadId: input.callerThreadId,
+              kind: "storage_failure",
+            }),
+          ),
+      }),
+    ),
+);

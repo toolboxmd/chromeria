@@ -1,10 +1,7 @@
 /**
- * Creates a starter Promachos home (toolboxmd/chromeria#139) on this server's machine, so it
- * works the same for local and remote environments.
- *
- * Every step keeps what is already there: an existing folder, git repository (including a
- * parent repository or a worktree), `AGENTS.md`, `CLAUDE.md` or project is reused. A failed
- * attempt therefore leaves nothing that blocks a retry.
+ * Creates a starter Promachos home on this server's machine, so local and remote environments work
+ * alike. Every step reuses what exists (folder, git repository or worktree, `AGENTS.md`,
+ * `CLAUDE.md`, project), so a failed attempt never blocks a retry.
  */
 import {
   CommandId,

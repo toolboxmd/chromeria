@@ -149,88 +149,94 @@ const make = Effect.gen(function* () {
       (row) => row.name,
     ),
   );
-  const legacyConflict = (scope: McpInvocationScope, tool: string, input: unknown, key: string) =>
-    Effect.gen(function* () {
-      const encoded = encodeURIComponent(key);
-      if (tables.has("orchestration_command_receipts")) {
-        const candidates = yield* sql<{
-          command_id: string;
-        }>`SELECT command_id FROM orchestration_command_receipts
+  const legacyConflict = Effect.fn("McpRequestReceipts.legacyConflict")(function* (
+    scope: McpInvocationScope,
+    tool: string,
+    input: unknown,
+    key: string,
+  ) {
+    const encoded = encodeURIComponent(key);
+    if (tables.has("orchestration_command_receipts")) {
+      const candidates = yield* sql<{
+        command_id: string;
+      }>`SELECT command_id FROM orchestration_command_receipts
         WHERE instr(command_id,${`:${encoded}`}) > 0`;
-        const operations: Readonly<Record<string, ReadonlyArray<string>>> = {
-          create_threads: ["create-thread"],
-          delegate_task: ["delegate-task"],
-          t3_thread_send: ["thread-send"],
-          t3_thread_interrupt: ["thread-stop", "thread-interrupt"],
-          task_cancel: ["cancel-task"],
-        };
-        for (const { command_id: id } of candidates) {
-          const parts = id.split(":");
-          const launch =
-            tool === "t3_thread_launch" &&
-            parts[0] === "mcp" &&
-            parts[1] === "launch" &&
-            parts[3] === encoded;
-          const spectrum =
-            tool === "start_spectrum" &&
-            parts[0] === "spectrum" &&
-            parts[2] === encoded &&
-            parts[3] === "register";
-          const target =
-            typeof input === "object" &&
-            input !== null &&
-            "threadId" in input &&
-            typeof input.threadId === "string"
-              ? input.threadId
-              : scope.thread?.threadId;
-          const metadata =
-            target !== undefined &&
-            parts[4] === encodeURIComponent(target) &&
-            tool === "t3_thread_update" &&
-            parts[0] === "command" &&
-            parts[1] === "mcp" &&
-            parts[3] === "thread-update" &&
-            parts[6] === encoded;
-          const command =
-            parts[0] === "command" &&
-            parts[1] === "mcp" &&
-            parts[4] === encoded &&
-            operations[tool]?.includes(parts[3]!);
-          if (!launch && !spectrum && !metadata && !command) continue;
-          const namespace = parts[spectrum ? 1 : 2]!;
-          // A verified modern caller owns its namespace, never this raw key in
-          // every other namespace. Missing ownership remains safe unsupported.
-          let decoded: string;
-          try {
-            decoded = decodeURIComponent(namespace);
-          } catch {
-            return true;
-          }
-          const modernId = requestDigest([decoded, tool, key]);
-          if ((yield* sql`SELECT id FROM mcp_request_receipts WHERE id=${modernId}`).length === 0)
-            return true;
+      const operations: Readonly<Record<string, ReadonlyArray<string>>> = {
+        create_threads: ["create-thread"],
+        delegate_task: ["delegate-task"],
+        t3_thread_send: ["thread-send"],
+        t3_thread_interrupt: ["thread-stop", "thread-interrupt"],
+        task_cancel: ["cancel-task"],
+      };
+      for (const { command_id: id } of candidates) {
+        const parts = id.split(":");
+        const launch =
+          tool === "t3_thread_launch" &&
+          parts[0] === "mcp" &&
+          parts[1] === "launch" &&
+          parts[3] === encoded;
+        const spectrum =
+          tool === "start_spectrum" &&
+          parts[0] === "spectrum" &&
+          parts[2] === encoded &&
+          parts[3] === "register";
+        const target =
+          typeof input === "object" &&
+          input !== null &&
+          "threadId" in input &&
+          typeof input.threadId === "string"
+            ? input.threadId
+            : scope.thread?.threadId;
+        const metadata =
+          target !== undefined &&
+          parts[4] === encodeURIComponent(target) &&
+          tool === "t3_thread_update" &&
+          parts[0] === "command" &&
+          parts[1] === "mcp" &&
+          parts[3] === "thread-update" &&
+          parts[6] === encoded;
+        const command =
+          parts[0] === "command" &&
+          parts[1] === "mcp" &&
+          parts[4] === encoded &&
+          operations[tool]?.includes(parts[3]!);
+        if (!launch && !spectrum && !metadata && !command) continue;
+        const namespace = parts[spectrum ? 1 : 2]!;
+        // A verified modern caller owns its namespace, never this raw key in
+        // every other namespace. Missing ownership remains safe unsupported.
+        let decoded: string;
+        try {
+          decoded = decodeURIComponent(namespace);
+        } catch {
+          return true;
         }
+        const modernId = requestDigest([decoded, tool, key]);
+        if ((yield* sql`SELECT id FROM mcp_request_receipts WHERE id=${modernId}`).length === 0)
+          return true;
       }
-      if (tool === "schedule_task" && tables.has("scheduled_tasks")) {
-        const rows = yield* sql<{
-          task_id: string;
-        }>`SELECT task_id FROM scheduled_tasks WHERE instr(task_id,${`:${key}`}) > 0 OR instr(task_id,${`:${encoded}`}) > 0`;
-        for (const { task_id: id } of rows) {
-          if (!id.endsWith(`:${key}`) && !id.endsWith(`:schedule-task:${encoded}`)) continue;
-          const hasScheduleReceipts =
-            tables.has("scheduled_mutation_receipts") ||
-            (yield* sql`SELECT name FROM sqlite_master WHERE type='table' AND name='scheduled_mutation_receipts'`)
-              .length > 0;
-          const owned = hasScheduleReceipts
-            ? yield* sql`SELECT r.id FROM scheduled_mutation_receipts s JOIN mcp_request_receipts r ON r.id=s.request_id WHERE s.task_id=${id} AND s.stage='confirmed'`
-            : [];
-          if (owned.length === 0) return true;
-        }
+    }
+    if (tool === "schedule_task" && tables.has("scheduled_tasks")) {
+      const rows = yield* sql<{
+        task_id: string;
+      }>`SELECT task_id FROM scheduled_tasks WHERE instr(task_id,${`:${key}`}) > 0 OR instr(task_id,${`:${encoded}`}) > 0`;
+      for (const { task_id: id } of rows) {
+        if (!id.endsWith(`:${key}`) && !id.endsWith(`:schedule-task:${encoded}`)) continue;
+        const hasScheduleReceipts =
+          tables.has("scheduled_mutation_receipts") ||
+          (yield* sql`SELECT name FROM sqlite_master WHERE type='table' AND name='scheduled_mutation_receipts'`)
+            .length > 0;
+        const owned = hasScheduleReceipts
+          ? yield* sql`SELECT r.id FROM scheduled_mutation_receipts s JOIN mcp_request_receipts r ON r.id=s.request_id WHERE s.task_id=${id} AND s.stage='confirmed'`
+          : [];
+        if (owned.length === 0) return true;
       }
-      return false;
-    });
-  const identify: McpRequestReceipts["Service"]["identify"] = (scope, tool, input, key) =>
-    Effect.gen(function* () {
+    }
+    return false;
+  });
+  const identify: McpRequestReceipts["Service"]["identify"] = Effect.fn(
+    "McpRequestReceipts.identify",
+  )(
+    function* (scope, tool, input, key) {
       const clientRequestId = key ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie));
       const id = requestDigest([requestNamespace(scope), tool, clientRequestId]);
       const identity = {
@@ -268,35 +274,37 @@ const make = Effect.gen(function* () {
           message: "The request key was already bound to different input.",
         });
       return identity;
-    }).pipe(
-      Effect.mapError((error) =>
-        error._tag === "OrchestratorMcpFailure" ? error : unavailable(error),
-      ),
-    );
-  const replay = <A>(
+    },
+    Effect.mapError((error) =>
+      error._tag === "OrchestratorMcpFailure" ? error : unavailable(error),
+    ),
+  );
+  // Effect.fn erases the generator's type parameter; the generic view narrows the stored value.
+  const replayStored = Effect.fn("McpRequestReceipts.replay")(function* (
     identity: RequestIdentity,
-  ): Effect.Effect<Option.Option<A>, OrchestratorMcpFailure> =>
-    Effect.gen(function* () {
-      const rows = yield* sql<{
-        state: string;
-        result_json: string | null;
-      }>`SELECT state,result_json FROM mcp_request_receipts WHERE id=${identity.id}
+  ) {
+    const rows = yield* sql<{
+      state: string;
+      result_json: string | null;
+    }>`SELECT state,result_json FROM mcp_request_receipts WHERE id=${identity.id}
       AND generation=${identity.generation} AND input_digest=${identity.inputDigest}`.pipe(
-        Effect.mapError(unavailable),
+      Effect.mapError(unavailable),
+    );
+    const row = rows[0];
+    if (row?.state === "bound") return Option.none<unknown>();
+    if (row?.state === "completed" && row.result_json !== null)
+      return Option.some(
+        (yield* decodeJson(row.result_json).pipe(Effect.mapError(unavailable))).value,
       );
-      const row = rows[0];
-      if (row?.state === "bound") return Option.none();
-      if (row?.state === "completed" && row.result_json !== null)
-        return Option.some(
-          (yield* decodeJson(row.result_json).pipe(Effect.mapError(unavailable))).value as A,
-        );
-      return yield* unknownOutcome(identity);
-    });
-  const external = <A, E, R>(
+    return yield* unknownOutcome(identity);
+  });
+  const replay = <A>(identity: RequestIdentity) =>
+    replayStored(identity) as Effect.Effect<Option.Option<A>, OrchestratorMcpFailure>;
+  const external: <A, E, R>(
     identity: RequestIdentity,
     perform: Effect.Effect<A, E, R>,
-  ): Effect.Effect<A, E | OrchestratorMcpFailure, R> =>
-    Effect.gen(function* () {
+  ) => Effect.Effect<A, E | OrchestratorMcpFailure, R> = Effect.fn("McpRequestReceipts.external")(
+    function* <A, E, R>(identity: RequestIdentity, perform: Effect.Effect<A, E, R>) {
       const attempt = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
       const notDispatched = yield* Ref.make(false);
       const changed =
@@ -330,7 +338,8 @@ const make = Effect.gen(function* () {
         Effect.mapError(() => unknownOutcome(identity)),
       );
       return result;
-    });
+    },
+  );
   const sqlMutation = <A, E, R>(
     identity: RequestIdentity,
     perform: Effect.Effect<A, E, R>,
@@ -375,18 +384,19 @@ const make = Effect.gen(function* () {
         }),
       )
       .pipe(Effect.catchIf(isSqlError, (error) => Effect.fail(unavailable(error))));
-  const destination: McpRequestReceipts["Service"]["destination"] = (identity, operation) =>
-    Effect.gen(function* () {
-      const rows = yield* sql<{
-        environment_id: string;
-        generation: string;
-      }>`SELECT d.environment_id,d.generation FROM mcp_request_destinations d JOIN mcp_request_receipts r ON r.id=d.request_id WHERE r.id=${identity.id} AND r.generation=${identity.generation} AND r.input_digest=${identity.inputDigest} AND d.operation=${operation}`.pipe(
-        Effect.mapError(unavailable),
-      );
-      return rows[0] === undefined
-        ? Option.none()
-        : Option.some({ environmentId: rows[0].environment_id, generation: rows[0].generation });
-    });
+  const destination: McpRequestReceipts["Service"]["destination"] = Effect.fn(
+    "McpRequestReceipts.destination",
+  )(function* (identity, operation) {
+    const rows = yield* sql<{
+      environment_id: string;
+      generation: string;
+    }>`SELECT d.environment_id,d.generation FROM mcp_request_destinations d JOIN mcp_request_receipts r ON r.id=d.request_id WHERE r.id=${identity.id} AND r.generation=${identity.generation} AND r.input_digest=${identity.inputDigest} AND d.operation=${operation}`.pipe(
+      Effect.mapError(unavailable),
+    );
+    return rows[0] === undefined
+      ? Option.none()
+      : Option.some({ environmentId: rows[0].environment_id, generation: rows[0].generation });
+  });
   return McpRequestReceipts.of({
     identify,
     replay,
@@ -400,50 +410,55 @@ const make = Effect.gen(function* () {
 export const layer = Layer.effect(McpRequestReceipts, make);
 
 /** Called at the actual external dispatch boundary, after resource/consent checks. */
-export const externalDispatch = <A, E, R>(perform: Effect.Effect<A, E, R>, partition?: unknown) =>
-  Effect.gen(function* () {
-    const operation = yield* CurrentOperation;
-    if (operation === undefined) return yield* perform;
-    const receipts = yield* Effect.serviceOption(McpRequestReceipts);
-    const scope = yield* Effect.serviceOption(Invocation.McpInvocationContext);
-    if (Option.isNone(receipts) || Option.isNone(scope)) return yield* unavailable(undefined);
-    const parent = yield* CurrentRequest;
-    const identity =
-      partition === undefined
-        ? (parent ?? (yield* receipts.value.identify(scope.value, operation.tool, operation.input)))
-        : yield* receipts.value.identify(
-            scope.value,
-            operation.tool,
-            { input: operation.input, partition },
-            parent === undefined ? undefined : requestDigest([parent.clientRequestId, partition]),
-          );
-    return yield* receipts.value.external(identity, perform);
-  });
+export const externalDispatch = Effect.fn("McpRequestReceipts.externalDispatch")(function* <
+  A,
+  E,
+  R,
+>(perform: Effect.Effect<A, E, R>, partition?: unknown) {
+  const operation = yield* CurrentOperation;
+  if (operation === undefined) return yield* perform;
+  const receipts = yield* Effect.serviceOption(McpRequestReceipts);
+  const scope = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+  if (Option.isNone(receipts) || Option.isNone(scope)) return yield* unavailable(undefined);
+  const parent = yield* CurrentRequest;
+  const identity =
+    partition === undefined
+      ? (parent ?? (yield* receipts.value.identify(scope.value, operation.tool, operation.input)))
+      : yield* receipts.value.identify(
+          scope.value,
+          operation.tool,
+          { input: operation.input, partition },
+          parent === undefined ? undefined : requestDigest([parent.clientRequestId, partition]),
+        );
+  return yield* receipts.value.external(identity, perform);
+});
 
 /** Read a prior outcome after caller authorization, before requiring a new external host. */
-export const externalReplay = <A>() =>
-  Effect.gen(function* () {
-    const operation = yield* CurrentOperation;
-    const identity = yield* CurrentRequest;
-    if (operation === undefined || identity === undefined) return Option.none<A>();
-    const receipts = yield* Effect.serviceOption(McpRequestReceipts);
-    if (Option.isNone(receipts)) return yield* unavailable(undefined);
-    return yield* receipts.value.replay<A>(identity);
-  });
+export const externalReplay = Effect.fn("McpRequestReceipts.externalReplay")(function* <A>() {
+  const operation = yield* CurrentOperation;
+  const identity = yield* CurrentRequest;
+  if (operation === undefined || identity === undefined) return Option.none<A>();
+  const receipts = yield* Effect.serviceOption(McpRequestReceipts);
+  if (Option.isNone(receipts)) return yield* unavailable(undefined);
+  return yield* receipts.value.replay<A>(identity);
+});
 
 /** Direct SQL owners call this inside their mutation, after actual caller/resource preflight. */
-export const ownedSqlMutation = <A, E, R>(perform: Effect.Effect<A, E, R>) =>
-  Effect.gen(function* () {
-    const identity = yield* CurrentRequest;
-    const scope = yield* Effect.serviceOption(Invocation.McpInvocationContext);
-    if (
-      identity === undefined ||
-      Option.isNone(scope) ||
-      (scope.value.client?.linked === true &&
-        interactiveAuthority(scope.value.authority)?.envelope.requestOwner === undefined)
-    )
-      return yield* perform;
-    const receipts = yield* Effect.serviceOption(McpRequestReceipts);
-    if (Option.isNone(receipts)) return yield* unavailable(undefined);
-    return yield* receipts.value.sqlMutation(identity, perform);
-  });
+export const ownedSqlMutation = Effect.fn("McpRequestReceipts.ownedSqlMutation")(function* <
+  A,
+  E,
+  R,
+>(perform: Effect.Effect<A, E, R>) {
+  const identity = yield* CurrentRequest;
+  const scope = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+  if (
+    identity === undefined ||
+    Option.isNone(scope) ||
+    (scope.value.client?.linked === true &&
+      interactiveAuthority(scope.value.authority)?.envelope.requestOwner === undefined)
+  )
+    return yield* perform;
+  const receipts = yield* Effect.serviceOption(McpRequestReceipts);
+  if (Option.isNone(receipts)) return yield* unavailable(undefined);
+  return yield* receipts.value.sqlMutation(identity, perform);
+});

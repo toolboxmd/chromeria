@@ -1,10 +1,7 @@
 /**
- * Exact keys from structured tool input: command words, paths and error text.
- * Command keys keep unquoted words and quoted words whose dequoted value has no
- * whitespace, drop quoted prose and literal heredoc bodies, and scan executed
- * substitutions and dequoted shell `-c` scripts (#232).
- * Shell names followed by `-c` options count anywhere, including a printed invocation
- * (`echo bash -c '...'`); ContextMD's `keys.py` follows this rule and paths see raw words (#234).
+ * Exact keys from structured tool input: command words, paths and error text. Command keys keep
+ * unquoted words and whitespace-free quoted words, drop prose and heredoc bodies, and scan
+ * substitutions and shell `-c` scripts anywhere; ContextMD's `keys.py` follows the same rule.
  */
 
 // ContextMD's keys.py uses the same ASCII whitespace set.
@@ -17,7 +14,7 @@ const PATH_FIELDS = ["file_path", "notebook_path", "path", "filePath", "target_f
 
 /**
  * Words of a shell command that name a file, so `path:` keys match files reached through
- * the shell (#234): anything with a `/` or a leading `~`, a `file:` URI without its query,
+ * the shell: anything with a `/` or a leading `~`, a `file:` URI without its query,
  * the value of `VAR=path`, and a bare name with an extension (relative to the cwd). No
  * general shell parsing: a word is a path by its shape. Web URLs are not paths.
  */

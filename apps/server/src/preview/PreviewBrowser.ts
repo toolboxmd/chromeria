@@ -24,11 +24,9 @@ import type * as Yauzl from "yauzl";
 import * as ServerConfig from "../config.ts";
 import { openZipArchive } from "../zipArchive.ts";
 
-// Update the version, sizes and hashes from each platform's full chrome zip listed at
-// https://googlechromelabs.github.io/chrome-for-testing/known-good-versions-with-downloads.json
-// Full Chrome rather than chrome-headless-shell: sites fingerprint the shell as a bot.
-// Never pin below 156.0.8078.70: Chrome for Testing gets no CRLSet and older SPKI blocklists
-// trust compromised eMudhra intermediates (crrev.com/c/8627687).
+// Update version, sizes and hashes from each platform's full chrome zip in Chrome for Testing's
+// known-good-versions-with-downloads.json; sites fingerprint chrome-headless-shell as a bot. Never
+// pin below 156.0.8078.70: older builds lack the CRLSet that blocks compromised eMudhra intermediates.
 const VERSION = "156.0.8078.70";
 const MAC_EXECUTABLE = "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing";
 const ARCHIVES = {

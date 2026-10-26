@@ -139,7 +139,6 @@ it.live(
         expect(requests).toEqual([]);
       }).pipe(Effect.provide(Layer.mergeAll(layer(executable), PublicHttp.layer)));
     }).pipe(Effect.scoped),
-  30_000,
 );
 
 it.live(
@@ -174,7 +173,6 @@ it.live(
         expect(result.status).toBe("blocked_local");
       }).pipe(Effect.provide(Layer.mergeAll(layer(executable), PublicHttp.layer)));
     }),
-  30_000,
 );
 
 it.live(
@@ -215,7 +213,6 @@ it.live(
         yield* Effect.promise(() => closed.promise);
       }).pipe(Effect.provide(layer(executable)));
     }).pipe(Effect.scoped),
-  30_000,
 );
 
 it.live(
@@ -253,7 +250,6 @@ it.live(
         expect(page.text).toContain("http://research.invalid/it/rooms");
       }
     }),
-  30_000,
 );
 
 it.live(
@@ -296,53 +292,46 @@ it.live(
         if (result._tag === "Failure") expect(result.failure.status).toBe("blocked_local");
       }).pipe(Effect.provide(Layer.mergeAll(layer(executable), PublicHttp.layer)));
     }),
-  30_000,
 );
 
-it.live(
-  "bounds HTTP redirect loops without releasing a hop to browser networking",
-  (ctx) =>
-    Effect.gen(function* () {
-      const executable = testChromium;
-      if (!executable) return ctx.skip(SKIP_WITHOUT_CHROMIUM);
-      let calls = 0;
-      const result = yield* PublicRender.PublicRender.use((renderer) =>
-        renderer.render({
-          url: new URL("http://research.invalid/"),
-          initial: initial("<script>location.href='/loop';</script>"),
-          loadDocument: () =>
-            Effect.sync(() => {
-              calls++;
-              return initial("", 302, { location: "/loop" });
-            }),
-        }),
-      ).pipe(Effect.flip, Effect.provide(layer(executable)));
-      expect(result.status).toBe("origin_error");
-      expect(calls).toBe(6);
-    }),
-  30_000,
-);
-
-it.live(
-  "keeps thin plain text as text rather than executing it as HTML",
-  (ctx) =>
-    Effect.gen(function* () {
-      const executable = testChromium;
-      if (!executable) return ctx.skip(SKIP_WITHOUT_CHROMIUM);
-      const result = yield* PublicRender.PublicRender.use((renderer) =>
-        renderer.render({
-          url: new URL("http://research.invalid/"),
-          initial: initial("<script>document.title='EXECUTED'</script>", 200, {
-            "content-type": "text/plain",
+it.live("bounds HTTP redirect loops without releasing a hop to browser networking", (ctx) =>
+  Effect.gen(function* () {
+    const executable = testChromium;
+    if (!executable) return ctx.skip(SKIP_WITHOUT_CHROMIUM);
+    let calls = 0;
+    const result = yield* PublicRender.PublicRender.use((renderer) =>
+      renderer.render({
+        url: new URL("http://research.invalid/"),
+        initial: initial("<script>location.href='/loop';</script>"),
+        loadDocument: () =>
+          Effect.sync(() => {
+            calls++;
+            return initial("", 302, { location: "/loop" });
           }),
-          loadDocument: unusedDocument,
+      }),
+    ).pipe(Effect.flip, Effect.provide(layer(executable)));
+    expect(result.status).toBe("origin_error");
+    expect(calls).toBe(6);
+  }),
+);
+
+it.live("keeps thin plain text as text rather than executing it as HTML", (ctx) =>
+  Effect.gen(function* () {
+    const executable = testChromium;
+    if (!executable) return ctx.skip(SKIP_WITHOUT_CHROMIUM);
+    const result = yield* PublicRender.PublicRender.use((renderer) =>
+      renderer.render({
+        url: new URL("http://research.invalid/"),
+        initial: initial("<script>document.title='EXECUTED'</script>", 200, {
+          "content-type": "text/plain",
         }),
-      ).pipe(Effect.provide(layer(executable)));
-      const page = extract(result.body, result.finalUrl);
-      expect(page.title).not.toBe("EXECUTED");
-      expect(page.text).toContain("<script>document.title='EXECUTED'</script>");
-    }),
-  30_000,
+        loadDocument: unusedDocument,
+      }),
+    ).pipe(Effect.provide(layer(executable)));
+    const page = extract(result.body, result.finalUrl);
+    expect(page.title).not.toBe("EXECUTED");
+    expect(page.text).toContain("<script>document.title='EXECUTED'</script>");
+  }),
 );
 
 it.live(
@@ -362,5 +351,4 @@ it.live(
       ).pipe(Effect.flip, Effect.provide(layer(executable)));
       expect(result.status).toBe("unsupported");
     }),
-  30_000,
 );

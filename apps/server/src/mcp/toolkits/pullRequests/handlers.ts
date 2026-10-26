@@ -209,15 +209,17 @@ const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const crypto = yield* Crypto.Crypto;
 
-  const commandId = (tag: string, threadId: ThreadId) =>
-    Effect.gen(function* () {
-      const request = yield* CurrentRequest;
-      if (request !== undefined) return CommandId.make(`server:${tag}:${threadId}:${request.id}`);
-      return yield* crypto.randomUUIDv4().pipe(
-        Effect.orDie,
-        Effect.map((uuid) => CommandId.make(`server:${tag}:${threadId}:${uuid}`)),
-      );
-    });
+  const commandId = Effect.fn("PullRequestToolHandlers.commandId")(function* (
+    tag: string,
+    threadId: ThreadId,
+  ) {
+    const request = yield* CurrentRequest;
+    if (request !== undefined) return CommandId.make(`server:${tag}:${threadId}:${request.id}`);
+    return yield* crypto.randomUUIDv4().pipe(
+      Effect.orDie,
+      Effect.map((uuid) => CommandId.make(`server:${tag}:${threadId}:${uuid}`)),
+    );
+  });
 
   const negotiatedRequest = Effect.gen(function* () {
     const request = yield* CurrentRequest;

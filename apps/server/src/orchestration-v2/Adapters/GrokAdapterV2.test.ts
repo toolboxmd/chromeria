@@ -823,7 +823,7 @@ describe("Grok model selection carries the reasoning effort", () => {
   it.effect("sends the selected effort as session/set_model metadata on protocol 1", () =>
     Effect.gen(function* () {
       const { runtime, calls } = makeRuntime();
-      // Same model as the session default: only the effort changes (#15251).
+      // Same model as the session default: only the effort changes.
       const applied = yield* flavor.applyModelSelection!({
         runtime,
         startResult: startResult(1, "xhigh"),

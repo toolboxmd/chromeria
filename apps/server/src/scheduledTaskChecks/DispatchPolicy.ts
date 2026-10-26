@@ -5,12 +5,9 @@ import type * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 
 /**
- * What upstream's `runTask` does with one fire, decided before the task is
- * marked running (toolboxmd/chromeria#174).
- * - `upstream`: dispatch exactly as upstream would.
- * - `skip`: a scheduled fire while the task's run is unfinished; the policy
- *   already consumed the slot, so upstream records no run.
- * - `fork`: the fork already recorded its run and dispatches it.
+ * What upstream's `runTask` does with one fire, decided before the task is marked running:
+ * `upstream` dispatches as upstream would; `skip` drops a fire while the run is unfinished, its slot
+ * already consumed; `fork` dispatches the run the fork already recorded.
  */
 export type ScheduledTaskDispatchDecision =
   | { readonly _tag: "upstream" }

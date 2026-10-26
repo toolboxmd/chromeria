@@ -245,7 +245,7 @@ const stopRequest = (run: OrchestrationV2Run) =>
     updatedAt: NOW,
     message: "Interrupt requested",
   });
-/** Fails a report run with a typed failure, then records #169's conclusion for it. */
+/** Fails a report run with a typed failure, then records Prism's recovery conclusion for it. */
 const fail = (
   run: OrchestrationV2Run,
   input: {

@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { act, useEffect, useImperativeHandle, type ReactNode, type Ref } from "react";
 import { createRoot } from "react-dom/client";
 import type { WebViewMessageEvent, WebViewProps } from "react-native-webview";
@@ -48,6 +47,7 @@ vi.mock("react-native", () => ({
     return <input aria-label="Dialog response" value={value} readOnly />;
   },
 }));
+vi.mock("../../components/ui/AppSymbol", () => ({ SymbolView: () => null }));
 vi.mock("react-native-webview", () => ({
   WebView: (
     props: WebViewProps & { ref?: Ref<{ injectJavaScript: (script: string) => void }> },
@@ -66,6 +66,19 @@ vi.mock("react-native-webview", () => ({
 }));
 vi.mock("@t3tools/mobile-preview-stream", () => ({ default: "" }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => {} }));
+vi.mock("expo", () => ({ requireOptionalNativeModule: () => null }));
+vi.mock("expo-constants", () => ({ default: { expoConfig: { extra: {} } } }));
+vi.mock("expo-crypto", () => ({
+  randomUUID: () => globalThis.crypto.randomUUID(),
+  getRandomBytes: (length: number) => globalThis.crypto.getRandomValues(new Uint8Array(length)),
+}));
+vi.mock("expo-device", () => ({ modelName: null, osName: null, osVersion: null }));
+vi.mock("expo-network", () => ({ getNetworkStateAsync: async () => ({ isConnected: true }) }));
+vi.mock("expo-secure-store", () => ({
+  getItemAsync: async () => null,
+  setItemAsync: async () => {},
+  deleteItemAsync: async () => {},
+}));
 vi.mock("expo-document-picker", () => ({ getDocumentAsync: observed.picker }));
 vi.mock("../../components/ui/Dialog", () => ({ alert: observed.alert }));
 vi.mock("../../components/ui/AppActivityIndicator", () => ({ AppActivityIndicator: () => null }));

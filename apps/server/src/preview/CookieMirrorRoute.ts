@@ -61,16 +61,17 @@ export const routeLayer = Layer.unwrap(
           ),
           Effect.forkScoped,
         );
-        const receive = (chunk: string | Uint8Array) =>
-          Effect.gen(function* () {
-            // Decode failures contain their input; replace them before request instrumentation.
-            if (chunk.length > 4 * 1024 * 1024) return yield* Effect.fail("invalid mirror frame");
-            const batch = yield* decodeBatch(
-              typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk),
-            ).pipe(Effect.mapError(() => "invalid mirror frame"));
-            yield* stream.apply(batch);
-            yield* writer.write(yield* encodeReply({ type: "ack", sequence: batch.sequence }));
-          });
+        const receive = Effect.fn("CookieMirrorRoute.receive")(function* (
+          chunk: string | Uint8Array,
+        ) {
+          // Decode failures contain their input; replace them before request instrumentation.
+          if (chunk.length > 4 * 1024 * 1024) return yield* Effect.fail("invalid mirror frame");
+          const batch = yield* decodeBatch(
+            typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk),
+          ).pipe(Effect.mapError(() => "invalid mirror frame"));
+          yield* stream.apply(batch);
+          yield* writer.write(yield* encodeReply({ type: "ack", sequence: batch.sequence }));
+        });
         yield* reader.pull.pipe(
           Effect.flatMap((chunks) => Effect.forEach(chunks, receive, { discard: true })),
           Effect.forever,

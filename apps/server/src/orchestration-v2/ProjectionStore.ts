@@ -2109,26 +2109,26 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 deleted_at = excluded.deleted_at,
                 payload_json = excluded.payload_json
             `;
-            break;
-          }
-          case "run.created":
-          case "run.updated": {
-            const currentRows = yield* sql<{ payload_json: string }>`
+              break;
+            }
+            case "run.created":
+            case "run.updated": {
+              const currentRows = yield* sql<{ payload_json: string }>`
               SELECT payload_json FROM orchestration_v2_projection_runs WHERE run_id = ${event.payload.id}
             `;
-            const current =
-              currentRows[0] === undefined
-                ? undefined
-                : yield* decodeRunPayload(currentRows[0].payload_json);
-            if (
-              current !== undefined &&
-              !executionPurposesEqual(current.purpose, event.payload.purpose)
-            ) {
-              return yield* new ProjectionStoreApplyEventError({ eventType: event.type });
-            }
-            const payloadJson = yield* encodeRunPayload(event.payload);
-            const payload = parseEncodedPayload(payloadJson);
-            yield* sql`
+              const current =
+                currentRows[0] === undefined
+                  ? undefined
+                  : yield* decodeRunPayload(currentRows[0].payload_json);
+              if (
+                current !== undefined &&
+                !executionPurposesEqual(current.purpose, event.payload.purpose)
+              ) {
+                return yield* new ProjectionStoreApplyEventError({ eventType: event.type });
+              }
+              const payloadJson = yield* encodeRunPayload(event.payload);
+              const payload = parseEncodedPayload(payloadJson);
+              yield* sql`
               INSERT INTO orchestration_v2_projection_runs (
                 run_id,
                 thread_id,
@@ -2282,21 +2282,21 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 completed_at = excluded.completed_at,
                 payload_json = excluded.payload_json
             `;
-            break;
-          }
-          case "subagent.updated": {
-            const existingRows =
-              yield* sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_subagents WHERE subagent_id = ${event.payload.id} LIMIT 1`;
-            const existing = existingRows[0];
-            const previous =
-              existing === undefined
-                ? undefined
-                : yield* decodeSubagentPayload(existing.payload_json);
-            const payloadJson = yield* encodeSubagentPayload(
-              preserveCompletionDelivery(previous, event.payload),
-            );
-            const payload = parseEncodedPayload(payloadJson);
-            yield* sql`
+              break;
+            }
+            case "subagent.updated": {
+              const existingRows =
+                yield* sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_subagents WHERE subagent_id = ${event.payload.id} LIMIT 1`;
+              const existing = existingRows[0];
+              const previous =
+                existing === undefined
+                  ? undefined
+                  : yield* decodeSubagentPayload(existing.payload_json);
+              const payloadJson = yield* encodeSubagentPayload(
+                preserveCompletionDelivery(previous, event.payload),
+              );
+              const payload = parseEncodedPayload(payloadJson);
+              yield* sql`
               INSERT INTO orchestration_v2_projection_subagents (
                 subagent_id,
                 thread_id,
@@ -2414,21 +2414,21 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               WHERE provider_session_id = ${event.payload.providerSessionId}
                 AND thread_id = ${event.threadId}
             `;
-            break;
-          }
-          case "provider-thread.updated": {
-            const existingRows =
-              yield* sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_provider_threads WHERE provider_thread_id = ${event.payload.id} LIMIT 1`;
-            const existing = existingRows[0];
-            const previous =
-              existing === undefined
-                ? undefined
-                : yield* decodeProviderThreadPayload(existing.payload_json);
-            const payloadJson = yield* encodeProviderThreadPayload(
-              preserveProviderThreadEvidence(previous, event.payload),
-            );
-            const payload = parseEncodedPayload(payloadJson);
-            yield* sql`
+              break;
+            }
+            case "provider-thread.updated": {
+              const existingRows =
+                yield* sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_provider_threads WHERE provider_thread_id = ${event.payload.id} LIMIT 1`;
+              const existing = existingRows[0];
+              const previous =
+                existing === undefined
+                  ? undefined
+                  : yield* decodeProviderThreadPayload(existing.payload_json);
+              const payloadJson = yield* encodeProviderThreadPayload(
+                preserveProviderThreadEvidence(previous, event.payload),
+              );
+              const payload = parseEncodedPayload(payloadJson);
+              yield* sql`
               INSERT INTO orchestration_v2_projection_provider_threads (
                 provider_thread_id,
                 thread_id,
@@ -2509,17 +2509,17 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     WHERE provider_turn_id = ${event.payload.id}
                     LIMIT 1
                   `;
-            const existing = existingRows[0];
-            const providerTurn =
-              existing === undefined
-                ? event.payload
-                : upsertProviderTurn(
-                    [yield* decodeProviderTurnPayload(existing.payload_json)],
-                    event.payload,
-                  )[0]!;
-            const payloadJson = yield* encodeProviderTurnPayload(providerTurn);
-            const payload = parseEncodedPayload(payloadJson);
-            yield* sql`
+              const existing = existingRows[0];
+              const providerTurn =
+                existing === undefined
+                  ? event.payload
+                  : upsertProviderTurn(
+                      [yield* decodeProviderTurnPayload(existing.payload_json)],
+                      event.payload,
+                    )[0]!;
+              const payloadJson = yield* encodeProviderTurnPayload(providerTurn);
+              const payload = parseEncodedPayload(payloadJson);
+              yield* sql`
               INSERT INTO orchestration_v2_projection_provider_turns (
                 provider_turn_id,
                 thread_id,
@@ -7269,7 +7269,10 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
           .getThreadProjection(threadId)
           .pipe(
             Effect.map((projection) =>
-              threadShellFromProjection(projection, pendingDelegatedChildTasks(projection, existing)),
+              threadShellFromProjection(
+                projection,
+                pendingDelegatedChildTasks(projection, existing),
+              ),
             ),
           );
         return shell.deletedAt === null ? shell : null;
@@ -7430,24 +7433,25 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
           )
           .map((projection) => projection.thread.id);
       }),
-    getUnresolvedRestartCuts: (afterRunId, limit) =>
-      Effect.gen(function* () {
-        const projections = (yield* Ref.get(replayState)).projections;
-        // The memory projection has no durable outbox; scheduled intents are missing here.
-        return [...projections.values()]
-          .flatMap((projection) =>
-            projection.runs.filter(
-              (run) =>
-                run.id > (afterRunId ?? "") &&
-                run.status === "cancelled" &&
-                run.restartCut?.continuation === "scheduled" &&
-                !projection.runs.some((next) => next.restartContinuationOfRunId === run.id),
-            ),
-          )
-          .toSorted((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
-          .slice(0, restartCutPageSize(limit))
-          .map((run) => ({ threadId: run.threadId, runId: run.id }));
-      }),
+      getUnresolvedRestartCuts: Effect.fn("ProjectionStore.getUnresolvedRestartCuts")(
+        function* (afterRunId, limit) {
+          const projections = (yield* Ref.get(replayState)).projections;
+          // The memory projection has no durable outbox; scheduled intents are missing here.
+          return [...projections.values()]
+            .flatMap((projection) =>
+              projection.runs.filter(
+                (run) =>
+                  run.id > (afterRunId ?? "") &&
+                  run.status === "cancelled" &&
+                  run.restartCut?.continuation === "scheduled" &&
+                  !projection.runs.some((next) => next.restartContinuationOfRunId === run.id),
+              ),
+            )
+            .toSorted((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
+            .slice(0, restartCutPageSize(limit))
+            .map((run) => ({ threadId: run.threadId, runId: run.id }));
+        },
+      ),
       getUnreadableThreadIds: () => Effect.succeed([]),
       getPendingNativeUserInputs: Effect.fn("ProjectionStore.getPendingNativeUserInputs")(
         function* (threadId, providerTurnId) {

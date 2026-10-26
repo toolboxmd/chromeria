@@ -89,11 +89,11 @@ const denied = (message: string) =>
  * credential's capability grants. The link ceiling is checked before borrowing
  * that scope; its modes must be at least the thread's, so no scope gains access.
  */
-export const withContext = <A, E, R>(
+export const withContext: <A, E, R>(
   params: unknown,
   here: Effect.Effect<A, E, R>,
-): Effect.Effect<A, E | OrchestratorMcpFailure, R> =>
-  Effect.gen(function* () {
+) => Effect.Effect<A, E | OrchestratorMcpFailure, R> = Effect.fn("McpRouting.withContext")(
+  function* <A, E, R>(params: unknown, here: Effect.Effect<A, E, R>) {
     let invocation = yield* Effect.serviceOption(Invocation.McpInvocationContext);
     const currentTool = yield* CurrentTool;
     if (
@@ -238,7 +238,8 @@ export const withContext = <A, E, R>(
       ),
     };
     return yield* here.pipe(Effect.provideService(Invocation.McpInvocationContext, bound));
-  });
+  },
+);
 
 const capabilityFor = (name: string): Invocation.McpCapability | undefined =>
   name.startsWith("preview_") || name.startsWith("t3_preview_")
@@ -257,11 +258,11 @@ const capabilityFor = (name: string): Invocation.McpCapability | undefined =>
             : "orchestration";
 
 /** Called only after the declaration's access check and before its local handler. */
-const invokeRouted = <P, A, E, R>(
+const invokeRouted: <P, A, E, R>(
   params: P,
   handle: (params: P) => Effect.Effect<A, E, R>,
-): Effect.Effect<A, E | OrchestratorMcpFailure, R> =>
-  Effect.gen(function* () {
+) => Effect.Effect<A, E | OrchestratorMcpFailure, R> = Effect.fn("McpRouting.invokeRouted")(
+  function* <P, A, E, R>(params: P, handle: (params: P) => Effect.Effect<A, E, R>) {
     const here = Effect.suspend(() => {
       if (typeof params !== "object" || params === null) return handle(params);
       const {
@@ -348,72 +349,77 @@ const invokeRouted = <P, A, E, R>(
     }
     // PeerForwarding decodes the paired toolkit's success schema before returning.
     return result as A;
-  });
+  },
+);
 
 /** Identity spans routing and destination-owned execution, including source HTML publication. */
-export const invoke = <P, A, E, R>(
+export const invoke: <P, A, E, R>(
   params: P,
   handle: (params: P) => Effect.Effect<A, E, R>,
-): Effect.Effect<A, E | OrchestratorMcpFailure, R> =>
-  Effect.gen(function* () {
-    const tool = yield* CurrentTool;
-    const effect = yield* CurrentEffect;
-    const scope = yield* Effect.serviceOption(Invocation.McpInvocationContext);
-    const receipts = yield* Effect.serviceOption(RequestReceipts.McpRequestReceipts);
-    const run = invokeRouted(params, handle).pipe(
-      Effect.provideService(
-        RequestReceipts.CurrentOperation,
-        tool !== undefined &&
-          effect === "external-unknown" &&
-          (Option.isSome(receipts) ||
-            (Option.isSome(scope) &&
-              interactiveAuthority(scope.value.authority)?.envelope.requestOwner !== undefined)) &&
-          typeof params === "object" &&
-          params !== null &&
-          "clientRequestId" in params &&
-          typeof params.clientRequestId === "string" &&
-          (Option.isNone(scope) ||
-            scope.value.client?.linked !== true ||
-            interactiveAuthority(scope.value.authority)?.envelope.requestOwner !== undefined)
-          ? { tool: tool.name, input: params }
-          : undefined,
-      ),
-    );
-    if (
+) => Effect.Effect<A, E | OrchestratorMcpFailure, R> = Effect.fn("McpRouting.invoke")(function* <
+  P,
+  A,
+  E,
+  R,
+>(params: P, handle: (params: P) => Effect.Effect<A, E, R>) {
+  const tool = yield* CurrentTool;
+  const effect = yield* CurrentEffect;
+  const scope = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+  const receipts = yield* Effect.serviceOption(RequestReceipts.McpRequestReceipts);
+  const run = invokeRouted(params, handle).pipe(
+    Effect.provideService(
+      RequestReceipts.CurrentOperation,
       tool !== undefined &&
-      effect !== "read" &&
-      Option.isSome(scope) &&
-      Option.isNone(receipts) &&
-      typeof params === "object" &&
-      params !== null &&
-      "clientRequestId" in params &&
-      typeof params.clientRequestId === "string" &&
-      interactiveAuthority(scope.value.authority)?.envelope.requestOwner !== undefined
-    )
-      return yield* new OrchestratorMcpFailure({
-        code: "capability_denied",
-        message: "Durable keyed requests are unavailable in this environment.",
-      });
-    if (
-      tool === undefined ||
-      effect === "read" ||
-      Option.isNone(scope) ||
-      Option.isNone(receipts) ||
-      typeof params !== "object" ||
-      params === null ||
-      !("clientRequestId" in params) ||
-      typeof params.clientRequestId !== "string"
-    )
-      return yield* run;
-    const identity = yield* receipts.value.identify(
-      scope.value,
-      tool.name,
-      params,
-      params.clientRequestId,
-    );
-    const index = yield* Ref.make(0);
-    return yield* run.pipe(
-      Effect.provideService(RequestReceipts.CurrentRequest, identity),
-      Effect.provideService(RequestReceipts.CommandIndex, index),
-    );
-  });
+        effect === "external-unknown" &&
+        (Option.isSome(receipts) ||
+          (Option.isSome(scope) &&
+            interactiveAuthority(scope.value.authority)?.envelope.requestOwner !== undefined)) &&
+        typeof params === "object" &&
+        params !== null &&
+        "clientRequestId" in params &&
+        typeof params.clientRequestId === "string" &&
+        (Option.isNone(scope) ||
+          scope.value.client?.linked !== true ||
+          interactiveAuthority(scope.value.authority)?.envelope.requestOwner !== undefined)
+        ? { tool: tool.name, input: params }
+        : undefined,
+    ),
+  );
+  if (
+    tool !== undefined &&
+    effect !== "read" &&
+    Option.isSome(scope) &&
+    Option.isNone(receipts) &&
+    typeof params === "object" &&
+    params !== null &&
+    "clientRequestId" in params &&
+    typeof params.clientRequestId === "string" &&
+    interactiveAuthority(scope.value.authority)?.envelope.requestOwner !== undefined
+  )
+    return yield* new OrchestratorMcpFailure({
+      code: "capability_denied",
+      message: "Durable keyed requests are unavailable in this environment.",
+    });
+  if (
+    tool === undefined ||
+    effect === "read" ||
+    Option.isNone(scope) ||
+    Option.isNone(receipts) ||
+    typeof params !== "object" ||
+    params === null ||
+    !("clientRequestId" in params) ||
+    typeof params.clientRequestId !== "string"
+  )
+    return yield* run;
+  const identity = yield* receipts.value.identify(
+    scope.value,
+    tool.name,
+    params,
+    params.clientRequestId,
+  );
+  const index = yield* Ref.make(0);
+  return yield* run.pipe(
+    Effect.provideService(RequestReceipts.CurrentRequest, identity),
+    Effect.provideService(RequestReceipts.CommandIndex, index),
+  );
+});

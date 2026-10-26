@@ -13,11 +13,9 @@ import {
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 
 /**
- * The pull request a GitHub `/issues/N` link would be if N is one, and where to read it, or null
- * when the link is no GitHub Issue URL or the server reads no Issues: such a link then opens as
- * it would without them, a pull request reference into the pull request panel's own not-found
- * state. GitHub numbers Issues and pull requests together and redirects between them, so the
- * link alone cannot say which it is.
+ * The pull request a GitHub `/issues/N` link may be, and where to read it, or null when it is no
+ * GitHub Issue URL or the server reads no Issues. GitHub numbers Issues and pull requests together
+ * and redirects between them, so the link alone cannot tell.
  */
 export function issueLinkCandidate({
   url,

@@ -54,7 +54,7 @@ export function validateScheduledTasksSearch(raw: Record<string, unknown>) {
   };
 }
 
-/** `preserved`: a fork trigger (#174) the dialog shows but never edits or converts. */
+/** `preserved`: a fork trigger the dialog shows but never edits or converts. */
 export type ScheduleMode = "fixed" | "interval" | "webhook" | "preserved";
 export type WorkspaceMode = "root" | "worktree" | "existing_worktree";
 

@@ -436,12 +436,12 @@ const make = Effect.gen(function* () {
     request_id TEXT PRIMARY KEY, generation TEXT NOT NULL, input_digest TEXT NOT NULL, name_digest TEXT NOT NULL,
     project_id TEXT NOT NULL, command_id TEXT NOT NULL, workspace_root TEXT NOT NULL,
     stage TEXT NOT NULL, commit_error TEXT)`.pipe(Effect.orDie);
-  const keyedNamedProject = (input: {
-    readonly name: string;
-    readonly request: RequestIdentity;
-    readonly recheck?: Effect.Effect<void, OrchestratorMcpFailure>;
-  }) =>
-    Effect.gen(function* () {
+  const keyedNamedProject = Effect.fn("ManagedProjectFolders.keyedNamedProject")(
+    function* (input: {
+      readonly name: string;
+      readonly request: RequestIdentity;
+      readonly recheck?: Effect.Effect<void, OrchestratorMcpFailure>;
+    }) {
       const request = input.request;
       const unknown = () =>
         new OrchestratorMcpFailure({
@@ -571,17 +571,17 @@ const make = Effect.gen(function* () {
         workspaceRoot: row.workspace_root,
         ...(row.commit_error === null ? {} : { commitError: row.commit_error }),
       };
-    }).pipe(
-      Effect.mapError((error) =>
-        error._tag === "SqlError"
-          ? new OrchestratorMcpFailure({
-              code: "orchestration_error",
-              message:
-                "The durable named-project binding could not be confirmed; inspect its original request before proceeding.",
-            })
-          : error,
-      ),
-    );
+    },
+    Effect.mapError((error) =>
+      error._tag === "SqlError"
+        ? new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message:
+              "The durable named-project binding could not be confirmed; inspect its original request before proceeding.",
+          })
+        : error,
+    ),
+  );
 
   const createNamedProject: ManagedProjectFolders["Service"]["createNamedProject"] = Effect.fn(
     "ManagedProjectFolders.createNamedProject",

@@ -721,62 +721,61 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
       ? checked.pipe(Effect.provideService(PeerAuthority.PeerAuthority, authorityOwner.value))
       : checked;
   };
-  const formatSavedSnapshot = (
+  const formatSavedSnapshot = Effect.fn("McpHttpServer.formatSavedSnapshot")(function* (
     receipt: unknown,
     identity: RequestReceipts.RequestIdentity,
     invocation: McpInvocationContext.McpInvocationScope,
     includeImage: boolean,
-  ) =>
-    Effect.gen(function* () {
-      const saved = yield* decodeSavedSnapshotReceipt(receipt).pipe(
-        Effect.mapError(
-          () =>
-            new OrchestratorMcpFailure({
-              code: "orchestration_error",
-              message: "The saved snapshot receipt is invalid.",
-            }),
-        ),
-      );
-      const config = yield* ServerConfig.ServerConfig;
-      const path = yield* Path.Path;
-      if (
-        saved.operationId !== identity.id ||
-        saved.requestId !== identity.clientRequestId ||
-        saved.artifact.environmentId !== invocation.environmentId ||
-        saved.artifact.owner !==
-          RequestReceipts.requestDigest([
-            requestNamespace(invocation),
-            requestGeneration(invocation),
-          ]) ||
-        path.resolve(path.dirname(saved.artifact.screenshotPath)) !==
-          path.resolve(config.browserArtifactsDir) ||
-        !path.basename(saved.artifact.screenshotPath).endsWith(`-${identity.id}.png`)
-      )
-        return yield* new OrchestratorMcpFailure({
-          code: "capability_denied",
-          message: "The saved snapshot does not belong to this verified operation.",
-        });
-      // Replays describe the original artifact. A later independent file
-      // edit must neither be overwritten nor shown as that original PNG.
-      const original = yield* FileSystem.FileSystem.pipe(
-        Effect.flatMap((fs) => fs.readFile(saved.artifact.screenshotPath)),
-        Effect.orElseSucceed(() => undefined),
-      );
-      const unchanged =
-        original !== undefined &&
-        original.byteLength === saved.artifact.sizeBytes &&
-        Hex.encode(sha256(original)) === saved.artifact.digest;
-      return new McpSchema.CallToolResult({
-        isError: false,
-        structuredContent: saved,
-        content: [
-          { type: "text", text: encodeJsonText(saved) },
-          ...(includeImage && unchanged
-            ? [{ type: "image" as const, data: original, mimeType: "image/png" }]
-            : []),
-        ],
+  ) {
+    const saved = yield* decodeSavedSnapshotReceipt(receipt).pipe(
+      Effect.mapError(
+        () =>
+          new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: "The saved snapshot receipt is invalid.",
+          }),
+      ),
+    );
+    const config = yield* ServerConfig.ServerConfig;
+    const path = yield* Path.Path;
+    if (
+      saved.operationId !== identity.id ||
+      saved.requestId !== identity.clientRequestId ||
+      saved.artifact.environmentId !== invocation.environmentId ||
+      saved.artifact.owner !==
+        RequestReceipts.requestDigest([
+          requestNamespace(invocation),
+          requestGeneration(invocation),
+        ]) ||
+      path.resolve(path.dirname(saved.artifact.screenshotPath)) !==
+        path.resolve(config.browserArtifactsDir) ||
+      !path.basename(saved.artifact.screenshotPath).endsWith(`-${identity.id}.png`)
+    )
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "The saved snapshot does not belong to this verified operation.",
       });
+    // Replays describe the original artifact. A later independent file
+    // edit must neither be overwritten nor shown as that original PNG.
+    const original = yield* FileSystem.FileSystem.pipe(
+      Effect.flatMap((fs) => fs.readFile(saved.artifact.screenshotPath)),
+      Effect.orElseSucceed(() => undefined),
+    );
+    const unchanged =
+      original !== undefined &&
+      original.byteLength === saved.artifact.sizeBytes &&
+      Hex.encode(sha256(original)) === saved.artifact.digest;
+    return new McpSchema.CallToolResult({
+      isError: false,
+      structuredContent: saved,
+      content: [
+        { type: "text", text: encodeJsonText(saved) },
+        ...(includeImage && unchanged
+          ? [{ type: "image" as const, data: original, mimeType: "image/png" }]
+          : []),
+      ],
     });
+  });
   yield* server.addTool({
     tool: new McpSchema.Tool({
       name: tool.name,

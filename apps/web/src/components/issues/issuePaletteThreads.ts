@@ -19,11 +19,9 @@ const useThreadsForIssuesQuery = createMergedEnvironmentQuery(
 const useIssueDetailQuery = createMergedEnvironmentQuery("web-palette:issue-detail", issueDetail);
 
 /**
- * Threads linked to the Issue the palette query names, per server, however they were linked
- * (by hand, by an agent, started from the Issue, by branch, by a closing pull request). Read once
- * the query settles. Closing pull requests come from the loaded Issues list, else from one Issue
- * read for `owner/repo#N` or a URL; a bare `#N` the list does not hold finds stored and branch
- * links only.
+ * Threads linked to the Issue the palette query names, per server, however they were linked.
+ * Closing pull requests come from the loaded Issues list, else one Issue read for `owner/repo#N` or a
+ * URL; a bare `#N` the list does not hold finds stored and branch links only.
  */
 export function usePaletteIssueThreads(query: string): ReadonlyArray<{
   readonly environmentId: EnvironmentId;

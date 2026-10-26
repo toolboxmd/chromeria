@@ -170,7 +170,9 @@ it.effect.each(["monitor", "subagent", "task"] as const)(
       yield* run({
         id: sourceId,
         status: "completed",
-        restartCancelledBackgroundWork: [{ kind, id: "lost", label: "Awaited work" }],
+        restartCancelledBackgroundWork: [
+          { kind, id: "lost", label: "Awaited work", awaited: true },
+        ],
       });
       const outbox = yield* Outbox.EffectOutboxV2;
       const effectId = `effect:restart-continuation:${sourceId}`;
@@ -206,7 +208,9 @@ it.effect.each(["completed", "cancelled"] as const)(
       yield* run({
         id: sourceId,
         status,
-        restartCancelledBackgroundWork: [{ kind: "monitor", id: "lost", label: "Awaited work" }],
+        restartCancelledBackgroundWork: [
+          { kind: "monitor", id: "lost", label: "Awaited work", awaited: true },
+        ],
       });
       const outbox = yield* Outbox.EffectOutboxV2;
       const effectId = `effect:restart-continuation:${sourceId}`;

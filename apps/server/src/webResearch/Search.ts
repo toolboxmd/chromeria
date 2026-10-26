@@ -270,14 +270,13 @@ const make = Effect.gen(function* () {
       blockedUntil: quota.blockedUntil,
     });
   });
-  const block = (source: Source, ms: number) =>
-    Effect.gen(function* () {
-      const quota = states[source].quota!;
-      yield* store(source, {
-        starts: quota.starts,
-        blockedUntil: Math.max(quota.blockedUntil, (yield* Clock.currentTimeMillis) + ms),
-      });
+  const block = Effect.fn("Search.block")(function* (source: Source, ms: number) {
+    const quota = states[source].quota!;
+    yield* store(source, {
+      starts: quota.starts,
+      blockedUntil: Math.max(quota.blockedUntil, (yield* Clock.currentTimeMillis) + ms),
     });
+  });
 
   const request = Effect.fnUntraced(
     function* (key: Query, source: Source, token: string | undefined) {

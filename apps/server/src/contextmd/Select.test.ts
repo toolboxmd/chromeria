@@ -77,7 +77,7 @@ describe("command keys", () => {
     ]) {
       assert.isTrue(hit(command), command);
     }
-    // Mentions logged on rocky (#232): strings, heredoc bodies, other programs' code.
+    // Mentions logged on rocky: strings, heredoc bodies, other programs' code.
     for (const command of [
       'echo "live check: gh pr create"',
       "echo 'gh pr create'",
@@ -1102,7 +1102,7 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
         });
       assert.deepStrictEqual(yield* grokRead(`${lines(1000)}\n`, 3001), ["read_partial"]);
       assert.deepStrictEqual(yield* grokRead(`${lines(4)}\n`, 5), ["read_tool"]);
-      // Grok's read-tool footer, which has no "of N" (Grok review of #226).
+      // Grok's read-tool footer, which has no "of N".
       assert.deepStrictEqual(
         yield* kinds("grok", {
           hook_event_name: "post_tool_use",
@@ -1180,7 +1180,7 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
       });
       assert.strictEqual(after.moment.kind, "tool_failure");
       // A read OpenCode cut at 2000 lines or 50 KB, as the plugin posts it: no offset or limit
-      // in the args, the footer at the end of the forwarded output (Grok review of #226).
+      // in the args, the footer at the end of the forwarded output.
       const readOf = (output: string, metadata: Record<string, unknown> = { exit: undefined }) =>
         sel("opencode", {
           hook: "tool.execute.after",

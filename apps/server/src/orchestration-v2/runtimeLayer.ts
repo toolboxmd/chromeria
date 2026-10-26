@@ -334,7 +334,7 @@ const layerThreadLaunchProvided = ThreadLaunchService.layer.pipe(
 const layerSecretRequestsProvided = SecretRequests.layer.pipe(
   Layer.provide(layerThreadManagementProvided),
 );
-// Fork: outcome-checked scheduled tasks wrap upstream's one scheduler (#174).
+// Fork: outcome-checked scheduled tasks wrap upstream's one scheduler.
 const layerScheduledTaskProvided = ScheduledTaskChecks.withOutcomeChecks(
   ScheduledTaskService.layer,
 ).pipe(

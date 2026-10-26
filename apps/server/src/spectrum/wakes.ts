@@ -89,11 +89,9 @@ const settlesNothing = (event: OrchestrationV2DomainEvent) =>
   (event.type === "turn-item.updated" && event.payload.status === "running");
 
 /**
- * Spectrums advance on events (#404). Every Spectrum thread is known; a live
- * Spectrum also follows its watch. Wakes for one Spectrum coalesce into one
- * pending resume, and each resume re-reads its watch. A slow tick wakes every
- * active or live Spectrum, the fallback for any lost wake; with none it costs
- * one indexed read.
+ * Spectrums advance on events: wakes for one Spectrum coalesce into one pending resume that re-reads
+ * its watch. A slow tick wakes every active or live Spectrum as the fallback for a lost wake, and costs
+ * one indexed read when there are none.
  */
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -177,21 +175,24 @@ export const layer = Layer.effectDiscard(
       yield* Effect.logInfo("Spectrum catch-up", { woken: rows.length });
     }).pipe(Effect.catchCause((cause) => Effect.logWarning("Spectrum catch-up failed", { cause })));
 
-    const refresh = (id: ThreadId) =>
-      Effect.gen(function* () {
+    const refresh = Effect.fn("wakes.refresh")(
+      function* (id: ThreadId) {
         const found = yield* readSpectrum(id);
         const watch = Option.isNone(found) ? null : yield* readSpectrumWatch(found.value);
         if (yield* index(id, watch)) yield* wake(id);
-      }).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
-        Effect.provideService(Projections.ProjectionStoreV2, projections),
-        Effect.catchCause((cause) =>
-          Effect.logWarning("Spectrum watch refresh failed", { threadId: id, cause }),
+      },
+      (effect, id) =>
+        effect.pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.provideService(Projections.ProjectionStoreV2, projections),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Spectrum watch refresh failed", { threadId: id, cause }),
+          ),
         ),
-      );
+    );
 
-    const route = (stored: OrchestrationV2StoredEvent) =>
-      Effect.gen(function* () {
+    const route = Effect.fn("wakes.route")(
+      function* (stored: OrchestrationV2StoredEvent) {
         const event = stored.event;
         if (settlesNothing(event)) return;
         if (event.type === "thread.created") {
@@ -214,14 +215,17 @@ export const layer = Layer.effectDiscard(
         }
         if (spectra.has(event.threadId)) yield* wake(event.threadId);
         yield* wakeWatchers(event.threadId, event.type === "thread.metadata-updated");
-      }).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("Spectrum event routing failed", {
-            sequence: stored.sequence,
-            cause,
-          }),
+      },
+      (effect, stored) =>
+        effect.pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Spectrum event routing failed", {
+              sequence: stored.sequence,
+              cause,
+            }),
+          ),
         ),
-      );
+    );
 
     const work = Effect.gen(function* () {
       const id = yield* Queue.take(ready);

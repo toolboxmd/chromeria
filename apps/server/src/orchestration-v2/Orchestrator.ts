@@ -1478,36 +1478,35 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         clearIfCurrent: () => Effect.void,
         // Stop owns eligibility even after an offer has left the mailbox. The
         // worker uses this upstream hook before reading or dispatching it.
-        dispatchIfCurrent: (effect) =>
-          Effect.gen(function* () {
-            const owners = yield* readRetirementThreadIds(threadId).pipe(
+        dispatchIfCurrent: Effect.fn("Orchestrator.dispatchIfCurrent")(function* (effect) {
+          const owners = yield* readRetirementThreadIds(threadId).pipe(
+            Effect.provideService(ProjectionStoreV2, projectionStore),
+            Effect.orDie,
+          );
+          let consume = Effect.gen(function* () {
+            const currentOwners = yield* readRetirementThreadIds(threadId).pipe(
               Effect.provideService(ProjectionStoreV2, projectionStore),
               Effect.orDie,
             );
-            let consume = Effect.gen(function* () {
-              const currentOwners = yield* readRetirementThreadIds(threadId).pipe(
-                Effect.provideService(ProjectionStoreV2, projectionStore),
-                Effect.orDie,
-              );
-              if (
-                owners.length !== currentOwners.length ||
-                owners.some((id, i) => id !== currentOwners[i])
-              )
-                return Option.none();
-              const current = yield* retirement(threadId).pipe(Effect.orDie);
-              if (current.retired || !current.complete) return Option.none();
-              return yield* effect.pipe(
-                Effect.asSome,
-                Effect.provideService(CompletionDeliveryLock, {
-                  threadId,
-                  fiberId: yield* Effect.fiberId,
-                }),
-              );
-            });
-            for (const owner of owners.toReversed())
-              consume = threadDispatch.withLock(owner, consume);
-            return yield* consume;
-          }),
+            if (
+              owners.length !== currentOwners.length ||
+              owners.some((id, i) => id !== currentOwners[i])
+            )
+              return Option.none();
+            const current = yield* retirement(threadId).pipe(Effect.orDie);
+            if (current.retired || !current.complete) return Option.none();
+            return yield* effect.pipe(
+              Effect.asSome,
+              Effect.provideService(CompletionDeliveryLock, {
+                threadId,
+                fiberId: yield* Effect.fiberId,
+              }),
+            );
+          });
+          for (const owner of owners.toReversed())
+            consume = threadDispatch.withLock(owner, consume);
+          return yield* consume;
+        }),
         delegatedCompletion: {
           parentRunId,
           generation: delivery.generation,
@@ -2528,11 +2527,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         : "disposed";
     const now = yield* DateTime.now;
     const emitEvent = emit(events, command);
-    // task_status and t3_thread_read use distinct command IDs, so two
-    // valid observations can race after their read preflight. Re-emit the
-    // existing task row so the second dispatch is a successful idempotent
-    // no-op rather than "already acknowledged/disposed" or empty-events.
-    // task_cancel replaces a Stop's disposal so a later follow-up stays quiet.
+    // task_status and t3_thread_read use distinct command IDs, so two observations can race after
+    // preflight; re-emitting the row makes the second an idempotent no-op. task_cancel replaces a
+    // Stop's disposal so a later follow-up stays quiet.
     if (
       (task.completionDelivery?.state === state &&
         !(
@@ -8366,7 +8363,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   ) {
     const child = projection.thread;
     const parentThreadId = child.lineage.parentThreadId;
-    // Non-monitor notifications in a delegated child continue its task (upstream #23542).
+    // Non-monitor notifications in a delegated child continue its task (pingdotgg/t3code#23542).
     if (
       !mayStartSubagentFollowup(command) ||
       child.lineage.relationshipToParent !== "subagent" ||
@@ -9216,11 +9213,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
   });
 
-  // Rewrites a delegated task's completionWake after creation. The wait path
-  // uses this when its blocking window ends without a terminal (timeout), so
-  // a child that later terminalizes mid-parent-turn still wakes the parent.
-  // Runs under the parent thread's dispatch lock, which is also what finalize
-  // takes for its parent-side writes, so the two never interleave on this row.
+  // Rewrites completionWake after creation when the wait window ends without a terminal, so a child
+  // that terminalizes mid-parent-turn still wakes the parent. It runs under the parent's dispatch
+  // lock, as finalize's parent writes do, so the two never interleave on this row.
   const dispatchDelegatedTaskWakePolicy = Effect.fn(
     "orchestrationV2.dispatch.delegatedTaskWakePolicy",
   )(function* (
@@ -13975,59 +13970,58 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   /** Native question lifetime is independent of result transfer. Callers hold
    * the parent lock; dismissal takes the child lock, as follow-up intake does. */
-  const dismissInvalidatedSubagentQuestions = (
+  const dismissInvalidatedSubagentQuestions = Effect.fn(
+    "Orchestrator.dismissInvalidatedSubagentQuestions",
+  )(function* (
     childControls: ProjectionRecords<"runs" | "messages" | "subagents" | "providerThreads">,
     settledContinuationOf?: RunId,
-  ) =>
-    Effect.gen(function* () {
-      const childThreadId = childControls.thread.id;
-      const progress = delegatedTaskProgress(childControls);
-      const { resultRun } = progress;
-      if (progress.state !== "result_available" || resultRun === undefined) return;
-      const status = delegatedTaskTerminalStatus(runOutcome(resultRun));
-      if (status !== "cancelled" && status !== "interrupted") return;
+  ) {
+    const childThreadId = childControls.thread.id;
+    const progress = delegatedTaskProgress(childControls);
+    const { resultRun } = progress;
+    if (progress.state !== "result_available" || resultRun === undefined) return;
+    const status = delegatedTaskTerminalStatus(runOutcome(resultRun));
+    if (status !== "cancelled" && status !== "interrupted") return;
+    if (yield* childAwaitsRestartContinuation(childControls.runs, resultRun, settledContinuationOf))
+      return;
+    // Cancelled or interrupted tasks must not leave async questions that resume the child.
+    const { runtimeRequests } = yield* projectionStore.getThreadRecords(childThreadId, [
+      "runtimeRequests",
+    ]);
+    const pendingQuestions = runtimeRequests.filter(
+      (request) =>
+        request.status === "pending" &&
+        request.kind === "user_input" &&
+        request.responseCapability.type === "message",
+    );
+    if (pendingQuestions.length === 0) return;
+    const { nodes } = yield* projectionStore.getThreadRecords(childThreadId, ["nodes"]);
+    const resultRunIds = new Set<RunId>();
+    let run: OrchestrationV2Run | undefined = resultRun;
+    while (run !== undefined && !resultRunIds.has(run.id)) {
+      resultRunIds.add(run.id);
+      const previousRunId: RunId | undefined = run.restartContinuationOfRunId;
+      run =
+        previousRunId === undefined
+          ? undefined
+          : childControls.runs.find((candidate) => candidate.id === previousRunId);
+    }
+    for (const request of pendingQuestions) {
       if (
-        yield* childAwaitsRestartContinuation(childControls.runs, resultRun, settledContinuationOf)
-      )
-        return;
-      // Cancelled or interrupted tasks must not leave async questions that resume the child.
-      const { runtimeRequests } = yield* projectionStore.getThreadRecords(childThreadId, [
-        "runtimeRequests",
-      ]);
-      const pendingQuestions = runtimeRequests.filter(
-        (request) =>
-          request.status === "pending" &&
-          request.kind === "user_input" &&
-          request.responseCapability.type === "message",
-      );
-      if (pendingQuestions.length === 0) return;
-      const { nodes } = yield* projectionStore.getThreadRecords(childThreadId, ["nodes"]);
-      const resultRunIds = new Set<RunId>();
-      let run: OrchestrationV2Run | undefined = resultRun;
-      while (run !== undefined && !resultRunIds.has(run.id)) {
-        resultRunIds.add(run.id);
-        const previousRunId: RunId | undefined = run.restartContinuationOfRunId;
-        run =
-          previousRunId === undefined
-            ? undefined
-            : childControls.runs.find((candidate) => candidate.id === previousRunId);
+        nodes.some(
+          (node) =>
+            node.id === request.nodeId && node.runId !== null && resultRunIds.has(node.runId),
+        )
+      ) {
+        yield* dispatchWithReceipt({
+          type: "thread.user-input.dismiss",
+          commandId: CommandId.make(`command:system:delegated-task-question:${request.id}`),
+          threadId: childThreadId,
+          requestId: request.id,
+        });
       }
-      for (const request of pendingQuestions) {
-        if (
-          nodes.some(
-            (node) =>
-              node.id === request.nodeId && node.runId !== null && resultRunIds.has(node.runId),
-          )
-        ) {
-          yield* dispatchWithReceipt({
-            type: "thread.user-input.dismiss",
-            commandId: CommandId.make(`command:system:delegated-task-question:${request.id}`),
-            threadId: childThreadId,
-            requestId: request.id,
-          });
-        }
-      }
-    });
+    }
+  });
 
   const finalizeAppOwnedSubagent = Effect.fn("Orchestrator.finalizeAppOwnedSubagent")(function* (
     childThreadId: ThreadId,
@@ -15434,8 +15428,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       : threadDispatch.withLock(parentThreadId, dispatch);
   });
 
-  const reconcileRemoteRequestsWithParentLockHeld = (parentThreadId: ThreadId, taskId: NodeId) =>
-    Effect.gen(function* () {
+  const reconcileRemoteRequestsWithParentLockHeld = Effect.fn(
+    "Orchestrator.reconcileRemoteRequestsWithParentLockHeld",
+  )(
+    function* (parentThreadId: ThreadId, taskId: NodeId) {
       const parent = yield* projectionStore.getThreadRecords(parentThreadId, ["subagents"]);
       const task = parent.subagents.find(
         (task) => task.id === taskId && task.origin === "app_owned",
@@ -15445,47 +15441,48 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         Effect.provideService(ProjectionStoreV2, projectionStore),
         Effect.provideService(CommandReceiptStoreV2, commandReceipts),
       );
-    }).pipe(
-      Effect.catchCause((cause) =>
-        Effect.logWarning("Failed to reconcile remote descendant requests", {
-          parentThreadId,
-          taskId,
-          cause,
-        }),
+    },
+    (effect, parentThreadId, taskId) =>
+      effect.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Failed to reconcile remote descendant requests", {
+            parentThreadId,
+            taskId,
+            cause,
+          }),
+        ),
       ),
-    );
+  );
 
-  const reconcileDelegatedTaskQuestionWithParentLockHeld = (
-    task: OrchestrationV2Subagent,
-    requestId: RuntimeRequestId,
-  ) =>
-    Effect.gen(function* () {
-      if (task.childThreadId === null) return;
-      let request = yield* projectionStore.getRuntimeRequest(task.childThreadId, requestId);
-      if (request === undefined || request.kind !== "user_input") return;
-      if (request.status === "pending" && request.responseCapability.type === "message") {
-        const child = yield* projectionStore.getThreadRecords(
-          task.childThreadId,
-          ["runs", "messages", "subagents", "providerThreads"],
-          { messageRoles: ["user"] },
-        );
-        if (
-          child.thread.lineage.relationshipToParent !== "subagent" ||
-          child.thread.lineage.parentThreadId !== task.threadId ||
-          child.thread.forkedFrom?.type !== "node"
-        )
-          return;
-        // Recovery listeners can run before the startup sweep, and result transfer
-        // may already have committed. Neither determines a question's lifetime.
-        yield* dismissInvalidatedSubagentQuestions(child);
-        request = yield* projectionStore.getRuntimeRequest(task.childThreadId, requestId);
-        if (request === undefined) return;
-      }
-      yield* deliverDelegatedTaskQuestion(task, request, dispatchWithReceiptEffect).pipe(
-        Effect.provideService(ProjectionStoreV2, projectionStore),
-        Effect.provideService(CommandReceiptStoreV2, commandReceipts),
+  const reconcileDelegatedTaskQuestionWithParentLockHeld = Effect.fn(
+    "Orchestrator.reconcileDelegatedTaskQuestionWithParentLockHeld",
+  )(function* (task: OrchestrationV2Subagent, requestId: RuntimeRequestId) {
+    if (task.childThreadId === null) return;
+    let request = yield* projectionStore.getRuntimeRequest(task.childThreadId, requestId);
+    if (request === undefined || request.kind !== "user_input") return;
+    if (request.status === "pending" && request.responseCapability.type === "message") {
+      const child = yield* projectionStore.getThreadRecords(
+        task.childThreadId,
+        ["runs", "messages", "subagents", "providerThreads"],
+        { messageRoles: ["user"] },
       );
-    });
+      if (
+        child.thread.lineage.relationshipToParent !== "subagent" ||
+        child.thread.lineage.parentThreadId !== task.threadId ||
+        child.thread.forkedFrom?.type !== "node"
+      )
+        return;
+      // Recovery listeners can run before the startup sweep, and result transfer
+      // may already have committed. Neither determines a question's lifetime.
+      yield* dismissInvalidatedSubagentQuestions(child);
+      request = yield* projectionStore.getRuntimeRequest(task.childThreadId, requestId);
+      if (request === undefined) return;
+    }
+    yield* deliverDelegatedTaskQuestion(task, request, dispatchWithReceiptEffect).pipe(
+      Effect.provideService(ProjectionStoreV2, projectionStore),
+      Effect.provideService(CommandReceiptStoreV2, commandReceipts),
+    );
+  });
 
   const reconcileDelegatedTaskQuestion = (
     parentThreadId: ThreadId,
@@ -15670,11 +15667,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     Effect.forkIn(requestWakeScope),
   );
 
-  // Settles child results and completion deliveries whose runs ended without
-  // the listener above: before this boot, or in runtime reconciliation, which
-  // it skips. Startup runs this after reconciliation and before the effect
-  // worker. Queue recovery instead holds unstarted runs until an explicit
-  // queue.resume command arrives.
+  // Settles child results and deliveries whose runs ended without the listener above: before this
+  // boot, or during runtime reconciliation. Startup runs it after reconciliation and before the effect
+  // worker; queue recovery holds unstarted runs until an explicit queue.resume.
   const recoverDelegatedTasks = Effect.gen(function* () {
     yield* projectionStore.getRecoveryThreadIds("subagent-results").pipe(
       Effect.tap((threadIds) =>

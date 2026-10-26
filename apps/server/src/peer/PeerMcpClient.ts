@@ -354,66 +354,106 @@ const make = Effect.gen(function* () {
           capabilities: {},
           clientInfo: { name: "t3code-peer", version: "1" },
         },
-        limitHeader,
-      );
-      const sessionId = initialized.headers["mcp-session-id"];
-      if (initialized.status === 409 && limitHeader[PeerAuthority.LINK_HEADER] !== undefined)
-        return yield* new OrchestratorMcpFailure({
-          code: "capability_denied",
-          message: "The destination does not support peer authority v1; no action was forwarded.",
-        });
-      if (initialized.status !== 200 || sessionId === undefined) {
-        const refusal = decodeFailure(yield* initialized.text);
-        if (Option.isSome(refusal)) return yield* new OrchestratorMcpFailure(refusal.value);
-        return yield* new OrchestratorMcpFailure({
-          code: initialized.status === 401 ? "capability_denied" : "orchestration_error",
-          message:
-            initialized.status === 401
-              ? "The linked environment no longer accepts this link. It may have been revoked there; link it again."
-              : `The linked environment refused to start an MCP session (HTTP ${initialized.status}).`,
-        });
-      }
-      if (
-        limitHeader[PeerAuthority.LINK_HEADER] !== undefined &&
-        initialized.headers[PeerAuthority.AUTHORITY_HEADER] !== "1"
-      )
-        return yield* new OrchestratorMcpFailure({
-          code: "capability_denied",
-          message: "The destination does not support peer authority v1; no action was forwarded.",
-        });
-      yield* post(
-        url,
-        token,
-        { jsonrpc: "2.0", method: "notifications/initialized" },
-        { ...limitHeader, "mcp-session-id": sessionId, "mcp-protocol-version": PROTOCOL_VERSION },
-      );
-      return sessionId;
-    });
+      },
+      limitHeader,
+    );
+    const sessionId = initialized.headers["mcp-session-id"];
+    if (initialized.status === 409 && limitHeader[PeerAuthority.LINK_HEADER] !== undefined)
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "The destination does not support peer authority v1; no action was forwarded.",
+      });
+    if (initialized.status !== 200 || sessionId === undefined) {
+      const refusal = decodeFailure(yield* initialized.text);
+      if (Option.isSome(refusal)) return yield* new OrchestratorMcpFailure(refusal.value);
+      return yield* new OrchestratorMcpFailure({
+        code: initialized.status === 401 ? "capability_denied" : "orchestration_error",
+        message:
+          initialized.status === 401
+            ? "The linked environment no longer accepts this link. It may have been revoked there; link it again."
+            : `The linked environment refused to start an MCP session (HTTP ${initialized.status}).`,
+      });
+    }
+    if (
+      limitHeader[PeerAuthority.LINK_HEADER] !== undefined &&
+      initialized.headers[PeerAuthority.AUTHORITY_HEADER] !== "1"
+    )
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "The destination does not support peer authority v1; no action was forwarded.",
+      });
+    yield* post(
+      url,
+      token,
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+      { ...limitHeader, "mcp-session-id": sessionId, "mcp-protocol-version": PROTOCOL_VERSION },
+    );
+    return sessionId;
+  });
 
-  const ensureChannel = (resolved: PeerLinks.ResolvedPeerLink, self: EnvironmentId) =>
-    Effect.gen(function* () {
-      const key = `${resolved.link.environmentId}:${resolved.link.launchIdentity}`;
-      if (Option.isNone(authority) || channels.has(key)) return;
-      channels.add(key);
-      const peerHeader = {
-        environmentId: self,
-        generation: resolved.link.launchIdentity,
-        automationVersion: 1,
-      };
-      const handleFrame = (
-        current: PeerLinks.ResolvedPeerLink,
-        frame: (typeof PeerAuthority.ExchangeResult.Type)["frames"][number],
-      ) =>
+  const ensureChannel = Effect.fn("PeerMcpClient.ensureChannel")(function* (
+    resolved: PeerLinks.ResolvedPeerLink,
+    self: EnvironmentId,
+  ) {
+    const key = `${resolved.link.environmentId}:${resolved.link.launchIdentity}`;
+    if (Option.isNone(authority) || channels.has(key)) return;
+    channels.add(key);
+    const peerHeader = {
+      environmentId: self,
+      generation: resolved.link.launchIdentity,
+      automationVersion: 1,
+    };
+    const handleFrame = Effect.fn("PeerMcpClient.handleFrame")(function* (
+      current: PeerLinks.ResolvedPeerLink,
+      frame: (typeof PeerAuthority.ExchangeResult.Type)["frames"][number],
+    ) {
+      const answer = yield* authority.value
+        .process(current.link.environmentId, current.link.launchIdentity, frame)
+        .pipe(
+          Effect.provideService(
+            PeerNoticeDelivery.PeerNoticeDelivery,
+            Option.isSome(delivery) ? delivery.value : PeerNoticeDelivery.unavailable,
+          ),
+        );
+      const acknowledged = yield* httpClient.execute(
+        HttpClientRequest.post(`${current.url}/mcp/peer-control`).pipe(
+          HttpClientRequest.setHeaders({
+            authorization: `Bearer ${current.token}`,
+            [PeerAuthority.LINK_HEADER]: json(peerHeader),
+          }),
+          HttpClientRequest.setBody(
+            HttpBody.text(
+              json({ ...peerHeader, answers: [answer], wait: false }),
+              "application/json",
+            ),
+          ),
+        ),
+      );
+      if (acknowledged.status !== 200)
+        return yield* new OrchestratorMcpFailure({
+          code:
+            acknowledged.status === 401 || acknowledged.status === 403
+              ? "capability_denied"
+              : "orchestration_error",
+          message: "Peer control acknowledgement failed.",
+        });
+      yield* acknowledged.text;
+    });
+    // Intake keeps reading while earlier frames validate through another hop.
+    // A batch boundary must never become the only reverse channel's lock.
+    const polling = Effect.suspend(() => {
+      let cursor = 0;
+      return Stream.fromEffectRepeat(
         Effect.gen(function* () {
-          const answer = yield* authority.value
-            .process(current.link.environmentId, current.link.launchIdentity, frame)
-            .pipe(
-              Effect.provideService(
-                PeerNoticeDelivery.PeerNoticeDelivery,
-                Option.isSome(delivery) ? delivery.value : PeerNoticeDelivery.unavailable,
-              ),
-            );
-          const acknowledged = yield* httpClient.execute(
+          const current = yield* links
+            .resolve(resolved.link.environmentId)
+            .pipe(Effect.mapError(fromLinkError));
+          if (current.link.launchIdentity !== resolved.link.launchIdentity)
+            return yield* new OrchestratorMcpFailure({
+              code: "capability_denied",
+              message: "The link control generation was replaced.",
+            });
+          const response = yield* httpClient.execute(
             HttpClientRequest.post(`${current.url}/mcp/peer-control`).pipe(
               HttpClientRequest.setHeaders({
                 authorization: `Bearer ${current.token}`,
@@ -421,138 +461,100 @@ const make = Effect.gen(function* () {
               }),
               HttpClientRequest.setBody(
                 HttpBody.text(
-                  json({ ...peerHeader, answers: [answer], wait: false }),
+                  json({ ...peerHeader, answers: [], after: cursor }),
                   "application/json",
                 ),
               ),
             ),
           );
-          if (acknowledged.status !== 200)
+          if (response.status !== 200)
             return yield* new OrchestratorMcpFailure({
               code:
-                acknowledged.status === 401 || acknowledged.status === 403
+                response.status === 401 || response.status === 403 || response.status === 409
                   ? "capability_denied"
                   : "orchestration_error",
-              message: "Peer control acknowledgement failed.",
+              message: "The peer control channel is unavailable.",
             });
-          yield* acknowledged.text;
-        });
-      // Intake keeps reading while earlier frames validate through another hop.
-      // A batch boundary must never become the only reverse channel's lock.
-      const polling = Effect.suspend(() => {
-        let cursor = 0;
-        return Stream.fromEffectRepeat(
-          Effect.gen(function* () {
-            const current = yield* links
-              .resolve(resolved.link.environmentId)
-              .pipe(Effect.mapError(fromLinkError));
-            if (current.link.launchIdentity !== resolved.link.launchIdentity)
-              return yield* new OrchestratorMcpFailure({
-                code: "capability_denied",
-                message: "The link control generation was replaced.",
-              });
-            const response = yield* httpClient.execute(
-              HttpClientRequest.post(`${current.url}/mcp/peer-control`).pipe(
-                HttpClientRequest.setHeaders({
-                  authorization: `Bearer ${current.token}`,
-                  [PeerAuthority.LINK_HEADER]: json(peerHeader),
-                }),
-                HttpClientRequest.setBody(
-                  HttpBody.text(
-                    json({ ...peerHeader, answers: [], after: cursor }),
-                    "application/json",
-                  ),
-                ),
-              ),
-            );
-            if (response.status !== 200)
-              return yield* new OrchestratorMcpFailure({
-                code:
-                  response.status === 401 || response.status === 403 || response.status === 409
-                    ? "capability_denied"
-                    : "orchestration_error",
-                message: "The peer control channel is unavailable.",
-              });
-            const batch = yield* decodeExchange(yield* response.text);
-            cursor = batch.cursor;
-            return batch.frames.map((frame) => ({ current, frame }));
-          }),
-        ).pipe(
-          Stream.flattenIterable,
-          Stream.mapEffect(({ current, frame }) => handleFrame(current, frame), {
-            concurrency: 8,
-            unordered: true,
-          }),
-          Stream.runDrain,
-        );
-      });
-      const streaming = Effect.gen(function* () {
-        const current = yield* links
-          .resolve(resolved.link.environmentId)
-          .pipe(Effect.mapError(fromLinkError));
-        if (current.link.launchIdentity !== resolved.link.launchIdentity)
-          return yield* new OrchestratorMcpFailure({
-            code: "capability_denied",
-            message: "The link control generation was replaced.",
-          });
-        const response = yield* httpClient
-          .execute(
-            HttpClientRequest.get(`${current.url}/mcp/peer-control/stream`).pipe(
-              HttpClientRequest.setHeaders({
-                authorization: `Bearer ${current.token}`,
-                [PeerAuthority.LINK_HEADER]: json(peerHeader),
-                accept: "text/event-stream",
-              }),
-            ),
-          )
-          .pipe(Effect.timeout("5 seconds"));
-        if (
-          response.status !== 200 ||
-          response.headers["content-type"]?.includes("text/event-stream") !== true
-        )
-          return yield* new OrchestratorMcpFailure({
-            code:
-              response.status === 401 || response.status === 403
-                ? "capability_denied"
-                : "orchestration_error",
-            message: "Peer streaming is unavailable.",
-          });
-        yield* response.stream.pipe(
-          Stream.timeout("30 seconds"),
-          Stream.decodeText(),
-          Stream.splitLines,
-          Stream.filter((line) => line.startsWith("data: ")),
-          Stream.mapEffect((line) => decodeExchange(line.slice(6))),
-          Stream.flatMap((batch) => Stream.fromIterable(batch.frames)),
-          Stream.mapEffect((frame) => handleFrame(current, frame), {
-            concurrency: 8,
-            unordered: true,
-          }),
-          Stream.runDrain,
-        );
-        return yield* new OrchestratorMcpFailure({
-          code: "orchestration_error",
-          message: "Peer control stream closed.",
-        });
-      });
-      yield* streaming.pipe(
-        Effect.catch((error) =>
-          error._tag === "SchemaError" ||
-          (error._tag === "OrchestratorMcpFailure" && error.code === "capability_denied")
-            ? Effect.fail(error)
-            : polling,
-        ),
-        Effect.retry({
-          schedule: Schedule.spaced("1 second"),
-          while: (error) =>
-            error._tag === "HttpClientError" ||
-            (error._tag === "OrchestratorMcpFailure" && error.code === "orchestration_error"),
+          const batch = yield* decodeExchange(yield* response.text);
+          cursor = batch.cursor;
+          return batch.frames.map((frame) => ({ current, frame }));
         }),
-        Effect.ensuring(Effect.sync(() => channels.delete(key))),
-        Effect.ignoreCause({ log: true }),
-        Effect.forkIn(lifetime),
+      ).pipe(
+        Stream.flattenIterable,
+        Stream.mapEffect(({ current, frame }) => handleFrame(current, frame), {
+          concurrency: 8,
+          unordered: true,
+        }),
+        Stream.runDrain,
       );
     });
+    const streaming = Effect.gen(function* () {
+      const current = yield* links
+        .resolve(resolved.link.environmentId)
+        .pipe(Effect.mapError(fromLinkError));
+      if (current.link.launchIdentity !== resolved.link.launchIdentity)
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "The link control generation was replaced.",
+        });
+      const response = yield* httpClient
+        .execute(
+          HttpClientRequest.get(`${current.url}/mcp/peer-control/stream`).pipe(
+            HttpClientRequest.setHeaders({
+              authorization: `Bearer ${current.token}`,
+              [PeerAuthority.LINK_HEADER]: json(peerHeader),
+              accept: "text/event-stream",
+            }),
+          ),
+        )
+        .pipe(Effect.timeout("5 seconds"));
+      if (
+        response.status !== 200 ||
+        response.headers["content-type"]?.includes("text/event-stream") !== true
+      )
+        return yield* new OrchestratorMcpFailure({
+          code:
+            response.status === 401 || response.status === 403
+              ? "capability_denied"
+              : "orchestration_error",
+          message: "Peer streaming is unavailable.",
+        });
+      yield* response.stream.pipe(
+        Stream.timeout("30 seconds"),
+        Stream.decodeText(),
+        Stream.splitLines,
+        Stream.filter((line) => line.startsWith("data: ")),
+        Stream.mapEffect((line) => decodeExchange(line.slice(6))),
+        Stream.flatMap((batch) => Stream.fromIterable(batch.frames)),
+        Stream.mapEffect((frame) => handleFrame(current, frame), {
+          concurrency: 8,
+          unordered: true,
+        }),
+        Stream.runDrain,
+      );
+      return yield* new OrchestratorMcpFailure({
+        code: "orchestration_error",
+        message: "Peer control stream closed.",
+      });
+    });
+    yield* streaming.pipe(
+      Effect.catch((error) =>
+        error._tag === "SchemaError" ||
+        (error._tag === "OrchestratorMcpFailure" && error.code === "capability_denied")
+          ? Effect.fail(error)
+          : polling,
+      ),
+      Effect.retry({
+        schedule: Schedule.spaced("1 second"),
+        while: (error) =>
+          error._tag === "HttpClientError" ||
+          (error._tag === "OrchestratorMcpFailure" && error.code === "orchestration_error"),
+      }),
+      Effect.ensuring(Effect.sync(() => channels.delete(key))),
+      Effect.ignoreCause({ log: true }),
+      Effect.forkIn(lifetime),
+    );
+  });
   const deliverSecretRetirements = Effect.gen(function* () {
     if (Option.isNone(secretSql) || Option.isNone(environment)) return false;
     const sql = secretSql.value;
@@ -696,21 +698,20 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  const reconnect = (id: EnvironmentId) =>
-    Effect.gen(function* () {
-      if (Option.isNone(environment) || Option.isNone(authority)) return;
-      const resolved = yield* links.resolve(id).pipe(Effect.mapError(fromLinkError));
-      const self = yield* environment.value.getEnvironmentId;
-      const peerHeader = {
-        environmentId: self,
-        generation: resolved.link.launchIdentity,
-        automationVersion: 1,
-      };
-      yield* openSession(resolved.url, resolved.token, {
-        [PeerAuthority.LINK_HEADER]: json(peerHeader),
-      });
-      yield* ensureChannel(resolved, self);
+  const reconnect = Effect.fn("PeerMcpClient.reconnect")(function* (id: EnvironmentId) {
+    if (Option.isNone(environment) || Option.isNone(authority)) return;
+    const resolved = yield* links.resolve(id).pipe(Effect.mapError(fromLinkError));
+    const self = yield* environment.value.getEnvironmentId;
+    const peerHeader = {
+      environmentId: self,
+      generation: resolved.link.launchIdentity,
+      automationVersion: 1,
+    };
+    yield* openSession(resolved.url, resolved.token, {
+      [PeerAuthority.LINK_HEADER]: json(peerHeader),
     });
+    yield* ensureChannel(resolved, self);
+  });
   const start = Option.isNone(authority)
     ? Effect.void
     : forkParked(
@@ -750,8 +751,8 @@ const make = Effect.gen(function* () {
         }).pipe(Effect.ignoreCause({ log: true })),
       );
 
-  const call: PeerMcpClient["Service"]["call"] = (input) =>
-    Effect.gen(function* () {
+  const call: PeerMcpClient["Service"]["call"] = Effect.fn("PeerMcpClient.call")(
+    function* (input) {
       const resolved = yield* links
         .resolve(input.environmentId)
         .pipe(Effect.mapError(fromLinkError));
@@ -914,13 +915,13 @@ const make = Effect.gen(function* () {
       ),
   );
 
-  const lifecycleRequest = (
-    environmentId: EnvironmentId,
-    generation?: string,
-    input?: Omit<PeerTaskLifecycleRequest, "environmentId" | "generation">,
-    pendingRequests = false,
-  ) =>
-    Effect.gen(function* () {
+  const lifecycleRequest = Effect.fn("PeerMcpClient.lifecycleRequest")(
+    function* (
+      environmentId: EnvironmentId,
+      generation?: string,
+      input?: Omit<PeerTaskLifecycleRequest, "environmentId" | "generation">,
+      pendingRequests = false,
+    ) {
       const resolved = yield* links.resolve(environmentId).pipe(Effect.mapError(fromLinkError));
       if (generation !== undefined && generation !== resolved.link.launchIdentity)
         return yield* new OrchestratorMcpFailure({
@@ -974,25 +975,25 @@ const make = Effect.gen(function* () {
             "The delegated lifecycle reply belongs to a link generation that is no longer current.",
         });
       return text;
-    }).pipe(
-      Effect.timeout("30 seconds"),
-      Effect.catchTags({
-        TimeoutError: () =>
-          Effect.fail(
-            new OrchestratorMcpFailure({
-              code: "orchestration_error",
-              message: "The delegated lifecycle operation timed out without confirmation.",
-            }),
-          ),
-        HttpClientError: () =>
-          Effect.fail(
-            new OrchestratorMcpFailure({
-              code: "orchestration_error",
-              message: "The delegated execution environment is unreachable.",
-            }),
-          ),
-      }),
-    );
+    },
+    Effect.timeout("30 seconds"),
+    Effect.catchTags({
+      TimeoutError: () =>
+        Effect.fail(
+          new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: "The delegated lifecycle operation timed out without confirmation.",
+          }),
+        ),
+      HttpClientError: () =>
+        Effect.fail(
+          new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: "The delegated execution environment is unreachable.",
+          }),
+        ),
+    }),
+  );
   const decodeLifecycleVersion = Schema.decodeUnknownEffect(
     Schema.fromJsonString(Schema.Struct({ version: Schema.Literal(1) })),
   );
@@ -1032,48 +1033,43 @@ const make = Effect.gen(function* () {
             }),
       ),
     );
-  const uploadAttachment: PeerMcpClient["Service"]["uploadAttachment"] = (input) =>
-    Effect.gen(function* () {
-      const resolved = yield* links
-        .resolve(input.environmentId)
-        .pipe(Effect.mapError(fromLinkError));
-      if (
-        resolved.link.launchIdentity !== input.generation ||
-        !/^\/api\/attachments\/upload\/[A-Za-z0-9_.-]+$/.test(input.relativeUrl)
+  const uploadAttachment: PeerMcpClient["Service"]["uploadAttachment"] = Effect.fn(
+    "PeerMcpClient.uploadAttachment",
+  )(function* (input) {
+    const resolved = yield* links.resolve(input.environmentId).pipe(Effect.mapError(fromLinkError));
+    if (
+      resolved.link.launchIdentity !== input.generation ||
+      !/^\/api\/attachments\/upload\/[A-Za-z0-9_.-]+$/.test(input.relativeUrl)
+    )
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "The attachment transfer does not match its destination grant or upload route.",
+      });
+    const response = yield* httpClient
+      .execute(
+        HttpClientRequest.post(`${resolved.url}${input.relativeUrl}`).pipe(
+          HttpClientRequest.setBody(
+            HttpBody.stream(input.bytes, "application/octet-stream", input.sizeBytes),
+          ),
+        ),
       )
-        return yield* new OrchestratorMcpFailure({
-          code: "capability_denied",
-          message: "The attachment transfer does not match its destination grant or upload route.",
-        });
-      const response = yield* httpClient
-        .execute(
-          HttpClientRequest.post(`${resolved.url}${input.relativeUrl}`).pipe(
-            HttpClientRequest.setBody(
-              HttpBody.stream(input.bytes, "application/octet-stream", input.sizeBytes),
-            ),
-          ),
-        )
-        .pipe(
-          Effect.mapError(
-            () =>
-              new OrchestratorMcpFailure({
-                code: "orchestration_error",
-                message:
-                  "The attachment transfer response was lost; retry the original request key.",
-              }),
-          ),
-        );
-      if (response.status !== 204)
-        return yield* new OrchestratorMcpFailure({
-          code: "invalid_request",
-          message: "The destination did not accept the attachment bytes.",
-        });
-    });
-  const requireRequestProtocol: NonNullable<PeerMcpClient["Service"]["requireRequestProtocol"]> = (
-    environmentId,
-    generation,
-  ) =>
-    Effect.gen(function* () {
+      .pipe(
+        Effect.mapError(
+          () =>
+            new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: "The attachment transfer response was lost; retry the original request key.",
+            }),
+        ),
+      );
+    if (response.status !== 204)
+      return yield* new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message: "The destination did not accept the attachment bytes.",
+      });
+  });
+  const requireRequestProtocol: NonNullable<PeerMcpClient["Service"]["requireRequestProtocol"]> =
+    Effect.fn("PeerMcpClient.requireRequestProtocol")(function* (environmentId, generation) {
       const resolved = yield* links.resolve(environmentId).pipe(Effect.mapError(fromLinkError));
       if (generation !== undefined && resolved.link.launchIdentity !== generation)
         return yield* new OrchestratorMcpFailure({
@@ -1122,11 +1118,11 @@ const make = Effect.gen(function* () {
         ),
       );
     });
-  const openViewer = (input: {
-    request: DeviceViewerOpenInput | PreviewViewerOpenInput;
-    authority: PeerAuthorityEnvelope;
-  }) =>
-    Effect.gen(function* () {
+  const openViewer = Effect.fn("PeerMcpClient.openViewer")(
+    function* (input: {
+      request: DeviceViewerOpenInput | PreviewViewerOpenInput;
+      authority: PeerAuthorityEnvelope;
+    }) {
       const resolved = yield* links
         .resolve(input.request.resource.environmentId)
         .pipe(Effect.mapError(fromLinkError));
@@ -1189,22 +1185,22 @@ const make = Effect.gen(function* () {
         });
       }
       return { origin: resolved.url, text };
-    }).pipe(
-      Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
-      Effect.mapError((error) =>
-        Schema.is(OrchestratorMcpFailure)(error)
-          ? error
-          : new OrchestratorMcpFailure({
-              code: "orchestration_error",
-              message: "The destination device viewer is unavailable.",
-            }),
-      ),
-    );
-  const closeViewer = (
-    input: { environmentId: EnvironmentId; generation: string; viewerId: string },
-    purpose: "device-viewer" | "preview-viewer",
-  ) =>
-    Effect.gen(function* () {
+    },
+    Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+    Effect.mapError((error) =>
+      Schema.is(OrchestratorMcpFailure)(error)
+        ? error
+        : new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: "The destination device viewer is unavailable.",
+          }),
+    ),
+  );
+  const closeViewer = Effect.fn("PeerMcpClient.closeViewer")(
+    function* (
+      input: { environmentId: EnvironmentId; generation: string; viewerId: string },
+      purpose: "device-viewer" | "preview-viewer",
+    ) {
       const resolved = yield* links
         .resolve(input.environmentId)
         .pipe(Effect.mapError(fromLinkError));
@@ -1221,16 +1217,16 @@ const make = Effect.gen(function* () {
       return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Boolean))(
         yield* deviceViewerReply(response),
       );
-    }).pipe(
-      Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
-      Effect.mapError(
-        () =>
-          new OrchestratorMcpFailure({
-            code: "orchestration_error",
-            message: "The destination viewer could not be released.",
-          }),
-      ),
-    );
+    },
+    Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+    Effect.mapError(
+      () =>
+        new OrchestratorMcpFailure({
+          code: "orchestration_error",
+          message: "The destination viewer could not be released.",
+        }),
+    ),
+  );
   const openDeviceViewer: NonNullable<PeerMcpClient["Service"]["openDeviceViewer"]> = (input) =>
     openViewer(input).pipe(
       Effect.flatMap(({ origin, text }) =>
@@ -1265,95 +1261,94 @@ const make = Effect.gen(function* () {
     closeViewer(input, "device-viewer");
   const closePreviewViewer: NonNullable<PeerMcpClient["Service"]["closePreviewViewer"]> = (input) =>
     closeViewer(input, "preview-viewer");
-  const authorizeSavedPreview: NonNullable<PeerMcpClient["Service"]["authorizeSavedPreview"]> = (
-    input,
-  ) =>
-    Effect.gen(function* () {
-      const resolved = yield* links
-        .resolve(input.request.environmentId)
-        .pipe(Effect.mapError(fromLinkError));
-      if (resolved.link.launchIdentity !== input.request.generation)
-        return yield* new OrchestratorMcpFailure({
-          code: "capability_denied",
-          message: "The original saved-preview destination grant was replaced.",
-        });
-      const endpoint = `${resolved.url}/mcp/peer-control/saved-preview`;
-      const support = yield* httpClient.execute(
-        HttpClientRequest.get(endpoint).pipe(
-          HttpClientRequest.setHeader("authorization", `Bearer ${resolved.token}`),
-        ),
-      );
-      if (support.status === 404 || support.status === 409)
-        return yield* new OrchestratorMcpFailure({
-          code: "invalid_request",
-          message:
-            "The destination does not support saved-preview authorization v1; no renderer or save was requested.",
-        });
-      if (support.status !== 200)
-        return yield* new OrchestratorMcpFailure({
-          code:
-            support.status === 401 || support.status === 403
-              ? "capability_denied"
-              : "orchestration_error",
-          message: "Saved-preview authority is unavailable.",
-        });
-      yield* decodeSavedPreviewSupport(yield* support.text).pipe(
-        Effect.mapError(
-          () =>
-            new OrchestratorMcpFailure({
-              code: "invalid_request",
-              message: "The saved-preview authorization protocol is unsupported.",
+  const authorizeSavedPreview: NonNullable<PeerMcpClient["Service"]["authorizeSavedPreview"]> =
+    Effect.fn("PeerMcpClient.authorizeSavedPreview")(
+      function* (input) {
+        const resolved = yield* links
+          .resolve(input.request.environmentId)
+          .pipe(Effect.mapError(fromLinkError));
+        if (resolved.link.launchIdentity !== input.request.generation)
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "The original saved-preview destination grant was replaced.",
+          });
+        const endpoint = `${resolved.url}/mcp/peer-control/saved-preview`;
+        const support = yield* httpClient.execute(
+          HttpClientRequest.get(endpoint).pipe(
+            HttpClientRequest.setHeader("authorization", `Bearer ${resolved.token}`),
+          ),
+        );
+        if (support.status === 404 || support.status === 409)
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message:
+              "The destination does not support saved-preview authorization v1; no renderer or save was requested.",
+          });
+        if (support.status !== 200)
+          return yield* new OrchestratorMcpFailure({
+            code:
+              support.status === 401 || support.status === 403
+                ? "capability_denied"
+                : "orchestration_error",
+            message: "Saved-preview authority is unavailable.",
+          });
+        yield* decodeSavedPreviewSupport(yield* support.text).pipe(
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "The saved-preview authorization protocol is unsupported.",
+              }),
+          ),
+        );
+        yield* ensureChannel(resolved, input.authority.environmentId);
+        const response = yield* httpClient.execute(
+          HttpClientRequest.post(endpoint).pipe(
+            HttpClientRequest.setHeaders({
+              authorization: `Bearer ${resolved.token}`,
+              [McpInvocationContext.MODE_LIMIT_HEADER]: `${input.limits.runtimeMode}/${input.limits.interactionMode}`,
+              [PeerAuthority.LINK_HEADER]: json({
+                environmentId: input.authority.environmentId,
+                generation: input.request.generation,
+              }),
+              [PeerAuthority.AUTHORITY_HEADER]: json(input.authority),
             }),
-        ),
-      );
-      yield* ensureChannel(resolved, input.authority.environmentId);
-      const response = yield* httpClient.execute(
-        HttpClientRequest.post(endpoint).pipe(
-          HttpClientRequest.setHeaders({
-            authorization: `Bearer ${resolved.token}`,
-            [McpInvocationContext.MODE_LIMIT_HEADER]: `${input.limits.runtimeMode}/${input.limits.interactionMode}`,
-            [PeerAuthority.LINK_HEADER]: json({
-              environmentId: input.authority.environmentId,
-              generation: input.request.generation,
-            }),
-            [PeerAuthority.AUTHORITY_HEADER]: json(input.authority),
-          }),
-          HttpClientRequest.setBody(HttpBody.text(json(input.request), "application/json")),
-        ),
-      );
-      const text = yield* response.text;
-      if (response.status !== 200) {
-        const refusal = decodeFailure(text);
-        if (Option.isSome(refusal)) return yield* new OrchestratorMcpFailure(refusal.value);
-        return yield* new OrchestratorMcpFailure({
-          code:
-            response.status === 401 || response.status === 403
-              ? "capability_denied"
-              : "orchestration_error",
-          message: "Saved-preview authority could not be confirmed.",
-        });
-      }
-      const result = yield* decodeSavedPreviewResult(text).pipe(
-        Effect.mapError(
-          () =>
-            new OrchestratorMcpFailure({
-              code: "orchestration_error",
-              message: "The saved-preview authorization result is invalid.",
-            }),
-        ),
-      );
-      if (
-        result.environmentId !== input.request.environmentId ||
-        result.generation !== input.request.generation ||
-        result.contextThreadId !== input.request.contextThreadId ||
-        result.operationId !== input.request.operationId
-      )
-        return yield* new OrchestratorMcpFailure({
-          code: "capability_denied",
-          message: "Saved-preview authorization belongs to a different context.",
-        });
-      return result;
-    }).pipe(
+            HttpClientRequest.setBody(HttpBody.text(json(input.request), "application/json")),
+          ),
+        );
+        const text = yield* response.text;
+        if (response.status !== 200) {
+          const refusal = decodeFailure(text);
+          if (Option.isSome(refusal)) return yield* new OrchestratorMcpFailure(refusal.value);
+          return yield* new OrchestratorMcpFailure({
+            code:
+              response.status === 401 || response.status === 403
+                ? "capability_denied"
+                : "orchestration_error",
+            message: "Saved-preview authority could not be confirmed.",
+          });
+        }
+        const result = yield* decodeSavedPreviewResult(text).pipe(
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "The saved-preview authorization result is invalid.",
+              }),
+          ),
+        );
+        if (
+          result.environmentId !== input.request.environmentId ||
+          result.generation !== input.request.generation ||
+          result.contextThreadId !== input.request.contextThreadId ||
+          result.operationId !== input.request.operationId
+        )
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "Saved-preview authorization belongs to a different context.",
+          });
+        return result;
+      },
       Effect.catchTags({
         HttpClientError: () =>
           Effect.fail(
@@ -1374,38 +1369,37 @@ const make = Effect.gen(function* () {
         message: "The native browser download is unavailable to its original reader.",
       });
     const mapFailure = () => refused();
-    const request = (offset?: number) =>
-      Effect.gen(function* () {
-        yield* input.authorize;
-        const current = yield* links
-          .resolve(input.resource.resource.environmentId)
-          .pipe(Effect.mapError(fromLinkError));
-        if (current.link.launchIdentity !== input.authority.generation) return yield* refused();
-        const response = yield* httpClient.execute(
-          HttpClientRequest.post(`${current.url}/mcp/peer-control/attachment`).pipe(
-            HttpClientRequest.setHeaders({
-              authorization: `Bearer ${current.token}`,
-              [PeerAuthority.LINK_HEADER]: json({
-                environmentId: input.authority.environmentId,
-                generation: input.authority.generation,
-              }),
-              [PeerAuthority.AUTHORITY_HEADER]: json(input.authority),
-              ...(offset === undefined
-                ? { "t3-attachment-check-only": "1" }
-                : { "t3-download-offset": String(offset) }),
+    const request = Effect.fn("PeerMcpClient.request")(function* (offset?: number) {
+      yield* input.authorize;
+      const current = yield* links
+        .resolve(input.resource.resource.environmentId)
+        .pipe(Effect.mapError(fromLinkError));
+      if (current.link.launchIdentity !== input.authority.generation) return yield* refused();
+      const response = yield* httpClient.execute(
+        HttpClientRequest.post(`${current.url}/mcp/peer-control/attachment`).pipe(
+          HttpClientRequest.setHeaders({
+            authorization: `Bearer ${current.token}`,
+            [PeerAuthority.LINK_HEADER]: json({
+              environmentId: input.authority.environmentId,
+              generation: input.authority.generation,
             }),
-            HttpClientRequest.setBody(HttpBody.text(json(input.resource), "application/json")),
-          ),
-        );
-        if (
-          response.status !== (offset === undefined ? 204 : 200) ||
-          response.headers["t3-attachment-producer"] !== "preview" ||
-          response.headers["t3-download-digest"] !== input.resource.digest ||
-          response.headers["t3-download-size"] !== String(input.resource.sizeBytes)
-        )
-          return yield* refused();
-        return response;
-      });
+            [PeerAuthority.AUTHORITY_HEADER]: json(input.authority),
+            ...(offset === undefined
+              ? { "t3-attachment-check-only": "1" }
+              : { "t3-download-offset": String(offset) }),
+          }),
+          HttpClientRequest.setBody(HttpBody.text(json(input.resource), "application/json")),
+        ),
+      );
+      if (
+        response.status !== (offset === undefined ? 204 : 200) ||
+        response.headers["t3-attachment-producer"] !== "preview" ||
+        response.headers["t3-download-digest"] !== input.resource.digest ||
+        response.headers["t3-download-size"] !== String(input.resource.sizeBytes)
+      )
+        return yield* refused();
+      return response;
+    });
     return Effect.gen(function* () {
       yield* input.authorize;
       const resolved = yield* links
@@ -1444,8 +1438,8 @@ const make = Effect.gen(function* () {
       yield* authorize;
       return {
         authorize,
-        readBlock: (offset: number) =>
-          Effect.gen(function* () {
+        readBlock: Effect.fn("PeerMcpClient.readBlock")(
+          function* (offset: number) {
             if (
               !Number.isSafeInteger(offset) ||
               offset < 0 ||
@@ -1480,18 +1474,20 @@ const make = Effect.gen(function* () {
               return yield* refused();
             yield* authorize;
             return bytes;
-          }).pipe(
-            Effect.mapError(mapFailure),
-            Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
-          ),
+          },
+          Effect.mapError(mapFailure),
+          Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+        ),
       };
     }).pipe(
       Effect.mapError(mapFailure),
       Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
     );
   };
-  const readAttachment: NonNullable<PeerMcpClient["Service"]["readAttachment"]> = (input) =>
-    Effect.gen(function* () {
+  const readAttachment: NonNullable<PeerMcpClient["Service"]["readAttachment"]> = Effect.fn(
+    "PeerMcpClient.readAttachment",
+  )(
+    function* (input) {
       yield* input.authorize;
       const resolved = yield* links
         .resolve(input.resource.reference.environmentId)
@@ -1628,20 +1624,20 @@ const make = Effect.gen(function* () {
       );
       yield* authorize;
       return { bytes, authorize, producer };
-    }).pipe(
-      Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
-      Effect.mapError((error) =>
-        error._tag === "OrchestratorMcpFailure"
-          ? error
-          : new OrchestratorMcpFailure({
-              code: "orchestration_error",
-              message: "Qualified attachment transport is unavailable.",
-            }),
-      ),
-    );
+    },
+    Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+    Effect.mapError((error) =>
+      error._tag === "OrchestratorMcpFailure"
+        ? error
+        : new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: "Qualified attachment transport is unavailable.",
+          }),
+    ),
+  );
   return PeerMcpClient.of({
-    remoteSecretReceipt: (environmentId, generation, query) =>
-      Effect.gen(function* () {
+    remoteSecretReceipt: Effect.fn("PeerMcpClient.remoteSecretReceipt")(
+      function* (environmentId, generation, query) {
         const resolved = yield* links.resolve(environmentId).pipe(Effect.mapError(fromLinkError));
         if (resolved.link.launchIdentity !== generation || Option.isNone(environment))
           return yield* new OrchestratorMcpFailure({
@@ -1678,19 +1674,19 @@ const make = Effect.gen(function* () {
             ),
           ),
         );
-      }).pipe(
-        Effect.catchTags({
-          HttpClientError: () =>
-            Effect.fail(
-              new OrchestratorMcpFailure({
-                code: "orchestration_error",
-                message: "The receipt owner is unreachable.",
-              }),
-            ),
-        }),
-      ),
-    remoteSecret: (environmentId, generation, input) =>
-      Effect.gen(function* () {
+      },
+      Effect.catchTags({
+        HttpClientError: () =>
+          Effect.fail(
+            new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: "The receipt owner is unreachable.",
+            }),
+          ),
+      }),
+    ),
+    remoteSecret: Effect.fn("PeerMcpClient.remoteSecret")(
+      function* (environmentId, generation, input) {
         if (Option.isNone(secretSql))
           return yield* new OrchestratorMcpFailure({
             code: "orchestration_error",
@@ -1773,17 +1769,17 @@ const make = Effect.gen(function* () {
               }),
           ),
         );
-      }).pipe(
-        Effect.catchTags({
-          HttpClientError: () =>
-            Effect.fail(
-              new OrchestratorMcpFailure({
-                code: "orchestration_error",
-                message: "The secret destination is unreachable.",
-              }),
-            ),
-        }),
-      ),
+      },
+      Effect.catchTags({
+        HttpClientError: () =>
+          Effect.fail(
+            new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: "The secret destination is unreachable.",
+            }),
+          ),
+      }),
+    ),
     readAttachment,
     readNativeBrowserDownload,
     call,

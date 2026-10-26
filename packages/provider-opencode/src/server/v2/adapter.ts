@@ -2663,15 +2663,16 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
 
     // Run after an entire event, so recursive call settlement publishes every child
     // artifact before it can release the root. No effect retry is needed to wake it.
-    const releaseSettledCutIns = (sessionId: string) =>
-      Effect.gen(function* () {
-        for (const { state, hold } of cutInsAbove(sessionId)) {
-          if (hold.phase !== "retry" || (hold.turn !== undefined && hold.terminal === undefined))
-            continue;
-          yield* settleCutInCohort(state, hold);
-          if (!cutInPending(state, hold)) yield* releaseCutIn(state, hold);
-        }
-      });
+    const releaseSettledCutIns = Effect.fn("OpenCodeAdapterV2.releaseSettledCutIns")(function* (
+      sessionId: string,
+    ) {
+      for (const { state, hold } of cutInsAbove(sessionId)) {
+        if (hold.phase !== "retry" || (hold.turn !== undefined && hold.terminal === undefined))
+          continue;
+        yield* settleCutInCohort(state, hold);
+        if (!cutInPending(state, hold)) yield* releaseCutIn(state, hold);
+      }
+    });
 
     const interruptForReplacement = Effect.fnUntraced(function* (
       state: ThreadState,

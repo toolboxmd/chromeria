@@ -309,6 +309,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/server/src/forkWsRpc.ts"
   ],
   "upstreamFiles": [
+    "scripts/effect-budget.json",
     "apps/web/src/components/device/DevicePanel.browser.test.tsx",
     ".github/workflows/ci.yml",
     ".github/workflows/pr-size.yml",
@@ -3210,7 +3211,6 @@ sources and reasons.
     "apps/server/src/preview/ServerCookieMirror.test.ts"
   ],
   "upstreamFiles": [
-    "scripts/lib/cached-tests.ts",
     "apps/server/src/htmlRender/headlessChrome.ts",
     "apps/server/src/preview/PreviewBrowser.test.ts",
     "apps/server/src/preview/PreviewBrowser.ts",

@@ -1298,76 +1298,77 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             ),
           );
 
-        const abortDescendants = (rootId: string, interruption = interruptions.get(rootId)) =>
-          Effect.gen(function* () {
-            const visited = new Set([rootId]);
-            const semaphore = Semaphore.makeUnsafe(8);
-            const visit = (
-              sessionId: string,
-              abort: boolean,
-            ): Effect.Effect<OpenCodeRuntime.OpenCodeRuntimeError | undefined> =>
-              Effect.gen(function* () {
-                interruption?.pendingDiscovery.add(sessionId);
-                const abortResult = abort
-                  ? yield* Effect.gen(function* () {
-                      // Capture at the SDK call, including sessions not yet
-                      // admitted as turns. A retry retains this exact cohort.
-                      interruption?.abortedSessions.set(sessionId, "aborting");
-                      // An earlier idle cannot acknowledge this abort: the
-                      // current child's SSE frames can follow its HTTP reply.
-                      if (nativeSessionStatuses.get(sessionId) === "idle")
-                        nativeSessionStatuses.delete(sessionId);
-                      const turn = threads.get(sessionId)?.activeTurn;
-                      const wasInterrupted = turn?.interrupted ?? false;
-                      if (turn != null) turn.interrupted = true;
-                      yield* sdkCall("session.abort", { sessionID: sessionId }, (signal) =>
-                        client.session.abort({ sessionID: sessionId }, { signal }),
-                      ).pipe(
-                        Effect.catchIf(isOpenCodeNotFound, () =>
-                          Effect.sync(() => nativeSessionStatuses.set(sessionId, "idle")),
-                        ),
-                        Effect.onError(() =>
-                          Effect.sync(() => {
-                            interruption?.abortedSessions.set(sessionId, "failed");
-                            const current = threads.get(sessionId)?.activeTurn;
-                            if (current != null && !current.finalized)
-                              current.interrupted = current === turn ? wasInterrupted : false;
-                          }),
-                        ),
-                      );
-                      interruption?.abortedSessions.set(sessionId, "aborted");
-                    }).pipe(semaphore.withPermit, Effect.result)
-                  : undefined;
-                const childrenResult = yield* sdkCall(
-                  "session.children",
-                  { sessionID: sessionId },
-                  (signal) => client.session.children({ sessionID: sessionId }, { signal }),
-                ).pipe(
-                  semaphore.withPermit,
-                  Effect.catchIf(isOpenCodeNotFound, () => Effect.void),
-                  Effect.result,
-                );
-                const firstFailure =
-                  abortResult?._tag === "Failure" ? abortResult.failure : undefined;
-                if (childrenResult._tag === "Failure")
-                  return firstFailure ?? childrenResult.failure;
-                interruption?.pendingDiscovery.delete(sessionId);
-                const childIds = (childrenResult.success?.data ?? []).map((child) => child.id);
-                if (sessionId === rootId && interruption !== undefined)
-                  childIds.push(...interruption.abortedSessions.keys());
-                const fresh = childIds.filter((id) => {
-                  if (visited.has(id)) return false;
-                  visited.add(id);
-                  return true;
-                });
-                const failures = yield* Effect.forEach(fresh, (id) => visit(id, true), {
-                  concurrency: 8,
-                });
-                return firstFailure ?? failures.find((failure) => failure !== undefined);
-              });
-            const failure = yield* visit(rootId, false);
-            if (failure) return yield* Effect.fail(failure);
-          }).pipe(Effect.timeout("15 seconds"));
+        const abortDescendants = Effect.fn("OpenCodeAdapter.abortDescendants")(function* (
+          rootId: string,
+          interruption = interruptions.get(rootId),
+        ) {
+          const visited = new Set([rootId]);
+          const semaphore = Semaphore.makeUnsafe(8);
+          const visit: (
+            sessionId: string,
+            abort: boolean,
+          ) => Effect.Effect<OpenCodeRuntime.OpenCodeRuntimeError | undefined> = Effect.fn(
+            "adapter.visit",
+          )(function* (sessionId: string, abort: boolean) {
+            interruption?.pendingDiscovery.add(sessionId);
+            const abortResult = abort
+              ? yield* Effect.gen(function* () {
+                  // Capture at the SDK call, including sessions not yet
+                  // admitted as turns. A retry retains this exact cohort.
+                  interruption?.abortedSessions.set(sessionId, "aborting");
+                  // An earlier idle cannot acknowledge this abort: the
+                  // current child's SSE frames can follow its HTTP reply.
+                  if (nativeSessionStatuses.get(sessionId) === "idle")
+                    nativeSessionStatuses.delete(sessionId);
+                  const turn = threads.get(sessionId)?.activeTurn;
+                  const wasInterrupted = turn?.interrupted ?? false;
+                  if (turn != null) turn.interrupted = true;
+                  yield* sdkCall("session.abort", { sessionID: sessionId }, (signal) =>
+                    client.session.abort({ sessionID: sessionId }, { signal }),
+                  ).pipe(
+                    Effect.catchIf(isOpenCodeNotFound, () =>
+                      Effect.sync(() => nativeSessionStatuses.set(sessionId, "idle")),
+                    ),
+                    Effect.onError(() =>
+                      Effect.sync(() => {
+                        interruption?.abortedSessions.set(sessionId, "failed");
+                        const current = threads.get(sessionId)?.activeTurn;
+                        if (current != null && !current.finalized)
+                          current.interrupted = current === turn ? wasInterrupted : false;
+                      }),
+                    ),
+                  );
+                  interruption?.abortedSessions.set(sessionId, "aborted");
+                }).pipe(semaphore.withPermit, Effect.result)
+              : undefined;
+            const childrenResult = yield* sdkCall(
+              "session.children",
+              { sessionID: sessionId },
+              (signal) => client.session.children({ sessionID: sessionId }, { signal }),
+            ).pipe(
+              semaphore.withPermit,
+              Effect.catchIf(isOpenCodeNotFound, () => Effect.void),
+              Effect.result,
+            );
+            const firstFailure = abortResult?._tag === "Failure" ? abortResult.failure : undefined;
+            if (childrenResult._tag === "Failure") return firstFailure ?? childrenResult.failure;
+            interruption?.pendingDiscovery.delete(sessionId);
+            const childIds = (childrenResult.success?.data ?? []).map((child) => child.id);
+            if (sessionId === rootId && interruption !== undefined)
+              childIds.push(...interruption.abortedSessions.keys());
+            const fresh = childIds.filter((id) => {
+              if (visited.has(id)) return false;
+              visited.add(id);
+              return true;
+            });
+            const failures = yield* Effect.forEach(fresh, (id) => visit(id, true), {
+              concurrency: 8,
+            });
+            return firstFailure ?? failures.find((failure) => failure !== undefined);
+          });
+          const failure = yield* visit(rootId, false);
+          if (failure) return yield* Effect.fail(failure);
+        }, Effect.timeout("15 seconds"));
 
         const updateProviderSession =
           /* Provider events include streaming deltas; avoid a span for each update. */

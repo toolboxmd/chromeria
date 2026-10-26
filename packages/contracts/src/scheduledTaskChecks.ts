@@ -4,16 +4,9 @@ import { IsoDateTime, NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from 
 import { PrismLane, PrismRole } from "./prism.ts";
 
 /**
- * Fork: scheduled task extensions (toolboxmd/chromeria#174). Upstream's
- * scheduled task contracts reach these through one spread per union or
- * struct; everything else about them lives here.
- *
- * - `once` and `weekly` are schedule triggers: upstream's poller fires them.
- * - An outcome check keeps an agent working in the same thread until its
- *   pinned check command passes.
- * - A command task runs one shell command per run instead of an agent.
- *
- * These fields are edited through the agent tools only; clients show them.
+ * Fork scheduled task extensions, reached from upstream's contracts through one spread per union or
+ * struct: `once` and `weekly` triggers, outcome checks that keep an agent working until its check
+ * passes, and command tasks. Only agent tools edit these fields; clients show them.
  */
 
 // An offset is required so the instant never depends on the server's time zone.

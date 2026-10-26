@@ -123,11 +123,9 @@ export const layer: Layer.Layer<
           cause: "The recorded provider execution target is no longer valid.",
         });
       }
-      // A restart-session command commits the replacement binding before its
-      // process-bound effect runs. The old live runtime must still receive
-      // the interrupt, but only when the projection matches the exact
-      // replacement captured by that same durable effect. Stop uses that
-      // capture too while the old runtime still owns the interrupted work.
+      // A restart-session command commits the replacement binding before its process-bound effect runs.
+      // The old runtime still gets the interrupt, but only when the projection matches the replacement
+      // that effect captured; Stop uses that capture while the old runtime owns the interrupted work.
       const interruptProviderThread = targetsRecordedSession
         ? providerThread
         : { ...providerThread, providerSessionId: input.providerSessionId };

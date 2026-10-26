@@ -259,12 +259,9 @@ const answered = <A>(promise: Promise<A>) => {
 };
 
 /**
- * Reads dotted values in isolated worlds, where page script can't change what `value`
- * returns, through the CDP session of the process each frame renders in. A frame in
- * another process that can't be attached, as in desktop tabs where only the page can,
- * is read in the page's own world, where its script can change `value`. `read` gives
- * each reader's values, or undefined for one that didn't answer, and fails when the
- * page's own frames don't or frames came or went.
+ * Reads dotted values in isolated worlds through each frame's own CDP session, so page script cannot
+ * change them; an unattachable frame is read in the page's world instead. `read` gives each reader's
+ * values or undefined, and fails if the page's frames don't answer or change.
  */
 const openReaders = async (page: Page, cdp: CDPSession, authorize: Authorize) => {
   const frames = page.frames();

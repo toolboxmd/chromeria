@@ -1,5 +1,5 @@
 /**
- * People (toolboxmd/chromeria#121, #170): which person's threads the sidebar shows.
+ * People (toolboxmd/chromeria#121): which person's threads the sidebar shows.
  * Ownership is a view, not access control: every view can still open every
  * thread by link.
  */

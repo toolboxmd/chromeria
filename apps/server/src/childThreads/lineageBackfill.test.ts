@@ -181,7 +181,7 @@ it.effect(
 );
 
 const realSource = process.env.CHROMERIA_V1_SNAPSHOT_SOURCE;
-(realSource ? it.effect : it.effect.skip)(
+it.effect.skipIf(!realSource)(
   "repairs actual V1 sub ancestry from a read-only snapshot without changing transcripts",
   () => {
     let phase = "snapshot";

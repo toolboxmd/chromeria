@@ -1926,7 +1926,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const grok = { instanceId: ProviderInstanceId.make("grok"), model: "grok-4.7" };
       const luna = { instanceId: codex, model: "gpt-6-luna" };
       // What earlier builds stored: every role filled in, one lane actually set.
-      // Those builds had no Run (#402).
+      // Those builds had no Run.
       const legacyKits = Object.fromEntries(
         Object.entries(
           (yield* encodePrismRoleKits(DEFAULT_PRISM_ROLE_KITS)) as Record<
@@ -1940,7 +1940,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const tuned = ProjectId.make("project-tuned");
       const untouched = ProjectId.make("project-untouched");
       const lanes = ProjectId.make("project-lanes");
-      // Kits of roles removed since (#399), as those builds stored them.
+      // Kits of roles removed since, as those builds stored them.
       const removedKits = {
         dispatcher: { instructions: "", skills: [], models: [grok] },
         retry: { instructions: "", skills: [], models: [luna], enabled: true },

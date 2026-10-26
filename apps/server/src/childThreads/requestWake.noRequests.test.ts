@@ -11,7 +11,7 @@ import { ThreadCommandExecutor } from "../orchestration-v2/ThreadCommandExecutor
 import { reconcileChildRequests } from "./requestWake.ts";
 
 // Startup reconciles every subagent thread. Loading each child's ancestors made
-// boot read a large parent thread once per child and run out of memory (#256).
+// boot read a large parent thread once per child and run out of memory.
 it.effect("a child with no deliverable requests never loads its ancestors", () =>
   Effect.gen(function* () {
     const child = ThreadId.make("child");

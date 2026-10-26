@@ -1,26 +1,7 @@
 /**
- * ContextmdServing - ContextMD serving state for this environment.
- *
- * A thin harness hook posts each moment (the raw hook event) here. The
- * service reads what the event is and which of ContextMD's stored entries
- * match (`Select`), joins it to the running Chromeria run, decides what to
- * serve or deny, and reserves it until the hook settles. State and the serving log
- * live in `<stateDir>/contextmd.sqlite`, on a connection of its own.
- *
- * Hooks authenticate as an ordinary Chromeria session (see `ContextmdRoute`),
- * so a hook installed for one base directory never serves through another
- * environment. After activation the service writes a heartbeat every 30 seconds
- * that marks outage windows in the log. If the run-attempt columns it reads are
- * missing, it serves nothing and logs every moment `unmapped`.
- *
- * With Cue configured (`cue` entry directories and `cue_url`), a joined moment also asks the Cue service
- * (`Cue.ts`): a user message and a failed call score at once, a pre-tool moment starts a score its tool
- * result collects. The window items come from the thread's projected turn items. Cue never holds the
- * exact-key lane up: an unreachable service is skipped machine-wide until a probe sees its health
- * document again. The skip is stored in the serving database, so a restarted server does not call
- * Cue on every new process while the service is down.
- *
- * @module ContextmdServing
+ * ContextMD serving state: a hook posts each moment here; the service matches entries, joins the
+ * running Chromeria run, decides what to serve or deny, and reserves it until the hook settles. State
+ * and the serving log live in `<stateDir>/contextmd.sqlite`; see `ContextmdRoute` and `Cue.ts`.
  */
 import * as NodeSqlite from "node:sqlite";
 
@@ -74,7 +55,7 @@ import {
 export const MAX_BODY_BYTES = 1_048_576;
 /**
  * Every moment replies within this many milliseconds of its arrival, whatever its steps cost. The hook
- * cuts the server off at 2 s (#248); its spawn, connect, queueing and transfer took up to 600 ms at p99
+ * cuts the server off at 2 s; its spawn, connect, queueing and transfer took up to 600 ms at p99
  * (Grok, rocky, 2026-10-13), and 200 ms stay spare.
  */
 export const MOMENT_BUDGET_MS = 1200;
@@ -247,8 +228,8 @@ export class ContextmdServing extends Context.Service<
 >()("t3/contextmd/ContextmdServing") {}
 
 /** The self-check: the run-attempt contract this module reads must be present. */
-const checkContract = (sql: SqlClient.SqlClient) =>
-  Effect.gen(function* () {
+const checkContract = Effect.fn("ContextmdServing.checkContract")(
+  function* (sql: SqlClient.SqlClient) {
     const columns = yield* sql<{ readonly name: string }>`
       SELECT name FROM pragma_table_info('orchestration_v2_projection_run_attempts')`;
     const names = new Set(columns.map((c) => c.name));
@@ -258,7 +239,9 @@ const checkContract = (sql: SqlClient.SqlClient) =>
         count(json_extract(payload_json, '$.nativeThreadId')) AS native
       FROM (SELECT payload_json FROM orchestration_v2_projection_run_attempts ORDER BY rowid DESC LIMIT 50)`;
     return counts === undefined || counts.total === 0 || counts.native > 0;
-  }).pipe(Effect.orElseSucceed(() => false));
+  },
+  Effect.orElseSucceed(() => false),
+);
 
 /** The field of each projected item type that holds what the model was shown for the call. */
 const RESULT_FIELD: Readonly<Record<string, string>> = {
@@ -405,74 +388,74 @@ const make = Effect.gen(function* () {
       Effect.provideService(Path.Path, path),
       Effect.provideService(Crypto.Crypto, crypto),
     );
-  const instructions = (candidate: NonNullable<Selection["greatLibrary"]>) =>
-    Effect.gen(function* () {
-      const text = Select.greatLibraryText(candidate.text);
-      return {
-        entry: candidate.entry,
-        version: candidate.version,
-        text,
-        bytes: Buffer.byteLength(text, "utf8"),
-        owners: {
-          [path.dirname(candidate.entry)]: yield* Store.headCommit(path.dirname(candidate.entry)),
-        },
-      } satisfies SessionInstructions;
-    });
-  const currentConfigured = () =>
-    Effect.gen(function* () {
-      if (!(yield* canServe())) return null;
-      return yield* Select.loadConfig(servingConfig).pipe(
-        Effect.flatMap(Select.configuredGreatLibrary),
-      );
-    }).pipe(withFiles);
+  const instructions = Effect.fn("ContextmdServing.instructions")(function* (
+    candidate: NonNullable<Selection["greatLibrary"]>,
+  ) {
+    const text = Select.greatLibraryText(candidate.text);
+    return {
+      entry: candidate.entry,
+      version: candidate.version,
+      text,
+      bytes: Buffer.byteLength(text, "utf8"),
+      owners: {
+        [path.dirname(candidate.entry)]: yield* Store.headCommit(path.dirname(candidate.entry)),
+      },
+    } satisfies SessionInstructions;
+  });
+  const currentConfigured = Effect.fn("ContextmdServing.currentConfigured")(function* () {
+    if (!(yield* canServe())) return null;
+    return yield* Select.loadConfig(servingConfig).pipe(
+      Effect.flatMap(Select.configuredGreatLibrary),
+    );
+  }, withFiles);
   const instructionsError =
     (operation: SessionInstructionsError["operation"]) => (cause: unknown) =>
       new SessionInstructionsError({ operation, cause });
 
-  const currentInstructions: ContextmdServing["Service"]["currentInstructions"] = (driver) =>
-    Effect.gen(function* () {
+  const currentInstructions: ContextmdServing["Service"]["currentInstructions"] = Effect.fn(
+    "ContextmdServing.currentInstructions",
+  )(
+    function* (driver) {
       if (driver !== "grok" || !(yield* canServe())) return undefined;
       const candidate = yield* Select.loadConfig(servingConfig).pipe(
         Effect.flatMap(Select.prepareGreatLibrary),
       );
       return candidate === null ? undefined : Select.greatLibraryText(candidate.text);
-    }).pipe(
+    },
+    withFiles,
+    Effect.catchCause((cause) => Effect.fail(instructionsError("stage")(cause))),
+  );
+
+  const stageSessionInstructions: ContextmdServing["Service"]["stageSessionInstructions"] =
+    Effect.fn("ContextmdServing.stageSessionInstructions")(
+      function* (input) {
+        if (input.driver !== "grok" || !(yield* canServe()))
+          return { reservation: null, text: undefined };
+        const config = yield* Select.loadConfig(servingConfig);
+        const candidate = yield* Select.prepareGreatLibrary(config);
+        const current = candidate === null ? null : yield* instructions(candidate);
+        const now = yield* nowSeconds;
+        state.releaseStale(now);
+        const delivery = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+        const reservation = state.stageSessionInstructions({
+          ...input,
+          delivery,
+          current,
+          now,
+          ...(candidate === null && config.greatLibrary !== undefined
+            ? { missing: config.greatLibrary }
+            : {}),
+        });
+        return { reservation, text: reservation === null ? undefined : current?.text };
+      },
       withFiles,
       Effect.catchCause((cause) => Effect.fail(instructionsError("stage")(cause))),
     );
 
-  const stageSessionInstructions: ContextmdServing["Service"]["stageSessionInstructions"] = (
-    input,
-  ) =>
-    Effect.gen(function* () {
-      if (input.driver !== "grok" || !(yield* canServe()))
-        return { reservation: null, text: undefined };
-      const config = yield* Select.loadConfig(servingConfig);
-      const candidate = yield* Select.prepareGreatLibrary(config);
-      const current = candidate === null ? null : yield* instructions(candidate);
-      const now = yield* nowSeconds;
-      state.releaseStale(now);
-      const delivery = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
-      const reservation = state.stageSessionInstructions({
-        ...input,
-        delivery,
-        current,
-        now,
-        ...(candidate === null && config.greatLibrary !== undefined
-          ? { missing: config.greatLibrary }
-          : {}),
-      });
-      return { reservation, text: reservation === null ? undefined : current?.text };
-    }).pipe(
-      withFiles,
-      Effect.catchCause((cause) => Effect.fail(instructionsError("stage")(cause))),
-    );
-
-  const recordInstallations: ContextmdServing["Service"]["recordInstallations"] = (
-    receipts,
-    input,
-  ) =>
-    Effect.gen(function* () {
+  const recordInstallations: ContextmdServing["Service"]["recordInstallations"] = Effect.fn(
+    "ContextmdServing.recordInstallations",
+  )(
+    function* (receipts, input) {
       for (const receipt of receipts) {
         const entry = Select.greatLibraryEntry(receipt.text);
         if (
@@ -500,26 +483,25 @@ const make = Effect.gen(function* () {
           now: yield* nowSeconds,
         });
       }
-    }).pipe(
-      withFiles,
-      Effect.catchCause((cause) => Effect.fail(instructionsError("record")(cause))),
-    );
+    },
+    withFiles,
+    Effect.catchCause((cause) => Effect.fail(instructionsError("record")(cause))),
+  );
 
-  const attachSessionInstructions: ContextmdServing["Service"]["attachSessionInstructions"] = (
-    input,
-  ) =>
-    Effect.gen(function* () {
-      if (input.driver !== "grok") return;
-      const candidate = yield* currentConfigured();
-      const current = candidate === null ? null : yield* instructions(candidate);
-      state.attachSessionInstructions({
-        ...input,
-        session: input.nativeSessionId,
-        current,
-        delivery: yield* crypto.randomUUIDv4().pipe(Effect.orDie),
-        now: yield* nowSeconds,
-      });
-    }).pipe(
+  const attachSessionInstructions: ContextmdServing["Service"]["attachSessionInstructions"] =
+    Effect.fn("ContextmdServing.attachSessionInstructions")(
+      function* (input) {
+        if (input.driver !== "grok") return;
+        const candidate = yield* currentConfigured();
+        const current = candidate === null ? null : yield* instructions(candidate);
+        state.attachSessionInstructions({
+          ...input,
+          session: input.nativeSessionId,
+          current,
+          delivery: yield* crypto.randomUUIDv4().pipe(Effect.orDie),
+          now: yield* nowSeconds,
+        });
+      },
       withFiles,
       Effect.catchCause((cause) => Effect.fail(instructionsError("attach")(cause))),
     );
@@ -535,8 +517,10 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const recordNativeFork: ContextmdServing["Service"]["recordNativeFork"] = (fork) =>
-    Effect.gen(function* () {
+  const recordNativeFork: ContextmdServing["Service"]["recordNativeFork"] = Effect.fn(
+    "ContextmdServing.recordNativeFork",
+  )(
+    function* (fork) {
       if ((fork.driver !== "codex" && fork.driver !== "claudeAgent") || !(yield* canServe()))
         return;
       const harness = fork.driver === "claudeAgent" ? "claude" : fork.driver;
@@ -576,12 +560,12 @@ const make = Effect.gen(function* () {
         now: yield* nowSeconds,
         delivery: yield* crypto.randomUUIDv4().pipe(Effect.orDie),
       });
-    }).pipe(
-      withFiles,
-      Effect.catchCause((cause) =>
-        Effect.logWarning("ContextMD native fork record failed", { cause }),
-      ),
-    );
+    },
+    withFiles,
+    Effect.catchCause((cause) =>
+      Effect.logWarning("ContextMD native fork record failed", { cause }),
+    ),
+  );
 
   const maxRead = 64 * 1024 * 1024;
   const decodeSeen = Schema.decodeUnknownOption(
@@ -814,8 +798,8 @@ const make = Effect.gen(function* () {
    * the text the model saw for that call (Claude Code, Grok). Another hook's deny on the
    * same call replaces ours there.
    */
-  const checkDenies = (harness: string, session: string, threadId: string) =>
-    Effect.gen(function* () {
+  const checkDenies = Effect.fn("ContextmdServing.checkDenies")(
+    function* (harness: string, session: string, threadId: string) {
       const pending = state.pendingChecks(harness, session);
       if (pending.length === 0) return;
       const results = yield* Effect.forEach(pending, (check) =>
@@ -831,9 +815,9 @@ const make = Effect.gen(function* () {
         ),
       );
       state.applyChecks(results, yield* nowSeconds);
-    }).pipe(
-      Effect.catchCause((cause) => Effect.logWarning("ContextMD deny check failed", { cause })),
-    );
+    },
+    Effect.catchCause((cause) => Effect.logWarning("ContextMD deny check failed", { cause })),
+  );
 
   /**
    * The projected exit status of earlier calls whose reads wait for proof (Codex reports no
@@ -869,41 +853,40 @@ const make = Effect.gen(function* () {
    * messages and the agent's replies between them, then the agent's work since the current message, so
    * each part is read with its own bound: however long a turn runs, its user message stays in.
    */
-  const transcript = (threadId: string) =>
-    Effect.gen(function* () {
-      const users = yield* sql<TranscriptRow>`
+  const transcript = Effect.fn("ContextmdServing.transcript")(function* (threadId: string) {
+    const users = yield* sql<TranscriptRow>`
         SELECT ordinal, type, payload_json FROM orchestration_v2_projection_turn_items
         WHERE thread_id = ${threadId} AND type = 'user_message'
         ORDER BY ordinal DESC LIMIT ${TRANSCRIPT_USERS}`;
-      if (users.length === 0) return [];
-      const first = users.at(-1)!.ordinal;
-      const current = users[0]!.ordinal;
-      const replies = yield* sql<TranscriptRow>`
+    if (users.length === 0) return [];
+    const first = users.at(-1)!.ordinal;
+    const current = users[0]!.ordinal;
+    const replies = yield* sql<TranscriptRow>`
         SELECT ordinal, type, payload_json FROM orchestration_v2_projection_turn_items
         WHERE thread_id = ${threadId} AND type = 'assistant_message'
           AND ordinal > ${first} AND ordinal < ${current}
         ORDER BY ordinal DESC LIMIT ${TRANSCRIPT_REPLIES}`;
-      const since = yield* sql<TranscriptRow>`
+    const since = yield* sql<TranscriptRow>`
         SELECT ordinal, type, payload_json FROM orchestration_v2_projection_turn_items
         WHERE thread_id = ${threadId} AND ordinal > ${current} AND type IN ('assistant_message',
           'command_execution', 'dynamic_tool', 'file_change', 'file_search', 'web_search')
         ORDER BY ordinal DESC LIMIT ${TRANSCRIPT_SINCE}`;
-      return transcriptItems(
-        [...users, ...replies, ...since].toSorted((a, b) => a.ordinal - b.ordinal),
-      );
-    });
+    return transcriptItems(
+      [...users, ...replies, ...since].toSorted((a, b) => a.ordinal - b.ordinal),
+    );
+  });
 
   /** Ask Cue about this moment, when Cue is configured and the moment is one it scores at. */
-  const askCue = (
-    harness: string,
-    selection: Selection,
-    threadId: string,
-    config: Select.ServingConfig,
-    library: Store.Library,
-    waitUntil: number,
-    enterPhase: (phase: "cue_window" | "cue_wait") => void,
-  ) =>
-    Effect.gen(function* () {
+  const askCue = Effect.fn("ContextmdServing.askCue")(
+    function* (
+      harness: string,
+      selection: Selection,
+      threadId: string,
+      config: Select.ServingConfig,
+      library: Store.Library,
+      waitUntil: number,
+      enterPhase: (phase: "cue_window" | "cue_wait") => void,
+    ) {
       const m = selection.moment;
       if (config.cueUrl === null || library.cue.length === 0) return null;
       if (!["user_message", "pre_tool", "tool_result", "tool_failure"].includes(m.kind))
@@ -957,31 +940,40 @@ const make = Effect.gen(function* () {
         } satisfies CueMoment,
         owners: library.owners,
       };
-    }).pipe(
-      Effect.catchCause((cause) =>
-        Effect.logWarning("ContextMD Cue request failed", { cause }).pipe(
-          Effect.as({
-            moment: {
-              reply: { status: "error", ms: null, waitMs: null },
-              candidates: [],
-            } satisfies CueMoment,
-            owners: {},
-          }),
-        ),
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("ContextMD Cue request failed", { cause }).pipe(
+        Effect.as({
+          moment: {
+            reply: { status: "error", ms: null, waitMs: null },
+            candidates: [],
+          } satisfies CueMoment,
+          owners: {},
+        }),
       ),
-    );
+    ),
+  );
 
-  const serveMoment = (
+  const serveMoment: (
     request: MomentRequest,
-    mode:
+    mode?:
       | { readonly type: "hook" }
       | {
           readonly type: "retained_startup";
           readonly runId: string;
           readonly receivedAt: number;
-        } = { type: "hook" },
-  ): Effect.Effect<MomentResponse> =>
-    Effect.gen(function* () {
+        },
+  ) => Effect.Effect<MomentResponse> = Effect.fn("ContextmdServing.serveMoment")(
+    function* (
+      request: MomentRequest,
+      mode:
+        | { readonly type: "hook" }
+        | {
+            readonly type: "retained_startup";
+            readonly runId: string;
+            readonly receivedAt: number;
+          } = { type: "hook" },
+    ) {
       let startup: PendingStartup | undefined;
       let waitedForRecovery = false;
       yield* Effect.addFinalizer(() =>
@@ -1315,20 +1307,20 @@ const make = Effect.gen(function* () {
       });
       startups.delete(delivery);
       return reply;
-    }).pipe(
-      // Authentication, run joins and Cue windows only read the main database. Use its existing
-      // WAL reader so a writer's transaction cannot spend the hook's deadline before selection.
-      NodeSqliteClient.readOnly,
-      Effect.catchCause((cause) =>
-        Effect.logWarning("ContextMD moment failed", { cause }).pipe(
-          Effect.as({ status: 204 } as const),
-        ),
+    },
+    NodeSqliteClient.readOnly,
+    Effect.catchCause((cause) =>
+      Effect.logWarning("ContextMD moment failed", { cause }).pipe(
+        Effect.as({ status: 204 } as const),
       ),
-      Effect.scoped,
-    );
+    ),
+    Effect.scoped,
+  );
 
-  const recoverStartups: ContextmdServing["Service"]["nativeSessionRegistered"] = (input) =>
-    Effect.gen(function* () {
+  const recoverStartups: ContextmdServing["Service"]["nativeSessionRegistered"] = Effect.fn(
+    "ContextmdServing.recoverStartups",
+  )(
+    function* (input) {
       yield* pruneStartups(yield* nowSeconds);
       if (startups.size === 0) return;
       const join = yield* resolveRun(input.nativeSessionId);
@@ -1358,43 +1350,44 @@ const make = Effect.gen(function* () {
           ),
         );
       }
-    }).pipe(
-      NodeSqliteClient.readOnly,
-      Effect.catchCause((cause) =>
-        Effect.logWarning("ContextMD startup registration failed", { cause }),
+    },
+    NodeSqliteClient.readOnly,
+    Effect.catchCause((cause) =>
+      Effect.logWarning("ContextMD startup registration failed", { cause }),
+    ),
+  );
+
+  const nativeSessionRegistered: ContextmdServing["Service"]["nativeSessionRegistered"] = Effect.fn(
+    "ContextmdServing.nativeSessionRegistered",
+  )(function* (input) {
+    if (![...startups.values()].some((entry) => entry.session === input.nativeSessionId)) return;
+    if (recovering.get(input.nativeSessionId)?.runId === input.runId) return;
+    const recovery = { runId: input.runId, ready: yield* Deferred.make<void>() };
+    // Publish the barrier synchronously, before dispatch can produce another hook.
+    recovering.set(input.nativeSessionId, recovery);
+    yield* recoverStartups(input).pipe(
+      Effect.ensuring(
+        Effect.gen(function* () {
+          if (recovering.get(input.nativeSessionId) === recovery)
+            recovering.delete(input.nativeSessionId);
+          yield* Deferred.succeed(recovery.ready, undefined);
+        }),
       ),
+      Effect.forkIn(serviceScope),
     );
+  });
 
-  const nativeSessionRegistered: ContextmdServing["Service"]["nativeSessionRegistered"] = (input) =>
-    Effect.gen(function* () {
-      if (![...startups.values()].some((entry) => entry.session === input.nativeSessionId)) return;
-      if (recovering.get(input.nativeSessionId)?.runId === input.runId) return;
-      const recovery = { runId: input.runId, ready: yield* Deferred.make<void>() };
-      // Publish the barrier synchronously, before dispatch can produce another hook.
-      recovering.set(input.nativeSessionId, recovery);
-      yield* recoverStartups(input).pipe(
-        Effect.ensuring(
-          Effect.gen(function* () {
-            if (recovering.get(input.nativeSessionId) === recovery)
-              recovering.delete(input.nativeSessionId);
-            yield* Deferred.succeed(recovery.ready, undefined);
-          }),
-        ),
-        Effect.forkIn(serviceScope),
-      );
-    });
-
-  const settle: ContextmdServing["Service"]["settle"] = (delivery) =>
-    Effect.gen(function* () {
+  const settle: ContextmdServing["Service"]["settle"] = Effect.fn("ContextmdServing.settle")(
+    function* (delivery) {
       const now = yield* nowSeconds;
       return state.settle(delivery, now) ? ({ status: 204 } as const) : ({ status: 404 } as const);
-    }).pipe(
-      Effect.catchCause((cause) =>
-        Effect.logWarning("ContextMD settle failed", { cause }).pipe(
-          Effect.as({ status: 404 } as const),
-        ),
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("ContextMD settle failed", { cause }).pipe(
+        Effect.as({ status: 404 } as const),
       ),
-    );
+    ),
+  );
 
   const release: ContextmdServing["Service"]["release"] = (delivery) =>
     Effect.sync(() =>

@@ -95,48 +95,47 @@ const make = Effect.gen(function* () {
   if (Option.isSome(authority))
     dependencies = Context.add(dependencies, PeerAuthority, authority.value);
   // Resolve only real native subagent edges below this root. No foreign local shell.
-  const subtree = (root: ThreadId) =>
-    Effect.gen(function* () {
-      const queue = [root];
-      const seen = new Set<ThreadId>();
-      const tasks: Array<import("@t3tools/contracts").OrchestrationV2Subagent> = [];
-      for (const id of queue) {
-        if (seen.has(id)) continue;
-        if (seen.size >= 256) return yield* denied();
-        seen.add(id);
-        const records = yield* threads
-          .getThreadRecords(id, ["subagents"])
-          .pipe(Effect.mapError(unavailable));
-        if (records.thread.deletedAt !== null || records.thread.archivedAt !== null) continue;
-        for (const task of records.subagents) {
+  const subtree = Effect.fn("PendingRequestService.subtree")(function* (root: ThreadId) {
+    const queue = [root];
+    const seen = new Set<ThreadId>();
+    const tasks: Array<import("@t3tools/contracts").OrchestrationV2Subagent> = [];
+    for (const id of queue) {
+      if (seen.has(id)) continue;
+      if (seen.size >= 256) return yield* denied();
+      seen.add(id);
+      const records = yield* threads
+        .getThreadRecords(id, ["subagents"])
+        .pipe(Effect.mapError(unavailable));
+      if (records.thread.deletedAt !== null || records.thread.archivedAt !== null) continue;
+      for (const task of records.subagents) {
+        if (
+          task.origin !== "app_owned" ||
+          task.completionDelivery?.state === "disposed" ||
+          ["cancelled", "interrupted"].includes(task.status)
+        )
+          continue;
+        if (task.childThreadId !== null) {
+          const child = yield* threads
+            .getThreadShell(task.childThreadId)
+            .pipe(Effect.mapError(unavailable));
           if (
-            task.origin !== "app_owned" ||
-            task.completionDelivery?.state === "disposed" ||
-            ["cancelled", "interrupted"].includes(task.status)
+            child?.lineage.relationshipToParent === "subagent" &&
+            child.lineage.parentThreadId === id
           )
-            continue;
-          if (task.childThreadId !== null) {
-            const child = yield* threads
-              .getThreadShell(task.childThreadId)
-              .pipe(Effect.mapError(unavailable));
-            if (
-              child?.lineage.relationshipToParent === "subagent" &&
-              child.lineage.parentThreadId === id
-            )
-              queue.push(task.childThreadId);
-          } else if (task.remoteChild?.threadId !== undefined) tasks.push(task);
-        }
+            queue.push(task.childThreadId);
+        } else if (task.remoteChild?.threadId !== undefined) tasks.push(task);
       }
-      return { seen, tasks };
-    });
-  const forward = (
-    scope: Invocation.McpInvocationScope,
-    destination: EnvironmentId,
-    input: Input,
-    action: Action,
-    generation: string,
-  ) =>
-    Effect.gen(function* () {
+    }
+    return { seen, tasks };
+  });
+  const forward = Effect.fn("PendingRequestService.forward")(
+    function* (
+      scope: Invocation.McpInvocationScope,
+      destination: EnvironmentId,
+      input: Input,
+      action: Action,
+      generation: string,
+    ) {
       if (Option.isNone(forwarding)) return yield* denied();
       const common = {
         ...input,
@@ -173,137 +172,141 @@ const make = Effect.gen(function* () {
         parameters,
         { expectedLinkIdentity: generation },
       );
-    }).pipe(
-      Effect.mapError((error) => (error._tag === "OrchestratorMcpFailure" ? error : unavailable())),
-    );
-  const execute = (input: Input, action: Action) =>
-    Effect.gen(function* () {
-      const caller = yield* readCaller();
-      const root = input.threadId ?? caller.caller?.id;
-      if (root === undefined) return yield* denied();
-      if (input.requestTarget !== undefined) {
-        if (
-          (input.requestTarget.environmentId !== caller.scope.environmentId ||
-            input.requestTarget.threadId !== root) &&
-          caller.caller?.id !== root &&
-          !(yield* isCallerAncestor(caller, root))
-        )
-          return yield* denied();
-        const { seen, tasks } = yield* subtree(root);
-        const here = caller.scope.environmentId;
-        if (input.requestTarget.environmentId !== here) {
-          const hop = input.requestRoute?.[0] ?? input.requestTarget;
-          const task = tasks.find(
-            (task) =>
-              task.remoteChild?.environmentId === hop.environmentId &&
-              task.remoteChild.threadId === hop.threadId,
-          );
-          if (task?.remoteChild?.launch === undefined) return yield* denied();
-          return yield* forward(
-            caller.scope,
-            hop.environmentId,
-            { ...input, threadId: hop.threadId, requestRoute: input.requestRoute?.slice(1) },
-            action,
-            task.remoteChild.launch.linkIdentity,
-          ).pipe(Effect.provideService(PendingRequestRelay, true));
-        }
-        if (
-          !seen.has(input.requestTarget.threadId) &&
-          (Option.isNone(authority) ||
-            !(yield* authority.value.pendingWithinTask(
-              { environmentId: here, threadId: root },
-              input.requestTarget.threadId,
-            )))
-        )
-          return yield* denied();
-      }
-      const target = input.requestTarget?.threadId ?? root;
-      const context = yield* readPendingRequest(
-        { ...input, threadId: target },
-        action.type !== "read",
-      );
-      if (context.projection.thread.archivedAt !== null) return yield* denied();
-      if (Option.isSome(authority)) {
-        // Request contents and responses use the actual destination, including
-        // every current contributor, rather than only the selected route root.
-        yield* authority.value.checkThread(target);
-        yield* authority.value.checkTarget(context.scope, { type: "thread", threadId: target });
-      } else if (context.answerer?.kind !== "promachos") {
-        yield* assertSameLink(context, context.projection.thread);
-      }
-      yield* assertTargetWithinLimits(context.limits, context.projection.thread);
-      // A thread's own question, or an ordinary local client, keeps local read and
-      // answer (readPendingRequest refuses own approvals). A linked client or a child
-      // delegated from another environment answers only through qualified ancestry.
+    },
+    Effect.mapError((error) => (error._tag === "OrchestratorMcpFailure" ? error : unavailable())),
+  );
+  const execute = Effect.fn("PendingRequestService.execute")(function* (
+    input: Input,
+    action: Action,
+  ) {
+    const caller = yield* readCaller();
+    const root = input.threadId ?? caller.caller?.id;
+    if (root === undefined) return yield* denied();
+    if (input.requestTarget !== undefined) {
       if (
-        context.answerer === undefined ||
-        (context.answerer.kind === "own" &&
-          (action.type === "dismiss" ||
-            context.scope.client?.linked === true ||
-            context.projection.thread.delegatedFrom !== undefined))
+        (input.requestTarget.environmentId !== caller.scope.environmentId ||
+          input.requestTarget.threadId !== root) &&
+        caller.caller?.id !== root &&
+        !(yield* isCallerAncestor(caller, root))
       )
         return yield* denied();
-      if (action.type === "read") {
-        const { item, revision } = context;
-        const common = {
-          requestId: input.requestId,
-          environmentId: context.scope.environmentId,
-          threadId: target,
-          status: "pending" as const,
-          responseType: context.request.responseCapability.type,
-          ...(context.request.responseCapability.type === "not_resumable"
-            ? { unavailableReason: context.request.responseCapability.reason }
-            : {}),
-          ...(revision === undefined ? {} : { revision }),
-        };
-        return item.type === "user_input_request"
-          ? { ...common, kind: "user-input" as const, questions: item.questions }
-          : {
-              ...common,
-              kind: "approval" as const,
-              requestKind: item.requestKind,
-              ...(item.prompt === undefined ? {} : { prompt: item.prompt }),
-              ...(item.appName === undefined ? {} : { appName: item.appName }),
-              ...(item.options === undefined ? {} : { options: item.options }),
-            };
+      const { seen, tasks } = yield* subtree(root);
+      const here = caller.scope.environmentId;
+      if (input.requestTarget.environmentId !== here) {
+        const hop = input.requestRoute?.[0] ?? input.requestTarget;
+        const task = tasks.find(
+          (task) =>
+            task.remoteChild?.environmentId === hop.environmentId &&
+            task.remoteChild.threadId === hop.threadId,
+        );
+        if (task?.remoteChild?.launch === undefined) return yield* denied();
+        return yield* forward(
+          caller.scope,
+          hop.environmentId,
+          { ...input, threadId: hop.threadId, requestRoute: input.requestRoute?.slice(1) },
+          action,
+          task.remoteChild.launch.linkIdentity,
+        ).pipe(Effect.provideService(PendingRequestRelay, true));
       }
-      if (context.scope.client?.linked === true && input.expectedRevision === undefined)
-        return yield* new OrchestratorMcpFailure({
-          code: "invalid_request",
-          message: "Read the qualified request and pass expectedRevision before answering.",
-        });
       if (
-        action.type === "respond" &&
-        ((context.item.type === "approval_request" &&
-          (action.decision === undefined || action.answers !== undefined)) ||
-          (context.item.type === "user_input_request" &&
-            (action.answers === undefined || action.decision !== undefined)))
+        !seen.has(input.requestTarget.threadId) &&
+        (Option.isNone(authority) ||
+          !(yield* authority.value.pendingWithinTask(
+            { environmentId: here, threadId: root },
+            input.requestTarget.threadId,
+          )))
       )
-        return yield* new OrchestratorMcpFailure({
-          code: "invalid_request",
-          message: "Pass only answers for a question or decision for an approval.",
-        });
-      const result = yield* threads
-        .dispatch({
-          type: action.type === "dismiss" ? "thread.user-input.dismiss" : "runtime-request.respond",
-          threadId: target,
-          commandId: yield* newCommandId(),
-          requestId: input.requestId,
-          ...(action.type === "respond" && context.answerer.kind === "promachos"
-            ? { answeredBy: context.answerer.answeredBy }
-            : {}),
-          ...(input.expectedRevision === undefined
-            ? {}
-            : { expectedRevision: input.expectedRevision }),
-          ...(action.type === "respond"
-            ? { answers: action.answers, decision: action.decision }
-            : {}),
-        })
-        .pipe(Effect.mapError(dispatchFailure));
-      return { sequence: result.sequence };
-    }).pipe(Effect.provide(dependencies));
-  const fromTask: PendingRequests["Service"]["fromTask"] = (sessionId, input) =>
-    Effect.gen(function* () {
+        return yield* denied();
+    }
+    const target = input.requestTarget?.threadId ?? root;
+    const context = yield* readPendingRequest(
+      { ...input, threadId: target },
+      action.type !== "read",
+    );
+    if (context.projection.thread.archivedAt !== null) return yield* denied();
+    if (Option.isSome(authority)) {
+      // Request contents and responses use the actual destination, including
+      // every current contributor, rather than only the selected route root.
+      yield* authority.value.checkThread(target);
+      yield* authority.value.checkTarget(context.scope, { type: "thread", threadId: target });
+    } else if (context.answerer?.kind !== "promachos") {
+      yield* assertSameLink(context, context.projection.thread);
+    }
+    yield* assertTargetWithinLimits(context.limits, context.projection.thread);
+    // A thread's own question, or an ordinary local client, keeps local read and
+    // answer (readPendingRequest refuses own approvals). A linked client or a child
+    // delegated from another environment answers only through qualified ancestry.
+    if (
+      context.answerer === undefined ||
+      (context.answerer.kind === "own" &&
+        (action.type === "dismiss" ||
+          context.scope.client?.linked === true ||
+          context.projection.thread.delegatedFrom !== undefined))
+    )
+      return yield* denied();
+    if (action.type === "read") {
+      const { item, revision } = context;
+      const common = {
+        requestId: input.requestId,
+        environmentId: context.scope.environmentId,
+        threadId: target,
+        status: "pending" as const,
+        responseType: context.request.responseCapability.type,
+        ...(context.request.responseCapability.type === "not_resumable"
+          ? { unavailableReason: context.request.responseCapability.reason }
+          : {}),
+        ...(revision === undefined ? {} : { revision }),
+      };
+      return item.type === "user_input_request"
+        ? { ...common, kind: "user-input" as const, questions: item.questions }
+        : {
+            ...common,
+            kind: "approval" as const,
+            requestKind: item.requestKind,
+            ...(item.prompt === undefined ? {} : { prompt: item.prompt }),
+            ...(item.appName === undefined ? {} : { appName: item.appName }),
+            ...(item.options === undefined ? {} : { options: item.options }),
+          };
+    }
+    if (context.scope.client?.linked === true && input.expectedRevision === undefined)
+      return yield* new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message: "Read the qualified request and pass expectedRevision before answering.",
+      });
+    if (
+      action.type === "respond" &&
+      ((context.item.type === "approval_request" &&
+        (action.decision === undefined || action.answers !== undefined)) ||
+        (context.item.type === "user_input_request" &&
+          (action.answers === undefined || action.decision !== undefined)))
+    )
+      return yield* new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message: "Pass only answers for a question or decision for an approval.",
+      });
+    const result = yield* threads
+      .dispatch({
+        type: action.type === "dismiss" ? "thread.user-input.dismiss" : "runtime-request.respond",
+        threadId: target,
+        commandId: yield* newCommandId(),
+        requestId: input.requestId,
+        ...(action.type === "respond" && context.answerer.kind === "promachos"
+          ? { answeredBy: context.answerer.answeredBy }
+          : {}),
+        ...(input.expectedRevision === undefined
+          ? {}
+          : { expectedRevision: input.expectedRevision }),
+        ...(action.type === "respond"
+          ? { answers: action.answers, decision: action.decision }
+          : {}),
+      })
+      .pipe(Effect.mapError(dispatchFailure));
+    return { sequence: result.sequence };
+  }, Effect.provide(dependencies));
+  const fromTask: PendingRequests["Service"]["fromTask"] = Effect.fn(
+    "PendingRequestService.fromTask",
+  )(
+    function* (sessionId, input) {
       const parent = yield* threads
         .getThreadRecords(input.parentThreadId, ["subagents"])
         .pipe(Effect.mapError(unavailable));
@@ -395,9 +398,9 @@ const make = Effect.gen(function* () {
         Effect.provideService(CurrentRequest, identity),
         Effect.provideService(CommandIndex, yield* Ref.make(0)),
       );
-    }).pipe(
-      Effect.mapError((error) => (error._tag === "OrchestratorMcpFailure" ? error : unavailable())),
-    );
+    },
+    Effect.mapError((error) => (error._tag === "OrchestratorMcpFailure" ? error : unavailable())),
+  );
   const read: PendingRequests["Service"]["read"] = (input) =>
     execute(input, { type: "read" }).pipe(
       Effect.flatMap((result) =>

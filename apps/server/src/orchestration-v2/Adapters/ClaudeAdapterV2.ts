@@ -8271,58 +8271,55 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 : { purpose: segment.purpose }),
             };
           });
-          const recordDisposition = (disposition: "offered" | "dropped_disabled") =>
-            Effect.gen(function* () {
-              const causeIds = new Set(nativeCauses.map((cause) => cause.operationId));
-              const operations = nativeOperationsByNativeThread.get(wakeInput.nativeThreadId) ?? [];
-              nativeOperationsByNativeThread.set(
-                wakeInput.nativeThreadId,
-                operations.map((operation) =>
-                  causeIds.has(operation.id)
+          const recordDisposition = Effect.fn("ClaudeAdapterV2.recordDisposition")(function* (
+            disposition: "offered" | "dropped_disabled",
+          ) {
+            const causeIds = new Set(nativeCauses.map((cause) => cause.operationId));
+            const operations = nativeOperationsByNativeThread.get(wakeInput.nativeThreadId) ?? [];
+            nativeOperationsByNativeThread.set(
+              wakeInput.nativeThreadId,
+              operations.map((operation) =>
+                causeIds.has(operation.id)
+                  ? {
+                      ...operation,
+                      wakeDispositions: [...new Set([...operation.wakeDispositions, disposition])],
+                    }
+                  : operation,
+              ),
+            );
+            for (const subagent of (yield* Ref.get(sessionSubagentsByTaskId)).values()) {
+              if (!subagent.task.nativeSegments?.some((segment) => causeIds.has(segment.id)))
+                continue;
+              subagent.task = {
+                ...subagent.task,
+                nativeSegments: subagent.task.nativeSegments.map((segment) =>
+                  causeIds.has(segment.id)
                     ? {
-                        ...operation,
-                        wakeDispositions: [
-                          ...new Set([...operation.wakeDispositions, disposition]),
-                        ],
+                        ...segment,
+                        wakeDispositions: [...new Set([...segment.wakeDispositions, disposition])],
                       }
-                    : operation,
+                    : segment,
                 ),
-              );
-              for (const subagent of (yield* Ref.get(sessionSubagentsByTaskId)).values()) {
-                if (!subagent.task.nativeSegments?.some((segment) => causeIds.has(segment.id)))
-                  continue;
-                subagent.task = {
-                  ...subagent.task,
-                  nativeSegments: subagent.task.nativeSegments.map((segment) =>
-                    causeIds.has(segment.id)
-                      ? {
-                          ...segment,
-                          wakeDispositions: [
-                            ...new Set([...segment.wakeDispositions, disposition]),
-                          ],
-                        }
-                      : segment,
-                  ),
-                };
-                // The notification's lifecycle update carries the initial offer
-                // evidence. Emitting its old running snapshot first would put a
-                // stale lifecycle receipt ahead of the confirmed native outcome.
-                if (disposition !== "offered")
-                  yield* emitProviderEvent({
-                    type: "subagent.updated",
-                    driver: CLAUDE_PROVIDER,
-                    subagent: subagent.task,
-                  });
-              }
-              const providerThread = (yield* Ref.get(lastProviderThreadByNativeThread)).get(
-                wakeInput.nativeThreadId,
-              );
-              if (providerThread !== undefined)
-                yield* emitProviderThreadRoster({
-                  nativeThreadId: wakeInput.nativeThreadId,
-                  providerThread,
+              };
+              // The notification's lifecycle update carries the initial offer
+              // evidence. Emitting its old running snapshot first would put a
+              // stale lifecycle receipt ahead of the confirmed native outcome.
+              if (disposition !== "offered")
+                yield* emitProviderEvent({
+                  type: "subagent.updated",
+                  driver: CLAUDE_PROVIDER,
+                  subagent: subagent.task,
                 });
-            });
+            }
+            const providerThread = (yield* Ref.get(lastProviderThreadByNativeThread)).get(
+              wakeInput.nativeThreadId,
+            );
+            if (providerThread !== undefined)
+              yield* emitProviderThreadRoster({
+                nativeThreadId: wakeInput.nativeThreadId,
+                providerThread,
+              });
+          });
           yield* recordDisposition("offered");
           yield* continuationRequests.offer({
             nativeCauses,
@@ -11417,51 +11414,52 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           ...(input.runtimePolicy.bare === undefined
             ? {}
             : {
-                getBareReceipt: (thread: OrchestrationV2ProviderThread) =>
-                  Effect.gen(function* () {
-                    const query = yield* Ref.get(queryContext);
-                    return bareReceipt({
-                      driver: CLAUDE_PROVIDER,
-                      bare: input.runtimePolicy.bare!,
-                      mode: input.runtimePolicy.runtimeMode,
-                      effective:
-                        query?.permissionMode ??
-                        permissionModeForClaudeRuntimePolicy(input.runtimePolicy),
-                      controls: [
-                        "custom system '.'",
-                        "settingSources=[]",
-                        "strictMcpConfig",
-                        "disable-slash-commands",
-                        "disableAllHooks",
-                        "disableBundledSkills",
-                        "autoMemoryEnabled=false",
-                        "disableClaudeAiConnectors",
-                        "CLAUDE_CODE_DISABLE_CLAUDE_MDS",
-                        "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
-                        ...(input.runtimePolicy.tools === undefined
-                          ? []
-                          : [
-                              `tool allowlist: ${input.runtimePolicy.tools.allow.join(", ") || "none"}`,
-                              "native dontAsk; only listed tools may be pre-approved",
-                            ]),
-                      ],
-                      retained: [
-                        "system text '.'",
-                        `builtin plugins: ${CLAUDE_BARE_BUILTIN_PLUGINS.join(", ")}`,
-                        "managed policy settings and hooks",
-                        "environment/date/session metadata",
-                        "native tool schemas",
-                        ...(input.runtimePolicy.tools === undefined
-                          ? []
-                          : [
-                              "attached MCP tool schemas can remain visible; unlisted calls are denied",
-                            ]),
-                      ],
-                      root: `${nativeHome(adapterOptions.environment ?? {}, "CLAUDE_CONFIG_DIR", ".claude")}/projects`,
-                      sessionId: thread.nativeThreadRef?.nativeId ?? null,
-                      evidence: bareEvidence,
-                    });
-                  }),
+                getBareReceipt: Effect.fn("ClaudeAdapterV2.getBareReceipt")(function* (
+                  thread: OrchestrationV2ProviderThread,
+                ) {
+                  const query = yield* Ref.get(queryContext);
+                  return bareReceipt({
+                    driver: CLAUDE_PROVIDER,
+                    bare: input.runtimePolicy.bare!,
+                    mode: input.runtimePolicy.runtimeMode,
+                    effective:
+                      query?.permissionMode ??
+                      permissionModeForClaudeRuntimePolicy(input.runtimePolicy),
+                    controls: [
+                      "custom system '.'",
+                      "settingSources=[]",
+                      "strictMcpConfig",
+                      "disable-slash-commands",
+                      "disableAllHooks",
+                      "disableBundledSkills",
+                      "autoMemoryEnabled=false",
+                      "disableClaudeAiConnectors",
+                      "CLAUDE_CODE_DISABLE_CLAUDE_MDS",
+                      "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+                      ...(input.runtimePolicy.tools === undefined
+                        ? []
+                        : [
+                            `tool allowlist: ${input.runtimePolicy.tools.allow.join(", ") || "none"}`,
+                            "native dontAsk; only listed tools may be pre-approved",
+                          ]),
+                    ],
+                    retained: [
+                      "system text '.'",
+                      `builtin plugins: ${CLAUDE_BARE_BUILTIN_PLUGINS.join(", ")}`,
+                      "managed policy settings and hooks",
+                      "environment/date/session metadata",
+                      "native tool schemas",
+                      ...(input.runtimePolicy.tools === undefined
+                        ? []
+                        : [
+                            "attached MCP tool schemas can remain visible; unlisted calls are denied",
+                          ]),
+                    ],
+                    root: `${nativeHome(adapterOptions.environment ?? {}, "CLAUDE_CONFIG_DIR", ".claude")}/projects`,
+                    sessionId: thread.nativeThreadRef?.nativeId ?? null,
+                    evidence: bareEvidence,
+                  });
+                }),
               }),
           instanceId: adapterOptions.instanceId,
           driver: CLAUDE_PROVIDER,

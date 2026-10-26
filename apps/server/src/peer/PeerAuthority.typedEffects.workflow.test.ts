@@ -325,7 +325,6 @@ it.live(
         expect(last.args[last.args.indexOf("--session") + 1]).not.toBe([...sessions][0]);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -367,7 +366,6 @@ it.live(
         yield* assertTyped383SourceIdle(a);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  60_000,
 );
 
 it.live.each(["device_open", "device_execute"] as const)(
@@ -417,7 +415,6 @@ it.live.each(["device_open", "device_execute"] as const)(
         }
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -463,7 +460,6 @@ it.live(
         expect(yield* footprint()).toEqual(accepted);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -529,7 +525,6 @@ it.live(
         expect(yield* footprint()).toEqual(stable);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -601,7 +596,6 @@ it.live(
         }).pipe(Effect.withTracer(tracer), Effect.withTracerEnabled(true));
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -803,7 +797,6 @@ it.live(
         expect(yield* footprint()).toEqual(afterInstall);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -889,7 +882,6 @@ it.live(
         expect(yield* footprint()).toEqual(afterChange);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -906,7 +898,6 @@ it.live(
         expect(yield* footprint()).toEqual(untouched);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -950,7 +941,6 @@ it.live(
         expect(b.deviceProcessCalls).toHaveLength(before);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -1010,40 +1000,36 @@ it.live(
         expect(b.deviceProcessCalls).toHaveLength(before);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
-it.live(
-  "typed383-core: wrong installed runtime or missing pin refuses without preparation",
-  () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const { a, b, parent, route, open, footprint } = yield* typed383Pair("typed383-version");
-        const target = (yield* decodeTyped383Open(
-          (yield* open("typed383-version-open")).structuredContent,
-        )).target;
-        const stable = yield* footprint();
-        yield* Ref.set(b.deviceOldVersion, true);
-        expect((yield* nativeCall(a, parent, "device_commands", route)).isError).toBe(true);
-        expect(
-          (yield* nativeCall(a, parent, "device_execute", {
-            ...route,
-            target,
-            command: { type: "click", ref: "@e1" },
-            clientRequestId: "typed383-old-version",
-          })).isError,
-        ).toBe(true);
-        expect(yield* footprint()).toEqual(stable);
-        yield* Ref.set(b.deviceOldVersion, false);
-        const fs = yield* FileSystem.FileSystem;
-        const sentinel = `${b.config.baseDir}/tools/agent-device/${AGENT_DEVICE_VERSION}/.install-complete`;
-        yield* fs.remove(sentinel);
-        expect((yield* nativeCall(a, parent, "device_commands", route)).isError).toBe(true);
-        expect((yield* open("typed383-missing-pin")).isError).toBe(true);
-        expect(yield* footprint()).toEqual(stable);
-      }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
+it.live("typed383-core: wrong installed runtime or missing pin refuses without preparation", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { a, b, parent, route, open, footprint } = yield* typed383Pair("typed383-version");
+      const target = (yield* decodeTyped383Open(
+        (yield* open("typed383-version-open")).structuredContent,
+      )).target;
+      const stable = yield* footprint();
+      yield* Ref.set(b.deviceOldVersion, true);
+      expect((yield* nativeCall(a, parent, "device_commands", route)).isError).toBe(true);
+      expect(
+        (yield* nativeCall(a, parent, "device_execute", {
+          ...route,
+          target,
+          command: { type: "click", ref: "@e1" },
+          clientRequestId: "typed383-old-version",
+        })).isError,
+      ).toBe(true);
+      expect(yield* footprint()).toEqual(stable);
+      yield* Ref.set(b.deviceOldVersion, false);
+      const fs = yield* FileSystem.FileSystem;
+      const sentinel = `${b.config.baseDir}/tools/agent-device/${AGENT_DEVICE_VERSION}/.install-complete`;
+      yield* fs.remove(sentinel);
+      expect((yield* nativeCall(a, parent, "device_commands", route)).isError).toBe(true);
+      expect((yield* open("typed383-missing-pin")).isError).toBe(true);
+      expect(yield* footprint()).toEqual(stable);
+    }),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );
 
 it.live(
@@ -1120,7 +1106,6 @@ it.live(
         );
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -1187,7 +1172,6 @@ it.live(
         expect(json(result)).not.toContain("agent-device.mjs");
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -1274,7 +1258,6 @@ it.live(
         expect(b.deviceProcessCalls.filter((call) => call.args[1] === "click")).toHaveLength(2);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -1366,7 +1349,6 @@ it.live(
         expect(yield* Ref.get(node.deviceConfigurations)).toBe(2);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -1631,7 +1613,6 @@ it.live(
         );
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -1884,7 +1865,6 @@ it.live(
         ).toEqual(originalNative);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -1955,7 +1935,6 @@ it.live(
         expect(yield* sql`SELECT thread_id FROM fork_spectra`).toHaveLength(1);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 const idleHtml382 = (id: string, htmlImageReadGate?: Effect.Effect<void>) =>
@@ -2086,7 +2065,6 @@ it.live(
         expect(json(rows)).toContain(result.htmlRender.attachmentId);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -2134,7 +2112,6 @@ it.live(
         expect(yield* fs.readDirectory(node.config.attachmentsDir)).toEqual(before);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -2240,7 +2217,6 @@ it.live(
         expect(yield* fs.readDirectory(revoked.b.config.attachmentsDir)).toEqual(["B-owned.svg"]);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live.each(["source-ended", "grant-narrowed", "grant-revoked"] as const)(
@@ -2299,118 +2275,109 @@ it.live.each(["source-ended", "grant-narrowed", "grant-revoked"] as const)(
         expect(original.capabilities.has("device")).toBe(false);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
-it.live(
-  "html382: source ending after a successful remote preparation cannot publish",
-  () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const entered = yield* Deferred.make<void>();
-        const release = yield* Deferred.make<void>();
-        const bridge = yield* makeNativePromiseBridge;
-        const preparedReplies: string[] = [];
-        let destination = "";
-        const actualFetch = yield* FetchHttpClient.Fetch;
-        const observedFetch: typeof globalThis.fetch = async (input, init) => {
-          const response = await actualFetch(input, init);
-          const body =
-            typeof init?.body === "string"
-              ? init.body
-              : init?.body instanceof Uint8Array
-                ? new TextDecoder().decode(init.body)
-                : "";
-          if (String(input) === `${destination}/mcp` && body.includes('"name":"html_render"')) {
-            const text = await response.clone().text();
-            preparedReplies.push(text);
-            await bridge(
-              Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
-            );
-          }
-          return response;
-        };
-        yield* Effect.gen(function* () {
-          const { a, b, parent, child, fs, image, call } =
-            yield* idleHtml382("html382-source-return");
-          destination = b.url;
-          const rendering = yield* call({
-            html: `<img src="${image}">`,
-            title: "Held response",
-            height: 300,
-            clientRequestId: "html382-source-return",
-          }).pipe(Effect.forkScoped);
-          yield* Deferred.await(entered);
-          expect(preparedReplies).toHaveLength(1);
-          expect(preparedReplies[0]).toContain("preparedHtml");
-          expect(preparedReplies[0]).toContain("data:image/svg+xml;base64,");
-          yield* a.threads.dispatch({
-            type: "thread.stop",
-            commandId: CommandId.make("html382-return-stop"),
-            threadId: parent,
-          });
-          yield* Deferred.succeed(release, undefined);
-          const refused = yield* Fiber.join(rendering);
-          expect(refused.isError, json(refused)).toBe(true);
-          expect(json(refused)).toContain("capability_denied");
-          expect(yield* fs.readDirectory(a.config.attachmentsDir)).toEqual([]);
-          expect(yield* fs.readDirectory(b.config.attachmentsDir)).toEqual(["B-owned.svg"]);
-          expect((yield* b.threads.getThreadShell(child))?.activeRunId).toBeNull();
-          expect(yield* b.registry.scopeForThread(child)).toBeUndefined();
-          const sql = Context.get(a.database, SqlClient.SqlClient);
-          expect(yield* sql`SELECT id FROM mcp_request_receipts WHERE state='completed'`).toEqual(
-            [],
+it.live("html382: source ending after a successful remote preparation cannot publish", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const bridge = yield* makeNativePromiseBridge;
+      const preparedReplies: string[] = [];
+      let destination = "";
+      const actualFetch = yield* FetchHttpClient.Fetch;
+      const observedFetch: typeof globalThis.fetch = async (input, init) => {
+        const response = await actualFetch(input, init);
+        const body =
+          typeof init?.body === "string"
+            ? init.body
+            : init?.body instanceof Uint8Array
+              ? new TextDecoder().decode(init.body)
+              : "";
+        if (String(input) === `${destination}/mcp` && body.includes('"name":"html_render"')) {
+          const text = await response.clone().text();
+          preparedReplies.push(text);
+          await bridge(
+            Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
           );
-        }).pipe(Effect.provideService(FetchHttpClient.Fetch, observedFetch));
-      }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
+        }
+        return response;
+      };
+      yield* Effect.gen(function* () {
+        const { a, b, parent, child, fs, image, call } =
+          yield* idleHtml382("html382-source-return");
+        destination = b.url;
+        const rendering = yield* call({
+          html: `<img src="${image}">`,
+          title: "Held response",
+          height: 300,
+          clientRequestId: "html382-source-return",
+        }).pipe(Effect.forkScoped);
+        yield* Deferred.await(entered);
+        expect(preparedReplies).toHaveLength(1);
+        expect(preparedReplies[0]).toContain("preparedHtml");
+        expect(preparedReplies[0]).toContain("data:image/svg+xml;base64,");
+        yield* a.threads.dispatch({
+          type: "thread.stop",
+          commandId: CommandId.make("html382-return-stop"),
+          threadId: parent,
+        });
+        yield* Deferred.succeed(release, undefined);
+        const refused = yield* Fiber.join(rendering);
+        expect(refused.isError, json(refused)).toBe(true);
+        expect(json(refused)).toContain("capability_denied");
+        expect(yield* fs.readDirectory(a.config.attachmentsDir)).toEqual([]);
+        expect(yield* fs.readDirectory(b.config.attachmentsDir)).toEqual(["B-owned.svg"]);
+        expect((yield* b.threads.getThreadShell(child))?.activeRunId).toBeNull();
+        expect(yield* b.registry.scopeForThread(child)).toBeUndefined();
+        const sql = Context.get(a.database, SqlClient.SqlClient);
+        expect(yield* sql`SELECT id FROM mcp_request_receipts WHERE state='completed'`).toEqual([]);
+      }).pipe(Effect.provideService(FetchHttpClient.Fetch, observedFetch));
+    }),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );
 
-it.live(
-  "named382: registered title-only project creation replays its exact native owner",
-  () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const node = yield* makeNode(
-          descriptorOf("named382-registered", "Named", { peerAuthority: 1 }),
-          "disk",
-          { productionKernel: true, attachmentRequests: true, nativeOwners: true },
-        );
-        const parent = ThreadId.make("named382-parent");
-        yield* seedParent(node, parent);
-        const input = { title: "Isolated named request", clientRequestId: "named382-original" };
-        const first = yield* nativeCall(node, parent, "t3_project_create", input);
-        expect(first.isError, json(first)).not.toBe(true);
-        const created = yield* Schema.decodeUnknownEffect(
-          ProjectToolkit.tools.t3_project_create.successSchema,
-        )(first.structuredContent);
-        const sql = Context.get(node.database, SqlClient.SqlClient);
-        const rows = yield* sql<{
-          project_id: string;
-          workspace_root: string;
-        }>`SELECT project_id,workspace_root FROM managed_project_requests`;
-        expect(rows).toHaveLength(1);
-        const fs = yield* FileSystem.FileSystem;
-        const readme = `${rows[0]!.workspace_root}/README.md`;
-        yield* fs.writeFileString(readme, "Later independent README edit 382");
-        const replay = yield* nativeCall(node, parent, "t3_project_create", input);
-        expect(replay.isError, json(replay)).not.toBe(true);
-        expect(replay.structuredContent).toEqual(created);
-        expect(yield* fs.readFileString(readme)).toBe("Later independent README edit 382");
-        expect(yield* sql`SELECT project_id FROM managed_project_requests`).toHaveLength(1);
-        expect(
-          yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE aggregate_kind='project' AND command_type='project.create'`,
-        ).toHaveLength(1);
-        const changed = yield* nativeCall(node, parent, "t3_project_create", {
-          ...input,
-          title: "Different title",
-        });
-        expect(changed.isError).toBe(true);
-        expect(yield* sql`SELECT project_id FROM managed_project_requests`).toHaveLength(1);
-      }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
+it.live("named382: registered title-only project creation replays its exact native owner", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const node = yield* makeNode(
+        descriptorOf("named382-registered", "Named", { peerAuthority: 1 }),
+        "disk",
+        { productionKernel: true, attachmentRequests: true, nativeOwners: true },
+      );
+      const parent = ThreadId.make("named382-parent");
+      yield* seedParent(node, parent);
+      const input = { title: "Isolated named request", clientRequestId: "named382-original" };
+      const first = yield* nativeCall(node, parent, "t3_project_create", input);
+      expect(first.isError, json(first)).not.toBe(true);
+      const created = yield* Schema.decodeUnknownEffect(
+        ProjectToolkit.tools.t3_project_create.successSchema,
+      )(first.structuredContent);
+      const sql = Context.get(node.database, SqlClient.SqlClient);
+      const rows = yield* sql<{
+        project_id: string;
+        workspace_root: string;
+      }>`SELECT project_id,workspace_root FROM managed_project_requests`;
+      expect(rows).toHaveLength(1);
+      const fs = yield* FileSystem.FileSystem;
+      const readme = `${rows[0]!.workspace_root}/README.md`;
+      yield* fs.writeFileString(readme, "Later independent README edit 382");
+      const replay = yield* nativeCall(node, parent, "t3_project_create", input);
+      expect(replay.isError, json(replay)).not.toBe(true);
+      expect(replay.structuredContent).toEqual(created);
+      expect(yield* fs.readFileString(readme)).toBe("Later independent README edit 382");
+      expect(yield* sql`SELECT project_id FROM managed_project_requests`).toHaveLength(1);
+      expect(
+        yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE aggregate_kind='project' AND command_type='project.create'`,
+      ).toHaveLength(1);
+      const changed = yield* nativeCall(node, parent, "t3_project_create", {
+        ...input,
+        title: "Different title",
+      });
+      expect(changed.isError).toBe(true);
+      expect(yield* sql`SELECT project_id FROM managed_project_requests`).toHaveLength(1);
+    }),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );
 
 it.live(
@@ -2562,7 +2529,6 @@ it.live(
         ).toHaveLength(4);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -2628,7 +2594,6 @@ it.live(
         expect(recovered.runCount).toBe(2);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -2720,7 +2685,6 @@ it.live(
         }
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -2823,7 +2787,6 @@ it.live(
         ).toEqual(accepted.manualReceipt);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -2914,7 +2877,6 @@ it.live(
         expect(yield* Ref.get(b.settingsWrites)).toBe(writes);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -3055,7 +3017,6 @@ it.live(
         expect(allRows).not.toContain("customInstructions");
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -3177,7 +3138,6 @@ it.live(
         ).toBe(false);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -3315,7 +3275,6 @@ it.live(
         }
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -3401,7 +3360,6 @@ it.live(
         ).toHaveLength(1);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -3509,7 +3467,6 @@ it.live(
         expect(actions).toBe(1);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -3638,7 +3595,6 @@ it.live(
         );
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -3804,7 +3760,6 @@ it.live(
         ).toBe(afterLater);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live.each([
@@ -3925,7 +3880,6 @@ it.live.each([
         expect(n.deviceViewerInputs).toEqual([lawful]);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -4113,7 +4067,6 @@ it.live(
         expect(a.deviceViewerRequests).toEqual([]);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -4162,7 +4115,6 @@ it.live(
         expect(b.deviceViewerRequests).toEqual([]);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -4327,7 +4279,6 @@ it.live(
         expect(a.deviceViewerRequests).toEqual([]);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live.each([
@@ -4511,7 +4462,6 @@ it.live.each([
     ).pipe(
       Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, TestClock.layer())),
     ),
-  30_000,
 );
 
 it.live(
@@ -4596,7 +4546,6 @@ it.live(
         expect(external.effects.filter((effect) => effect === "click")).toHaveLength(1);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -4815,7 +4764,6 @@ it.live(
         ).toBe(true);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  60_000,
 );
 
 it.live.each(["layout", "clear"] as const)(
@@ -4887,7 +4835,6 @@ it.live.each(["layout", "clear"] as const)(
         }
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -4940,7 +4887,6 @@ it.live(
         expect(browserExternalContexts.at(-1)!.effects).not.toContain("new-page");
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -5019,7 +4965,6 @@ it.live(
         expect((yield* authorization.pipe(Effect.result))._tag).toBe("Failure");
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -5497,7 +5442,6 @@ it.live(
     ).pipe(
       Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, TestClock.layer())),
     ),
-  30_000,
 );
 
 it.live.each(["messages", "bytes", "progress"] as const)(
@@ -5727,7 +5671,6 @@ it.live.each(["messages", "bytes", "progress"] as const)(
         ]);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live.each([5, 20])(
@@ -5871,7 +5814,6 @@ it.live.each([5, 20])(
         expect(json(projected.output)).not.toContain(b.config.stateDir);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -6055,7 +5997,6 @@ it.live(
         expect((yield* fetchAsset("GET")).status).toBe(403);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -6183,7 +6124,6 @@ it.live(
         ).toEqual(before);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -6270,7 +6210,6 @@ it.live(
         expect(yield* footprint()).toEqual(after);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -6369,7 +6308,6 @@ it.live(
         expect(Array.from(yield* fs.readFile(value.path))).toEqual(Array.from(edited));
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live.each(["agent", "human"] as const)(
@@ -6465,7 +6403,6 @@ it.live.each(["agent", "human"] as const)(
         expect(Array.from(yield* fs.readFile(lawful.saves[0]!))).toEqual(Array.from(bytes));
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -6512,7 +6449,6 @@ it.live(
         ).not.toContain(b.config.stateDir);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -6673,7 +6609,6 @@ it.live(
         expect(resource.resource.threadId).toBe(child);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -6875,7 +6810,6 @@ it.live(
         expect((yield* fetchAsset("HEAD")).status).toBe(403);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -7172,140 +7106,135 @@ it.live(
         expect(resource.threadId).toBe(child);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
-it.live(
-  "native383-input: whole mixed browser batch is verified before new source transfer",
-  () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const nativePromise = yield* makeNativePromiseBridge;
-        const { a, b, parent, route } = yield* typed383Pair(
-          "native383-browser-batch",
-          false,
-          false,
-          { source: false, destination: false, destinationBrowser: true },
-        );
-        const grant = (yield* b.authority.grants)[0]!;
-        yield* b.authority.setGrant({ ...grant, preview: true });
-        const opened = yield* nativeCall(a, parent, "preview_open", {
-          ...route,
-          show: false,
-          clientRequestId: "batch-open",
-        });
-        expect(opened.isError, json(opened)).not.toBe(true);
-        const { resource } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PreviewViewerResource }),
-        )(opened.structuredContent);
-        const http = yield* HttpClient.HttpClient;
-        const stage = (remote: boolean, name: string, bytes: Uint8Array) =>
-          Effect.gen(function* () {
-            const target = remote ? route : {};
-            const upload = {
-              type: "file" as const,
-              name,
-              mimeType: "text/plain",
-              sizeBytes: bytes.length,
-            };
-            const prepared = yield* nativeCall(a, parent, "t3_attachment_prepare_upload", {
-              ...target,
-              upload,
-              digest: yield* typed383Digest(bytes),
-              clientRequestId: `batch-${name}`,
-            });
-            expect(prepared.isError, json(prepared)).not.toBe(true);
-            const issued = yield* decodeTyped383Upload(prepared.structuredContent);
-            expect(
-              (yield* http.execute(
-                HttpClientRequest.post(`${remote ? b.url : a.url}${issued.relativeUrl}`).pipe(
-                  HttpClientRequest.setBody(HttpBody.uint8Array(bytes)),
-                ),
-              )).status,
-            ).toBe(204);
-            const inspected = yield* nativeCall(a, parent, "t3_attachment_inspect", {
-              ...target,
-              source: { type: "upload", attachmentId: issued.attachmentId, upload },
-            });
-            expect(inspected.isError, json(inspected)).not.toBe(true);
-            return (yield* Schema.decodeUnknownEffect(
-              Schema.Struct({
-                inspection: Schema.Struct({
-                  stage: Schema.Literal("staged"),
-                  reference: PeerAttachmentReference,
-                }),
+it.live("native383-input: whole mixed browser batch is verified before new source transfer", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const nativePromise = yield* makeNativePromiseBridge;
+      const { a, b, parent, route } = yield* typed383Pair("native383-browser-batch", false, false, {
+        source: false,
+        destination: false,
+        destinationBrowser: true,
+      });
+      const grant = (yield* b.authority.grants)[0]!;
+      yield* b.authority.setGrant({ ...grant, preview: true });
+      const opened = yield* nativeCall(a, parent, "preview_open", {
+        ...route,
+        show: false,
+        clientRequestId: "batch-open",
+      });
+      expect(opened.isError, json(opened)).not.toBe(true);
+      const { resource } = yield* Schema.decodeUnknownEffect(
+        Schema.Struct({ resource: PreviewViewerResource }),
+      )(opened.structuredContent);
+      const http = yield* HttpClient.HttpClient;
+      const stage = (remote: boolean, name: string, bytes: Uint8Array) =>
+        Effect.gen(function* () {
+          const target = remote ? route : {};
+          const upload = {
+            type: "file" as const,
+            name,
+            mimeType: "text/plain",
+            sizeBytes: bytes.length,
+          };
+          const prepared = yield* nativeCall(a, parent, "t3_attachment_prepare_upload", {
+            ...target,
+            upload,
+            digest: yield* typed383Digest(bytes),
+            clientRequestId: `batch-${name}`,
+          });
+          expect(prepared.isError, json(prepared)).not.toBe(true);
+          const issued = yield* decodeTyped383Upload(prepared.structuredContent);
+          expect(
+            (yield* http.execute(
+              HttpClientRequest.post(`${remote ? b.url : a.url}${issued.relativeUrl}`).pipe(
+                HttpClientRequest.setBody(HttpBody.uint8Array(bytes)),
+              ),
+            )).status,
+          ).toBe(204);
+          const inspected = yield* nativeCall(a, parent, "t3_attachment_inspect", {
+            ...target,
+            source: { type: "upload", attachmentId: issued.attachmentId, upload },
+          });
+          expect(inspected.isError, json(inspected)).not.toBe(true);
+          return (yield* Schema.decodeUnknownEffect(
+            Schema.Struct({
+              inspection: Schema.Struct({
+                stage: Schema.Literal("staged"),
+                reference: PeerAttachmentReference,
               }),
-            )(inspected.structuredContent)).inspection.reference;
-          });
-        const local = yield* stage(false, "source.txt", new Uint8Array([1, 2]));
-        const destination = yield* stage(true, "destination.txt", new Uint8Array([3, 4]));
-        const fs = yield* FileSystem.FileSystem;
-        const external = browserExternalContexts.at(-1)!;
-        const batches: number[][][] = [];
-        external.controls.afterSetFiles = async (paths) => {
-          const batch = [];
-          for (const path of paths) batch.push(Array.from(await nativePromise(fs.readFile(path))));
-          batches.push(batch);
-        };
-        const input = {
-          ...route,
-          resource,
-          artifacts: [local, destination],
-          locator: "input[type=file]",
-          clientRequestId: "mixed-input",
-        };
-        const accepted = yield* nativeCall(a, parent, "preview_upload", input);
-        expect(accepted.isError, json(accepted)).not.toBe(true);
-        expect(batches).toEqual([
-          [
-            [1, 2],
-            [3, 4],
-          ],
-        ]);
-        expect((yield* nativeCall(a, parent, "preview_upload", input)).structuredContent).toEqual(
-          accepted.structuredContent,
-        );
+            }),
+          )(inspected.structuredContent)).inspection.reference;
+        });
+      const local = yield* stage(false, "source.txt", new Uint8Array([1, 2]));
+      const destination = yield* stage(true, "destination.txt", new Uint8Array([3, 4]));
+      const fs = yield* FileSystem.FileSystem;
+      const external = browserExternalContexts.at(-1)!;
+      const batches: number[][][] = [];
+      external.controls.afterSetFiles = async (paths) => {
+        const batch = [];
+        for (const path of paths) batch.push(Array.from(await nativePromise(fs.readFile(path))));
+        batches.push(batch);
+      };
+      const input = {
+        ...route,
+        resource,
+        artifacts: [local, destination],
+        locator: "input[type=file]",
+        clientRequestId: "mixed-input",
+      };
+      const accepted = yield* nativeCall(a, parent, "preview_upload", input);
+      expect(accepted.isError, json(accepted)).not.toBe(true);
+      expect(batches).toEqual([
+        [
+          [1, 2],
+          [3, 4],
+        ],
+      ]);
+      expect((yield* nativeCall(a, parent, "preview_upload", input)).structuredContent).toEqual(
+        accepted.structuredContent,
+      );
+      expect(batches).toHaveLength(1);
+      const fresh = yield* stage(false, "fresh.txt", new Uint8Array([5, 6]));
+      const sourceDb = Context.get(a.database, SqlClient.SqlClient);
+      const destinationDb = Context.get(b.database, SqlClient.SqlClient);
+      const sourceRows = yield* sourceDb`SELECT * FROM attachment_staging`;
+      const destinationRows = yield* destinationDb`SELECT * FROM attachment_staging`;
+      for (const bad of [
+        {
+          ...input,
+          artifacts: [fresh, { ...destination, digest: "0".repeat(64) }],
+          clientRequestId: "mixed-forged",
+        },
+        { ...input, artifacts: [fresh, destination], clientRequestId: "mixed-consumed" },
+      ]) {
+        expect((yield* nativeCall(a, parent, "preview_upload", bad)).isError).toBe(true);
+        expect(yield* sourceDb`SELECT * FROM attachment_staging`).toEqual(sourceRows);
+        expect(yield* destinationDb`SELECT * FROM attachment_staging`).toEqual(destinationRows);
         expect(batches).toHaveLength(1);
-        const fresh = yield* stage(false, "fresh.txt", new Uint8Array([5, 6]));
-        const sourceDb = Context.get(a.database, SqlClient.SqlClient);
-        const destinationDb = Context.get(b.database, SqlClient.SqlClient);
-        const sourceRows = yield* sourceDb`SELECT * FROM attachment_staging`;
-        const destinationRows = yield* destinationDb`SELECT * FROM attachment_staging`;
-        for (const bad of [
-          {
-            ...input,
-            artifacts: [fresh, { ...destination, digest: "0".repeat(64) }],
-            clientRequestId: "mixed-forged",
-          },
-          { ...input, artifacts: [fresh, destination], clientRequestId: "mixed-consumed" },
-        ]) {
-          expect((yield* nativeCall(a, parent, "preview_upload", bad)).isError).toBe(true);
-          expect(yield* sourceDb`SELECT * FROM attachment_staging`).toEqual(sourceRows);
-          expect(yield* destinationDb`SELECT * FROM attachment_staging`).toEqual(destinationRows);
-          expect(batches).toHaveLength(1);
-        }
-        for (const artifacts of [
-          Array.from({ length: 21 }, () => fresh),
-          [fresh, { ...destination, sizeBytes: 51 * 1024 * 1024 }],
-          [
-            fresh,
-            { ...destination, sizeBytes: 50 * 1024 * 1024 },
-            { ...fresh, attachmentId: destination.attachmentId, sizeBytes: 50 * 1024 * 1024 },
-          ],
-        ]) {
-          const response = yield* nativeRpcCall(a, parent, "preview_upload", {
-            ...input,
-            artifacts,
-            clientRequestId: "mixed-bounds",
-          });
-          expect(response).toContain('"code":-32602');
-          expect(yield* sourceDb`SELECT * FROM attachment_staging`).toEqual(sourceRows);
-          expect(yield* destinationDb`SELECT * FROM attachment_staging`).toEqual(destinationRows);
-          expect(batches).toHaveLength(1);
-        }
-      }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
+      }
+      for (const artifacts of [
+        Array.from({ length: 21 }, () => fresh),
+        [fresh, { ...destination, sizeBytes: 51 * 1024 * 1024 }],
+        [
+          fresh,
+          { ...destination, sizeBytes: 50 * 1024 * 1024 },
+          { ...fresh, attachmentId: destination.attachmentId, sizeBytes: 50 * 1024 * 1024 },
+        ],
+      ]) {
+        const response = yield* nativeRpcCall(a, parent, "preview_upload", {
+          ...input,
+          artifacts,
+          clientRequestId: "mixed-bounds",
+        });
+        expect(response).toContain('"code":-32602');
+        expect(yield* sourceDb`SELECT * FROM attachment_staging`).toEqual(sourceRows);
+        expect(yield* destinationDb`SELECT * FROM attachment_staging`).toEqual(destinationRows);
+        expect(batches).toHaveLength(1);
+      }
+    }),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );
 
 it.live(
@@ -7407,7 +7336,6 @@ it.live(
         expect(yield* db`SELECT * FROM attachment_staging`).toEqual(accepted);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live.each(["android", "ios"] as const)(
@@ -8018,7 +7946,6 @@ it.live.each([false, true])(
         }
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  60_000,
 );
 
 it.live.each([false, true])(
@@ -8103,7 +8030,6 @@ it.live.each([false, true])(
         }).pipe(Effect.provideService(FileSystem.FileSystem, recordingFs));
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  60_000,
 );
 
 it.live.each(["preview_upload", "preview_navigate"] as const)(
@@ -8236,72 +8162,68 @@ it.live.each(["preview_upload", "preview_navigate"] as const)(
         expect(replayed.isError, "receipt wait retired the real preview grant").toBe(true);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  60_000,
 );
 
-it.live(
-  "review534-r3: failed source device admission closes the already opened B viewer",
-  () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const { a, b, parent, child, route, open } = yield* typed383Pair(
-          "device-partial-open",
-          false,
-          false,
-          true,
-        );
-        const opened = yield* open("device-partial-native-open");
-        expect(opened.isError, json(opened)).not.toBe(true);
-        const { target } = yield* decodeTyped383Open(opened.structuredContent);
-        const owner = yield* a.auth.issueSession({
-          scopes: ["orchestration:read", "orchestration:operate"],
-        });
-        const peers = Context.get(a.services, PeerMcpClient.PeerMcpClient);
-        const actual = peers.openDeviceViewer;
-        if (actual === undefined) return yield* Effect.die("Missing real remote viewer owner");
-        let accepted: DeviceViewerAccess | undefined;
-        const observation = vi.spyOn(peers, "openDeviceViewer").mockImplementation((input) =>
-          actual(input).pipe(
-            Effect.tap((result) =>
-              Effect.gen(function* () {
-                accepted = result.access;
-                yield* a.auth.revokeSession(owner.sessionId).pipe(Effect.orDie);
-              }),
-            ),
+it.live("review534-r3: failed source device admission closes the already opened B viewer", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { a, b, parent, child, route, open } = yield* typed383Pair(
+        "device-partial-open",
+        false,
+        false,
+        true,
+      );
+      const opened = yield* open("device-partial-native-open");
+      expect(opened.isError, json(opened)).not.toBe(true);
+      const { target } = yield* decodeTyped383Open(opened.structuredContent);
+      const owner = yield* a.auth.issueSession({
+        scopes: ["orchestration:read", "orchestration:operate"],
+      });
+      const peers = Context.get(a.services, PeerMcpClient.PeerMcpClient);
+      const actual = peers.openDeviceViewer;
+      if (actual === undefined) return yield* Effect.die("Missing real remote viewer owner");
+      let accepted: DeviceViewerAccess | undefined;
+      const observation = vi.spyOn(peers, "openDeviceViewer").mockImplementation((input) =>
+        actual(input).pipe(
+          Effect.tap((result) =>
+            Effect.gen(function* () {
+              accepted = result.access;
+              yield* a.auth.revokeSession(owner.sessionId).pipe(Effect.orDie);
+            }),
           ),
-        );
-        const response = yield* (yield* HttpClient.HttpClient)
-          .execute(
-            HttpClientRequest.post(`${a.url}/api/device-hub/viewer/open`).pipe(
-              HttpClientRequest.setHeader("authorization", `Bearer ${owner.token}`),
-              HttpClientRequest.setBody(
-                HttpBody.text(
-                  json({
-                    resource: {
-                      type: "device",
-                      environmentId: b.environmentId,
-                      threadId: child,
-                      platform: "android",
-                      ...target,
-                    },
-                    operation: "control",
-                  }),
-                  "application/json",
-                ),
+        ),
+      );
+      const response = yield* (yield* HttpClient.HttpClient)
+        .execute(
+          HttpClientRequest.post(`${a.url}/api/device-hub/viewer/open`).pipe(
+            HttpClientRequest.setHeader("authorization", `Bearer ${owner.token}`),
+            HttpClientRequest.setBody(
+              HttpBody.text(
+                json({
+                  resource: {
+                    type: "device",
+                    environmentId: b.environmentId,
+                    threadId: child,
+                    platform: "android",
+                    ...target,
+                  },
+                  operation: "control",
+                }),
+                "application/json",
               ),
             ),
-          )
-          .pipe(Effect.ensuring(Effect.sync(() => observation.mockRestore())));
-        expect(response.status).not.toBe(200);
-        if (accepted === undefined) return yield* Effect.die("Remote admission was not exercised");
-        expect(
-          (yield* b
-            .fixtureViewerSessions!.authenticateViewerToken(accepted.ticket)
-            .pipe(Effect.result))._tag,
-        ).toBe("Failure");
-      }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
+          ),
+        )
+        .pipe(Effect.ensuring(Effect.sync(() => observation.mockRestore())));
+      expect(response.status).not.toBe(200);
+      if (accepted === undefined) return yield* Effect.die("Remote admission was not exercised");
+      expect(
+        (yield* b
+          .fixtureViewerSessions!.authenticateViewerToken(accepted.ticket)
+          .pipe(Effect.result))._tag,
+      ).toBe("Failure");
+    }),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );
 
 it.live.each([
@@ -8550,7 +8472,6 @@ it.live.each([
         expect(answers).toBe(count === 8 ? 1 : 0);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -8684,7 +8605,6 @@ it.live(
         ]);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live.each([10_000, 10_001, 20_000])(
@@ -8808,7 +8728,6 @@ it.live.each([10_000, 10_001, 20_000])(
         ]);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live.each([
@@ -9072,7 +8991,6 @@ it.live.each([
         expect(resumed.isError, json(resumed)).not.toBe(true);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live.each([
@@ -9086,224 +9004,219 @@ it.live.each([
   { kind: "prompt-overflow", route: "qualified" },
   { kind: "viewport", route: "qualified" },
   { kind: "viewport", route: "local" },
-] as const)(
-  "input383-r10-opus: $route $kind",
-  (probe) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const { a, b, parent, child, route } = yield* typed383Pair(
-          `r10-${probe.route}-${probe.kind}`,
-          false,
-          false,
-          { source: false, destination: false, destinationBrowser: true },
-        );
-        const credential = yield* a.registry.issue({
-          threadId: parent,
-          providerInstanceId: instanceId,
-          capabilities: new Set(["orchestration", "preview", "device"]),
+] as const)("input383-r10-opus: $route $kind", (probe) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { a, b, parent, child, route } = yield* typed383Pair(
+        `r10-${probe.route}-${probe.kind}`,
+        false,
+        false,
+        { source: false, destination: false, destinationBrowser: true },
+      );
+      const credential = yield* a.registry.issue({
+        threadId: parent,
+        providerInstanceId: instanceId,
+        capabilities: new Set(["orchestration", "preview", "device"]),
+      });
+      const grant = (yield* b.authority.grants)[0]!;
+      yield* b.authority.setGrant({ ...grant, preview: true });
+      const opened = yield* nativeCall(
+        a,
+        parent,
+        "preview_open",
+        { ...route, show: false, clientRequestId: "r10-opus-open" },
+        undefined,
+        credential,
+      );
+      expect(opened.isError, json(opened)).not.toBe(true);
+      const { resource } = yield* Schema.decodeUnknownEffect(
+        Schema.Struct({ resource: PreviewViewerResource }),
+      )(opened.structuredContent);
+      const external = browserExternalContexts.at(-1)!;
+      const destination = probe.route === "qualified" ? a : b;
+      const issued = yield* destination.auth.issueSession({
+        scopes: ["orchestration:read", "preview:operate"],
+      });
+      const principal = yield* destination.auth.authenticateHttpRequest(
+        HttpServerRequest.fromWeb(
+          new Request(destination.url, { headers: { authorization: `Bearer ${issued.token}` } }),
+        ),
+      );
+      const query: Record<string, string> = {};
+      if (probe.route === "qualified") {
+        const access = yield* a.fixtureBrowserViewers!.open(principal, {
+          resource,
+          operation: "control",
         });
-        const grant = (yield* b.authority.grants)[0]!;
-        yield* b.authority.setGrant({ ...grant, preview: true });
-        const opened = yield* nativeCall(
-          a,
-          parent,
-          "preview_open",
-          { ...route, show: false, clientRequestId: "r10-opus-open" },
-          undefined,
-          credential,
-        );
-        expect(opened.isError, json(opened)).not.toBe(true);
-        const { resource } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PreviewViewerResource }),
-        )(opened.structuredContent);
-        const external = browserExternalContexts.at(-1)!;
-        const destination = probe.route === "qualified" ? a : b;
-        const issued = yield* destination.auth.issueSession({
-          scopes: ["orchestration:read", "preview:operate"],
-        });
-        const principal = yield* destination.auth.authenticateHttpRequest(
-          HttpServerRequest.fromWeb(
-            new Request(destination.url, { headers: { authorization: `Bearer ${issued.token}` } }),
-          ),
-        );
-        const query: Record<string, string> = {};
-        if (probe.route === "qualified") {
-          const access = yield* a.fixtureBrowserViewers!.open(principal, {
-            resource,
-            operation: "control",
-          });
-          query.viewerTicket = access.ticket;
-        } else {
-          const ticket = yield* b.auth.issueWebSocketTicket(principal);
-          query.wsTicket = ticket.ticket;
-        }
-        const ready = Promise.withResolvers<void>();
-        const controlled = Promise.withResolvers<void>();
-        const released = Promise.withResolvers<void>();
-        const disconnected = Promise.withResolvers<void>();
-        const promptReady = Promise.withResolvers<void>();
-        const connections: boolean[] = [];
-        const refusals: string[] = [];
-        let releasing = false;
-        const client = createPreviewStreamClient(
-          {
-            threadId: child,
-            tabId: resource.tabId,
-            maxWidth: 800,
-            maxHeight: 600,
-            access: {
-              httpBase: `${destination.url}/api/preview-stream`,
-              wsBase: `${destination.url.replace(/^http/, "ws")}/api/preview-stream`,
-              query,
-              credentials: false,
-            },
+        query.viewerTicket = access.ticket;
+      } else {
+        const ticket = yield* b.auth.issueWebSocketTicket(principal);
+        query.wsTicket = ticket.ticket;
+      }
+      const ready = Promise.withResolvers<void>();
+      const controlled = Promise.withResolvers<void>();
+      const released = Promise.withResolvers<void>();
+      const disconnected = Promise.withResolvers<void>();
+      const promptReady = Promise.withResolvers<void>();
+      const connections: boolean[] = [];
+      const refusals: string[] = [];
+      let releasing = false;
+      const client = createPreviewStreamClient(
+        {
+          threadId: child,
+          tabId: resource.tabId,
+          maxWidth: 800,
+          maxHeight: 600,
+          access: {
+            httpBase: `${destination.url}/api/preview-stream`,
+            wsBase: `${destination.url.replace(/^http/, "ws")}/api/preview-stream`,
+            query,
+            credentials: false,
           },
-          {
-            onFrame: () => {},
-            onViewport: () => {},
-            onControl: (control) => {
-              if (control.controller === "you") controlled.resolve();
-              else ready.resolve();
-              if (releasing && control.controller !== "you") released.resolve();
-              if (control.dialog?.message === "r10-prompt") promptReady.resolve();
-            },
-            onConnectedChange: (connected) => {
-              connections.push(connected);
-              if (!connected) disconnected.resolve();
-            },
-            onUnauthorized: () => {},
-            onInputRejected: (message) => refusals.push(message),
+        },
+        {
+          onFrame: () => {},
+          onViewport: () => {},
+          onControl: (control) => {
+            if (control.controller === "you") controlled.resolve();
+            else ready.resolve();
+            if (releasing && control.controller !== "you") released.resolve();
+            if (control.dialog?.message === "r10-prompt") promptReady.resolve();
           },
-        );
-        yield* Effect.addFinalizer(() => Effect.sync(() => client.stop()));
-        yield* Effect.promise(() => ready.promise);
-        expect(client.send({ type: "takeControl" })).toBe(true);
-        yield* Effect.promise(() => controlled.promise);
-        const drain = (text: string) =>
-          Effect.gen(function* () {
-            const continued = Promise.withResolvers<void>();
-            external.controls.afterInput = async (method) => {
-              if (method === "Input.insertText" && external.inputs.at(-1)?.params?.text === text)
-                continued.resolve();
-            };
-            expect(client.send({ type: "text", text })).toBe(true);
-            const outcome = yield* Effect.promise(() =>
-              Promise.race([
-                continued.promise.then(() => "continued"),
-                disconnected.promise.then(() => "disconnected"),
-              ]),
-            );
-            expect(outcome, "producer input must preserve the same controlling viewer").toBe(
-              "continued",
-            );
-          });
-        if (probe.kind === "viewport") {
-          const settings: PreviewViewportSetting[] = [
-            { _tag: "freeform", width: 500, height: 700 },
-            { _tag: "preset", width: 375, height: 667, presetId: "iphone-se" },
-            { _tag: "fill" },
-          ];
-          for (const setting of settings) {
-            const input = {
-              type: "viewport" as const,
-              setting:
-                probe.route === "local" ? { ...setting, ignored: "x".repeat(300000) } : setting,
-            };
-            expect(client.send(input)).toBe(true);
-            yield* drain(`after-${setting._tag}`);
-            const expected =
-              setting._tag === "fill"
-                ? { width: 1280, height: 800 }
-                : { width: setting.width, height: setting.height };
-            expect(external.page.viewportSize(), `native ${setting._tag} viewport`).toEqual(
-              expected,
-            );
-            const snapshot = (yield* b.nativePreviewManager!.list({
-              threadId: child,
-            })).sessions.find((session) => session.tabId === resource.tabId);
-            expect(snapshot?.viewport).toEqual(setting);
-          }
-        } else if (probe.kind === "prompt-boundary" || probe.kind === "prompt-overflow") {
-          const answered = Promise.withResolvers<void>();
-          const answers: string[] = [];
-          external.emit("dialog", {
-            type: () => "prompt",
-            message: () => "r10-prompt",
-            defaultValue: () => "",
-            accept: async (value: string) => {
-              answers.push(value);
-              answered.resolve();
-            },
-            dismiss: async () => {},
-          });
-          yield* Effect.promise(() => promptReady.promise);
-          let overflowSent = false;
-          if (probe.kind === "prompt-overflow")
-            overflowSent = client.send({
-              type: "dialog",
-              accept: true,
-              promptText: "界".repeat(16385),
-            });
-          const answer = "界".repeat(16384);
-          expect(client.send({ type: "dialog", accept: true, promptText: answer })).toBe(true);
+          onConnectedChange: (connected) => {
+            connections.push(connected);
+            if (!connected) disconnected.resolve();
+          },
+          onUnauthorized: () => {},
+          onInputRejected: (message) => refusals.push(message),
+        },
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(() => client.stop()));
+      yield* Effect.promise(() => ready.promise);
+      expect(client.send({ type: "takeControl" })).toBe(true);
+      yield* Effect.promise(() => controlled.promise);
+      const drain = (text: string) =>
+        Effect.gen(function* () {
+          const continued = Promise.withResolvers<void>();
+          external.controls.afterInput = async (method) => {
+            if (method === "Input.insertText" && external.inputs.at(-1)?.params?.text === text)
+              continued.resolve();
+          };
+          expect(client.send({ type: "text", text })).toBe(true);
           const outcome = yield* Effect.promise(() =>
             Promise.race([
-              answered.promise.then(() => "answered"),
+              continued.promise.then(() => "continued"),
               disconnected.promise.then(() => "disconnected"),
             ]),
           );
-          expect(
-            outcome,
-            "a refused oversized draft must leave its exact pending dialog answerable",
-          ).toBe("answered");
-          expect(overflowSent).toBe(false);
-          expect(answers).toEqual([answer]);
-          expect(refusals).toHaveLength(probe.kind === "prompt-overflow" ? 1 : 0);
-          yield* drain("after-prompt");
-        } else {
-          const prefix = "https://example.test/";
-          const url =
-            probe.kind === "empty"
-              ? ""
-              : probe.kind === "blank"
-                ? "   "
-                : probe.kind === "invalid-url-control"
-                  ? "http://"
-                  : prefix + "a".repeat((probe.kind === "long" ? 2049 : 2048) - prefix.length);
-          const before = external.effects.filter((effect) => effect === "navigate").length;
-          const sent = client.send({ type: "navigate", url });
-          yield* drain("after-navigation-input");
-          const refused =
-            probe.route === "qualified" &&
-            (probe.kind === "empty" || probe.kind === "blank" || probe.kind === "long");
-          expect(sent).toBe(!refused);
-          expect(refusals).toHaveLength(refused ? 1 : 0);
-          expect(external.effects.filter((effect) => effect === "navigate")).toHaveLength(
-            before + (probe.kind === "url-boundary" ? 1 : 0),
+          expect(outcome, "producer input must preserve the same controlling viewer").toBe(
+            "continued",
           );
-          if (probe.kind === "url-boundary") expect(external.page.url()).toBe(url);
+        });
+      if (probe.kind === "viewport") {
+        const settings: PreviewViewportSetting[] = [
+          { _tag: "freeform", width: 500, height: 700 },
+          { _tag: "preset", width: 375, height: 667, presetId: "iphone-se" },
+          { _tag: "fill" },
+        ];
+        for (const setting of settings) {
+          const input = {
+            type: "viewport" as const,
+            setting:
+              probe.route === "local" ? { ...setting, ignored: "x".repeat(300000) } : setting,
+          };
+          expect(client.send(input)).toBe(true);
+          yield* drain(`after-${setting._tag}`);
+          const expected =
+            setting._tag === "fill"
+              ? { width: 1280, height: 800 }
+              : { width: setting.width, height: setting.height };
+          expect(external.page.viewportSize(), `native ${setting._tag} viewport`).toEqual(expected);
+          const snapshot = (yield* b.nativePreviewManager!.list({
+            threadId: child,
+          })).sessions.find((session) => session.tabId === resource.tabId);
+          expect(snapshot?.viewport).toEqual(setting);
         }
-        expect(connections).toEqual([true]);
-        releasing = true;
-        expect(client.send({ type: "releaseControl" })).toBe(true);
-        yield* Effect.promise(() => released.promise);
-        const resumed = yield* nativeCall(
-          a,
-          parent,
-          "preview_navigate",
-          {
-            ...route,
-            tabId: resource.tabId,
-            url: "https://example.test/after-opus-input",
-            clientRequestId: "r10-opus-resume",
+      } else if (probe.kind === "prompt-boundary" || probe.kind === "prompt-overflow") {
+        const answered = Promise.withResolvers<void>();
+        const answers: string[] = [];
+        external.emit("dialog", {
+          type: () => "prompt",
+          message: () => "r10-prompt",
+          defaultValue: () => "",
+          accept: async (value: string) => {
+            answers.push(value);
+            answered.resolve();
           },
-          undefined,
-          credential,
+          dismiss: async () => {},
+        });
+        yield* Effect.promise(() => promptReady.promise);
+        let overflowSent = false;
+        if (probe.kind === "prompt-overflow")
+          overflowSent = client.send({
+            type: "dialog",
+            accept: true,
+            promptText: "界".repeat(16385),
+          });
+        const answer = "界".repeat(16384);
+        expect(client.send({ type: "dialog", accept: true, promptText: answer })).toBe(true);
+        const outcome = yield* Effect.promise(() =>
+          Promise.race([
+            answered.promise.then(() => "answered"),
+            disconnected.promise.then(() => "disconnected"),
+          ]),
         );
-        expect(resumed.isError, json(resumed)).not.toBe(true);
-      }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30000,
+        expect(
+          outcome,
+          "a refused oversized draft must leave its exact pending dialog answerable",
+        ).toBe("answered");
+        expect(overflowSent).toBe(false);
+        expect(answers).toEqual([answer]);
+        expect(refusals).toHaveLength(probe.kind === "prompt-overflow" ? 1 : 0);
+        yield* drain("after-prompt");
+      } else {
+        const prefix = "https://example.test/";
+        const url =
+          probe.kind === "empty"
+            ? ""
+            : probe.kind === "blank"
+              ? "   "
+              : probe.kind === "invalid-url-control"
+                ? "http://"
+                : prefix + "a".repeat((probe.kind === "long" ? 2049 : 2048) - prefix.length);
+        const before = external.effects.filter((effect) => effect === "navigate").length;
+        const sent = client.send({ type: "navigate", url });
+        yield* drain("after-navigation-input");
+        const refused =
+          probe.route === "qualified" &&
+          (probe.kind === "empty" || probe.kind === "blank" || probe.kind === "long");
+        expect(sent).toBe(!refused);
+        expect(refusals).toHaveLength(refused ? 1 : 0);
+        expect(external.effects.filter((effect) => effect === "navigate")).toHaveLength(
+          before + (probe.kind === "url-boundary" ? 1 : 0),
+        );
+        if (probe.kind === "url-boundary") expect(external.page.url()).toBe(url);
+      }
+      expect(connections).toEqual([true]);
+      releasing = true;
+      expect(client.send({ type: "releaseControl" })).toBe(true);
+      yield* Effect.promise(() => released.promise);
+      const resumed = yield* nativeCall(
+        a,
+        parent,
+        "preview_navigate",
+        {
+          ...route,
+          tabId: resource.tabId,
+          url: "https://example.test/after-opus-input",
+          clientRequestId: "r10-opus-resume",
+        },
+        undefined,
+        credential,
+      );
+      expect(resumed.isError, json(resumed)).not.toBe(true);
+    }),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );
 
 it.live.each([
@@ -9316,138 +9229,135 @@ it.live.each([
       "same-controller-return",
     ].map((transition) => ({ wait, transition })),
   ),
-])(
-  "dialog383-r11: $transition during authorization $wait",
-  ({ wait, transition }) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const nativePromise = yield* makeNativePromiseBridge;
-        const { a, b, parent, child, route } = yield* typed383Pair(
-          `r11-dialog-${transition}-${wait}`,
-          false,
-          false,
-          { source: false, destination: false, destinationBrowser: true },
-        );
-        const grant = (yield* b.authority.grants)[0]!;
-        yield* b.authority.setGrant({ ...grant, preview: true });
-        const opened = yield* nativeCall(a, parent, "preview_open", {
-          ...route,
-          show: false,
-          clientRequestId: "r11-dialog-open",
-        });
-        expect(opened.isError, json(opened)).not.toBe(true);
-        const { resource } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PreviewViewerResource }),
-        )(opened.structuredContent);
-        const issued = yield* b.auth.issueSession({
-          scopes: ["orchestration:read", "preview:operate"],
-        });
-        const native = yield* b.auth.authenticateHttpRequest(
-          HttpServerRequest.fromWeb(
-            new Request(b.url, { headers: { authorization: `Bearer ${issued.token}` } }),
-          ),
-        );
-        const repository = yield* AuthSessions.layer.pipe(
-          Layer.provide(Layer.succeedContext(b.database)),
-          Layer.build,
-        );
-        const read = yield* Auth.nativeSessionAuthorization(native, "orchestration:read").pipe(
-          Effect.provideContext(repository),
-        );
-        const operate = yield* Auth.nativeSessionAuthorization(native, "preview:operate").pipe(
-          Effect.provideContext(repository),
-        );
-        const check = read.pipe(Effect.andThen(operate));
-        let armed = false;
-        let calls = 0;
-        const reached = Promise.withResolvers<void>();
-        const resume = Promise.withResolvers<void>();
-        yield* Effect.addFinalizer(() => Effect.sync(() => resume.resolve()));
-        const first = yield* b.nativeBrowser!.attachViewer({
-          threadId: child,
-          tabId: resource.tabId,
-          maxWidth: 1280,
-          maxHeight: 800,
-          quality: 70,
-          canOperate: true,
-          authorize: async () => {
-            await nativePromise(check);
-            if (armed && ++calls === wait) {
-              reached.resolve();
-              await resume.promise;
-            }
-          },
-        });
-        const second = yield* b.nativeBrowser!.attachViewer({
-          threadId: child,
-          tabId: resource.tabId,
-          maxWidth: 1280,
-          maxHeight: 800,
-          quality: 70,
-          canOperate: true,
-          authorize: () => nativePromise(check),
-        });
-        yield* first.input({ type: "takeControl" });
-        const external = browserExternalContexts.at(-1)!;
-        let originalAccepted = 0;
-        let originalDismissed = 0;
-        let replacementAccepted = 0;
+])("dialog383-r11: $transition during authorization $wait", ({ wait, transition }) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const nativePromise = yield* makeNativePromiseBridge;
+      const { a, b, parent, child, route } = yield* typed383Pair(
+        `r11-dialog-${transition}-${wait}`,
+        false,
+        false,
+        { source: false, destination: false, destinationBrowser: true },
+      );
+      const grant = (yield* b.authority.grants)[0]!;
+      yield* b.authority.setGrant({ ...grant, preview: true });
+      const opened = yield* nativeCall(a, parent, "preview_open", {
+        ...route,
+        show: false,
+        clientRequestId: "r11-dialog-open",
+      });
+      expect(opened.isError, json(opened)).not.toBe(true);
+      const { resource } = yield* Schema.decodeUnknownEffect(
+        Schema.Struct({ resource: PreviewViewerResource }),
+      )(opened.structuredContent);
+      const issued = yield* b.auth.issueSession({
+        scopes: ["orchestration:read", "preview:operate"],
+      });
+      const native = yield* b.auth.authenticateHttpRequest(
+        HttpServerRequest.fromWeb(
+          new Request(b.url, { headers: { authorization: `Bearer ${issued.token}` } }),
+        ),
+      );
+      const repository = yield* AuthSessions.layer.pipe(
+        Layer.provide(Layer.succeedContext(b.database)),
+        Layer.build,
+      );
+      const read = yield* Auth.nativeSessionAuthorization(native, "orchestration:read").pipe(
+        Effect.provideContext(repository),
+      );
+      const operate = yield* Auth.nativeSessionAuthorization(native, "preview:operate").pipe(
+        Effect.provideContext(repository),
+      );
+      const check = read.pipe(Effect.andThen(operate));
+      let armed = false;
+      let calls = 0;
+      const reached = Promise.withResolvers<void>();
+      const resume = Promise.withResolvers<void>();
+      yield* Effect.addFinalizer(() => Effect.sync(() => resume.resolve()));
+      const first = yield* b.nativeBrowser!.attachViewer({
+        threadId: child,
+        tabId: resource.tabId,
+        maxWidth: 1280,
+        maxHeight: 800,
+        quality: 70,
+        canOperate: true,
+        authorize: async () => {
+          await nativePromise(check);
+          if (armed && ++calls === wait) {
+            reached.resolve();
+            await resume.promise;
+          }
+        },
+      });
+      const second = yield* b.nativeBrowser!.attachViewer({
+        threadId: child,
+        tabId: resource.tabId,
+        maxWidth: 1280,
+        maxHeight: 800,
+        quality: 70,
+        canOperate: true,
+        authorize: () => nativePromise(check),
+      });
+      yield* first.input({ type: "takeControl" });
+      const external = browserExternalContexts.at(-1)!;
+      let originalAccepted = 0;
+      let originalDismissed = 0;
+      let replacementAccepted = 0;
+      external.emit("dialog", {
+        type: () => "prompt",
+        message: () => "original",
+        defaultValue: () => "",
+        accept: async () => {
+          originalAccepted++;
+        },
+        dismiss: async () => {
+          originalDismissed++;
+        },
+      });
+      armed = true;
+      const stale = yield* first
+        .input({ type: "dialog", accept: true, promptText: "old-viewer-reply" })
+        .pipe(Effect.forkScoped);
+      yield* Effect.promise(() => reached.promise);
+      const handoff = transition.startsWith("handoff") || transition === "same-controller-return";
+      const replacement = transition.endsWith("replacement");
+      if (handoff) {
+        yield* first.input({ type: "releaseControl" });
+        yield* second.input({ type: "takeControl" });
+      }
+      const current = handoff ? second : first;
+      if (replacement) {
+        yield* current.input({ type: "dialog", accept: false });
         external.emit("dialog", {
           type: () => "prompt",
-          message: () => "original",
+          message: () => "replacement",
           defaultValue: () => "",
           accept: async () => {
-            originalAccepted++;
+            replacementAccepted++;
           },
-          dismiss: async () => {
-            originalDismissed++;
-          },
+          dismiss: async () => {},
         });
-        armed = true;
-        const stale = yield* first
-          .input({ type: "dialog", accept: true, promptText: "old-viewer-reply" })
-          .pipe(Effect.forkScoped);
-        yield* Effect.promise(() => reached.promise);
-        const handoff = transition.startsWith("handoff") || transition === "same-controller-return";
-        const replacement = transition.endsWith("replacement");
-        if (handoff) {
-          yield* first.input({ type: "releaseControl" });
-          yield* second.input({ type: "takeControl" });
-        }
-        const current = handoff ? second : first;
-        if (replacement) {
-          yield* current.input({ type: "dialog", accept: false });
-          external.emit("dialog", {
-            type: () => "prompt",
-            message: () => "replacement",
-            defaultValue: () => "",
-            accept: async () => {
-              replacementAccepted++;
-            },
-            dismiss: async () => {},
-          });
-        }
-        if (transition === "same-controller-return") {
-          yield* second.input({ type: "releaseControl" });
-          yield* first.input({ type: "takeControl" });
-        }
-        resume.resolve();
-        yield* Fiber.join(stale);
-        yield* check;
-        expect(replacementAccepted, "a stale reply must never answer a replacement dialog").toBe(0);
-        expect(originalAccepted).toBe(transition === "unchanged" ? 1 : 0);
-        expect(originalDismissed).toBe(replacement ? 1 : 0);
-        const owner = transition === "same-controller-return" ? first : current;
-        if (transition !== "unchanged")
-          yield* owner.input({ type: "dialog", accept: true, promptText: "current-owner" });
-        expect(replacementAccepted).toBe(replacement ? 1 : 0);
-        expect(originalAccepted).toBe(replacement ? 0 : 1);
-        yield* owner.input({ type: "dialog", accept: true, promptText: "duplicate" });
-        expect(replacementAccepted).toBe(replacement ? 1 : 0);
-        expect(originalAccepted).toBe(replacement ? 0 : 1);
-      }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30000,
+      }
+      if (transition === "same-controller-return") {
+        yield* second.input({ type: "releaseControl" });
+        yield* first.input({ type: "takeControl" });
+      }
+      resume.resolve();
+      yield* Fiber.join(stale);
+      yield* check;
+      expect(replacementAccepted, "a stale reply must never answer a replacement dialog").toBe(0);
+      expect(originalAccepted).toBe(transition === "unchanged" ? 1 : 0);
+      expect(originalDismissed).toBe(replacement ? 1 : 0);
+      const owner = transition === "same-controller-return" ? first : current;
+      if (transition !== "unchanged")
+        yield* owner.input({ type: "dialog", accept: true, promptText: "current-owner" });
+      expect(replacementAccepted).toBe(replacement ? 1 : 0);
+      expect(originalAccepted).toBe(replacement ? 0 : 1);
+      yield* owner.input({ type: "dialog", accept: true, promptText: "duplicate" });
+      expect(replacementAccepted).toBe(replacement ? 1 : 0);
+      expect(originalAccepted).toBe(replacement ? 0 : 1);
+    }),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );
 
 it.live.each([
@@ -9656,7 +9566,6 @@ it.live.each([
         yield* check;
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live.each([
@@ -9712,111 +9621,108 @@ it.live.each([
       expected: ["mousePressed", "mouseReleased"],
     },
   ].flatMap((entry) => [false, true].map((held) => ({ ...entry, held }))),
-])(
-  "order383-r13: $kind held-first=$held",
-  ({ kind, one, two, expected, held }) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const nativePromise = yield* makeNativePromiseBridge;
-        const { a, b, parent, child, route } = yield* typed383Pair(
-          `r13-order-${kind}-${held}`,
-          false,
-          false,
-          { source: false, destination: false, destinationBrowser: true },
-        );
-        const grant = (yield* b.authority.grants)[0]!;
-        yield* b.authority.setGrant({ ...grant, preview: true });
-        const opened = yield* nativeCall(a, parent, "preview_open", {
-          ...route,
-          show: false,
-          clientRequestId: "r13-order-open",
-        });
-        expect(opened.isError, json(opened)).not.toBe(true);
-        const { resource } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PreviewViewerResource }),
-        )(opened.structuredContent);
-        const issued = yield* b.auth.issueSession({
-          scopes: ["orchestration:read", "preview:operate"],
-        });
-        const native = yield* b.auth.authenticateHttpRequest(
-          HttpServerRequest.fromWeb(
-            new Request(b.url, { headers: { authorization: `Bearer ${issued.token}` } }),
-          ),
-        );
-        const repository = yield* AuthSessions.layer.pipe(
-          Layer.provide(Layer.succeedContext(b.database)),
-          Layer.build,
-        );
-        const read = yield* Auth.nativeSessionAuthorization(native, "orchestration:read").pipe(
-          Effect.provideContext(repository),
-        );
-        const operate = yield* Auth.nativeSessionAuthorization(native, "preview:operate").pipe(
-          Effect.provideContext(repository),
-        );
-        const check = read.pipe(Effect.andThen(operate));
-        let armed = false;
-        const authorizations: Promise<void>[] = [];
-        const reached = Promise.withResolvers<void>();
-        const resume = Promise.withResolvers<void>();
-        yield* Effect.addFinalizer(() => Effect.sync(() => resume.resolve()));
-        const viewer = yield* b.nativeBrowser!.attachViewer({
-          threadId: child,
-          tabId: resource.tabId,
-          maxWidth: 1280,
-          maxHeight: 800,
-          quality: 70,
-          canOperate: true,
-          authorize: () => {
-            const first = armed && authorizations.length === 0;
-            const checking = (async () => {
-              await nativePromise(check);
-              if (first && held) {
-                reached.resolve();
-                await resume.promise;
-              }
-            })();
-            if (armed) authorizations.push(checking);
-            return checking;
-          },
-        });
-        yield* viewer.input({ type: "takeControl" });
-        const firstInput = yield* Schema.decodeUnknownEffect(PreviewStreamInput)(one);
-        const secondInput = yield* Schema.decodeUnknownEffect(PreviewStreamInput)(two);
-        const external = browserExternalContexts.at(-1)!;
-        const start = external.inputs.length;
-        armed = true;
-        if (held) {
-          const first = yield* viewer.input(firstInput).pipe(Effect.forkScoped);
-          yield* Effect.promise(() => reached.promise);
-          expect(external.inputs.slice(start)).toEqual([]);
-          const beforeSuccessor = authorizations.length;
-          yield* viewer.enqueueInput(secondInput);
-          // Wait only for checks already started, never for queued successor work.
-          const startedChecks = authorizations.slice(beforeSuccessor);
-          yield* Effect.promise(() => Promise.all(startedChecks));
-          resume.resolve();
-          yield* Fiber.join(first);
-        } else {
-          yield* viewer.input(firstInput);
-          yield* viewer.input(secondInput);
-        }
-        yield* viewer.input({ type: "text", text: "later-lawful" });
-        expect(
-          external.inputs.filter(
-            (event) => event.method === "Input.insertText" && event.params?.text === "later-lawful",
-          ),
-        ).toHaveLength(1);
-        const effects = external.inputs
-          .slice(start)
-          .filter((event) => event.params?.text !== "later-lawful");
-        expect(
-          effects.map((event) => (kind === "text" ? event.params?.text : event.params?.type)),
-          "native effects must retain submitted order across authorization",
-        ).toEqual(expected);
-        yield* check;
-      }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
+])("order383-r13: $kind held-first=$held", ({ kind, one, two, expected, held }) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const nativePromise = yield* makeNativePromiseBridge;
+      const { a, b, parent, child, route } = yield* typed383Pair(
+        `r13-order-${kind}-${held}`,
+        false,
+        false,
+        { source: false, destination: false, destinationBrowser: true },
+      );
+      const grant = (yield* b.authority.grants)[0]!;
+      yield* b.authority.setGrant({ ...grant, preview: true });
+      const opened = yield* nativeCall(a, parent, "preview_open", {
+        ...route,
+        show: false,
+        clientRequestId: "r13-order-open",
+      });
+      expect(opened.isError, json(opened)).not.toBe(true);
+      const { resource } = yield* Schema.decodeUnknownEffect(
+        Schema.Struct({ resource: PreviewViewerResource }),
+      )(opened.structuredContent);
+      const issued = yield* b.auth.issueSession({
+        scopes: ["orchestration:read", "preview:operate"],
+      });
+      const native = yield* b.auth.authenticateHttpRequest(
+        HttpServerRequest.fromWeb(
+          new Request(b.url, { headers: { authorization: `Bearer ${issued.token}` } }),
+        ),
+      );
+      const repository = yield* AuthSessions.layer.pipe(
+        Layer.provide(Layer.succeedContext(b.database)),
+        Layer.build,
+      );
+      const read = yield* Auth.nativeSessionAuthorization(native, "orchestration:read").pipe(
+        Effect.provideContext(repository),
+      );
+      const operate = yield* Auth.nativeSessionAuthorization(native, "preview:operate").pipe(
+        Effect.provideContext(repository),
+      );
+      const check = read.pipe(Effect.andThen(operate));
+      let armed = false;
+      const authorizations: Promise<void>[] = [];
+      const reached = Promise.withResolvers<void>();
+      const resume = Promise.withResolvers<void>();
+      yield* Effect.addFinalizer(() => Effect.sync(() => resume.resolve()));
+      const viewer = yield* b.nativeBrowser!.attachViewer({
+        threadId: child,
+        tabId: resource.tabId,
+        maxWidth: 1280,
+        maxHeight: 800,
+        quality: 70,
+        canOperate: true,
+        authorize: () => {
+          const first = armed && authorizations.length === 0;
+          const checking = (async () => {
+            await nativePromise(check);
+            if (first && held) {
+              reached.resolve();
+              await resume.promise;
+            }
+          })();
+          if (armed) authorizations.push(checking);
+          return checking;
+        },
+      });
+      yield* viewer.input({ type: "takeControl" });
+      const firstInput = yield* Schema.decodeUnknownEffect(PreviewStreamInput)(one);
+      const secondInput = yield* Schema.decodeUnknownEffect(PreviewStreamInput)(two);
+      const external = browserExternalContexts.at(-1)!;
+      const start = external.inputs.length;
+      armed = true;
+      if (held) {
+        const first = yield* viewer.input(firstInput).pipe(Effect.forkScoped);
+        yield* Effect.promise(() => reached.promise);
+        expect(external.inputs.slice(start)).toEqual([]);
+        const beforeSuccessor = authorizations.length;
+        yield* viewer.enqueueInput(secondInput);
+        // Wait only for checks already started, never for queued successor work.
+        const startedChecks = authorizations.slice(beforeSuccessor);
+        yield* Effect.promise(() => Promise.all(startedChecks));
+        resume.resolve();
+        yield* Fiber.join(first);
+      } else {
+        yield* viewer.input(firstInput);
+        yield* viewer.input(secondInput);
+      }
+      yield* viewer.input({ type: "text", text: "later-lawful" });
+      expect(
+        external.inputs.filter(
+          (event) => event.method === "Input.insertText" && event.params?.text === "later-lawful",
+        ),
+      ).toHaveLength(1);
+      const effects = external.inputs
+        .slice(start)
+        .filter((event) => event.params?.text !== "later-lawful");
+      expect(
+        effects.map((event) => (kind === "text" ? event.params?.text : event.params?.type)),
+        "native effects must retain submitted order across authorization",
+      ).toEqual(expected);
+      yield* check;
+    }),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );
 
 it.live.each([
@@ -9824,135 +9730,130 @@ it.live.each([
     ["unchanged", "cycle"].map((transition) => ({ kind: "take", wait, transition })),
   ),
   ...["unchanged", "cycle"].map((transition) => ({ kind: "release", wait: 1, transition })),
-])(
-  "control383-r14: $kind $transition authorization $wait",
-  ({ kind, wait, transition }) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const nativePromise = yield* makeNativePromiseBridge;
-        const { a, b, parent, child, route } = yield* typed383Pair(
-          `r14-control-${kind}-${transition}-${wait}`,
-          false,
-          false,
-          { source: false, destination: false, destinationBrowser: true },
-        );
-        const grant = (yield* b.authority.grants)[0]!;
-        yield* b.authority.setGrant({ ...grant, preview: true });
-        const opened = yield* nativeCall(a, parent, "preview_open", {
-          ...route,
-          show: false,
-          clientRequestId: "r14-control-open",
-        });
-        expect(opened.isError, json(opened)).not.toBe(true);
-        const { resource } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PreviewViewerResource }),
-        )(opened.structuredContent);
-        const issued = yield* b.auth.issueSession({
-          scopes: ["orchestration:read", "preview:operate"],
-        });
-        const native = yield* b.auth.authenticateHttpRequest(
-          HttpServerRequest.fromWeb(
-            new Request(b.url, { headers: { authorization: `Bearer ${issued.token}` } }),
+])("control383-r14: $kind $transition authorization $wait", ({ kind, wait, transition }) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const nativePromise = yield* makeNativePromiseBridge;
+      const { a, b, parent, child, route } = yield* typed383Pair(
+        `r14-control-${kind}-${transition}-${wait}`,
+        false,
+        false,
+        { source: false, destination: false, destinationBrowser: true },
+      );
+      const grant = (yield* b.authority.grants)[0]!;
+      yield* b.authority.setGrant({ ...grant, preview: true });
+      const opened = yield* nativeCall(a, parent, "preview_open", {
+        ...route,
+        show: false,
+        clientRequestId: "r14-control-open",
+      });
+      expect(opened.isError, json(opened)).not.toBe(true);
+      const { resource } = yield* Schema.decodeUnknownEffect(
+        Schema.Struct({ resource: PreviewViewerResource }),
+      )(opened.structuredContent);
+      const issued = yield* b.auth.issueSession({
+        scopes: ["orchestration:read", "preview:operate"],
+      });
+      const native = yield* b.auth.authenticateHttpRequest(
+        HttpServerRequest.fromWeb(
+          new Request(b.url, { headers: { authorization: `Bearer ${issued.token}` } }),
+        ),
+      );
+      const repository = yield* AuthSessions.layer.pipe(
+        Layer.provide(Layer.succeedContext(b.database)),
+        Layer.build,
+      );
+      const read = yield* Auth.nativeSessionAuthorization(native, "orchestration:read").pipe(
+        Effect.provideContext(repository),
+      );
+      const operate = yield* Auth.nativeSessionAuthorization(native, "preview:operate").pipe(
+        Effect.provideContext(repository),
+      );
+      const check = read.pipe(Effect.andThen(operate));
+      let armed = false;
+      let calls = 0;
+      const reached = Promise.withResolvers<void>();
+      const resume = Promise.withResolvers<void>();
+      yield* Effect.addFinalizer(() => Effect.sync(() => resume.resolve()));
+      const viewer = yield* b.nativeBrowser!.attachViewer({
+        threadId: child,
+        tabId: resource.tabId,
+        maxWidth: 1280,
+        maxHeight: 800,
+        quality: 70,
+        canOperate: true,
+        authorize: async () => {
+          await nativePromise(check);
+          if (armed && ++calls === wait) {
+            reached.resolve();
+            await resume.promise;
+          }
+        },
+      });
+      const take = yield* Schema.decodeUnknownEffect(PreviewStreamInput)({ type: "takeControl" });
+      const release = yield* Schema.decodeUnknownEffect(PreviewStreamInput)({
+        type: "releaseControl",
+      });
+      if (kind === "release") yield* viewer.input(take);
+      yield* Queue.clear(viewer.output);
+      armed = true;
+      const delayed = yield* viewer.input(kind === "take" ? take : release).pipe(Effect.forkScoped);
+      yield* Effect.promise(() => reached.promise);
+      if (transition === "cycle") {
+        yield* viewer.input(kind === "take" ? take : release);
+        yield* viewer.input(kind === "take" ? release : take);
+      }
+      const before = (yield* Queue.clear(viewer.output)).filter((out) => out._tag === "control");
+      if (transition === "cycle") {
+        expect(
+          before.map((out) => ({ controller: out.controller, generation: out.generation })),
+        ).toEqual(
+          expect.arrayContaining(
+            kind === "take"
+              ? [
+                  { controller: "you", generation: 1 },
+                  { controller: "agent", generation: 2 },
+                ]
+              : [
+                  { controller: "agent", generation: 2 },
+                  { controller: "you", generation: 3 },
+                ],
           ),
         );
-        const repository = yield* AuthSessions.layer.pipe(
-          Layer.provide(Layer.succeedContext(b.database)),
-          Layer.build,
-        );
-        const read = yield* Auth.nativeSessionAuthorization(native, "orchestration:read").pipe(
-          Effect.provideContext(repository),
-        );
-        const operate = yield* Auth.nativeSessionAuthorization(native, "preview:operate").pipe(
-          Effect.provideContext(repository),
-        );
-        const check = read.pipe(Effect.andThen(operate));
-        let armed = false;
-        let calls = 0;
-        const reached = Promise.withResolvers<void>();
-        const resume = Promise.withResolvers<void>();
-        yield* Effect.addFinalizer(() => Effect.sync(() => resume.resolve()));
-        const viewer = yield* b.nativeBrowser!.attachViewer({
-          threadId: child,
-          tabId: resource.tabId,
-          maxWidth: 1280,
-          maxHeight: 800,
-          quality: 70,
-          canOperate: true,
-          authorize: async () => {
-            await nativePromise(check);
-            if (armed && ++calls === wait) {
-              reached.resolve();
-              await resume.promise;
-            }
-          },
-        });
-        const take = yield* Schema.decodeUnknownEffect(PreviewStreamInput)({ type: "takeControl" });
-        const release = yield* Schema.decodeUnknownEffect(PreviewStreamInput)({
-          type: "releaseControl",
-        });
-        if (kind === "release") yield* viewer.input(take);
-        yield* Queue.clear(viewer.output);
-        armed = true;
-        const delayed = yield* viewer
-          .input(kind === "take" ? take : release)
-          .pipe(Effect.forkScoped);
-        yield* Effect.promise(() => reached.promise);
-        if (transition === "cycle") {
-          yield* viewer.input(kind === "take" ? take : release);
-          yield* viewer.input(kind === "take" ? release : take);
-        }
-        const before = (yield* Queue.clear(viewer.output)).filter((out) => out._tag === "control");
-        if (transition === "cycle") {
-          expect(
-            before.map((out) => ({ controller: out.controller, generation: out.generation })),
-          ).toEqual(
-            expect.arrayContaining(
-              kind === "take"
-                ? [
-                    { controller: "you", generation: 1 },
-                    { controller: "agent", generation: 2 },
-                  ]
-                : [
-                    { controller: "agent", generation: 2 },
-                    { controller: "you", generation: 3 },
-                  ],
-            ),
-          );
-        }
-        resume.resolve();
-        yield* Fiber.join(delayed);
-        const after = (yield* Queue.clear(viewer.output)).filter((out) => out._tag === "control");
-        const observed = [...before, ...after].at(-1);
-        const external = browserExternalContexts.at(-1)!;
-        yield* viewer.input(take);
-        yield* viewer.input({ type: "text", text: "current-owner-marker" });
-        expect(
-          external.inputs.filter(
-            (event) =>
-              event.method === "Input.insertText" && event.params?.text === "current-owner-marker",
-          ),
-        ).toHaveLength(1);
-        yield* check;
-        const expected =
-          transition === "cycle"
-            ? kind === "take"
-              ? { controller: "agent", generation: 2 }
-              : { controller: "you", generation: 3 }
-            : kind === "take"
-              ? { controller: "you", generation: 1 }
-              : { controller: "agent", generation: 2 };
-        expect(
-          observed,
-          "pending old control must not reverse a newer completed opposite intent",
-        ).toMatchObject(expected);
-        yield* viewer.input(release);
-        expect(
-          (yield* Queue.clear(viewer.output)).filter((out) => out._tag === "control").at(-1)
-            ?.controller,
-        ).toBe("agent");
-      }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
+      }
+      resume.resolve();
+      yield* Fiber.join(delayed);
+      const after = (yield* Queue.clear(viewer.output)).filter((out) => out._tag === "control");
+      const observed = [...before, ...after].at(-1);
+      const external = browserExternalContexts.at(-1)!;
+      yield* viewer.input(take);
+      yield* viewer.input({ type: "text", text: "current-owner-marker" });
+      expect(
+        external.inputs.filter(
+          (event) =>
+            event.method === "Input.insertText" && event.params?.text === "current-owner-marker",
+        ),
+      ).toHaveLength(1);
+      yield* check;
+      const expected =
+        transition === "cycle"
+          ? kind === "take"
+            ? { controller: "agent", generation: 2 }
+            : { controller: "you", generation: 3 }
+          : kind === "take"
+            ? { controller: "you", generation: 1 }
+            : { controller: "agent", generation: 2 };
+      expect(
+        observed,
+        "pending old control must not reverse a newer completed opposite intent",
+      ).toMatchObject(expected);
+      yield* viewer.input(release);
+      expect(
+        (yield* Queue.clear(viewer.output)).filter((out) => out._tag === "control").at(-1)
+          ?.controller,
+      ).toBe("agent");
+    }),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );
 
 it.live.each(["preview", "device"] as const)(
@@ -10032,7 +9933,6 @@ it.live.each(["preview", "device"] as const)(
         expect((yield* a.threads.getThreadShell(parent))?.activeRunId).not.toBeNull();
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  60_000,
 );
 
 it.live.each(["preview", "device"] as const)(
@@ -10149,7 +10049,6 @@ it.live.each(["preview", "device"] as const)(
         expect(effects()).toEqual(resumed);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  60_000,
 );
 
 it.live.each(["preview", "device"] as const)(
@@ -10200,7 +10099,6 @@ it.live.each(["preview", "device"] as const)(
         yield* assertIdle;
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  60_000,
 );
 
 it.live(
@@ -10290,7 +10188,6 @@ it.live(
         expect(browserExternalContexts).toHaveLength(contextsBefore + 3);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  60_000,
 );
 
 it.live.each(["unchanged", "source-ended", "grant-retired"] as const)(
@@ -10379,7 +10276,6 @@ it.live.each(["unchanged", "source-ended", "grant-retired"] as const)(
         }).pipe(Effect.withTracer(tracer), Effect.withTracerEnabled(true));
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  60_000,
 );
 
 it.live.each(["preview", "device"] as const)(
@@ -10484,7 +10380,6 @@ it.live.each(["preview", "device"] as const)(
         expect(json(ended)).toContain("parent_not_active");
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  60_000,
 );
 
 it.live.each(["source", "destination", "mixed"] as const)(
@@ -10552,7 +10447,6 @@ it.live.each(["source", "destination", "mixed"] as const)(
         yield* assertIdle;
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  60_000,
 );
 
 it.live.each(["install", "reinstall"] as const)(
@@ -10600,7 +10494,6 @@ it.live.each(["install", "reinstall"] as const)(
         yield* assertIdle;
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  60_000,
 );
 
 it.live.each(["preview", "device"] as const)(
@@ -10703,7 +10596,6 @@ it.live.each(["preview", "device"] as const)(
         expect((yield* open()).isError).not.toBe(true);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  60_000,
 );
 
 it.live.each([false, true])(
@@ -10740,7 +10632,6 @@ it.live.each([false, true])(
         ).toHaveLength(retire ? 0 : 1);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  60_000,
 );
 
 it.live.each([false, true])(
@@ -10801,7 +10692,6 @@ it.live.each([false, true])(
         }).pipe(Effect.withTracer(tracer), Effect.withTracerEnabled(true));
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  60_000,
 );
 
 it.live.each(["preview", "device"] as const)(
@@ -10838,7 +10728,6 @@ it.live.each(["preview", "device"] as const)(
         yield* assertIdle;
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  60_000,
 );
 
 it.live.each(["preview", "device"] as const)(
@@ -11009,7 +10898,6 @@ it.live.each(["preview", "device"] as const)(
         yield* assertIdle;
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  60_000,
 );
 
 it.live.each(["unchanged", "source-ended", "scope-retired"] as const)(
@@ -11079,7 +10967,6 @@ it.live.each(["unchanged", "source-ended", "scope-retired"] as const)(
         yield* assertIdle;
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  60_000,
 );
 
 it.live.each(["source-ended", "grant-retired"] as const)(
@@ -11152,7 +11039,6 @@ it.live.each(["source-ended", "grant-retired"] as const)(
         yield* assertIdle;
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  60_000,
 );
 
 it("native383-rpc-groups: production partitions preserve the complete public method schemas and middleware", () => {
@@ -11221,5 +11107,4 @@ it.live(
         yield* assertIdle;
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  60_000,
 );

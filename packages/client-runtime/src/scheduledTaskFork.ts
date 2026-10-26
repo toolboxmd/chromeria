@@ -102,16 +102,9 @@ export type CommandHealth = ReadonlyMap<
 >;
 
 /**
- * The command tasks that turned from passing to failing since `previous`, and
- * the health to compare the next read with (ported from Chromeria v1 #149).
- *
- * Without `previous` (the first read after mounting) it only records a
- * baseline, so opening the app never replays old failures. A task first seen
- * after that counts as passing, so its first-ever failure alerts. Reads are
- * samples, so the newest run does not decide: a task failing now alerts when
- * it was passing at the last read, or when a run passed since then, shown by
- * a new `lastSuccessfulRunId` even if the streak looks unchanged. Consecutive
- * failures, runs in progress and edits stay quiet.
+ * Command tasks that turned from passing to failing since `previous`, plus the health for the next
+ * read. The first read only records a baseline. A task alerts when it was passing at the last read or
+ * passed since, shown by a new `lastSuccessfulRunId`; repeat failures, running runs and edits stay quiet.
  */
 export function commandTasksTurnedFailing(
   previous: CommandHealth | null,

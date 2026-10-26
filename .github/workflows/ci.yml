@@ -461,6 +461,13 @@ jobs:
         run: >-
           vp run test:cached -- --shard ${{ matrix.shard }}/${{ strategy.job-total }}
           --uncached apps/server/integration/transferBudgetV2.integration.test.ts
+          --uncached apps/server/src/htmlRender/HtmlRender.test.ts
+          --uncached apps/server/src/mcp/WebResearchRender.integration.test.ts
+          --uncached apps/server/src/preview/CredentialLogin.integration.test.ts
+          --uncached apps/server/src/preview/ServerBrowserContexts.integration.test.ts
+          --uncached apps/server/src/preview/ServerCookieMirror.integration.test.ts
+          --uncached apps/server/src/webResearch/PublicRender.test.ts
+          --uncached apps/server/src/webResearch/ResearchHost.test.ts
           --verify-hits 1 --report "${{ runner.temp }}/test-cache-${{ matrix.shard }}.json" apps/server
 
       - name: Upload test cache measurements

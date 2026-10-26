@@ -34,17 +34,16 @@ interface AdmissionEntry {
 
 export const make = Effect.gen(function* () {
   const entries = yield* Ref.make<ReadonlyMap<string, AdmissionEntry>>(new Map());
-  const acquire = (key: string) =>
-    Effect.gen(function* () {
-      const turnstile = yield* Semaphore.make(1);
-      const shared = yield* Semaphore.make(sharedPermits);
-      return yield* Ref.modify(entries, (current) => {
-        const entry = current.get(key) ?? { turnstile, shared, users: 0 };
-        const next = new Map(current);
-        next.set(key, { ...entry, users: entry.users + 1 });
-        return [entry, next] as const;
-      });
+  const acquire = Effect.fn("providerAdmissionGate.acquire")(function* (key: string) {
+    const turnstile = yield* Semaphore.make(1);
+    const shared = yield* Semaphore.make(sharedPermits);
+    return yield* Ref.modify(entries, (current) => {
+      const entry = current.get(key) ?? { turnstile, shared, users: 0 };
+      const next = new Map(current);
+      next.set(key, { ...entry, users: entry.users + 1 });
+      return [entry, next] as const;
     });
+  });
   const release = (key: string) =>
     Ref.update(entries, (current) => {
       const entry = current.get(key);

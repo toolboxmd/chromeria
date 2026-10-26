@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import type { ThreadListV2ListItem } from "../threads/threadListV2";
 import { RegistryContext } from "@effect/atom-react";
 import {
@@ -28,6 +27,39 @@ const state = vi.hoisted(() => ({
   selected: [] as string[],
 }));
 
+vi.mock("expo-crypto", () => ({ randomUUID: () => globalThis.crypto.randomUUID() }));
+vi.mock("expo", () => ({ requireOptionalNativeModule: () => null }));
+vi.mock("expo-blur", () => ({ BlurView: () => null }));
+vi.mock("expo-constants", () => ({ default: { expoConfig: { extra: {} } } }));
+vi.mock("expo-glass-effect", () => ({
+  GlassView: () => null,
+  isGlassEffectAPIAvailable: () => false,
+}));
+vi.mock("expo-secure-store", () => ({
+  getItemAsync: async () => null,
+  setItemAsync: async () => {},
+  deleteItemAsync: async () => {},
+}));
+vi.mock("react-native-keyboard-controller", () => ({ useKeyboardState: () => false }));
+vi.mock("uniwind", () => ({ withUniwind: (component: unknown) => component }));
+vi.mock("../../components/ui/Toast", () => ({ toast: () => {}, ToastViewport: () => null }));
+vi.mock("../threads/threadListAnimations", () => ({ THREAD_SIDEBAR_ROW_LAYOUT: undefined }));
+vi.mock("./ThreadUndoNotice", () => ({ ThreadUndoNotice: () => null }));
+// No older settled shelf here: every thread under test is loaded.
+vi.mock("../../state/olderSettledShelf", () => ({
+  useOlderSettledShelf: () => ({
+    environments: new Map(),
+    visibleCount: 0,
+    pages: new Map(),
+    grow: () => {},
+    isListed: () => true,
+    unloadedCount: () => 0,
+    loading: false,
+    failed: false,
+    retry: () => {},
+  }),
+  useOlderSettledShelfGrowth: () => {},
+}));
 vi.mock("react-native", () => ({
   Platform: { OS: "ios" },
   View: state.container,
@@ -53,15 +85,18 @@ vi.mock("react-native-gesture-handler", () => ({
 vi.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
-vi.mock("@legendapp/list/react-native", () => ({
-  LegendList: (props: {
-    data: readonly ThreadListV2ListItem[];
-    renderItem: (input: { item: ThreadListV2ListItem }) => ReactNode;
-  }) => {
-    state.listRenders++;
-    return props.data.map((item) => <div key={item.key}>{props.renderItem({ item })}</div>);
-  },
-}));
+const legendList = vi.hoisted(
+  () =>
+    (props: {
+      data: readonly ThreadListV2ListItem[];
+      renderItem: (input: { item: ThreadListV2ListItem }) => ReactNode;
+    }) => {
+      state.listRenders++;
+      return props.data.map((item) => <div key={item.key}>{props.renderItem({ item })}</div>);
+    },
+);
+vi.mock("@legendapp/list/react-native", () => ({ LegendList: legendList }));
+vi.mock("@legendapp/list/reanimated", () => ({ AnimatedLegendList: legendList }));
 vi.mock("../../native/native-layout-metrics", () => ({
   useDeviceType: () => "phone",
   useNativeColumnLayoutMetrics: () => null,
@@ -105,10 +140,11 @@ vi.mock("./thread-swipe-actions", () => ({
 }));
 vi.mock("./useThreadListActions", () => ({ useThreadListActions: () => ({}) }));
 vi.mock("./usePendingTaskListActions", () => ({ usePendingTaskListActions: () => ({}) }));
-vi.mock("./home-thread-navigation", () => ({
-  useHomeThreadSelection: () => (thread: { environmentId: string; id: string }) => {
-    state.selected = [thread.environmentId, thread.id];
-  },
+vi.mock("../workspace/useSelectWorkspaceDetail", () => ({
+  useSelectWorkspaceDetail:
+    () => (detail: { readonly params: { environmentId: string; threadId: string } }) => {
+      state.selected = [detail.params.environmentId, detail.params.threadId];
+    },
 }));
 vi.mock("./home-list-options", () => ({
   useHomeListOptions: () => ({
@@ -144,6 +180,7 @@ vi.mock("../../state/threads", async () => {
   );
   state.snapshots = snapshots;
   return {
+    startOpeningEnvironmentThread: () => {},
     environmentThreadShells: createEnvironmentThreadShellAtoms({
       snapshotAtom: snapshots,
       catalogValueAtom: Atom.make({
@@ -179,7 +216,13 @@ vi.mock("../../state/use-remote-environment-registry", () => ({
 }));
 vi.mock("../../state/use-pending-new-tasks", () => ({ usePendingNewTasks: () => [] }));
 vi.mock("../../state/use-thread-outbox", () => ({ useQueuedThreadKeys: () => new Set() }));
-vi.mock("../../state/queries", () => ({ useThreadSearch: () => ({ matches: state.matches }) }));
+vi.mock("../../state/queries", () => ({
+  useThreadSearch: (_environmentIds: unknown, query: string) => ({
+    matches: state.matches,
+    query: query.trim(),
+    isPending: false,
+  }),
+}));
 vi.mock("../../state/thread-order", () => ({ usePendingThreadOrder: () => null }));
 vi.mock("../../state/server", async () => {
   const { Atom } = await import("effect/reactivity");

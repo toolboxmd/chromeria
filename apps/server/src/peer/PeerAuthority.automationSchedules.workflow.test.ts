@@ -132,7 +132,6 @@ it.live.each(["client", "mcp", "unkeyed-mcp"] as const)(
         ).toHaveLength(1);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -190,7 +189,6 @@ it.live(
         expect(yield* sql`SELECT 1 FROM orchestration_v2_effect_outbox`).toHaveLength(0);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -569,7 +567,6 @@ it.live(
         ).toBe("Failure");
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live.each(["disable", "edit", "delete"] as const)(
@@ -673,7 +670,6 @@ it.live.each(["disable", "edit", "delete"] as const)(
         ).toHaveLength(0);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live.each(["disable", "edit", "delete"] as const)(
@@ -801,7 +797,6 @@ it.live.each(["disable", "edit", "delete"] as const)(
         expect((yield* Effect.result(b.authority.checkThread(threadId)))._tag).toBe("Failure");
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live.each([
@@ -881,7 +876,6 @@ it.live.each([
         expect(yield* sql`SELECT 1 FROM orchestration_v2_effect_outbox`).toHaveLength(0);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live.each(["schedule_task", "start_spectrum"] as const)(
@@ -950,7 +944,6 @@ it.live.each(["schedule_task", "start_spectrum"] as const)(
         expect(yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox`).toEqual(effects);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -1035,7 +1028,6 @@ it.live(
         expect("certificateId" in local ? local.certificateId : undefined).toBe(certificate.id);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -1140,7 +1132,6 @@ it.live(
         }).pipe(Effect.provide(TestClock.layer()));
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  60_000,
 );
 
 it.live(
@@ -1246,7 +1237,6 @@ it.live(
         ).toHaveLength(0);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live.each([503, 202, "lost-ack"] as const)(
@@ -1361,7 +1351,6 @@ it.live.each([503, 202, "lost-ack"] as const)(
         }).pipe(Effect.provide(TestClock.layer()));
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live(
@@ -1488,7 +1477,6 @@ it.live(
         expect(yield* validationAttempts).toHaveLength(0);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.effect(
@@ -1591,7 +1579,6 @@ it.effect(
         expect(yield* validationAttempts).toHaveLength(0);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
-  30_000,
 );
 
 it.live(
@@ -1699,7 +1686,6 @@ it.live(
         ).toHaveLength(0);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
-  30_000,
 );
 
 it.live.each(["non-turn", "non-turn-offline", "policy", "onward"] as const)(
@@ -1926,7 +1912,6 @@ it.live.each(["non-turn", "non-turn-offline", "policy", "onward"] as const)(
         );
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
-  90_000,
 );
 
 it.live(
@@ -2132,7 +2117,6 @@ it.live(
         expect(yield* sql`SELECT 1 FROM fork_automation_disable_acks`).toHaveLength(1);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30000,
 );
 
 it.live.each(["browser-off-after", "device-default", "browser-off-nested"] as const)(
@@ -2342,7 +2326,6 @@ it.live.each(["browser-off-after", "device-default", "browser-off-nested"] as co
         expect((yield* Effect.result(b.authority.checkThread(threadId)))._tag).toBe("Failure");
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  60_000,
 );
 it.live(
   "automation384-r4: birth-only onward automation survives broadening and receives exact DISABLE on real revocation",
@@ -2478,7 +2461,6 @@ it.live(
         expect(yield* b.authority.pendingAutomationDisables).toEqual([]);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
-  120_000,
 );
 
 it.live(
@@ -2767,7 +2749,6 @@ it.live(
         expect(yield* sql`SELECT 1 FROM fork_automation_disable_acks`).toHaveLength(1);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30000,
 );
 
 it.live(
@@ -2881,7 +2862,6 @@ it.live(
         }).pipe(Effect.provide(TestClock.layer()));
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );
 
 it.live.each(["late", "earlier", "simultaneous"] as const)(
@@ -3061,5 +3041,4 @@ it.live.each(["late", "earlier", "simultaneous"] as const)(
         }).pipe(Effect.provide(TestClock.layer()));
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-  30_000,
 );

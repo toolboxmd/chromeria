@@ -33,6 +33,10 @@ const reactTests = [
   "src/features/connection/ConnectionsNewRouteScreen.test.tsx",
   // Fork (toolboxmd/chromeria#584).
   "src/features/browser/BrowserPreviewRouteScreen.test.tsx",
+  "src/features/browser/preview-stream.browser.test.ts",
+  "src/features/browser/PreviewStreamWebView.test.tsx",
+  "src/features/home/HomeRouteScreen.search.test.tsx",
+  "src/features/threads/RemotePendingRequest.test.tsx",
 ];
 
 const sourceRoot = `${normalizePath(NodeURL.fileURLToPath(new URL("./src", import.meta.url)))}/`;
@@ -47,6 +51,12 @@ const babelConfig = require("./babel.config.js")({ cache: () => {} });
 
 export default defineConfig({
   test: {
+    // Fork: Metro serves the generated preview stream; tests read its source.
+    alias: {
+      "@t3tools/mobile-preview-stream": NodeURL.fileURLToPath(
+        new URL("./src/features/browser/preview-stream.browser.ts", import.meta.url),
+      ),
+    },
     hookTimeout: 60_000,
     testTimeout: 60_000,
     projects: [

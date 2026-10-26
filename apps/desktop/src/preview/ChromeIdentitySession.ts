@@ -117,11 +117,9 @@ export const installChromeIdentity = (
       };
       observed.set(contents, controller);
     }
-    // Never hold the request on the command. Chromium suspends renderer-bound CDP messages from
-    // DidStartNavigation to DidFinishNavigation, and Emulation.setUserAgentOverride falls through
-    // to the renderer, so its reply cannot arrive while this navigation is paused (#524). This
-    // request's headers were fixed before this hook anyway; later requests and the committed
-    // document get the identity.
+    // Never hold the request on the command: Chromium suspends renderer-bound CDP messages during
+    // navigation, and Emulation.setUserAgentOverride reaches the renderer, so its reply cannot arrive.
+    // This request's headers were fixed already; later requests and the document get the identity.
     callback({});
     controller.start(details.url);
   });

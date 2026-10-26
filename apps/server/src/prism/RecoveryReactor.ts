@@ -53,8 +53,8 @@ export const layer = Layer.effect(
     const scheduler = yield* Scheduler.Scheduler;
     const permit = yield* Semaphore.make(1);
     const afterRunId = yield* Ref.make("");
-    const reconcileSource = (threadId: ThreadId, sourceRunId: RunId) =>
-      Effect.gen(function* () {
+    const reconcileSource = Effect.fn("RecoveryReactor.reconcileSource")(
+      function* (threadId: ThreadId, sourceRunId: RunId) {
         const latest = yield* sql<{
           run_id: string;
         }>`SELECT run_id FROM orchestration_v2_projection_runs
@@ -95,11 +95,14 @@ export const layer = Layer.effect(
         const command = retryCommand(record, DateTime.toEpochMillis(yield* DateTime.now));
         // Source eligibility and ancestry are rechecked by the composed commit plans.
         if (command !== null) yield* threads.dispatch(command);
-      }).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("prism.recovery.reconcile-failed", { threadId, cause }),
+      },
+      (effect, threadId, sourceRunId) =>
+        effect.pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("prism.recovery.reconcile-failed", { threadId, cause }),
+          ),
         ),
-      );
+    );
     const reconcile = Effect.gen(function* () {
       // A fair keyset batch covers every unresolved exact source, including old/non-MCP failures.
       // Neither a pending controller nor a newer thread run can starve historical decisions.
