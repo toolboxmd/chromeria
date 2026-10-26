@@ -1414,8 +1414,10 @@ it.live("secret385 r1 timeout returns the saved winner from the final pending po
         });
         const opened = yield* openRequest(setup, "r1-timeout", false, 1200);
         yield* Queue.take(polling);
-        yield* TestClock.adjust(1000);
+        // Each poll reads SQLite asynchronously, so advance one interval per observed poll.
+        yield* TestClock.adjust(500);
         yield* Queue.take(polling);
+        yield* TestClock.adjust(500);
         yield* Queue.take(polling);
         expect((yield* opened.answer(opened.input)).exit?._tag).toBe("Success");
         yield* TestClock.adjust(200);
@@ -1591,8 +1593,12 @@ it.live.each(["success", "timeout", "cancel", "startup", "budget"] as const)(
           const armed = yield* Queue.unbounded<void>();
           const observed = {
             ...clock,
+            // Arm only on the frame wait; the lazy SQLite reader worker also sleeps on this clock.
             sleep: (duration: Duration.Duration) =>
-              Queue.offer(armed, undefined).pipe(Effect.andThen(clock.sleep(duration))),
+              (Duration.toMillis(duration) === 25_000
+                ? Queue.offer(armed, undefined)
+                : Effect.void
+              ).pipe(Effect.andThen(clock.sleep(duration))),
           };
           for (let index = 0; index < (variant === "budget" ? 33 : 1); index++) {
             const waiting = yield* setup.b.authority

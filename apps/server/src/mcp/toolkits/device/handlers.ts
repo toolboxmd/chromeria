@@ -287,7 +287,14 @@ const handlers = {
                   "Typed execution currently uses the existing simulator/emulator capability. Physical-device consent and support must be established separately.",
               });
             // Resolve consent and agent connectivity before booting or registering a session.
-            if (!(yield* devices.agentReadinessIfSupported(target.hostId))) {
+            // Fork: registered commands need the agent target configured before the session opens.
+            if (request !== undefined)
+              yield* devices.agentTarget({
+                threadId: scope.thread.threadId,
+                hostId: target.hostId,
+                deviceId: target.id,
+              });
+            else if (!(yield* devices.agentReadinessIfSupported(target.hostId))) {
               return yield* new DeviceToolUnavailableError({
                 reason:
                   "Agent device access requires enabled device support, agent access, and an available simulator platform on this host.",
