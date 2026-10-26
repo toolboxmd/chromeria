@@ -1368,7 +1368,9 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "newFiles": [
     "apps/server/src/mcp/delegatedTaskContinuation.test.ts",
     "packages/shared/src/forkToolInstructions.ts",
-    "apps/server/src/prism/ReplayInstructions.test.ts"
+    "apps/server/src/prism/ReplayInstructions.test.ts",
+    "packages/provider-core/src/server/forkOrchestrationGuidance.test.ts",
+    "apps/server/src/mcp/toolkits/orchestrator/forkToolGuidance.test.ts"
   ],
   "upstreamFiles": [
     "apps/server/src/mcp/toolkits/preview/tools.test.ts",
