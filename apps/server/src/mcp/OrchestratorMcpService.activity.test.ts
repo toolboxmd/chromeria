@@ -516,7 +516,7 @@ it("readThread and sendToThread reach threads in other projects", async () => {
       .requestSecret(makeScope(), { label: "Secret", reason: "requires a run" })
       .pipe(Effect.flip);
     expect(secret.code).toBe("parent_not_active");
-    // Fork (#551): upstream's delivery "file" returns one path, so it cannot combine with fields.
+    // Fork: upstream's delivery "file" returns one path, so it cannot combine with fields.
     const fileWithFields = yield* service
       .requestSecret(makeScope(), {
         label: "Client",

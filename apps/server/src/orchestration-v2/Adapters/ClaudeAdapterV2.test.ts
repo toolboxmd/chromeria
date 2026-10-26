@@ -8058,7 +8058,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.equal(terminal.status, "failed");
           if (terminal.status !== "failed") return;
           assert.isNotEmpty(terminal.failure.message);
-          // Fork (#580): an API error without a status is a retryable transport failure.
+          // Fork: an API error without a status is a retryable transport failure.
           assert.equal(
             terminal.failure.class,
             terminalReason === "api_error" ? "transport_error" : "provider_error",
