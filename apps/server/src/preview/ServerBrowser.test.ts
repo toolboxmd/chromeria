@@ -14,12 +14,14 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import type { BrowserContext, Page } from "playwright-core";
 import { beforeEach, expect, vi } from "vite-plus/test";
@@ -349,7 +351,7 @@ it.live.each([
 ])("page watch cleans up before detaching CDP: %j", ({ baseline, reason, cleanupThrows }) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const { broker, tabId } = yield* ready;
+      const { browser, broker, tabId } = yield* ready;
       const source = new EventTarget();
       const realm = NodeVM.createContext({ TextEncoder, source, callbacks: 0, cleanups: 0 });
       const events = new NodeEvents.EventEmitter();
@@ -411,6 +413,41 @@ it.live.each([
         source.dispatchEvent(new Event("change"));
         expect(realm.callbacks).toBe(1);
         yield* broker.invoke({ scope, tabId, operation: "watchStop", input: started });
+        const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+        yield* viewer.input({ type: "takeControl" });
+        const before = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          tabId,
+          operation: "status",
+          input: {},
+        });
+        const retained = yield* browser.readWatch!(
+          {
+            ...started,
+            threadId: scope.thread.threadId,
+            after: 0,
+            timeoutMs: 0,
+          },
+          Effect.void,
+        ).pipe(Effect.flip);
+        expect(retained).toMatchObject({ reason: "stopped" });
+        yield* broker.invoke({ scope, tabId, operation: "watchStop", input: started });
+        const refused = yield* broker
+          .invoke<void>({
+            scope,
+            tabId,
+            operation: "watchStart",
+            input: { subscription: "(emit) => emit(1)" },
+          })
+          .pipe(Effect.flip);
+        expect(refused).toMatchObject({ reason: "humanControl" });
+        const after = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          tabId,
+          operation: "status",
+          input: {},
+        });
+        expect(after.control).toEqual(before.control);
       }
       expect(realm.cleanups).toBe(1);
       const callbacks = realm.callbacks;
@@ -1766,6 +1803,81 @@ it.live("agents read a human's tab with no arguments and act on it only while no
         .invoke<void>({ scope, tabId, operation: "press", input: { key: "Enter" } })
         .pipe(Effect.flip);
       expect(retaken).toMatchObject({ reason: "humanControl" });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("an agent's tab stays human-controlled across viewer disconnects and passive reads", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, broker, tabId } = yield* ready;
+      const viewerScope = yield* Scope.make();
+      const viewer = yield* browser
+        .attachViewer(viewerInput(tabId, true))
+        .pipe(Effect.provideService(Scope.Scope, viewerScope));
+      yield* viewer.input({ type: "takeControl" });
+      const status = () =>
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          tabId,
+          operation: "status",
+          input: {},
+        });
+      expect((yield* status()).control?.owner).toBe("human");
+      yield* Scope.close(viewerScope, Exit.void);
+      expect((yield* status()).control?.owner).toBe("human");
+      const generation = (yield* status()).control?.generation;
+      yield* broker.invoke({ scope, tabId, operation: "snapshot", input: {} });
+      const refused = yield* broker
+        .invoke<void>({
+          scope,
+          tabId,
+          operation: "navigate",
+          input: { url: "https://example.com" },
+        })
+        .pipe(Effect.flip);
+      expect(refused).toMatchObject({ reason: "humanControl" });
+      expect((yield* status()).control).toMatchObject({ owner: "human", generation });
+      const reconnected = yield* browser.attachViewer(viewerInput(tabId, true));
+      expect((yield* status()).control?.owner).toBe("human");
+      expect(yield* Queue.clear(reconnected.output)).toContainEqual(
+        expect.objectContaining({ _tag: "control", controller: "unclaimed", canOperate: true }),
+      );
+      yield* reconnected.input({ type: "takeControl" });
+      yield* reconnected.input({ type: "text", text: "human input" });
+      yield* reconnected.input({ type: "releaseControl" });
+      expect((yield* status()).control?.owner).toBe("agent");
+      yield* broker.invoke({
+        scope,
+        tabId,
+        operation: "navigate",
+        input: { url: "https://example.com" },
+      });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("an agent can snapshot its own tab while a human drives without changing control", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, broker, tabId } = yield* ready;
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      yield* viewer.input({ type: "takeControl" });
+      const before = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        tabId,
+        operation: "status",
+        input: {},
+      });
+      yield* broker.invoke({ scope, tabId, operation: "snapshot", input: {} });
+      const after = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        tabId,
+        operation: "status",
+        input: {},
+      });
+      expect(after.control).toEqual(before.control);
+      expect(after.control?.owner).toBe("human");
     }),
   ).pipe(Effect.provide(layer)),
 );

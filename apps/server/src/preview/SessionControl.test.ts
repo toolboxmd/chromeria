@@ -115,6 +115,25 @@ describe("SessionControl", () => {
     expect(control.controller).toBe("lawful");
   });
 
+  it("keeps disconnected human control when a replacement takeover fails authorization", async () => {
+    const control = new SessionControl("agent");
+    await control.take("viewer");
+    await control.disconnect("viewer");
+    let checks = 0;
+    await expect(
+      control.take("replacement", async () => {
+        if (++checks > 1) throw new Error("authorization retired");
+      }),
+    ).rejects.toThrow("authorization retired");
+    expect(control.humanDisconnected).toBe(true);
+    await expect(control.agent("agent", async () => "resumed")).rejects.toMatchObject({
+      reason: "humanControl",
+    });
+    await control.take("human");
+    await control.release("human");
+    await expect(control.agent("agent", async () => "resumed")).resolves.toBe("resumed");
+  });
+
   it("returns an action result before tracked navigation but drains it before already queued actions", async () => {
     const control = new SessionControl("agent");
     const committed = Promise.withResolvers<void>();
@@ -216,12 +235,19 @@ describe("SessionControl", () => {
       control.human("viewer", async () => events.push("stale human action")),
     ).rejects.toThrow(BrowserControlInterrupted);
     const disconnected = control.disconnect("viewer");
-    const resumed = control.agent("agent", async () => events.push("agent resumed"));
+    const refused = expect(
+      control.agent("agent", async () => events.push("agent resumed")),
+    ).rejects.toMatchObject({ reason: "humanControl" });
     expect(control.generation).toBe(2);
     expect(invalidations).toBe(2);
     finish.resolve();
-    await Promise.all([running, queued, disconnected, resumed]);
-    expect(events).toEqual(["human finished", "agent resumed"]);
+    await Promise.all([running, queued, disconnected, refused]);
+    expect(events).toEqual(["human finished"]);
+    await control.take("reconnected");
+    await control.human("reconnected", async () => events.push("human reconnected"));
+    await control.release("reconnected");
+    await control.agent("agent", async () => events.push("agent resumed"));
+    expect(events).toEqual(["human finished", "human reconnected", "agent resumed"]);
   });
 
   it("does not revive stale actions when takeover is released before running work finishes", async () => {
