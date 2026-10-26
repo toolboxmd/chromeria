@@ -89,7 +89,7 @@ emits its own initial baseline, for example:
   const unsubscribe = window.appStore.subscribe(listener);
   listener();
   return unsubscribe;
-}
+};
 ```
 
 Save the returned `watchId` and `epoch`. The start `cursor` is always zero, before
