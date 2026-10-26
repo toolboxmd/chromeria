@@ -37,7 +37,6 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as TestClock from "effect/testing/TestClock";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -1090,8 +1089,8 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
           ...(input.bounded ? { bounded: true as const } : {}),
           ...(input.afterSequence === undefined ? {} : { afterSequence: input.afterSequence }),
         } as Parameters<EventSink.EventSinkV2Shape["stream"]>[0]);
-      // The test clock does not advance this wait. A bad cursor that falls
-      // through into the live tail stays suspended, which is still a miss.
+      // Bad cursors are rejected before any subscribe or read, so a stream still
+      // running after one yield fell through into the live tail: a miss.
       const classifyOpened = (opened: ReturnType<EventSink.EventSinkV2Shape["stream"]>) =>
         Effect.gen(function* () {
           const fiber = yield* opened.pipe(
@@ -1100,11 +1099,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
             Effect.forkChild({ startImmediately: true }),
           );
           yield* Effect.yieldNow;
-          let done = fiber.pollUnsafe();
-          if (done === undefined) {
-            yield* TestClock.withLive(Effect.sleep("200 millis"));
-            done = fiber.pollUnsafe();
-          }
+          const done = fiber.pollUnsafe();
           if (done === undefined) {
             yield* Fiber.interrupt(fiber);
             return "waited for a live event";

@@ -1070,9 +1070,9 @@ describe("ServingState settlement", () => {
     );
     try {
       await new Promise<void>((resolve) => holder.stdout!.once("data", () => resolve()));
-      const started = performance.now();
+      // A bounded busy timeout, not the holder's lifetime, decides when the write gives up.
+      assert.deepEqual({ ...h.db.prepare("PRAGMA busy_timeout").get() }, { timeout: 100 });
       assert.throws(() => h.fire({ kind: "tool_result", candidates: [entry("a", "A")] }));
-      assert.isBelow(performance.now() - started, 1000);
     } finally {
       holder.kill("SIGKILL");
       NodeFS.rmSync(dir, { recursive: true, force: true });

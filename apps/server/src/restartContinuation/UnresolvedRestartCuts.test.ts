@@ -323,11 +323,9 @@ it.effect(
           return span;
         },
       });
-      const start = performance.now();
       const page = yield* store
         .getUnresolvedRestartCuts(undefined, 100)
         .pipe(Effect.withTracer(tracer));
-      const elapsedMs = performance.now() - start;
       assert.lengthOf(page, 100);
       const query = statements.find((statement) =>
         statement.includes("LEFT JOIN orchestration_v2_effect_outbox"),
@@ -343,7 +341,6 @@ it.effect(
             evidence: "Restart-cut discovery on synthetic SQLite",
             runRows: 846,
             returnedRows: page.length,
-            elapsedMs,
             plan: plan.map((row) => row.detail),
           })}\n`,
         );

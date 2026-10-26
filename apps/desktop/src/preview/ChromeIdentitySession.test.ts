@@ -66,8 +66,11 @@ const harness = (
   const emit = (event: string, ...args: unknown[]) => listeners.get(event)?.(...args);
   const commit = (url = listed, isMainFrame = true) =>
     emit("did-frame-navigate", {}, url, 200, "OK", isMainFrame, 1, 1);
-  // Identity commands run on a promise chain; fakes that settle immediately finish within one turn.
-  const drain = () => new Promise<void>((resolve) => setImmediate(resolve));
+  // Identity commands chain only microtasks when fakes settle immediately, so flushing
+  // microtasks runs them to completion without any timer.
+  const drain = async () => {
+    for (let turn = 0; turn < 32; turn += 1) await Promise.resolve();
+  };
   return {
     configure,
     contents,

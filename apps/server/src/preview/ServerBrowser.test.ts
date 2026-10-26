@@ -867,14 +867,14 @@ it.live("a person's popup from an agent's tab stays a server page the desktop ca
       const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
       yield* viewer.input({ type: "takeControl" });
       const popup = makeContext();
-      contexts[0]!.page.emit("popup", popup.page);
       const manager = yield* Manager.PreviewManager;
-      let sessions = (yield* manager.list({ threadId: scope.thread.threadId })).sessions;
-      while (sessions.length < 2) {
-        yield* Effect.sleep("5 millis");
-        sessions = (yield* manager.list({ threadId: scope.thread.threadId })).sessions;
-      }
-      const popupTab = sessions.find((session) => session.tabId !== tabId)!;
+      const events = yield* manager.subscribeEvents;
+      contexts[0]!.page.emit("popup", popup.page);
+      let event = yield* PubSub.take(events);
+      while (event.type !== "opened" || event.snapshot.tabId === tabId)
+        event = yield* PubSub.take(events);
+      const popupTab = event.snapshot;
+      const sessions = (yield* manager.list({ threadId: scope.thread.threadId })).sessions;
       expect(popupTab.automationOwner).toBeUndefined();
       expect(popupTab.serverPage).toBe(true);
       expect(sessions.find((session) => session.tabId === tabId)?.serverPage).toBe(true);
@@ -1205,13 +1205,15 @@ it.live("an agent's tab runs in the server browser without waiting for the deskt
       yield* ServerBrowser.ServerBrowser;
       yield* Effect.yieldNow;
       desktopRendersNext = true;
+      const entered = Promise.withResolvers<void>();
+      contextStarted = () => entered.resolve();
       yield* manager.open({
         threadId: scope.thread.threadId,
         runtime: "server",
         automationOwner: "agent-desktop",
         reveal: false,
       });
-      while (contexts.length === 0) yield* Effect.yieldNow;
+      yield* Effect.promise(() => entered.promise);
       expect(desktopConnections).toEqual([]);
       // The desktop was never asked to attach, so its next tab is still pending.
       expect(desktopRendersNext).toBe(true);

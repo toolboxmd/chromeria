@@ -54,7 +54,6 @@ it.effect(
       yield* Deferred.await(began);
       const worker = workers.at(-1)!;
       expect(worker.unref).toHaveBeenCalledOnce();
-      yield* Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
       yield* Fiber.interrupt(fiber);
       expect(worker.terminate).toHaveBeenCalledOnce();
     }).pipe(Effect.scoped),

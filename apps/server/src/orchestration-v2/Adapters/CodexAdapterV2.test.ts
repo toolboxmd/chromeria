@@ -1063,17 +1063,6 @@ describe("CodexAdapterV2 session initialize", () => {
 });
 
 describe("CodexAdapterV2 post-settle continuation", () => {
-  const awaitUntil = (predicate: () => boolean, label: string): Effect.Effect<void> =>
-    Effect.gen(function* () {
-      for (let attempt = 0; attempt < 5000; attempt++) {
-        if (predicate()) {
-          return;
-        }
-        yield* Effect.yieldNow;
-      }
-      return yield* Effect.die(`Timed out waiting for ${label}.`);
-    });
-
   // The harness notifies after every recorded event or continuation, so a wait
   // re-checks exactly when the state it reads changes. Subscribing before the
   // first check means a change that lands in between is not lost.
@@ -8521,7 +8510,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             },
           };
           yield* harness.runtime.startTurn(turnInput);
-          yield* awaitUntil(() => harness.terminalEvents().length === 1, "root turn terminal");
+          yield* harness.until(() => harness.terminalEvents().length === 1);
           assert.equal(harness.terminalEvents()[0]?.status, "completed");
           assert.isTrue(yield* harness.hasPendingBackgroundWork);
           assert.isTrue(
@@ -8531,10 +8520,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           const terminalIndex = harness.events.findIndex((event) => event.type === "turn.terminal");
 
           yield* TestClock.adjust("30 seconds");
-          yield* awaitUntil(
-            () => harness.continuationRequests.length === 1,
-            "continuation request",
-          );
+          yield* harness.until(() => harness.continuationRequests.length === 1);
           yield* Deferred.await(backgroundEnded);
           const request = harness.continuationRequests[0];
           const operation = harness.events
@@ -8606,10 +8592,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 event.turnItem.output === "CODEX_BG_WAKE_DONE\n" &&
                 event.turnItem.exitCode === 0,
             );
-          yield* awaitUntil(
-            () => lateCommandUpdateIndex() > terminalIndex,
-            "post-settle command projection",
-          );
+          yield* harness.until(() => lateCommandUpdateIndex() > terminalIndex);
           assert.lengthOf(harness.terminalEvents(), 1);
           assert.isFalse(yield* harness.hasPendingBackgroundWork);
         }).pipe(
