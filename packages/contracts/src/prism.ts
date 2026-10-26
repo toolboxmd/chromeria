@@ -99,8 +99,11 @@ export function isPrismRunGroupRole(role: PrismRole): role is PrismRunGroupRole 
   return (PRISM_RUN_GROUP_ROLES as ReadonlyArray<PrismRole>).includes(role);
 }
 
-/** Work difficulty a job or spawn runs at; the worker keeps one model list per lane. */
-const PRISM_LANES = ["easy", "medium", "hard"] as const;
+/**
+ * The worker's lane: a difficulty, or `ui` for UI and frontend work. The
+ * worker keeps one model list per lane; `ui` runs only on its own list.
+ */
+const PRISM_LANES = ["easy", "medium", "hard", "ui"] as const;
 export const PrismLane = Schema.Literals(PRISM_LANES);
 export type PrismLane = typeof PrismLane.Type;
 export const DEFAULT_PRISM_LANE: PrismLane = "medium";
@@ -124,6 +127,17 @@ export const PrismLaneModels = Schema.Struct({
   easy: modelList,
   medium: modelList,
   hard: modelList,
+  ui: Schema.Array(Color).pipe(
+    Schema.withDecodingDefault(
+      Effect.succeed([
+        {
+          instanceId: defaultInstanceIdForDriver(ProviderDriverKind.make("claudeAgent")),
+          model: "claude-opus-5-5",
+          effort: "medium",
+        },
+      ]),
+    ),
+  ),
 }).pipe(Schema.withDecodingDefault(Effect.succeed({})));
 export type PrismLaneModels = typeof PrismLaneModels.Type;
 
@@ -148,7 +162,8 @@ export const PRISM_ROLE_DESCRIPTIONS: Record<PrismRole, string> = {
     "Investigates read-only and reports cited facts, unknowns and options. Changes nothing.",
   designer:
     "Proposes or compares designs, interfaces and plans for a goal, and recommends one. Changes nothing.",
-  worker: `Implements the task and commits as it goes. Use optional lane for difficulty: ${PRISM_LANES.join(", ")}.`,
+  worker:
+    "Implements the task and commits as it goes. Use optional lane for difficulty: easy, medium, hard; or ui for UI and frontend work, which runs only on the ui lane's Colors.",
   "computer-use":
     'Drives the browser (preview_* tools) and, where available, the desktop through computer-use tools. Reports what it saw and did. For browser or desktop driving beyond a quick check, delegate with delegate_task using prismRole: "computer-use".',
   roast:
@@ -281,6 +296,7 @@ export const PrismRoleKitsPatch = Schema.Struct({
           easy: Schema.optionalKey(Schema.Array(Color)),
           medium: Schema.optionalKey(Schema.Array(Color)),
           hard: Schema.optionalKey(Schema.Array(Color)),
+          ui: Schema.optionalKey(Schema.Array(Color)),
         }),
       ),
     }),

@@ -43,7 +43,12 @@ describe("Prism role kits", () => {
       if ("models" in kit) expect(kit.models).toEqual([]);
     }
     expect(DEFAULT_PRISM_ROLE_KITS.promachos.models).toEqual([]);
-    expect(DEFAULT_PRISM_ROLE_KITS.worker.lanes).toEqual({ easy: [], medium: [], hard: [] });
+    expect(DEFAULT_PRISM_ROLE_KITS.worker.lanes).toEqual({
+      easy: [],
+      medium: [],
+      hard: [],
+      ui: [{ instanceId: "claudeAgent", model: "claude-opus-5-5", effort: "medium" }],
+    });
   });
 
   it("defaults computer use to Claude Haiku in new and older saved settings", () => {
@@ -131,7 +136,11 @@ describe("Prism role kits", () => {
     expect(settings.prismRoles.planner.models).toEqual([opus]);
     expect(settings.prismRoles.reviewer.models).toEqual([luna, grok]);
     expect(settings.prismRoles.promachos.models).toEqual([grok]);
-    expect(settings.prismRoles.worker.lanes).toEqual({ easy: [luna], medium: [], hard: [opus] });
+    expect(settings.prismRoles.worker.lanes).toMatchObject({
+      easy: [luna],
+      medium: [],
+      hard: [opus],
+    });
 
     // A project override keeps only the kept roles it set; an empty list stays a real value.
     const overrides = decodeProjectOverrides({

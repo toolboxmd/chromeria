@@ -190,15 +190,44 @@ const make = Effect.gen(function* () {
           ]
             .filter(Boolean)
             .join("\n\n");
+      // UI work must land on a UI Color: the ui lane never inherits the caller's
+      // model, and callers often pass an inherited model as `explicit`.
+      const ui = input.lane === "ui";
+      if (ui && input.role !== "worker")
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "The ui lane is only for the worker role.",
+        });
+      const preferences = prismRoleModels(kits, input.role, input.lane ?? DEFAULT_PRISM_LANE);
       if (input.explicit !== undefined) {
-        const modelSelection = input.validate
-          ? yield* input.validate(input.explicit)
-          : input.explicit;
+        const explicit = input.explicit;
+        const modelSelection = input.validate ? yield* input.validate(explicit) : explicit;
+        const providers = ui ? yield* registry.getProviders : [];
+        // A Color may name a model by an alias of the slug a selection carries.
+        const slug = (instanceId: string, model: string) =>
+          providers
+            .find((p) => p.instanceId === instanceId)
+            ?.models.find((m) => m.slug === model || m.aliases?.includes(model))?.slug ?? model;
+        const isUiColor = (selection: ModelSelection) =>
+          preferences.some(
+            (color) =>
+              color.instanceId === selection.instanceId &&
+              slug(color.instanceId, color.model) === slug(selection.instanceId, selection.model),
+          );
+        if (ui && !isUiColor(explicit) && !isUiColor(modelSelection))
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: `${modelSelection.instanceId}/${modelSelection.model} is not one of the worker's ui lane Colors. Omit the model to use them.`,
+          });
         return { modelSelection, modelSelections: [modelSelection], kitText };
       }
       const providers = yield* registry.getProviders;
       const now = DateTime.toEpochMillis(yield* DateTime.now);
-      const preferences = prismRoleModels(kits, input.role, input.lane ?? DEFAULT_PRISM_LANE);
+      if (ui && preferences.length === 0)
+        return yield* new OrchestratorMcpFailure({
+          code: "provider_unavailable",
+          message: "The worker's ui lane has no Colors. Add one in Settings > Prism.",
+        });
       const candidates =
         preferences.length > 0 ? preferences : input.inherited ? [input.inherited] : [];
       const count = Math.max(1, input.count ?? 1);

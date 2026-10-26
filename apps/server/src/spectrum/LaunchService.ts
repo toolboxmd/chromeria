@@ -21,7 +21,7 @@ import {
   threadOwner,
   type ModelSelection,
   type OrchestrationV2AppThread,
-  type OrchestratorMcpFailure,
+  OrchestratorMcpFailure,
   type PrismLane,
   type PrismRole,
   type RunId,
@@ -242,6 +242,12 @@ const make = Effect.gen(function* () {
       color: SpectrumColorSpec,
       threadId: ThreadId,
     ) {
+      // Slot fallbacks start later without Prism, so they cannot preserve the ui lane.
+      if (color.lane === "ui")
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: `${color.label}: the ui lane is for worker delegations, not Spectrum members.`,
+        });
       const primary =
         color.selection ?? (color.role === undefined ? caller.modelSelection : undefined);
       const explicit =
