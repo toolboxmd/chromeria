@@ -338,3 +338,8 @@ _Avoid_: rung list
 Chromeria's reusable store of research pages and their provenance, shared by
 threads that use the same research environment.
 _Avoid_: scrape cache
+
+
+**Page watch**:
+A caller-authored subscription in one authorized browser opening whose JSON
+changes remain available as an ordered, replayable event queue.

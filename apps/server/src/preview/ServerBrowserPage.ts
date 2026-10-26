@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off - Playwright callbacks run outside the Effect runtime.
 
 import {
+  PreviewWatchError,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   type PreviewAutomationClickInput,
   type PreviewAutomationConsoleEntry,
@@ -17,6 +18,7 @@ import {
   type PreviewAutomationUploadInput,
   type PreviewAutomationWaitForInput,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import { constVoid } from "effect/Function";
 import type { CDPSession, Frame, Locator, Page } from "playwright-core";
 import * as NodeCrypto from "node:crypto";
@@ -39,7 +41,12 @@ export class ServerBrowserOperationError extends Error {
   }
 }
 
+const isWatchError = Schema.is(PreviewWatchError);
 export const toOperationError = (cause: unknown): ServerBrowserOperationError => {
+  if (isWatchError(cause))
+    return new ServerBrowserOperationError("PreviewWatchError", cause.message, {
+      reason: cause.reason,
+    });
   if (cause instanceof BrowserControlInterrupted)
     return new ServerBrowserOperationError(
       "PreviewAutomationControlInterruptedError",
