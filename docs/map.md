@@ -39,6 +39,9 @@ flowchart TD
     BST["Settled thread browser cleanup"]
     %% BST: #601
     PBI --> BST
+    PWS["Replayable page subscriptions"]
+    %% PWS: #622
+    PBI --> PWS --> T3M
 
     BLM["Chrome login mirror"]
     %% BLM: #520 #541 PR #530 PR #545

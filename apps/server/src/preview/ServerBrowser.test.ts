@@ -31,6 +31,7 @@ import { beforeEach, expect, vi } from "vite-plus/test";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as Broker from "../mcp/PreviewAutomationBroker.ts";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
 import * as CredentialVault from "./CredentialVault.ts";
 import * as DesktopChannel from "./DesktopBrowserChannel.ts";
 import * as Manager from "./Manager.ts";
@@ -437,6 +438,101 @@ it.live("tells the desktop once per thread when its agent turns start and end", 
     expect(yield* Queue.take(turns)).toEqual([threadId, false]);
     expect(yield* Queue.size(turns)).toBe(0);
   }).pipe(Effect.scoped, Effect.provide(layer)),
+);
+
+it.live.each([
+  { baseline: "1", reason: undefined, cleanupThrows: false },
+  { baseline: "undefined", reason: "malformed_payload", cleanupThrows: false },
+  { baseline: "'x'.repeat(1024 * 1024)", reason: "overflow", cleanupThrows: false },
+  { baseline: "undefined", reason: "malformed_payload", cleanupThrows: true },
+])("page watch cleans up before detaching CDP: %j", ({ baseline, reason, cleanupThrows }) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const source = new EventTarget();
+      const realm = NodeVM.createContext({ TextEncoder, source, callbacks: 0, cleanups: 0 });
+      const events = new NodeEvents.EventEmitter();
+      const commands: string[] = [];
+      let detached = false;
+      let dispose: (() => void) | undefined;
+      const session = {
+        ...makeSession(),
+        on: vi.fn((name: string, listener: () => void) => events.on(name, listener)),
+        off: vi.fn((name: string, listener: () => void) => events.off(name, listener)),
+        detach: vi.fn(async () => {
+          commands.push("detach");
+          detached = true;
+        }),
+        send: vi.fn(async (method: string, input?: unknown): Promise<Record<string, unknown>> => {
+          commands.push(method);
+          if (detached) throw new Error("CDP session detached");
+          const params = input as Record<string, unknown>;
+          if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
+          if (method === "Runtime.enable")
+            events.emit("Runtime.executionContextCreated", {
+              context: { id: 17, auxData: { isDefault: true, frameId: "main" } },
+            });
+          if (method === "Runtime.addBinding") {
+            const name = String(params.name);
+            realm[name] = (payload: string) =>
+              events.emit("Runtime.bindingCalled", { name, payload, executionContextId: 17 });
+          }
+          if (method === "Runtime.evaluate") {
+            dispose = NodeVM.runInContext(String(params.expression), realm) as () => void;
+            return { result: { type: "function", objectId: "cleanup-17" } };
+          }
+          if (method === "Runtime.callFunctionOn") dispose?.();
+          return {};
+        }),
+      };
+      vi.spyOn(contexts[0]!, "newCDPSession").mockResolvedValue(session);
+      const start = broker.invoke<{ watchId: string; epoch: string }>({
+        scope,
+        tabId,
+        operation: "watchStart",
+        input: {
+          subscription: `(emit) => {
+            const listener = () => { globalThis.callbacks++; emit(1); };
+            source.addEventListener('change', listener);
+            emit(${baseline});
+            return () => {
+              globalThis.cleanups++;
+              source.removeEventListener('change', listener);
+              ${cleanupThrows ? "throw new Error('cleanup failed');" : ""}
+            };
+          }`,
+        },
+      });
+      if (reason) {
+        expect(yield* start.pipe(Effect.flip)).toMatchObject({ reason });
+      } else {
+        const started = yield* start;
+        source.dispatchEvent(new Event("change"));
+        expect(realm.callbacks).toBe(1);
+        yield* broker.invoke({ scope, tabId, operation: "watchStop", input: started });
+      }
+      expect(realm.cleanups).toBe(1);
+      const callbacks = realm.callbacks;
+      source.dispatchEvent(new Event("change"));
+      expect(realm.callbacks).toBe(callbacks);
+      expect(session.detach).toHaveBeenCalledTimes(1);
+      expect(commands.indexOf("Runtime.callFunctionOn")).toBeLessThan(commands.indexOf("detach"));
+      expect(commands).toContain("Runtime.releaseObject");
+      expect(commands).toContain("Runtime.removeBinding");
+      expect(events.listenerCount("Runtime.bindingCalled")).toBe(0);
+    }).pipe(
+      Effect.provide(
+        layer.pipe(
+          Layer.provide(
+            Layer.mock(PeerAuthority.PeerAuthority)({
+              recheckInvocation: (invocation) => Effect.succeed(invocation),
+              acquirePreviewWatchAuthority: () => Effect.succeed(Effect.void),
+            }),
+          ),
+        ),
+      ),
+    ),
+  ),
 );
 
 it.live("preview_open reports its navigation timeout instead of the request budget", () =>

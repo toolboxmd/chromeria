@@ -303,6 +303,10 @@ export class PeerAuthority extends Context.Service<
       intent: "device" | "preview" | "thread-resource",
       threadId: ThreadId,
     ) => Effect.Effect<Invocation.McpThreadInvocationScope, OrchestratorMcpFailure>;
+    /** Acquired under normal live-run authority; only this resource may continue after the turn. */
+    readonly acquirePreviewWatchAuthority: (
+      scope: Invocation.McpThreadInvocationScope,
+    ) => Effect.Effect<Effect.Effect<void, OrchestratorMcpFailure>, OrchestratorMcpFailure>;
     readonly authorizeStopEffect: (
       effectId: string,
       threadId: ThreadId,
@@ -3335,9 +3339,12 @@ const make = Effect.gen(function* () {
     else if (sessionId !== undefined) yield* checkCreated(sessionId, binding);
     return modes;
   });
-  const recheckInvocation: PeerAuthority["Service"]["recheckInvocation"] = Effect.fn(
-    "PeerAuthority.recheckInvocation",
-  )(function* (scope, intent, threadId) {
+  const checkInvocation = Effect.fn("PeerAuthority.checkInvocation")(function* (
+    scope: Invocation.McpThreadInvocationScope,
+    intent: "device" | "preview" | "thread-resource",
+    threadId: ThreadId,
+    lifetime: { type: "run" } | { type: "watch"; ceiling: Invocation.ClientModes },
+  ) {
     // The incoming action remains the owner even when its selected destination
     // thread has a different creation/run authority.
     const record =
@@ -3362,11 +3369,14 @@ const make = Effect.gen(function* () {
       if (
         caller === null ||
         caller.deletedAt !== null ||
-        !Invocation.isLiveCallerShell(caller, scope.thread.providerInstanceId)
+        (lifetime.type === "run" &&
+          !Invocation.isLiveCallerShell(caller, scope.thread.providerInstanceId))
       )
         return yield* denied("The original caller no longer owns a live run.");
       modes = Invocation.intersectModes(caller, modes);
     } else modes = Invocation.intersectModes(Invocation.clientModeCeiling(scope.client), modes);
+    if (lifetime.type === "watch")
+      modes = Invocation.intersectModes(modes ?? lifetime.ceiling, lifetime.ceiling);
     if (exceededDispatchModeLimit(modes, target.thread) !== undefined)
       return yield* denied(
         intent === "thread-resource"
@@ -3388,6 +3398,27 @@ const make = Effect.gen(function* () {
         : { authority: { ...record, ceiling } }),
     };
   });
+  const recheckInvocation: PeerAuthority["Service"]["recheckInvocation"] = (
+    scope,
+    intent,
+    threadId,
+  ) => checkInvocation(scope, intent, threadId, { type: "run" });
+  const acquirePreviewWatchAuthority: PeerAuthority["Service"]["acquirePreviewWatchAuthority"] =
+    Effect.fn("PeerAuthority.acquirePreviewWatchAuthority")(function* (scope) {
+      const checked = yield* recheckInvocation(scope, "preview", scope.thread.threadId);
+      const caller = yield* threads
+        .getThreadShell(scope.thread.threadId)
+        .pipe(Effect.mapError(unavailable));
+      if (caller === null || caller.deletedAt !== null)
+        return yield* denied("The watch host thread is unavailable.");
+      return checkInvocation(checked, "preview", scope.thread.threadId, {
+        type: "watch",
+        ceiling: Invocation.intersectModes(
+          caller,
+          checked.authority?.ceiling ?? checked.legacyPeerCeiling,
+        ),
+      }).pipe(Effect.asVoid);
+    });
   const executionRecord = (
     certificate: Automation.AutomationCertificate,
     actionId: string,
@@ -3520,6 +3551,7 @@ const make = Effect.gen(function* () {
       },
     ),
     recheckInvocation,
+    acquirePreviewWatchAuthority,
     pendingWithinTask: (resource, target) => ancestor({ type: "thread", ...resource }, target),
     checkRecord: (id) => Effect.flatMap(read(id), validate).pipe(Effect.asVoid),
     checkInteractiveRecord: (id) =>

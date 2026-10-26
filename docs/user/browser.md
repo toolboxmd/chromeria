@@ -65,10 +65,58 @@ desktop tab.
 ## Tab lifetime and limits
 
 When a thread settles, its agent tabs close unless you are watching or
-controlling them, or a login is in progress in their profile. Tabs you opened
-yourself stay open. Agent tabs also close after 30 minutes unused unless someone
-is watching them. The agent browser allows up to 8 tabs per agent session and 32 per environment;
+controlling them, a page watch is active, or a login is in progress in their
+profile. Tabs you opened yourself stay open. Agent tabs also close
+after 30 minutes unused unless someone is watching them or a page watch is active.
+The agent browser allows up to 8 tabs per agent session and 32 per environment;
 agents can close or reuse tabs to make room.
 
 For streaming controls and Linux setup, see
 [Browser on a remote environment](remote-access.md#browser-on-a-remote-environment).
+
+## Subscribe to page changes
+
+An authorized agent can call `preview_watch_start` with an existing owned server
+`tabId` and a JavaScript `subscription` function `(emit) => cleanup`. The function
+runs once in the main page and returns a synchronous cleanup function. It can
+listen to page events, observe elements or subscribe to an accessible application
+store. Chromeria does not poll, refresh the page or start a model. The caller
+emits its own initial baseline. For example, pass this string as `subscription`:
+
+```js
+const subscription = `(emit) => {
+  const listener = () => emit({ selected: window.appStore.selected });
+  const unsubscribe = window.appStore.subscribe(listener);
+  listener();
+  return unsubscribe;
+}`;
+```
+
+Save the returned `watchId` and `epoch`. The start `cursor` is always zero, before
+any synchronous baseline. Call `preview_watch_read` with the host `threadId`,
+`watchId`, `epoch`, and `after: 0` to read retained events. An optional `timeoutMs`
+waits for the queue, at most 30 seconds; zero returns immediately. This read never
+inspects the page. Repeating `after` replays the same events without consuming or
+acknowledging them. Commit your processed cursor with your own database work;
+retry the same cursor after a failed transaction. A reply's cursor names its last
+returned event, and an empty active reply keeps your supplied cursor.
+
+A page watch survives turn completion and thread settlement. Explicit close,
+navigation (including route changes), human takeover, thread archive/deletion,
+login quarantine and revoked authority end it. Stop an exact watch with
+`preview_watch_stop`. The event queue lives in the server process: restart,
+unknown watches, invalid cursors, terminal state and overflow produce explicit
+errors. Reconcile your application's state before registering again; a new
+baseline cannot recover every transient change from a lost stream.
+
+JSON is preserved without truncation. Each value may be at most 1 MiB; each watch
+retains at most 256 events or 8 MiB. The server allows 128 active watches and
+64 MiB of retained and pending payloads, with 256 bounded watch records including
+terminal records. Reads return up to 64 events or 2 MiB, leaving later events for
+the next cursor. Non-JSON values or exhausted retention end the watch visibly.
+Stop watches you no longer need so their tabs can close normally.
+
+An outside OAuth client with existing `read` permission can read an exact named
+watch only in an undeleted thread of its approved project. It cannot start or stop
+watches, inspect a page, navigate or sign in. Provision the subscription through
+an authorized thread; this capability does not change existing grants.

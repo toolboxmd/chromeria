@@ -250,6 +250,21 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     "browser",
     "browser",
   ),
+  preview_watch_start: tool(
+    ["Subscribe", "Subscribing", "Subscribed", "to preview page changes"],
+    "browser",
+    "browser",
+  ),
+  preview_watch_read: tool(
+    ["Read", "Reading", "Read", "retained preview page changes"],
+    "browser",
+    "browser",
+  ),
+  preview_watch_stop: tool(
+    ["Stop", "Stopping", "Stopped", "a preview page subscription"],
+    "browser",
+    "browser",
+  ),
   preview_wait_for: tool(
     ["Wait", "Waiting", "Waited", "for the preview page"],
     "browser",

@@ -58,6 +58,8 @@ export const PREVIEW_AUTOMATION_SERVER_OPERATIONS = [
   "readPage",
   "fillCredential",
   "endLogin",
+  "watchStart",
+  "watchStop",
 ] as const;
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_SERVER_OPERATIONS);
 export type PreviewAutomationOperation = typeof PreviewAutomationOperation.Type;
@@ -68,6 +70,93 @@ const PreviewAutomationTabTargetFields = {
 
 export const PreviewAutomationTabTargetInput = Schema.Struct(PreviewAutomationTabTargetFields);
 export type PreviewAutomationTabTargetInput = typeof PreviewAutomationTabTargetInput.Type;
+
+// Retention and the callback bridge share these bounds. JSON is never shortened.
+export const PREVIEW_WATCH_MAX_PAYLOAD_BYTES = 1024 * 1024;
+export const PREVIEW_WATCH_MAX_EVENTS = 256;
+export const PREVIEW_WATCH_MAX_BYTES = 8 * 1024 * 1024;
+export const PREVIEW_WATCH_TOTAL_BYTES = 64 * 1024 * 1024;
+export const PREVIEW_WATCH_MAX_WATCHES = 128;
+export const PREVIEW_WATCH_MAX_RECORDS = 256;
+export const PREVIEW_WATCH_MAX_READ_EVENTS = 64;
+export const PREVIEW_WATCH_MAX_READ_BYTES = 2 * 1024 * 1024;
+const WatchId = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(128)).annotate({
+  description: "Exact watch identity returned by preview_watch_start.",
+});
+const WatchEpoch = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(128)).annotate({
+  description: "Process epoch returned by preview_watch_start; a restart requires reconciliation.",
+});
+const WatchCursor = Schema.Int.check(
+  Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+).annotate({
+  description: "Last processed event sequence. Start with zero; persist with your own transaction.",
+});
+export const PreviewWatchStartInput = Schema.Struct({
+  tabId: PreviewTabId.annotate({
+    description: "Existing owned server tab. This never opens a tab.",
+  }),
+  subscription: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(65536)).annotate({
+    description:
+      "JavaScript function (emit) => cleanup, executed once in the main page. Emit an initial baseline and JSON changes; return a synchronous cleanup function.",
+  }),
+});
+export type PreviewWatchStartInput = typeof PreviewWatchStartInput.Type;
+export const PreviewWatchStartResult = Schema.Struct({
+  watchId: WatchId,
+  epoch: WatchEpoch,
+  cursor: WatchCursor,
+});
+export type PreviewWatchStartResult = typeof PreviewWatchStartResult.Type;
+export const PreviewWatchStopInput = Schema.Struct({ watchId: WatchId, epoch: WatchEpoch });
+export type PreviewWatchStopInput = typeof PreviewWatchStopInput.Type;
+export const PreviewWatchStopResult = Schema.Struct({
+  ...PreviewWatchStopInput.fields,
+  state: Schema.Literal("stopped"),
+});
+export const PreviewWatchReadInput = Schema.Struct({
+  threadId: ThreadId.annotate({ description: "Undeleted host thread that owns this exact watch." }),
+  ...PreviewWatchStopInput.fields,
+  after: WatchCursor,
+  timeoutMs: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 30000 })).annotate({
+      description:
+        "Bounded retained-queue wait in milliseconds, default zero. Never inspects the browser.",
+    }),
+  ),
+});
+export type PreviewWatchReadInput = typeof PreviewWatchReadInput.Type;
+export const PreviewWatchReadResult = Schema.Struct({
+  epoch: WatchEpoch,
+  state: Schema.Literal("active"),
+  events: Schema.Array(Schema.Struct({ sequence: WatchCursor, value: Schema.Json })),
+  cursor: WatchCursor,
+});
+export type PreviewWatchReadResult = typeof PreviewWatchReadResult.Type;
+export class PreviewWatchError extends Schema.TaggedError<PreviewWatchError>()(
+  "PreviewWatchError",
+  {
+    reason: Schema.Literals([
+      "unknown",
+      "stale_epoch",
+      "gap",
+      "overflow",
+      "malformed_payload",
+      "stopped",
+      "navigation",
+      "closed",
+      "ownership",
+      "login",
+      "revoked",
+      "thread_deleted",
+      "capacity",
+      "subscription_failed",
+    ]),
+  },
+) {
+  override get message(): string {
+    return `Browser watch unavailable: ${this.reason}. Reconcile before registering again.`;
+  }
+}
 
 export const PreviewAutomationTabOwner = Schema.Literals(["agent", "human", "unclaimed"]);
 
@@ -1016,6 +1105,7 @@ export class PreviewAutomationRecordingDeadlineExpiredError extends Schema.Tagge
 }
 
 export const PreviewAutomationError = Schema.Union([
+  PreviewWatchError,
   PreviewAutomationRecordingTransferError,
   PreviewAutomationRecordingDesktopUpdateRequiredError,
   PreviewAutomationRecordingTooLargeError,

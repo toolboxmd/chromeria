@@ -2,6 +2,12 @@ import { McpSavedSnapshotReceipt } from "@t3tools/contracts";
 import * as McpRouting from "../../McpRouting.ts";
 import {
   OrchestratorMcpFailure,
+  PreviewWatchStartInput,
+  PreviewWatchStartResult,
+  PreviewWatchStopInput,
+  PreviewWatchStopResult,
+  PreviewWatchReadInput,
+  PreviewWatchReadResult,
   ToolActivityIcon,
   PreviewAutomationActInput,
   PreviewAutomationDialogInput,
@@ -61,8 +67,9 @@ const readonlyBrowserTool = <T extends Tool.Any>(tool: T): T =>
 
 const PreviewStatusTool = Tool.make("preview_status", {
   description:
-    "Report preview tab state: owner, pending dialog, URL, title, loading, viewport, and size. `tabs` lists this thread's tabs. `profiles` lists logins for `preview_open`. Read any listed tab. Act only on your tab, or an unclaimed tab with no human in control." + COMPUTER_USE_HINT,
-  parameters: PreviewAutomationTabTargetInput,
+    "Report preview tab state: owner, pending dialog, URL, title, loading, viewport, and size. `tabs` lists this thread's tabs. `profiles` lists logins for `preview_open`. Read any listed tab. Act only on your tab, or an unclaimed tab with no human in control." +
+    COMPUTER_USE_HINT,
+  parameters: McpRouting.parameters(PreviewAutomationTabTargetInput),
   success: PreviewAutomationStatus,
   failure: PreviewToolFailure,
   dependencies,
@@ -75,8 +82,9 @@ const PreviewStatusTool = Tool.make("preview_status", {
 const PreviewOpenTool = browserTool(
   Tool.make("preview_open", {
     description:
-      "Open a preview tab in this thread and show it. `open=false` keeps it in the background. Reuses your current tab unless `tabId` or `reuseExistingTab=false` says otherwise. Parallel subagents in one session must each use `reuseExistingTab=false`, then their own returned `tabId`." + COMPUTER_USE_HINT,
-    parameters: PreviewAutomationOpenInput,
+      "Open a preview tab in this thread and show it. `open=false` keeps it in the background. Reuses your current tab unless `tabId` or `reuseExistingTab=false` says otherwise. Parallel subagents in one session must each use `reuseExistingTab=false`, then their own returned `tabId`." +
+      COMPUTER_USE_HINT,
+    parameters: McpRouting.parameters(PreviewAutomationOpenInput),
     success: PreviewAutomationStatus,
     failure: PreviewToolFailure,
     dependencies,
@@ -88,8 +96,9 @@ const PreviewOpenTool = browserTool(
 const PreviewDialogTool = browserTool(
   Tool.make("preview_dialog", {
     description:
-      "Accept or dismiss the dialog `preview_status` reports. Pass `promptText` to accept a prompt. Needs your own tab, or an unclaimed one. Desktop hosts may not support this." + COMPUTER_USE_HINT,
-    parameters: PreviewAutomationDialogInput,
+      "Accept or dismiss the dialog `preview_status` reports. Pass `promptText` to accept a prompt. Needs your own tab, or an unclaimed one. Desktop hosts may not support this." +
+      COMPUTER_USE_HINT,
+    parameters: McpRouting.parameters(PreviewAutomationDialogInput),
     success: PreviewAutomationStatus,
     failure: PreviewToolFailure,
     dependencies,
@@ -99,8 +108,9 @@ const PreviewDialogTool = browserTool(
 const PreviewNavigateTool = safeBrowserTool(
   Tool.make("preview_navigate", {
     description:
-      "Navigate the chosen tab. Pass `url` for a website, or `target:{kind:'environment-port',port}` for a dev server. Exactly one of `url` and `target`." + COMPUTER_USE_HINT,
-    parameters: PreviewAutomationNavigateInput,
+      "Navigate the chosen tab. Pass `url` for a website, or `target:{kind:'environment-port',port}` for a dev server. Exactly one of `url` and `target`." +
+      COMPUTER_USE_HINT,
+    parameters: McpRouting.parameters(PreviewAutomationNavigateInput),
     success: PreviewAutomationStatus,
     failure: PreviewToolFailure,
     dependencies,
@@ -110,8 +120,9 @@ const PreviewNavigateTool = safeBrowserTool(
 const PreviewResizeTool = safeBrowserTool(
   Tool.make("preview_resize", {
     description:
-      "Resize the chosen tab: {mode:'fill'}, {mode:'freeform',width,height}, or {mode:'preset',preset,orientation}. Changes CSS size only, not the user agent." + COMPUTER_USE_HINT,
-    parameters: PreviewAutomationResizeInput,
+      "Resize the chosen tab: {mode:'fill'}, {mode:'freeform',width,height}, or {mode:'preset',preset,orientation}. Changes CSS size only, not the user agent." +
+      COMPUTER_USE_HINT,
+    parameters: McpRouting.parameters(PreviewAutomationResizeInput),
     success: Schema.Struct({ ...PreviewAutomationResizeResult.fields, ...presentationFields }),
     failure: PreviewToolFailure,
     dependencies,
@@ -123,8 +134,9 @@ const PreviewResizeTool = safeBrowserTool(
 const PreviewSetAppearanceTool = safeBrowserTool(
   Tool.make("preview_set_appearance", {
     description:
-      "Set `prefers-color-scheme` for the chosen tab: 'dark', 'light', or 'system' to clear the override." + COMPUTER_USE_HINT,
-    parameters: PreviewAutomationSetColorSchemeInput,
+      "Set `prefers-color-scheme` for the chosen tab: 'dark', 'light', or 'system' to clear the override." +
+      COMPUTER_USE_HINT,
+    parameters: McpRouting.parameters(PreviewAutomationSetColorSchemeInput),
     success: Schema.Struct({
       ...PreviewAutomationSetColorSchemeResult.fields,
       ...presentationFields,
@@ -140,20 +152,23 @@ const PreviewSetAppearanceTool = safeBrowserTool(
 export const PreviewSnapshotTool = safeBrowserTool(
   Tool.make("preview_snapshot", {
     description:
-      "Use it only when the current request asks for browser work, including checking an edit in the browser. Never use it unasked to verify your own edit, or to repeat a snapshot from an earlier turn. Works on a tab the user is driving. Returns page state, elements, diagnostics, and screenshot size. Target one element with `locator='aria-ref=<ref>'` from `accessibilityTree`, even in frames. Refs die on navigation, a new snapshot, or handoff. Text caps near 20 KB; on your own or an unclaimed tab, `preview_evaluate` reads more. To show a screenshot when asked: `save=true`, then embed ![alt](screenshotPath)." + COMPUTER_USE_HINT,
-    parameters: Schema.Struct({
-      ...PreviewAutomationTabTargetInput.fields,
-      includeImage: Schema.optional(
-        Schema.Boolean.annotate({
-          description: "Default false. True only to see the page.",
-        }),
-      ),
-      save: Schema.optional(
-        Schema.Boolean.annotate({
-          description: "Write PNG, return `screenshotPath`.",
-        }),
-      ),
-    }),
+      "Use it only when the current request asks for browser work, including checking an edit in the browser. Never use it unasked to verify your own edit, or to repeat a snapshot from an earlier turn. Works on a tab the user is driving. Returns page state, elements, diagnostics, and screenshot size. Target one element with `locator='aria-ref=<ref>'` from `accessibilityTree`, even in frames. Refs die on navigation, a new snapshot, or handoff. Text caps near 20 KB; on your own or an unclaimed tab, `preview_evaluate` reads more. To show a screenshot: `save=true`, then embed ![alt](screenshotPath)." +
+      COMPUTER_USE_HINT,
+    parameters: McpRouting.parameters(
+      Schema.Struct({
+        ...PreviewAutomationTabTargetInput.fields,
+        includeImage: Schema.optional(
+          Schema.Boolean.annotate({
+            description: "Default false. True only to see the page.",
+          }),
+        ),
+        save: Schema.optional(
+          Schema.Boolean.annotate({
+            description: "Write PNG, return `screenshotPath`.",
+          }),
+        ),
+      }),
+    ),
     success: Schema.Union([PreviewAutomationSnapshot, McpSavedSnapshotReceipt]),
     failure: PreviewToolFailure,
     dependencies,
@@ -162,7 +177,9 @@ export const PreviewSnapshotTool = safeBrowserTool(
 
 const PreviewClickTool = browserTool(
   Tool.make("preview_click", {
-    description: "Click exactly one target. Prefer a Playwright locator. `x` and `y` go together." + COMPUTER_USE_HINT,
+    description:
+      "Click exactly one target. Prefer a Playwright locator. `x` and `y` go together." +
+      COMPUTER_USE_HINT,
     parameters: McpRouting.parameters(PreviewAutomationClickInput),
     success: PreviewActionResult,
     failure: PreviewToolFailure,
@@ -172,7 +189,9 @@ const PreviewClickTool = browserTool(
 
 const PreviewTypeTool = browserTool(
   Tool.make("preview_type", {
-    description: "Type literal text into one input. `clear=true` replaces the current text." + COMPUTER_USE_HINT,
+    description:
+      "Type literal text into one input. `clear=true` replaces the current text." +
+      COMPUTER_USE_HINT,
     parameters: McpRouting.parameters(PreviewAutomationTypeInput),
     success: PreviewActionResult,
     failure: PreviewToolFailure,
@@ -193,7 +212,8 @@ const PreviewHoverTool = safeBrowserTool(
 const PreviewSelectTool = browserTool(
   Tool.make("preview_select", {
     description:
-      "Pick options in one native <select>, by value or label. For a custom dropdown, click it open, then click the option." + COMPUTER_USE_HINT,
+      "Pick options in one native <select>, by value or label. For a custom dropdown, click it open, then click the option." +
+      COMPUTER_USE_HINT,
     parameters: McpRouting.parameters(PreviewAutomationSelectInput),
     success: Schema.Struct({
       ...PreviewAutomationSelectResult.fields,
@@ -217,7 +237,8 @@ const PreviewDragTool = browserTool(
 const PreviewUploadTool = browserTool(
   Tool.make("preview_upload", {
     description:
-      "Give files to the page. After a click opens a file picker, `preview_status` reports it. Local callers pass absolute `paths`; a linked browser takes `artifacts` from `t3_attachment_inspect` with the exact `resource` from `preview_open` or `preview_status`. One of the two, at most 20 files/100 MiB. An empty list cancels the picker or clears a named input. Or pass a locator for an <input type=file>." + COMPUTER_USE_HINT,
+      "Give files to the page. After a click opens a file picker, `preview_status` reports it. Local callers pass absolute `paths`; a linked browser takes `artifacts` from `t3_attachment_inspect` with the exact `resource` from `preview_open` or `preview_status`. One of the two, at most 20 files/100 MiB. An empty list cancels the picker or clears a named input. Or pass a locator for an <input type=file>." +
+      COMPUTER_USE_HINT,
     // Routing rebuilds the struct, so the upload input's cross-field filter is checked again here.
     parameters: McpRouting.parameters(PreviewAutomationUploadInput).check(
       Schema.makeFilter(
@@ -287,8 +308,9 @@ export const PreviewEvaluateResult = Schema.Struct({
 const PreviewEvaluateTool = browserTool(
   Tool.make("preview_evaluate", {
     description:
-      "Run JavaScript in the page. It can change page state. Returns `{value}`, up to 64 KB. Needs your tab, or an unclaimed one. To read a tab the user drives, use `preview_snapshot`. Page tools reached here: read data only, never create, save, or display. Show results with `html_render`." + COMPUTER_USE_HINT,
-    parameters: PreviewAutomationEvaluateInput,
+      "Run JavaScript in the page. It can change page state. Returns `{value}`, up to 64 KB. Needs your tab, or an unclaimed one. To read a tab the user drives, use `preview_snapshot`. Page tools reached here: read data only, never create, save, or display. Show results with `html_render`." +
+      COMPUTER_USE_HINT,
+    parameters: McpRouting.parameters(PreviewAutomationEvaluateInput),
     success: PreviewEvaluateResult,
     failure: PreviewToolFailure,
     dependencies,
@@ -298,8 +320,9 @@ const PreviewEvaluateTool = browserTool(
 const PreviewWaitForTool = readonlyBrowserTool(
   Tool.make("preview_wait_for", {
     description:
-      "Wait until all given locator, selector, text, and URL conditions match in the chosen tab." + COMPUTER_USE_HINT,
-    parameters: PreviewAutomationWaitForInput,
+      "Wait until all given locator, selector, text, and URL conditions match in the chosen tab." +
+      COMPUTER_USE_HINT,
+    parameters: McpRouting.parameters(PreviewAutomationWaitForInput),
     success: PreviewActionResult,
     failure: PreviewToolFailure,
     dependencies,
@@ -319,7 +342,8 @@ const PreviewRecordingStartTool = safeBrowserTool(
 const PreviewRecordingStopTool = safeBrowserTool(
   Tool.make("preview_recording_stop", {
     description:
-      "Stop recording the chosen tab. Returns a local path to the recording file (max 50 MiB). Negotiated peer calls return an environment-qualified resource instead; send it by its `attachmentId`, never as a source path. An unconfirmed durable publication reports `outcome_unknown` and is not repeated." + COMPUTER_USE_HINT,
+      "Stop recording the chosen tab. Returns a local path to the recording file (max 50 MiB). Negotiated peer calls return an environment-qualified resource instead; send it by its `attachmentId`, never as a source path. An unconfirmed durable publication reports `outcome_unknown` and is not repeated." +
+      COMPUTER_USE_HINT,
     parameters: McpRouting.parameters(PreviewAutomationTabTargetInput),
     success: Schema.Union([
       Schema.Struct({ ...PreviewAutomationRecordingArtifact.fields, ...presentationFields }),
@@ -371,3 +395,42 @@ export const PreviewStandardToolkit = Toolkit.make(
 );
 
 export const PreviewSnapshotToolkit = Toolkit.make(PreviewSnapshotTool);
+
+export const PreviewWatchToolkit = Toolkit.make(
+  browserTool(
+    Tool.make("preview_watch_start", {
+      description:
+        "Subscribe once in an existing owned server tab with a caller-authored (emit) => cleanup function. Emit JSON changes or a baseline using DOM events or an application subscription. No page polling or model calls. Survives turn completion while current authority and the exact opening remain valid. Start cursor is zero, before synchronous baseline events." +
+        COMPUTER_USE_HINT,
+      parameters: McpRouting.parameters(PreviewWatchStartInput),
+      success: PreviewWatchStartResult,
+      failure: PreviewToolFailure,
+      dependencies,
+    }).annotate(Tool.Title, "Subscribe to page changes"),
+  ),
+  safeBrowserTool(
+    Tool.make("preview_watch_stop", {
+      description:
+        "Stop this exact browser watch and run its cleanup. Requires normal preview action authority in its host thread. Reads afterwards report terminal stopped state; events are never acknowledged by stopping.",
+      parameters: McpRouting.parameters(PreviewWatchStopInput),
+      success: PreviewWatchStopResult,
+      failure: PreviewToolFailure,
+      dependencies,
+    }).annotate(Tool.Title, "Stop page subscription"),
+  ),
+  Tool.make("preview_watch_read", {
+    description:
+      "Read only an exact watch's retained ordered JSON queue, without browser or status requests. Pass the host threadId, watchId, epoch and last processed sequence as after. Reads replay without consuming. Commit the returned cursor atomically with your own work. Empty active reads preserve after; terminal, stale, gap and overflow states error explicitly. Limited read clients need an approved project and an undeleted host thread. Optional bounded wait never polls the page.",
+    parameters: McpRouting.parameters(PreviewWatchReadInput),
+    success: PreviewWatchReadResult,
+    failure: PreviewToolFailure,
+    dependencies: [
+      McpInvocationContext.McpInvocationContext,
+      ThreadManagementService.ThreadManagementService,
+    ],
+  })
+    .annotate(Tool.Title, "Read retained page changes")
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true),
+);
