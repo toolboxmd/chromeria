@@ -365,3 +365,21 @@ it("resets environment Prism roles without changing the Promachos launch kit", (
     }),
   ).toBe(true);
 });
+
+it("adopts a tier-only change and keeps distinct Color row identities across reordering", () => {
+  const standard = {
+    instanceId: ProviderInstanceId.make("codex"),
+    model: "sol",
+    options: [{ id: "serviceTier", value: "default" }],
+  };
+  const fast = { ...standard, options: [{ id: "serviceTier", value: "priority" }] };
+  const draft = [
+    { ...standard, entryId: 1 },
+    { ...fast, entryId: 2 },
+  ];
+  expect(syncPrismDraft(draft, [fast, standard])).toEqual([
+    { ...fast, entryId: 2 },
+    { ...standard, entryId: 1 },
+  ]);
+  expect(syncPrismDraft([draft[0]!], [fast])[0]?.options).toEqual(fast.options);
+});
