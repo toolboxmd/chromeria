@@ -62,6 +62,11 @@ vi.mock("../settings/appearance/AppearancePreferencesProvider", () => ({
   useAppearancePreferences: () => ({ themeVariables: {} }),
 }));
 vi.mock("../../components/ui/Toolbar", () => ({ Toolbar: () => null }));
+vi.mock("../../components/ui/SheetHeader", () => ({ SheetHeader: () => null }));
+vi.mock("../../state/session", async () => {
+  const Option = await import("effect/Option");
+  return { usePreparedConnection: () => Option.none() };
+});
 vi.mock("../../components/ui/AppActivityIndicator", () => ({ AppActivityIndicator: () => null }));
 vi.mock("../../components/ui/ControlPill", () => ({ ControlPill: () => null }));
 vi.mock("../../components/ui/AppBar", () => ({ AppBar: () => null }));
@@ -70,9 +75,7 @@ vi.mock("../../components/ui/AppText", () => ({
 }));
 vi.mock("./BrowserTabMenu", () => ({ BrowserTabMenu: () => null }));
 vi.mock("./PreviewStreamWebView", () => ({
-  PreviewStreamWebView: (
-    props: ComponentProps<typeof import("./PreviewStreamWebView").PreviewStreamWebView>,
-  ) => {
+  PreviewStreamWebView: (props: ComponentProps<typeof PreviewStreamWebViewComponent>) => {
     useImperativeHandle(
       props.ref,
       () => ({ command: observed.command, togglePictureInPicture() {}, paste() {} }),
@@ -86,6 +89,7 @@ vi.mock("./PreviewStreamWebView", () => ({
   },
 }));
 import { BrowserPreviewRouteScreen } from "./BrowserPreviewRouteScreen";
+import type { PreviewStreamWebView as PreviewStreamWebViewComponent } from "./PreviewStreamWebView";
 it("qualified navigation reports invalid addresses and sends only normalized valid input", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   observed.command.mockClear();

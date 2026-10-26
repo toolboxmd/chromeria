@@ -45,6 +45,8 @@ const reactTests = [
   "src/features/workspace/useSearchScrollRestoration.test.tsx",
   "src/features/connection/ConnectionsNewRouteScreen.test.tsx",
   "src/features/devices/device-stream.browser.test.ts",
+  // Fork (toolboxmd/chromeria#584).
+  "src/features/browser/BrowserPreviewRouteScreen.test.tsx",
 ];
 
 const sourceRoot = `${normalizePath(NodeURL.fileURLToPath(new URL("./src", import.meta.url)))}/`;

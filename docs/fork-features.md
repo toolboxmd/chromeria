@@ -2103,7 +2103,8 @@ sources and reasons.
     "apps/web/src/components/chat/ThreadActivityBanners.tsx",
     "apps/web/src/components/chat/TimelineWorkEntryRow.tsx",
     "apps/web/src/components/chat/timelineRowContext.ts",
-    "apps/web/src/components/chat/useThreadLifecycle.tsx"
+    "apps/web/src/components/chat/useThreadLifecycle.tsx",
+    "apps/mobile/vite.config.ts"
   ],
   "sharedFiles": [
     "vite.config.ts",

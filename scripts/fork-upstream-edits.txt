@@ -692,3 +692,4 @@ apps/web/src/components/sidebar/SidebarThreadRow.tsx
 docs/user/t3-connect-troubleshooting.md
 packages/client-runtime/src/relay/errorPresentation.ts
 packages/contracts/src/device.ts
+apps/mobile/vite.config.ts

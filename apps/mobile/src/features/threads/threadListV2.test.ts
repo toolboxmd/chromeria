@@ -2023,8 +2023,8 @@ describe("No project shelf", () => {
       ).toEqual(
         expanded
           ? [
-              "inbox",
               "v2-pending",
+              "inbox",
               "v2-working-shelf",
               "working",
               "v2-no-project-shelf",
@@ -2035,8 +2035,8 @@ describe("No project shelf", () => {
               "settled",
             ]
           : [
-              "inbox",
               "v2-pending",
+              "inbox",
               "v2-working-shelf",
               "v2-no-project-shelf",
               "v2-snoozed-shelf",
