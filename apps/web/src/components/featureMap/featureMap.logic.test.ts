@@ -441,12 +441,13 @@ describe("featureMapDiagramSource", () => {
 describe("featureMapPartIdOf", () => {
   const ids = new Set(["C", "SR", "flowchart"]);
   it("reads the part from a rendered node id", () => {
-    expect(featureMapPartIdOf("mermaid-diagram-12-flowchart-SR-3", ids)).toBe("SR");
-    expect(featureMapPartIdOf("mermaid-diagram-0-flowchart-flowchart-0", ids)).toBe("flowchart");
+    expect(featureMapPartIdOf("SR", ids)).toBe("SR");
+    expect(featureMapPartIdOf("flowchart", ids)).toBe("flowchart");
   });
   it("ignores ids that are not parts", () => {
-    expect(featureMapPartIdOf("mermaid-diagram-12-flowchart-GHOST-3", ids)).toBeNull();
+    expect(featureMapPartIdOf("GHOST", ids)).toBeNull();
     expect(featureMapPartIdOf("L_C_SR_0", ids)).toBeNull();
+    expect(featureMapPartIdOf(null, ids)).toBeNull();
   });
 });
 

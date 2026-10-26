@@ -7,7 +7,11 @@ import { createRoot } from "react-dom/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
 import { MermaidDiagram } from "../chat/MermaidDiagram";
-import { featureMapPartIdOf, featureMapDiagramSource } from "./featureMap.logic";
+import {
+  FEATURE_MAP_NODE_SELECTOR,
+  featureMapPartIdOf,
+  featureMapDiagramSource,
+} from "./featureMap.logic";
 
 // The installed Mermaid, not a mock, renders here; jsdom lacks SVG layout, so sizes are stubbed.
 const prototype = window.SVGElement.prototype as SVGElement & {
@@ -54,8 +58,8 @@ describe("the feature map on the pinned Mermaid", () => {
     classDef fmDone fill:#bbf7d0
     class SR fmDone`);
     const parts = new Set(["C", "SR", "flowchart_2"]);
-    const nodes = [...svg.querySelectorAll<SVGGElement>("g.node")].map((node) => ({
-      part: featureMapPartIdOf(node.id, parts),
+    const nodes = [...svg.querySelectorAll<SVGGElement>(FEATURE_MAP_NODE_SELECTOR)].map((node) => ({
+      part: featureMapPartIdOf(node.getAttribute("data-id"), parts),
       done: node.classList.contains("fmDone"),
     }));
     expect(nodes).toEqual([
@@ -63,14 +67,14 @@ describe("the feature map on the pinned Mermaid", () => {
       { part: "SR", done: true },
       { part: "flowchart_2", done: false },
     ]);
-    // Edges and markers are never read as parts.
-    const others = [...svg.querySelectorAll("[id]")].filter(
-      (element) => !element.matches("g.node"),
+    // Edges are never read as parts.
+    const others = [...svg.querySelectorAll("[data-id]")].filter(
+      (element) => !element.matches(FEATURE_MAP_NODE_SELECTOR),
     );
     expect(others.length).toBeGreaterThan(0);
-    expect(others.map((element) => featureMapPartIdOf(element.id, parts))).toEqual(
-      others.map(() => null),
-    );
+    expect(
+      others.map((element) => featureMapPartIdOf(element.getAttribute("data-id"), parts)),
+    ).toEqual(others.map(() => null));
   });
 });
 
@@ -88,13 +92,17 @@ it("renders subgraphs without turning clusters into clickable parts", async () =
     classDef fmPlanned fill:#e0e7ff
     class F fmPlanned`);
   const parts = new Set(["L", "C", "F"]);
-  const nodes = [...svg.querySelectorAll<SVGGElement>("g.node")];
-  expect(nodes.map((node) => featureMapPartIdOf(node.id, parts)).sort()).toEqual(["C", "F", "L"]);
+  const nodes = [...svg.querySelectorAll<SVGGElement>(FEATURE_MAP_NODE_SELECTOR)];
+  expect(
+    nodes.map((node) => featureMapPartIdOf(node.getAttribute("data-id"), parts)).sort(),
+  ).toEqual(["C", "F", "L"]);
   expect(nodes.filter((node) => node.classList.contains("fmLive"))).toHaveLength(2);
   expect(nodes.filter((node) => node.classList.contains("fmPlanned"))).toHaveLength(1);
-  const clusters = [...svg.querySelectorAll("g.cluster")];
+  const clusters = [...svg.querySelectorAll("g.pele-cluster")];
   expect(clusters).toHaveLength(1);
-  expect(clusters.map((cluster) => featureMapPartIdOf(cluster.id, parts))).toEqual([null]);
+  expect(
+    clusters.map((cluster) => featureMapPartIdOf(cluster.getAttribute("data-id"), parts)),
+  ).toEqual([null]);
 });
 
 it("renders the real holistic map, preserving every part and live class", async () => {
@@ -119,15 +127,19 @@ it("renders the real holistic map, preserving every part and live class", async 
     threads: [],
   }));
   const svg = await renderedSvg(featureMapDiagramSource(source, views));
-  const nodes = [...svg.querySelectorAll<SVGGElement>("g.node")];
-  expect(nodes.map((node) => featureMapPartIdOf(node.id, parts)).sort()).toEqual([...parts].sort());
+  const nodes = [...svg.querySelectorAll<SVGGElement>(FEATURE_MAP_NODE_SELECTOR)];
+  expect(
+    nodes.map((node) => featureMapPartIdOf(node.getAttribute("data-id"), parts)).sort(),
+  ).toEqual([...parts].sort());
   expect(
     nodes
       .filter((node) => node.classList.contains("fmLive"))
-      .map((node) => featureMapPartIdOf(node.id, parts))
+      .map((node) => featureMapPartIdOf(node.getAttribute("data-id"), parts))
       .sort(),
   ).toEqual([...liveIds].sort());
   expect(
-    [...svg.querySelectorAll("g.cluster")].map((cluster) => featureMapPartIdOf(cluster.id, parts)),
+    [...svg.querySelectorAll("g.pele-cluster")].map((cluster) =>
+      featureMapPartIdOf(cluster.getAttribute("data-id"), parts),
+    ),
   ).toEqual([null]);
 });

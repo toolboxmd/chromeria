@@ -110,7 +110,7 @@ it("distinguishes an empty partial remote scan and clears the labeled warning af
   await act(async () => root.render(panel()));
   expect(container.textContent).toContain("incomplete");
   expect(container.textContent).not.toContain("No simulators or emulators were found");
-  const diagnostic = [...container.querySelectorAll('[role="status"]')].find((element) =>
+  const diagnostic = [...container.querySelectorAll('[role="alert"]')].find((element) =>
     element.textContent?.includes(warning),
   );
   expect(diagnostic?.textContent).toContain("Remote Mac");

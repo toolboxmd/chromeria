@@ -281,13 +281,13 @@ export function featureMapDiagramSource(
   return `${source.trimEnd()}\n${lines.join("\n")}\n`;
 }
 
-// Mermaid 11 names a flowchart node `<diagram id>-flowchart-<node id>-<counter>`.
-const RENDERED_NODE_ID = /^mermaid-diagram-\d+-flowchart-(.+)-\d+$/;
+// Pele draws each flowchart node as a `g.pele-node` whose `data-id` is the node id.
+// Clusters and edges carry `data-id` too, so callers select nodes first.
+export const FEATURE_MAP_NODE_SELECTOR = "g.pele-node";
 
 /** The part a rendered node draws, or null for anything else in the SVG. */
-export function featureMapPartIdOf(elementId: string, partIds: ReadonlySet<string>) {
-  const id = RENDERED_NODE_ID.exec(elementId)?.[1];
-  return id !== undefined && partIds.has(id) ? id : null;
+export function featureMapPartIdOf(nodeId: string | null, partIds: ReadonlySet<string>) {
+  return nodeId !== null && partIds.has(nodeId) ? nodeId : null;
 }
 
 export type FeatureMapShown =
