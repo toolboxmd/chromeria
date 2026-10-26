@@ -42,6 +42,8 @@ import {
   ORCHESTRATION_V2_WS_METHODS,
   PreviewStreamInput,
   WS_METHODS,
+  SourceControlProviderError,
+  SourceControlProviderKind,
 } from "@t3tools/contracts";
 import * as PendingRequests from "../childThreads/PendingRequestService.ts";
 import * as AttachmentStaging from "../assets/AttachmentStaging.ts";
@@ -520,10 +522,16 @@ export const makeNode = (
 ) =>
   Effect.gen(function* () {
     // Closures rebuilt later reuse this node's instances; provider sessions keep per-thread state.
+    // Pick only these two: the ambient context also holds an HttpClient that would shadow peerHttp.
     const hostServices = Layer.succeedContext(
-      yield* Effect.context<
-        McpProviderSessions.McpProviderSessions | BuiltInDrivers.SourceControlDrivers
-      >(),
+      Context.pick(
+        McpProviderSessions.McpProviderSessions,
+        BuiltInDrivers.SourceControlDrivers,
+      )(
+        yield* Effect.context<
+          McpProviderSessions.McpProviderSessions | BuiltInDrivers.SourceControlDrivers
+        >(),
+      ),
     );
     const graphScope = yield* Scope.Scope;
     const connectionScopes = graphConnections.get(graphScope) ?? new Set<Scope.Closeable>();
@@ -735,6 +743,16 @@ export const makeNode = (
       Layer.provide(
         Layer.mock(SourceProviders.SourceControlProviderRegistry)({
           resolveLink: () => Effect.die("No external repository host in this fixture"),
+          // Upstream git workflows look up a forge and tolerate none.
+          resolve: ({ cwd }) =>
+            Effect.fail(
+              new SourceControlProviderError({
+                provider: SourceControlProviderKind.make("unknown"),
+                operation: "resolve",
+                cwd,
+                detail: "No external repository host in this fixture.",
+              }),
+            ),
         }),
       ),
       Layer.provide(projectLayer),
@@ -798,6 +816,7 @@ export const makeNode = (
       : Layer.mock(Folders.ManagedProjectFolders)({
           namedProjectsRoot: "/unused",
           folderForThread: () => Effect.succeed(Option.none()),
+          isScratchProject: () => Effect.succeed(false),
         });
     const noticeFailure = yield* Deferred.make<unknown>();
     const noticeDelivery = Layer.effect(
@@ -1143,6 +1162,16 @@ export const makeNode = (
       Layer.provide(
         Layer.mock(SourceProviders.SourceControlProviderRegistry)({
           resolveLink: () => Effect.die("No external repository host in this fixture"),
+          // Upstream git workflows look up a forge and tolerate none.
+          resolve: ({ cwd }) =>
+            Effect.fail(
+              new SourceControlProviderError({
+                provider: SourceControlProviderKind.make("unknown"),
+                operation: "resolve",
+                cwd,
+                detail: "No external repository host in this fixture.",
+              }),
+            ),
         }),
       ),
       Layer.provide(Layer.mock(TextGeneration.TextGeneration)({})),
@@ -1621,15 +1650,21 @@ export const makeNode = (
               }),
           });
           const currentHub = yield* Ref.make<DeviceHost.DeviceHostReady | null>(null);
-          const run: DeviceHost.DeviceHostReady["run"] = () =>
-            Effect.succeed({ code: 0, stdout: "", stderr: "" });
+          // Opening an Android device probes the host's ffmpeg encoders before streaming.
+          const run: DeviceHost.DeviceHostReady["run"] = (_command, args) =>
+            Effect.succeed({
+              code: 0,
+              stdout: args[0] === "-e" ? " V....D libx264  H.264\n" : "",
+              stderr: "",
+            });
           const ready: DeviceHost.DeviceHostReady = {
             nodePath: "/remote-host/node-must-never-execute",
             hub: { origin: viewerHubOrigin },
             devices: makeDeviceHubOperations({
               hostId: LOCAL_DEVICE_HOST_ID,
               origin: viewerHubOrigin,
-              http: yield* HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer)),
+              // Resolved per request: the fixture hub client below serves these calls.
+              http: HttpClient.make((request) => hub.execute(request)),
               run,
               androidAvailable: Ref.get(devicePlatformAvailable),
             }),

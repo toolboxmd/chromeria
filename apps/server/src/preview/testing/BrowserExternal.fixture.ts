@@ -192,6 +192,8 @@ export function makeExternalBrowserDownload(
       saves.push(path);
       await save(path);
     },
+    // Upstream deletes the artifact after saveAs so cached contexts do not keep it.
+    delete: async () => {},
   };
   return { download: download as unknown as Download, saves };
 }
