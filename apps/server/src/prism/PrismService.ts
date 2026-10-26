@@ -239,6 +239,9 @@ const make = Effect.gen(function* () {
       const [first, ...rest] = started;
       if (first !== undefined)
         return { modelSelection: first, modelSelections: [first, ...rest], kitText };
+      // Without a kit the inherited selection was the only candidate; name why it cannot run.
+      if (preferences.length === 0 && input.inherited && input.validate)
+        yield* input.validate(input.inherited);
       return yield* new OrchestratorMcpFailure({
         code: "provider_unavailable",
         message: "No eligible model with usage headroom for this Prism role and lane.",

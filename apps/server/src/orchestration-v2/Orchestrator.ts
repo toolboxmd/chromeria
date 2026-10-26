@@ -4440,30 +4440,30 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 ? undefined
                 : {
                     ...((changedWatch === undefined ? existing.watch : undefined) ?? {
-                    startedAt: watchStartedAt,
-                    headSha: null,
-                    failedChecks: [],
-                    passed: false,
-                    passedChecks: [],
-                    conflicting: false,
-                    // Watching again must not repeat check or conflict news the last watch told.
-                    ...(existing.endedWatch && {
-                      headSha: existing.endedWatch.headSha,
-                      failedChecks: existing.endedWatch.failedChecks,
-                      passed: existing.endedWatch.passed,
-                      passedChecks: existing.endedWatch.passedChecks,
-                      conflicting: existing.endedWatch.conflicting,
+                      startedAt: watchStartedAt,
+                      headSha: null,
+                      failedChecks: [],
+                      passed: false,
+                      passedChecks: [],
+                      conflicting: false,
+                      // Watching again must not repeat check or conflict news the last watch told.
+                      ...(existing.endedWatch && {
+                        headSha: existing.endedWatch.headSha,
+                        failedChecks: existing.endedWatch.failedChecks,
+                        passed: existing.endedWatch.passed,
+                        passedChecks: existing.endedWatch.passedChecks,
+                        conflicting: existing.endedWatch.conflicting,
+                      }),
+                      ...(existing.endedWatch?.owedChecks !== undefined && {
+                        owedChecks: existing.endedWatch.owedChecks,
+                      }),
+                      ...(existing.endedWatch?.checksAwaitedSince !== undefined && {
+                        checksAwaitedSince: existing.endedWatch.checksAwaitedSince,
+                      }),
+                      remarksThrough: startedAt,
+                      remarkIds: [],
+                      wakes: 0,
                     }),
-                    ...(existing.endedWatch?.owedChecks !== undefined && {
-                      owedChecks: existing.endedWatch.owedChecks,
-                    }),
-                    ...(existing.endedWatch?.checksAwaitedSince !== undefined && {
-                      checksAwaitedSince: existing.endedWatch.checksAwaitedSince,
-                    }),
-                    remarksThrough: startedAt,
-                    remarkIds: [],
-                    wakes: 0,
-                  }),
                     ...(command.purposeIntent === undefined
                       ? {}
                       : { purposeIntent: command.purposeIntent }),
@@ -5486,8 +5486,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         readonly modelSwitch?: OrchestrationV2ModelSwitch | undefined;
       }) {
         const message: OrchestrationV2ConversationMessage = {
-          ...(input.command.type !== "message.dispatch" ||
-          input.command.purposeIntent === undefined
+          ...(input.command.type !== "message.dispatch" || input.command.purposeIntent === undefined
             ? {}
             : { purposeIntent: input.command.purposeIntent }),
           createdBy: input.createdBy,
@@ -6339,8 +6338,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           (command.dispatchMode.type === "steer_active" ||
             command.dispatchMode.type === "restart_active")));
     const requestedPurposeTargetId =
-      command.dispatchMode.type === "steer_active" ||
-      command.dispatchMode.type === "restart_active"
+      command.dispatchMode.type === "steer_active" || command.dispatchMode.type === "restart_active"
         ? command.dispatchMode.targetRunId
         : undefined;
     const target = !isTargetOperation
@@ -8134,7 +8132,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
     const run: OrchestrationV2Run = {
-  purpose: resolvedPurpose.purpose,
+      purpose: resolvedPurpose.purpose,
       id: runId,
       threadId: command.threadId,
       ordinal,
@@ -15797,7 +15795,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const stopping =
       command.type === "thread.stop" ||
       (command.type === "run.interrupt" && command.holdQueue === true);
-    const propagatedStop = command.type === "thread.stop" ? command.forkRetirementStop : undefined;
+    const propagatedStop =
+      command.type === "thread.stop" && "forkRetirementStop" in command
+        ? command.forkRetirementStop
+        : undefined;
     const state = needsAdmission
       ? yield* retirement(admissionThreadId).pipe(
           Effect.mapError(
@@ -15820,7 +15821,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               : {}),
           });
     const forkPlans = retirementPlan === undefined ? [] : [retirementPlan];
-    if (command.type === "thread.stop" && command.forkRetirementStop !== undefined)
+    if (command.type === "thread.stop" && "forkRetirementStop" in command)
       forkPlans.push(propagatedStopAdmission(command.threadId, command.forkRetirementStop));
     if (command.type === "message.dispatch") {
       const wightPlan = wightAdmissionPlan(command);

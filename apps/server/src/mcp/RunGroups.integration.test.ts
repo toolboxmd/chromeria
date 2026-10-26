@@ -676,7 +676,12 @@ describe("Run groups", () => {
             { version: 1, intent: { type: "inherit" } },
             { version: 1, intent: { type: "unscoped" } },
           ]) {
-            const refused = yield* invoke("delegate_task", { ...args, purposeIntent });
+            // JSON transport omits an absent intent; it never sends undefined.
+            const { purposeIntent: _replayed, ...withoutIntent } = args;
+            const refused = yield* invoke(
+              "delegate_task",
+              purposeIntent === undefined ? withoutIntent : { ...withoutIntent, purposeIntent },
+            );
             expect(declaredFailure(refused)).toMatchObject({ code: "orchestration_error" });
             expect(declaredFailure(refused).message).toContain("different purpose intent");
           }
