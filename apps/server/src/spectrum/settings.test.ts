@@ -134,3 +134,20 @@ it("names the separate White after the first label no Color uses, ignoring case"
     "White (moderator 3)",
   );
 });
+
+it("retains options on Spectrum primary, fallbacks and copied White", () => {
+  const fast = { ...primary, options: [{ id: "serviceTier", value: "priority" }] };
+  const configured = {
+    ...settings,
+    slots: settings.slots.map((slot) => ({ ...slot, primary: fast, fallbacks: [fast] })),
+    white: { primary: fast, fallbacks: [fast] },
+  };
+  const result = resolveSpectrumStart(request, configured);
+  expect(result.colors[0]?.selection?.options).toEqual(fast.options);
+  expect(result.colors[0]?.fallbacks?.[0]?.selection?.options).toEqual(fast.options);
+  expect(result.white.selection?.options).toEqual(fast.options);
+  expect(result.white.fallbacks?.[0]?.selection?.options).toEqual(fast.options);
+  expect(
+    resolveSpectrumStart({ ...request, white: "Blue" }, configured).white.selection?.options,
+  ).toEqual(fast.options);
+});

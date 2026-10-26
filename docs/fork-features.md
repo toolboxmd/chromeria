@@ -1259,6 +1259,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "purpose": "Keep scoped Prism kits for the delegated roles (Planner, Researcher, Designer, Worker lanes, Computer use, Roast, Reviewer, Judge) and the stored Promachos kit on its own page editable with ordered Color lists and saved settings replay. Removed role kits drop at decode; stored records that name a removed role read as its successor. Project overrides are partial role maps over the environment kits; each page resets only its own kits.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/169",
+    "https://github.com/toolboxmd/chromeria/issues/625",
     "https://github.com/toolboxmd/chromeria/issues/395",
     "https://github.com/toolboxmd/chromeria/issues/397",
     "https://github.com/toolboxmd/chromeria/issues/399",
@@ -1271,6 +1272,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
   ],
   "newFiles": [
     "apps/server/src/prism/PrismRoleOverrides.test.ts",
+    "apps/server/src/prism/modelOptions.ts",
     "apps/server/src/prism/PrismRoleOverrides.ts",
     "packages/shared/src/prismProjectOverrides.test.ts",
     "apps/web/src/components/settings/ColorList.tsx",
@@ -1280,6 +1282,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/web/src/components/settings/usePrismSettingsSave.ts",
     "apps/web/src/routes/settings.promachos.tsx",
     "apps/web/src/components/settings/ColorPicker.logic.test.ts",
+    "apps/web/src/components/settings/ColorPicker.browser.test.tsx",
     "apps/web/src/components/settings/ColorPicker.logic.ts",
     "apps/web/src/components/settings/ColorPicker.tsx",
     "apps/web/src/components/settings/PrismSettings.list.test.tsx",

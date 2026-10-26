@@ -14,7 +14,11 @@ export class SpectrumStartValidationError extends Schema.TaggedError<SpectrumSta
 export const isStartValidationError = Schema.is(SpectrumStartValidationError);
 
 const colorCandidate = (color: Color) => ({
-  selection: { instanceId: color.instanceId, model: color.model },
+  selection: {
+    instanceId: color.instanceId,
+    model: color.model,
+    ...(color.options === undefined ? {} : { options: color.options }),
+  },
   ...(color.effort === undefined ? {} : { effort: color.effort }),
 });
 

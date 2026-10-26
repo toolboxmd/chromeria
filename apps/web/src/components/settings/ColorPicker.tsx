@@ -4,6 +4,7 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import {
   chooseColorEffort,
   chooseColorModel,
+  chooseColorOption,
   chooseColorProvider,
   findColorChoice,
   type ColorProviderChoice,
@@ -27,7 +28,7 @@ function ProviderLabel({ provider }: { provider: ColorProviderChoice }) {
 
 /**
  * Chooses a Color: a provider enabled for the scope, then one of its models, then that model's
- * effort. A saved Color the scope no longer offers stays visible, marked unavailable.
+ * effort and advertised options. A saved Color the scope no longer offers stays visible, marked unavailable.
  */
 export function ColorPicker({
   value,
@@ -125,6 +126,62 @@ export function ColorPicker({
           ))}
         </SelectPopup>
       </Select>
+      {model?.options?.map((descriptor) => {
+        const selected = value.options?.find((option) => option.id === descriptor.id)?.value;
+        const choices =
+          descriptor.type === "boolean"
+            ? [
+                { id: "true", label: "On" },
+                { id: "false", label: "Off" },
+              ]
+            : descriptor.options;
+        const selectedId = selected === undefined ? "" : String(selected);
+        const unknown =
+          selected !== undefined && !choices.some((choice) => choice.id === selectedId);
+        return (
+          <Select
+            key={descriptor.id}
+            value={selectedId}
+            disabled={disabled}
+            onValueChange={(option) => {
+              if (option !== null)
+                onChange(
+                  chooseColorOption(
+                    value,
+                    descriptor.id,
+                    option === ""
+                      ? undefined
+                      : descriptor.type === "boolean"
+                        ? option === "true"
+                        : option,
+                  ),
+                );
+            }}
+          >
+            <SelectTrigger size="sm" className="w-fit" aria-label={`${label} ${descriptor.label}`}>
+              <SelectValue>
+                {choices.find((choice) => choice.id === selectedId)?.label ??
+                  (unknown
+                    ? `${selectedId} (unavailable)`
+                    : `Default ${descriptor.label.toLowerCase()}`)}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectPopup>
+              <SelectItem value="">Default {descriptor.label.toLowerCase()}</SelectItem>
+              {unknown && (
+                <SelectItem value={selectedId} disabled>
+                  {selectedId} (unavailable)
+                </SelectItem>
+              )}
+              {choices.map((choice) => (
+                <SelectItem key={choice.id} value={choice.id}>
+                  {choice.label}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        );
+      })}
     </span>
   );
 }

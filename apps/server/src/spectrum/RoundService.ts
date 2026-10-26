@@ -13,6 +13,9 @@ import { ForkDispatchPlans } from "../fork/ForkDispatchPlans.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ProviderAdapters from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as Prism from "../prism/PrismService.ts";
 import { bindRun, fallBack, nextRound } from "./barrier.ts";
 import { whiteInstruction } from "./freeMode.ts";
 import { spectrumLaunchAdmission } from "./launchAdmission.ts";
@@ -43,6 +46,8 @@ const make = Effect.gen(function* () {
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const sink = yield* EventSink.EventSinkV2;
   const threads = yield* Threads.ThreadManagementService;
+  const adapters = yield* ProviderAdapters.ProviderAdapterRegistryV2;
+  const providers = yield* ProviderRegistry.ProviderRegistry;
   const read = (threadId: ThreadId) =>
     readSpectrum(threadId).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
@@ -53,8 +58,13 @@ const make = Effect.gen(function* () {
       ),
     );
   /** Admission refused the start: nothing of it committed, and its command can never commit. */
-  const refusedBeforeCommit = (commandId: CommandId, error: { readonly _tag: string }) =>
-    error._tag === "ThreadManagementProviderInstanceDisabledError"
+  const refusedBeforeCommit = (
+    commandId: CommandId,
+    error: { readonly _tag: string; readonly code?: string },
+  ) =>
+    error._tag === "ThreadManagementProviderInstanceDisabledError" ||
+    (error._tag === "OrchestratorMcpFailure" &&
+      (error.code === "provider_unavailable" || error.code === "model_unavailable"))
       ? Effect.succeed(true)
       : sql<{ readonly status: string }>`
           SELECT status FROM orchestration_command_receipts WHERE command_id = ${commandId}
@@ -164,7 +174,21 @@ const make = Effect.gen(function* () {
               pending.commandId,
             );
       // Fiber-local admission is rebuilt on every replay. No captured scope survives a restart.
-      const outcome = yield* threads.dispatch(pending).pipe(
+      const outcome = yield* Effect.gen(function* () {
+        // Replays bind an already accepted run; only a new start needs fresh validation.
+        if (!committed) {
+          if (pending.modelSelection === undefined)
+            return yield* new SpectrumRoundError({
+              threadId,
+              cause: "Round command has no model selection",
+            });
+          yield* Prism.validateLaunchSelection(pending.modelSelection).pipe(
+            Effect.provideService(ProviderAdapters.ProviderAdapterRegistryV2, adapters),
+            Effect.provideService(ProviderRegistry.ProviderRegistry, providers),
+          );
+        }
+        return yield* threads.dispatch(pending);
+      }).pipe(
         Effect.provideService(PeerDispatchAuthority, owner?.id),
         Effect.provideService(ForkDispatchPlans, [
           spectrumLaunchAdmission(threadId, current.generation, pending),

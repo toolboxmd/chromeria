@@ -13,12 +13,14 @@ import {
   ThreadId,
   type NodeId,
   type OrchestrationV2Run,
+  OrchestratorMcpFailure,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Events from "../orchestration-v2/EventSink.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
@@ -30,6 +32,7 @@ import { layer as serialization } from "../orchestration-v2/ThreadCommandExecuto
 import type { McpInvocationScope } from "../mcp/McpInvocationContext.ts";
 import * as Mcp from "../mcp/OrchestratorMcpService.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
+import * as Providers from "../provider/ProviderRegistry.ts";
 import { initializeRecoveryHistory } from "../prism/RecoveryHistory.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
@@ -466,6 +469,171 @@ it.effect(
         ]);
       }).pipe(Effect.provide(Layer.fresh(Round.layer).pipe(Layer.provideMerge(gate))));
     }).pipe(Effect.provide(runtime)),
+);
+
+const isControllerError = Schema.is(Controller.SpectrumControllerError);
+const isRoundError = Schema.is(Round.SpectrumRoundError);
+const isMcpFailure = Schema.is(OrchestratorMcpFailure);
+
+it.effect.each(
+  (["Color", "White"] as const).flatMap((member) =>
+    [
+      { id: "serviceTier", value: true, error: "must be one of" },
+      { id: "serviceTier", value: "unsupported", error: "must be one of" },
+      { id: "unknown", value: "priority", error: "Unknown option" },
+      { id: "serviceTier", value: "priority", error: null },
+    ].map((option) => ({ member, option, label: `${option.id}=${option.value}` })),
+  ),
+)("a delayed $member fallback validates advertised options: $label", ({ member, option }) =>
+  Effect.gen(function* () {
+    yield* setup;
+    yield* initializeRecoveryHistory;
+    const codex = ProviderInstanceId.make("codex");
+    const primary = { instanceId: codex, model: "test-model" };
+    const spare = { instanceId: spareInstanceId, model: "test-model" };
+    const backup = { ...spare, options: [{ id: option.id, value: option.value }] };
+    const unavailable = [
+      { instanceId: ProviderInstanceId.make("missing"), model: "test-model" },
+      { ...spare, model: "missing-model" },
+    ];
+    // Unavailable backups are admitted now and skipped later; malformed options stop the start
+    // even when another valid candidate remains.
+    const fallbacks = option.error === null ? [...unavailable, backup] : [backup, spare];
+    const slot = { primary, fallbacks };
+    const providers = yield* Providers.ProviderRegistry;
+    const catalog = Layer.succeed(Providers.ProviderRegistry, {
+      ...providers,
+      getProviders: providers.getProviders.pipe(
+        Effect.map((entries) =>
+          entries.map((provider) => ({
+            ...provider,
+            models: provider.models.map((model) => ({
+              ...model,
+              capabilities: {
+                ...model.capabilities,
+                optionDescriptors: [
+                  {
+                    id: "serviceTier",
+                    label: "Speed",
+                    type: "select" as const,
+                    options: [
+                      { id: "standard", label: "Standard" },
+                      { id: "priority", label: "Fast" },
+                    ],
+                  },
+                ],
+              },
+            })),
+          })),
+        ),
+      ),
+    });
+    // Load saved Colors, including their unchecked backups, through the real settings seam.
+    const saved = Settings.layerTest({
+      spectrum: {
+        slots: [
+          {
+            label: "Blue",
+            ...(member === "Color" ? slot : { primary: spare, fallbacks: [] }),
+          },
+          { label: "Red", primary: spare, fallbacks: [] },
+        ],
+        white: member === "White" ? slot : { primary: spare, fallbacks: [] },
+      },
+    });
+    const { colors: _colors, moderator: _moderator, ...request } = agentStart;
+    const state = yield* Effect.gen(function* () {
+      return yield* (yield* Launch.SpectrumLaunchService).register(request);
+    }).pipe(
+      Effect.provide(Layer.fresh(Launch.layer).pipe(Layer.provide(Layer.mergeAll(saved, catalog)))),
+    );
+    const target = member === "White" ? state.white! : state.participants[0]!;
+    assert.deepStrictEqual(target.selection, primary);
+    assert.deepStrictEqual(target.fallbacks, fallbacks);
+    const projections = yield* Projection.ProjectionStoreV2;
+    const projectId = (yield* projections.getThread(state.threadId)).projectId;
+    const gate = Layer.fresh(Threads.layer).pipe(
+      Layer.provideMerge(
+        Settings.layerTest({
+          providerInstances: {
+            [codex]: { driver: ProviderDriverKind.make("codex"), enabled: true },
+            [spareInstanceId]: { driver: ProviderDriverKind.make("codex"), enabled: true },
+          },
+          projectSettingsOverrides: {
+            [projectId]: { providerInstances: { [codex]: { enabled: false } } },
+          },
+        }),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const rounds = yield* Round.SpectrumRoundService;
+      const result = yield* Effect.gen(function* () {
+        if (member === "Color") {
+          const prepared = yield* rounds.prepare(state.threadId);
+          return yield* rounds.dispatch(
+            state.threadId,
+            prepared.outbox.find(
+              (command) =>
+                command.type === "message.dispatch" && command.threadId === target.threadId,
+            )!.commandId,
+          );
+        }
+        const controller = yield* Controller.SpectrumController;
+        let current = yield* controller.resume(state.threadId);
+        // Complete the real council rounds so White reaches its own dispatch seam.
+        for (let step = 0; step <= state.limit; step++) {
+          assert.strictEqual(current.round!.step, step);
+          for (const slot of current.round!.slots) {
+            const records = yield* projections.getThreadRecords(slot.threadId, ["runs"]);
+            yield* ended(
+              records.runs.find((run) => run.id === slot.runId)!,
+              "completed",
+              "reply",
+            );
+          }
+          current = yield* controller.resume(state.threadId);
+        }
+        return current;
+      }).pipe(Effect.result);
+      const runs = (yield* projections.getThreadRecords(target.threadId, ["runs"])).runs;
+      const persisted = yield* read(state.threadId);
+      const selected = member === "White" ? persisted.white! : persisted.participants[0]!;
+      // Both cases must reach the delayed fallback, after the initially valid primary refuses.
+      assert.deepStrictEqual(
+        selected.attempted,
+        option.error === null ? [primary, ...unavailable] : [primary],
+      );
+      if (option.error === null) {
+        assert.strictEqual(result._tag, "Success");
+        assert.deepStrictEqual(
+          runs.map((run) => run.modelSelection),
+          [backup],
+        );
+      } else {
+        assert.strictEqual(result._tag, "Failure");
+        if (result._tag !== "Failure") return;
+        const error =
+          member === "White" && isControllerError(result.failure)
+            ? result.failure.cause
+            : result.failure;
+        assert.isTrue(isRoundError(error));
+        if (!isRoundError(error)) return;
+        assert.isTrue(isMcpFailure(error.cause));
+        if (!isMcpFailure(error.cause)) return;
+        assert.strictEqual(error.cause.code, "invalid_request");
+        assert.include(error.cause.message, option.error);
+        assert.deepStrictEqual(runs, []);
+      }
+    }).pipe(
+      Effect.provide(
+        Layer.fresh(Controller.layer).pipe(
+          Layer.provideMerge(
+            Layer.fresh(Round.layer).pipe(Layer.provideMerge(Layer.mergeAll(gate, catalog))),
+          ),
+        ),
+      ),
+    );
+  }).pipe(Effect.provide(runtime)),
 );
 
 it.effect("a Spectrum task of a scheduled run still holds that run until its report lands", () =>
