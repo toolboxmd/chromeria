@@ -431,3 +431,45 @@ it.effect("persists peer origin on the Spectrum and Colors, fencing each descend
     }
   }).pipe(Effect.provide(runtime)),
 );
+
+it.effect(
+  "Spectrum preserves model options when applying effort to participants, fallbacks and White",
+  () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const fast = {
+        ...selection,
+        options: [
+          { id: "serviceTier", value: "priority" },
+          { id: "reasoningEffort", value: "low" },
+        ],
+      };
+      const { moderator: _moderator, ...request } = input;
+      const state = yield* (yield* Launch.SpectrumLaunchService).register({
+        ...request,
+        colors: [
+          {
+            label: "Blue",
+            selection: fast,
+            effort: "high",
+            fallbacks: [{ selection: fast, effort: "medium" }],
+          },
+          { label: "Red", selection: fast },
+        ],
+        white: { selection: fast, effort: "high" },
+      });
+      const projections = yield* Projection.ProjectionStoreV2;
+      const blue = yield* projections.getThread(state.participants[0]!.threadId);
+      assert.deepStrictEqual(blue.modelSelection.options, [
+        { id: "serviceTier", value: "priority" },
+        { id: "reasoningEffort", value: "high" },
+      ]);
+      const white = yield* projections.getThread(state.white!.threadId);
+      assert.deepStrictEqual(white.modelSelection.options, blue.modelSelection.options);
+      const saved = Option.getOrThrow(yield* readSpectrum(state.threadId));
+      assert.deepStrictEqual(saved.participants[0]?.fallbacks?.[0]?.options, [
+        { id: "serviceTier", value: "priority" },
+        { id: "reasoningEffort", value: "medium" },
+      ]);
+    }).pipe(Effect.provide(runtime)),
+);

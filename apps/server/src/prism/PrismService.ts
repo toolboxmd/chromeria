@@ -1,3 +1,4 @@
+import { colorModelSelection, invalidOptionSelections } from "./modelOptions.ts";
 import { unsupportedBare } from "@t3tools/provider-core/server/bareLaunch";
 import {
   DEFAULT_PRISM_LANE,
@@ -87,6 +88,15 @@ export const validateLaunchSelection = Effect.fn("Prism.validateLaunchSelection"
       code: "model_unavailable",
       message: `Model ${selection.model} is not advertised by provider ${selection.instanceId}.`,
     });
+  const invalid = invalidOptionSelections(
+    selection.options ?? [],
+    model.capabilities?.optionDescriptors,
+  );
+  if (invalid.length > 0)
+    return yield* new OrchestratorMcpFailure({
+      code: "invalid_request",
+      message: `Model ${model.slug} on provider ${selection.instanceId} rejected options: ${invalid.join(" ")}`,
+    });
   return { ...selection, model: model.slug };
 });
 
@@ -109,19 +119,6 @@ function blocked(provider: ServerProvider, now: number) {
       window.usedPercent >= 100 &&
       (window.resetsAt === undefined || Date.parse(window.resetsAt) > now),
   );
-}
-
-function effortOption(driver: string) {
-  switch (driver) {
-    case "codex":
-    case "grok":
-    case "muse":
-      return "reasoningEffort";
-    case "opencode":
-      return "variant";
-    default:
-      return "effort";
-  }
 }
 
 export class PrismService extends Context.Service<
@@ -280,16 +277,10 @@ const make = Effect.gen(function* () {
         );
         if (!model && !rechecking && (preferences.length > 0 || provider.models.length > 0))
           continue;
-        const effort = "effort" in candidate ? candidate.effort : undefined;
-        const selection: ModelSelection = {
-          instanceId: candidate.instanceId,
-          model: model?.slug ?? candidate.model,
-          ...(effort === undefined
-            ? "options" in candidate
-              ? { options: candidate.options }
-              : {}
-            : { options: [{ id: effortOption(provider.driver), value: effort }] }),
-        };
+        const selection = colorModelSelection(
+          { ...candidate, model: model?.slug ?? candidate.model },
+          provider.driver,
+        );
         const validated = yield* (
           input.validate ? input.validate(selection) : Effect.succeed(selection)
         ).pipe(
@@ -299,7 +290,30 @@ const make = Effect.gen(function* () {
               : Effect.fail(error),
           ),
         );
-        if (validated !== null) started.push(validated);
+        if (validated === null) continue;
+        const advertisedModel = rechecking
+          ? (yield* registry.getProviders)
+              .find((p) => p.instanceId === validated.instanceId)
+              ?.models.find(
+                (m) => m.slug === validated.model || m.aliases?.includes(validated.model),
+              )
+          : model;
+        // New Color options must be advertised; legacy effort still works with older catalogs.
+        const descriptors = advertisedModel?.capabilities?.optionDescriptors;
+        const invalidColorOptions = invalidOptionSelections(
+          candidate.options ?? [],
+          preferences.length > 0 ? (descriptors ?? []) : descriptors,
+        );
+        const invalid =
+          invalidColorOptions.length > 0
+            ? invalidColorOptions
+            : invalidOptionSelections(validated.options ?? [], descriptors);
+        if (invalid.length > 0)
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: `Model ${validated.model} on provider ${validated.instanceId} rejected options: ${invalid.join(" ")}`,
+          });
+        started.push(validated);
       }
       const [first, ...rest] = started;
       if (first !== undefined)

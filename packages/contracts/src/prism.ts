@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { PositiveInt, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
+import { ProviderOptionSelections } from "./model.ts";
 import {
   defaultInstanceIdForDriver,
   ProviderDriverKind,
@@ -109,15 +110,16 @@ export type PrismLane = typeof PrismLane.Type;
 export const DEFAULT_PRISM_LANE: PrismLane = "medium";
 
 /**
- * A Color: one provider instance, model and effort used together. Prism role
+ * A Color: one provider instance, model, effort and model options used together. Prism role
  * lists, the Promachos kit and Spectrum slots all store Colors; the same
- * model at another effort is a separate Color.
+ * model at another effort or with different options is a separate Color.
  */
 export const Color = Schema.Struct({
   instanceId: ProviderInstanceId,
   model: TrimmedNonEmptyString,
   /** Claude effort, Codex/Grok reasoningEffort, OpenCode variant. */
   effort: Schema.optionalKey(TrimmedNonEmptyString),
+  options: Schema.optionalKey(ProviderOptionSelections),
 });
 export type Color = typeof Color.Type;
 

@@ -5,6 +5,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
+  type ProviderOptionSelection,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -13,6 +14,7 @@ import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { buildUnavailableProviderSnapshot } from "../provider/unavailableProviderSnapshot.ts";
 import * as Settings from "../serverSettings.ts";
 import * as Prism from "./PrismService.ts";
+import * as Adapters from "../orchestration-v2/ProviderAdapterRegistry.ts";
 
 const instanceId = ProviderInstanceId.make("codex");
 const projectId = ProjectId.make("project:prism");
@@ -542,3 +544,177 @@ describe("PrismService", () => {
     assert.strictEqual(Prism.delegatedPrismRole(), "worker");
   });
 });
+
+const optionDescriptors = [
+  {
+    id: "reasoningEffort",
+    label: "Reasoning",
+    type: "select" as const,
+    options: [{ id: "high", label: "High" }],
+  },
+  {
+    id: "serviceTier",
+    label: "Speed",
+    type: "select" as const,
+    options: [
+      { id: "priority", label: "Fast" },
+      { id: "default", label: "Standard" },
+    ],
+  },
+  { id: "enabled", label: "Enabled", type: "boolean" as const },
+];
+const advertised = Effect.map(provider, (p) => ({
+  ...p,
+  installed: true,
+  status: "ready" as const,
+  models: p.models.map((m) => ({ ...m, aliases: ["alias"], capabilities: { optionDescriptors } })),
+}));
+const fastOptions = [{ id: "serviceTier", value: "priority" }];
+
+it.effect(
+  "preserves tier-only distinct Colors, effort and inherited options without a validation callback",
+  () =>
+    Effect.gen(function* () {
+      const p = yield* advertised;
+      yield* Effect.gen(function* () {
+        const service = yield* Prism.PrismService;
+        const result = yield* service.resolve({ projectId, role: "reviewer", count: 2 });
+        assert.deepStrictEqual(result.modelSelections, [
+          {
+            ...selection,
+            options: [
+              { id: "serviceTier", value: "default" },
+              { id: "reasoningEffort", value: "high" },
+            ],
+          },
+          { ...selection, options: [...fastOptions, { id: "reasoningEffort", value: "high" }] },
+        ]);
+        const inherited = {
+          ...selection,
+          options: [...fastOptions, { id: "enabled", value: false }],
+        };
+        assert.deepStrictEqual(
+          (yield* service.resolve({ projectId, role: "planner", inherited })).modelSelection,
+          inherited,
+        );
+        assert.deepStrictEqual(
+          (yield* service.resolve({ projectId, role: "promachos" })).modelSelection.options,
+          [...fastOptions, { id: "reasoningEffort", value: "high" }],
+        );
+      }).pipe(
+        Effect.provide(
+          Prism.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                registry([p]),
+                Settings.layerTest({
+                  prismRoles: {
+                    reviewer: {
+                      models: [
+                        {
+                          ...selection,
+                          effort: "high",
+                          options: [{ id: "serviceTier", value: "default" }],
+                        },
+                        { ...selection, model: "alias", effort: "high", options: fastOptions },
+                      ],
+                    },
+                    promachos: { models: [{ ...selection, effort: "high", options: fastOptions }] },
+                  },
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+    }),
+);
+
+it.effect(
+  "rejects unknown ids, values, types and duplicate Color options without falling back or needing a callback",
+  () =>
+    Effect.gen(function* () {
+      const p = yield* advertised;
+      const cases: readonly (readonly ProviderOptionSelection[])[] = [
+        [{ id: "unknown", value: "priority" }],
+        [{ id: "serviceTier", value: "turbo" }],
+        [{ id: "serviceTier", value: true }],
+        [{ id: "enabled", value: "true" }],
+        [{ id: "serviceTier", value: "default" }, ...fastOptions],
+        [{ id: "reasoningEffort", value: "invalid" }],
+      ];
+      for (const options of cases) {
+        const error = yield* Effect.gen(function* () {
+          const service = yield* Prism.PrismService;
+          return yield* service.resolve({ projectId, role: "reviewer" });
+        }).pipe(
+          Effect.flip,
+          Effect.provide(
+            Prism.layer.pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  registry([p]),
+                  Settings.layerTest({
+                    prismRoles: {
+                      reviewer: { models: [{ ...selection, effort: "high", options }, selection] },
+                    },
+                  }),
+                ),
+              ),
+            ),
+          ),
+        );
+        assert.strictEqual(error.code, "invalid_request");
+      }
+      const error = yield* Effect.gen(function* () {
+        return yield* (yield* Prism.PrismService).resolve({ projectId, role: "reviewer" });
+      }).pipe(
+        Effect.flip,
+        Effect.provide(
+          Prism.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                registry([yield* provider]),
+                Settings.layerTest({
+                  prismRoles: { reviewer: { models: [{ ...selection, options: fastOptions }] } },
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+      assert.strictEqual(error.code, "invalid_request");
+    }),
+);
+
+it.effect(
+  "native launch validation canonicalizes the model and applies explicit-target option validation",
+  () =>
+    Effect.gen(function* () {
+      const p = yield* advertised;
+      yield* Effect.gen(function* () {
+        const valid = yield* Prism.validateLaunchSelection({
+          ...selection,
+          model: "alias",
+          options: fastOptions,
+        });
+        assert.deepStrictEqual(valid, { ...selection, options: fastOptions });
+        const error = yield* Effect.flip(
+          Prism.validateLaunchSelection({
+            ...selection,
+            options: [{ id: "serviceTier", value: "turbo" }],
+          }),
+        );
+        assert.strictEqual(error.code, "invalid_request");
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            registry([p]),
+            Layer.mock(Adapters.ProviderAdapterRegistryV2)({
+              list: () => Effect.succeed([instanceId]),
+            }),
+          ),
+        ),
+      );
+    }),
+);

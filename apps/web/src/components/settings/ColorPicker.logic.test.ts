@@ -3,6 +3,8 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   chooseColorEffort,
   chooseColorModel,
+  chooseColorOption,
+  colorKey,
   chooseColorProvider,
   colorEffortOptions,
   colorProviderChoices,
@@ -172,4 +174,84 @@ describe("choosing a Color", () => {
     expect(chooseColorEffort(current, "")).toEqual({ instanceId: codex, model: "sol" });
     expect(chooseColorEffort(current, "low")).toEqual({ ...current, effort: "low" });
   });
+});
+
+const speed = {
+  id: "serviceTier",
+  label: "Speed",
+  type: "select" as const,
+  options: [
+    { id: "default", label: "Standard" },
+    { id: "priority", label: "Priority" },
+  ],
+};
+it("offers advertised speed with priority labeled Fast and leaves Grok Fast as a model", () => {
+  const choices = colorProviderChoices(
+    [
+      {
+        ...entry(codex, []),
+        models: [
+          {
+            slug: "sol",
+            name: "Sol",
+            isCustom: false,
+            capabilities: { optionDescriptors: [speed] },
+          },
+        ],
+      },
+      { ...entry(claude, [{ slug: "grok-fast" }]), driverKind: ProviderDriverKind.make("grok") },
+    ],
+    new Map([
+      [codex, [{ slug: "sol", name: "Sol" }]],
+      [claude, [{ slug: "grok-fast", name: "Grok Fast" }]],
+    ]),
+    () => null,
+  );
+  expect(choices[0]?.models[0]?.options?.[0]).toMatchObject({
+    options: [
+      { id: "default", label: "Standard" },
+      { id: "priority", label: "Fast" },
+    ],
+  });
+  expect(choices[1]?.models[0]).toEqual({ slug: "grok-fast", name: "Grok Fast", efforts: [] });
+});
+it("preserves other options when changing effort or clearing speed, and keeps only supported options on a new model", () => {
+  const fast = {
+    instanceId: codex,
+    model: "sol",
+    effort: "high",
+    options: [
+      { id: "serviceTier", value: "priority" },
+      { id: "enabled", value: false },
+    ],
+  };
+  expect(chooseColorEffort(fast, "low")).toEqual({ ...fast, effort: "low" });
+  expect(chooseColorOption(fast, "serviceTier", undefined).options).toEqual([
+    { id: "enabled", value: false },
+  ]);
+  const available = [
+    {
+      ...providers[0]!,
+      models: [
+        { slug: "luna", name: "Luna", efforts: [{ id: "high", label: "High" }], options: [speed] },
+      ],
+    },
+  ];
+  expect(chooseColorModel(available, fast, "luna")).toEqual({
+    ...fast,
+    model: "luna",
+    options: [{ id: "serviceTier", value: "priority" }],
+  });
+  expect(
+    chooseColorModel(
+      available,
+      { ...fast, options: [{ id: "serviceTier", value: "turbo" }] },
+      "luna",
+    ).options,
+  ).toBeUndefined();
+  expect(chooseColorProvider(providers, fast, claude).options).toBeUndefined();
+  expect(colorKey(fast)).not.toBe(
+    colorKey({ ...fast, options: [{ id: "serviceTier", value: "default" }] }),
+  );
+  expect(colorKey(fast)).toBe(colorKey({ ...fast, options: fast.options.toReversed() }));
 });

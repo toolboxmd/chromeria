@@ -60,8 +60,9 @@ or in free mode.
 _Avoid_: room, channel, group chat
 
 **Color**:
-One harness, model and effort used together, such as Claude Opus 5.5 at high
-effort. A Drafter runs on one Color.
+One harness, model, effort and advertised model options used together, such as
+Codex at high effort with Fast speed. Different options make distinct Colors.
+A Drafter runs on one Color.
 _Avoid_: model config, route
 
 **White**:

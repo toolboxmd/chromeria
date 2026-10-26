@@ -1,4 +1,10 @@
-import type { Color, ModelCapabilities, ProviderInstanceId } from "@t3tools/contracts";
+import type {
+  Color,
+  ModelCapabilities,
+  ProviderInstanceId,
+  ProviderOptionDescriptor,
+  ProviderOptionSelection,
+} from "@t3tools/contracts";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 import type { ModelEsque } from "../chat/providerIconUtils";
 
@@ -11,6 +17,7 @@ export interface ColorModelChoice {
   readonly slug: string;
   readonly name: string;
   readonly efforts: readonly ColorEffortChoice[];
+  readonly options?: readonly ProviderOptionDescriptor[];
 }
 
 /** A provider the scope allows, with the models it allows; the picker's only source of options. */
@@ -26,8 +33,15 @@ export interface ColorProviderChoice extends Pick<
   readonly models: readonly ColorModelChoice[];
 }
 
-export function colorKey(color: Pick<Color, "instanceId" | "model">) {
-  return JSON.stringify([color.instanceId, color.model]);
+export function colorKey(color: Color) {
+  return JSON.stringify([
+    color.instanceId,
+    color.model,
+    color.effort ?? null,
+    [...(color.options ?? [])]
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map(({ id, value }) => [id, value]),
+  ]);
 }
 
 export function colorEffortOptions(
@@ -63,13 +77,33 @@ export function colorProviderChoices(
     if (!entry.enabled || !entry.isAvailable) return [];
     const models = (options.get(entry.instanceId) ?? [])
       .filter((model) => !model.isUnavailable && !disabledReason(entry.instanceId, model.slug))
-      .map((model) => ({
-        slug: model.slug,
-        name: model.name,
-        efforts: colorEffortOptions(
-          entry.models.find((candidate) => candidate.slug === model.slug)?.capabilities,
-        ),
-      }));
+      .map((model) => {
+        const capabilities = entry.models.find(
+          (candidate) => candidate.slug === model.slug,
+        )?.capabilities;
+        const options = capabilities?.optionDescriptors
+          ?.filter((option) => !["effort", "reasoningEffort", "variant"].includes(option.id))
+          .map((option) =>
+            option.type === "select"
+              ? {
+                  ...option,
+                  options: option.options
+                    .filter((choice) => !option.promptInjectedValues?.includes(choice.id))
+                    .map((choice) =>
+                      option.id === "serviceTier" && choice.id === "priority"
+                        ? { ...choice, label: "Fast" }
+                        : choice,
+                    ),
+                }
+              : option,
+          );
+        return {
+          slug: model.slug,
+          name: model.name,
+          efforts: colorEffortOptions(capabilities),
+          ...(options?.length ? { options } : {}),
+        };
+      });
     if (models.length === 0) return [];
     const { enabled: _enabled, isAvailable: _isAvailable, models: _models, ...provider } = entry;
     return [{ ...provider, models }];
@@ -117,10 +151,37 @@ export function chooseColorModel(
   const effort = model.efforts.some((option) => option.id === current.effort)
     ? current.effort
     : undefined;
-  return withEffort(current.instanceId, slug, effort);
+  const options = current.options?.filter((selection) =>
+    model.options?.some(
+      (descriptor) =>
+        descriptor.id === selection.id &&
+        (descriptor.type === "boolean"
+          ? typeof selection.value === "boolean"
+          : descriptor.options.some((choice) => choice.id === selection.value)),
+    ),
+  );
+  return {
+    ...withEffort(current.instanceId, slug, effort),
+    ...(options?.length ? { options } : {}),
+  };
 }
 
 /** An empty effort means the provider default. */
 export function chooseColorEffort(current: Color, effort: string): Color {
-  return withEffort(current.instanceId, current.model, effort || undefined);
+  const { effort: _effort, ...rest } = current;
+  return { ...rest, ...(effort ? { effort } : {}) };
+}
+
+/** Undefined removes an override so the provider uses its default. */
+export function chooseColorOption(
+  current: Color,
+  id: string,
+  value: ProviderOptionSelection["value"] | undefined,
+): Color {
+  const { options: previous, ...rest } = current;
+  const options = [
+    ...(previous ?? []).filter((option) => option.id !== id),
+    ...(value === undefined ? [] : [{ id, value }]),
+  ];
+  return { ...rest, ...(options.length ? { options } : {}) };
 }

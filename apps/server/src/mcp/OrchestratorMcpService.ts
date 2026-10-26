@@ -23,6 +23,7 @@ import { callerLinkOrigin, assertSameLink } from "./linkOrigin.ts";
 import { SpectrumMcpInterrupt } from "../spectrum/mcpInterrupt.ts";
 import { SpectrumMcpSend } from "../spectrum/mcpSend.ts";
 import * as Prism from "../prism/PrismService.ts";
+import { invalidOptionSelections } from "../prism/modelOptions.ts";
 import {
   CommandId,
   type RunId,

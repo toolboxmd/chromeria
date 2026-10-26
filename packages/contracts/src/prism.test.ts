@@ -1,8 +1,13 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { OrchestratorMcpDelegateTaskInput, OrchestrationV2RemoteTaskLaunch } from "./index.ts";
 import {
+  ProjectId,
+  OrchestratorMcpDelegateTaskInput,
+  OrchestrationV2RemoteTaskLaunch,
+} from "./index.ts";
+import {
+  Color,
   admitDelegateRole,
   DEFAULT_PRISM_ROLE_KITS,
   PRISM_DELEGATE_ROLE_ERROR,
@@ -302,4 +307,45 @@ describe("Prism role kits", () => {
     );
     expect(decodeKitsPatch({ planner: { run: 1 } })).toEqual({ planner: { run: 1 } });
   });
+});
+
+it("round-trips Color options in role, project, Promachos and Spectrum settings without changing old Colors", () => {
+  const legacy = { instanceId: "codex", model: "gpt-6.1-sol", effort: "high" };
+  const fast = {
+    ...legacy,
+    options: [
+      { id: "serviceTier", value: "priority" },
+      { id: "enabled", value: false },
+    ],
+  };
+  const stored = decodeServerSettings({
+    prismRoles: { reviewer: { models: [legacy, fast] }, promachos: { models: [fast] } },
+    projectSettingsOverrides: { project: { prismRoles: { reviewer: { models: [fast] } } } },
+    spectrum: {
+      slots: [
+        { label: "Blue", primary: fast, fallbacks: [legacy] },
+        { label: "Red", primary: legacy, fallbacks: [fast] },
+      ],
+      white: { primary: fast, fallbacks: [legacy] },
+    },
+  });
+  const restored = decodeServerSettings(encodeServerSettings(stored));
+  expect(restored.prismRoles.reviewer.models).toEqual([legacy, fast]);
+  expect(restored.prismRoles.promachos.models).toEqual([fast]);
+  expect(
+    restored.projectSettingsOverrides[ProjectId.make("project")]?.prismRoles?.reviewer?.models,
+  ).toEqual([fast]);
+  expect(restored.spectrum.slots[0]?.primary).toEqual(fast);
+  expect(restored.spectrum.white?.primary).toEqual(fast);
+  expect(decodeKitsPatch({ reviewer: { models: [fast] } }).reviewer?.models).toEqual([fast]);
+});
+const decodeColor = Schema.decodeUnknownSync(Color);
+it("uses the existing model option decoder and rejects malformed Color option arrays", () => {
+  expect(
+    decodeColor({ instanceId: "codex", model: "sol", options: { serviceTier: "priority" } })
+      .options,
+  ).toEqual([{ id: "serviceTier", value: "priority" }]);
+  expect(() =>
+    decodeColor({ instanceId: "codex", model: "sol", options: [{ id: "serviceTier", value: 3 }] }),
+  ).toThrow();
 });
