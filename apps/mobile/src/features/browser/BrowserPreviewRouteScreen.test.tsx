@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { act, useEffect, useImperativeHandle, type ComponentProps, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { EnvironmentId, ThreadId, PreviewTabId } from "@t3tools/contracts";

@@ -284,15 +284,18 @@ export const make = Effect.gen(function* () {
   const revokeActiveSessionsForReplacement = SqlSchema.findAll({
     Request: CreateReplacingActiveAuthSessionInput,
     Result: Schema.Struct({ sessionId: AuthSessionId }),
-    execute: ({ session, revokedAt, replaceSessionId }) =>
-      Effect.gen(function* () {
-        const retiring = yield* sql<{
-          session_id: string;
-        }>`SELECT session_id FROM auth_sessions WHERE ${replaceSessionId === undefined ? sql`subject=${session.subject}` : sql`session_id=${replaceSessionId}`} AND method=${session.method} AND revoked_at IS NULL AND expires_at>${revokedAt}`;
-        yield* invalidateAutomationSessions(retiring.map((row) => row.session_id)).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-        );
-        return yield* sql`
+    execute: Effect.fn("AuthSessions.execute")(function* ({
+      session,
+      revokedAt,
+      replaceSessionId,
+    }) {
+      const retiring = yield* sql<{
+        session_id: string;
+      }>`SELECT session_id FROM auth_sessions WHERE ${replaceSessionId === undefined ? sql`subject=${session.subject}` : sql`session_id=${replaceSessionId}`} AND method=${session.method} AND revoked_at IS NULL AND expires_at>${revokedAt}`;
+      yield* invalidateAutomationSessions(retiring.map((row) => row.session_id)).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      return yield* sql`
         UPDATE auth_sessions
         SET revoked_at = ${revokedAt}
         WHERE ${
@@ -305,7 +308,7 @@ export const make = Effect.gen(function* () {
           AND expires_at > ${revokedAt}
         RETURNING session_id AS "sessionId"
       `;
-      }),
+    }),
   });
 
   const listActiveSessionRows = SqlSchema.findAll({
@@ -350,40 +353,38 @@ export const make = Effect.gen(function* () {
   const revokeSessionRows = SqlSchema.findAll({
     Request: RevokeAuthSessionInput,
     Result: Schema.Struct({ sessionId: AuthSessionId }),
-    execute: ({ sessionId, revokedAt }) =>
-      Effect.gen(function* () {
-        yield* invalidateAutomationSessions([sessionId]).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-        );
-        return yield* sql`
+    execute: Effect.fn("AuthSessions.execute")(function* ({ sessionId, revokedAt }) {
+      yield* invalidateAutomationSessions([sessionId]).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      return yield* sql`
         UPDATE auth_sessions
         SET revoked_at = ${revokedAt}
         WHERE session_id = ${sessionId}
           AND revoked_at IS NULL
         RETURNING session_id AS "sessionId"
       `;
-      }),
+    }),
   });
 
   const revokeOtherSessionRows = SqlSchema.findAll({
     Request: RevokeOtherAuthSessionsInput,
     Result: Schema.Struct({ sessionId: AuthSessionId }),
-    execute: ({ currentSessionId, revokedAt }) =>
-      Effect.gen(function* () {
-        const retiring = yield* sql<{
-          session_id: string;
-        }>`SELECT session_id FROM auth_sessions WHERE session_id<>${currentSessionId} AND revoked_at IS NULL`;
-        yield* invalidateAutomationSessions(retiring.map((row) => row.session_id)).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-        );
-        return yield* sql`
+    execute: Effect.fn("AuthSessions.execute")(function* ({ currentSessionId, revokedAt }) {
+      const retiring = yield* sql<{
+        session_id: string;
+      }>`SELECT session_id FROM auth_sessions WHERE session_id<>${currentSessionId} AND revoked_at IS NULL`;
+      yield* invalidateAutomationSessions(retiring.map((row) => row.session_id)).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      return yield* sql`
         UPDATE auth_sessions
         SET revoked_at = ${revokedAt}
         WHERE session_id <> ${currentSessionId}
           AND revoked_at IS NULL
         RETURNING session_id AS "sessionId"
       `;
-      }),
+    }),
   });
 
   const create: AuthSessionRepository["Service"]["create"] = (input) =>

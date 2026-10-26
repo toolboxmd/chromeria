@@ -261,7 +261,6 @@ it.effect(
         expect(accessed.every((id) => id === source)).toBe(true);
       }),
     ),
-  10000,
 );
 
 it("accepts the pre-request-route snapshot but rejects a missing required request roster", () => {

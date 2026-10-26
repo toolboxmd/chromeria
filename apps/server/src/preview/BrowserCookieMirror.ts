@@ -46,45 +46,40 @@ const make = Effect.gen(function* () {
   const lock = yield* Semaphore.make(1);
   const parents = new Map<string, AuthSessionId>();
   let generation = 0;
-  const owner = (sessionId: AuthSessionId) =>
-    Effect.gen(function* () {
-      const active = yield* sessions
-        .listActive()
-        .pipe(Effect.mapError(() => new CookieMirrorError({ reason: "unavailable" })));
-      const client = active.find((client) => client.sessionId === sessionId);
-      if (
-        !client ||
-        (client.person ?? DEFAULT_PERSON) !== DEFAULT_PERSON ||
-        !(client.permissions ?? client.scopes).includes(AuthCookieMirrorWriteScope)
-      )
-        return yield* new CookieMirrorError({ reason: "forbidden" });
-    });
+  const owner = Effect.fn("BrowserCookieMirror.owner")(function* (sessionId: AuthSessionId) {
+    const active = yield* sessions
+      .listActive()
+      .pipe(Effect.mapError(() => new CookieMirrorError({ reason: "unavailable" })));
+    const client = active.find((client) => client.sessionId === sessionId);
+    if (
+      !client ||
+      (client.person ?? DEFAULT_PERSON) !== DEFAULT_PERSON ||
+      !(client.permissions ?? client.scopes).includes(AuthCookieMirrorWriteScope)
+    )
+      return yield* new CookieMirrorError({ reason: "forbidden" });
+  });
   return BrowserCookieMirror.of({
-    grant: (session) =>
-      Effect.gen(function* () {
-        if (
-          !session.scopes.includes(AuthCookieMirrorWriteScope) ||
-          session.subject === "mcp-client"
-        )
-          return yield* new CookieMirrorError({ reason: "forbidden" });
-        yield* owner(session.sessionId);
-        const child = yield* sessions
-          .issue({
-            subject: `cookie-mirror:${session.sessionId}`,
-            method: "bearer-access-token",
-            scopes: [AuthCookieMirrorWriteScope],
-            ttl: Duration.minutes(10),
-            client: { deviceType: "desktop", label: "Desktop browser cookie mirror" },
-            replaceActiveForSubjectAndMethod: true,
-          })
-          .pipe(Effect.mapError(() => new CookieMirrorError({ reason: "unavailable" })));
-        for (const [id, parent] of parents) if (parent === session.sessionId) parents.delete(id);
-        parents.set(child.sessionId, session.sessionId);
-        const ticket = yield* sessions
-          .issueWebSocketToken(child.sessionId)
-          .pipe(Effect.mapError(() => new CookieMirrorError({ reason: "unavailable" })));
-        return { ticket: ticket.token, environmentId };
-      }),
+    grant: Effect.fn("BrowserCookieMirror.grant")(function* (session) {
+      if (!session.scopes.includes(AuthCookieMirrorWriteScope) || session.subject === "mcp-client")
+        return yield* new CookieMirrorError({ reason: "forbidden" });
+      yield* owner(session.sessionId);
+      const child = yield* sessions
+        .issue({
+          subject: `cookie-mirror:${session.sessionId}`,
+          method: "bearer-access-token",
+          scopes: [AuthCookieMirrorWriteScope],
+          ttl: Duration.minutes(10),
+          client: { deviceType: "desktop", label: "Desktop browser cookie mirror" },
+          replaceActiveForSubjectAndMethod: true,
+        })
+        .pipe(Effect.mapError(() => new CookieMirrorError({ reason: "unavailable" })));
+      for (const [id, parent] of parents) if (parent === session.sessionId) parents.delete(id);
+      parents.set(child.sessionId, session.sessionId);
+      const ticket = yield* sessions
+        .issueWebSocketToken(child.sessionId)
+        .pipe(Effect.mapError(() => new CookieMirrorError({ reason: "unavailable" })));
+      return { ticket: ticket.token, environmentId };
+    }),
     open: (session) =>
       lock.withPermits(1)(
         Effect.gen(function* () {

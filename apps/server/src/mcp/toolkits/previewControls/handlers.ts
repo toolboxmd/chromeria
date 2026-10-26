@@ -8,17 +8,18 @@ import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import * as PeerAuthority from "../../../peer/PeerAuthority.ts";
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 
-const recheck = (scope: import("../../McpInvocationContext.ts").McpThreadInvocationScope) =>
-  Effect.gen(function* () {
-    const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
-    if (Option.isSome(authority)) {
-      yield* authority.value.recheckInvocation(scope, "preview", scope.thread.threadId);
-    } else if (scope.authority !== undefined || scope.client?.linked === true)
-      return yield* new OrchestratorMcpFailure({
-        code: "capability_denied",
-        message: "Current original preview authority is unavailable.",
-      });
-  });
+const recheck = Effect.fn("PreviewControlToolHandlers.recheck")(function* (
+  scope: import("../../McpInvocationContext.ts").McpThreadInvocationScope,
+) {
+  const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+  if (Option.isSome(authority)) {
+    yield* authority.value.recheckInvocation(scope, "preview", scope.thread.threadId);
+  } else if (scope.authority !== undefined || scope.client?.linked === true)
+    return yield* new OrchestratorMcpFailure({
+      code: "capability_denied",
+      message: "Current original preview authority is unavailable.",
+    });
+});
 
 const access = Effect.gen(function* () {
   const scope = yield* requireThreadMcpCapability("preview");

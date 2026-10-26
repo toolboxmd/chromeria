@@ -21,7 +21,7 @@ import { APPEND } from "./testFixtures.ts";
 import { SpectrumState, type SpectrumRound } from "./state.ts";
 
 const spare = { instanceId: ProviderInstanceId.make("codex-spare"), model: "test-model" };
-/** A Spectrum started after #525: White is its own member, not one of the Colors. */
+/** A Spectrum with a separate White member: White is not one of the Colors. */
 function withWhite(overrides: Partial<SpectrumState> = {}): SpectrumState {
   const { moderator: _moderator, ...state } = makeState(overrides);
   return {

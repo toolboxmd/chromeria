@@ -210,43 +210,40 @@ export const ensureAutomationAuthoritySchema = Effect.gen(function* () {
 });
 
 /** Persist downstream obligations before retiring an exact local generation. */
-const invalidateAutomationCertificates = (
-  certificateIds: ReadonlyArray<string>,
-  reason: "retired" | "revoked",
-) =>
-  Effect.gen(function* () {
-    if (certificateIds.length === 0) return;
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`UPDATE fork_automation_obligations SET pending=1 WHERE ack_json IS NULL AND dependency_id IN (SELECT dependency_id FROM fork_automation_dependency_certificates WHERE ${sql.in("certificate_id", certificateIds)} AND (${reason}='revoked' OR certificate_kind='automation-execution'))`;
-    yield* sql`UPDATE fork_automation_certificates SET disabled=1,revoked=CASE WHEN ${reason}='revoked' THEN 1 ELSE revoked END WHERE ${sql.in("id", certificateIds)}`;
-  });
+const invalidateAutomationCertificates = Effect.fn(
+  "DestinationAutomationAuthority.invalidateAutomationCertificates",
+)(function* (certificateIds: ReadonlyArray<string>, reason: "retired" | "revoked") {
+  if (certificateIds.length === 0) return;
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE fork_automation_obligations SET pending=1 WHERE ack_json IS NULL AND dependency_id IN (SELECT dependency_id FROM fork_automation_dependency_certificates WHERE ${sql.in("certificate_id", certificateIds)} AND (${reason}='revoked' OR certificate_kind='automation-execution'))`;
+  yield* sql`UPDATE fork_automation_certificates SET disabled=1,revoked=CASE WHEN ${reason}='revoked' THEN 1 ELSE revoked END WHERE ${sql.in("id", certificateIds)}`;
+});
 
 /** SQL-only: call in the revocation owner's transaction, before invalidating credentials. */
-export const invalidateAutomationSessions = (
-  sessionIds: ReadonlyArray<string>,
-  reason: "retired" | "revoked" = "revoked",
-) =>
-  Effect.gen(function* () {
-    if (sessionIds.length === 0) return;
-    const sql = yield* SqlClient.SqlClient;
-    yield* ensureAutomationAuthoritySchema;
-    yield* RemoteSecretPersistence.invalidateSessions(sessionIds);
-    yield* sql`UPDATE fork_automation_obligations SET pending=1 WHERE ack_json IS NULL AND dependency_id IN (SELECT dependency_id FROM fork_automation_dependency_grants WHERE ${sql.in("session_id", sessionIds)} AND (${reason}='revoked' OR grant_kind='automation-execution'))`;
-    const affected = yield* sql<{
-      id: string;
-    }>`SELECT id FROM fork_automation_certificates WHERE id IN (SELECT json_extract(dependency_json,'$.certificateId') FROM fork_automation_recovery WHERE ${sql.in("session_id", sessionIds)}) OR EXISTS (SELECT 1 FROM json_each(certificate_json,'$.graph.records') node JOIN json_each(${json(sessionIds)}) requested WHERE json_extract(node.value,'$.environmentId')=json_extract(certificate_json,'$.audience') AND requested.value IN (json_extract(node.value,'$.record.sessionId'),json_extract(node.value,'$.record.originClientId'),json_extract(node.value,'$.record.requestClientSessionId'),json_extract(node.value,'$.record.resourceSessionId'))) OR EXISTS (SELECT 1 FROM json_each(certificate_json,'$.graph.legacy') node JOIN json_each(${json(sessionIds)}) requested WHERE json_extract(node.value,'$.environmentId')=json_extract(certificate_json,'$.audience') AND json_extract(node.value,'$.sessionId')=requested.value)`;
-    yield* invalidateAutomationCertificates(
-      affected.map((row) => row.id),
-      reason,
-    );
-  });
+export const invalidateAutomationSessions = Effect.fn(
+  "DestinationAutomationAuthority.invalidateAutomationSessions",
+)(function* (sessionIds: ReadonlyArray<string>, reason: "retired" | "revoked" = "revoked") {
+  if (sessionIds.length === 0) return;
+  const sql = yield* SqlClient.SqlClient;
+  yield* ensureAutomationAuthoritySchema;
+  yield* RemoteSecretPersistence.invalidateSessions(sessionIds);
+  yield* sql`UPDATE fork_automation_obligations SET pending=1 WHERE ack_json IS NULL AND dependency_id IN (SELECT dependency_id FROM fork_automation_dependency_grants WHERE ${sql.in("session_id", sessionIds)} AND (${reason}='revoked' OR grant_kind='automation-execution'))`;
+  const affected = yield* sql<{
+    id: string;
+  }>`SELECT id FROM fork_automation_certificates WHERE id IN (SELECT json_extract(dependency_json,'$.certificateId') FROM fork_automation_recovery WHERE ${sql.in("session_id", sessionIds)}) OR EXISTS (SELECT 1 FROM json_each(certificate_json,'$.graph.records') node JOIN json_each(${json(sessionIds)}) requested WHERE json_extract(node.value,'$.environmentId')=json_extract(certificate_json,'$.audience') AND requested.value IN (json_extract(node.value,'$.record.sessionId'),json_extract(node.value,'$.record.originClientId'),json_extract(node.value,'$.record.requestClientSessionId'),json_extract(node.value,'$.record.resourceSessionId'))) OR EXISTS (SELECT 1 FROM json_each(certificate_json,'$.graph.legacy') node JOIN json_each(${json(sessionIds)}) requested WHERE json_extract(node.value,'$.environmentId')=json_extract(certificate_json,'$.audience') AND json_extract(node.value,'$.sessionId')=requested.value)`;
+  yield* invalidateAutomationCertificates(
+    affected.map((row) => row.id),
+    reason,
+  );
+});
 
-export const invalidateAutomationLink = (environmentId: string, generation: string) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* ensureAutomationAuthoritySchema;
-    yield* sql`UPDATE fork_automation_obligations SET pending=1 WHERE ack_json IS NULL AND next_environment_id=${environmentId} AND next_generation=${generation}`;
-  });
+export const invalidateAutomationLink = Effect.fn(
+  "DestinationAutomationAuthority.invalidateAutomationLink",
+)(function* (environmentId: string, generation: string) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* ensureAutomationAuthoritySchema;
+  yield* sql`UPDATE fork_automation_obligations SET pending=1 WHERE ack_json IS NULL AND next_environment_id=${environmentId} AND next_generation=${generation}`;
+});
 
 /** Historical callers and index rows retain strict execution retirement. */
 export type DependencyGrant =
@@ -308,261 +305,264 @@ export class DestinationAutomationAuthority extends Context.Service<
   }
 >()("t3/scheduledTasks/DestinationAutomationAuthority") {}
 
-const readCertificate = (id: string) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    const row = (yield* sql<{
-      certificate_json: string;
-      disabled: number;
-      revoked: number;
-    }>`SELECT * FROM fork_automation_certificates WHERE id=${id}`.pipe(
-      Effect.mapError(unavailable),
-    ))[0];
-    if (row === undefined) return yield* denied("Unknown destination automation authority.");
-    const certificate = yield* decodeCertificate(row.certificate_json).pipe(
-      Effect.mapError(unavailable),
-    );
-    return { certificate, disabled: row.disabled !== 0, revoked: row.revoked !== 0 };
-  });
+const readCertificate = Effect.fn("DestinationAutomationAuthority.readCertificate")(function* (
+  id: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const row = (yield* sql<{
+    certificate_json: string;
+    disabled: number;
+    revoked: number;
+  }>`SELECT * FROM fork_automation_certificates WHERE id=${id}`.pipe(
+    Effect.mapError(unavailable),
+  ))[0];
+  if (row === undefined) return yield* denied("Unknown destination automation authority.");
+  const certificate = yield* decodeCertificate(row.certificate_json).pipe(
+    Effect.mapError(unavailable),
+  );
+  return { certificate, disabled: row.disabled !== 0, revoked: row.revoked !== 0 };
+});
 
-const checkDestinationSessions = (certificate: AutomationCertificate) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    const sessionIds = new Set<string>();
-    for (const node of certificate.graph.records)
-      if (node.environmentId === certificate.audience && "envelope" in node.record)
-        for (const id of [
-          node.record.sessionId,
-          node.record.originClientId,
-          node.record.requestClientSessionId,
-          node.record.resourceSessionId,
-        ])
-          if (id !== null && id !== undefined) sessionIds.add(id);
-    for (const node of certificate.graph.legacy)
-      if (node.environmentId === certificate.audience) sessionIds.add(node.sessionId);
-    const now = DateTime.formatIso(yield* DateTime.now);
-    for (const id of sessionIds) {
-      const valid =
-        yield* sql`SELECT 1 FROM auth_sessions WHERE session_id=${id} AND revoked_at IS NULL AND expires_at>${now}`.pipe(
-          Effect.mapError(unavailable),
-        );
-      if (valid.length !== 1)
-        return yield* denied("An accepted destination grant expired or was revoked.");
-    }
-  });
+const checkDestinationSessions = Effect.fn(
+  "DestinationAutomationAuthority.checkDestinationSessions",
+)(function* (certificate: AutomationCertificate) {
+  const sql = yield* SqlClient.SqlClient;
+  const sessionIds = new Set<string>();
+  for (const node of certificate.graph.records)
+    if (node.environmentId === certificate.audience && "envelope" in node.record)
+      for (const id of [
+        node.record.sessionId,
+        node.record.originClientId,
+        node.record.requestClientSessionId,
+        node.record.resourceSessionId,
+      ])
+        if (id !== null && id !== undefined) sessionIds.add(id);
+  for (const node of certificate.graph.legacy)
+    if (node.environmentId === certificate.audience) sessionIds.add(node.sessionId);
+  const now = DateTime.formatIso(yield* DateTime.now);
+  for (const id of sessionIds) {
+    const valid =
+      yield* sql`SELECT 1 FROM auth_sessions WHERE session_id=${id} AND revoked_at IS NULL AND expires_at>${now}`.pipe(
+        Effect.mapError(unavailable),
+      );
+    if (valid.length !== 1)
+      return yield* denied("An accepted destination grant expired or was revoked.");
+  }
+});
 
-const claimCertificate = (
+const claimCertificate: (
+  id: string,
+  ancestors: ReadonlySet<string>,
+  purpose?: "execution" | "birth",
+) => Effect.Effect<AutomationCertificate, OrchestratorMcpFailure, SqlClient.SqlClient> = Effect.fn(
+  "DestinationAutomationAuthority.claimCertificate",
+)(function* (
   id: string,
   ancestors: ReadonlySet<string>,
   purpose: "execution" | "birth" = "execution",
-): Effect.Effect<AutomationCertificate, OrchestratorMcpFailure, SqlClient.SqlClient> =>
-  Effect.gen(function* () {
-    if (ancestors.has(id) || ancestors.size >= 256)
-      return yield* denied("The local automation contributor graph is cyclic or too deep.");
-    const visited = new Set([...ancestors, id]);
-    const sql = yield* SqlClient.SqlClient;
-    const { certificate, disabled, revoked } = yield* readCertificate(id);
-    const current = (yield* sql<{
-      certificate_id: string;
-    }>`SELECT certificate_id FROM fork_automation_bindings WHERE kind=${certificate.binding.kind} AND resource_id=${certificate.binding.resourceId}`.pipe(
+) {
+  if (ancestors.has(id) || ancestors.size >= 256)
+    return yield* denied("The local automation contributor graph is cyclic or too deep.");
+  const visited = new Set([...ancestors, id]);
+  const sql = yield* SqlClient.SqlClient;
+  const { certificate, disabled, revoked } = yield* readCertificate(id);
+  const current = (yield* sql<{
+    certificate_id: string;
+  }>`SELECT certificate_id FROM fork_automation_bindings WHERE kind=${certificate.binding.kind} AND resource_id=${certificate.binding.resourceId}`.pipe(
+    Effect.mapError(unavailable),
+  ))[0];
+  const tombstones =
+    yield* sql`SELECT 1 FROM fork_automation_disable_acks WHERE certificate_id=${id} LIMIT 1`.pipe(
+      Effect.mapError(unavailable),
+    );
+  if (
+    revoked ||
+    tombstones.length !== 0 ||
+    (purpose === "execution" && (disabled || current?.certificate_id !== id))
+  )
+    return yield* denied("Destination automation authority is disabled or superseded.");
+  if (certificate.expiresAt !== null && certificate.expiresAt <= (yield* Clock.currentTimeMillis))
+    return yield* denied("Destination automation authority has expired.");
+  yield* checkDestinationSessions(certificate);
+  for (const node of certificate.graph.records) {
+    if (node.environmentId !== certificate.audience || !("certificateId" in node.record)) continue;
+    const prior = (yield* readCertificate(node.record.certificateId)).certificate;
+    const retainedBirth =
+      certificate.binding.kind === "spectrum" &&
+      prior.binding.kind === "spectrum" &&
+      prior.binding.resourceId === certificate.binding.resourceId &&
+      prior.binding.projectId === certificate.binding.projectId &&
+      prior.binding.workflowGeneration < certificate.binding.workflowGeneration;
+    yield* claimCertificate(
+      prior.id,
+      visited,
+      node.record.kind === "automation-birth" || retainedBirth ? "birth" : purpose,
+    );
+  }
+  if (purpose === "birth") return certificate;
+  if (certificate.binding.kind === "schedule") {
+    const row = (yield* sql<{
+      project_id: string;
+      thread_id: string | null;
+      enabled: number;
+      incarnation: string;
+      certificate_id: string | null;
+    }>`SELECT t.project_id,t.thread_id,t.enabled,i.incarnation,json_extract(t.schedule_json,'$.certificateId') AS certificate_id FROM scheduled_tasks t JOIN scheduled_task_request_incarnations i ON i.task_id=t.task_id WHERE t.task_id=${certificate.binding.resourceId}`.pipe(
       Effect.mapError(unavailable),
     ))[0];
-    const tombstones =
-      yield* sql`SELECT 1 FROM fork_automation_disable_acks WHERE certificate_id=${id} LIMIT 1`.pipe(
-        Effect.mapError(unavailable),
-      );
     if (
-      revoked ||
-      tombstones.length !== 0 ||
-      (purpose === "execution" && (disabled || current?.certificate_id !== id))
+      row === undefined ||
+      row.enabled !== 1 ||
+      row.project_id !== certificate.binding.projectId ||
+      row.thread_id !== certificate.binding.threadId ||
+      row.incarnation !== certificate.binding.incarnation ||
+      row.certificate_id !== certificate.id
     )
-      return yield* denied("Destination automation authority is disabled or superseded.");
-    if (certificate.expiresAt !== null && certificate.expiresAt <= (yield* Clock.currentTimeMillis))
-      return yield* denied("Destination automation authority has expired.");
-    yield* checkDestinationSessions(certificate);
-    for (const node of certificate.graph.records) {
-      if (node.environmentId !== certificate.audience || !("certificateId" in node.record))
-        continue;
-      const prior = (yield* readCertificate(node.record.certificateId)).certificate;
-      const retainedBirth =
-        certificate.binding.kind === "spectrum" &&
-        prior.binding.kind === "spectrum" &&
-        prior.binding.resourceId === certificate.binding.resourceId &&
-        prior.binding.projectId === certificate.binding.projectId &&
-        prior.binding.workflowGeneration < certificate.binding.workflowGeneration;
-      yield* claimCertificate(
-        prior.id,
-        visited,
-        node.record.kind === "automation-birth" || retainedBirth ? "birth" : purpose,
+      return yield* denied(
+        "The current schedule no longer matches its accepted automation definition.",
       );
-    }
-    if (purpose === "birth") return certificate;
-    if (certificate.binding.kind === "schedule") {
-      const row = (yield* sql<{
-        project_id: string;
-        thread_id: string | null;
-        enabled: number;
-        incarnation: string;
-        certificate_id: string | null;
-      }>`SELECT t.project_id,t.thread_id,t.enabled,i.incarnation,json_extract(t.schedule_json,'$.certificateId') AS certificate_id FROM scheduled_tasks t JOIN scheduled_task_request_incarnations i ON i.task_id=t.task_id WHERE t.task_id=${certificate.binding.resourceId}`.pipe(
-        Effect.mapError(unavailable),
-      ))[0];
-      if (
-        row === undefined ||
-        row.enabled !== 1 ||
-        row.project_id !== certificate.binding.projectId ||
-        row.thread_id !== certificate.binding.threadId ||
-        row.incarnation !== certificate.binding.incarnation ||
-        row.certificate_id !== certificate.id
-      )
-        return yield* denied(
-          "The current schedule no longer matches its accepted automation definition.",
-        );
-    } else {
-      const row = (yield* sql<{
-        generation: number;
-        status: string;
-        certificate_id: string | null;
-      }>`SELECT generation,json_extract(payload_json,'$.status') AS status,json_extract(payload_json,'$.state.automationCertificateId') AS certificate_id FROM fork_spectra WHERE thread_id=${certificate.binding.resourceId}`.pipe(
-        Effect.mapError(unavailable),
-      ))[0];
-      if (
-        row === undefined ||
-        row.status !== "active" ||
-        row.generation !== certificate.binding.workflowGeneration ||
-        row.certificate_id !== certificate.id
-      )
-        return yield* denied(
-          "The current Spectrum no longer matches its accepted launch generation.",
-        );
-    }
-    return certificate;
-  });
+  } else {
+    const row = (yield* sql<{
+      generation: number;
+      status: string;
+      certificate_id: string | null;
+    }>`SELECT generation,json_extract(payload_json,'$.status') AS status,json_extract(payload_json,'$.state.automationCertificateId') AS certificate_id FROM fork_spectra WHERE thread_id=${certificate.binding.resourceId}`.pipe(
+      Effect.mapError(unavailable),
+    ))[0];
+    if (
+      row === undefined ||
+      row.status !== "active" ||
+      row.generation !== certificate.binding.workflowGeneration ||
+      row.certificate_id !== certificate.id
+    )
+      return yield* denied(
+        "The current Spectrum no longer matches its accepted launch generation.",
+      );
+  }
+  return certificate;
+});
 
 const claimBirthCertificate = (id: string) => claimCertificate(id, new Set(), "birth");
 
 export const claimAutomationCertificate = (id: string) => claimCertificate(id, new Set());
 
-export const currentAutomationCertificate = (kind: AutomationBinding["kind"], resourceId: string) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    const row = (yield* sql<{
-      certificate_id: string;
-    }>`SELECT certificate_id FROM fork_automation_bindings WHERE kind=${kind} AND resource_id=${resourceId}`.pipe(
-      Effect.mapError(unavailable),
-    ))[0];
-    return row === undefined ? undefined : (yield* readCertificate(row.certificate_id)).certificate;
-  });
+export const currentAutomationCertificate = Effect.fn(
+  "DestinationAutomationAuthority.currentAutomationCertificate",
+)(function* (kind: AutomationBinding["kind"], resourceId: string) {
+  const sql = yield* SqlClient.SqlClient;
+  const row = (yield* sql<{
+    certificate_id: string;
+  }>`SELECT certificate_id FROM fork_automation_bindings WHERE kind=${kind} AND resource_id=${resourceId}`.pipe(
+    Effect.mapError(unavailable),
+  ))[0];
+  return row === undefined ? undefined : (yield* readCertificate(row.certificate_id)).certificate;
+});
 
 /** Native acceptance calls this inside the event/receipt transaction; no peer I/O is permitted. */
-export const checkAutomationCommit = (
-  recordIds: ReadonlyArray<string>,
-  liveBirths: ReadonlySet<string> = new Set(),
-) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    const pending = [...recordIds];
-    const seen = new Set<string>();
-    const certificates: Extract<typeof ExecutionRecord.Type, { readonly certificateId: string }>[] =
-      [];
-    const sessions = new Set<string>();
-    while (pending.length !== 0) {
-      const id = pending.pop()!;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      if (seen.size > 256)
-        return yield* denied("The native automation contributor bound was exceeded.");
-      const row = (yield* sql<{
-        record_json: string;
-      }>`SELECT record_json FROM peer_authority_records WHERE id=${id}`.pipe(
-        Effect.mapError(unavailable),
-      ))[0];
-      if (row === undefined) return yield* denied("The native authority owner is unavailable.");
-      const record = yield* decodeExecutionRecord(row.record_json).pipe(
-        Effect.mapError(unavailable),
+export const checkAutomationCommit = Effect.fn(
+  "DestinationAutomationAuthority.checkAutomationCommit",
+)(function* (recordIds: ReadonlyArray<string>, liveBirths: ReadonlySet<string> = new Set()) {
+  const sql = yield* SqlClient.SqlClient;
+  const pending = [...recordIds];
+  const seen = new Set<string>();
+  const certificates: Extract<typeof ExecutionRecord.Type, { readonly certificateId: string }>[] =
+    [];
+  const sessions = new Set<string>();
+  while (pending.length !== 0) {
+    const id = pending.pop()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    if (seen.size > 256)
+      return yield* denied("The native automation contributor bound was exceeded.");
+    const row = (yield* sql<{
+      record_json: string;
+    }>`SELECT record_json FROM peer_authority_records WHERE id=${id}`.pipe(
+      Effect.mapError(unavailable),
+    ))[0];
+    if (row === undefined) return yield* denied("The native authority owner is unavailable.");
+    const record = yield* decodeExecutionRecord(row.record_json).pipe(Effect.mapError(unavailable));
+    if ("envelope" in record) {
+      for (const sessionId of [
+        record.sessionId,
+        record.originClientId,
+        record.requestClientSessionId,
+        record.resourceSessionId,
+      ])
+        if (sessionId !== null && sessionId !== undefined) sessions.add(sessionId);
+    } else if ("resourceSessionId" in record && record.resourceSessionId !== undefined)
+      sessions.add(record.resourceSessionId);
+    if ("certificateId" in record) {
+      certificates.push(record);
+    } else if (record.context !== undefined) {
+      const context = record.context;
+      if (context.type === "task-stop") continue;
+      pending.push(
+        ...(context.type === "run-inputs"
+          ? context.recordIds
+          : context.type === "owned-thread"
+            ? [context.creationRecordId, context.runRecordId]
+            : [context.runRecordId]),
       );
-      if ("envelope" in record) {
-        for (const sessionId of [
-          record.sessionId,
-          record.originClientId,
-          record.requestClientSessionId,
-          record.resourceSessionId,
-        ])
-          if (sessionId !== null && sessionId !== undefined) sessions.add(sessionId);
-      } else if ("resourceSessionId" in record && record.resourceSessionId !== undefined)
-        sessions.add(record.resourceSessionId);
-      if ("certificateId" in record) {
-        certificates.push(record);
-      } else if (record.context !== undefined) {
-        const context = record.context;
-        if (context.type === "task-stop") continue;
-        pending.push(
-          ...(context.type === "run-inputs"
-            ? context.recordIds
-            : context.type === "owned-thread"
-              ? [context.creationRecordId, context.runRecordId]
-              : [context.runRecordId]),
+    } else if (record.parentId !== null) pending.push(record.parentId);
+  }
+  if (certificates.length !== 0) {
+    const now = DateTime.formatIso(yield* DateTime.now);
+    for (const sessionId of sessions) {
+      const active =
+        yield* sql`SELECT 1 FROM auth_sessions WHERE session_id=${sessionId} AND revoked_at IS NULL AND expires_at>${now}`.pipe(
+          Effect.mapError(unavailable),
         );
-      } else if (record.parentId !== null) pending.push(record.parentId);
+      if (active.length !== 1)
+        return yield* denied(
+          "A native automation contributor expired or was revoked before commit.",
+        );
     }
-    if (certificates.length !== 0) {
-      const now = DateTime.formatIso(yield* DateTime.now);
-      for (const sessionId of sessions) {
-        const active =
-          yield* sql`SELECT 1 FROM auth_sessions WHERE session_id=${sessionId} AND revoked_at IS NULL AND expires_at>${now}`.pipe(
-            Effect.mapError(unavailable),
-          );
-        if (active.length !== 1)
-          return yield* denied(
-            "A native automation contributor expired or was revoked before commit.",
-          );
+  }
+  const covered = new Map<string, typeof ExecutionRecord.Type>();
+  const failures: { record: (typeof certificates)[number]; error: OrchestratorMcpFailure }[] = [];
+  for (const record of certificates) {
+    const result = yield* Effect.result(
+      record.kind === "automation-birth"
+        ? claimBirthCertificate(record.certificateId)
+        : claimAutomationCertificate(record.certificateId),
+    );
+    if (result._tag === "Failure") {
+      if (record.kind === "automation-birth") return yield* result.failure;
+      failures.push({ record, error: result.failure });
+      continue;
+    }
+    const certificate = result.success;
+    if (
+      record.kind === "automation-birth" &&
+      !liveBirths.has(record.id) &&
+      !certificates.some(
+        (owner) =>
+          owner.kind === "automation-execution" && owner.certificateId === record.certificateId,
+      )
+    ) {
+      failures.push({
+        record,
+        error: denied("A native birth requires live original-contributor admission."),
+      });
+      continue;
+    }
+    if (certificate.binding.projectId !== record.projectId)
+      return yield* denied("The native automation project changed.");
+    if (record.kind === "automation-birth") continue;
+    for (const node of certificate.graph.records)
+      if (node.environmentId === certificate.audience) {
+        const prior = covered.get(node.record.id);
+        if (prior !== undefined && requestDigest(prior) !== requestDigest(node.record))
+          return yield* denied("The native automation contributor changed.");
+        covered.set(node.record.id, node.record);
       }
-    }
-    const covered = new Map<string, typeof ExecutionRecord.Type>();
-    const failures: { record: (typeof certificates)[number]; error: OrchestratorMcpFailure }[] = [];
-    for (const record of certificates) {
-      const result = yield* Effect.result(
-        record.kind === "automation-birth"
-          ? claimBirthCertificate(record.certificateId)
-          : claimAutomationCertificate(record.certificateId),
-      );
-      if (result._tag === "Failure") {
-        if (record.kind === "automation-birth") return yield* result.failure;
-        failures.push({ record, error: result.failure });
-        continue;
-      }
-      const certificate = result.success;
-      if (
-        record.kind === "automation-birth" &&
-        !liveBirths.has(record.id) &&
-        !certificates.some(
-          (owner) =>
-            owner.kind === "automation-execution" && owner.certificateId === record.certificateId,
-        )
-      ) {
-        failures.push({
-          record,
-          error: denied("A native birth requires live original-contributor admission."),
-        });
-        continue;
-      }
-      if (certificate.binding.projectId !== record.projectId)
-        return yield* denied("The native automation project changed.");
-      if (record.kind === "automation-birth") continue;
-      for (const node of certificate.graph.records)
-        if (node.environmentId === certificate.audience) {
-          const prior = covered.get(node.record.id);
-          if (prior !== undefined && requestDigest(prior) !== requestDigest(node.record))
-            return yield* denied("The native automation contributor changed.");
-          covered.set(node.record.id, node.record);
-        }
-    }
-    for (const failure of failures) {
-      const frozen = covered.get(failure.record.id);
-      if (frozen === undefined || requestDigest(frozen) !== requestDigest(failure.record))
-        return yield* failure.error;
-    }
-  });
+  }
+  for (const failure of failures) {
+    const frozen = covered.get(failure.record.id);
+    if (frozen === undefined || requestDigest(frozen) !== requestDigest(failure.record))
+      return yield* failure.error;
+  }
+});
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -571,79 +571,76 @@ const make = Effect.gen(function* () {
     readCertificate(id).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   const claim = (id: string) =>
     claimAutomationCertificate(id).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-  const accept: DestinationAutomationAuthority["Service"]["accept"] = (value, binding) =>
-    Effect.gen(function* () {
-      const certificate = value.certificate;
-      if (
-        !value.consume() ||
-        requestDigest({ ...certificate.binding, incarnation: binding.incarnation }) !==
-          requestDigest(binding)
-      )
-        return yield* denied("The automation acceptance does not match this definition.");
-      if (
-        certificate.expiresAt !== null &&
-        certificate.expiresAt <= (yield* Clock.currentTimeMillis)
-      )
-        return yield* denied("The captured automation authority expired before acceptance.");
-      for (const expected of value.grantFence) {
-        const rows = yield* sql<{
-          generation: string;
-          grant_json: string;
-        }>`SELECT generation,grant_json FROM peer_authority_sessions WHERE session_id=${expected.session_id}`.pipe(
-          Effect.mapError(unavailable),
-        );
-        if (
-          rows.length !== 1 ||
-          rows[0]!.generation !== expected.generation ||
-          rows[0]!.grant_json !== expected.grant_json
-        )
-          return yield* denied(
-            "A destination contributor grant changed during automation capture.",
-          );
-      }
-      yield* checkDestinationSessions(certificate).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
-      );
-      const tombstone =
-        yield* sql`SELECT 1 FROM fork_automation_disable_acks WHERE certificate_id=${certificate.id} LIMIT 1`.pipe(
-          Effect.mapError(unavailable),
-        );
-      if (tombstone.length !== 0)
-        return yield* denied("The automation was disabled before acceptance.");
-      const previous = yield* sql<{
-        certificate_id: string;
-      }>`SELECT certificate_id FROM fork_automation_bindings WHERE kind=${binding.kind} AND resource_id=${binding.resourceId} AND certificate_id<>${certificate.id}`.pipe(
-        Effect.mapError(unavailable),
-      );
-      yield* invalidateAutomationCertificates(
-        previous.map((row) => row.certificate_id),
-        "retired",
-      ).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(unavailable));
-      const encoded = json({ ...certificate, binding });
-      yield* sql`INSERT INTO fork_automation_certificates(id,certificate_json) VALUES (${certificate.id},${encoded}) ON CONFLICT DO NOTHING`.pipe(
-        Effect.mapError(unavailable),
-      );
-      const stored = yield* read(certificate.id);
-      if (
-        requestDigest(stored.certificate) !== requestDigest({ ...certificate, binding }) ||
-        stored.disabled
-      )
-        return yield* denied("The automation acceptance identity was already consumed.");
-      yield* sql`INSERT INTO fork_automation_bindings VALUES (${binding.kind},${binding.resourceId},${certificate.id}) ON CONFLICT(kind,resource_id) DO UPDATE SET certificate_id=excluded.certificate_id`.pipe(
-        Effect.mapError(unavailable),
-      );
-    });
-  const current: DestinationAutomationAuthority["Service"]["current"] = (kind, resourceId) =>
-    Effect.gen(function* () {
+  const accept: DestinationAutomationAuthority["Service"]["accept"] = Effect.fn(
+    "DestinationAutomationAuthority.accept",
+  )(function* (value, binding) {
+    const certificate = value.certificate;
+    if (
+      !value.consume() ||
+      requestDigest({ ...certificate.binding, incarnation: binding.incarnation }) !==
+        requestDigest(binding)
+    )
+      return yield* denied("The automation acceptance does not match this definition.");
+    if (certificate.expiresAt !== null && certificate.expiresAt <= (yield* Clock.currentTimeMillis))
+      return yield* denied("The captured automation authority expired before acceptance.");
+    for (const expected of value.grantFence) {
       const rows = yield* sql<{
-        certificate_id: string;
-      }>`SELECT certificate_id FROM fork_automation_bindings WHERE kind=${kind} AND resource_id=${resourceId}`.pipe(
+        generation: string;
+        grant_json: string;
+      }>`SELECT generation,grant_json FROM peer_authority_sessions WHERE session_id=${expected.session_id}`.pipe(
         Effect.mapError(unavailable),
       );
-      return rows[0] === undefined
-        ? Option.none()
-        : Option.some((yield* read(rows[0].certificate_id)).certificate);
-    });
+      if (
+        rows.length !== 1 ||
+        rows[0]!.generation !== expected.generation ||
+        rows[0]!.grant_json !== expected.grant_json
+      )
+        return yield* denied("A destination contributor grant changed during automation capture.");
+    }
+    yield* checkDestinationSessions(certificate).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+    const tombstone =
+      yield* sql`SELECT 1 FROM fork_automation_disable_acks WHERE certificate_id=${certificate.id} LIMIT 1`.pipe(
+        Effect.mapError(unavailable),
+      );
+    if (tombstone.length !== 0)
+      return yield* denied("The automation was disabled before acceptance.");
+    const previous = yield* sql<{
+      certificate_id: string;
+    }>`SELECT certificate_id FROM fork_automation_bindings WHERE kind=${binding.kind} AND resource_id=${binding.resourceId} AND certificate_id<>${certificate.id}`.pipe(
+      Effect.mapError(unavailable),
+    );
+    yield* invalidateAutomationCertificates(
+      previous.map((row) => row.certificate_id),
+      "retired",
+    ).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(unavailable));
+    const encoded = json({ ...certificate, binding });
+    yield* sql`INSERT INTO fork_automation_certificates(id,certificate_json) VALUES (${certificate.id},${encoded}) ON CONFLICT DO NOTHING`.pipe(
+      Effect.mapError(unavailable),
+    );
+    const stored = yield* read(certificate.id);
+    if (
+      requestDigest(stored.certificate) !== requestDigest({ ...certificate, binding }) ||
+      stored.disabled
+    )
+      return yield* denied("The automation acceptance identity was already consumed.");
+    yield* sql`INSERT INTO fork_automation_bindings VALUES (${binding.kind},${binding.resourceId},${certificate.id}) ON CONFLICT(kind,resource_id) DO UPDATE SET certificate_id=excluded.certificate_id`.pipe(
+      Effect.mapError(unavailable),
+    );
+  });
+  const current: DestinationAutomationAuthority["Service"]["current"] = Effect.fn(
+    "DestinationAutomationAuthority.current",
+  )(function* (kind, resourceId) {
+    const rows = yield* sql<{
+      certificate_id: string;
+    }>`SELECT certificate_id FROM fork_automation_bindings WHERE kind=${kind} AND resource_id=${resourceId}`.pipe(
+      Effect.mapError(unavailable),
+    );
+    return rows[0] === undefined
+      ? Option.none()
+      : Option.some((yield* read(rows[0].certificate_id)).certificate);
+  });
   const disableLocal: DestinationAutomationAuthority["Service"]["disableLocal"] = (
     kind,
     resourceId,
@@ -661,25 +658,22 @@ const make = Effect.gen(function* () {
         }),
       )
       .pipe(Effect.mapError(unavailable));
-  const registerRecovery: DestinationAutomationAuthority["Service"]["registerRecovery"] = (
-    dependency,
-    sessionId,
-    credentialIdentity,
-  ) =>
-    Effect.gen(function* () {
-      const key = requestDigest(dependency);
-      yield* sql`INSERT INTO fork_automation_recovery VALUES (${key},${json(dependency)},${sessionId},${credentialIdentity}) ON CONFLICT DO NOTHING`.pipe(
-        Effect.mapError(unavailable),
-      );
-      const stored = (yield* sql<{
-        session_id: string;
-        credential_identity: string;
-      }>`SELECT session_id,credential_identity FROM fork_automation_recovery WHERE dependency_id=${key}`.pipe(
-        Effect.mapError(unavailable),
-      ))[0];
-      if (stored?.session_id !== sessionId || stored.credential_identity !== credentialIdentity)
-        return yield* denied("The automation recovery identity is already bound.");
-    });
+  const registerRecovery: DestinationAutomationAuthority["Service"]["registerRecovery"] = Effect.fn(
+    "DestinationAutomationAuthority.registerRecovery",
+  )(function* (dependency, sessionId, credentialIdentity) {
+    const key = requestDigest(dependency);
+    yield* sql`INSERT INTO fork_automation_recovery VALUES (${key},${json(dependency)},${sessionId},${credentialIdentity}) ON CONFLICT DO NOTHING`.pipe(
+      Effect.mapError(unavailable),
+    );
+    const stored = (yield* sql<{
+      session_id: string;
+      credential_identity: string;
+    }>`SELECT session_id,credential_identity FROM fork_automation_recovery WHERE dependency_id=${key}`.pipe(
+      Effect.mapError(unavailable),
+    ))[0];
+    if (stored?.session_id !== sessionId || stored.credential_identity !== credentialIdentity)
+      return yield* denied("The automation recovery identity is already bound.");
+  });
   const registerDependency: DestinationAutomationAuthority["Service"]["registerDependency"] = (
     dependency,
     next,
@@ -827,19 +821,16 @@ const make = Effect.gen(function* () {
       }),
     );
   });
-  const acknowledge: DestinationAutomationAuthority["Service"]["acknowledge"] = (
-    acknowledgement,
-    peer,
-    generation,
-  ) =>
-    Effect.gen(function* () {
-      const rows =
-        yield* sql`UPDATE fork_automation_obligations SET ack_json=${json(acknowledgement)},pending=0 WHERE dependency_id=${requestDigest(acknowledgement.dependency)} AND next_environment_id=${peer} AND next_generation=${generation} RETURNING dependency_id`.pipe(
-          Effect.mapError(unavailable),
-        );
-      if (rows.length !== 1)
-        return yield* denied("The disable acknowledgement does not match its obligation.");
-    });
+  const acknowledge: DestinationAutomationAuthority["Service"]["acknowledge"] = Effect.fn(
+    "DestinationAutomationAuthority.acknowledge",
+  )(function* (acknowledgement, peer, generation) {
+    const rows =
+      yield* sql`UPDATE fork_automation_obligations SET ack_json=${json(acknowledgement)},pending=0 WHERE dependency_id=${requestDigest(acknowledgement.dependency)} AND next_environment_id=${peer} AND next_generation=${generation} RETURNING dependency_id`.pipe(
+        Effect.mapError(unavailable),
+      );
+    if (rows.length !== 1)
+      return yield* denied("The disable acknowledgement does not match its obligation.");
+  });
   return DestinationAutomationAuthority.of({
     accept,
     claim,

@@ -1914,7 +1914,7 @@ export const layer: Layer.Layer<
               }),
         ),
       );
-    let deliverySession =
+      let deliverySession =
         effectiveHandoffs.length === 0 &&
         retryHandoff.length === 0 &&
         sideChatHandoff === undefined &&
@@ -2052,8 +2052,8 @@ export const layer: Layer.Layer<
     });
 
     return ProviderTurnStartServiceV2.of({
-      settleUnstartedRun: (input) =>
-        Effect.gen(function* () {
+      settleUnstartedRun: Effect.fn("ProviderTurnStartService.settleUnstartedRun")(
+        function* (input) {
           const projection = yield* projectionStore.getTurnStartContext(
             input.threadId,
             input.runId,
@@ -2093,13 +2093,16 @@ export const layer: Layer.Layer<
               }),
             },
           });
-        }).pipe(
-          Effect.mapError((cause) =>
-            isProviderTurnStartError(cause)
-              ? cause
-              : new ProviderTurnStartError({ runId: input.runId, cause }),
+        },
+        (effect, input) =>
+          effect.pipe(
+            Effect.mapError((cause) =>
+              isProviderTurnStartError(cause)
+                ? cause
+                : new ProviderTurnStartError({ runId: input.runId, cause }),
+            ),
           ),
-        ),
+      ),
       start: Effect.fn("ProviderTurnStartService.start")(
         function* (input) {
           // This reservation belongs to one start attempt, including every early return and failure.

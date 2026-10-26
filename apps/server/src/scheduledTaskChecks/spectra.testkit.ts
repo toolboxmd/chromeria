@@ -8,12 +8,9 @@ import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts
 import type { BoundSpectrum } from "./handoff.ts";
 
 /**
- * A fixture of #176's published Spectrum storage (toolboxmd/chromeria
- * 7cb115d306, `spectrum/store.ts` and `spectrum/state.ts`): its exact table,
- * and payloads written as its encoder writes them. #176 owns the real adapter;
- * this fixture maps the same rows onto the fence's port. Needs-you is not
- * stored: #176's adapter derives it from its bounded attempts and recovery
- * facts, so a test supplies it per report command.
+ * A fixture of Spectrum's published table and payloads (`spectrum/store.ts`, `spectrum/state.ts`),
+ * mapped onto the fence's port. Needs-you is derived, not stored, so a test supplies it per report
+ * command.
  */
 export const ensureSpectraFixture = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -34,7 +31,7 @@ const FixtureReport = OrchestrationV2Command.pipe(
       command.type === "message.dispatch",
   ),
 );
-/** The fields of #176's `SpectrumState` that the fence reads; missing report fields decode null. */
+/** The fields of Spectrum's `SpectrumState` that the fence reads; missing report fields decode null. */
 const decodeFixtureSpectrum = Schema.decodeUnknownSync(
   Schema.fromJsonString(
     Schema.Struct({
@@ -52,7 +49,7 @@ const decodeFixtureSpectrum = Schema.decodeUnknownSync(
   ),
 );
 
-/** The port over fixture rows; `needsYou` maps a report command to the reason #176 would derive. */
+/** The port over fixture rows; `needsYou` maps a report command to the reason Spectrum would derive. */
 export const fixtureSpectra = (needsYou: ReadonlyMap<string, string> = new Map()) => ({
   boundTo: (schedulerRunId: string) =>
     Effect.gen(function* () {
@@ -105,7 +102,7 @@ const reportCommand = (threadId: ThreadId, id: string) => ({
 });
 
 let spectra = 0;
-/** Binds one Spectrum to a scheduler run, as a row in #176's full payload shape. */
+/** Binds one Spectrum to a scheduler run, as a row in Spectrum's full payload shape. */
 export const bindSpectrum = (input: {
   readonly callerThreadId: ThreadId;
   readonly schedulerRunId: string;

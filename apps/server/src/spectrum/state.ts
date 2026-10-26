@@ -83,7 +83,7 @@ const SpectrumStateValue = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(3)),
   ),
   limit: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
-  /** Spectra started before #525 have no separate White: the Color at this index acts as White. */
+  /** Spectra started without a separate White member: the Color at this index acts as White. */
   moderator: Schema.optionalKey(NonNegativeInt),
   /** White's own member: it writes the synthesis, moderation and summary, never a Color turn. */
   white: Schema.optionalKey(Participant),

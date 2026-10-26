@@ -1,11 +1,7 @@
 /**
- * Promachos mode (toolboxmd/chromeria#116): a chat-first view of the
- * conversations in the Promachos home, switched per client.
- *
- * Both values live in this client's local storage: the mode is a view
- * preference, and the home names one project on one environment, so the same
- * project id on two environments never collides. The home spans every
- * project the sidebar merges with it, so the Promachos runs on any machine.
+ * Promachos mode: a chat-first view of the Promachos home's conversations, switched per client. The
+ * mode and home live in this client's local storage, the home naming one project on one environment;
+ * it spans every project the sidebar merges with it, so the Promachos runs on any machine.
  */
 import { ScopedProjectRef } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";

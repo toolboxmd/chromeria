@@ -18,7 +18,7 @@ import {
 import { toastManager } from "./ui/toast";
 
 /**
- * Fork (toolboxmd/chromeria#174, from v1 #149): alerts once when a scheduled
+ * Fork (toolboxmd/chromeria#174, from v1): alerts once when a scheduled
  * shell command in this environment starts failing, through the same
  * preferences, sound, toast, desktop notification and badge as thread alerts.
  * Rendered by the thread notification coordinator, which owns the badge count.

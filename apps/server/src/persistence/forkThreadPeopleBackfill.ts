@@ -47,15 +47,9 @@ interface FrozenPeopleRow {
 }
 
 /**
- * Carries the frozen v1 `projection_threads.owner` and `co_owners_json`
- * columns onto imported v2 threads (toolboxmd/chromeria#170). Every imported
- * thread gets explicit `owner` and `coOwners`, null and [] included; a field
- * the v2 thread already has wins, and only the frozen values it needs are read.
- * A malformed needed value becomes null or [] and is recorded in
- * `fork_thread_people_backfill_issues` (thread id and reason kind only). Each
- * thread is one transaction whose stable event id marks it done, so reruns and
- * partial failures converge. A payload it reads that no longer decodes stops
- * startup.
+ * Carries frozen v1 thread `owner` and `co_owners_json` onto imported v2 threads; values the v2 thread
+ * has win. Malformed values become null or [] and are logged by id and kind only. One transaction
+ * per thread, keyed by a stable event id, so reruns converge; an unreadable payload stops startup.
  */
 export const backfillThreadPeople = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;

@@ -1,13 +1,7 @@
 /**
- * HTTP transport for ContextMD serving: `POST /contextmd/v1/moment` takes one
- * raw harness hook event and answers with the bytes the hook prints (200) or
- * nothing (204); `POST /contextmd/v1/settle/<delivery>` confirms the hook wrote
- * that reply; `POST /contextmd/v1/release/<delivery>` frees a reply the hook
- * dropped before the model saw it.
- *
- * Hooks authenticate like any other client: a bearer session issued by this
- * environment (`t3 auth session issue`, run by `contextmd-serve install`) with
- * `orchestration:read`, checked by `EnvironmentAuth`.
+ * HTTP transport for ContextMD serving: `moment` answers a hook event with the bytes to print (200)
+ * or nothing (204), `settle/<delivery>` confirms the reply was written, `release/<delivery>` frees a
+ * dropped one. Hooks authenticate with an environment session holding `orchestration:read`.
  */
 import * as ByteSize from "effect/ByteSize";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";

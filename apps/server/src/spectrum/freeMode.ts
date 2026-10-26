@@ -7,7 +7,7 @@ import {
 } from "./state.ts";
 
 /**
- * White-moderated free mode (#398). `state.limit` is the cap on Color turns,
+ * White-moderated free mode. `state.limit` is the cap on Color turns,
  * the opening round included; moderation, re-asks and the summary are White's
  * calls, not Color turns.
  */

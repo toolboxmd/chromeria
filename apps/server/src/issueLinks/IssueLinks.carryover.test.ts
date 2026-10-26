@@ -192,7 +192,7 @@ it.effect("carries stored Issue links through the V1 import into V2 reads", () =
 );
 
 const realSource = process.env.CHROMERIA_V1_SNAPSHOT_SOURCE;
-(realSource ? it.effect : it.effect.skip)(
+it.effect.skipIf(!realSource)(
   "reads every stored Issue link of a read-only VACUUM INTO snapshot of real V1 data",
   () =>
     Effect.gen(function* () {

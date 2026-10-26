@@ -1,21 +1,7 @@
 /**
- * Which files a tool call read, so a pointer rule can lift once its target is read in full.
- *
- * A file-reading tool's file argument counts, and in a shell command the operands of
- * a reader (`cat`, `sed`, `head`, `rg` ...) in its own segment, resolved against
- * `cwd` and any earlier `cd`. Only files that exist count. The serving state
- * records a read at the tool result, and only when the call did not fail.
- *
- * Only a full read lifts a pointer rule (#225). A shell command is a full read
- * only when the whole command is one plain whole-file reader call: optional
- * `cd <dir> &&` steps, then `cat`, `nl`, `bat`, `less`, `more` or `view` with
- * known whole-file options and file operands, at most `2>/dev/null`, and no
- * other shell syntax. Shell is open-ended, so every other shape is partial: its
- * reader operands are still logged, but never lift. A file-reading tool (Claude
- * Code `Read`, OpenCode `read`, Grok `read_file`) counts only for its file field,
- * and is full only without an offset, limit, line or page range. Either is partial when the result
- * shows it was cut (a truncation marker, or fewer lines returned than the file
- * has). A missed full read only costs the deny cap.
+ * Which files a tool call read, so a pointer rule lifts once its target is read in full. Only a
+ * plain whole-file read lifts it: a file tool without range options, or one shell `cat`-style call;
+ * any other shape or a truncated result is partial. A missed full read only costs the deny cap.
  */
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -59,12 +45,9 @@ const SHELL_SYNTAX = /[;|&<>`$(){}[\]*?!\\\n'"]/u;
 /** Operands a full read refuses: `..` after a symlink or `cd -` can name another file. */
 const UNSAFE_PATH = /(?:^|\/)\.\.(?:\/|$)|^-$/u;
 /**
- * How harnesses mark a cut result, checked against live hook payloads on 2026-10-13:
- * Claude Code (`[N characters truncated]`, `Output too large`), Codex (`Warning: truncated
- * output (original token count: N)`, `N tokens truncated`, `N bytes omitted`), Grok (`[+N
- * chars]`, `[truncated: showing first/last ...]`, `(output truncated)`), and the OpenCode
- * and Grok read tools (`(Showing lines A-B` with or without `of N`, `(Output capped at 50 KB`,
- * `(line truncated to N chars)`).
+ * Truncation markers each harness writes, checked against live hook payloads on 2026-10-13, for
+ * Claude Code, Codex, Grok and the OpenCode and Grok read tools. Keep the list in step with
+ * `TRUNCATED` below when a harness changes its wording.
  */
 const TRUNCATED = new RegExp(
   [
@@ -212,7 +195,7 @@ export const reads = Effect.fn("contextmd.reads")(function* (
   } else if (READ_TOOLS[tool] !== undefined) {
     const target = input[READ_TOOLS[tool]];
     if (typeof target !== "string") return [] as Read[];
-    // `..` after a symlinked directory names another file than the collapsed path (#225).
+    // `..` after a symlinked directory names another file than the collapsed path.
     if (target.split("/").includes("..")) return [] as Read[];
     const kind = RANGE_FIELDS.some((f) => input[f] !== undefined && input[f] !== null)
       ? "read_partial"

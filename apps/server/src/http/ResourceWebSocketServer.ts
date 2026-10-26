@@ -27,75 +27,74 @@ const make = Effect.fn("ResourceWebSocketServer.make")(function* (
 ) {
   const server = evaluate();
   const native = yield* NodeHttpServer.make(() => server, options);
-  const serve = <E, R>(
+  const serve = Effect.fn("ResourceWebSocketServer.serve")(function* <E, R>(
     app: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
     middleware?: HttpMiddleware.HttpMiddleware,
-  ) =>
-    Effect.gen(function* () {
-      const serveScope = yield* Effect.scope;
-      const scope = Scope.forkUnsafe(serveScope, "parallel");
-      const websocketServer = (resource: boolean) =>
-        Effect.acquireRelease(
-          Effect.sync(
-            () =>
-              new NodeWS.WebSocketServer({
-                ...options.websocket,
-                ...(resource ? { maxPayload: RESOURCE_MAX_PAYLOAD } : {}),
-                noServer: true,
-              }),
-          ),
-          (wss) =>
-            Effect.callback<void>((resume) => {
-              for (const client of wss.clients) client.terminate();
-              wss.close(() => resume(Effect.void));
+  ) {
+    const serveScope = yield* Effect.scope;
+    const scope = Scope.forkUnsafe(serveScope, "parallel");
+    const websocketServer = (resource: boolean) =>
+      Effect.acquireRelease(
+        Effect.sync(
+          () =>
+            new NodeWS.WebSocketServer({
+              ...options.websocket,
+              ...(resource ? { maxPayload: RESOURCE_MAX_PAYLOAD } : {}),
+              noServer: true,
             }),
-        );
-      const ordinary = yield* websocketServer(false);
-      const resource = yield* websocketServer(true);
-      const handler = yield* NodeHttpServer.makeHandler<
-        R,
-        E,
-        Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>
-      >(app, { middleware, scope });
-      const ordinaryUpgrade = yield* NodeHttpServer.makeUpgradeHandler<
-        R,
-        E,
-        Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>
-      >(Effect.succeed(ordinary), app, { middleware, scope });
-      const resourceUpgrade = yield* NodeHttpServer.makeUpgradeHandler<
-        R,
-        E,
-        Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>
-      >(Effect.succeed(resource), app, { middleware, scope });
-      const upgrade: typeof ordinaryUpgrade = (request, socket, head) =>
-        (isResourceUpgrade(request.url) ? resourceUpgrade : ordinaryUpgrade)(request, socket, head);
-      yield* Scope.addFinalizer(
-        serveScope,
-        Effect.suspend(() => {
-          const shutdown = options.disablePreemptiveShutdown
-            ? Effect.void
-            : Effect.callback<void>((resume) => {
-                if (!server.listening) return resume(Effect.void);
-                server.close((error) => resume(error ? Effect.die(error) : Effect.void));
-              }).pipe(
-                Effect.timeoutOrElse({
-                  duration: options.gracefulShutdownTimeout ?? "20 seconds",
-                  orElse: () => Effect.void,
-                }),
-              );
-          return shutdown.pipe(
-            Effect.ensuring(
-              Effect.sync(() => {
-                server.off("request", handler);
-                server.off("upgrade", upgrade);
-              }),
-            ),
-          );
-        }),
+        ),
+        (wss) =>
+          Effect.callback<void>((resume) => {
+            for (const client of wss.clients) client.terminate();
+            wss.close(() => resume(Effect.void));
+          }),
       );
-      server.on("request", handler);
-      server.on("upgrade", upgrade);
-    });
+    const ordinary = yield* websocketServer(false);
+    const resource = yield* websocketServer(true);
+    const handler = yield* NodeHttpServer.makeHandler<
+      R,
+      E,
+      Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>
+    >(app, { middleware, scope });
+    const ordinaryUpgrade = yield* NodeHttpServer.makeUpgradeHandler<
+      R,
+      E,
+      Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>
+    >(Effect.succeed(ordinary), app, { middleware, scope });
+    const resourceUpgrade = yield* NodeHttpServer.makeUpgradeHandler<
+      R,
+      E,
+      Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>
+    >(Effect.succeed(resource), app, { middleware, scope });
+    const upgrade: typeof ordinaryUpgrade = (request, socket, head) =>
+      (isResourceUpgrade(request.url) ? resourceUpgrade : ordinaryUpgrade)(request, socket, head);
+    yield* Scope.addFinalizer(
+      serveScope,
+      Effect.suspend(() => {
+        const shutdown = options.disablePreemptiveShutdown
+          ? Effect.void
+          : Effect.callback<void>((resume) => {
+              if (!server.listening) return resume(Effect.void);
+              server.close((error) => resume(error ? Effect.die(error) : Effect.void));
+            }).pipe(
+              Effect.timeoutOrElse({
+                duration: options.gracefulShutdownTimeout ?? "20 seconds",
+                orElse: () => Effect.void,
+              }),
+            );
+        return shutdown.pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              server.off("request", handler);
+              server.off("upgrade", upgrade);
+            }),
+          ),
+        );
+      }),
+    );
+    server.on("request", handler);
+    server.on("upgrade", upgrade);
+  });
   return HttpServer.make({ address: native.address, serve });
 });
 

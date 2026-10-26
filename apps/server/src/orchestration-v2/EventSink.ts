@@ -1064,7 +1064,7 @@ const layerBase: Layer.Layer<
           }),
       );
       // A stopped start may still commit what it did, which takes the publish
-      // lane; waiting for it while holding that lane deadlocks every commit (#511).
+      // lane; waiting for it while holding that lane deadlocks every commit.
       yield* drained;
       return {
         receipt: result.receipt,
@@ -1165,11 +1165,9 @@ const layerBase: Layer.Layer<
       // Read fields only after this confirms an object, so `stream()` returns
       // a stream error instead of throwing.
       const provided = input as typeof input | null | undefined;
-      // `readAgentEvents` turns a missing cursor into `0` and sends any other
-      // number through as `sequence > cursor`. Reject an omitted argument and
-      // every unusable cursor here, before subscribe or read, so both `stream`
-      // and `streamStoredEventsFrom` fail closed. `0` stays a deliberate full
-      // replay of the matched range.
+      // `readAgentEvents` reads a missing cursor as `0` and any other number as `sequence > cursor`, so
+      // reject an omitted or unusable cursor here, before subscribe or read; `stream` and
+      // `streamStoredEventsFrom` then fail closed. `0` stays a deliberate full replay.
       if (
         provided === undefined ||
         provided === null ||

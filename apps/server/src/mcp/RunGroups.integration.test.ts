@@ -1037,7 +1037,7 @@ describe("Run groups", () => {
           const started = yield* group(
             yield* invoke("delegate_task", { task: "Attack this plan.", prismRole: "roast" }),
           );
-          // At once, while members' turns are still starting (#511).
+          // At once, while members' turns are still starting.
           const cancelled = yield* decodeGroupCancel(
             (yield* invoke("task_cancel", { taskId: started.groupId })).structuredContent,
           ).pipe(Effect.orDie);

@@ -31,12 +31,9 @@ import {
 } from "./store.ts";
 
 /**
- * Report delivery (D40, D42) is bounded at-least-once, not exactly-once: an
- * attempt can process the report, run tools, then fail before its turn
- * completes, and the next attempt processes the same text again. Spectrum
- * accepts that duplicate risk for three total attempts, and never retries after
- * Stop, abandonment, a retired Spectrum or a failure without typed retryable
- * evidence.
+ * Report delivery (D40, D42) is bounded at-least-once: an attempt can run tools and fail before its
+ * turn completes, so the next repeats the text. Spectrum accepts that for three attempts and never
+ * retries after Stop, abandonment, retirement or a failure without typed retryable evidence.
  */
 const REPORT_ATTEMPTS = 3;
 
@@ -325,8 +322,8 @@ const walkChain = Effect.fnUntraced(function* (
 });
 
 /**
- * Classifies one attempt from durable receipts, its exact run chain, #169's
- * recovery history and #174's followSend. Missing or undecided evidence holds;
+ * Classifies one attempt from durable receipts, its exact run chain, Prism's
+ * recovery history and the scheduler's followSend. Missing or undecided evidence holds;
  * nothing is concluded from absence. Reads through the caller's SqlClient, so
  * the scheduler can call it inside its transaction; never inside a commit guard.
  */
@@ -567,12 +564,9 @@ export interface ReportDrainProof {
 }
 
 /**
- * Planning for reopen (D42): null while any attempt of the abandoned report is
- * open, held or unresolved, such as a restart-cancelled run that may still be
- * continued, or while a terminal run's provider work still drains: an
- * unsettled attempt, provider turn or effect, including a pending start that a
- * late queue release could still run. An attempt never sent stays unsent:
- * admission refuses it once abandoned or replaced, so it holds no chain.
+ * Planning for reopen (D42): null while any attempt of the abandoned report is open, held or
+ * unresolved, or a terminal run's provider work still drains (attempt, turn, effect or pending start).
+ * An attempt never sent holds no chain: admission refuses it once abandoned or replaced.
  */
 export const reportDrainProof = Effect.fn("SpectrumReport.drainProof")(function* (
   state: SpectrumState,

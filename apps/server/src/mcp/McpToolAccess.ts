@@ -170,20 +170,19 @@ export const actsAsCaller = <P, A, E, R>(
   );
 
 /** Resource context need not run a provider when verified incoming authority owns the action. */
-export const recheckResource = (
+export const recheckResource = Effect.fn("McpToolAccess.recheckResource")(function* (
   intent: Parameters<PeerAuthority.PeerAuthority["Service"]["recheckInvocation"]>[1],
-) =>
-  Effect.gen(function* () {
-    const scope = yield* requireThreadCaller;
-    yield* refuseReadOnlyClient;
-    if (scope.client?.linked === true && scope.authority !== undefined) {
-      const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
-      if (Option.isNone(authority)) return yield* unavailable();
-      return yield* authority.value.recheckInvocation(scope, intent, scope.thread.threadId);
-    }
-    yield* writingCaller;
-    return scope;
-  });
+) {
+  const scope = yield* requireThreadCaller;
+  yield* refuseReadOnlyClient;
+  if (scope.client?.linked === true && scope.authority !== undefined) {
+    const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+    if (Option.isNone(authority)) return yield* unavailable();
+    return yield* authority.value.recheckInvocation(scope, intent, scope.thread.threadId);
+  }
+  yield* writingCaller;
+  return scope;
+});
 
 export const actsOnResource = <P, A, E, R>(
   intent: Parameters<typeof recheckResource>[0],

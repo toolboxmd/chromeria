@@ -19,20 +19,23 @@ export const schema = Effect.gen(function* () {
     create_json TEXT NOT NULL, authority_json TEXT NOT NULL, attempt_id TEXT NOT NULL,
     pending INTEGER NOT NULL DEFAULT 0, ack_json TEXT, expires_at REAL NOT NULL)`;
 });
-export const invalidateLink = (environmentId: string, generation: string) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* schema;
-    yield* sql`UPDATE remote_secret_obligations SET pending=1 WHERE environment_id=${environmentId} AND generation=${generation} AND ack_json IS NULL`;
-  });
-export const invalidateSessions = (sessionIds: ReadonlyArray<string>) =>
-  Effect.gen(function* () {
+export const invalidateLink = Effect.fn("remoteSecretPersistence.invalidateLink")(function* (
+  environmentId: string,
+  generation: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* schema;
+  yield* sql`UPDATE remote_secret_obligations SET pending=1 WHERE environment_id=${environmentId} AND generation=${generation} AND ack_json IS NULL`;
+});
+export const invalidateSessions = Effect.fn("remoteSecretPersistence.invalidateSessions")(
+  function* (sessionIds: ReadonlyArray<string>) {
     if (sessionIds.length === 0) return;
     const sql = yield* SqlClient.SqlClient;
     yield* schema;
     // A locally observed destination revocation denies immediately; protected copy cleanup is replayable.
     yield* sql`UPDATE remote_secret_requests SET status='retired' WHERE ${sql.in("session_id", sessionIds)} AND status NOT IN ('consumed','declined','retired')`;
-  });
+  },
+);
 
 export const reconcileObligations = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;

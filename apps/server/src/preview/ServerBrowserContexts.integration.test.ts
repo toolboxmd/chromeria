@@ -208,7 +208,7 @@ describe.skipIf(!testChromium)("ServerBrowserContexts on Chrome for Testing", ()
       expect(document.headers["sec-ch-ua"]).toContain('"Google Chrome";v="154"');
       expect(document.headers["sec-ch-ua"]).not.toContain("Headless");
     });
-  }, 60_000);
+  });
 
   it("keeps a profile's session alive while its tabs close, and recreates the reserved page", async () => {
     await withPool("keep-alive", async (pool) => {
@@ -256,7 +256,7 @@ describe.skipIf(!testChromium)("ServerBrowserContexts on Chrome for Testing", ()
       await reopened.goto(origin);
       expect(await reopened.evaluate<string>("document.cookie")).toContain("mirrored=second");
     });
-  }, 60_000);
+  });
 
   it.skipIf(!testHeadlessShell)(
     "opens a profile the headless shell wrote with its cookies intact",
@@ -281,6 +281,5 @@ describe.skipIf(!testChromium)("ServerBrowserContexts on Chrome for Testing", ()
         expect(await sessionCookies(context)).toContain("remembered=from-the-shell");
       });
     },
-    60_000,
   );
 });

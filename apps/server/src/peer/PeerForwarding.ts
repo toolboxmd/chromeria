@@ -174,40 +174,39 @@ const make = Effect.gen(function* () {
    * Linked descendants need explicit durable onward consent. The destination
    * validates the originating grant through the concurrent control channel.
    */
-  const forwardingCaller = (scope: Scope) =>
-    Effect.gen(function* () {
-      const pendingRelay = yield* PeerAuthority.PendingRequestRelay;
-      return yield* loadCaller().pipe(
-        Effect.tap((caller) =>
-          pendingRelay && scope.client?.linked === true && scope.authority !== undefined
-            ? Effect.void
-            : callerLinkOrigin(caller) === undefined
-              ? assertNotLinked(caller, "use this environment's links")
-              : Option.isSome(authority) && scope.thread !== undefined
-                ? authority.value.forThread(scope.thread.threadId).pipe(
-                    Effect.flatMap((record) =>
-                      record?.ceiling.onward === true
-                        ? Effect.void
-                        : Effect.fail(
-                            new OrchestratorMcpFailure({
-                              code: "capability_denied",
-                              message:
-                                "This child's durable grant does not permit onward delegation.",
-                            }),
-                          ),
-                    ),
-                  )
-                : Effect.fail(
-                    new OrchestratorMcpFailure({
-                      code: "capability_denied",
-                      message: "A peer link cannot forward through another environment's links.",
-                    }),
+  const forwardingCaller = Effect.fn("PeerForwarding.forwardingCaller")(function* (scope: Scope) {
+    const pendingRelay = yield* PeerAuthority.PendingRequestRelay;
+    return yield* loadCaller().pipe(
+      Effect.tap((caller) =>
+        pendingRelay && scope.client?.linked === true && scope.authority !== undefined
+          ? Effect.void
+          : callerLinkOrigin(caller) === undefined
+            ? assertNotLinked(caller, "use this environment's links")
+            : Option.isSome(authority) && scope.thread !== undefined
+              ? authority.value.forThread(scope.thread.threadId).pipe(
+                  Effect.flatMap((record) =>
+                    record?.ceiling.onward === true
+                      ? Effect.void
+                      : Effect.fail(
+                          new OrchestratorMcpFailure({
+                            code: "capability_denied",
+                            message:
+                              "This child's durable grant does not permit onward delegation.",
+                          }),
+                        ),
                   ),
-        ),
-        Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
-        Effect.provideService(ThreadManagement.ThreadManagementService, threads),
-      );
-    });
+                )
+              : Effect.fail(
+                  new OrchestratorMcpFailure({
+                    code: "capability_denied",
+                    message: "A peer link cannot forward through another environment's links.",
+                  }),
+                ),
+      ),
+      Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+      Effect.provideService(ThreadManagement.ThreadManagementService, threads),
+    );
+  });
 
   /**
    * Every caller here reaches the peer as the one link session, so a retry
@@ -221,7 +220,8 @@ const make = Effect.gen(function* () {
     );
 
   /** Tool and contract schemas are plain data: they encode and decode without services. */
-  const forward = <A>(
+  // Effect.fn erases type parameters; `forward` narrows the decoded result for each caller.
+  const forwardDecoded: (
     scope: Scope,
     toolName: string,
     parameters: Schema.Top,
@@ -232,9 +232,21 @@ const make = Effect.gen(function* () {
       readonly expectedLinkIdentity: string;
       readonly pair?: PeerAuthority.Authority["pair"];
     },
-    readOnly = false,
-  ): Effect.Effect<A, OrchestratorMcpFailure> =>
-    Effect.gen(function* () {
+    readOnly?: boolean,
+  ) => Effect.Effect<unknown, OrchestratorMcpFailure> = Effect.fn("PeerForwarding.forward")(
+    function* (
+      scope: Scope,
+      toolName: string,
+      parameters: Schema.Top,
+      success: Schema.Top,
+      environmentId: EnvironmentId,
+      params: unknown,
+      options?: {
+        readonly expectedLinkIdentity: string;
+        readonly pair?: PeerAuthority.Authority["pair"];
+      },
+      readOnly: boolean = false,
+    ) {
       if (toolName === "request_secret")
         return yield* new OrchestratorMcpFailure({
           code: "capability_denied",
@@ -316,9 +328,9 @@ const make = Effect.gen(function* () {
             : {}),
         });
         if (returned !== undefined)
-          return yield* Schema.decodeUnknownEffect(success as Schema.Decoder<A>)(returned).pipe(
-            Effect.mapError(unavailable),
-          );
+          return yield* Schema.decodeUnknownEffect(success as Schema.Decoder<unknown>)(
+            returned,
+          ).pipe(Effect.mapError(unavailable));
       }
       const caller = yield* forwardingCaller(scope);
       const limits = caller.limits;
@@ -1104,7 +1116,7 @@ const make = Effect.gen(function* () {
           tool: toolName,
           arguments: args,
           limits,
-          success: success as Schema.Decoder<A>,
+          success: success as Schema.Decoder<unknown>,
           ...(toolName.startsWith("t3_pending_request_") &&
           caller.caller !== undefined &&
           isPromachosThread(caller.caller)
@@ -1143,7 +1155,10 @@ const make = Effect.gen(function* () {
         });
       }
       return result;
-    });
+    },
+  );
+  const forward = <A>(...args: Parameters<typeof forwardDecoded>) =>
+    forwardDecoded(...args) as Effect.Effect<A, OrchestratorMcpFailure>;
 
   const call: PeerForwarding["Service"]["call"] = (scope, tool, environmentId, params, options) =>
     forward(
@@ -1191,31 +1206,32 @@ const make = Effect.gen(function* () {
       options,
     );
 
-  const waitForThread: PeerForwarding["Service"]["waitForThread"] = (scope, environmentId, input) =>
-    Effect.gen(function* () {
-      let remaining = Math.min(
-        MAX_WAIT_TIMEOUT_MS,
-        Math.max(1, input.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS),
+  const waitForThread: PeerForwarding["Service"]["waitForThread"] = Effect.fn(
+    "PeerForwarding.waitForThread",
+  )(function* (scope, environmentId, input) {
+    let remaining = Math.min(
+      MAX_WAIT_TIMEOUT_MS,
+      Math.max(1, input.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS),
+    );
+    let runId = input.runId;
+    while (true) {
+      const chunk = Math.min(remaining, FORWARDED_WAIT_CHUNK_MS);
+      const result = yield* forward<OrchestratorMcpThreadWaitResult>(
+        scope,
+        "t3_thread_wait",
+        OrchestratorMcpThreadWaitInput,
+        OrchestratorMcpThreadWaitResult,
+        environmentId,
+        { threadId: input.threadId, ...(runId === undefined ? {} : { runId }), timeoutMs: chunk },
+        undefined,
+        true,
       );
-      let runId = input.runId;
-      while (true) {
-        const chunk = Math.min(remaining, FORWARDED_WAIT_CHUNK_MS);
-        const result = yield* forward<OrchestratorMcpThreadWaitResult>(
-          scope,
-          "t3_thread_wait",
-          OrchestratorMcpThreadWaitInput,
-          OrchestratorMcpThreadWaitResult,
-          environmentId,
-          { threadId: input.threadId, ...(runId === undefined ? {} : { runId }), timeoutMs: chunk },
-          undefined,
-          true,
-        );
-        remaining -= chunk;
-        if (!result.timedOut || remaining <= 0) return result;
-        // Later pieces wait for the run the first one picked, not a newer one.
-        runId = result.runId ?? undefined;
-      }
-    });
+      remaining -= chunk;
+      if (!result.timedOut || remaining <= 0) return result;
+      // Later pieces wait for the run the first one picked, not a newer one.
+      runId = result.runId ?? undefined;
+    }
+  });
 
   const listLinks: PeerForwarding["Service"]["links"] = (scope) =>
     links.list.pipe(
@@ -1236,83 +1252,79 @@ const make = Effect.gen(function* () {
       })),
     );
 
-  const authorizeSavedPreview: PeerForwarding["Service"]["authorizeSavedPreview"] = (
-    scope,
-    environmentId,
-    parameters,
-    request,
-  ) =>
-    Effect.gen(function* () {
-      if (
-        Option.isNone(authority) ||
-        Option.isNone(requestOwner) ||
-        peers.authorizeSavedPreview === undefined ||
-        parameters.contextThreadId === undefined ||
-        !scope.capabilities.has("preview")
-      )
+  const authorizeSavedPreview: PeerForwarding["Service"]["authorizeSavedPreview"] = Effect.fn(
+    "PeerForwarding.authorizeSavedPreview",
+  )(function* (scope, environmentId, parameters, request) {
+    if (
+      Option.isNone(authority) ||
+      Option.isNone(requestOwner) ||
+      peers.authorizeSavedPreview === undefined ||
+      parameters.contextThreadId === undefined ||
+      !scope.capabilities.has("preview")
+    )
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message:
+          "Saved-preview authorization needs its verified source, preview capability and destination context.",
+      });
+    const { limits } = yield* forwardingCaller(scope);
+    const link = yield* links.get(environmentId).pipe(Effect.mapError(unavailable));
+    if (Option.isNone(link))
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "The original saved-preview link is no longer available.",
+      });
+    const receipts = requestOwner.value;
+    const operation = "saved-preview-authorization";
+    const recorded = yield* receipts.destination(request, operation);
+    if (Option.isNone(recorded) && Option.isSome(yield* receipts.replay(request))) {
+      // A pre-path accepted save can use only its exact existing forwarding proof.
+      // Missing proof is unsupported, never bound to today's replacement grant.
+      const root = yield* receipts.identify(
+        scope,
+        "preview_snapshot",
+        { ...parameters, environmentId, contextCapabilities: [...scope.capabilities] },
+        request.clientRequestId,
+      );
+      const original = yield* receipts.destination(
+        root,
+        RequestReceipts.requestDigest(["preview_snapshot", request.clientRequestId]),
+      );
+      if (Option.isNone(original))
         return yield* new OrchestratorMcpFailure({
           code: "capability_denied",
           message:
-            "Saved-preview authorization needs its verified source, preview capability and destination context.",
+            "The saved preview has no verified original destination binding; automatic replay is unsupported.",
         });
-      const { limits } = yield* forwardingCaller(scope);
-      const link = yield* links.get(environmentId).pipe(Effect.mapError(unavailable));
-      if (Option.isNone(link))
-        return yield* new OrchestratorMcpFailure({
-          code: "capability_denied",
-          message: "The original saved-preview link is no longer available.",
-        });
-      const receipts = requestOwner.value;
-      const operation = "saved-preview-authorization";
-      const recorded = yield* receipts.destination(request, operation);
-      if (Option.isNone(recorded) && Option.isSome(yield* receipts.replay(request))) {
-        // A pre-path accepted save can use only its exact existing forwarding proof.
-        // Missing proof is unsupported, never bound to today's replacement grant.
-        const root = yield* receipts.identify(
-          scope,
-          "preview_snapshot",
-          { ...parameters, environmentId, contextCapabilities: [...scope.capabilities] },
-          request.clientRequestId,
-        );
-        const original = yield* receipts.destination(
-          root,
-          RequestReceipts.requestDigest(["preview_snapshot", request.clientRequestId]),
-        );
-        if (Option.isNone(original))
-          return yield* new OrchestratorMcpFailure({
-            code: "capability_denied",
-            message:
-              "The saved preview has no verified original destination binding; automatic replay is unsupported.",
-          });
-        yield* receipts.bindDestination(
-          request,
-          operation,
-          original.value.environmentId,
-          original.value.generation,
-        );
-      }
-      yield* receipts.bindDestination(request, operation, environmentId, link.value.launchIdentity);
-      const input = {
-        version: 1 as const,
-        purpose: "saved-preview-authorization" as const,
-        environmentId,
-        generation: link.value.launchIdentity,
-        contextThreadId: parameters.contextThreadId,
-        operationId: request.id,
-      };
-      const envelope = yield* authority.value.prepare(
-        scope,
-        environmentId,
-        link.value.launchIdentity,
-        "preview_snapshot",
-        input,
-        limits,
-        undefined,
-        true,
-        true,
+      yield* receipts.bindDestination(
+        request,
+        operation,
+        original.value.environmentId,
+        original.value.generation,
       );
-      yield* peers.authorizeSavedPreview({ request: input, authority: envelope, limits });
-    });
+    }
+    yield* receipts.bindDestination(request, operation, environmentId, link.value.launchIdentity);
+    const input = {
+      version: 1 as const,
+      purpose: "saved-preview-authorization" as const,
+      environmentId,
+      generation: link.value.launchIdentity,
+      contextThreadId: parameters.contextThreadId,
+      operationId: request.id,
+    };
+    const envelope = yield* authority.value.prepare(
+      scope,
+      environmentId,
+      link.value.launchIdentity,
+      "preview_snapshot",
+      input,
+      limits,
+      undefined,
+      true,
+      true,
+    );
+    yield* peers.authorizeSavedPreview({ request: input, authority: envelope, limits });
+  });
   return PeerForwarding.of({
     authorizeSavedPreview,
     call,

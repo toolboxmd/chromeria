@@ -146,44 +146,40 @@ it.effect(
 );
 
 const realSource = process.env.CHROMERIA_V1_SNAPSHOT_SOURCE;
-(realSource ? it.effect : it.effect.skip)(
-  "imports a read-only VACUUM INTO snapshot of real V1 data",
-  () =>
-    Effect.gen(function* () {
-      const directory = NodeFS.mkdtempSync(
-        NodePath.join(NodeOS.tmpdir(), "chromeria-real-import-"),
-      );
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true })),
-      );
-      const snapshotPath = NodePath.join(directory, "chromeria-v2.sqlite");
-      yield* Effect.promise(() =>
-        vacuumForkV1Snapshot({ sourcePath: realSource!, destinationPath: snapshotPath }),
-      );
-      const messagesAndLinks = () =>
-        retainedSnapshot(snapshotPath)
-          .slice(-2)
-          .map(({ name, rows, sha256 }) => ({ name, rows, sha256 }));
-      const sourceMessagesAndLinks = messagesAndLinks();
-      yield* runMigrations({ toMigrationInclusive: 62 }).pipe(
-        Effect.provide(NodeSqliteClient.layer({ filename: snapshotPath })),
-      );
-      const before63 = retainedSnapshot(snapshotPath);
-      yield* Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
-        const pending = yield* importer.pendingThreadCount;
-        assert.isAbove(pending, 0);
-        const result = yield* importer.reconcileShells;
-        assert.equal(result.importedThreadCount, pending);
-        // Exercise registered feature backfills during the same shell-only phase
-        // as startup, before transcript import or the idempotence baseline.
-        yield* runForkV1Backfills();
-        yield* runForkV1Backfills([
-          {
-            id: "snapshot-shell-proof",
-            run: Effect.gen(function* () {
-              const missingShells = yield* sql`SELECT thread_id FROM projection_threads AS thread
+it.effect.skipIf(!realSource)("imports a read-only VACUUM INTO snapshot of real V1 data", () =>
+  Effect.gen(function* () {
+    const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "chromeria-real-import-"));
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true })),
+    );
+    const snapshotPath = NodePath.join(directory, "chromeria-v2.sqlite");
+    yield* Effect.promise(() =>
+      vacuumForkV1Snapshot({ sourcePath: realSource!, destinationPath: snapshotPath }),
+    );
+    const messagesAndLinks = () =>
+      retainedSnapshot(snapshotPath)
+        .slice(-2)
+        .map(({ name, rows, sha256 }) => ({ name, rows, sha256 }));
+    const sourceMessagesAndLinks = messagesAndLinks();
+    yield* runMigrations({ toMigrationInclusive: 62 }).pipe(
+      Effect.provide(NodeSqliteClient.layer({ filename: snapshotPath })),
+    );
+    const before63 = retainedSnapshot(snapshotPath);
+    yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
+      const pending = yield* importer.pendingThreadCount;
+      assert.isAbove(pending, 0);
+      const result = yield* importer.reconcileShells;
+      assert.equal(result.importedThreadCount, pending);
+      // Exercise registered feature backfills during the same shell-only phase
+      // as startup, before transcript import or the idempotence baseline.
+      yield* runForkV1Backfills();
+      yield* runForkV1Backfills([
+        {
+          id: "snapshot-shell-proof",
+          run: Effect.gen(function* () {
+            const missingShells = yield* sql`SELECT thread_id FROM projection_threads AS thread
               WHERE NOT EXISTS (
                 SELECT 1 FROM orchestration_events AS event
                 WHERE event.application_event_version = 2
@@ -191,33 +187,33 @@ const realSource = process.env.CHROMERIA_V1_SNAPSHOT_SOURCE;
                   AND event.stream_id = thread.thread_id
                   AND event.event_type = 'thread.created'
               )`;
-              assert.lengthOf(missingShells, 0);
-              const hydrated = yield* sql`SELECT thread_id FROM orchestration_v2_legacy_imports
+            assert.lengthOf(missingShells, 0);
+            const hydrated = yield* sql`SELECT thread_id FROM orchestration_v2_legacy_imports
               WHERE transcript_imported_at IS NOT NULL`;
-              assert.lengthOf(hydrated, 0);
-              const shells = yield* sql<{ count: number }>`SELECT COUNT(*) AS count
+            assert.lengthOf(hydrated, 0);
+            const shells = yield* sql<{ count: number }>`SELECT COUNT(*) AS count
               FROM orchestration_v2_legacy_imports WHERE transcript_imported_at IS NULL`;
-              assert.equal(shells[0]?.count, pending);
-            }),
-          },
-        ]);
-        yield* importer.importPendingTranscripts;
-        assert.equal(yield* importer.pendingThreadCount, 0);
-        const failures = yield* sql`SELECT thread_id FROM orchestration_v2_legacy_imports
+            assert.equal(shells[0]?.count, pending);
+          }),
+        },
+      ]);
+      yield* importer.importPendingTranscripts;
+      assert.equal(yield* importer.pendingThreadCount, 0);
+      const failures = yield* sql`SELECT thread_id FROM orchestration_v2_legacy_imports
         WHERE transcript_imported_at IS NULL OR last_error IS NOT NULL`;
-        assert.lengthOf(failures, 0);
-        const before = yield* sql`SELECT COUNT(*) AS count FROM orchestration_events`;
-        assert.equal((yield* importer.reconcileShells).importedThreadCount, 0);
-        yield* runForkV1Backfills();
-        assert.equal((yield* importer.importPendingTranscripts).importedMessageCount, 0);
-        assert.deepEqual(yield* sql`SELECT COUNT(*) AS count FROM orchestration_events`, before);
-        assert.deepEqual(yield* runMigrations(), []);
-        assert.deepEqual(
-          yield* sql`SELECT migration_id, name FROM effect_sql_migrations WHERE migration_id = 63`,
-          [{ migration_id: 63, name: "DropUnusedV1Projections" }],
-        );
-      }).pipe(Effect.provide(forkV1SnapshotLayer(snapshotPath)));
-      assert.deepEqual(retainedSnapshot(snapshotPath), before63);
-      assert.deepEqual(messagesAndLinks(), sourceMessagesAndLinks);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      assert.lengthOf(failures, 0);
+      const before = yield* sql`SELECT COUNT(*) AS count FROM orchestration_events`;
+      assert.equal((yield* importer.reconcileShells).importedThreadCount, 0);
+      yield* runForkV1Backfills();
+      assert.equal((yield* importer.importPendingTranscripts).importedMessageCount, 0);
+      assert.deepEqual(yield* sql`SELECT COUNT(*) AS count FROM orchestration_events`, before);
+      assert.deepEqual(yield* runMigrations(), []);
+      assert.deepEqual(
+        yield* sql`SELECT migration_id, name FROM effect_sql_migrations WHERE migration_id = 63`,
+        [{ migration_id: 63, name: "DropUnusedV1Projections" }],
+      );
+    }).pipe(Effect.provide(forkV1SnapshotLayer(snapshotPath)));
+    assert.deepEqual(retainedSnapshot(snapshotPath), before63);
+    assert.deepEqual(messagesAndLinks(), sourceMessagesAndLinks);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

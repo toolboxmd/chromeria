@@ -1,29 +1,7 @@
 /**
- * The serving state of one Chromeria environment: run budgets, context epochs,
- * must-know deny state, observed reads, Grok carries, reservations and the
- * serving log, in `<base>/userdata/contextmd.sqlite`.
- *
- * Every method is synchronous and runs in one short transaction on the
- * module's own connection, so concurrent hooks are serialized by the event
- * loop and no transaction spans a network await. Rules (ContextMD Spec #3,
- * "Design: serving state in Chromeria"):
- *
- * - The budget key is the Chromeria run: an 8,000-byte serve budget and a
- *   2,000-byte deny budget, in UTF-8 bytes. Session-start files sit outside both.
- * - A reply is `reserved` until the hook settles it. Only settled claims count
- *   for dedupe and deny lifts. A reservation the hook drops, or one not settled
- *   within the harness's settle deadline, is released as `delivery_unverified`,
- *   with its bytes and claims returned.
- * - A must-know entry denies every matching call until it lifts: a pointer
- *   rule on an observed successful read of its target in the same session and
- *   epoch, an inline rule on a settled whole delivery. After `DENY_CAP`
- *   denies the next matching call passes, logged `not_read_capped`.
- * - Compaction starts a new context epoch, which re-arms denies and resets
- *   dedupe.
- * - Cue (`intent`) candidates are scored on the GPU serving host. Each is logged with its score; one at
- *   or above the adapter's threshold is served like any other match, except in a holdout session (one in
- *   ten), where it is logged `holdout` and never charged or printed. Each moment records Cue's status,
- *   adapter and latency, so an outage's cost is countable.
+ * One environment's ContextMD serving state in `<base>/userdata/contextmd.sqlite`, per ContextMD
+ * Spec #3. Each method is one short synchronous transaction, so hooks serialize on the event loop.
+ * Budgets key by run; replies stay reserved until settled; must-know denies lift on a full read.
  */
 import type * as NodeSqlite from "node:sqlite";
 
@@ -35,7 +13,7 @@ export const DENY_BUDGET_BYTES = 2_000;
 const DENY_CAP = 3;
 /** A denied call is projected within seconds; after this a deny without its item stays unproven. */
 const CHECK_GIVE_UP_SECONDS = 60;
-/** Read kinds that lift a pointer rule: the agent saw the whole target (#225). */
+/** Read kinds that lift a pointer rule: the agent saw the whole target. */
 const FULL_READS: ReadonlySet<string> = new Set(["read_tool", "shell_full"]);
 
 const SCHEMA = `
@@ -1204,11 +1182,9 @@ export class ServingState {
   }
 
   /**
-   * Record what the projection showed for settled denies. `shown`: the model saw this
-   * rule, so an inline rule lifts. `hidden`: the call's projected output lacks it,
-   * because another hook's deny replaced it; the rule stays armed, that deny does not
-   * count toward the cap, and it no longer dedupes the rule. A deny with no projected
-   * item after `CHECK_GIVE_UP_SECONDS` stays armed, logged `unverified`.
+   * Records what the projection showed for settled denies: `shown` lifts an inline rule; `hidden`
+   * (another hook's deny replaced it) keeps the rule armed without counting toward the cap or dedupe.
+   * A deny with no projected item after `CHECK_GIVE_UP_SECONDS` stays armed, logged `unverified`.
    */
   applyChecks(
     results: ReadonlyArray<{
@@ -1240,7 +1216,7 @@ export class ServingState {
           }
           continue;
         }
-        // Grok shows a deny reason only up to a length, then `… [+N chars]` (#228): the model
+        // Grok shows a deny reason only up to a length, then `… [+N chars]`: the model
         // saw the rule cut, so the deny counts toward the cap but the rule is not read.
         if (r.output.some((text) => shownCut(text, c.probe))) {
           if (this.adjudicate(r.claim, "shown")) {
@@ -1584,7 +1560,7 @@ export class ServingState {
 
   /**
    * A must-know rule matched by a command or path key governs that very call, which has
-   * now run: serving it as context would remind the agent after the action (#231). Rules
+   * now run: serving it as context would remind the agent after the action. Rules
    * keyed on an error only exist after the call and stay.
    */
   private dropAfterAction(sel: Selection, momentId: number): Selection {
@@ -2167,7 +2143,7 @@ export class ServingState {
       let whole = true;
       if (i === 0) {
         if (out.overLimit(text)) {
-          // A pointer's deny opens with "Read <target> in full", which must never be cut (#229):
+          // A pointer's deny opens with "Read <target> in full", which must never be cut:
           // cut what follows, then give up the head; if that still cannot fit, deny nothing.
           // Built from the entry's own target, never found by searching the text: a path may
           // itself contain " in full".

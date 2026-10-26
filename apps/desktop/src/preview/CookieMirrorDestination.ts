@@ -47,8 +47,8 @@ export const makeCookieMirrorDestinationResolver = Effect.gen(function* () {
   const context = yield* Effect.context<never>();
   const run = Effect.runPromiseWith(context);
 
-  const resolve = (environmentId: string) =>
-    Effect.gen(function* () {
+  const resolve = Effect.fn("CookieMirrorDestination.resolve")(
+    function* (environmentId: string) {
       const now = yield* Clock.currentTimeMillis;
       let httpBaseUrl: string | undefined;
       let bearer: string | undefined;
@@ -148,6 +148,8 @@ export const makeCookieMirrorDestinationResolver = Effect.gen(function* () {
           authorize("POST", environmentEndpointUrl(base, COOKIE_MIRROR_GRANT_PATH)),
         ),
       } satisfies CookieMirrorDestination;
-    }).pipe(Effect.catchCause(() => new CookieMirrorError({ reason: "forbidden" })));
+    },
+    Effect.catchCause(() => new CookieMirrorError({ reason: "forbidden" })),
+  );
   return (environmentId: string) => run(resolve(environmentId));
 });

@@ -21,13 +21,9 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { CheckState } from "./state.ts";
 
 /**
- * Chromeria v1 scheduled tasks through the real v2 startup path, on an
- * ACTUAL-DATA SUBSET of a v1 database (toolboxmd/chromeria#174): every
- * scheduler event plus the exact projects and threads they reference, copied
- * read-only into a private file. Never a full snapshot. Runs only when
- * `CHROMERIA_V1_SUBSET_DB` names such a file; it works on a copy and records
- * counts only, never ids or text, in `CHROMERIA_V1_SUBSET_SUMMARY` when set.
- * Nothing imported is ever run.
+ * Runs v1 scheduled tasks through the real v2 startup path on an actual-data v1 subset, only when
+ * `CHROMERIA_V1_SUBSET_DB` names one, working on a copy. It records counts only, never ids or text, in
+ * `CHROMERIA_V1_SUBSET_SUMMARY`, and never runs an imported task.
  */
 const subset = process.env.CHROMERIA_V1_SUBSET_DB;
 /** Where to write the sanitized counts, when set. */

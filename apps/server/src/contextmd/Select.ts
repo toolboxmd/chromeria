@@ -1,11 +1,7 @@
 /**
- * Selection: one raw harness hook event in, the moment and its matching entries
- * out. Holds no serving state; `ServingState` decides what to serve.
- *
- * The stores and the session-start files are ContextMD's data, named by
- * ContextMD's serving config (`~/.config/contextmd/serving.json`, or the file in
- * `CONTEXTMD_SERVING_CONFIG`), and are read on every moment, so a knowledge edit
- * applies to the next moment without a release.
+ * Selection: one raw hook event in, its moment and matching entries out; `ServingState` decides what
+ * to serve. Stores and session-start files are read on every moment from ContextMD's serving config,
+ * so a knowledge edit applies to the next moment without a release.
  */
 import * as Config from "effect/Config";
 import * as Crypto from "effect/Crypto";

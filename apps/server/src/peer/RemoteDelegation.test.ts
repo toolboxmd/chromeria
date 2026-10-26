@@ -2128,7 +2128,7 @@ it.effect.each([false, true])(
             Stream.runHead,
           );
         }
-        // Imported #380 intents retain their original single-result observation.
+        // Imported remote intents retain their original single-result observation.
         expect(yield* after.projections.getOpenRemoteDelegatedTasks).toEqual([]);
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
@@ -2954,7 +2954,7 @@ it.effect.each([false, true])(
           }),
         );
         const sql = Context.get(database, SqlClient.SqlClient);
-        // Serialize the isolated record through #380's persisted shape. All real
+        // Serialize the isolated record through the remote launch's persisted shape. All real
         // accepted task/thread/run/namespace/grant identities remain unchanged.
         for (const table of [
           "orchestration_v2_projection_subagents",
@@ -3013,7 +3013,7 @@ it.effect.each([false, true])(
         expect(final.result).toBe(exported.result ?? "Imported original result.");
         expect(final.remoteChild?.launch?.lifecycleVersion).toBeUndefined();
         expect(yield* Ref.get(thread.interrupted)).toBe(supported ? 1 : 0);
-        // #380's terminal observation may have recorded stoppedThere. It is
+        // A remote launch's terminal observation may have recorded stoppedThere. It is
         // retained history and never promotes this new Stop to process confirmation.
         expect(final.remoteChild?.stoppedThere).toBe(imported?.remoteChild?.stoppedThere);
         expect(final.remoteChild?.stop?.state).not.toBe("confirmed");

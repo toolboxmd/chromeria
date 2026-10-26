@@ -34,11 +34,9 @@ export interface ProviderAutoUpdateTarget {
 }
 
 /**
- * Providers that should be updated now. Applies the update notification's
- * one-click rule per driver: every outdated instance must share one update
- * command, and that command runs once for all of them. A driver is skipped
- * while an update is active or its last result was a failure, and deferred
- * while work is active unless the resolved updater supports active sessions.
+ * Providers to update now, by the notification's one-click rule: a driver's outdated instances must
+ * share one update command, which runs once for all. Skip a driver with an active update or a failed
+ * last result; defer while work runs unless its updater supports active sessions.
  */
 function selectProviderAutoUpdateTargets(input: {
   readonly settings: Pick<ServerSettings, "autoUpdateProviders" | "enableProviderUpdateChecks">;

@@ -199,11 +199,10 @@ const make = Effect.gen(function* () {
   ) {
     const state = originFor(url.origin);
     const queuedAt = yield* Clock.currentTimeMillis;
-    const refuse = (retryAfterMs: number | null) =>
-      Effect.gen(function* () {
-        const now = yield* Clock.currentTimeMillis;
-        return yield* new OriginQueueWaitError({ retryAfterMs, delayMs: now - queuedAt });
-      });
+    const refuse = Effect.fn("WebResearch.refuse")(function* (retryAfterMs: number | null) {
+      const now = yield* Clock.currentTimeMillis;
+      return yield* new OriginQueueWaitError({ retryAfterMs, delayMs: now - queuedAt });
+    });
     const run = Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       const spacing = Math.max(0, state.nextStart - now);

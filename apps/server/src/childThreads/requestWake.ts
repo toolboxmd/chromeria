@@ -34,7 +34,7 @@ export const reconcileChildRequests = Effect.fn("childThreads.reconcileRequests"
   const receiptsStore = yield* CommandReceiptStoreV2;
   const child = yield* projections.getThreadRecords(childId, ["runtimeRequests"]);
   // Startup runs this for every subagent thread; without requests to deliver,
-  // loading the ancestors only reads large parent threads once per child (#256).
+  // loading the ancestors only reads large parent threads once per child.
   if (child.runtimeRequests.every(isUndeliveredKind)) return;
   const ancestors: Array<ThreadId> = [];
   const seen = new Set<ThreadId>([childId]);

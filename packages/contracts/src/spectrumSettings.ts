@@ -51,7 +51,7 @@ const CurrentSpectrumSettings = Schema.Struct({
 );
 
 /**
- * Builds before #525 saved White as a slot label. Such a value, from the settings
+ * Builds before White became its own member saved it as a slot label. Such a value, from the settings
  * file or an older client's write, becomes a copy of that slot's Colors; the slots
  * stay as they are, so a slot labelled "White" remains a Color. A label naming no
  * slot is left to fail decoding.

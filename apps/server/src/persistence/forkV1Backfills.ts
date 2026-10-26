@@ -37,11 +37,9 @@ export class ForkV1BackfillError extends Schema.TaggedError<ForkV1BackfillError>
 }
 
 /**
- * Register feature-owned, idempotent backfills here. They run on every startup
- * after V2 shells are imported, before recovery and workers start. Read only
- * imported V2 shells and frozen V1 data: transcripts have NOT been hydrated.
- * Features own their recovery markers in fork tables or supported V2 event IDs,
- * outside the upstream migration ledger. No provider work may start here.
+ * Feature-owned, idempotent backfills, run each startup after V2 shells import and before recovery
+ * and workers. Read only V2 shells and frozen V1 data; transcripts are not hydrated. Keep recovery
+ * markers outside the upstream migration ledger, and start no provider work.
  */
 export const forkV1Backfills: ReadonlyArray<ForkV1Backfill> = [
   { id: "spectrum-schema", run: ensureSpectrumSchema },

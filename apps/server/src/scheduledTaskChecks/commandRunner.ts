@@ -10,7 +10,7 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import type { CommandOutcome } from "./engine.ts";
 
 /**
- * Shell command tasks (toolboxmd/chromeria#174, ported from Chromeria v1 #149).
+ * Shell command tasks (toolboxmd/chromeria#174, ported from Chromeria v1).
  * Long enough for backups and syncs, short enough that a hung command frees
  * its task for later slots.
  */
@@ -41,11 +41,9 @@ export const makeOutputTail = (limit: number) => {
 };
 
 /**
- * Starts `command` with /bin/sh in `cwd` with no stdin, in the caller's scope,
- * and returns once the process has spawned or could not start; the returned
- * effect waits for it to end. When `deadline` completes first the process
- * group is stopped. The output tail keeps what the process wrote either way,
- * stdout and stderr together in arrival order.
+ * Starts `command` with /bin/sh in `cwd`, without stdin, in the caller's scope, returning once it
+ * spawned or failed to; the returned effect waits for it to end. A `deadline` that completes first
+ * stops the process group. The output tail keeps stdout and stderr in arrival order.
  */
 export const startShellCommand = Effect.fnUntraced(function* (input: {
   readonly command: string;

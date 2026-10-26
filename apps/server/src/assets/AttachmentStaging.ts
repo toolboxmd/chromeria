@@ -254,13 +254,8 @@ const make = Effect.gen(function* () {
     );
   const owned = (scope: Invocation.McpInvocationScope, row: Row | undefined) =>
     row !== undefined && row.owner === owner(scope) && row.generation === requestGeneration(scope);
-  const reserve: AttachmentStaging["Service"]["reserve"] = (
-    scope,
-    commandId,
-    threadId,
-    attachment,
-  ) =>
-    Effect.gen(function* () {
+  const reserve: AttachmentStaging["Service"]["reserve"] = Effect.fn("AttachmentStaging.reserve")(
+    function* (scope, commandId, threadId, attachment) {
       const row = yield* read(attachment.id);
       if (row === undefined) return undefined; // Pre-protocol native uploads retain their existing owner.
       if (
@@ -292,35 +287,35 @@ const make = Effect.gen(function* () {
       });
       if (currentPath === null || finalPath === null) return yield* denied();
       return { ok: true, finalId: reserved.claimed_id, currentPath, finalPath };
-    });
-  const bindIntent = (
+    },
+  );
+  const bindIntent = Effect.fn("AttachmentStaging.bindIntent")(function* (
     scope: Invocation.McpInvocationScope | undefined,
     commandId: string,
     threadId: string,
     attachments: ReadonlyArray<ChatAttachment>,
-  ) =>
-    Effect.gen(function* () {
-      const rows = yield* Effect.forEach(attachments, (attachment) => read(attachment.id));
-      if (!rows.some((row) => row !== undefined)) return;
-      if (scope === undefined) return yield* denied();
-      const binding = requestDigest({
-        owner: owner(scope),
-        generation: requestGeneration(scope),
-        threadId,
-        attachments,
-      });
-      yield* sql`INSERT INTO attachment_consumptions (command_id,manifest) VALUES (${commandId},${binding}) ON CONFLICT DO NOTHING`.pipe(
-        Effect.mapError(unavailable),
-      );
-      const existing = yield* sql<{
-        manifest: string;
-      }>`SELECT manifest FROM attachment_consumptions WHERE command_id=${commandId}`.pipe(
-        Effect.mapError(unavailable),
-      );
-      if (existing[0]?.manifest !== binding) return yield* denied();
+  ) {
+    const rows = yield* Effect.forEach(attachments, (attachment) => read(attachment.id));
+    if (!rows.some((row) => row !== undefined)) return;
+    if (scope === undefined) return yield* denied();
+    const binding = requestDigest({
+      owner: owner(scope),
+      generation: requestGeneration(scope),
+      threadId,
+      attachments,
     });
-  const verify: AttachmentStaging["Service"]["verify"] = (scope, attachment) =>
-    Effect.gen(function* () {
+    yield* sql`INSERT INTO attachment_consumptions (command_id,manifest) VALUES (${commandId},${binding}) ON CONFLICT DO NOTHING`.pipe(
+      Effect.mapError(unavailable),
+    );
+    const existing = yield* sql<{
+      manifest: string;
+    }>`SELECT manifest FROM attachment_consumptions WHERE command_id=${commandId}`.pipe(
+      Effect.mapError(unavailable),
+    );
+    if (existing[0]?.manifest !== binding) return yield* denied();
+  });
+  const verify: AttachmentStaging["Service"]["verify"] = Effect.fn("AttachmentStaging.verify")(
+    function* (scope, attachment) {
       const row = yield* read(attachment.id);
       let expectedDigest: string | undefined;
       if (row !== undefined) {
@@ -371,7 +366,8 @@ const make = Effect.gen(function* () {
           sizeBytes: attachment.sizeBytes,
         },
       };
-    });
+    },
+  );
   const transferBinding = (
     scope: Invocation.McpInvocationScope,
     destination: string,
@@ -384,43 +380,42 @@ const make = Effect.gen(function* () {
       attachment.id,
       manifest(attachment),
     ]);
-  const publicationCapability = (resource: PeerAttachmentAssetResource) =>
-    Effect.gen(function* () {
-      const reference = resource.reference;
-      const row = yield* read(reference.attachmentId);
-      const attachment = {
-        type: "file" as const,
-        id: reference.attachmentId,
-        name: reference.name,
-        mimeType: reference.mimeType,
-        sizeBytes: reference.sizeBytes,
-      };
-      if (
-        row === undefined ||
-        row.publication_environment !== reference.environmentId ||
-        row.publication_thread !== resource.threadId ||
-        reference.sizeBytes < 1 ||
-        reference.sizeBytes > 50 * 1024 * 1024 ||
-        (row.publication_capability !== "device" && row.publication_capability !== "preview") ||
-        row.consumer === "discarded" ||
-        row.owner !== reference.owner ||
-        row.digest === null ||
-        row.digest !== reference.digest ||
-        row.expected_digest !== reference.digest ||
-        ![manifest(attachment), manifest({ ...attachment, type: "image" })].includes(row.manifest)
-      )
-        return yield* denied();
-      return row.publication_capability;
-    });
-  const authorizeReference: AttachmentStaging["Service"]["authorizeReference"] = (
-    resource,
-    authorize,
-  ) =>
-    Effect.gen(function* () {
-      const capability = yield* publicationCapability(resource);
-      yield* authorize(capability, resource.threadId);
-      return capability;
-    });
+  const publicationCapability = Effect.fn("AttachmentStaging.publicationCapability")(function* (
+    resource: PeerAttachmentAssetResource,
+  ) {
+    const reference = resource.reference;
+    const row = yield* read(reference.attachmentId);
+    const attachment = {
+      type: "file" as const,
+      id: reference.attachmentId,
+      name: reference.name,
+      mimeType: reference.mimeType,
+      sizeBytes: reference.sizeBytes,
+    };
+    if (
+      row === undefined ||
+      row.publication_environment !== reference.environmentId ||
+      row.publication_thread !== resource.threadId ||
+      reference.sizeBytes < 1 ||
+      reference.sizeBytes > 50 * 1024 * 1024 ||
+      (row.publication_capability !== "device" && row.publication_capability !== "preview") ||
+      row.consumer === "discarded" ||
+      row.owner !== reference.owner ||
+      row.digest === null ||
+      row.digest !== reference.digest ||
+      row.expected_digest !== reference.digest ||
+      ![manifest(attachment), manifest({ ...attachment, type: "image" })].includes(row.manifest)
+    )
+      return yield* denied();
+    return row.publication_capability;
+  });
+  const authorizeReference: AttachmentStaging["Service"]["authorizeReference"] = Effect.fn(
+    "AttachmentStaging.authorizeReference",
+  )(function* (resource, authorize) {
+    const capability = yield* publicationCapability(resource);
+    yield* authorize(capability, resource.threadId);
+    return capability;
+  });
   const claimRecording: AttachmentStaging["Service"]["claimRecording"] = (
     scope,
     pendingId,
@@ -551,8 +546,8 @@ const make = Effect.gen(function* () {
         return reference(digest);
       }),
     );
-  const prepare: AttachmentStaging["Service"]["prepare"] = (scope, input, key, digest) =>
-    Effect.gen(function* () {
+  const prepare: AttachmentStaging["Service"]["prepare"] = Effect.fn("AttachmentStaging.prepare")(
+    function* (scope, input, key, digest) {
       const requestId = requestDigest([requestNamespace(scope), "attachment-upload", key]);
       const id = createPendingAttachmentId(
         input.type === "file" ? attachmentFileExtension(input.name) : undefined,
@@ -574,10 +569,12 @@ const make = Effect.gen(function* () {
           ON CONFLICT(attachment_id) DO UPDATE SET record_id=excluded.record_id`;
       }
       return { attachmentId: row!.id, owner: row!.owner };
-    }).pipe(Effect.mapError((e) => (e._tag === "OrchestratorMcpFailure" ? e : unavailable(e))));
+    },
+    Effect.mapError((e) => (e._tag === "OrchestratorMcpFailure" ? e : unavailable(e))),
+  );
   return AttachmentStaging.of({
-    transferReference: (scope, consumer, destination, attachment, reference) =>
-      Effect.gen(function* () {
+    transferReference: Effect.fn("AttachmentStaging.transferReference")(
+      function* (scope, consumer, destination, attachment, reference) {
         const rows = yield* sql<{
           binding: string;
           digest: string;
@@ -619,9 +616,10 @@ const make = Effect.gen(function* () {
         )
           return yield* denied();
         return Option.some(retained);
-      }),
-    inspectUpload: (scope, id, input, authorize) =>
-      Effect.gen(function* () {
+      },
+    ),
+    inspectUpload: Effect.fn("AttachmentStaging.inspectUpload")(
+      function* (scope, id, input, authorize) {
         yield* authorize;
         const row = yield* read(id);
         if (
@@ -673,53 +671,53 @@ const make = Effect.gen(function* () {
           return yield* denied();
         yield* authorize;
         return { stage: "staged" as const, reference: verified.reference };
-      }),
+      },
+    ),
     authorizeReference,
-    readReference: (resource, authorize) =>
-      Effect.gen(function* () {
-        const reference = resource.reference;
-        const capability = yield* publicationCapability(resource);
-        yield* authorize(capability, resource.threadId);
-        const path = resolveAttachmentPathById({
-          attachmentsDir: config.attachmentsDir,
-          attachmentId: reference.attachmentId,
-        });
-        if (path === null) return yield* denied();
-        yield* authorize(capability, resource.threadId);
-        const chunks = yield* fs.stream(path).pipe(
-          Stream.mapError(unavailable),
-          Stream.runFoldEffect(
-            () => ({ size: 0, chunks: new Array<Uint8Array>() }),
-            (state, chunk) => {
-              if (state.size + chunk.byteLength > reference.sizeBytes) return Effect.fail(denied());
-              return authorize(capability, resource.threadId).pipe(
-                Effect.andThen(
-                  Effect.sync(() => {
-                    state.size += chunk.byteLength;
-                    state.chunks.push(chunk);
-                    return state;
-                  }),
-                ),
-              );
-            },
-          ),
-        );
-        const bytes = new Uint8Array(chunks.size);
-        let offset = 0;
-        for (const chunk of chunks.chunks) {
-          bytes.set(chunk, offset);
-          offset += chunk.byteLength;
-        }
-        if (
-          bytes.byteLength !== reference.sizeBytes ||
-          Hex.encode(sha256(bytes)) !== reference.digest
-        )
-          return yield* denied();
-        yield* authorizeReference(resource, authorize);
-        return bytes;
-      }),
-    acquireReference: (scope, source, bytes, key, producer, authorize) =>
-      Effect.gen(function* () {
+    readReference: Effect.fn("AttachmentStaging.readReference")(function* (resource, authorize) {
+      const reference = resource.reference;
+      const capability = yield* publicationCapability(resource);
+      yield* authorize(capability, resource.threadId);
+      const path = resolveAttachmentPathById({
+        attachmentsDir: config.attachmentsDir,
+        attachmentId: reference.attachmentId,
+      });
+      if (path === null) return yield* denied();
+      yield* authorize(capability, resource.threadId);
+      const chunks = yield* fs.stream(path).pipe(
+        Stream.mapError(unavailable),
+        Stream.runFoldEffect(
+          () => ({ size: 0, chunks: new Array<Uint8Array>() }),
+          (state, chunk) => {
+            if (state.size + chunk.byteLength > reference.sizeBytes) return Effect.fail(denied());
+            return authorize(capability, resource.threadId).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  state.size += chunk.byteLength;
+                  state.chunks.push(chunk);
+                  return state;
+                }),
+              ),
+            );
+          },
+        ),
+      );
+      const bytes = new Uint8Array(chunks.size);
+      let offset = 0;
+      for (const chunk of chunks.chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      if (
+        bytes.byteLength !== reference.sizeBytes ||
+        Hex.encode(sha256(bytes)) !== reference.digest
+      )
+        return yield* denied();
+      yield* authorizeReference(resource, authorize);
+      return bytes;
+    }),
+    acquireReference: Effect.fn("AttachmentStaging.acquireReference")(
+      function* (scope, source, bytes, key, producer, authorize) {
         yield* authorize;
         if (bytes.byteLength !== source.sizeBytes || Hex.encode(sha256(bytes)) !== source.digest)
           return yield* denied();
@@ -787,11 +785,12 @@ const make = Effect.gen(function* () {
         if (reference.digest !== source.digest) return yield* denied();
         yield* authorize;
         return { reference, attachment, path };
-      }),
+      },
+    ),
     claimRecording,
     prepare,
-    publishReference: (scope, attachment, producer) =>
-      Effect.gen(function* () {
+    publishReference: Effect.fn("AttachmentStaging.publishReference")(
+      function* (scope, attachment, producer) {
         if (scope.authority !== undefined) {
           if (Option.isNone(authority) || scope.thread === undefined)
             return yield* unavailable(undefined);
@@ -852,35 +851,34 @@ const make = Effect.gen(function* () {
           mimeType: attachment.mimeType,
           sizeBytes: attachment.sizeBytes,
         };
-      }),
+      },
+    ),
     verify,
-    complete: (id, expectedOwner, digest) =>
-      Effect.gen(function* () {
-        const changed = yield* sql`UPDATE attachment_staging SET digest=${digest}
+    complete: Effect.fn("AttachmentStaging.complete")(function* (id, expectedOwner, digest) {
+      const changed = yield* sql`UPDATE attachment_staging SET digest=${digest}
         WHERE id=${id} AND owner=${expectedOwner} AND (digest IS NULL OR digest=${digest})
           AND (consumer IS NULL OR (consumer<>'discarded' AND digest=${digest}))
           AND (expected_digest IS NULL OR expected_digest=${digest}) RETURNING id`.pipe(
-          Effect.mapError(unavailable),
-        );
-        if (changed.length !== 1) return yield* denied();
-      }),
-    authorizeUpload: (id, expectedOwner) =>
-      Effect.gen(function* () {
-        const row = yield* read(id);
-        if (row === undefined || row.owner !== expectedOwner || row.consumer === "discarded")
-          return yield* denied();
-        const owners = yield* sql<{
-          record_id: string;
-        }>`SELECT record_id FROM attachment_staging_authority WHERE attachment_id=${id}`.pipe(
-          Effect.mapError(unavailable),
-        );
-        if (owners[0] !== undefined) {
-          if (Option.isNone(authority)) return yield* unavailable(undefined);
-          yield* authority.value.checkRecord(owners[0].record_id);
-        }
-      }),
-    transferDigest: (scope, consumer, destination, attachment) =>
-      Effect.gen(function* () {
+        Effect.mapError(unavailable),
+      );
+      if (changed.length !== 1) return yield* denied();
+    }),
+    authorizeUpload: Effect.fn("AttachmentStaging.authorizeUpload")(function* (id, expectedOwner) {
+      const row = yield* read(id);
+      if (row === undefined || row.owner !== expectedOwner || row.consumer === "discarded")
+        return yield* denied();
+      const owners = yield* sql<{
+        record_id: string;
+      }>`SELECT record_id FROM attachment_staging_authority WHERE attachment_id=${id}`.pipe(
+        Effect.mapError(unavailable),
+      );
+      if (owners[0] !== undefined) {
+        if (Option.isNone(authority)) return yield* unavailable(undefined);
+        yield* authority.value.checkRecord(owners[0].record_id);
+      }
+    }),
+    transferDigest: Effect.fn("AttachmentStaging.transferDigest")(
+      function* (scope, consumer, destination, attachment) {
         const row = (yield* sql<{
           binding: string;
           digest: string;
@@ -890,44 +888,40 @@ const make = Effect.gen(function* () {
         if (row?.binding !== transferBinding(scope, destination, attachment))
           return yield* denied();
         return yield* decodeAttachmentDigest(row.digest).pipe(Effect.mapError(unavailable));
-      }),
-    inspectTransfer: (scope, id, input) =>
-      Effect.gen(function* () {
-        const row = yield* read(id);
+      },
+    ),
+    inspectTransfer: Effect.fn("AttachmentStaging.inspectTransfer")(function* (scope, id, input) {
+      const row = yield* read(id);
+      if (!owned(scope, row) || row!.manifest !== manifest(input) || row!.consumer === "discarded")
+        return yield* denied();
+      if (row!.digest === null) return { stage: "awaiting-bytes" as const };
+      if (
+        row!.consumer !== null &&
+        row!.claimed_id !== null &&
+        row!.target !== null &&
+        Option.isSome(receipts)
+      ) {
+        const receipt = yield* receipts.value
+          .getByCommandId(CommandId.make(row!.consumer))
+          .pipe(Effect.mapError(unavailable));
         if (
-          !owned(scope, row) ||
-          row!.manifest !== manifest(input) ||
-          row!.consumer === "discarded"
+          Option.isSome(receipt) &&
+          receipt.value.status === "accepted" &&
+          receipt.value.commandType === "message.dispatch" &&
+          receipt.value.threadId === row!.target
         )
-          return yield* denied();
-        if (row!.digest === null) return { stage: "awaiting-bytes" as const };
-        if (
-          row!.consumer !== null &&
-          row!.claimed_id !== null &&
-          row!.target !== null &&
-          Option.isSome(receipts)
-        ) {
-          const receipt = yield* receipts.value
-            .getByCommandId(CommandId.make(row!.consumer))
-            .pipe(Effect.mapError(unavailable));
-          if (
-            Option.isSome(receipt) &&
-            receipt.value.status === "accepted" &&
-            receipt.value.commandType === "message.dispatch" &&
-            receipt.value.threadId === row!.target
-          )
-            return { stage: "native-accepted" as const, digest: row!.digest };
-        }
-        const path = resolveAttachmentPathById({
-          attachmentsDir: config.attachmentsDir,
-          attachmentId: id,
-        });
-        if (path === null) return { stage: "awaiting-bytes" as const };
-        const bytes = yield* fs.readFile(path).pipe(Effect.mapError(unavailable));
-        return bytes.byteLength === input.sizeBytes && Hex.encode(sha256(bytes)) === row!.digest
-          ? { stage: "staged" as const, digest: row!.digest }
-          : { stage: "awaiting-bytes" as const };
-      }),
+          return { stage: "native-accepted" as const, digest: row!.digest };
+      }
+      const path = resolveAttachmentPathById({
+        attachmentsDir: config.attachmentsDir,
+        attachmentId: id,
+      });
+      if (path === null) return { stage: "awaiting-bytes" as const };
+      const bytes = yield* fs.readFile(path).pipe(Effect.mapError(unavailable));
+      return bytes.byteLength === input.sizeBytes && Hex.encode(sha256(bytes)) === row!.digest
+        ? { stage: "staged" as const, digest: row!.digest }
+        : { stage: "awaiting-bytes" as const };
+    }),
     reserveTransfer: (scope, consumer, destination, attachments, references) =>
       sql
         .withTransaction(
@@ -1016,49 +1010,48 @@ const make = Effect.gen(function* () {
           ),
         ),
     reserve,
-    discard: (scope, id, request) =>
-      Effect.gen(function* () {
-        if (request !== undefined && request.generation !== requestGeneration(scope))
-          return yield* denied();
-        const binding =
-          request === undefined
-            ? null
-            : encode({
-                id: request.id,
-                generation: request.generation,
-                inputDigest: request.inputDigest,
-              });
-        // Ownership and the one-use transition are one conditional write.
-        // A stale pre-read cannot authorize deletion after a rival reserves it.
-        yield* sql
-          .withTransaction(
-            Effect.gen(function* () {
-              const won = yield* sql<Row>`UPDATE attachment_staging
+    discard: Effect.fn("AttachmentStaging.discard")(function* (scope, id, request) {
+      if (request !== undefined && request.generation !== requestGeneration(scope))
+        return yield* denied();
+      const binding =
+        request === undefined
+          ? null
+          : encode({
+              id: request.id,
+              generation: request.generation,
+              inputDigest: request.inputDigest,
+            });
+      // Ownership and the one-use transition are one conditional write.
+      // A stale pre-read cannot authorize deletion after a rival reserves it.
+      yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const won = yield* sql<Row>`UPDATE attachment_staging
                 SET consumer='discarded',discard_receipt=${binding},discard_cleanup=${request === undefined ? "pending" : "retained"}
                 WHERE id=${id} AND owner=${owner(scope)} AND generation=${requestGeneration(scope)} AND consumer IS NULL RETURNING *`;
-              const row = won[0] ?? (request === undefined ? undefined : yield* read(id));
-              if (
-                row === undefined ||
-                !owned(scope, row) ||
-                row.consumer !== "discarded" ||
-                row.discard_receipt !== binding ||
-                (row.discard_cleanup !== "pending" &&
-                  row.discard_cleanup !== "started" &&
-                  row.discard_cleanup !== "retained")
-              )
-                return yield* denied();
-            }),
-          )
-          .pipe(
-            Effect.mapError((error) =>
-              error._tag === "OrchestratorMcpFailure" ? error : unavailable(error),
-            ),
-          );
-        // Native acceptance does not prove ownership of the current path contents.
-        // A read/digest followed by unlink can delete an independent replacement.
-        // Keyed calls therefore retain bytes, including historical pending cleanup;
-        // legacy callers keep their existing separate best-effort cleanup.
-      }),
+            const row = won[0] ?? (request === undefined ? undefined : yield* read(id));
+            if (
+              row === undefined ||
+              !owned(scope, row) ||
+              row.consumer !== "discarded" ||
+              row.discard_receipt !== binding ||
+              (row.discard_cleanup !== "pending" &&
+                row.discard_cleanup !== "started" &&
+                row.discard_cleanup !== "retained")
+            )
+              return yield* denied();
+          }),
+        )
+        .pipe(
+          Effect.mapError((error) =>
+            error._tag === "OrchestratorMcpFailure" ? error : unavailable(error),
+          ),
+        );
+      // Native acceptance does not prove ownership of the current path contents.
+      // A read/digest followed by unlink can delete an independent replacement.
+      // Keyed calls therefore retain bytes, including historical pending cleanup;
+      // legacy callers keep their existing separate best-effort cleanup.
+    }),
   });
 });
 

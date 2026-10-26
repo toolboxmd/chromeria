@@ -10,12 +10,8 @@ import {
 } from "./providerInstance.ts";
 
 /**
- * Prism (Model Router) roles and their kits (toolboxmd/model-router#115).
- *
- * A role is a kit (instructions, skills) plus an ordered list of Colors;
- * only the worker keeps one list per lane. Every role may use every thread
- * tool. The kits live in server settings under `prismRoles`, overridable per
- * project like any key in `PROJECT_SCOPED_SERVER_SETTING_KEYS`;
+ * Prism roles and their kits: instructions and skills plus an ordered list of Colors, one list per
+ * lane for the worker. Kits live in server settings under `prismRoles`, overridable per project;
  * `delegate_task` and `t3_thread_launch` apply them through Prism.
  */
 export const PRISM_DELEGATE_ROLES = [
@@ -297,12 +293,9 @@ export const PrismRoleKitsPatch = Schema.Struct({
 export type PrismRoleKitsPatch = typeof PrismRoleKitsPatch.Type;
 
 /**
- * A project's `prismRoles` override: only the roles, fields and worker lanes
- * the project set, with no filled-in defaults. Each present value overlays
- * the environment kit and everything absent inherits it, so a later
- * environment change still reaches the project. A present empty model list
- * is a real value: that role runs on the caller's model. Removed roles are
- * dropped like any unknown key.
+ * A project's `prismRoles` override: only the roles, fields and lanes the project set. Present values
+ * overlay the environment kit and absent ones inherit it, so later environment changes still apply.
+ * A present empty model list runs that role on the caller's model; removed roles are dropped.
  */
 export const PrismProjectRoleKits = Schema.Record(Schema.String, Schema.Unknown).pipe(
   Schema.decodeTo(

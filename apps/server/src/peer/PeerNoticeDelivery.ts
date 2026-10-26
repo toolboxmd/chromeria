@@ -40,8 +40,8 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const threads = yield* Threads.ThreadManagementService;
     return PeerNoticeDelivery.of({
-      deliver: (pair, runId, text, mode, identity) =>
-        Effect.gen(function* () {
+      deliver: Effect.fn("PeerNoticeDelivery.deliver")(
+        function* (pair, runId, text, mode, identity) {
           const parent = yield* threads.getThreadShell(pair.parentThreadId);
           if (!parent)
             return yield* new OrchestratorMcpFailure({
@@ -72,16 +72,16 @@ export const layer = Layer.effect(
             status: sent.run.status,
             delivery: sent.delivery,
           };
-        }).pipe(
-          Effect.mapError((error) =>
-            error._tag === "OrchestratorMcpFailure"
-              ? error
-              : new OrchestratorMcpFailure({
-                  code: "orchestration_error",
-                  message: "The parent notice was not accepted.",
-                }),
-          ),
+        },
+        Effect.mapError((error) =>
+          error._tag === "OrchestratorMcpFailure"
+            ? error
+            : new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "The parent notice was not accepted.",
+              }),
         ),
+      ),
     });
   }),
 );

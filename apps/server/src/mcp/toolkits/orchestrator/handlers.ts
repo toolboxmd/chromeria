@@ -20,17 +20,21 @@ const { tools } = OrchestratorToolkit;
  * environment `input.environmentId` names. The tool's declaration has already
  * checked the caller here either way.
  */
-const routed = <T extends (typeof tools)[keyof typeof tools], A, E, R>(
+const routed = Effect.fn("OrchestratorToolHandlers.routed")(function* <
+  T extends (typeof tools)[keyof typeof tools],
+  A,
+  E,
+  R,
+>(
   tool: T,
   input: Tool.Parameters<T> & { readonly environmentId?: EnvironmentId | undefined },
   here: Effect.Effect<A, E, R>,
-) =>
-  Effect.gen(function* () {
-    const scope = yield* McpInvocationContext.McpInvocationContext;
-    if (PeerForwarding.remoteTarget(scope, input.environmentId) === undefined) return yield* here;
-    const forwarding = yield* PeerForwarding.PeerForwarding;
-    return yield* forwarding.route(scope, tool, input, here);
-  });
+) {
+  const scope = yield* McpInvocationContext.McpInvocationContext;
+  if (PeerForwarding.remoteTarget(scope, input.environmentId) === undefined) return yield* here;
+  const forwarding = yield* PeerForwarding.PeerForwarding;
+  return yield* forwarding.route(scope, tool, input, here);
+});
 
 const handlers = {
   orchestrator_capabilities: McpToolAccess.reads((input) =>

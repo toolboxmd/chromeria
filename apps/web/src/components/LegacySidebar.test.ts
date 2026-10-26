@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { expect, it } from "vite-plus/test";

@@ -238,101 +238,103 @@ const make = Effect.gen(function* () {
           : { options: [{ id: effortOption, value: spec.effort }] }),
       } satisfies ModelSelection;
     });
-    const resolveMember = (color: SpectrumColorSpec, threadId: ThreadId) =>
-      Effect.gen(function* () {
-        const primary =
-          color.selection ?? (color.role === undefined ? caller.modelSelection : undefined);
-        const explicit =
-          primary === undefined &&
-          color.instanceId === undefined &&
-          color.model === undefined &&
-          color.effort === undefined
-            ? undefined
-            : yield* withOverrides(primary ?? caller.modelSelection, color);
-        const resolveCandidate = (candidate: ModelSelection | undefined) =>
-          prism.resolve({
-            bare: color.bare !== undefined,
-            projectId: caller.projectId,
-            role: color.role ?? "worker",
-            lane: color.lane,
-            explicit: candidate,
-            inherited: caller.modelSelection,
-            validate: (selection) =>
-              Prism.validateLaunchSelection(selection, color.bare !== undefined).pipe(
-                Effect.provideService(ProviderAdapters.ProviderAdapterRegistryV2, adapters),
-                Effect.provideService(ProviderRegistry.ProviderRegistry, providers),
-              ),
-          });
-        const attempted: ModelSelection[] = [];
-        // A candidate that cannot start now is recorded and skipped while a later one remains.
-        const resolveFrom = (
-          candidate: ModelSelection | undefined,
-          later: ReadonlyArray<ModelSelection>,
-        ): Effect.Effect<
-          {
-            readonly target: { readonly modelSelection: ModelSelection; readonly kitText: string };
-            readonly fallbacks: ReadonlyArray<ModelSelection>;
-          },
-          OrchestratorMcpFailure
-        > =>
-          resolveCandidate(candidate).pipe(
-            Effect.map((target) => ({ target, fallbacks: later })),
-            Effect.catch((error) => {
-              const [next, ...rest] = later;
-              if (
-                next === undefined ||
-                (error.code !== "provider_unavailable" && error.code !== "model_unavailable")
-              )
-                return Effect.fail(error);
-              if (candidate !== undefined) attempted.push(candidate);
-              return resolveFrom(next, rest);
-            }),
-          );
-        const { target, fallbacks } = yield* resolveFrom(
-          explicit,
-          yield* Effect.forEach(color.fallbacks ?? [], (fallback) =>
-            withOverrides(fallback.selection ?? caller.modelSelection, fallback),
-          ),
+    const resolveMember = Effect.fn("LaunchService.resolveMember")(function* (
+      color: SpectrumColorSpec,
+      threadId: ThreadId,
+    ) {
+      const primary =
+        color.selection ?? (color.role === undefined ? caller.modelSelection : undefined);
+      const explicit =
+        primary === undefined &&
+        color.instanceId === undefined &&
+        color.model === undefined &&
+        color.effort === undefined
+          ? undefined
+          : yield* withOverrides(primary ?? caller.modelSelection, color);
+      const resolveCandidate = (candidate: ModelSelection | undefined) =>
+        prism.resolve({
+          bare: color.bare !== undefined,
+          projectId: caller.projectId,
+          role: color.role ?? "worker",
+          lane: color.lane,
+          explicit: candidate,
+          inherited: caller.modelSelection,
+          validate: (selection) =>
+            Prism.validateLaunchSelection(selection, color.bare !== undefined).pipe(
+              Effect.provideService(ProviderAdapters.ProviderAdapterRegistryV2, adapters),
+              Effect.provideService(ProviderRegistry.ProviderRegistry, providers),
+            ),
+        });
+      const attempted: ModelSelection[] = [];
+      // A candidate that cannot start now is recorded and skipped while a later one remains.
+      const resolveFrom = (
+        candidate: ModelSelection | undefined,
+        later: ReadonlyArray<ModelSelection>,
+      ): Effect.Effect<
+        {
+          readonly target: { readonly modelSelection: ModelSelection; readonly kitText: string };
+          readonly fallbacks: ReadonlyArray<ModelSelection>;
+        },
+        OrchestratorMcpFailure
+      > =>
+        resolveCandidate(candidate).pipe(
+          Effect.map((target) => ({ target, fallbacks: later })),
+          Effect.catch((error) => {
+            const [next, ...rest] = later;
+            if (
+              next === undefined ||
+              (error.code !== "provider_unavailable" && error.code !== "model_unavailable")
+            )
+              return Effect.fail(error);
+            if (candidate !== undefined) attempted.push(candidate);
+            return resolveFrom(next, rest);
+          }),
         );
-        const selection = target.modelSelection;
-        const project =
-          color.bare === undefined || caller.worktreePath !== null
-            ? Option.none()
-            : yield* projects.get(caller.projectId);
-        const cwd =
-          caller.worktreePath ?? (Option.isSome(project) ? project.value.workspaceRoot : undefined);
-        if (color.bare !== undefined && cwd === undefined)
-          return yield* new SpectrumLaunchError({
-            threadId: input.threadId,
-            cause: "Bare workspace is unavailable.",
-          });
-        const bare =
-          color.bare === undefined
-            ? undefined
-            : yield* bareLaunch.resolve({
-                request: color.bare,
-                instanceId: selection.instanceId,
-                cwd: cwd!,
-                readGrant:
-                  caller.runtimeMode === "full-access"
-                    ? { type: "all" }
-                    : { type: "roots", roots: [cwd!] },
-              });
-        return {
-          ...(bare === undefined ? {} : { bare }),
-          threadId,
-          label: color.label,
-          selection,
-          fallbacks,
-          attempted,
-          instructions: [
-            color.bare !== undefined || color.role === undefined ? "" : target.kitText,
-            color.instructions ?? "",
-          ]
-            .filter(Boolean)
-            .join("\n\n"),
-        };
-      });
+      const { target, fallbacks } = yield* resolveFrom(
+        explicit,
+        yield* Effect.forEach(color.fallbacks ?? [], (fallback) =>
+          withOverrides(fallback.selection ?? caller.modelSelection, fallback),
+        ),
+      );
+      const selection = target.modelSelection;
+      const project =
+        color.bare === undefined || caller.worktreePath !== null
+          ? Option.none()
+          : yield* projects.get(caller.projectId);
+      const cwd =
+        caller.worktreePath ?? (Option.isSome(project) ? project.value.workspaceRoot : undefined);
+      if (color.bare !== undefined && cwd === undefined)
+        return yield* new SpectrumLaunchError({
+          threadId: input.threadId,
+          cause: "Bare workspace is unavailable.",
+        });
+      const bare =
+        color.bare === undefined
+          ? undefined
+          : yield* bareLaunch.resolve({
+              request: color.bare,
+              instanceId: selection.instanceId,
+              cwd: cwd!,
+              readGrant:
+                caller.runtimeMode === "full-access"
+                  ? { type: "all" }
+                  : { type: "roots", roots: [cwd!] },
+            });
+      return {
+        ...(bare === undefined ? {} : { bare }),
+        threadId,
+        label: color.label,
+        selection,
+        fallbacks,
+        attempted,
+        instructions: [
+          color.bare !== undefined || color.role === undefined ? "" : target.kitText,
+          color.instructions ?? "",
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+      };
+    });
     const resolved = yield* Effect.forEach(input.colors, (color, index) =>
       resolveMember(color, ThreadId.make(`sub.${input.threadId}.color.${index}`)),
     );

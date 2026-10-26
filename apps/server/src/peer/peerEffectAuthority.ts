@@ -40,12 +40,12 @@ export class NativeAuthorityValidation extends Context.Service<
   }
 >()("t3/peer/peerEffectAuthority/NativeAuthorityValidation") {}
 
-export const nativeAuthorityOwners = (
-  explicit: ReadonlyArray<string>,
-  threadIds: ReadonlyArray<ThreadId>,
-  runIds: ReadonlyArray<string>,
-) =>
-  Effect.gen(function* () {
+export const nativeAuthorityOwners = Effect.fn("peerEffectAuthority.nativeAuthorityOwners")(
+  function* (
+    explicit: ReadonlyArray<string>,
+    threadIds: ReadonlyArray<ThreadId>,
+    runIds: ReadonlyArray<string>,
+  ) {
     const sql = yield* SqlClient.SqlClient;
     const births =
       threadIds.length === 0
@@ -66,7 +66,8 @@ export const nativeAuthorityOwners = (
         ...runs.map((row) => row.record_id),
       ]),
     ].sort();
-  });
+  },
+);
 
 /** Initialized with the event sink so local-only services need no peer runtime. */
 export const initializePeerEffectAuthority = Effect.gen(function* () {
@@ -93,58 +94,60 @@ const decodeRecord = Schema.decodeUnknownEffect(Schema.fromJsonString(Authority)
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const encodeRecord = Schema.encodeSync(Schema.fromJsonString(Authority));
 
-export const recordPeerEffectAuthority = (
-  events: ReadonlyArray<OrchestrationV2DomainEvent>,
-  effects: ReadonlyArray<PendingOrchestrationEffectV2>,
-) =>
-  Effect.gen(function* () {
+export const recordPeerEffectAuthority = Effect.fn("peerEffectAuthority.recordPeerEffectAuthority")(
+  function* (
+    events: ReadonlyArray<OrchestrationV2DomainEvent>,
+    effects: ReadonlyArray<PendingOrchestrationEffectV2>,
+  ) {
     const authority = yield* PeerDispatchAuthority;
     const automation = yield* PeerAcceptedAutomation;
     const sql = yield* SqlClient.SqlClient;
-    const read = (id: string) =>
-      Effect.gen(function* () {
-        const rows = yield* sql<{
-          record_json: string;
-        }>`SELECT record_json FROM peer_authority_records WHERE id = ${id}`;
-        if (rows[0] === undefined)
-          return yield* Effect.die(new Error("Missing accepted peer authority record"));
-        return yield* decodeRecord(rows[0].record_json);
-      });
-    const combine = (threadId: ThreadId, first: string | undefined, next: string | undefined) =>
-      Effect.gen(function* () {
-        if (first === undefined) return next;
-        if (next === undefined || next === first) return first;
-        const a = yield* read(first);
-        const b = yield* read(next);
-        const ids = [
-          ...new Set(
-            [a, b].flatMap((record) =>
-              record.context?.type === "run-inputs" && record.context.threadId === threadId
-                ? record.context.recordIds
-                : [record.id],
-            ),
+    const read = Effect.fn("peerEffectAuthority.read")(function* (id: string) {
+      const rows = yield* sql<{
+        record_json: string;
+      }>`SELECT record_json FROM peer_authority_records WHERE id = ${id}`;
+      if (rows[0] === undefined)
+        return yield* Effect.die(new Error("Missing accepted peer authority record"));
+      return yield* decodeRecord(rows[0].record_json);
+    });
+    const combine = Effect.fn("peerEffectAuthority.combine")(function* (
+      threadId: ThreadId,
+      first: string | undefined,
+      next: string | undefined,
+    ) {
+      if (first === undefined) return next;
+      if (next === undefined || next === first) return first;
+      const a = yield* read(first);
+      const b = yield* read(next);
+      const ids = [
+        ...new Set(
+          [a, b].flatMap((record) =>
+            record.context?.type === "run-inputs" && record.context.threadId === threadId
+              ? record.context.recordIds
+              : [record.id],
           ),
-        ].sort();
-        const [head, ...tail] = ids;
-        if (head === undefined)
-          return yield* Effect.die(new Error("Empty accepted peer authority set"));
-        const recordIds: [string, ...Array<string>] = [head, ...tail];
-        const context = { type: "run-inputs" as const, threadId, recordIds };
-        const records = yield* Effect.forEach(recordIds, read);
-        const base = records[0];
-        if (base === undefined)
-          return yield* Effect.die(new Error("Empty accepted peer authority set"));
-        const digest = sha256(new TextEncoder().encode(json(context)));
-        const id = `context:${Hex.encode(digest)}`;
-        const record = conjunction(id, context, [base, ...records.slice(1)]);
-        yield* sql`INSERT INTO peer_authority_records (id, record_json) VALUES (${id}, ${encodeRecord(record)}) ON CONFLICT DO NOTHING`;
-        return id;
-      });
-    const birthOwner = (
-      id: string,
-      seen: ReadonlySet<string> = new Set(),
-    ): Effect.Effect<string, never> =>
-      Effect.gen(function* () {
+        ),
+      ].sort();
+      const [head, ...tail] = ids;
+      if (head === undefined)
+        return yield* Effect.die(new Error("Empty accepted peer authority set"));
+      const recordIds: [string, ...Array<string>] = [head, ...tail];
+      const context = { type: "run-inputs" as const, threadId, recordIds };
+      const records = yield* Effect.forEach(recordIds, read);
+      const base = records[0];
+      if (base === undefined)
+        return yield* Effect.die(new Error("Empty accepted peer authority set"));
+      const digest = sha256(new TextEncoder().encode(json(context)));
+      const id = `context:${Hex.encode(digest)}`;
+      const record = conjunction(id, context, [base, ...records.slice(1)]);
+      yield* sql`INSERT INTO peer_authority_records (id, record_json) VALUES (${id}, ${encodeRecord(record)}) ON CONFLICT DO NOTHING`;
+      return id;
+    });
+    const birthOwner: (id: string, seen?: ReadonlySet<string>) => Effect.Effect<string, never> =
+      Effect.fn("peerEffectAuthority.birthOwner")(function* (
+        id: string,
+        seen: ReadonlySet<string> = new Set(),
+      ) {
         if (seen.has(id) || seen.size >= 256)
           return yield* Effect.die(new Error("Cyclic native birth owner"));
         const visited = new Set([...seen, id]);
@@ -197,12 +200,15 @@ export const recordPeerEffectAuthority = (
       }>`SELECT record_id FROM peer_run_authority WHERE run_id = ${runId}`.pipe(
         Effect.map((rows) => rows[0]?.record_id),
       );
-    const attach = (runId: string, threadId: ThreadId, contributor: string | undefined) =>
-      Effect.gen(function* () {
-        const owner = yield* combine(threadId, yield* runOwner(runId), contributor);
-        if (owner !== undefined)
-          yield* sql`INSERT INTO peer_run_authority (run_id, record_id) VALUES (${runId}, ${owner}) ON CONFLICT (run_id) DO UPDATE SET record_id = excluded.record_id`;
-      });
+    const attach = Effect.fn("peerEffectAuthority.attach")(function* (
+      runId: string,
+      threadId: ThreadId,
+      contributor: string | undefined,
+    ) {
+      const owner = yield* combine(threadId, yield* runOwner(runId), contributor);
+      if (owner !== undefined)
+        yield* sql`INSERT INTO peer_run_authority (run_id, record_id) VALUES (${runId}, ${owner}) ON CONFLICT (run_id) DO UPDATE SET record_id = excluded.record_id`;
+    });
     // An inherited native Stop is authority for this exact next obligation,
     // never general authority for the now-stopped intermediate thread.
     if (authority !== undefined) {
@@ -326,4 +332,5 @@ export const recordPeerEffectAuthority = (
         yield* sql`INSERT INTO peer_effect_authority (effect_id, record_id) VALUES (${effect.id}, ${owner}) ON CONFLICT DO NOTHING`;
       }
     }
-  });
+  },
+);

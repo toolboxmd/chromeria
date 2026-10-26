@@ -51,7 +51,7 @@ it.effect(
       yield* Effect.gen(function* () {
         const threads = yield* Threads.ThreadManagementService;
         const first = yield* threads.dispatch(command);
-        assert.deepStrictEqual(yield* threads.dispatch(command), first);
+        assert.deepStrictEqual(yield* threads.dispatch(command), { ...first, replayed: true });
         const projections = yield* Projection.ProjectionStoreV2;
         const records = yield* projections.getThreadRecords(state.threadId, ["runs", "messages"]);
         assert.deepStrictEqual(records.runs, []);

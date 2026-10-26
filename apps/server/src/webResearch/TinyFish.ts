@@ -140,8 +140,8 @@ const make = Effect.gen(function* () {
     yield* fs.rename(`${quotaPath}.tmp`, quotaPath);
     quota = value;
   });
-  const reserve = (deadline: (() => number) | undefined) =>
-    Effect.gen(function* () {
+  const reserve = Effect.fn("TinyFish.reserve")(
+    function* (deadline: (() => number) | undefined) {
       if (quota === undefined) {
         const stored = yield* fs.readFileString(quotaPath).pipe(
           Effect.catchIf(
@@ -174,14 +174,14 @@ const make = Effect.gen(function* () {
       // Reserve before sending; cancelled or uncertain requests still consumed shared-key capacity.
       yield* storeQuota({ starts: [...starts, now], blockedUntil: quota.blockedUntil });
       return true;
-    }).pipe(
-      lock.withPermits(1),
-      Effect.mapError((error) =>
-        error._tag === "TinyFishBudgetError"
-          ? error
-          : new TinyFishProviderError({ reason: "quota_storage", httpStatus: null }),
-      ),
-    );
+    },
+    lock.withPermits(1),
+    Effect.mapError((error) =>
+      error._tag === "TinyFishBudgetError"
+        ? error
+        : new TinyFishProviderError({ reason: "quota_storage", httpStatus: null }),
+    ),
+  );
   const block = (until: number) =>
     lock
       .withPermits(1)(

@@ -117,7 +117,9 @@ const loseAwaitedWork = Effect.fn("test.Spectrum.loseAwaitedWork")(function* (
           ...run,
           status,
           completedAt: NOW,
-          restartCancelledBackgroundWork: [{ kind: "monitor", id: "lost", label: "Awaited work" }],
+          restartCancelledBackgroundWork: [
+            { kind: "monitor", id: "lost", label: "Awaited work", awaited: true },
+          ],
         },
       },
     ],
@@ -484,7 +486,7 @@ it.effect(
           dispatchMode: { type: "start_immediately" as const },
         };
         const first = yield* threads.dispatch(composer);
-        assert.deepStrictEqual(yield* threads.dispatch(composer), first);
+        assert.deepStrictEqual(yield* threads.dispatch(composer), { ...first, replayed: true });
         const send = yield* McpSend.SpectrumMcpSend;
         assert.deepStrictEqual(
           yield* send.send(
@@ -957,7 +959,7 @@ it.effect(
       };
       const first = yield* orchestrator.dispatch(command);
       const replay = yield* orchestrator.dispatch(command);
-      assert.deepStrictEqual(replay, first);
+      assert.deepStrictEqual(replay, { ...first, replayed: true });
       const projections = yield* Projection.ProjectionStoreV2;
       const records = yield* projections.getThreadRecords(state.threadId, ["messages", "runs"]);
       assert.deepStrictEqual(records.runs, []);
