@@ -817,11 +817,13 @@ const make = Effect.gen(function* () {
         controller:
           tab.control.controller === viewer.id
             ? "you"
-            : tab.control.controller !== null
-              ? "another-viewer"
-              : tab.control.agentId !== null
-                ? "agent"
-                : "unclaimed",
+            : tab.control.humanDisconnected
+              ? "unclaimed"
+              : tab.control.controller !== null
+                ? "another-viewer"
+                : tab.control.agentId !== null
+                  ? "agent"
+                  : "unclaimed",
         generation: tab.control.generation,
         dialog: dialogStatus(tab),
       });
@@ -2865,11 +2867,7 @@ const make = Effect.gen(function* () {
     }
     const agentSessionId = request.agentSessionId!;
 
-    if (
-      READ_OPERATIONS.has(request.operation) &&
-      tab.control.agentId !== agentSessionId &&
-      !tab.control.agentCanActNow(agentSessionId)
-    ) {
+    if (READ_OPERATIONS.has(request.operation) && !tab.control.agentCanActNow(agentSessionId)) {
       return tab.control.observe(async () => {
         await authorize();
         if (tab.dialog)

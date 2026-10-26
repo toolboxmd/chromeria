@@ -56,7 +56,8 @@ desktop tabs.
 
 On an agent tab, choose **Take control** before interacting with the page.
 The agent pauses its actions while you control it. Choose **Release control**
-to let the agent continue.
+to let the agent continue. A disconnected viewer does not return control to the
+agent. After reconnecting, take control again to continue or release it.
 
 You can also open a tab yourself and tell the agent to “look at this”. Agents
 can read your tab, but cannot use the rbw login tool there when it is a native
