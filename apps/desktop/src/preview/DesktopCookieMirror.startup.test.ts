@@ -103,6 +103,8 @@ it.effect.each([
         ),
       );
     const healthy = yield* Deferred.make<void>();
+    // The mirror's scan reads client settings first, once it holds the scan lock.
+    const scanStarted = yield* Deferred.make<void>();
     const windowCreated = vi.fn();
     const backendExited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
     const backend = yield* DesktopBackendManager.makeBackendInstance({
@@ -238,7 +240,9 @@ it.effect.each([
         load: Effect.succeed(desktopSettings),
         get: Effect.succeed(desktopSettings),
       }),
-      Layer.mock(DesktopClientSettings.DesktopClientSettings, { get: Effect.succeedNone }),
+      Layer.mock(DesktopClientSettings.DesktopClientSettings, {
+        get: Deferred.succeed(scanStarted, undefined).pipe(Effect.andThen(Effect.succeedNone)),
+      }),
       Layer.mock(BrowserSession.BrowserSession, { isPartition: () => true }),
       Layer.mock(DesktopConnectionCatalogStore.DesktopConnectionCatalogStore, {
         get: Effect.succeedNone,
@@ -320,9 +324,8 @@ it.effect.each([
       expect((yield* backend.snapshot).ready).toBe(true);
       if (command?.length) expect(readKey).toHaveBeenCalledOnce();
       else {
-        // Let the initial ready callback acquire the scan lock, then wait for
-        // that scan to finish before asserting the absence of a key read.
-        yield* Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
+        // Wait until the initial scan holds the lock; status then waits for it to finish.
+        yield* Deferred.await(scanStarted);
         yield* mirror.connection({ action: "status" });
         expect(readKey).not.toHaveBeenCalled();
       }
