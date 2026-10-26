@@ -39,6 +39,7 @@ import {
   featureMapClassOf,
   featureMapDiagramSource,
   featureMapGaps,
+  FEATURE_MAP_NODE_SELECTOR,
   featureMapPartIdOf,
   type FeatureMapPartView,
   featureMapShown,
@@ -626,15 +627,16 @@ function FeatureMapDiagram({
     if (contentRef) contentRef.current = node;
   };
   // Node clicks read the newest views, so a refresh never needs the SVG rebound.
-  const openNode = useEffectEvent((elementId: string) => {
-    const id = featureMapPartIdOf(elementId, new Set(byId.keys()));
+  const openNode = useEffectEvent((nodeId: string | null) => {
+    const id = featureMapPartIdOf(nodeId, new Set(byId.keys()));
     const url = id === null ? null : (byId.get(id)?.url ?? null);
     if (url !== null) onOpen(url);
   });
   useEffect(() => {
     if (svg === null) return;
-    const nodes = [...svg.querySelectorAll<SVGGElement>("g.node")];
-    const onClick = (event: MouseEvent) => openNode((event.currentTarget as SVGGElement).id);
+    const nodes = [...svg.querySelectorAll<SVGGElement>(FEATURE_MAP_NODE_SELECTOR)];
+    const onClick = (event: MouseEvent) =>
+      openNode((event.currentTarget as SVGGElement).getAttribute("data-id"));
     for (const node of nodes) {
       node.style.cursor = "pointer";
       node.addEventListener("click", onClick);
@@ -664,8 +666,8 @@ function FeatureMapDiagram({
       const origin = wrapper.getBoundingClientRect();
       const wanted = new Set(workingIds);
       const placements: Array<IconPlacement> = [];
-      for (const node of svg.querySelectorAll<SVGGElement>("g.node")) {
-        const id = featureMapPartIdOf(node.id, wanted);
+      for (const node of svg.querySelectorAll<SVGGElement>(FEATURE_MAP_NODE_SELECTOR)) {
+        const id = featureMapPartIdOf(node.getAttribute("data-id"), wanted);
         if (id === null) continue;
         const box = node.getBoundingClientRect();
         placements.push({

@@ -47,9 +47,12 @@ it("legacy rendered rows and jump candidates omit remote children but retain use
     },
   });
   const searchResult = actions.find(
-    (item) => item.searchTerms.includes("Remote child") && item.value === `thread:${child.id}`,
+    (item) =>
+      item.searchTerms.includes("Remote child") &&
+      item.value === `thread:${destination}:${child.id}`,
   );
   expect(searchResult).toBeDefined();
+  expect(actions.map((item) => item.value)).not.toContain(`thread:${destination}:${localChild.id}`);
   await searchResult!.run();
   expect(selected).toEqual([[destination, child.id]]);
   expect(all).toContain(child);
