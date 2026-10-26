@@ -3252,3 +3252,49 @@ sources and reasons.
   "keywords": ["thread.settled", "preview-tab-settlement"]
 }
 ```
+
+## page-subscriptions
+
+```json
+{
+  "id": "page-subscriptions",
+  "purpose": "Retain generic caller-authored page subscriptions after their creating turn, with exact-opening callback fences and a browser-free replay read for authorized named watches. Drop when upstream supports equivalent retained subscriptions.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/622"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/compare/4943d14ba305c0471df3ceca50a883c32ea98170...feat/622-page-subscriptions"
+  ],
+  "newFiles": [
+    "apps/server/src/mcp/PreviewWatchAccess.ts",
+    "apps/server/src/mcp/toolkits/preview/watchHandlers.ts",
+    "apps/server/src/preview/PageSubscriptions.integration.test.ts",
+    "apps/server/src/preview/PageWatchStore.test.ts",
+    "apps/server/src/preview/PageWatchStore.ts",
+    "apps/server/src/preview/ServerBrowserWatch.test.ts",
+    "apps/server/src/preview/ServerBrowserWatch.ts"
+  ],
+  "upstreamFiles": [],
+  "sharedFiles": [
+    "GLOSSARY.md",
+    "apps/server/src/mcp/McpHttpServer.ts",
+    "apps/server/src/mcp/PreviewAutomationBroker.ts",
+    "apps/server/src/mcp/outsideGrant.ts",
+    "apps/server/src/mcp/t3ToolNames.ts",
+    "apps/server/src/mcp/toolkits/core.test.ts",
+    "apps/server/src/mcp/toolkits/preview/tools.ts",
+    "apps/server/src/peer/PeerAuthority.ts",
+    "apps/server/src/preview/ServerBrowser.ts",
+    "apps/server/src/preview/ServerBrowserPage.ts",
+    "docs/map.md",
+    "docs/user/browser.md",
+    "packages/contracts/src/previewAutomation.ts",
+    "packages/shared/src/t3McpToolPresentation.ts"
+  ],
+  "keywords": [
+    "preview_watch_start",
+    "preview_watch_read",
+    "preview_watch_stop",
+    "PageWatchStore",
+    "installPageWatch"
+  ]
+}
+```

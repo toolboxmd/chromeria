@@ -1,6 +1,7 @@
 import { interactiveAuthority } from "../peer/PeerAuthorityRecord.ts";
 import {
   PREVIEW_AUTOMATION_V1_OPERATIONS,
+  PreviewWatchError,
   PreviewAutomationClientDisconnectedError,
   PreviewAutomationControlInterruptedError,
   PreviewAutomationControlReason,
@@ -94,6 +95,7 @@ export class PreviewAutomationBroker extends Context.Service<
         readonly dispatch: Effect.Effect<void, OrchestratorMcpFailure>;
         /** A recording outlives its start reply, but never its original authority. */
         readonly resource: Effect.Effect<void, OrchestratorMcpFailure>;
+        readonly watch?: Effect.Effect<void, OrchestratorMcpFailure>;
       },
       OrchestratorMcpFailure
     >;
@@ -201,6 +203,7 @@ const hostAssignmentKey = (scope: McpInvocationContext.McpThreadInvocationScope)
 const isPreviewTabId = Schema.is(PreviewTabId);
 const decodeControlReason = Schema.decodeUnknownOption(PreviewAutomationControlReason);
 const decodeCredentialError = Schema.decodeUnknownOption(PreviewCredentialError);
+const decodeWatchError = Schema.decodeUnknownOption(PreviewWatchError);
 
 const readResultTabId = (result: unknown): PreviewTabId | null | undefined => {
   if (typeof result !== "object" || result === null || !("tabId" in result)) return undefined;
@@ -349,6 +352,15 @@ const classifyResponseError = (
         ...remoteDiagnostics,
         ...(maximumBytes === undefined ? {} : { maximumBytes }),
       });
+    }
+    case "PreviewWatchError": {
+      const decoded = decodeWatchError({
+        _tag: "PreviewWatchError",
+        ...(typeof error.detail === "object" && error.detail !== null ? error.detail : {}),
+      });
+      return Option.isSome(decoded)
+        ? decoded.value
+        : new PreviewAutomationMalformedResponseError(context);
     }
     case "PreviewCredentialError": {
       const credential = decodeCredentialError({
@@ -790,7 +802,19 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           message: "The original preview request or execution host is no longer current.",
         });
       yield* recheckScope(pending.scope);
+      const watch =
+        pending.context.operation === "watchStart"
+          ? Option.isSome(authority)
+            ? yield* authority.value.acquirePreviewWatchAuthority(pending.scope)
+            : Effect.fail(
+                new OrchestratorMcpFailure({
+                  code: "capability_denied",
+                  message: "Durable browser watch authority is unavailable.",
+                }),
+              )
+          : undefined;
       return {
+        ...(watch === undefined ? {} : { watch }),
         resource: recheckScope(pending.scope),
         dispatch: Effect.gen(function* () {
           const latest = yield* SynchronizedRef.get(state);

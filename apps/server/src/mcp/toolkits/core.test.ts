@@ -55,7 +55,7 @@ import * as McpInvocationContext from "../McpInvocationContext.ts";
 import * as McpToolAccessTestkit from "../McpToolAccess.testkit.ts";
 import { dispatchFailure } from "../threadAccess.ts";
 import { OrchestratorToolkit } from "./orchestrator/tools.ts";
-import { PreviewToolkit } from "./preview/tools.ts";
+import { PreviewToolkit, PreviewWatchToolkit } from "./preview/tools.ts";
 import { PreviewControlsToolkit } from "./previewControls/tools.ts";
 import { EnvironmentToolkit } from "./environment/tools.ts";
 import * as EnvironmentHandlers from "./environment/handlers.ts";
@@ -106,6 +106,7 @@ it("publishes unique tool names with reference-free object-root inputs", () => {
   for (const toolkit of [
     OrchestratorToolkit,
     PreviewToolkit,
+    PreviewWatchToolkit,
     WorktreeToolkit,
     ThreadToolkit,
     AttachmentToolkit,

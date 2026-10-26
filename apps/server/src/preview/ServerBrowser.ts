@@ -3,6 +3,11 @@
 // --disable-gpu uses cheaper software compositing while preserving SwiftShader WebGL.
 import {
   BUILT_IN_BROWSER_PROFILES,
+  PreviewWatchError,
+  PreviewWatchStartInput,
+  PreviewWatchStopInput,
+  type PreviewWatchReadInput,
+  type PreviewWatchReadResult,
   CookieMirrorError,
   type CookieMirrorBatch,
   OrchestratorMcpFailure,
@@ -99,6 +104,8 @@ import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
 import { ServerCookieMirrorProfiles } from "./ServerCookieMirrorProfiles.ts";
 import { ServerCookieMirror } from "./ServerCookieMirror.ts";
 import { presentAsChrome, ServerBrowserContexts } from "./ServerBrowserContexts.ts";
+import { PageWatchStore } from "./PageWatchStore.ts";
+import { installPageWatch } from "./ServerBrowserWatch.ts";
 import { BrowserControlInterrupted, SessionControl } from "./SessionControl.ts";
 
 const SERVER_HOST_CLIENT_ID = SERVER_BROWSER_AUTOMATION_CLIENT_ID;
@@ -115,6 +122,9 @@ const VIEWER_OUTPUT_LIMIT = 64;
 const RECORDING_SCREENCAST = { format: "jpeg", quality: 90, everyNthFrame: 1 } as const;
 const decodeViewportSetting = Schema.decodeUnknownSync(PreviewViewportSettingSchema);
 const decodeReadPage = Schema.decodeUnknownSync(PreviewAutomationReadPageInput);
+const decodeWatchStart = Schema.decodeUnknownSync(PreviewWatchStartInput);
+const decodeWatchStop = Schema.decodeUnknownSync(PreviewWatchStopInput);
+const isWatchReadFailure = Schema.is(Schema.Union([PreviewWatchError, OrchestratorMcpFailure]));
 const encodeInputJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const AGENT_CURSOR_MOVE_MS = 160;
 const AGENT_CURSOR_CLICK_LEAD_MS = 40;
@@ -239,6 +249,11 @@ export interface ServerBrowserViewer {
 export class ServerBrowser extends Context.Service<
   ServerBrowser,
   {
+    /** Retained queue only, including while the host thread is settled. */
+    readonly readWatch?: <R>(
+      input: PreviewWatchReadInput,
+      authorizeReader: Effect.Effect<void, OrchestratorMcpFailure, R>,
+    ) => Effect.Effect<PreviewWatchReadResult, PreviewWatchError | OrchestratorMcpFailure, R>;
     readonly attachViewer: (input: {
       readonly threadId: string;
       readonly tabId: string;
@@ -347,6 +362,7 @@ interface ServerTab {
   readonly networkEntries: Array<PreviewAutomationNetworkEntry>;
   readonly actionTimeline: Array<PreviewAutomationActionEvent>;
   readonly control: SessionControl;
+  readonly watches: Set<string>;
   /**
    * The browser profile whose storage the tab shares: a server profile id, its own
    * context for an isolated tab and its popups, or a desktop tab of its own. A login
@@ -629,6 +645,15 @@ const make = Effect.gen(function* () {
   const setupCommand = yield* resolveRootCliCommand(PreviewBrowserHost.SETUP_SUBCOMMAND);
 
   const tabs = new Map<string, ServerTab>();
+  const watches = new PageWatchStore(NodeCrypto.randomUUID());
+  const stopTabWatches = (tab: ServerTab, reason: PreviewWatchError["reason"]) => {
+    for (const id of tab.watches) void watches.terminate(id, reason).catch(constVoid);
+  };
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      for (const tab of tabs.values()) stopTabWatches(tab, "closed");
+    }),
+  );
   const pendingTabs = new Map<
     string,
     { readonly threadId: string; readonly opening: Promise<ServerTab>; settled: boolean }
@@ -659,6 +684,7 @@ const make = Effect.gen(function* () {
     tab.control.agentId !== null &&
     tab.control.controller === null &&
     tab.viewers.size === 0 &&
+    tab.watches.size === 0 &&
     // Quarantine ends only after the whole profile context closes.
     !inLogin(tab);
   const profileTabs = (profileKey: string) =>
@@ -887,6 +913,7 @@ const make = Effect.gen(function* () {
   const sessionOpen = (tab: ServerTab) => !closedSessions.has(tabKey(tab.threadId, tab.tabId));
 
   const dropTab = (tab: ServerTab, closeSession: boolean) => {
+    stopTabWatches(tab, "closed");
     const key = tabKey(tab.threadId, tab.tabId);
     if (tabs.get(key) !== tab) return;
     tabs.delete(key);
@@ -983,9 +1010,10 @@ const make = Effect.gen(function* () {
       if (!desktop) await recordCopies(cdp, authorize);
       page.setDefaultTimeout(NAVIGATION_TIMEOUT_MS);
       page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
-      const control = new SessionControl(snapshot.automationOwner ?? null, () =>
-        ServerBrowserPage.invalidateRefs(page),
-      );
+      const control = new SessionControl(snapshot.automationOwner ?? null, () => {
+        ServerBrowserPage.invalidateRefs(page);
+        if (createdTab) stopTabWatches(createdTab, "ownership");
+      });
       const tab: ServerTab = (createdTab = {
         authorize,
         threadId: ThreadId.make(snapshot.threadId),
@@ -1000,6 +1028,7 @@ const make = Effect.gen(function* () {
         networkEntries: [],
         actionTimeline: [],
         control,
+        watches: new Set(),
         profileKey:
           adopted?.profileKey ??
           (desktop
@@ -1037,6 +1066,7 @@ const make = Effect.gen(function* () {
       const navigationGenerations = new WeakMap<object, number>();
       page.on("request", (request) => {
         if (!isMainNavigation(request)) return;
+        stopTabWatches(tab, "navigation");
         navigationGenerations.set(request, ++tab.navigationGeneration);
         clearAbortedNavigation(tab);
         tab.loading = true;
@@ -1047,6 +1077,7 @@ const make = Effect.gen(function* () {
         void reportLoaded(tab);
       });
       page.on("framenavigated", (frame) => {
+        if (frame === page.mainFrame()) stopTabWatches(tab, "navigation");
         // Same-document navigations (SPA routes) fire no load event.
         if (frame === page.mainFrame() && !tab.loading) void reportLoaded(tab);
         if (!desktop) void recordFrameCopies(tab, frame);
@@ -1757,7 +1788,12 @@ const make = Effect.gen(function* () {
   const closeIdleAgentTabs = () => {
     const cutoff = Date.now() - AGENT_TAB_IDLE_MS;
     for (const tab of tabs.values()) {
-      if (tab.control.agentId !== null && tab.viewers.size === 0 && tab.usedAt < cutoff)
+      if (
+        tab.control.agentId !== null &&
+        tab.viewers.size === 0 &&
+        tab.watches.size === 0 &&
+        tab.usedAt < cutoff
+      )
         dropTab(tab, true);
     }
   };
@@ -2284,6 +2320,16 @@ const make = Effect.gen(function* () {
     await authorize();
     const input = request.input;
     switch (request.operation) {
+      case "watchStop": {
+        const input = decodeWatchStop(request.input);
+        return watches.stop({
+          ...input,
+          threadId: request.threadId,
+          ...(request.agentSessionId === undefined
+            ? {}
+            : { agentSessionId: request.agentSessionId }),
+        });
+      }
       case "status":
         return statusWithTitle(
           request.tabId === undefined
@@ -2429,6 +2475,11 @@ const make = Effect.gen(function* () {
         );
       }
     }
+    if (
+      request.operation === "watchStart" &&
+      (!request.tabIdExplicit || !tabs.has(tabKey(request.threadId, request.tabId ?? "")))
+    )
+      throw new PreviewWatchError({ reason: "unknown" });
     const tab = await requireTab(request);
     // Closing must unblock an action waiting on a dialog, without queueing behind it.
     if (request.operation === "close") {
@@ -2440,6 +2491,7 @@ const make = Effect.gen(function* () {
         );
       if (tab.control.controller !== null)
         throw new BrowserControlInterrupted("A human controls this tab.", "humanControl");
+      stopTabWatches(tab, "closed");
       void tab.control.close().catch(constVoid);
       await Effect.runPromise(manager.close({ threadId: tab.threadId, tabId: tab.tabId }));
       dropTab(tab, false);
@@ -2578,7 +2630,10 @@ const make = Effect.gen(function* () {
       profileLogins.set(tab.profileKey, { ending: false, context: tab.page.context() });
       loginEpoch++;
       // What every tab of the profile already showed is replaced at once.
-      for (const member of profileTabs(tab.profileKey)) report(member, { _tag: "Idle" });
+      for (const member of profileTabs(tab.profileKey)) {
+        stopTabWatches(member, "login");
+        report(member, { _tag: "Idle" });
+      }
     }
     return recordAction(tab, "fillCredential", () =>
       fillCredential({
@@ -2739,6 +2794,81 @@ const make = Effect.gen(function* () {
         );
       case "fillCredential":
         return fillInLogin(tab, input as PreviewAutomationFillCredentialInput, authorize);
+      case "watchStart": {
+        const input = decodeWatchStart({
+          ...(request.input as object),
+          tabId: tab.tabId,
+        });
+        if (tab.control.agentId !== request.agentSessionId)
+          throw new PreviewWatchError({ reason: "ownership" });
+        const generation = tab.control.generation;
+        const navigation = tab.navigationGeneration;
+        const fence = (): PreviewWatchError["reason"] | undefined => {
+          if (tabs.get(tabKey(tab.threadId, tab.tabId)) !== tab || tab.closing) return "closed";
+          if (inLogin(tab)) return "login";
+          if (tab.navigationGeneration !== navigation) return "navigation";
+          if (
+            tab.control.generation !== generation ||
+            !tab.control.agentCanActNow(request.agentSessionId ?? "")
+          )
+            return "ownership";
+          return undefined;
+        };
+        await resourceAuthorization();
+        const cdp = await tab.page.context().newCDPSession(tab.page);
+        const watchId = NodeCrypto.randomUUID();
+        let cleanup: (() => Promise<void>) | undefined;
+        const installed = Promise.withResolvers<void>();
+        let cleanupTask: Promise<void> | undefined;
+        const dispose = () =>
+          (cleanupTask ??= (async () => {
+            // A synchronous baseline can terminate before registration returns its disposer.
+            await installed.promise;
+            try {
+              await cleanup?.();
+            } finally {
+              tab.watches.delete(watchId);
+              await cdp.detach().catch(constVoid);
+            }
+          })());
+        let started: ReturnType<PageWatchStore["register"]>;
+        try {
+          started = watches.register(
+            watchId,
+            tab.threadId,
+            {
+              authorize: resourceAuthorization,
+              fence,
+              cleanup: dispose,
+            },
+            request.agentSessionId,
+          );
+        } catch (cause) {
+          await cdp.detach().catch(constVoid);
+          throw cause;
+        }
+        tab.watches.add(watchId);
+        try {
+          try {
+            cleanup = await installPageWatch({
+              cdp,
+              watchId,
+              subscription: input.subscription,
+              store: watches,
+              authorize: resourceAuthorization,
+            });
+          } finally {
+            installed.resolve();
+          }
+          await authorize();
+          await watches.flush(watchId);
+          return started;
+        } catch (cause) {
+          await watches.terminate(watchId, "subscription_failed").catch(constVoid);
+          await dispose().catch(constVoid);
+          throw cause;
+        }
+      }
       case "evaluate":
         return ServerBrowserPage.evaluate(
           tab.cdp,
@@ -2817,7 +2947,18 @@ const make = Effect.gen(function* () {
           checkedOperation(
             request,
             () => Effect.runPromise(authorization.dispatch),
-            () => Effect.runPromise(authorization.resource),
+            () =>
+              Effect.runPromise(
+                request.operation === "watchStart"
+                  ? (authorization.watch ??
+                      Effect.fail(
+                        new OrchestratorMcpFailure({
+                          code: "capability_denied",
+                          message: "Watch continuation authority is unavailable.",
+                        }),
+                      ))
+                  : authorization.resource,
+              ),
           ).finally(() => markUsed(request)),
         catch: ServerBrowserPage.toOperationError,
       });
@@ -3337,6 +3478,10 @@ const make = Effect.gen(function* () {
   yield* orchestrator.streamDomainEvents.pipe(
     Stream.runForEach((event) =>
       Effect.sync(() => {
+        if (event.type === "thread.deleted" || event.type === "thread.archived") {
+          watches.terminateThread(event.threadId, "thread_deleted");
+          return;
+        }
         if (event.type !== "thread.settled") return;
         for (const pending of pendingTabs.values()) {
           if (pending.threadId === event.threadId) pending.settled = true;
@@ -3432,6 +3577,25 @@ const make = Effect.gen(function* () {
     });
 
   return ServerBrowser.of({
+    readWatch: (input, authorizeReader) =>
+      Effect.gen(function* () {
+        const context = yield* Effect.context<Effect.Services<typeof authorizeReader>>();
+        return yield* Effect.tryPromise({
+          try: (signal) =>
+            watches.read(
+              input,
+              async () => {
+                const result = await Effect.runPromiseWith(context)(Effect.result(authorizeReader));
+                if (result._tag === "Failure") throw result.failure;
+              },
+              signal,
+            ),
+          catch: (cause) =>
+            isWatchReadFailure(cause)
+              ? cause
+              : new PreviewWatchError({ reason: "subscription_failed" }),
+        });
+      }),
     mirrorResets: Stream.fromPubSub(mirrorResets),
     mirrorCookies: (batch) =>
       Effect.tryPromise({

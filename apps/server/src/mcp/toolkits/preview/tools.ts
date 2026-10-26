@@ -2,6 +2,12 @@ import { McpSavedSnapshotReceipt } from "@t3tools/contracts";
 import * as McpRouting from "../../McpRouting.ts";
 import {
   OrchestratorMcpFailure,
+  PreviewWatchStartInput,
+  PreviewWatchStartResult,
+  PreviewWatchStopInput,
+  PreviewWatchStopResult,
+  PreviewWatchReadInput,
+  PreviewWatchReadResult,
   ToolActivityIcon,
   PreviewAutomationClickInput,
   PreviewAutomationDialogInput,
@@ -433,3 +439,42 @@ export const PreviewStandardToolkit = Toolkit.make(
 );
 
 export const PreviewSnapshotToolkit = Toolkit.make(PreviewSnapshotTool);
+
+export const PreviewWatchToolkit = Toolkit.make(
+  browserTool(
+    Tool.make("preview_watch_start", {
+      description:
+        "Subscribe once in an existing owned server tab with a caller-authored (emit) => cleanup function. Emit JSON changes or a baseline using DOM events or an application subscription. No page polling or model calls. Survives turn completion while current authority and the exact opening remain valid. Start cursor is zero, before synchronous baseline events." +
+        COMPUTER_USE_HINT,
+      parameters: McpRouting.parameters(PreviewWatchStartInput),
+      success: PreviewWatchStartResult,
+      failure: PreviewToolFailure,
+      dependencies,
+    }).annotate(Tool.Title, "Subscribe to page changes"),
+  ),
+  safeBrowserTool(
+    Tool.make("preview_watch_stop", {
+      description:
+        "Stop this exact browser watch and run its cleanup. Requires normal preview action authority in its host thread. Reads afterwards report terminal stopped state; events are never acknowledged by stopping.",
+      parameters: McpRouting.parameters(PreviewWatchStopInput),
+      success: PreviewWatchStopResult,
+      failure: PreviewToolFailure,
+      dependencies,
+    }).annotate(Tool.Title, "Stop page subscription"),
+  ),
+  Tool.make("preview_watch_read", {
+    description:
+      "Read only an exact watch's retained ordered JSON queue, without browser or status requests. Pass the host threadId, watchId, epoch and last processed sequence as after. Reads replay without consuming. Commit the returned cursor atomically with your own work. Empty active reads preserve after; terminal, stale, gap and overflow states error explicitly. Limited read clients need an approved project and an undeleted host thread. Optional bounded wait never polls the page.",
+    parameters: McpRouting.parameters(PreviewWatchReadInput),
+    success: PreviewWatchReadResult,
+    failure: PreviewToolFailure,
+    dependencies: [
+      McpInvocationContext.McpInvocationContext,
+      ThreadManagementService.ThreadManagementService,
+    ],
+  })
+    .annotate(Tool.Title, "Read retained page changes")
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true),
+);
