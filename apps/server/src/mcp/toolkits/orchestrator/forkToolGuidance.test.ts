@@ -3,7 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { OrchestratorToolkit } from "./tools.ts";
 
-// Fork (toolboxmd/chromeria#523, #565, #571): tool copy upstream trims must keep these rules.
+// Fork: tool copy upstream trims must keep these rules.
 describe("fork orchestrator tool guidance", () => {
   it("delegate_task names every Prism role and the computer-use hand-off", () => {
     const description = OrchestratorToolkit.tools.delegate_task.description ?? "";

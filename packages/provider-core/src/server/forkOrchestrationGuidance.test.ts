@@ -7,7 +7,7 @@ import {
   T3_CODE_ORCHESTRATION_SECTIONS,
 } from "./orchestrationInstructions.ts";
 
-// Fork (toolboxmd/chromeria#571, #565): Prism delegation guidance must survive upstream copy cuts.
+// Fork: Prism delegation guidance must survive upstream copy cuts.
 describe("fork orchestration guidance", () => {
   it("names every Prism delegate role where agents read their guidance", () => {
     for (const role of PRISM_DELEGATE_ROLES) {
