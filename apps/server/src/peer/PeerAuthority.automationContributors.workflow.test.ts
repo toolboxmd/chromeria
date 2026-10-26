@@ -159,7 +159,7 @@ it.live.each([false, true])(
           Effect.gen(function* () {
             const request = yield* HttpServerRequest.HttpServerRequest;
             const authenticated = yield* b.auth
-              .authenticateWebSocketUpgrade(request)
+              .authenticateWebSocketUpgrade(request, "rpc")
               .pipe(Effect.result);
             if (authenticated._tag === "Failure") return HttpServerResponse.empty({ status: 403 });
             const session = authenticated.success;

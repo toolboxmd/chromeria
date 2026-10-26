@@ -538,7 +538,7 @@ export function routeProviderEvent(
             event.turnItem.threadId !== input.threadId ||
             (event.turnItem.providerTurnId === null
               ? event.turnItem.nodeId !== null && state.ownedNodeIds.has(event.turnItem.nodeId)
-              : state.ownedProviderTurnIds.has(event.turnItem.providerTurnId)))) ||
+              : state.ownedProviderTurns.has(event.turnItem.providerTurnId)))) ||
         ownsChildThread(event.turnItem.threadId)
       ) {
         return [true, state];
@@ -1294,9 +1294,8 @@ export const layer: Layer.Layer<
             const stillRoutedAfterRoot =
               event.turnItem.threadId !== input.run.threadId ||
               (event.turnItem.providerTurnId === null
-                ? event.turnItem.nodeId !== null &&
-                  routing.ownedNodeIds.has(event.turnItem.nodeId)
-                : routing.ownedProviderTurnIds.has(event.turnItem.providerTurnId));
+                ? event.turnItem.nodeId !== null && routing.ownedNodeIds.has(event.turnItem.nodeId)
+                : routing.ownedProviderTurns.has(event.turnItem.providerTurnId));
             const belongsToOwnedChildThread =
               event.turnItem.threadId !== input.run.threadId &&
               routing.ownedThreadIds.has(event.turnItem.threadId);
@@ -1827,7 +1826,9 @@ export const layer: Layer.Layer<
           ),
           Effect.ensuring(endPreviewActivity),
           Effect.ensuring(eventSubscription.close),
-          Effect.ensuring(streamClock.endAttempt(input.run.threadId, input.run.id, input.attempt.id)),
+          Effect.ensuring(
+            streamClock.endAttempt(input.run.threadId, input.run.id, input.attempt.id),
+          ),
           Effect.forkDetach,
         );
 

@@ -202,7 +202,10 @@ const handlers = {
                 (candidate) =>
                   candidate.hostId === session.hostId && candidate.id === session.deviceId,
               ) ?? target;
-            const targetArgs = [...agentDeviceTargetArgs(device), ...agentArgs];
+            const targetArgs = [
+              ...agentDeviceTargetArgs({ ...device, id: agentArgs.agentDeviceId }),
+              ...agentArgs.args,
+            ];
             const config = yield* ServerConfig.ServerConfig;
             const path = yield* Path.Path;
             const platform = yield* HostProcess.Platform;

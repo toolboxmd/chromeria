@@ -268,7 +268,7 @@ export const layer: Layer.Layer<
           (turn.runAttemptId === null || !rolledBackAttemptIds.has(turn.runAttemptId)),
       );
 
-      const contextmd = projection.thread.bare === undefined ? contextmdServing : undefined;
+      const contextmd = context.thread.bare === undefined ? contextmdServing : undefined;
       const newSessionInstructions =
         contextmd !== undefined && session.driver === "grok" && runsToRollback.length > 0
           ? yield* contextmd.currentInstructions(session.driver)

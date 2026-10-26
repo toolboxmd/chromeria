@@ -75,7 +75,7 @@ vi.mock("./PreviewStreamWebView", () => ({
   ) => {
     useImperativeHandle(
       props.ref,
-      () => ({ command: observed.command, togglePictureInPicture() {} }),
+      () => ({ command: observed.command, togglePictureInPicture() {}, paste() {} }),
       [],
     );
     useEffect(() => {

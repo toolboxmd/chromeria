@@ -40,8 +40,7 @@ it("legacy rendered rows and jump candidates omit remote children but retain use
   const selected: string[][] = [];
   const actions = buildThreadActionItems({
     threads: all,
-    projectTitleById: new Map(),
-    sortOrder: "created_at",
+    projectByKey: new Map(),
     icon: null,
     runThread: async (thread) => {
       selected.push([thread.environmentId, thread.id]);

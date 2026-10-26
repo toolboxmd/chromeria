@@ -37,6 +37,7 @@ import {
   buildThreadListV2Items,
   buildThreadListV2ListItems,
   getThreadListV2OrderedSection,
+  isThreadListV2ListItem,
   resolveThreadListV2SnoozeMenuSelection,
   resolveThreadListV2SnoozePresets,
   resolveThreadListV2Status,
@@ -1331,6 +1332,18 @@ it("excludes subagents from navigation, search and ordering while retaining user
 
 const BASE_MS = Date.parse(NOW);
 const isoAt = (ms: number) => new Date(ms).toISOString();
+
+function runningRuntime() {
+  return {
+    status: "running" as const,
+    providerName: "Codex",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    runtimeMode: "full-access" as const,
+    activeRunId: null,
+    lastError: null,
+    updatedAt: NOW,
+  };
+}
 const MINUTE_MS = 60_000;
 
 function buildTickList(

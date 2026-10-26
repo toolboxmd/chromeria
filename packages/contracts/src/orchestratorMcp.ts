@@ -642,6 +642,7 @@ export const OrchestratorMcpThreadSendResult = Schema.Union([
   }),
   Schema.Struct({
     threadId: ThreadId,
+    link: Schema.optional(Schema.String),
     messageId: MessageId,
     runId: RunId,
     purpose: Schema.optional(ExecutionPurpose),
@@ -712,16 +713,6 @@ export const OrchestratorMcpThreadInterruptResult = Schema.Struct({
 });
 export type OrchestratorMcpThreadInterruptResult = typeof OrchestratorMcpThreadInterruptResult.Type;
 
-export const OrchestratorMcpCapabilitiesInput = Schema.Struct({
-  environmentId: OrchestratorMcpEnvironmentTarget,
-  search: Schema.optional(
-    TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
-      description: "Match model ids and labels. Replaces the short list.",
-    }),
-  ),
-});
-export type OrchestratorMcpCapabilitiesInput = typeof OrchestratorMcpCapabilitiesInput.Type;
-
 export const OrchestratorMcpModelOption = Schema.Struct({
   id: Schema.String,
   values: Schema.Array(ProviderOptionSelectionValue),
@@ -753,6 +744,11 @@ export type OrchestratorMcpProviderCapability = typeof OrchestratorMcpProviderCa
 
 export const OrchestratorMcpCapabilitiesInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,
+  search: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
+      description: "Match model ids and labels. Replaces the short list.",
+    }),
+  ),
 });
 export type OrchestratorMcpCapabilitiesInput = typeof OrchestratorMcpCapabilitiesInput.Type;
 

@@ -4201,7 +4201,7 @@ it.live(
           Effect.gen(function* () {
             const request = yield* HttpServerRequest.HttpServerRequest;
             const authenticated = yield* a.auth
-              .authenticateWebSocketUpgrade(request)
+              .authenticateWebSocketUpgrade(request, "rpc")
               .pipe(Effect.result);
             if (authenticated._tag === "Failure") return HttpServerResponse.empty({ status: 403 });
             const session = authenticated.success;
@@ -7837,6 +7837,7 @@ it.live(
                 `${a.nativeViewerRpcUrl!.replace(/^ws/, "http")}/ws?wsTicket=${encodeURIComponent(retiredTicket.ticket)}`,
               ),
             ),
+            "rpc",
           )
           .pipe(Effect.result);
         expect(retired._tag).toBe("Failure");

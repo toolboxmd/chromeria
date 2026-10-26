@@ -316,6 +316,7 @@ const unusedScheduledTasks = Layer.succeed(
     listWebhookDeliveries: () => Effect.die("unused"),
     getWebhookDelivery: () => Effect.die("unused"),
     triggerWebhook: () => Effect.die("unused"),
+    deleteForThread: () => Effect.die("unused"),
   }),
 );
 

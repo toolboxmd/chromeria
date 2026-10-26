@@ -62,6 +62,7 @@ import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
@@ -921,113 +922,111 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     stdio: "inherit", timeout: 10000, killSignal: "SIGKILL",
   });
   process.exitCode = result.error ? 1 : (result.status ?? 1);`,
-        ]);
-        if (encoders.code !== 0) {
-          return yield* new DevicePlatformUnavailableError({
-            hostId: host.id,
-            platform: "android",
-            reason:
-              "Android emulator video needs working ffmpeg with the libx264 encoder. Install it on the device host's PATH or set SERVE_EMU_FFMPEG there, then retry opening the emulator. After changing PATH or SERVE_EMU_FFMPEG, turn device support off and on for SSH hosts, or restart the local environment server.",
-          });
-        }
-        if (!/^\s*V\S*[ \t]+libx264(?:[ \t]|$)/m.test(`${encoders.stdout}\n${encoders.stderr}`)) {
-          return yield* new DevicePlatformUnavailableError({
-            hostId: host.id,
-            platform: "android",
-            reason:
-              "Android emulator video needs the libx264 encoder. Install an ffmpeg build that includes libx264 on the device host, then retry opening the emulator. After changing PATH or SERVE_EMU_FFMPEG, turn device support off and on for SSH hosts, or restart the local environment server.",
-          });
-        }
+      ]);
+      if (encoders.code !== 0) {
+        return yield* new DevicePlatformUnavailableError({
+          hostId: host.id,
+          platform: "android",
+          reason:
+            "Android emulator video needs working ffmpeg with the libx264 encoder. Install it on the device host's PATH or set SERVE_EMU_FFMPEG there, then retry opening the emulator. After changing PATH or SERVE_EMU_FFMPEG, turn device support off and on for SSH hosts, or restart the local environment server.",
+        });
       }
-      if (!device.booted && input.boot !== false) {
-        const booting = { ...device, threadId: input.threadId };
-        yield* publish((current) => ({
-          ...current,
-          bootingDevices: [
-            ...(current.bootingDevices ?? []).filter(
+      if (!/^\s*V\S*[ \t]+libx264(?:[ \t]|$)/m.test(`${encoders.stdout}\n${encoders.stderr}`)) {
+        return yield* new DevicePlatformUnavailableError({
+          hostId: host.id,
+          platform: "android",
+          reason:
+            "Android emulator video needs the libx264 encoder. Install an ffmpeg build that includes libx264 on the device host, then retry opening the emulator. After changing PATH or SERVE_EMU_FFMPEG, turn device support off and on for SSH hosts, or restart the local environment server.",
+        });
+      }
+    }
+    if (!device.booted && input.boot !== false) {
+      const booting = { ...device, threadId: input.threadId };
+      yield* publish((current) => ({
+        ...current,
+        bootingDevices: [
+          ...(current.bootingDevices ?? []).filter(
+            (entry) => entry.hostId !== booting.hostId || entry.id !== booting.id,
+          ),
+          booting,
+        ],
+      }));
+      yield* recheckAction;
+      const bootedId = yield* ready.devices.boot(device, context).pipe(
+        Effect.ensuring(
+          publish((current) => ({
+            ...current,
+            bootingDevices: (current.bootingDevices ?? []).filter(
               (entry) => entry.hostId !== booting.hostId || entry.id !== booting.id,
             ),
-            booting,
+          })),
+        ),
+      );
+      state = yield* refresh(ready);
+      device = findDevice(state, host.id, bootedId) ?? findDevice(state, host.id, device.id);
+      if (!device) {
+        return yield* new DeviceNotFoundError({ hostId: host.id, deviceId: bootedId });
+      }
+    } else if (device.booted) {
+      yield* recheckAction;
+      yield* ready.devices.attach(device);
+    }
+    if (hosts.get(host.id) !== host)
+      return yield* new DeviceHostUnavailableError({
+        hostId: host.id,
+        hostLabel: host.label,
+        reason: "Host configuration changed. Retry the operation.",
+      });
+    const openedAt = DateTime.formatIso(yield* DateTime.now);
+    const session: DeviceSession = {
+      threadId: input.threadId,
+      hostId: host.id,
+      deviceId: device.id,
+      platform: device.platform,
+      openedAt,
+      toolSessionId: yield* crypto.randomUUIDv4().pipe(Effect.orDie),
+    };
+    yield* lifecycleLock.withPermit(
+      Effect.gen(function* () {
+        if (!(yield* readDeviceSettings).enabled)
+          return yield* new DeviceHostUnavailableError({
+            hostId: host.id,
+            hostLabel: host.label,
+            reason: "Device support was turned off while the device was opening.",
+          });
+        const previous = (yield* SynchronizedRef.get(stateRef)).state.sessions.filter(
+          (existing) =>
+            existing.threadId === session.threadId &&
+            existing.hostId === session.hostId &&
+            existing.deviceId === session.deviceId,
+        );
+        yield* recheckAction;
+        yield* Effect.forEach(previous, retireCommandSession, { discard: true });
+        const caller = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+        const request = yield* CurrentRequest;
+        if (Option.isSome(caller) && request !== undefined)
+          commandOwners.set(session, {
+            namespace: requestNamespace(caller.value),
+            generation: request.generation,
+          });
+        yield* publish((current) => ({
+          ...current,
+          sessions: [
+            ...current.sessions.filter(
+              (existing) =>
+                !(
+                  existing.threadId === session.threadId &&
+                  existing.hostId === session.hostId &&
+                  existing.deviceId === session.deviceId
+                ),
+            ),
+            session,
           ],
         }));
-        yield* recheckAction;
-        const bootedId = yield* ready.devices.boot(device, context).pipe(
-          Effect.ensuring(
-            publish((current) => ({
-              ...current,
-              bootingDevices: (current.bootingDevices ?? []).filter(
-                (entry) => entry.hostId !== booting.hostId || entry.id !== booting.id,
-              ),
-            })),
-          ),
-        );
-        state = yield* refresh(ready);
-        device = findDevice(state, host.id, bootedId) ?? findDevice(state, host.id, device.id);
-        if (!device) {
-          return yield* new DeviceNotFoundError({ hostId: host.id, deviceId: bootedId });
-        }
-      } else if (device.booted) {
-        yield* recheckAction;
-        yield* ready.devices.attach(device);
-      }
-      if (hosts.get(host.id) !== host)
-        return yield* new DeviceHostUnavailableError({
-          hostId: host.id,
-          hostLabel: host.label,
-          reason: "Host configuration changed. Retry the operation.",
-        });
-      const openedAt = DateTime.formatIso(yield* DateTime.now);
-      const session: DeviceSession = {
-        threadId: input.threadId,
-        hostId: host.id,
-        deviceId: device.id,
-        platform: device.platform,
-        openedAt,
-        toolSessionId: yield* crypto.randomUUIDv4().pipe(Effect.orDie),
-      };
-      yield* lifecycleLock.withPermit(
-        Effect.gen(function* () {
-          if (!(yield* readDeviceSettings).enabled)
-            return yield* new DeviceHostUnavailableError({
-              hostId: host.id,
-              hostLabel: host.label,
-              reason: "Device support was turned off while the device was opening.",
-            });
-          const previous = (yield* SynchronizedRef.get(stateRef)).state.sessions.filter(
-            (existing) =>
-              existing.threadId === session.threadId &&
-              existing.hostId === session.hostId &&
-              existing.deviceId === session.deviceId,
-          );
-          yield* recheckAction;
-          yield* Effect.forEach(previous, retireCommandSession, { discard: true });
-          const caller = yield* Effect.serviceOption(Invocation.McpInvocationContext);
-          const request = yield* CurrentRequest;
-          if (Option.isSome(caller) && request !== undefined)
-            commandOwners.set(session, {
-              namespace: requestNamespace(caller.value),
-              generation: request.generation,
-            });
-          yield* publish((current) => ({
-            ...current,
-            sessions: [
-              ...current.sessions.filter(
-                (existing) =>
-                  !(
-                    existing.threadId === session.threadId &&
-                    existing.hostId === session.hostId &&
-                    existing.deviceId === session.deviceId
-                  ),
-              ),
-              session,
-            ],
-          }));
-        }),
-      );
-      return session;
-    },
-    commandLock.withPermit,
-  );
+      }),
+    );
+    return session;
+  }, commandLock.withPermit);
 
   const shutdownDevice = Effect.fn("DeviceService.shutdownDevice")(function* (
     hostId: DeviceHostId,
@@ -1500,7 +1499,9 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
             yield* recheck;
             yield* checkAgentAccess(session.hostId);
             const ready = yield* agentReadinessIfSupported(session.hostId);
-            if (ready === null) return yield* commandUnavailable(session.hostId);
+            // Registered commands drive one host-wide daemon; per-device daemon hosts are not supported.
+            const agentDevice = ready?.agentDevice ?? null;
+            if (agentDevice === null) return yield* commandUnavailable(session.hostId);
             const running = (yield* runtime.host.summary).tools;
             if (
               running?.agent.runningVersion !== AGENT_DEVICE_VERSION ||
@@ -1508,7 +1509,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
             )
               return yield* commandUnavailable(session.hostId);
             yield* recheck;
-            yield* configureAgent(session.hostId, ready);
+            yield* configureAgent(session.hostId, agentDevice);
             const current = (yield* sessionsForThread(scope.thread.threadId)).includes(session);
             if (!current || hosts.get(session.hostId) !== runtime.host)
               return yield* commandUnavailable(session.hostId);
@@ -1520,7 +1521,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
               `${session.toolSessionId}.json`,
             );
             yield* recheck;
-            yield* writeAgentDeviceConfig(configured, ready.agentDevice).pipe(
+            yield* writeAgentDeviceConfig(configured, agentDevice).pipe(
               Effect.provideService(FileSystem.FileSystem, runtime.fs),
               Effect.provideService(Path.Path, runtime.path),
               Effect.mapError(() => commandUnavailable(session.hostId)),
@@ -1674,8 +1675,8 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
                     command.type,
                     result.document,
                     [
-                      ready.agentDevice.token,
-                      ready.agentDevice.baseUrl,
+                      agentDevice.token,
+                      agentDevice.baseUrl,
                       runtime.config.baseDir,
                       runtime.entry.entryPath,
                       configured,
@@ -1740,8 +1741,8 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
                         catch: () => commandUnavailable(session.hostId),
                       });
                       const privateValues = [
-                        ready.agentDevice.token,
-                        ready.agentDevice.baseUrl,
+                        agentDevice.token,
+                        agentDevice.baseUrl,
                         runtime.config.baseDir,
                         runtime.entry.entryPath,
                         configured,
@@ -1826,8 +1827,8 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
                   const serialized = yield* encodeCommandJson(result).pipe(Effect.orDie);
                   if (
                     [
-                      ready.agentDevice.token,
-                      ready.agentDevice.baseUrl,
+                      agentDevice.token,
+                      agentDevice.baseUrl,
                       configured,
                       runtime.entry.entryPath,
                     ].some(

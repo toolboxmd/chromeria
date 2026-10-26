@@ -3467,11 +3467,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 key="no-project-shelf-header"
                                 marker="no-project-header"
                                 className={cn(workingThreads.length === 0 && "mt-auto")}
-                                label={
-                                  noProjectShelfExpanded
-                                    ? "No project"
-                                    : `No project (${noProjectShelfCount})`
-                                }
+                                label="No project"
+                                count={noProjectShelfCount}
                                 toggle={{
                                   expanded: noProjectShelfExpanded,
                                   onToggle: toggleNoProjectShelf,

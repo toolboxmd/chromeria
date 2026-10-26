@@ -798,6 +798,8 @@ export function buildThreadListV2Items(input: {
       })),
       hiddenSettledCount: 0,
       listedSettledThreads: [],
+      noProjectCount: 0,
+      noProjectShelfHeaderIndex: null,
       workingCount: 0,
       workingShelfHeaderIndex: null,
       snoozedCount: 0,
@@ -900,7 +902,14 @@ export function buildThreadListV2Items(input: {
   }
   const noProjectShelfHeaderIndex = orderedNoProject.length > 0 ? items.length : null;
   for (const thread of visibleNoProject) {
-    items.push({ thread, variant: "card", snoozed: false, pinned: false, isLast: false });
+    items.push({
+      thread,
+      variant: "card",
+      snoozed: false,
+      pinned: false,
+      wokeAt: resolveThreadListV2WokeAt(thread, { now }),
+      isLast: false,
+    });
   }
   const snoozedShelfHeaderIndex = orderedSnoozed.length > 0 ? items.length : null;
   for (const thread of visibleSnoozed) {

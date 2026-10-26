@@ -91,7 +91,7 @@ export interface PreviewBrowserRelease {
   readonly executable: string;
 }
 
-const previewBrowserRelease = (
+export const previewBrowserRelease = (
   platform: NodeJS.Platform,
   arch: NodeJS.Architecture,
 ): PreviewBrowserRelease | null => {

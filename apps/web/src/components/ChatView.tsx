@@ -242,6 +242,7 @@ import { useKnownTerminalSessions, useThreadRunningTerminalIds } from "../state/
 import { useEnvironmentQuery } from "../state/query";
 import { useEnvironmentScope } from "~/state/session";
 import {
+  environmentServerConfigsAtom,
   primaryServerAvailableEditorsAtom,
   primaryServerKeybindingsAtom,
   serverEnvironment,

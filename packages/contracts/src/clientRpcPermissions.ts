@@ -8,7 +8,6 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthPreviewOperateScope,
-  AuthAccessWriteScope,
   AuthSettingsWriteScope,
   AuthSourceControlWriteScope,
   AuthTerminalOperateScope,

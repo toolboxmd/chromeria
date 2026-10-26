@@ -56,7 +56,6 @@ import * as Cause from "effect/Cause";
 import * as PlatformError from "effect/PlatformError";
 import * as Stdio from "effect/Stdio";
 import * as Sink from "effect/Sink";
-import * as Queue from "effect/Queue";
 import { TestClock } from "effect/testing";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
@@ -82,6 +81,7 @@ const encodeStringJson = Schema.encodeEffect(Schema.fromJsonString(Schema.String
 const isProviderAdapterEventStreamError = Schema.is(
   ProviderAdapter.ProviderAdapterEventStreamError,
 );
+const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 describe("CodexAdapterV2 context usage", () => {
   it("uses the current context rather than cumulative processed tokens", () => {
@@ -1063,6 +1063,17 @@ describe("CodexAdapterV2 session initialize", () => {
 });
 
 describe("CodexAdapterV2 post-settle continuation", () => {
+  const awaitUntil = (predicate: () => boolean, label: string): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      for (let attempt = 0; attempt < 5000; attempt++) {
+        if (predicate()) {
+          return;
+        }
+        yield* Effect.yieldNow;
+      }
+      return yield* Effect.die(`Timed out waiting for ${label}.`);
+    });
+
   // The harness notifies after every recorded event or continuation, so a wait
   // re-checks exactly when the state it reads changes. Subscribing before the
   // first check means a change that lands in between is not lost.
@@ -4675,6 +4686,100 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       ),
     ),
   );
+
+  const childInterruptResponseIndex = interruptSubagentCommandTranscript.entries.findIndex(
+    (entry) => entry.type === "emit_inbound" && entry.label === "turn/interrupt/child",
+  );
+  const rootInterruptResponseIndex = interruptSubagentCommandTranscript.entries.findIndex(
+    (entry) => entry.type === "emit_inbound" && entry.label === "turn/interrupt/root",
+  );
+  const interruptSubagentRequestFailureTranscript = makeCodexReplayTranscript({
+    scenario: "codex-interrupt-subagent-request-failure",
+    entries: [
+      ...interruptSubagentCommandTranscript.entries.slice(0, rootInterruptResponseIndex + 1),
+      {
+        type: "emit_inbound",
+        label: "turn/completed/root-before-child-interrupt-failure",
+        frame: {
+          method: "turn/completed",
+          params: {
+            threadId: INTERRUPT_NATIVE_THREAD,
+            turn: makeCodexReplayTurn({ id: INTERRUPT_NATIVE_TURN, status: "interrupted" }),
+          },
+        },
+      },
+      ...interruptSubagentCommandTranscript.entries.slice(
+        rootInterruptResponseIndex + 1,
+        childInterruptResponseIndex,
+      ),
+      {
+        type: "emit_inbound",
+        label: "turn/interrupt/child",
+        frame: {
+          id: 5,
+          error: { code: -32_000, message: "child interrupt request failed" },
+        },
+      },
+      { type: "runtime_exit", status: "success" },
+    ],
+  });
+
+  const interruptTerminationFailureTranscript = makeCodexReplayTranscript({
+    scenario: "codex-interrupt-termination-failure",
+    entries: [
+      ...interruptMidCommandTranscript.entries
+        .filter(
+          (entry) => entry.type === "runtime_exit" || entry.label !== "item/completed/command-late",
+        )
+        .map((entry) =>
+          entry.type === "emit_inbound" &&
+          entry.label === "thread/backgroundTerminals/list/after-false"
+            ? {
+                ...entry,
+                frame: {
+                  id: 6,
+                  result: {
+                    data: [{ processId: "57680" }],
+                    nextCursor: null,
+                  },
+                },
+              }
+            : entry,
+        ),
+      {
+        type: "expect_outbound",
+        label: "thread/backgroundTerminals/terminate/one-retry",
+        frame: {
+          id: 8,
+          method: "thread/backgroundTerminals/terminate",
+          params: { threadId: INTERRUPT_NATIVE_THREAD, processId: "57680" },
+        },
+      },
+      {
+        type: "emit_inbound",
+        label: "thread/backgroundTerminals/terminate/one-retry",
+        frame: { id: 8, result: { terminated: false } },
+      },
+      {
+        type: "expect_outbound",
+        label: "thread/backgroundTerminals/list/after-false-retry",
+        frame: {
+          id: 9,
+          method: "thread/backgroundTerminals/list",
+          params: { threadId: INTERRUPT_NATIVE_THREAD },
+        },
+      },
+      {
+        type: "emit_inbound",
+        label: "thread/backgroundTerminals/list/after-false-retry",
+        frame: {
+          id: 9,
+          result: { data: [{ processId: "57680" }], nextCursor: null },
+        },
+      },
+      { type: "runtime_exit", status: "success" },
+    ],
+  });
 
   it.effect("keeps the Codex root interruptible when a descendant rejects the cut-in", () =>
     Effect.scoped(

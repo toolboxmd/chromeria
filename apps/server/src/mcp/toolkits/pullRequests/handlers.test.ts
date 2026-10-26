@@ -469,12 +469,14 @@ describe("pull request toolkit handlers", () => {
         repository: "team/repo",
         number: 7,
       });
+      if ("type" in other) throw new Error("Unkeyed calls keep their legacy result.");
       expect(other.url).toBe("https://gitlab.example.test/team/repo/-/merge_requests/7");
       const onGitHub = yield* harness.call("link_pull_request", {
         host: "github.com",
         repository: "acme/web",
         number: 9,
       });
+      if ("type" in onGitHub) throw new Error("Unkeyed calls keep their legacy result.");
       expect(onGitHub.url).toBe("https://github.com/acme/web/pull/9");
     }),
   );

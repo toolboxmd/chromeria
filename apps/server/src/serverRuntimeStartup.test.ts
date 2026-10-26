@@ -39,6 +39,7 @@ import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManag
 import * as ThreadLaunch from "./orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "./orchestration-v2/ThreadManagementService.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
+import * as SqlitePersistence from "./persistence/Sqlite.ts";
 import * as ProjectService from "./project/ProjectService.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { ServerActivation } from "./serverActivation.ts";
@@ -216,6 +217,7 @@ it.effect.each([
         Layer.mock(ServerSecretStore.ServerSecretStore)({ get: () => Effect.succeedNone }),
         Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
         Layer.mock(ExternalLauncher.ExternalLauncher)({}),
+        SqlitePersistence.layerMemory,
         Layer.mock(HttpServer.HttpServer)({
           address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 3773),
         }),

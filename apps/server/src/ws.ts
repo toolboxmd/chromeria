@@ -119,7 +119,7 @@ import {
   HttpServerRespondable,
   HttpServerResponse,
 } from "effect/http";
-import { RpcGroup, RpcSerialization, RpcServer } from "effect/rpc";
+import { RpcSerialization, RpcServer } from "effect/rpc";
 import * as Struct from "effect/Struct";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as ForkWsRpc from "./forkWsRpc.ts";

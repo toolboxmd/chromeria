@@ -15,10 +15,7 @@ import {
   type IssueSetStateInput,
   type IssueStatesInput,
   type IssueStatesResult,
-  pullRequestHostOf,
-  type SourceControlProviderKind,
 } from "@t3tools/contracts";
-import { sourceControlRepositorySelector } from "@t3tools/shared/sourceControl";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -28,6 +25,7 @@ import * as Result from "effect/Result";
 import * as IssueLinks from "../issueLinks/IssueLinks.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
+import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 import {
   decodeFeatureMapFactsJson,
   decodeFeatureMapFileJson,
@@ -187,12 +185,11 @@ const make = Effect.gen(function* () {
         if (!identity) continue;
         // A fork checkout lists its own repository's Issues, not the upstream it tracks.
         const gitHub = gitHubRepositoryOf(identity);
-        const selector = sourceControlRepositorySelector(identity);
+        const selector = sourceControlDefinitions.repositorySelector(identity);
         const host =
-          gitHub?.host ??
-          pullRequestHostOf(identity, identity.provider as SourceControlProviderKind);
+          gitHub?.host ?? sourceControlDefinitions.changeRequestHost(identity, identity.provider);
         const repository = gitHub?.repository ?? selector;
-        if (repository === null) continue;
+        if (repository === null || host === undefined) continue;
         // Worktrees of one repository are separate projects; count and list the repository once.
         const key = `${host} ${repository.toLowerCase()}`;
         if (seen.has(key)) continue;

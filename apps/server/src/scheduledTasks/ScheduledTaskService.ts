@@ -1111,7 +1111,7 @@ export const layer = Layer.effect(
         const decision = yield* dispatchPolicy
           .decide({ task: active, trigger, startedAt })
           .pipe(Effect.mapError((error) => taskError(error.message, { taskId: active.id })));
-        if (decision._tag === "skip") return active;
+        if (decision._tag === "skip") return { task: active, threadId: null };
 
         if (webhook === undefined) yield* markRunning(active.id, startedAtIso);
         else

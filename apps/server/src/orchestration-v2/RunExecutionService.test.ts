@@ -362,6 +362,7 @@ it("moves a child thread to the run that shows its subagent now", () => {
     runId: RunId.make("run:handoff:1"),
     attemptId: RunAttemptId.make("attempt:handoff:1"),
     providerThreadId: ProviderThreadId.make("provider-thread:handoff"),
+    rootNodeId: NodeId.make("node:handoff"),
   };
   const resumedChild = ThreadId.make("thread:handoff:resumed");
   const siblingChild = ThreadId.make("thread:handoff:sibling");

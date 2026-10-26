@@ -369,16 +369,20 @@ export function ThreadRelationshipsPanel(props: {
   const archivedShells = archived.snapshots.find(
     (entry) => entry.environmentId === props.environmentId,
   )?.snapshot.threads;
+  // Linked-environment children arrive scoped; the current thread and its parent are local.
+  const localRelationshipShells = relationshipShells.filter(
+    (entry): entry is OrchestrationV2ThreadShell => !("shell" in entry),
+  );
   const currentThread =
     projection?.thread ??
-    relationshipShells.find((thread) => thread.id === props.threadId) ??
+    localRelationshipShells.find((thread) => thread.id === props.threadId) ??
     archivedShells?.find((thread) => thread.id === props.threadId);
   const parentThreadId =
     currentThread?.forkedFrom?.type === "run"
       ? currentThread.forkedFrom.threadId
       : currentThread?.lineage.parentThreadId;
   const parentShell = parentThreadId
-    ? (relationshipShells.find((thread) => thread.id === parentThreadId) ??
+    ? (localRelationshipShells.find((thread) => thread.id === parentThreadId) ??
       archivedShells?.find((thread) => thread.id === parentThreadId))
     : undefined;
   const parentRef =
@@ -635,7 +639,11 @@ export function ThreadRelationshipsPanel(props: {
                 (isParent && threadId === parentRef?.threadId
                   ? (node?.thread?.activityRunStatus ?? parentNativeStatus)
                   : undefined) ??
-                threadRelationshipRowStatus(graph, { threadId, environmentId: rowEnvironment, edge });
+                threadRelationshipRowStatus(graph, {
+                  threadId,
+                  environmentId: rowEnvironment,
+                  edge,
+                });
               const RelationshipIcon = isParent
                 ? CornerLeftUpIcon
                 : isSubagent

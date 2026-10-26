@@ -58,6 +58,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { ProcessRunner } from "../processRunner.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import {
   ScheduledTaskDispatchPolicy,
@@ -181,6 +182,10 @@ const runtime = (
           }),
         ).pipe(Layer.provide(orchestration)),
     Layer.mock(SecretRequests.SecretRequests)({}),
+    Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+      namedProjectsRoot: "/projects",
+      isScratchProject: () => Effect.succeed(false),
+    }),
     Layer.succeed(ProcessRunner, {
       run: () => (options.check ?? Effect.succeed(1)).pipe(Effect.map(checkResult)),
     }),

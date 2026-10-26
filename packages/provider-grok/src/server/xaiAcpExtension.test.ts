@@ -15,6 +15,8 @@ import {
   extractGrokPlanMarkdownFromToolCallData,
   extractXAiAcpBackgroundToolMutation,
   extractXAiAcpSubagentEndNotice,
+  registerXAiBackgroundTaskTracking,
+  registerXAiSubagentFinished,
   extractXAiAcpSubagentUpdate,
   extractXAiAskUserQuestions,
   extractXAiBackgroundTaskCompletion,

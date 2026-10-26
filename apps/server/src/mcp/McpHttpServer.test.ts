@@ -24,6 +24,7 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
@@ -36,6 +37,7 @@ import * as Sqlite from "../persistence/Sqlite.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
+import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
@@ -430,7 +432,11 @@ it.effect("decodes null optional arguments the way it decodes omitted ones", () 
     expect(calls[1]).toEqual(calls[0]);
     expect(calls[3]).toEqual(calls[2]);
     expect(calls[4]).toStrictEqual({ projectId: "project-1", projectIcon: null });
-  }).pipe(Effect.provide(layerRecordingTools(calls)));
+  }).pipe(
+    Effect.provide(layerRecordingTools(calls)),
+    // Recorded calls stay local; no linked environment is selected.
+    Effect.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+  );
 });
 
 it.effect(
@@ -459,7 +465,11 @@ it.effect(
         { ...thread, limit: 100, runLimit: 50, maxCharsPerItem: 50_000 },
         { ...thread, limit: 7, runLimit: 1, maxCharsPerItem: 1 },
       ]);
-    }).pipe(Effect.provide(layerRecordingTools(calls)));
+    }).pipe(
+      Effect.provide(layerRecordingTools(calls)),
+      // Recorded calls stay local; no linked environment is selected.
+      Effect.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+    );
   },
 );
 
@@ -584,7 +594,11 @@ it.effect.each(["limit", "runLimit", "maxCharsPerItem"])(
 
       expect(String(rejected)).toContain("greater than or equal to 1");
       expect(calls).toEqual([]);
-    }).pipe(Effect.provide(layerRecordingTools(calls)));
+    }).pipe(
+      Effect.provide(layerRecordingTools(calls)),
+      // Recorded calls stay local; no linked environment is selected.
+      Effect.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+    );
   },
 );
 

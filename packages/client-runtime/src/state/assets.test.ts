@@ -1,12 +1,24 @@
 import { describe, expect, it } from "@effect/vitest";
-import { type AssetCreateUrlResult, EnvironmentId } from "@t3tools/contracts";
+import { type AssetCreateUrlResult, EnvironmentId, ThreadId, WS_METHODS } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
-
-import { createProjectFaviconUrlAtomFamily } from "./assets.ts";
+import * as EnvironmentRegistry from "../connection/registry.ts";
+import {
+  AVAILABLE_CONNECTION_STATE,
+  PrimaryConnectionTarget,
+  type PreparedConnection,
+  type SupervisorConnectionState,
+} from "../connection/model.ts";
+import * as EnvironmentSupervisor from "../connection/supervisor.ts";
+import type { RpcSession } from "../rpc/session.ts";
+import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
+import { createAssetEnvironmentAtoms, createProjectFaviconUrlAtomFamily } from "./assets.ts";
 
 describe("project favicon URL cache", () => {
   it("does not reuse another environment, workspace, or selected icon's cached URL", () => {

@@ -11,6 +11,7 @@ import {
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Exit from "effect/Exit";
 import * as Latch from "effect/Latch";
 import * as Layer from "effect/Layer";

@@ -13,6 +13,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "vite-plus/test";
 
@@ -30,12 +31,15 @@ import type * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import { liveThreadShell } from "./McpToolAccess.testkit.ts";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 
 const layerOrchestratorService = OrchestratorMcpService.layer.pipe(
   Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
   Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+  Layer.provide(NodeServices.layer),
 );
 
 const environmentId = EnvironmentId.make("environment-mcp-orchestrator-detail");

@@ -11,6 +11,9 @@ import {
   getFallbackThreadIdAfterDelete,
   hasUnseenCompletion,
   resolveSidebarRowThreadId,
+  isSidebarThreadWorking,
+  isSidebarSubagentThread,
+  filterSidebarV2VisibleThreads,
   orderItemsByPreferredIds,
   pinOrderKeyBetween,
   resolveProjectStatusIndicator,
@@ -100,6 +103,12 @@ describe("No project shelf", () => {
       ...thread,
       environmentId: EnvironmentId.make(thread.environmentId),
       id: ThreadId.make(thread.id),
+      branch: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      latestUserMessageAt: null,
+      latestUserAuthoredMessageAt: null,
+      opens: null,
     }));
     expect(visibleSidebarShelfThreads(searchable, false, null)).toEqual([]);
     expect(searchSidebarThreads(searchable, "Remote test")).toEqual([searchable[1]]);
@@ -280,7 +289,6 @@ describe("sidebar thread lineage helpers", () => {
     expect(filterSidebarV2VisibleThreads(all, scope, "  ")).toEqual([ordinary]);
     expect(all).toHaveLength(5);
   });
-
 
   it("keeps inherited-provenance user forks in normal navigation and offline search", () => {
     const environmentId = EnvironmentId.make("destination");

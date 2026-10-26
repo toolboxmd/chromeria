@@ -58,7 +58,7 @@ export function grokAcpSpawnArgs(runtimeMode?: RuntimeMode): ReadonlyArray<strin
   }
 }
 
-function buildGrokAcpSpawnInput(
+export function buildGrokAcpSpawnInput(
   grokSettings: GrokAcpRuntimeGrokSettings | null | undefined,
   cwd: string,
   environment?: NodeJS.ProcessEnv,
@@ -84,7 +84,7 @@ function resolveGrokAuthMethodId(environment: NodeJS.ProcessEnv | undefined): st
     : GROK_AUTH_METHOD_CACHED_TOKEN;
 }
 
-function grokAcpRuntimeProcessOwnership(
+export function grokAcpRuntimeProcessOwnership(
   processGroupPlatform: NodeJS.Platform,
 ): Pick<
   AcpSessionRuntime.AcpSessionRuntimeOptions,

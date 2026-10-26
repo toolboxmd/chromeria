@@ -911,6 +911,7 @@ const layerBase: Layer.Layer<
                 return {
                   receipt,
                   storedEvents: [],
+                  outcomes: [],
                   committed: true as const,
                   cancelledEffectIds: [],
                   enqueuedEffectCount: 0,

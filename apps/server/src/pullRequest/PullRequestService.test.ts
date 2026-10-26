@@ -4449,7 +4449,7 @@ it.effect("lists and reads the fork origin while preserving the canonical projec
     const service = yield* makeService({
       projects: [fork],
       providers: [
-        fakeProvider(SourceControlProviderKind.make("github"), {
+        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
           listChangeRequests: ({ repository }) => {
             requested.push(repository);
             return Effect.succeed({

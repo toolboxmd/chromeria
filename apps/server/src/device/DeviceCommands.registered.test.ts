@@ -13,6 +13,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -22,7 +23,9 @@ import * as Config from "../config.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as Settings from "../serverSettings.ts";
 import * as Secrets from "../auth/ServerSecretStore.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 import * as DeviceHost from "./DeviceHost.ts";
+import { makeDeviceHubOperations } from "./DeviceHubOperations.ts";
 import * as DeviceService from "./DeviceService.ts";
 import { AGENT_DEVICE_VERSION, DEVICE_HUB_VERSION } from "./DeviceToolchain.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -112,17 +115,50 @@ const fixture = Effect.gen(function* () {
   let failCaptureStart = false;
   let revokeAfter: string | undefined;
   const mediaPaths = new Map<string, string>();
+  const hub = HttpClient.make((request) =>
+    Effect.sync(() => {
+      if (request.url.includes("screenshot")) {
+        captures++;
+        return HttpClientResponse.fromWeb(request, new Response(png));
+      }
+      return HttpClientResponse.fromWeb(
+        request,
+        Response.json({
+          simulators: [],
+          emulators: [
+            {
+              id: "emulator-383",
+              name: "Isolated",
+              platform: "android",
+              version: "fixture",
+              booted: true,
+              physical: false,
+            },
+          ],
+        }),
+      );
+    }),
+  );
+  const run: DeviceHost.DeviceHostReady["run"] = (command, args) => {
+    expect([command, ...args]).toEqual(["emulator", "-list-avds"]);
+    return Effect.succeed({ code: 0, stdout: "Isolated\n", stderr: "" });
+  };
   const ready: DeviceHost.DeviceHostReady = {
     nodePath: "/remote-host/node-must-never-execute",
     hub: { origin: "http://device383.invalid" },
+    devices: makeDeviceHubOperations({
+      hostId: "local",
+      origin: "http://device383.invalid",
+      http: hub,
+      run,
+      androidAvailable: Effect.succeed(true),
+    }),
     helpers: { serveSimAxSettings: null, serveSimCli: null },
-    run: (command, args) => {
-      expect([command, ...args]).toEqual(["emulator", "-list-avds"]);
-      return Effect.succeed({ code: 0, stdout: "Isolated\n", stderr: "" });
-    },
+    run,
   };
   const host: DeviceHost.DeviceHost["Service"] = {
     id: "local",
+    label: "Isolated leaf",
     summary: Effect.sync(() => ({
       id: "local",
       kind: "local" as const,
@@ -168,30 +204,6 @@ const fixture = Effect.gen(function* () {
     stopAgent: Effect.void,
     stop: Effect.void,
   };
-  const hub = HttpClient.make((request) =>
-    Effect.sync(() => {
-      if (request.url.includes("screenshot")) {
-        captures++;
-        return HttpClientResponse.fromWeb(request, new Response(png));
-      }
-      return HttpClientResponse.fromWeb(
-        request,
-        Response.json({
-          simulators: [],
-          emulators: [
-            {
-              id: "emulator-383",
-              name: "Isolated",
-              platform: "android",
-              version: "fixture",
-              booted: true,
-              physical: false,
-            },
-          ],
-        }),
-      );
-    }),
-  );
   const runner = ProcessRunner.ProcessRunner.of({
     run: (input) =>
       Effect.gen(function* () {
@@ -319,6 +331,9 @@ const fixture = Effect.gen(function* () {
     Layer.provideMerge(McpServer.McpServer.layer),
     Layer.provide(AccessTestkit.liveThreadsLayer),
     Layer.provide(Layer.succeed(DeviceService.DeviceService, service)),
+    Layer.provide(
+      Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeed(Option.none()) }),
+    ),
     Layer.provide(configLayer),
     Layer.build,
   );

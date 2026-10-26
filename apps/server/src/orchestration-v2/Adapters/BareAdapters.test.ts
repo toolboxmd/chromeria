@@ -155,6 +155,7 @@ it("Cursor uses a positive tool list on the common create/resume options and lea
     threadId,
     mcpSession: undefined,
     modelSelection: selection,
+    platform: "linux",
     runtimePolicy: policy("approval-required"),
   });
   expect(options.tools).toEqual(["shell", "read", "edit", "grep", "glob", "ls", "delete"]);
@@ -165,6 +166,7 @@ it("Cursor uses a positive tool list on the common create/resume options and lea
     threadId,
     mcpSession: undefined,
     modelSelection: selection,
+    platform: "linux",
     runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: "/workspace" },
   });
   expect(normal.local?.settingSources).toContain("project");

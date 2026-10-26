@@ -10,7 +10,11 @@
  */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
-import { type OrchestrationProjectShell, ProjectId } from "@t3tools/contracts";
+import {
+  type OrchestrationProjectShell,
+  ProjectId,
+  SourceControlProviderKind,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -25,6 +29,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as ServerSourceControlHost from "../sourceControl/ServerSourceControlHost.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import * as GitHubApi from "./IssueGitHubApi.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as IssueService from "./IssueService.ts";
@@ -56,7 +61,7 @@ const projects = [
   project("gitlab", {
     canonicalKey: "gitlab.com/someone/elsewhere",
     locator: { source: "git-remote", remoteName: "origin", remoteUrl: "https://gitlab.com/x.git" },
-    provider: "gitlab",
+    provider: SourceControlProviderKind.make("gitlab"),
     owner: "someone",
     name: "elsewhere",
   }),
@@ -71,6 +76,7 @@ const github = GitHubApi.layerWithDependencies.pipe(
       Layer.provide(VcsProcess.layer),
     ),
   ),
+  Layer.provide(SourceControlRateLimit.layer),
   Layer.provide(FetchHttpClient.layer),
   Layer.provide(NodeServices.layer),
 );

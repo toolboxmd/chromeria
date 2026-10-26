@@ -255,7 +255,7 @@ async function setup() {
 describe("EnvironmentProviderSettings routing", () => {
   it("keeps provider update checks on the settings scope when another provider device is selected", async () => {
     state.scopeEnvironmentId = "primary-settings";
-    await render();
+    await using _screen = await render(panel());
     await userEvent.click(page.getByRole("switch", { name: "Check provider versions" }));
     expect(state.updateScopedSettings).toHaveBeenCalledExactlyOnceWith({
       environmentId: "primary-settings",

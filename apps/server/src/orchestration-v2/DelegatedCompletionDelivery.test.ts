@@ -1354,28 +1354,30 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
                   captured = true;
                   // Commit capture after finalize planned its stale waiting snapshot.
                   const { delegatedCompletion: _cohort, ...captureRun } = waiting;
-                  yield* sink.commitCommand({
-                    commandId: CommandId.make("command:completion-capture-race"),
-                    threadId,
-                    commandType: "checkpoint.capture",
-                    acceptedAt: now,
-                    effects: [],
-                    events: [
-                      {
-                        id: EventId.make("event:completion-capture-completed"),
-                        type: "run.updated",
-                        threadId,
-                        runId,
-                        occurredAt: now,
-                        payload: {
-                          ...captureRun,
-                          status: "completed",
-                          completedAt: now,
-                          checkpointId,
+                  yield* sink
+                    .commitCommand({
+                      commandId: CommandId.make("command:completion-capture-race"),
+                      threadId,
+                      commandType: "checkpoint.capture",
+                      acceptedAt: now,
+                      effects: [],
+                      events: [
+                        {
+                          id: EventId.make("event:completion-capture-completed"),
+                          type: "run.updated",
+                          threadId,
+                          runId,
+                          occurredAt: now,
+                          payload: {
+                            ...captureRun,
+                            status: "completed",
+                            completedAt: now,
+                            checkpointId,
+                          },
                         },
-                      },
-                    ],
-                  });
+                      ],
+                    })
+                    .pipe(Effect.orDie);
                 }
                 const stored = yield* write(input);
                 for (const { event } of stored) {

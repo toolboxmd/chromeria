@@ -18,11 +18,7 @@ import {
   issueUrlFor,
   parseIssueUrl,
 } from "@t3tools/contracts";
-import {
-  normalizeThreadPullRequestKey,
-  threadPullRequestsOf,
-  visibleThreadPullRequests,
-} from "@t3tools/shared/threadPullRequests";
+
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -39,6 +35,11 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
+import {
+  normalizeThreadPullRequestKey,
+  threadPullRequestsOf,
+  visibleThreadPullRequests,
+} from "../sourceControl/threadPullRequests.ts";
 import * as ClosingReferences from "./closingReferences.ts";
 import {
   type DerivedIssueLink,

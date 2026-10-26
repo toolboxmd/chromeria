@@ -7,6 +7,7 @@ import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import { afterEach, vi } from "vite-plus/test";
 
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -19,6 +20,7 @@ import * as ScheduledTaskService from "./ScheduledTaskService.ts";
 afterEach(() => vi.unstubAllEnvs());
 
 const dependencies = Layer.mergeAll(
+  Layer.mock(BareLaunch.BareLaunch)({}),
   NodeCrypto.layer,
   Scheduler.layer,
   Layer.mock(ThreadLaunchService.ThreadLaunchService)({

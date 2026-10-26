@@ -2631,7 +2631,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                       driver: CursorAgentSdk.CURSOR_PROVIDER,
                       bare: input.runtimePolicy.bare!,
                       mode: input.runtimePolicy.runtimeMode,
-                      effective: `Cursor sandbox ${cursorRuntimeAgentPolicy(input.runtimePolicy).sandboxEnabled ? "enabled" : "disabled"}, auto-review ${cursorRuntimeAgentPolicy(input.runtimePolicy).autoReview}`,
+                      effective: `Cursor sandbox ${cursorRuntimeAgentPolicy(input.runtimePolicy, platform).sandboxEnabled ? "enabled" : "disabled"}, auto-review ${cursorRuntimeAgentPolicy(input.runtimePolicy, platform).autoReview}`,
                       controls: [
                         "positive tools on create/resume",
                         "settingSources omitted",

@@ -328,9 +328,12 @@ it.effect("sends replies ahead of stale frames and only the newest frame after a
     const browser = ServerBrowser.ServerBrowser.of({
       clearProfile: () => Effect.void,
       reportProfiles: () => Effect.void,
+      mirrorResets: Stream.empty,
+      mirrorCookies: () => Effect.void,
       openDownload: () => Effect.succeedNone,
       answerFileChooser: () => Effect.succeed(false),
-      attachViewer: () => Effect.succeed({ output, input: () => Effect.void }),
+      attachViewer: () =>
+        Effect.succeed({ output, input: () => Effect.void, enqueueInput: () => Effect.void }),
     });
     const services = yield* Layer.build(
       HttpRouter.serve(

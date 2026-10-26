@@ -360,6 +360,7 @@ it.effect("thread cleanup notifies subscribers and a finishing run cannot recrea
             namedProjectsRoot: "/projects",
             isScratchProject: () => Effect.succeed(false),
           }),
+          Layer.mock(BareLaunch.BareLaunch)({}),
           NodeCrypto.layer,
           Scheduler.layer,
         ),

@@ -118,6 +118,18 @@ import * as SqlitePersistence from "./persistence/Sqlite.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as ProjectEnrichment from "./project/ProjectEnrichmentService.ts";
 import * as ProjectService from "./project/ProjectService.ts";
+import * as AuthSessions from "./persistence/AuthSessions.ts";
+import * as DeviceHubProxy from "./device/DeviceHubProxy.ts";
+import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
+import * as IssueLinks from "./issueLinks/IssueLinks.ts";
+import * as IssueService from "./issues/IssueService.ts";
+import * as PeerAuthority from "./peer/PeerAuthority.ts";
+import * as PeerLinks from "./peer/PeerLinks.ts";
+import * as PendingRequestService from "./childThreads/PendingRequestService.ts";
+import * as ServerBrowserStream from "./preview/ServerBrowserStream.ts";
+import * as RemoteDelegation from "./peer/RemoteDelegation.ts";
+import * as SpectrumReportService from "./spectrum/ReportService.ts";
+import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import {
   layerWsRpc,
   subscribeOrchestrationV2Shell,
@@ -536,6 +548,18 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(WorkspaceEntries.WorkspaceEntries)({}),
   Layer.mock(WorkspaceFileSystem.WorkspaceFileSystem)({}),
   Layer.mock(WorktreeSetupTracker.WorktreeSetupTracker)({}),
+  Layer.mock(AuthSessions.AuthSessionRepository)({}),
+  Layer.mock(DeviceHubProxy.DeviceViewers)({}),
+  Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+  Layer.mock(IssueLinks.IssueLinks)({}),
+  Layer.mock(IssueService.IssueService)({}),
+  Layer.mock(PeerAuthority.PeerAuthority)({}),
+  Layer.mock(PeerLinks.PeerLinks)({}),
+  Layer.mock(PendingRequestService.PendingRequests)({}),
+  Layer.mock(ServerBrowserStream.PreviewViewers)({}),
+  Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+  Layer.mock(SpectrumReportService.SpectrumReportService)({}),
+  Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({}),
 );
 
 const layerConfigSources = Layer.mergeAll(

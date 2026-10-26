@@ -187,6 +187,13 @@ it.effect("keeps the task list order when a toggle or edit rewrites updated_at",
       const edit = { ...input(older.task.id), requireExisting: true, title: "Edited" };
       yield* service.upsert(yield* decodeUpsertInput({ ...edit, enabled: false }));
       expect(yield* listedIds).toEqual(order);
-    }).pipe(Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))));
+    }).pipe(
+      Effect.provide(
+        ScheduledTaskService.layer.pipe(
+          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+          Layer.provide(layerDependencies),
+        ),
+      ),
+    );
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );

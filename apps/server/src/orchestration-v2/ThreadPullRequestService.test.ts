@@ -43,7 +43,7 @@ describe("ThreadPullRequestServiceV2 project guard", () => {
       };
       const identity = {
         canonicalKey: "github.com/pingdotgg/t3code",
-        provider: "github",
+        provider: SourceControlProviderKind.make("github"),
         displayName: "pingdotgg/t3code",
         locator: {
           source: "git-remote" as const,

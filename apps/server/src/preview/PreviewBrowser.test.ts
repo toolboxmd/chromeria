@@ -304,7 +304,26 @@ it.layer(NodeServices.layer)("PreviewBrowser", (it) => {
       }
     }),
   );
+});
 
+const describeTree = async (root: string) => {
+  const names = (await NodeFS.promises.readdir(root, { recursive: true })).toSorted();
+  return Promise.all(
+    names.map(async (name) => {
+      const file = NodePath.join(root, name);
+      const info = await NodeFS.promises.lstat(file);
+      const mode = info.mode & 0o777;
+      if (info.isSymbolicLink()) return [name, "link", await NodeFS.promises.readlink(file)];
+      if (info.isDirectory()) return [name, "directory", mode];
+      const hash = NodeCrypto.createHash("sha256");
+      await NodeStreamPromises.pipeline(NodeFS.createReadStream(file), hash);
+      return [name, "file", mode, hash.digest("hex")];
+    }),
+  );
+};
+
+// Set CHROMERIA_TEST_CFT_ARCHIVE to a downloaded chrome-mac-arm64.zip of the pinned
+// version to prove the real bundle unpacks with its links intact and still runs.
 it.live(
   "installs the pinned mac-arm64 Chrome for Testing with a valid signature",
   (ctx) =>
@@ -383,4 +402,3 @@ it.live(
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   { timeout: 300_000 },
 );
-});
