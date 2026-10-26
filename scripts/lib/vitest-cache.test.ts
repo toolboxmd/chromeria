@@ -21,7 +21,9 @@ async function runCacheProbe(project: boolean, kill: boolean) {
     import { createVitest } from "vite-plus/test/node";
     import { existsSync, readdirSync } from "node:fs";
     const root = ${JSON.stringify(sandbox)};
-    const test = { root, include: ["basic.test.js"], exclude: [], pool: "forks", watch: false };
+    // Vitest 5.0.5 persists transforms in fsModuleCache by default and only makes these
+    // temp copies without it, so the probe turns it off to exercise the copies.
+    const test = { root, include: ["basic.test.js"], exclude: [], pool: "forks", watch: false, fsModuleCache: false };
     const vitest = await createVitest({
       ...test, configFile: false, reporters: [{}],
       ${project ? 'projects: [{ test: { ...test, name: "child" } }],' : ""}
