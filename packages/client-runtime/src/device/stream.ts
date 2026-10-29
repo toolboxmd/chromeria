@@ -1291,6 +1291,7 @@ export function createDeviceStreamClient(
     configuring = false;
     iosInputAdmitted = false;
     iosInputUnavailable = false;
+    if (access.canOperate === false) events.onInputConnected(false, "View only");
     connecting();
     if (serveSimOnly) {
       if (!target.videoOnly && access.canOperate !== false) void connectIosInput();
