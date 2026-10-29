@@ -58,7 +58,6 @@ import {
 import packageJson from "../../package.json" with { type: "json" };
 import { parseBearerToken } from "../auth/EnvironmentAuth.ts";
 import * as ServerConfig from "../config.ts";
-import * as ServerSettings from "../serverSettings.ts";
 import * as DeviceService from "../device/DeviceService.ts";
 import * as HtmlRender from "../htmlRender/HtmlRender.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
@@ -421,7 +420,10 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
       bound = verified.success;
     }
     return yield* httpEffect.pipe(
-      Effect.provideService(McpInvocationContext.McpInvocationContext, { ...bound, linkedEnvironments }),
+      Effect.provideService(McpInvocationContext.McpInvocationContext, {
+        ...bound,
+        linkedEnvironments,
+      }),
       Effect.map(normalizeMcpHttpResponse),
       Effect.map((response) =>
         Option.isSome(authority)

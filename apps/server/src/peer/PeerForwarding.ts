@@ -1160,17 +1160,33 @@ const make = Effect.gen(function* () {
   const forward = <A>(...args: Parameters<typeof forwardDecoded>) =>
     forwardDecoded(...args) as Effect.Effect<A, OrchestratorMcpFailure>;
 
+  const requireEnabled = links.enabled.pipe(
+    Effect.flatMap((enabled) =>
+      enabled
+        ? Effect.void
+        : Effect.fail(
+            new OrchestratorMcpFailure({
+              code: "capability_denied",
+              message: PeerLinks.LINKED_ENVIRONMENTS_OFF,
+            }),
+          ),
+    ),
+  );
+
   const call: PeerForwarding["Service"]["call"] = (scope, tool, environmentId, params, options) =>
-    forward(
-      scope,
-      tool.name,
-      tool.parametersSchema,
-      tool.successSchema,
-      environmentId,
-      params,
-      options,
-      (toolEffect(tool, params) ??
-        (Context.get(tool.annotations, Tool.Readonly) ? "read" : "owned")) === "read",
+    Effect.andThen(
+      requireEnabled,
+      forward(
+        scope,
+        tool.name,
+        tool.parametersSchema,
+        tool.successSchema,
+        environmentId,
+        params,
+        options,
+        (toolEffect(tool, params) ??
+          (Context.get(tool.annotations, Tool.Readonly) ? "read" : "owned")) === "read",
+      ),
     );
 
   const route: PeerForwarding["Service"]["route"] = (scope, tool, params, here) => {
@@ -1222,7 +1238,7 @@ const make = Effect.gen(function* () {
         OrchestratorMcpThreadWaitInput,
         OrchestratorMcpThreadWaitResult,
         environmentId,
-        { threadId: input.threadId, ...(runId === undefined ? {} : { runId }), timeoutMs: chunk },
+        { ...input, ...(runId === undefined ? {} : { runId }), timeoutMs: chunk },
         undefined,
         true,
       );
@@ -1234,13 +1250,15 @@ const make = Effect.gen(function* () {
   });
 
   const listLinks: PeerForwarding["Service"]["links"] = (scope) =>
-    links.list.pipe(
+    Effect.andThen(requireEnabled, links.list).pipe(
       Effect.mapError(
         (error) =>
           new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
       ),
       Effect.map((listed) => ({
         environmentId: scope.environmentId,
+        notListed:
+          "Not listed: not linked yet. Call t3_environment_link with a hint from the user's words.",
         links: listed.map((link) => ({
           environmentId: link.environmentId,
           label: link.label,
