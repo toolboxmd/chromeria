@@ -309,6 +309,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/server/src/forkWsRpc.ts"
   ],
   "upstreamFiles": [
+    "apps/server/src/orchestration-v2/ThreadFind.ts",
+    "apps/server/src/orchestration-v2/threadHistoryPaging.ts",
     "apps/server/src/outboundHttp.test.ts",
     "scripts/effect-budget.json",
     "apps/web/src/components/device/DevicePanel.browser.test.tsx",
@@ -1973,6 +1975,8 @@ sources and reasons.
     "packages/client-runtime/src/state/deviceHubAccess.test.ts"
   ],
   "upstreamFiles": [
+    "apps/web/src/components/device/deviceStreamSession.ts",
+    "apps/server/src/peer/PeerLinkRequests.test.ts",
     "packages/contracts/src/rpc.test.ts",
     "apps/server/src/mcp/delegatedTaskModes.ts",
     "apps/server/src/mcp/linkOrigin.test.ts",
