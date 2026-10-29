@@ -175,9 +175,9 @@ const fixture = Effect.fnUntraced(function* (
           ),
         ),
         Layer.provide(PeerForwarding.layer),
+        Layer.provideMerge(Settings.layerTest({ webResearch: { host: bestia.environmentId } })),
         Layer.provide(Layer.succeedContext(linking)),
         Layer.provide(threads),
-        Layer.provideMerge(Settings.layerTest({ webResearch: { host: bestia.environmentId } })),
         Layer.fresh,
       ),
     );
