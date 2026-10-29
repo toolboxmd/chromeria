@@ -1,3 +1,4 @@
+import * as McpRouting from "../../McpRouting.ts";
 import {
   WorktreeMcpFailure,
   OrchestratorMcpEnvironmentTarget,
@@ -29,7 +30,7 @@ const WorktreeToolFailure = Schema.Union([WorktreeMcpFailure, OrchestratorMcpFai
 const WorktreeHandoffTool = Tool.make("t3_worktree_handoff", {
   description:
     "Move THIS thread into a new git worktree on a new branch. Runs the setup script by default. A separate agent in a worktree: `t3_thread_launch` with `workspaceStrategy`. Call last in your turn. The move ends the live session. `continuationPrompt` resumes work there next turn. Without it, the thread waits. The worktree stays after the thread is deleted. Fails if this thread has a worktree.",
-  parameters: WorktreeMcpHandoffInput,
+  parameters: McpRouting.parameters(WorktreeMcpHandoffInput),
   success: WorktreeMcpHandoffResult,
   failure: WorktreeToolFailure,
   failureMode: "return",
@@ -44,10 +45,7 @@ const WorktreeHandoffTool = Tool.make("t3_worktree_handoff", {
 const WorktreeStatusTool = Tool.make("t3_worktree_status", {
   description:
     "Report this thread's worktree: attached or not, path, branch, project root, and the `startFromOrigin` default. Check before `t3_worktree_handoff`.",
-  // No `parameters`: Tool.make defaults to Tool.EmptyParams, which serializes
-  // to a top-level `type: "object"` JSON Schema. An explicit empty
-  // Schema.Struct({}) serializes to `anyOf: [object, array]`, which is not a
-  // valid MCP tool input schema and makes clients reject the whole server.
+  parameters: McpRouting.parameters(Schema.Struct({})),
   success: WorktreeMcpStatusResult,
   failure: WorktreeToolFailure,
   failureMode: "return",

@@ -581,8 +581,9 @@ it.live(
         const sql = Context.get(b.database, SqlClient.SqlClient);
         const read = CheckStore.readCheckState(receipt.scheduledTaskId).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
-          Effect.flatMap((state) =>
-            state === null ? Effect.die("Missing native checked state") : Effect.succeed(state),
+          Effect.filterOrElse(
+            (state) => state !== null,
+            () => Effect.die("Missing native checked state"),
           ),
         );
         const checks = Option.getOrThrow(b.scheduledChecks);
@@ -1244,9 +1245,7 @@ it.live("scheduler-replay382: replayed creation preserves later independent sche
       };
       const first = yield* nativeCall(node, parent, "schedule_task", input);
       expect(first.isError, json(first)).not.toBe(true);
-      const result = yield* Schema.decodeUnknownEffect(
-        Schema.Struct({ scheduledTaskId: Schema.String }),
-      )(first.structuredContent);
+      const result = yield* decodeScheduledTaskId(first.structuredContent);
       const later = yield* nativeCall(node, parent, "update_scheduled_task", {
         purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
         scheduledTaskId: result.scheduledTaskId,
@@ -1514,9 +1513,7 @@ it.live(
           result_json: string;
         }>`SELECT result_json FROM scheduled_mutation_receipts WHERE stage='confirmed'`;
         expect(rows).toHaveLength(1);
-        const receipt = yield* Schema.decodeUnknownEffect(
-          Schema.fromJsonString(McpScheduledMutationReceipt),
-        )(rows[0]!.result_json);
+        const receipt = yield* decodeMcpScheduledMutationReceipt(rows[0]!.result_json);
         const beforeRoute = Option.getOrThrow(yield* a.links.get(b.environmentId));
         const resumed = { ...b, ...(yield* b.restartSchedulerTransport) };
         // Only isolated transport location changes. Existing session, grant and
@@ -1800,15 +1797,11 @@ it.live(
           clientRequestId: "manual382-command-schedule",
         });
         expect(scheduled.isError, json(scheduled)).not.toBe(true);
-        const task = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ scheduledTaskId: Schema.String }),
-        )(scheduled.structuredContent);
+        const task = yield* decodeScheduledTaskId(scheduled.structuredContent);
         const input = { taskId: task.scheduledTaskId, clientRequestId: "manual382-command-fire" };
         const first = yield* nativeCall(node, parent, "run_scheduled_task_now", input);
         expect(first.isError, json(first)).not.toBe(true);
-        const result = yield* Schema.decodeUnknownEffect(
-          ThreadToolkit.tools.run_scheduled_task_now.successSchema,
-        )(first.structuredContent);
+        const result = yield* decodeScheduledRun(first.structuredContent);
         expect(result.manualReceipt?.stage).toBe("admitted");
         yield* Deferred.await(started);
         expect(starts).toBe(1);
@@ -1844,4 +1837,14 @@ it.live(
         expect(current.runCount).toBe(1);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+);
+
+const decodeScheduledTaskId = Schema.decodeUnknownEffect(
+  Schema.Struct({ scheduledTaskId: Schema.String }),
+);
+const decodeMcpScheduledMutationReceipt = Schema.decodeEffect(
+  Schema.fromJsonString(McpScheduledMutationReceipt),
+);
+const decodeScheduledRun = Schema.decodeUnknownEffect(
+  ThreadToolkit.tools.run_scheduled_task_now.successSchema,
 );

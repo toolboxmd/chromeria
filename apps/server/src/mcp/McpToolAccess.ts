@@ -175,7 +175,7 @@ export const actsAsCaller = <P, A, E, R>(
   declare(
     (params: P) =>
       requireThreadCaller.pipe(
-        Effect.flatMap(() => writingCaller),
+        Effect.andThen(writingCaller),
         Effect.flatMap(() => McpRouting.invoke(params, handle)),
       ),
     effect,

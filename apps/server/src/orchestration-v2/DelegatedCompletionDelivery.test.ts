@@ -2045,11 +2045,10 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
         });
         // The cancelled result is published before anyone answers the question.
         yield* orchestrator.recoverDelegatedTasks;
-        assert.isNotNull(
-          (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
-            (task) => task.id === child.taskId,
-          )?.result,
-        );
+        const originalTask = (yield* orchestrator.getThreadProjection(
+          parentThreadId,
+        )).subagents.find((task) => task.id === child.taskId)!;
+        assert.isNotNull(originalTask.result);
         const parentRun = (yield* orchestrator.getThreadProjection(parentThreadId)).runs.find(
           (run) => run.id === parentRunId,
         )!;
@@ -2169,11 +2168,10 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
           (task) => task.id === answerRun?.delegatedTaskId,
         );
         assert.equal(followup?.childThreadId, child.childThreadId);
-        assert.isNull(followup?.result);
+        assert.equal(followup?.id, child.taskId);
+        assert.equal(followup?.result, originalTask.result);
         assert.isTrue(
-          (yield* orchestrator.getThreadShell(parentThreadId))?.pendingBackgroundTasks?.some(
-            (task) => task.kind === "subagent" && task.childThreadId === child.childThreadId,
-          ),
+          yield* orchestrator.delegatedTaskResultPending(child.childThreadId, child.taskId),
         );
       }),
     );

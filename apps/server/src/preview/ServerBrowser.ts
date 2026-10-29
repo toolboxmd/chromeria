@@ -1196,7 +1196,7 @@ const make = Effect.gen(function* () {
         await control.close().catch(constVoid);
         await page.close().catch(constVoid);
         if (isolatedContext) await context.close().catch(constVoid);
-        await Effect.runPromise(
+        await runPromise(
           manager.close({ threadId: tab.threadId, tabId: tab.tabId }).pipe(Effect.ignore),
         );
         throw new ServerBrowserTabNotFoundError({ threadId: tab.threadId, tabId: tab.tabId });
@@ -1748,7 +1748,7 @@ const make = Effect.gen(function* () {
         if (controller !== undefined) {
           try {
             await authorize();
-            const { serverEpoch } = await Effect.runPromise(
+            const { serverEpoch } = await runPromise(
               manager.list({ threadId: ThreadId.make(snapshot.threadId) }),
             );
             await authorize();
@@ -1948,7 +1948,7 @@ const make = Effect.gen(function* () {
     }
     const url = tab.page.url();
     const viewport = tab.page.viewportSize();
-    const { serverEpoch } = await Effect.runPromise(manager.list({ threadId: tab.threadId }));
+    const { serverEpoch } = await runPromise(manager.list({ threadId: tab.threadId }));
     const resource = (candidate: ServerTab): PreviewViewerResource => ({
       type: "preview",
       environmentId,
@@ -2576,7 +2576,7 @@ const make = Effect.gen(function* () {
       login.ending = true;
       for (const member of members) {
         void member.control.close().catch(constVoid);
-        await Effect.runPromise(
+        await runPromise(
           manager.close({ threadId: member.threadId, tabId: member.tabId }).pipe(Effect.ignore),
         );
       }
@@ -3020,9 +3020,9 @@ const make = Effect.gen(function* () {
         try: () =>
           checkedOperation(
             request,
-            () => Effect.runPromise(authorization.dispatch),
+            () => runPromise(authorization.dispatch),
             () =>
-              Effect.runPromise(
+              runPromise(
                 request.operation === "watchStart"
                   ? (authorization.watch ??
                       Effect.fail(
@@ -3463,7 +3463,7 @@ const make = Effect.gen(function* () {
             ? "control"
             : "action";
       const release = tab.control.reserveInput(Buffer.byteLength(encodeInputJson(message)), lane);
-      if (release === null) return yield* Effect.fail(new BrowserInputOverloaded({}));
+      if (release === null) return yield* new BrowserInputOverloaded({});
       const controlGeneration = lane === "control" ? tab.control.generation : null;
       const inputAdmission =
         lane === "control"
@@ -3676,7 +3676,7 @@ const make = Effect.gen(function* () {
       });
     }),
     mirrorResets: Stream.fromPubSub(mirrorResets),
-    mirrorCookies: (batch) =>
+    mirrorCookies: Effect.fn("ServerBrowser.mirrorCookies")((batch) =>
       Effect.tryPromise({
         try: async () => {
           if (catalogRead._tag === "Failure")
@@ -3690,6 +3690,7 @@ const make = Effect.gen(function* () {
         },
         catch: () => new CookieMirrorError({ reason: "unavailable" }),
       }),
+    ),
     authorizeViewer: Effect.fn("ServerBrowser.authorizeViewer")(function* (resource) {
       const current = yield* manager.list({ threadId: resource.threadId });
       if (
@@ -3708,9 +3709,12 @@ const make = Effect.gen(function* () {
     clearProfile,
     reportProfiles,
     openDownload,
-    inspectDownload: (resource, authorize) =>
+    inspectDownload: Effect.fn("ServerBrowser.inspectDownload")((resource, authorize) =>
       nativeDownload(resource, authorize).pipe(Effect.asVoid),
-    readDownloadBlock: (resource, offset, authorize) => nativeDownload(resource, authorize, offset),
+    ),
+    readDownloadBlock: Effect.fn("ServerBrowser.readDownloadBlock")((resource, offset, authorize) =>
+      nativeDownload(resource, authorize, offset),
+    ),
     answerFileChooser,
   });
 });

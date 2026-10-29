@@ -525,7 +525,9 @@ const policyLayer = Layer.effect(
   Effect.gen(function* () {
     const { runs, sql } = yield* Engine;
     return {
-      decide: (input) => runs.decide(input).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      decide: Effect.fn("ScheduledTaskDispatchPolicy.decide")((input) =>
+        runs.decide(input).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      ),
     };
   }),
 );
@@ -646,7 +648,9 @@ const decoratedLayer = Layer.effect(
 
     return ScheduledTaskService.ScheduledTaskService.of({
       ...inner,
-      list: () => inner.list().pipe(Effect.flatMap(attachList)),
+      list: Effect.fn("ScheduledTaskService.ScheduledTaskService.list")(() =>
+        inner.list().pipe(Effect.flatMap(attachList)),
+      ),
       subscribeList: () =>
         Stream.merge(
           inner.subscribeList(),
@@ -712,11 +716,12 @@ const decoratedLayer = Layer.effect(
             Effect.fail(new ScheduledTaskError({ message: cause.message, cause })),
         }),
       ),
-      setEnabled: (input) =>
+      setEnabled: Effect.fn("ScheduledTaskService.ScheduledTaskService.setEnabled")((input) =>
         inner.setEnabled(input).pipe(
           Effect.flatMap((result) => attach(result.task)),
           Effect.map((task) => ({ task })),
         ),
+      ),
       // The guard, upstream's delete and the fork state share the task's lock and one transaction.
       delete: Effect.fn("ScheduledTaskChecks.delete")(
         function* (input) {
@@ -748,11 +753,13 @@ const decoratedLayer = Layer.effect(
           ),
       ),
       runNow,
-      rotateWebhookToken: (input) =>
-        inner.rotateWebhookToken(input).pipe(
-          Effect.flatMap((result) => attach(result.task)),
-          Effect.map((task) => ({ task })),
-        ),
+      rotateWebhookToken: Effect.fn("ScheduledTaskService.ScheduledTaskService.rotateWebhookToken")(
+        (input) =>
+          inner.rotateWebhookToken(input).pipe(
+            Effect.flatMap((result) => attach(result.task)),
+            Effect.map((task) => ({ task })),
+          ),
+      ),
     });
   }),
 );

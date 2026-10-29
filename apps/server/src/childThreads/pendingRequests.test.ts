@@ -115,6 +115,7 @@ const respond = (input: {
   readonly shells?: Map<ThreadId, OrchestrationV2ThreadShell>;
   /** Read the request first; the read is accepted exactly when the answer is. */
   readonly read?: boolean;
+  readonly consolidated?: boolean;
 }) =>
   Effect.gen(function* () {
     const { target, kind } = input;
@@ -187,8 +188,8 @@ const respond = (input: {
         Effect.gen(function* () {
           if (kind === "approval") {
             const listed = yield* service.callTool({
-              name: "t3_pending_request_list",
-              arguments: { threadId: target },
+              name: input.consolidated ? "t3_pending_request" : "t3_pending_request_list",
+              arguments: { threadId: target, ...(input.consolidated ? { action: "list" } : {}) },
             });
             assert.notEqual(listed.isError, true);
             listedApproval = (yield* decodeRequestList(
@@ -198,12 +199,17 @@ const respond = (input: {
           if (input.read === true)
             readRefused =
               (yield* service.callTool({
-                name: "t3_pending_request_read",
-                arguments: { threadId: target, requestId },
+                name: input.consolidated ? "t3_pending_request" : "t3_pending_request_read",
+                arguments: {
+                  threadId: target,
+                  requestId,
+                  ...(input.consolidated ? { action: "read" } : {}),
+                },
               })).isError === true;
           return yield* service.callTool({
-            name: "t3_pending_request_respond",
+            name: input.consolidated ? "t3_pending_request" : "t3_pending_request_respond",
             arguments: {
+              ...(input.consolidated ? { action: "respond" } : {}),
               threadId: target,
               requestId,
               ...(input.scope.client?.linked === true ? { expectedRevision: 0 } : {}),
@@ -239,9 +245,17 @@ it.effect.each([
   [unrelated, topLevel, "question", false],
 ] as const)("respond authorizes %s -> %s %s", ([caller, target, kind, accepted]) =>
   Effect.gen(function* () {
-    const command = yield* respond({ scope: scope(caller), target, kind });
-    assert.equal(command !== undefined, accepted);
-    assert.isUndefined(command?.answeredBy);
+    for (const consolidated of [false, true]) {
+      const command = yield* respond({
+        scope: scope(caller),
+        target,
+        kind,
+        consolidated,
+        read: true,
+      });
+      assert.equal(command !== undefined, accepted);
+      assert.isUndefined(command?.answeredBy);
+    }
   }),
 );
 

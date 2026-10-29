@@ -1,7 +1,7 @@
+import { MessageId } from "@t3tools/contracts";
 import * as DocumentText from "../provider/DocumentText.ts";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
-import { layerLaunchCatalog } from "../peer/PeerLinks.testkit.ts";
-import * as Settings from "../serverSettings.ts";
+
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -18,9 +18,9 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
+
 import * as Layer from "effect/Layer";
-import * as Schema from "effect/Schema";
+
 import { McpSchema, McpServer } from "effect/ai";
 
 import * as ServerConfig from "../config.ts";
@@ -86,7 +86,10 @@ const layerLaunches = Layer.effect(
   Effect.gen(function* () {
     const threads = yield* ThreadManagement.ThreadManagementService;
     return ThreadLaunch.ThreadLaunchService.of({
-      replayOrLaunch,
+      replayOrLaunch: <E, R>(
+        _input: Parameters<ThreadLaunch.ThreadLaunchService["Service"]["replayOrLaunch"]>[0],
+        launch: Effect.Effect<ThreadLaunch.ThreadLaunchResult, E, R>,
+      ) => launch,
       configureMcp: () => Effect.die("unused MCP configuration"),
       checkWorktreeBase: () => Effect.void,
       prepareRun: () => Effect.die("No workspace preparation needed for link-origin commands"),
@@ -310,7 +313,7 @@ it.layer(Layer.provideMerge(layerTools, layerOrchestration))("work a link starts
         creationSource: "mcp",
       });
       assert.deepEqual(child.linkOrigin, shell?.linkOrigin);
-      const sourceRun: OrchestrationV2Run = {
+      const _sourceRun = {
         id: RunId.make("run:source"),
         threadId: launched,
         ordinal: 1,
@@ -398,7 +401,7 @@ it.layer(Layer.provideMerge(layerTools, layerOrchestration))("work a link starts
 
       // Nor scheduled tasks, which belong to no thread.
       assert.equal(
-        failureCode(yield* call(narrowed, "delete_scheduled_task", { scheduledTaskId: "any" })),
+        failureCode(yield* call(laptop, "delete_scheduled_task", { scheduledTaskId: "any" })),
         "capability_denied",
       );
 

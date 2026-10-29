@@ -424,21 +424,18 @@ describe("page dispatch authorization", () => {
     }
   });
 
-  it("refuses screenshot dispatch after the layout read retires authorization", async () => {
+  it("refuses screenshot dispatch after authorization retires", async () => {
     const external = makeExternalBrowserContext();
-    const page = external.page as unknown as Page;
     const cdp = external.cdp as unknown as CDPSession;
     let current = true;
     const authorize = async () => {
       if (!current) throw retired();
     };
-    await ServerBrowserPage.captureViewport(page, cdp, { format: "png", scale: 0.5 }, authorize);
+    await ServerBrowserPage.captureViewport(cdp, { format: "png" }, authorize);
     expect(external.effects.filter((effect) => effect === "capture")).toHaveLength(1);
-    external.controls.beforeLayout = async () => {
-      current = false;
-    };
+    current = false;
     await expect(
-      ServerBrowserPage.captureViewport(page, cdp, { format: "png", scale: 0.5 }, authorize),
+      ServerBrowserPage.captureViewport(cdp, { format: "png" }, authorize),
     ).rejects.toThrow("Original invocation retired");
     expect(external.effects.filter((effect) => effect === "capture")).toHaveLength(1);
   });

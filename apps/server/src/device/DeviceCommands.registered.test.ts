@@ -1,3 +1,4 @@
+import * as ServerSettings from "../serverSettings.ts";
 import { sha256 } from "@noble/hashes/sha2";
 import * as Hex from "effect/encoding/Hex";
 import { expect, it } from "@effect/vitest";
@@ -13,7 +14,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
+
 import * as Schema from "effect/Schema";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -331,12 +332,11 @@ const fixture = Effect.gen(function* () {
     Effect.provide(Layer.mergeAll(configLayer, Layer.succeedContext(settingsContext))),
   );
   const serverContext = yield* McpHttpServer.layerDeviceToolkit.pipe(
+    Layer.provide(ServerSettings.layerTest()),
     Layer.provideMerge(McpServer.McpServer.layer),
     Layer.provide(AccessTestkit.liveThreadsLayer),
     Layer.provide(Layer.succeed(DeviceService.DeviceService, service)),
-    Layer.provide(
-      Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeed(Option.none()) }),
-    ),
+    Layer.provide(Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone })),
     Layer.provide(configLayer),
     Layer.build,
   );

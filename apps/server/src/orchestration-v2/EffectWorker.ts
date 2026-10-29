@@ -834,7 +834,7 @@ export const layerWithOptions = (
                       }),
                   ),
                 )
-              : Effect.succeed(undefined);
+              : Effect.sync(() => undefined);
           const stopOwner =
             Option.isSome(authority) &&
             ["provider-turn.interrupt", "provider-session.detach", "delegated-tasks.stop"].includes(
@@ -850,20 +850,20 @@ export const layerWithOptions = (
                       }),
                   ),
                 )
-              : Effect.succeed(undefined);
-          const execution = authorized
-            .pipe(
-              Effect.flatMap((executionOwner) =>
-                stopOwner.pipe(
-                  Effect.flatMap((owner) =>
-                    executor
-                      .execute(effect, { willRetry: effect.attemptCount < maxAttempts })
-                      .pipe(Effect.provideService(PeerDispatchAuthority, owner ?? executionOwner)),
-                  ),
+              : Effect.sync(() => undefined);
+          const execution = authorized.pipe(
+            Effect.flatMap((executionOwner) =>
+              stopOwner.pipe(
+                Effect.flatMap((owner) =>
+                  executor
+                    .execute(effect, { willRetry: effect.attemptCount < maxAttempts })
+                    .pipe(Effect.provideService(PeerDispatchAuthority, owner ?? executionOwner)),
                 ),
               ),
-            )
-            .pipe(boundExecution(effect), Effect.as("executed" as const));
+            ),
+            boundExecution(effect),
+            Effect.as("executed" as const),
+          );
           const exit = yield* Effect.exit(Effect.raceFirst(execution, cancellation)).pipe(
             Effect.ensuring(outbox.clearCancellation(effect.id)),
           );

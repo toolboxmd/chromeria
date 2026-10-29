@@ -95,7 +95,7 @@ it.layer(NodeServices.layer)("paired auth renewal", (it) => {
                 .pipe(Effect.provideService(Clock.Clock, clock)),
             );
             return HttpServerResponse.empty();
-          }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty()))),
+          }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty())),
         ),
       );
       const services = yield* Layer.build(

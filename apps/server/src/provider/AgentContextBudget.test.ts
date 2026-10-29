@@ -1,3 +1,7 @@
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
+import * as IssueLinks from "../issueLinks/IssueLinks.ts";
+import * as SpectrumLaunchService from "../spectrum/LaunchService.ts";
+import * as Database from "../persistence/Sqlite.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { ProviderInstanceId } from "@t3tools/contracts";
@@ -45,6 +49,10 @@ import budget from "./agentContextBudget.json" with { type: "json" };
 
 // Registration only stores tool definitions, so the handlers' services are never called.
 const toolHandlerServices = Layer.mergeAll(
+  Layer.mock(BareLaunch.BareLaunch)({}),
+  Layer.mock(IssueLinks.IssueLinks)({}),
+  Layer.mock(SpectrumLaunchService.SpectrumLaunchService)({}),
+  Database.layerMemory,
   Layer.mock(DeviceService)({}),
   Layer.mock(DocumentText)({}),
   Layer.mock(GitVcsDriver)({}),

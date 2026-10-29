@@ -65,8 +65,8 @@ const make = Effect.gen(function* () {
       WHERE state IN ('retry_pending','retry_started','reset_wait')`.pipe(
       Effect.map((rows) => rows.map((row) => decode(row.payload_json))),
     ),
-    close: (record) => transition(record, "closed"),
-    started: (record) => transition(record, "retry_started"),
+    close: Effect.fn("RecoveryStore.close")((record) => transition(record, "closed")),
+    started: Effect.fn("RecoveryStore.started")((record) => transition(record, "retry_started")),
   });
 });
 export const layer = Layer.effect(RecoveryStore, make);

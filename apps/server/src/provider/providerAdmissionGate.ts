@@ -58,7 +58,7 @@ export const make = Effect.gen(function* () {
     use: (entry: AdmissionEntry) => Effect.Effect<A, E, R>,
   ) => Effect.acquireUseRelease(acquire(key), use, () => release(key));
   return ProviderAdmissionGate.of({
-    withStart: (key, start) =>
+    withStart: Effect.fn("ProviderAdmissionGate.withStart")((key, start) =>
       withEntry(key, (entry) =>
         Effect.uninterruptibleMask((restore) =>
           Effect.acquireUseRelease(
@@ -68,16 +68,16 @@ export const make = Effect.gen(function* () {
           ),
         ),
       ),
-    withUpdate: ({ installKey, isBusy, install }) =>
+    ),
+    withUpdate: Effect.fn("ProviderAdmissionGate.withUpdate")(({ installKey, isBusy, install }) =>
       withEntry(installKey, (entry) =>
         entry.turnstile.withPermit(
           entry.shared.withPermits(sharedPermits)(
-            Effect.flatMap(isBusy, (busy) =>
-              busy ? Effect.succeed(Option.none()) : Effect.map(install, Option.some),
-            ),
+            Effect.flatMap(isBusy, (busy) => (busy ? Effect.succeedNone : Effect.asSome(install))),
           ),
         ),
       ),
+    ),
   });
 });
 

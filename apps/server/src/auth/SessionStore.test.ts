@@ -522,7 +522,7 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
               () => server.markDisconnected(session.sessionId),
             );
             return HttpServerResponse.empty();
-          }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty()))),
+          }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty())),
         ),
       );
       const http = Context.get(

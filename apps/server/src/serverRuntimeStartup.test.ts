@@ -1,3 +1,4 @@
+import * as EventSink from "./orchestration-v2/EventSink.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
@@ -72,6 +73,7 @@ it.effect.each([
       const dependencies = Layer.mergeAll(
         NodeCrypto.layer,
         Path.layer,
+        Layer.mock(EventSink.EventSinkV2)({}),
         Layer.mock(ServerConfig.ServerConfig)({
           ...(yield* ServerConfig.deriveServerPaths("/bootstrap-project", undefined).pipe(
             Effect.provide(Path.layer),

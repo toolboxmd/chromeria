@@ -5,7 +5,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { decodeProviderReplayNdjson } from "@t3tools/provider-testing/replayTranscript";
 import { materializeReplayTranscriptRuntimeInstructions } from "../orchestration-v2/testkit/ReplayRuntimeInstructions.ts";
 
-const museDriver = Schema.decodeUnknownSync(ProviderDriverKind)("muse");
+const museDriver = Schema.decodeSync(ProviderDriverKind)("muse");
 
 const recorded =
   decodeProviderReplayNdjson(`{"type":"transcript_start","provider":"muse","protocol":"muse.msp-jsonl","version":"1","scenario":"runtime-context"}

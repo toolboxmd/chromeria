@@ -2,12 +2,13 @@ import * as DocumentText from "../provider/DocumentText.ts";
 import * as Database from "../persistence/Sqlite.ts";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import { layerLaunchCatalog } from "./PeerLinks.testkit.ts";
-import * as Settings from "../serverSettings.ts";
+
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentId,
+  MessageId,
   type OrchestrationV2Run,
   type OrchestrationV2ThreadShell,
   type SourceControlCloneRepositoryInput,
@@ -19,7 +20,7 @@ import {
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
+
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import { McpSchema, McpServer } from "effect/ai";
@@ -40,7 +41,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as RemoteDelegation from "./RemoteDelegation.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
-import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
+import { idleThreadProjection, liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerLinkRequests from "./PeerLinkRequests.ts";
@@ -85,16 +86,35 @@ const boxThreads = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) => {
     Effect.map((sessionId) => ({ ...base, linkOrigin: { sessionId, label: "T3 Code · Laptop" } })),
   );
   const users = { ...liveThreadShell(usersThread, { runtimeMode: "auto" }), projectId: boxProject };
-  const run = (status: OrchestrationV2Run["status"]) =>
-    ({ id: boxRun, status }) as unknown as OrchestrationV2Run;
+  const run = (status: OrchestrationV2Run["status"]): OrchestrationV2Run => ({
+    id: boxRun,
+    threadId: boxThread,
+    ordinal: 1,
+    providerInstanceId: base.providerInstanceId!,
+    modelSelection: base.modelSelection,
+    providerThreadId: null,
+    userMessageId: MessageId.make("box-message"),
+    rootNodeId: null,
+    activeAttemptId: null,
+    status,
+    requestedAt: base.createdAt,
+    startedAt: base.createdAt,
+    completedAt: null,
+    checkpointId: null,
+    contextHandoffId: null,
+  });
   const shellOf = (threadId: ThreadId): Effect.Effect<OrchestrationV2ThreadShell | null> =>
     threadId === boxThread ? linked : Effect.succeed(threadId === usersThread ? users : null);
   const projectionOf = (threadId: ThreadId) =>
     shellOf(threadId).pipe(
-      Effect.map((thread) => ({ thread, runs: [run("running")], runtimeRequests: [] }) as never),
+      Effect.map((thread) => ({ ...idleThreadProjection(thread!), runs: [run("running")] })),
     );
   return Layer.mock(ThreadManagement.ThreadManagementService)({
     getThreadShell: shellOf,
+    readRunRecovery: () => Effect.succeed({ state: "none" }),
+    readRestartCutView: () => Effect.sync(() => undefined),
+    getTimelinePage: () =>
+      Effect.succeed({ items: [], totalItems: 0, nextCursor: null, hasMore: false } as never),
     getProjectThreadRecords: (input) => projectionOf(input.threadId),
     getThreadRecords: (threadId) => projectionOf(threadId),
     listProjectThreads: () => linked.pipe(Effect.map((shell) => [shell] as never)),
@@ -232,12 +252,11 @@ const serveBox = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) =>
         ),
       ),
       Layer.provide(NodeServices.layer),
-      Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
-      Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
+      Layer.provide(layerLaunchCatalog),
       Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
       // A linked caller has no thread here, so launch reads the project's defaults.
       Layer.provide(
-        Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeed(Option.none()) }),
+        Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
       ),
       Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
       Layer.provide(ServerSettings.layerTest()),
@@ -290,7 +309,7 @@ const makeLaptop = Effect.gen(function* () {
       ),
     ),
     Layer.provide(NodeServices.layer),
-    Layer.provide(PeerForwarding.layer),
+    Layer.provideMerge(PeerForwarding.layer),
     Layer.provide(Layer.succeedContext(linking)),
     Layer.provide(NodeCrypto.layer),
     Layer.provideMerge(
@@ -461,7 +480,7 @@ it.effect("an agent here works on a linked environment's threads within its own 
       const recoveryScope = a.scopeOf("thread:laptop-full");
       expect(
         (yield* a.forwarding.readThread(recoveryScope, box.environmentId, { threadId: boxThread }))
-          .threadId,
+          .thread.threadId,
       ).toBe(boxThread);
       expect(
         (yield* a.forwarding.waitForThread(recoveryScope, box.environmentId, {

@@ -1308,10 +1308,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ) {
       const pending = (yield* Ref.get(events)).filter((event) => event.threadId === threadId);
       const stored = yield* readCommandProjection(threadId).pipe(
-        Effect.map(Option.some),
+        Effect.asSome,
         Effect.catchIf(
           (error) => isMissingProjectionThread(error.cause),
-          () => Effect.succeed(Option.none()),
+          () => Effect.succeedNone,
         ),
       );
       let projection: OrchestrationV2ThreadProjection;
@@ -8378,7 +8378,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         OrchestratorProjectionError: (error) =>
           command.createdBy === "user" &&
           (error.cause === undefined || isMissingProjectionThread(error.cause))
-            ? Effect.succeed(undefined)
+            ? Effect.void
             : Effect.fail(error),
       }),
       mapDispatchError(command),
@@ -10189,7 +10189,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               cause: "Answer each question before sending.",
             });
           }
-          const text = typeof answer === "string" ? answer : answer.join(", ");
+          const text =
+            typeof answer === "string" ? answer : answer.map((value) => value.trim()).join(", ");
           replies.push(`${question.question}\n${text.trim()}`);
         }
         if (replies.length === 0) {
@@ -12790,7 +12791,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Provider thread ${stopThread.id} has no active provider session.`,
       });
     }
-    const providerSessionId = providerThread.providerSessionId;
+    const _providerSessionId = providerThread.providerSessionId;
     yield* mapDispatchError(command)(
       commandPolicy.ensureInterrupt({
         commandId: command.commandId,
@@ -14902,7 +14903,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const current = yield* projectionStore
         .getThread(event.threadId)
         .pipe(
-          Effect.map(Option.some),
+          Effect.asSome,
           Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeedNone }),
         );
       const acknowledged = Option.isSome(current) ? current.value.forkResumedRetirements : [];
@@ -15307,29 +15308,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           };
         }),
       ),
-      Effect.flatMap((planned) =>
-        // A settle that finds the provider already ended everything, or a
-        // stop that finds nothing running, has nothing to record. That is
-        // its expected outcome, not a failure.
-        planned.events.length > 0 ||
-        (planned.forkPlans?.length ?? 0) > 0 ||
-        command.type === "thread.background-work.settle" ||
-        command.type === "thread.stop" ||
-        command.type === "subagent.stop" ||
-        // A second Stop sharing, or one after the share already ended, is not an error.
-        command.type === "thread.guest-share.close" ||
-        command.type === "delegated_task.remote.launch" ||
-        command.type === "delegated_task.remote.attach" ||
-        command.type === "delegated_task.remote.observe" ||
-        command.type === "delegated_task.remote.complete"
-          ? Effect.succeed(planned)
-          : Effect.fail(
-              new OrchestratorDispatchError({
-                commandId: command.commandId,
-                commandType: command.type,
-                cause: "Command produced no domain events.",
-              }),
-            ),
+      Effect.filterOrFail(
+        (planned) =>
+          // A settle that finds the provider already ended everything, or a
+          // stop that finds nothing running, has nothing to record. That is
+          // its expected outcome, not a failure.
+          planned.events.length > 0 ||
+          (planned.forkPlans?.length ?? 0) > 0 ||
+          command.type === "thread.background-work.settle" ||
+          command.type === "thread.stop" ||
+          command.type === "subagent.stop" ||
+          // A second Stop sharing, or one after the share already ended, is not an error.
+          command.type === "thread.guest-share.close" ||
+          command.type === "delegated_task.remote.launch" ||
+          command.type === "delegated_task.remote.attach" ||
+          command.type === "delegated_task.remote.observe" ||
+          command.type === "delegated_task.remote.complete",
+        () =>
+          new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "Command produced no domain events.",
+          }),
       ),
       Effect.catch((cause) =>
         Effect.gen(function* () {

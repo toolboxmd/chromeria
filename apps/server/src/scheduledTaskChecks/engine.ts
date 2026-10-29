@@ -269,16 +269,15 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
 
   /** Sends exactly the recorded send; a failure turns into a delayed retry. */
   const deliver = (taskId: ScheduledTaskId, state: CheckState, run: CheckedRun, send: RunSend) =>
-    claimRun(taskId, run)
-      .pipe(Effect.andThen(deps.dispatch({ taskId, run, send })))
-      .pipe(
-        Effect.catch((error) =>
-          Clock.currentTimeMillis.pipe(
-            Effect.flatMap((now) => retry(state, run, error.message, now)),
-            Effect.andThen(Effect.fail(error)),
-          ),
+    claimRun(taskId, run).pipe(
+      Effect.andThen(deps.dispatch({ taskId, run, send })),
+      Effect.catch((error) =>
+        Clock.currentTimeMillis.pipe(
+          Effect.flatMap((now) => retry(state, run, error.message, now)),
+          Effect.andThen(Effect.fail(error)),
         ),
-      );
+      ),
+    );
 
   /**
    * Records the next send with its whole payload before anything leaves the
@@ -436,9 +435,12 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
           return started === null ? null : yield* started;
         }),
       ).pipe(
-        Effect.catch((error) =>
-          Effect.succeed({ exitCode: null, output: "", timedOut: false, failure: error.message }),
-        ),
+        Effect.orElseSucceed((error) => ({
+          exitCode: null,
+          output: "",
+          timedOut: false,
+          failure: error.message,
+        })),
         Effect.flatMap((outcome) =>
           outcome === null ? Effect.void : finishCommand(task.id, runId, admission, outcome),
         ),
@@ -717,7 +719,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
         runId: run.id,
         date: run.slot.slice(0, 10),
       })
-      .pipe(Effect.catch((error) => Effect.succeed({ passed: false, output: error.message })));
+      .pipe(Effect.orElseSucceed((error) => ({ passed: false, output: error.message })));
     const result: CheckResult = {
       version: version.version,
       passed: verdict.passed,

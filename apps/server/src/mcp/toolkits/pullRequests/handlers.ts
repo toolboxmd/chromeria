@@ -429,7 +429,8 @@ const make = Effect.gen(function* () {
           );
         return request === undefined
           ? {
-              ...target, ...next,
+              ...target,
+              ...next,
               alreadyLinked,
               ...(input.purposeDelivery === undefined
                 ? {}
@@ -533,14 +534,14 @@ const make = Effect.gen(function* () {
                     outcome: result.started ? ("started" as const) : ("running" as const),
                     detail: null,
                   })),
-                  Effect.catch((error) =>
-                    error._tag === "OrchestratorMcpFailure"
-                      ? Effect.fail(error)
-                      : Effect.succeed({
-                          ...identity,
-                          outcome: "failed" as const,
-                          detail: guideFailureDetail(error),
-                        }),
+                  Effect.catchIf(
+                    (error) => error._tag !== "OrchestratorMcpFailure",
+                    (error) =>
+                      Effect.succeed({
+                        ...identity,
+                        outcome: "failed" as const,
+                        detail: guideFailureDetail(error),
+                      }),
                   ),
                 );
               }),

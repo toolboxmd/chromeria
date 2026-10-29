@@ -259,28 +259,25 @@ function makeHarness(options: HarnessOptions = {}) {
         Layer.provide(NodeServices.layer),
       )
     : Layer.mock(BareLaunch.BareLaunch)({});
-  const layerLaunch = ThreadLaunch.layer
-    .pipe(Layer.provide(bareLayer))
-    .pipe(Layer.provide(layerRegistry))
-    .pipe(
-      Layer.provide(
-        ThreadMcpConfig.layer.pipe(
-          Layer.provide(ServerSecretStore.layer),
-          Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-tool-policy-" })),
-          Layer.provide(NodeServices.layer),
-        ),
+  const layerLaunch = ThreadLaunch.layer.pipe(
+    Layer.provide(bareLayer),
+    Layer.provide(layerRegistry),
+    Layer.provide(
+      ThreadMcpConfig.layer.pipe(
+        Layer.provide(ServerSecretStore.layer),
+        Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-tool-policy-" })),
+        Layer.provide(NodeServices.layer),
       ),
-    )
-    .pipe(
-      Layer.provide(
-        Layer.mergeAll(
-          layerExternalServices,
-          layerThreadManagement,
-          layerReceipts,
-          IdAllocator.layer,
-        ),
+    ),
+    Layer.provide(
+      Layer.mergeAll(
+        layerExternalServices,
+        layerThreadManagement,
+        layerReceipts,
+        IdAllocator.layer,
       ),
-    );
+    ),
+  );
   const layerProjectedProjects = Layer.mock(ProjectStore.ProjectStoreV2)({
     get: (requestedProjectId) =>
       Effect.succeed(
@@ -1168,7 +1165,12 @@ it.effect.each(["stable", "upstream/release"])(
       Effect.provide(
         GitVcsDriver.layer.pipe(
           Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "launch-remote-git-" })),
-          Layer.provideMerge(NodeServices.layer),
+          Layer.provideMerge(
+            Layer.merge(
+              NodeServices.layer,
+              DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+            ),
+          ),
         ),
       ),
     ),
@@ -2067,7 +2069,16 @@ it.effect("creates a strong provider-thread mapping for an imported native sessi
 it.effect("shared intake preserves durable attachment bytes after a lost launch result", () => {
   const harness = makeHarness();
   const layerFiles = ServerConfig.layerTest(process.cwd(), { prefix: "t3-message-intake-" }).pipe(
-    Layer.provideMerge(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+    Layer.provideMerge(
+      DocumentText.layer.pipe(
+        Layer.provideMerge(
+          Layer.merge(
+            NodeServices.layer,
+            DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+          ),
+        ),
+      ),
+    ),
     Layer.merge(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
   );
   return Effect.gen(function* () {
@@ -2540,7 +2551,16 @@ it.effect.each([
 it.effect("replays an accepted send after the project disables the instance", () => {
   const harness = makeHarness();
   const layerFiles = ServerConfig.layerTest(process.cwd(), { prefix: "t3-send-retry-" }).pipe(
-    Layer.provideMerge(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+    Layer.provideMerge(
+      DocumentText.layer.pipe(
+        Layer.provideMerge(
+          Layer.merge(
+            NodeServices.layer,
+            DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+          ),
+        ),
+      ),
+    ),
   );
   return Effect.gen(function* () {
     const launches = yield* ThreadLaunch.ThreadLaunchService;
@@ -2834,7 +2854,12 @@ it.effect.each([false, true])(
               Layer.mergeAll(
                 ProjectStore.layer,
                 ServerConfig.layerTest(process.cwd(), { prefix: "t3-delegated-intake-" }).pipe(
-                  Layer.provideMerge(NodeServices.layer),
+                  Layer.provideMerge(
+                    Layer.merge(
+                      NodeServices.layer,
+                      DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+                    ),
+                  ),
                 ),
               ).pipe(Layer.provide(harness.layer)),
             ),
@@ -3046,7 +3071,11 @@ it.effect(
         expect(replay.projection.thread.bare).toEqual(result.projection.thread.bare);
         expect(h.createWorktree).toHaveBeenCalledTimes(1);
       }).pipe(Effect.provide(h.layer));
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(
+      Effect.provide(
+        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+      ),
+    ),
 );
 
 it.effect("bare launch persists selected t3-code tools through replay", () => {
@@ -3234,7 +3263,11 @@ it.effect.each(["full-access", "approval-required"] as const)(
           child.thread.bare,
         );
       }).pipe(Effect.provide(Layer.merge(h.layer, mcp)));
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(
+      Effect.provide(
+        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+      ),
+    ),
 );
 
 const encodeToolPolicyProjection = Schema.encodeEffect(

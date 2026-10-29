@@ -1,3 +1,5 @@
+import * as DocumentText from "../provider/DocumentText.ts";
+import * as PeerLinkRequests from "./PeerLinkRequests.ts";
 import { subagentResultForRun } from "@t3tools/provider-core/server/subagentProjection";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
@@ -632,10 +634,17 @@ const boxToolkitLayer = (
   return Layer.mergeAll(
     lifecycle,
     McpHttpServer.layerOrchestratorToolkit.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(PeerLinks.PeerLinks)({}),
+          Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+        ),
+      ),
       Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
     ),
     McpHttpServer.layerProjectRegistration,
   ).pipe(
+    Layer.provide(DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
     Layer.provide(NodeCrypto.layer),
     Layer.provide(
       Settings.layerTest({
@@ -689,8 +698,7 @@ const boxToolkitLayer = (
     Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
     Layer.provide(
       Layer.mock(ProjectService.ProjectService)({
-        getById: () =>
-          Effect.succeed(Option.some({ defaultModelSelection: modelSelection } as never)),
+        getById: () => Effect.succeedSome({ defaultModelSelection: modelSelection } as never),
         // More than a page, so finding the project with this repository pages.
         listPage: ({ cursor, limit }) =>
           Effect.succeed({
@@ -772,10 +780,10 @@ const makeRealBox = Effect.gen(function* () {
     }),
     Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
       namedProjectsRoot: "/p",
-      folderForThread: () => Effect.succeed(Option.none()),
+      folderForThread: () => Effect.succeedNone,
     }),
     Layer.mock(ProjectService.ProjectService)({
-      getById: () => Effect.succeed(Option.some(boxProjects.at(-1)!)),
+      getById: () => Effect.succeedSome(boxProjects.at(-1)!),
     }),
     Settings.layerTest({
       providerInstances: { [instanceId]: { driver, enabled: true } },
@@ -838,6 +846,13 @@ const makeLaptop = (
     );
     const layerThreads = ThreadManagement.layer.pipe(Layer.provideMerge(layerOrchestrator));
     const layerHere = McpHttpServer.layerOrchestratorToolkit.pipe(
+      Layer.provide(DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(PeerLinks.PeerLinks)({}),
+          Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+        ),
+      ),
       Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
       Layer.provideMerge(McpServer.McpServer.layer),
       Layer.provideMerge(
@@ -848,12 +863,10 @@ const makeLaptop = (
             Layer.mock(ProjectService.ProjectService)({
               // A cold enrichment cache: the project itself reports no identity yet.
               getById: () =>
-                Effect.succeed(
-                  Option.some({
-                    workspaceRoot: "/home/me/app",
-                    repositoryIdentity: null,
-                  } as never),
-                ),
+                Effect.succeedSome({
+                  workspaceRoot: "/home/me/app",
+                  repositoryIdentity: null,
+                } as never),
             }),
           ),
           Layer.provide(

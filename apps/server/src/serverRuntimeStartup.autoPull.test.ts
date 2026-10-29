@@ -1,3 +1,4 @@
+import * as EventSink from "./orchestration-v2/EventSink.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import { DEFAULT_SERVER_SETTINGS, EnvironmentId, ProjectId } from "@t3tools/contracts";
@@ -74,6 +75,7 @@ it.effect("parks automatic pull until activation without delaying command readin
         Layer.Services<ReturnType<typeof ServerRuntimeStartup.layerWithOptions>>
       > = Layer.mergeAll(
         Layer.orDie(SqlitePersistence.layerMemory),
+        Layer.mock(EventSink.EventSinkV2)({}),
         Layer.mock(ServerConfig.ServerConfig)({
           ...(yield* ServerConfig.deriveServerPaths(cwd, undefined).pipe(
             Effect.provide(Path.layer),

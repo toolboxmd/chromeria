@@ -185,7 +185,7 @@ it.effect.each(["monitor", "subagent", "task"] as const)(
         },
       ]);
       assert.deepEqual(yield* followRun(sourceId), { kind: "waiting" });
-      const claimed = yield* outbox.claimNext({ workerId: "restart", leaseDurationMs: 10_000 });
+      const claimed = yield* outbox.claimNext({ workerId: "restart" });
       assert.isTrue(Option.isSome(claimed));
       assert.deepEqual(yield* followRun(sourceId), { kind: "waiting" });
 
@@ -223,7 +223,7 @@ it.effect.each(["completed", "cancelled"] as const)(
         },
       ]);
       assert.deepEqual(yield* followRun(sourceId), { kind: "waiting" });
-      const claimed = yield* outbox.claimNext({ workerId: "restart", leaseDurationMs: 10_000 });
+      const claimed = yield* outbox.claimNext({ workerId: "restart" });
       assert.isTrue(Option.isSome(claimed));
       assert.isTrue(yield* outbox.succeed({ effectId, workerId: "restart" }));
       assert.deepEqual(yield* followRun(sourceId), { kind: "ended", runId: sourceId });

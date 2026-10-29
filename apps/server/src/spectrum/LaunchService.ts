@@ -540,7 +540,7 @@ const make = Effect.gen(function* () {
     return state;
   });
   return SpectrumLaunchService.of({
-    register: (input) =>
+    register: Effect.fn("SpectrumLaunchService.register")((input) =>
       register(input).pipe(
         Effect.mapError((cause) =>
           isStartValidationError(cause)
@@ -548,6 +548,7 @@ const make = Effect.gen(function* () {
             : new SpectrumLaunchError({ threadId: input.threadId, cause }),
         ),
       ),
+    ),
   });
 });
 

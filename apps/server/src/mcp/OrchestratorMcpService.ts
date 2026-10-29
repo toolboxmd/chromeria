@@ -3208,9 +3208,7 @@ const make = Effect.gen(function* () {
                     runtimeTarget = resolved;
                     return resolved.modelSelection;
                   }),
-                  Effect.flatMap((selection) =>
-                    input.bare === undefined ? Effect.succeed(selection) : bareTarget(selection),
-                  ),
+                  Effect.filterOrElse(() => input.bare === undefined, bareTarget),
                 )
             : undefined,
       });

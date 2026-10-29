@@ -209,6 +209,7 @@ const dependencies = Layer.mergeAll(
     isAttached: () => Effect.sync(() => desktop.enabled),
     endpoint: () => Effect.succeed("ws://desktop-boundary"),
     pointer: () => Effect.void,
+    turn: () => Effect.void,
   }),
 ).pipe(
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-credential-login-" })),
@@ -216,7 +217,7 @@ const dependencies = Layer.mergeAll(
 );
 const layer = ServerBrowser.layer.pipe(
   Layer.provide(PreviewAgentActivity.layer),
-  Layer.provide(ServerSettings.layerTest()),
+  Layer.provideMerge(ServerSettings.layerTest()),
   Layer.provideMerge(dependencies),
 );
 

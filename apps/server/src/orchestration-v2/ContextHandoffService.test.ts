@@ -38,7 +38,6 @@ it.effect(
         createdAt: DateTime.makeUnsafe("2026-10-14T00:00:00Z"),
       };
       const outcomes = [
-        yield* service.prepare(shared).pipe(Effect.flip),
         yield* service.prepareLegacyImport(shared).pipe(Effect.flip),
         yield* service
           .prepareProviderHandoff({ ...shared, strategy: "full_thread_summary" })

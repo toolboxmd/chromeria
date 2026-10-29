@@ -260,10 +260,7 @@ const renewalListCommand = Command.make("list", { ...authLocationFlags, json: js
             ...entry,
             fingerprint: entry.fingerprint.slice(0, 16),
           }));
-          if (flags.json)
-            return yield* Console.log(
-              yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(entries),
-            );
+          if (flags.json) return yield* Console.log(yield* encodeValue(entries));
           for (const entry of entries) {
             const clean = (value: string | null) =>
               value?.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 256) ?? "unknown";
@@ -320,27 +317,15 @@ const renewalClientCommitments = Command.make("client-commitments", {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const directory = yield* fs.realPath(path.resolve(flags.stateDir));
-      const document = yield* Schema.decodeUnknownEffect(
-        Schema.fromJsonString(
-          Schema.Struct({
-            stateDir: Schema.String,
-            entries: Schema.Array(
-              Schema.Struct({
-                key: Schema.String,
-                environmentId: Schema.String,
-                origin: Schema.String,
-                epoch: Schema.String,
-                commitment: AuthRenewalCommitment,
-              }),
-            ),
-          }),
-        ),
-      )(yield* fs.readFileString(path.join(directory, "renewal-commitments.json")));
+      const document =
+        yield* decodeStateDirentrieskeyenvironmentIdoriginepochcommitmentAuthRenewalCommitment(
+          yield* fs.readFileString(path.join(directory, "renewal-commitments.json")),
+        );
       if ((yield* fs.realPath(path.resolve(document.stateDir))) !== directory)
         return yield* new RenewalDiagnosticError({});
       yield* Console.log(
         flags.json
-          ? yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(document.entries)
+          ? yield* encodeValue(document.entries)
           : document.entries
               .map((entry) => `${entry.environmentId} ${entry.origin}\n  ${entry.commitment}`)
               .join("\n"),
@@ -362,3 +347,22 @@ export const authCommand = Command.make("auth").pipe(
   Command.withDescription("Manage the local auth control plane for headless deployments."),
   Command.withSubcommands([pairingCommand, sessionCommand, renewalCommand]),
 );
+
+const encodeValue = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeStateDirentrieskeyenvironmentIdoriginepochcommitmentAuthRenewalCommitment =
+  Schema.decodeEffect(
+    Schema.fromJsonString(
+      Schema.Struct({
+        stateDir: Schema.String,
+        entries: Schema.Array(
+          Schema.Struct({
+            key: Schema.String,
+            environmentId: Schema.String,
+            origin: Schema.String,
+            epoch: Schema.String,
+            commitment: AuthRenewalCommitment,
+          }),
+        ),
+      }),
+    ),
+  );

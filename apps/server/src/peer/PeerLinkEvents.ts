@@ -26,7 +26,9 @@ export const layer = Layer.effect(
     const changes = yield* PubSub.sliding<EnvironmentId>(64);
     const automation = yield* PubSub.sliding<void>(1);
     return PeerLinkEvents.of({
-      changed: (id) => PubSub.publish(changes, id).pipe(Effect.asVoid),
+      changed: Effect.fn("PeerLinkEvents.changed")((id) =>
+        PubSub.publish(changes, id).pipe(Effect.asVoid),
+      ),
       changes: Stream.fromPubSub(changes),
       automationChanged: PubSub.publish(automation, undefined).pipe(Effect.asVoid),
       subscribeAutomationChanges: PubSub.subscribe(automation),

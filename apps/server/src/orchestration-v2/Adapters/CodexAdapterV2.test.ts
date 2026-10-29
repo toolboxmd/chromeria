@@ -1,3 +1,13 @@
+import * as CapacityRecovery from "../../prism/RecoveryCoordinator.ts";
+import * as CapacityHistory from "../../prism/RecoveryHistory.ts";
+import {
+  recoveryRun as capacityRun,
+  threadFor as capacityThread,
+  errorFor as capacityErrorItem,
+} from "../../prism/recovery.testkit.ts";
+import { retryCommand as capacityRetryCommand } from "../../prism/recoveryPolicy.ts";
+import * as CapacitySqlite from "../../persistence/Sqlite.ts";
+import * as CapacitySettings from "../../serverSettings.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import {
   makeProviderTextDeltaCoalescer,
@@ -2389,6 +2399,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     "recover",
     "completion-only",
     "exhaust",
+    "exhaust-completion-only",
     "stop",
     "stop-continued",
     "stop-starting",
@@ -2441,10 +2452,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           prompt,
         });
         entries.push(
-          ...(outcome === "completion-only" ? failureEntries(0).slice(1) : failureEntries(0)),
+          ...(outcome === "completion-only" || outcome === "exhaust-completion-only"
+            ? failureEntries(0).slice(1)
+            : failureEntries(0)),
         );
         if (outcome === "completion-only") entries.push(...failureEntries(0).slice(1));
-        const retries = outcome === "exhaust" ? 5 : outcome === "stop" ? 0 : 1;
+        const retries = outcome.startsWith("exhaust") ? 5 : outcome === "stop" ? 0 : 1;
         const steeredText = "Use the smaller change.";
         for (let attempt = 1; attempt <= retries; attempt++) {
           const start = codexReplayPreamble({
@@ -2536,7 +2549,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               }
             }
           }
-          if (outcome === "exhaust") entries.push(...failureEntries(attempt));
+          if (outcome.startsWith("exhaust"))
+            entries.push(
+              ...(outcome === "exhaust-completion-only"
+                ? failureEntries(attempt).slice(1)
+                : failureEntries(attempt)),
+            );
           if (
             outcome === "recover" ||
             outcome === "completion-only" ||
@@ -2704,6 +2722,48 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         );
         assert.lengthOf(starts, 1 + retries);
         assert.lengthOf(harness.terminalEvents(), 1);
+        if (outcome.startsWith("exhaust")) {
+          assert.isTrue(terminal?.failure?.retryable);
+          const failure = terminal!.failure!;
+          const database = CapacitySqlite.layerMemory;
+          yield* Effect.gen(function* () {
+            const coordinator = yield* CapacityRecovery.RecoveryCoordinator;
+            const item = capacityErrorItem(capacityRun);
+            if (item.type !== "error") return yield* Effect.die("Expected error fixture");
+            const projection = {
+              thread: capacityThread(capacityRun),
+              runs: [capacityRun],
+              turnItems: [{ ...item, failure }],
+              runtimeRequests: [],
+            };
+            const first = yield* coordinator.observe(projection, false);
+            assert.equal(first?.state, "retry_pending");
+            assert.isTrue(first?.retryUsed);
+            assert.deepEqual(yield* coordinator.observe(projection, false), first);
+            const command = capacityRetryCommand(first!, 0);
+            assert.equal(command?.type, "message.dispatch");
+            if (command?.type === "message.dispatch") {
+              assert.notEqual(command.text, prompt);
+              assert.deepEqual(command.modelSelection, capacityRun.modelSelection);
+            }
+            assert.equal((yield* coordinator.observe(projection, true))?.state, "cancelled");
+            const stoppedOutcome = yield* CapacityHistory.readRecoveryOutcome(capacityRun.id);
+            assert.equal(stoppedOutcome?.status, "decided");
+            yield* coordinator.observe(projection, false);
+            assert.deepEqual(
+              yield* CapacityHistory.readRecoveryOutcome(capacityRun.id),
+              stoppedOutcome,
+            );
+          }).pipe(
+            Effect.provide(
+              CapacityRecovery.layer.pipe(
+                Layer.provideMerge(database),
+                Layer.provide(CapacitySettings.layerTest()),
+              ),
+            ),
+          );
+        }
+
         assert.lengthOf(
           harness.events.filter(
             (event) =>
@@ -8962,7 +9022,7 @@ describe("CodexAdapterV2 cut-in cohort", () => {
     const hold = Effect.suspend(
       () =>
         runtime.endedTurnHold?.({ providerThread, providerTurnId: rootId() }) ??
-        Effect.succeed(undefined),
+        Effect.sync(() => undefined),
     );
     const take = (method: string) => Queue.take(controls.get(method)!);
     const pending = runtime.hasPendingBackgroundWork ?? Effect.die("Missing pending work probe");

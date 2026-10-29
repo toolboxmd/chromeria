@@ -284,10 +284,9 @@ const make = Effect.gen(function* () {
         const validated = yield* (
           input.validate ? input.validate(selection) : Effect.succeed(selection)
         ).pipe(
-          Effect.catch((error) =>
-            error.code === "provider_unavailable" || error.code === "model_unavailable"
-              ? Effect.succeed(null)
-              : Effect.fail(error),
+          Effect.catchIf(
+            (error) => error.code === "provider_unavailable" || error.code === "model_unavailable",
+            () => Effect.succeed(null),
           ),
         );
         if (validated === null) continue;

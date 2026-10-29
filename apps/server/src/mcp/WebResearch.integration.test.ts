@@ -80,7 +80,9 @@ const fixture = Effect.fnUntraced(function* (
   );
   const reader = WebResearch.layer.pipe(
     Layer.provide(Layer.mock(Search.Search)({})),
-    Layer.provide(Layer.succeed(TinyFish.TinyFish, { fetch: () => Effect.succeed(undefined) })),
+    Layer.provide(
+      Layer.succeed(TinyFish.TinyFish, { fetch: () => Effect.die("Unused TinyFish fetch") }),
+    ),
     Layer.provide(cacheLayer),
     Layer.provide(
       Layer.succeed(PublicRender.PublicRender, {

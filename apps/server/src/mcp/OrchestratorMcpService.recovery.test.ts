@@ -1,3 +1,5 @@
+import * as PeerLinkRequests from "../peer/PeerLinkRequests.ts";
+import * as PeerLinks from "../peer/PeerLinks.ts";
 import { NodeHttpServer } from "@effect/platform-node";
 import { HttpBody, HttpClient, HttpRouter } from "effect/http";
 import * as Schema from "effect/Schema";
@@ -75,12 +77,19 @@ const persist = (key: string, events: ReadonlyArray<OrchestrationV2DomainEvent>)
 const read = Effect.scoped(
   Effect.gen(function* () {
     const serverLayer = McpHttpServer.toolkitRegistration(OrchestratorToolkit, Handlers.layer).pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(PeerLinks.PeerLinks)({}),
+          Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+        ),
+      ),
+      Layer.provide(Settings.layerTest()),
       Layer.provide(Metadata.layer),
       Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
       Layer.provideMerge(McpHttpServer.layerMcpTransport),
       Layer.provide(
         Layer.mock(McpSessionRegistry.McpSessionRegistry)({
-          resolve: () => Effect.succeed(undefined),
+          resolve: () => Effect.sync(() => undefined),
         }),
       ),
       Layer.provide(
@@ -156,7 +165,7 @@ const processLayer = (path: string) => {
           projections.getTimelinePage(id, options).pipe(Effect.orDie),
         readRunRecovery: (source) =>
           History.readRunRecovery(source).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
-        readRestartCutView: () => Effect.succeed(undefined),
+        readRestartCutView: () => Effect.sync(() => undefined),
       });
     }),
   ).pipe(Layer.provide(stores));
@@ -181,6 +190,7 @@ const processLayer = (path: string) => {
   );
   return Layer.mergeAll(
     stores,
+    Settings.layerTest(),
     management,
     EventSink.layer.pipe(Layer.provide(stores)),
     service,

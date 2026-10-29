@@ -259,7 +259,6 @@ it.effect.each([
           // Hold the real durable root effect while another worker starts the explicit turn.
           const delayed = yield* outbox.claimNext({
             workerId: "delayed-root-stop",
-            leaseDurationMs: 60_000,
           });
           assert.isTrue(Option.isSome(delayed));
           if (Option.isNone(delayed)) return;

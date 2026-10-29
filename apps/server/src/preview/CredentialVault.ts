@@ -154,7 +154,7 @@ const make = Effect.gen(function* () {
   });
 
   return CredentialVault.of({
-    uris: (item) =>
+    uris: Effect.fn("CredentialVault.uris")((item) =>
       call(item, "get", "uris").pipe(
         Effect.map((text) =>
           text
@@ -163,7 +163,10 @@ const make = Effect.gen(function* () {
             .filter(Boolean),
         ),
       ),
-    read: (item, field) => (field === "totp" ? call(item, "code") : call(item, "get", field)),
+    ),
+    read: Effect.fn("CredentialVault.read")((item, field) =>
+      field === "totp" ? call(item, "code") : call(item, "get", field),
+    ),
   });
 });
 

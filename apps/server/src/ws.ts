@@ -1407,7 +1407,8 @@ export const layerWsRpc = (
         currentSession,
         AuthPreviewOperateScope,
       );
-      const authorizePreviewClient = () => Effect.runPromise(checkPreviewClient);
+      const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
+      const authorizePreviewClient = () => runPromise(checkPreviewClient);
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
       const triage = yield* TriageService.TriageService;
       const hostResources = yield* HostResources.HostResources;

@@ -69,7 +69,7 @@ export const READ_EXPRESSION = `(async () => {
 })()`;
 
 export const layer = Layer.succeed(BrowserRenewalEngine, {
-  read: (input) =>
+  read: Effect.fn("BrowserRenewalEngine.read")((input) =>
     Effect.acquireUseRelease(
       Effect.tryPromise({
         try: () => {
@@ -114,6 +114,7 @@ export const layer = Layer.succeed(BrowserRenewalEngine, {
         }),
       (context) => Effect.promise(() => context.close()).pipe(Effect.ignore),
     ),
+  ),
 });
 
 /** The live profile is only copied. Chromium and SQLite open the private copy. */
@@ -167,7 +168,7 @@ export const read = Effect.fn("BrowserRenewalCommitments.read")(function* (input
       catch: (cause) => new BrowserCommitmentReadError({ cause }),
     });
     for (const row of ids) {
-      const { id } = yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.Number }))(row);
+      const { id } = yield* decodeId(row);
       if (!Number.isSafeInteger(id) || id < 0) throw new Error("Invalid browser storage bucket.");
       yield* copy(path.join("WebStorage", String(id), "IndexedDB"));
     }
@@ -180,3 +181,5 @@ export const read = Effect.fn("BrowserRenewalCommitments.read")(function* (input
       Effect.mapError((cause) => new BrowserCommitmentReadError({ cause })),
     );
 });
+
+const decodeId = Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.Number }));

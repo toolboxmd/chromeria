@@ -1076,10 +1076,16 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
         (input.deviceId === undefined || session.deviceId === input.deviceId),
     );
     if (closing.length === 0) return;
-    yield* Effect.forEach(closing, retireCommandSession, { discard: true });
+    const ending = (session: DeviceSession) =>
+      closing.includes(session) ||
+      (input.shutdown === true &&
+        closing.some(
+          (closed) => closed.hostId === session.hostId && closed.deviceId === session.deviceId,
+        ));
+    yield* Effect.forEach(state.sessions.filter(ending), retireCommandSession, { discard: true });
     yield* publish((current) => ({
       ...current,
-      sessions: current.sessions.filter((session) => !closing.includes(session)),
+      sessions: current.sessions.filter((session) => !ending(session)),
     }));
     if (input.shutdown) {
       yield* Effect.forEach(
@@ -1087,25 +1093,6 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
         (session) => shutdownDevice(session.hostId, session.deviceId, session.platform),
         { discard: true },
       );
-      if (closing.length === 0) return;
-      // Powering off ends every session on the device, so all of them retire, and release, while it is on.
-      const ending = (session: DeviceSession) =>
-        closing.includes(session) ||
-        (input.shutdown === true &&
-          closing.some(
-            (closed) => closed.hostId === session.hostId && closed.deviceId === session.deviceId,
-          ));
-      yield* publish((current) => ({
-        ...current,
-        sessions: current.sessions.filter((session) => !ending(session)),
-      }));
-      if (input.shutdown) {
-        yield* Effect.forEach(
-          closing,
-          (session) => shutdownDevice(session.hostId, session.deviceId, session.platform),
-          { discard: true },
-        );
-      }
     }
   }, commandLock.withPermit);
 

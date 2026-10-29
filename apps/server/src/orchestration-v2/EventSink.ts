@@ -1022,7 +1022,7 @@ const layerBase: Layer.Layer<
                       ),
                     (id) =>
                       projectionStore.getThread(id).pipe(
-                        Effect.map(Option.some),
+                        Effect.asSome,
                         Effect.catchTags({
                           ProjectionStoreThreadNotFoundError: () => Effect.succeedNone,
                         }),
