@@ -160,7 +160,7 @@ export const layer = McpToolAccess.toLayer(
           return {
             matches: matches.map((match) => ({
               ...match,
-              link: formatThreadLink({ threadId: match.threadId, title: match.title }),
+              link: formatThreadLink({ threadId: match.threadId }, match.title),
             })),
           };
         }),
