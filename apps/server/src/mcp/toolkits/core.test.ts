@@ -214,7 +214,14 @@ it.effect("an answered question reports already answered instead of not found", 
                   },
                 ],
               }),
-            dispatch: () => Effect.die("an answered question must not dispatch again"),
+            dispatch: (command) =>
+              Effect.fail(
+                new OrchestratorDispatchError({
+                  commandId: command.commandId,
+                  commandType: command.type,
+                  cause: `Runtime request ${requestId} is resolved.`,
+                }),
+              ),
           }),
         ),
       ),
