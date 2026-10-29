@@ -1,9 +1,7 @@
 # Carried upstream edits, one primary owner in docs/fork-features.md.
-packages/ssh/src/tunnel.test.ts
 apps/desktop/src/shell/DesktopShellEnvironment.test.ts
 apps/desktop/src/shell/DesktopShellEnvironment.ts
 apps/server/src/os-jank.test.ts
-packages/shared/src/shell.test.ts
 packages/shared/src/shell.ts
 .github/workflows/ci.yml
 .github/workflows/pr-size.yml
@@ -13,10 +11,8 @@ AGENTS.md
 apps/desktop/package.json
 apps/desktop/src/app/DesktopAppIdentity.test.ts
 apps/desktop/src/app/DesktopAppIdentity.ts
-apps/desktop/src/window/DesktopApplicationMenu.test.ts
 apps/desktop/src/app/DesktopClerk.test.ts
 apps/desktop/src/app/DesktopEnvironment.ts
-apps/desktop/src/app/DesktopPreReadyFileSystem.test.ts
 apps/desktop/src/app/DesktopPreReadyPlatform.test.ts
 apps/desktop/src/app/DesktopUserData.test.ts
 apps/desktop/src/app/DesktopUserData.ts
@@ -25,7 +21,6 @@ apps/server/src/auth/PairingGrantStore.test.ts
 apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts
 apps/server/src/testUtils/shardWeights.json
 apps/server/src/auth/RpcAuthorization.ts
-apps/server/src/cli/config.test.ts
 apps/server/src/config.ts
 apps/server/src/environment/ServerEnvironment.ts
 apps/server/src/mcp/McpHttpServer.ts
@@ -36,10 +31,8 @@ apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts
 apps/server/src/mcp/TaskCancelNativeSubagent.integration.test.ts
 apps/server/src/mcp/threadAccess.ts
 apps/server/src/mcp/toolkits/core.test.ts
-apps/server/src/mcp/toolkits/orchestrator/tools.test.ts
 apps/server/src/mcp/toolkits/thread/handlers.ts
 apps/server/src/mcp/toolkits/thread/tools.ts
-apps/server/src/mcp/toolkits/worktree/registration.test.ts
 apps/server/src/observability/RpcInstrumentation.ts
 packages/provider-opencode/src/server/adapter.test.ts
 packages/provider-opencode/src/server/adapter.ts
@@ -73,12 +66,10 @@ apps/server/src/orchestration-v2/ThreadMessageIntake.ts
 apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts
 apps/server/src/orchestration-v2/ThreadPullRequestService.ts
 apps/server/src/orchestration-v2/ThreadStop.test.ts
-apps/server/src/orchestration-v2/V1ImportBoundary.test.ts
 apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts
 apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts
 apps/server/src/persistence/initializeV2Database.test.ts
 apps/server/src/project/RepositoryIdentityResolver.test.ts
-apps/server/src/project/RepositoryIdentityResolver.ts
 packages/provider-grok/src/server/driver.test.ts
 packages/provider-grok/src/server/driver.ts
 packages/provider-core/src/server/maintenance.ts
@@ -94,20 +85,14 @@ apps/server/src/serverRuntimeStartup.autoPull.test.ts
 apps/server/src/serverRuntimeStartup.ts
 apps/server/src/serverSettings.test.ts
 apps/server/src/serverSettings.ts
-apps/server/src/vcs/GitVcsDriver.test.ts
-apps/server/src/vcs/GitVcsDriver.ts
 apps/server/src/vcs/GitVcsDriverCore.test.ts
-apps/server/src/vcs/GitVcsDriverCore.ts
 apps/server/src/ws.ts
 apps/web/index.html
-apps/web/src/bootstrap.test.ts
-apps/web/src/branding.test.ts
 apps/web/src/branding.ts
 apps/web/src/bundledDev.test.ts
 apps/web/src/components/ChatMarkdown.tsx
 apps/web/src/components/ChatView.tsx
 apps/web/src/components/CommandPalette.tsx
-apps/web/src/components/RightPanelTabs.keyboard.browser.test.tsx
 apps/web/src/components/RightPanelTabs.tsx
 apps/web/src/components/T3Wordmark.tsx
 apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
@@ -117,7 +102,6 @@ apps/web/src/components/pullRequest/PullRequestListFilters.tsx
 apps/web/src/components/pullRequest/ThreadPullRequestsPanel.tsx
 apps/web/src/components/settings/IntegrationsSettings.tsx
 apps/web/src/components/settings/ProviderSettingsPanel.tsx
-apps/web/src/components/settings/SettingsPanels.tsx
 apps/web/src/components/settings/ThemePreviewCircles.tsx
 apps/web/src/components/settings/settingsSearch.ts
 apps/web/src/components/settings/settingsSearch.test.ts
@@ -147,7 +131,6 @@ packages/contracts/src/rpc.ts
 packages/contracts/src/settings.ts
 scripts/build-desktop-artifact.test.ts
 scripts/build-desktop-artifact.ts
-scripts/lib/brand-assets.test.ts
 scripts/lib/brand-assets.ts
 t3.json
 
@@ -181,10 +164,8 @@ apps/server/src/mcp/toolkits/project/tools.ts
 apps/server/src/orchestration-v2/runtimeLayer.ts
 packages/provider-core/src/server/runtimeInstructions.ts
 packages/provider-core/src/server/orchestrationInstructions.ts
-packages/provider-core/src/server/orchestrationInstructions.test.ts
 apps/web/src/components/settings/SettingsSidebarNav.tsx
 apps/web/src/routeTree.gen.ts
-apps/web/src/components/settings/SettingsPanels.restore.browser.test.tsx
 apps/server/src/orchestration-v2/testkit/ReplayRuntimeInstructions.ts
 
 # Attempt-owned stream observation before presentation buffering (#172)
@@ -213,7 +194,6 @@ apps/mobile/src/features/settings/scheduledTaskDraft.ts
 apps/server/src/scheduledTasks/Schedule.ts
 apps/server/src/scheduledTasks/ScheduledTaskService.ts
 apps/web/src/components/ThreadNotificationCoordinator.badge.browser.test.ts
-apps/web/src/components/ThreadNotificationCoordinator.browser.test.tsx
 apps/web/src/components/ThreadNotificationCoordinator.tsx
 apps/web/src/components/settings/ScheduledTasksSettings.tsx
 apps/web/src/components/settings/scheduledTasksSettings.logic.ts
@@ -241,7 +221,6 @@ apps/web/src/components/chat/MermaidDiagram.tsx
 apps/server/src/cli/invocation.test.ts
 apps/server/src/environment/ServerEnvironment.test.ts
 apps/server/src/auth/ServerSecretStore.test.ts
-apps/server/src/auth/ServerSecretStore.ts
 
 # Exports used by carried fork instructions and ACP regressions.
 packages/shared/package.json
@@ -249,15 +228,12 @@ packages/provider-grok/src/testing.ts
 
 # Issue links in inline and expanded HTML documents.
 apps/web/src/components/files/BrowserDocumentFrame.tsx
-apps/web/src/components/chat/HtmlRenderDialog.browser.test.tsx
 
 # Peer links: upstream port and fork hooks (#164, #380)
 apps/mobile/src/features/home/HomeRouteScreen.tsx
 apps/mobile/src/features/settings/SettingsEnvironmentDetailRouteScreen.tsx
-apps/web/src/components/LegacySidebar.tsx
 packages/client-runtime/src/state/commandPermissions.test.ts
 apps/server/src/auth/McpOAuth.ts
-apps/server/src/binCli.ts
 apps/server/src/mcp/McpHttpServer.test.ts
 apps/server/src/mcp/McpInvocationContext.ts
 apps/server/src/mcp/McpToolAccess.test.ts
@@ -272,22 +248,16 @@ apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts
 apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts
 apps/server/src/orchestration-v2/ThreadManagementService.test.ts
 apps/server/src/orchestration-v2/runtimeLayer.test.ts
-apps/server/src/project/ProjectEnrichmentService.ts
 apps/server/src/project/ProjectService.ts
 apps/server/src/project/ProjectSetupScriptRunner.test.ts
-apps/server/src/project/ProjectSetupScriptRunner.ts
 packages/shared/src/t3McpToolPresentation.ts
 packages/shared/src/t3McpToolPresentation.test.ts
-apps/server/src/cli/environment.ts
-apps/server/src/orchestration-v2/ProviderRuntimeRecoveryPerformance.test.ts
 apps/server/src/orchestration-v2/RestartContinuation.test.ts
 apps/server/src/orchestration-v2/RestartContinuation.ts
 apps/server/src/orchestration-v2/SubagentProjection.test.ts
 packages/client-runtime/src/work-log/presentation.ts
 
 # Nested CLI startup: upstream fix carried until absorption (#295).
-apps/server/src/cloud/serviceLauncherClient.test.ts
-apps/server/src/cloud/serviceLauncherClient.ts
 
 # ContextMD native receipt proof (#245).
 apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts
@@ -310,7 +280,6 @@ apps/server/src/mcp/toolkits/preview/tools.ts
 apps/server/src/mcp/toolkits/previewControls/tools.ts
 apps/server/src/mcp/toolkits/pullRequests/tools.ts
 apps/server/src/mcp/toolkits/worktree/tools.ts
-apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts
 docs/internals/remote.md
 packages/contracts/src/assets.ts
 apps/server/src/htmlRender/HtmlRender.ts
@@ -324,7 +293,6 @@ apps/server/src/orchestration-v2/CheckpointRollbackService.ts
 packages/provider-core/src/server/ProviderAdapter.ts
 apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts
 apps/server/src/orchestration-v2/ProviderTurnStartService.ts
-apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs
 apps/server/src/provider/acp/AcpJsonRpcConnection.test.ts
 packages/provider-acp/src/server/AcpSessionRuntime.ts
 
@@ -356,19 +324,15 @@ apps/web/src/lib/runtime.test.ts
 
 # Bare launch context stripping and durable admission (#289).
 apps/server/package.json
-apps/server/src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts
 apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts
 apps/server/src/orchestration-v2/ContextHandoffService.test.ts
 apps/server/src/orchestration-v2/ContextHandoffService.ts
-apps/server/src/orchestration-v2/CursorOrchestratorV2.live.test.ts
-apps/server/src/orchestration-v2/GrokOrchestratorV2.live.test.ts
 apps/server/src/orchestration-v2/ProjectSettingsUpgrade.integration.test.ts
 apps/server/src/orchestration-v2/ProviderSwitchService.ts
 apps/server/src/orchestration-v2/RuntimePolicy.ts
 apps/server/src/scheduledTasks/ScheduledTaskService.schedule.test.ts
 apps/server/src/scheduledTasks/ScheduledTaskService.test.ts
 apps/server/src/scheduledTasks/ScheduledTaskService.webhook.test.ts
-apps/server/src/scheduling/Scheduler.integration.test.ts
 docs/user/outside-agents.md
 packages/provider-core/package.json
 packages/provider-core/src/server/failure.ts
@@ -385,7 +349,6 @@ docs/user/composer.md
 packages/provider-opencode/src/server/v2/adapter.ts
 apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts
 apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts
-apps/server/src/orchestration-v2/testkit/OrchestratorReplayRestartBackgroundNote.integration.test.ts
 
 # No project sidebar section (#356).
 apps/mobile/src/features/home/HomeScreen.tsx
@@ -419,13 +382,11 @@ packages/client-runtime/src/connection/registry.ts
 packages/client-runtime/src/relay/discovery.test.ts
 packages/client-runtime/src/relay/discovery.ts
 packages/client-runtime/src/state/threads-atoms.test.ts
-apps/web/src/components/cloud/CloudEnvironmentConnectList.browser.test.tsx
 apps/mobile/src/features/threads/SubagentRow.tsx
 apps/mobile/src/features/threads/ThreadAgentsSheet.tsx
 apps/mobile/src/features/threads/thread-subagent-group.tsx
 apps/mobile/src/features/threads/threadAgentsPresentation.test.ts
 apps/mobile/src/features/threads/threadAgentsPresentation.ts
-apps/web/src/components/chat/ThreadRelationshipsControl.agents.browser.test.tsx
 apps/web/src/components/chat/ThreadRelationshipsControl.tsx
 apps/web/src/components/chat/V2ItemInspector.tsx
 apps/web/src/components/chat/V2LifecycleRow.tsx
@@ -446,14 +407,12 @@ packages/source-control-github/package.json
 apps/server/src/sourceControl/builtInDrivers.ts
 apps/web/src/components/chat/RightPanelSurfaceContent.tsx
 apps/web/src/state/entities.ts
-apps/server/src/orchestration-v2/testkit/OrchestratorReplayRecovery.integration.test.ts
 apps/web/src/components/settings/ProviderSettingsPanel.environment.browser.test.tsx
 packages/client-runtime/src/state/presentation.test.ts
 
 packages/source-control-github/graphql.config.ts
 packages/source-control-github/src/server/GitHubPullRequestApi.test.ts
 packages/source-control-github/src/server/GitHubPullRequestApi.ts
-packages/source-control-github/src/server/gitHubPullRequestJson.test.ts
 packages/source-control-github/src/server/gitHubPullRequestJson.ts
 packages/source-control-github/src/server/pullRequestBatches.graphql
 packages/source-control-github/src/server/pullRequestBatches.graphql.ts
@@ -516,7 +475,6 @@ apps/mobile/src/state/pending-thread-creation.ts
 apps/mobile/src/state/thread-outbox-model.ts
 apps/mobile/src/state/thread-outbox.test.ts
 apps/mobile/src/state/use-thread-composer-state.ts
-apps/mobile/src/state/use-thread-outbox-drain.ts
 apps/server/src/mcp/toolkits/pullRequests/handlers.ts
 packages/client-runtime/src/state/models.ts
 packages/contracts/src/threadPullRequest.ts
@@ -548,7 +506,6 @@ packages/client-runtime/src/rpc/session.test.ts
 docs/user/browser-import.md
 apps/desktop/src/backend/DesktopLocalEnvironmentAuth.ts
 apps/server/src/auth/PairingGrantStore.ts
-apps/web/src/components/settings/IntegrationsSettings.browser.test.tsx
 apps/web/src/hooks/useSettings.test.ts
 packages/shared/src/authScopeOptions.ts
 apps/web/vite.config.ts
@@ -571,7 +528,6 @@ packages/contracts/src/previewAutomation.ts
 # Chrome source opt-in and nonblocking Keychain reads (#541, chrome-login-mirror)
 apps/desktop/src/preview/BrowserImport/ChromiumKeys.test.ts
 apps/desktop/vite.config.ts
-apps/desktop/src/preview/BrowserImport/ChromiumKeys.module.test.ts
 apps/desktop/scripts/main-process-bundle.test.mjs
 
 # Vault credential fill in server browser tabs (#557)
@@ -618,13 +574,11 @@ apps/server/src/device/DeviceService.test.ts
 apps/server/src/http.ts
 apps/server/src/preview/Manager.ts
 apps/server/src/preview/ServerBrowserPage.test.ts
-apps/server/src/preview/ServerBrowserPage.ts
 apps/server/src/preview/ServerBrowserStream.ts
 apps/server/src/preview/SessionControl.test.ts
 apps/server/src/preview/SessionControl.ts
 apps/web/src/browser/ServerBrowserSurface.tsx
 apps/web/src/browser/serverPictureInPicture.ts
-apps/web/src/components/device/DeviceStreamView.browser.test.tsx
 apps/web/src/components/device/DeviceStreamView.tsx
 apps/web/src/components/preview/PreviewPanel.tsx
 apps/web/src/components/preview/ThreadPreviewMiniPlayer.tsx
@@ -642,16 +596,13 @@ packages/client-runtime/src/state/assets.ts
 packages/client-runtime/src/state/device.ts
 packages/client-runtime/src/state/deviceHubAccess.ts
 packages/client-runtime/src/state/preview.ts
-packages/contracts/src/assets.test.ts
 packages/contracts/src/preview.test.ts
 packages/contracts/src/preview.ts
-packages/contracts/src/previewAutomation.ts
 packages/shared/src/toolOutput.test.ts
 packages/shared/src/toolOutput.ts
 
 # Qualified viewer per-request screenshot admission (#383)
 packages/client-runtime/src/device/screenshot.ts
-packages/client-runtime/src/device/screenshot.test.ts
 
 # Full Chrome for Testing for server browsers (#572)
 apps/server/src/htmlRender/headlessChrome.ts
@@ -660,10 +611,7 @@ apps/server/src/preview/PreviewBrowser.ts
 apps/server/src/preview/PreviewBrowserHost.ts
 apps/server/src/preview/ServerBrowserContexts.test.ts
 docs/user/html-renders.md
-apps/web/src/browser/ElectronBrowserHost.tsx
-apps/web/src/browser/previewRuntime.test.ts
 apps/web/src/browser/previewRuntime.ts
-apps/web/src/components/preview/usePreviewSession.ts
 apps/mobile/src/features/threads/useThreadListV2.ts
 apps/server/src/cli/thread.ts
 apps/server/src/device/DeviceService.ts
@@ -697,7 +645,6 @@ apps/server/src/provider/CodexDeveloperInstructions.test.ts
 apps/web/src/components/CommandPalette.logic.ts
 apps/web/src/components/device/DevicePanel.browser.test.tsx
 apps/server/src/persistence/Migrations/066_RepairClientSettlementTimestamps.test.ts
-scripts/effect-budget.json
 apps/mobile/src/lib/protectedData.test.ts
 
 # Upstream absorption at 6d82a22: retained mobile cache bridge and carried hooks (#620).
@@ -724,3 +671,5 @@ apps/server/src/orchestration-v2/threadHistoryPaging.ts
 packages/client-runtime/src/state/entities.test.ts
 apps/server/src/provider/AgentContextBudget.test.ts
 apps/server/src/provider/agentContextBudget.json
+
+apps/web/src/components/files/BrowserDocumentFrame.browser.test.tsx
