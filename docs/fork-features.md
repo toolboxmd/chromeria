@@ -971,6 +971,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/childThreads/pendingResponseAdmission.ts"
   ],
   "upstreamFiles": [
+    "apps/server/src/orchestration-v2/BackgroundWorkStop.integration.test.ts",
     "packages/client-runtime/src/state/threadDetail.ts",
     "apps/server/src/mcp/OrchestratorMcpService.activity.test.ts",
     "apps/server/src/mcp/OrchestratorMcpService.test.ts",
