@@ -11,7 +11,6 @@ import * as Sqlite from "../persistence/Sqlite.ts";
 import * as Config from "../config.ts";
 import * as Receipts from "./McpRequestReceipts.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
-import * as NodeCrypto from "node:crypto";
 import { requestNamespace } from "./requestIdentity.ts";
 
 const scope: McpInvocationScope = {
@@ -209,13 +208,12 @@ it.effect.each(["encoded", "hashed", "hashed-peer"] as const)(
                 },
               }
             : scope;
-        const namespace = format === "hashed-peer" ? "client:old-grant" : caller.requestNamespace;
         const legacyId =
           format === "encoded"
             ? "mcp:launch:client%3Aold-grant:imported-key"
-            : `mcp:launch:${NodeCrypto.createHash("sha256")
-                .update(JSON.stringify([namespace, "imported-key"]))
-                .digest("hex")}`;
+            : format === "hashed"
+              ? "mcp:launch:da418df51aa93712cfab20eec913e1ac7c0521dbc1ffad2e7a483409b324fbcf"
+              : "mcp:launch:d01d58fad315954b9ff7171b84ae8178c3c37f86b7388eb7edcb609b3b2f5ea3";
         yield* sql`INSERT INTO orchestration_command_receipts (command_id,aggregate_kind,aggregate_id,command_type,accepted_at,result_sequence,status,error)
       VALUES (${legacyId},'thread','original-thread','thread.create','2026-01-01T00:00:00.000Z',1,'accepted',NULL)`;
         const receipts = yield* reconstruct;
