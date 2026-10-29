@@ -1,3 +1,4 @@
+import { PreviewAutomationSelectResult } from "@t3tools/contracts";
 import * as PeerAuthority from "../../../peer/PeerAuthority.ts";
 import * as ServerBrowser from "../../../preview/ServerBrowser.ts";
 import { externalReplay, requestDigest } from "../../McpRequestReceipts.ts";
@@ -438,38 +439,6 @@ const handlers = {
         ),
       ),
     ),
-  ),
-  preview_fill_credential: McpToolAccess.actsAsCaller(
-    (input) =>
-      Effect.gen(function* () {
-        const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
-        // The audit line takes nothing from the page: only the matched vault host.
-        const audit = (site: string | null, result: string) =>
-          recordCredentialFill({
-            environmentId: scope.environmentId,
-            threadId: scope.thread.threadId,
-            item: input.item,
-            field: input.field,
-            site,
-            result,
-          });
-        return yield* invokeTargeted<PreviewAutomationFillCredentialResult>(
-          "fillCredential",
-          input,
-          input.timeoutMs,
-        ).pipe(
-          Effect.tap((result) => audit(result.site, "filled")),
-          Effect.tapError((error) =>
-            audit(null, error._tag === "PreviewCredentialError" ? error.reason : error._tag),
-          ),
-        );
-      }),
-    {
-      effect: (input) =>
-        typeof input === "object" && input !== null && "save" in input && input.save === true
-          ? "external-unknown"
-          : "read",
-    },
   ),
   preview_click: McpToolAccess.actsOnResource(
     "preview",

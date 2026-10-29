@@ -1,3 +1,8 @@
+import * as Path from "effect/Path";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as ServerConfig from "../../../config.ts";
+import { ensureAgentDeviceShim } from "../../../device/AgentDeviceShim.ts";
+import { nodeRuntimeUnavailableMessage } from "@t3tools/shared/nodeRuntime";
 import type * as Tool from "effect/ai/Tool";
 import {
   OrchestratorMcpFailure,
@@ -280,7 +285,7 @@ const handlers = {
                   "Device support is off. Ask the user to enable it in the Device panel before installing or starting device tools.",
               });
             }
-            const target = yield* pickDevice(state.devices, input);
+            const target = yield* pickDevice(state, input);
             if (request !== undefined && target.physical)
               return yield* new DeviceToolUnavailableError({
                 reason:
@@ -377,7 +382,12 @@ const handlers = {
             return {
               device,
               agentDevice: { command, targetArgs },
-              quickStart: agentDeviceQuickStart(device, targetArgs, command, cloud),
+              quickStart: agentDeviceQuickStart(
+                device,
+                targetArgs,
+                command,
+                cloud ? { kind: "eas" } : undefined,
+              ),
             };
           }),
         );

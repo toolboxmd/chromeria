@@ -8845,7 +8845,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command.stoppedThere === "stopped" &&
       (command.stopCount ?? 0) !== (task.remoteChild?.stopCount ?? 0)
     )
-      return;
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "The remote Stop generation changed.",
+      });
     const observation = command.observation;
     if (
       observation !== undefined &&
@@ -12787,7 +12791,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     const providerSessionId = providerThread.providerSessionId;
-    yield* enforceCommandPolicy(command)(
+    yield* mapDispatchError(command)(
       commandPolicy.ensureInterrupt({
         commandId: command.commandId,
         threadId: command.threadId,

@@ -82,15 +82,18 @@ const HtmlRenderTool = Tool.make(HTML_RENDER_TOOL_NAME, {
       description: `Frame height in CSS pixels, ${HTML_RENDER_MIN_HEIGHT} to ${HTML_RENDER_MAX_HEIGHT}. Use the contentHeight from html_preview.`,
     }),
   }),
-  success: Schema.Struct({
-    htmlRender: Schema.Struct({
-      attachmentId: Schema.String,
-      title: Schema.String,
-      height: Schema.Number,
-      heights: Schema.optional(Schema.Array(Schema.Tuple([Schema.Int, Schema.Int]))),
+  success: Schema.Union([
+    Schema.Struct({ preparedHtml: Schema.String, title: Schema.String, height: Schema.Number }),
+    Schema.Struct({
+      htmlRender: Schema.Struct({
+        attachmentId: Schema.String,
+        title: Schema.String,
+        height: Schema.Number,
+        heights: Schema.optional(Schema.Array(Schema.Tuple([Schema.Int, Schema.Int]))),
+      }),
+      message: Schema.String,
     }),
-    message: Schema.String,
-  }),
+  ]),
   failure: OrchestratorMcpFailure,
   failureMode: "return",
   dependencies: [

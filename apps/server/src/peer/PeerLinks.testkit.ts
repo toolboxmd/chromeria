@@ -195,6 +195,7 @@ export const servePeer = <E, R>(
       ),
     ).pipe(
       Layer.provide(layerRecordBearers),
+      Layer.provide(ServerSettings.layerTest({ linkedEnvironmentsEnabled: true })),
       Layer.provide(Layer.succeedContext(authorityContext ?? Context.empty())),
       Layer.provide(layerEnvironment),
       Layer.provide(Layer.succeedContext(authContext)),

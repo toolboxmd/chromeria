@@ -1,3 +1,4 @@
+import * as Duration from "effect/Duration";
 import * as RecoveryHooks from "../prism/RecoveryHooks.ts";
 import { waitForRecovery, RecoveryWaitState } from "../peer/recoveryWait.ts";
 import type {
@@ -1493,7 +1494,8 @@ const make = Effect.gen(function* () {
     > = [];
     const stoppedChildThreadIds = new Set<ThreadId>(descendants);
     for (const task of subagents) {
-      if (task.origin === "app_owned" && task.childThreadId !== null) stoppedChildThreadIds.add(task.childThreadId);
+      if (task.origin === "app_owned" && task.childThreadId !== null)
+        stoppedChildThreadIds.add(task.childThreadId);
       // A task in a linked environment ends here; its follower then stops it there.
       if (
         task.origin !== "app_owned" ||

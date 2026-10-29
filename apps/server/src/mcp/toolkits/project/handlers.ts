@@ -1,3 +1,4 @@
+import * as DateTime from "effect/DateTime";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import { BareLaunchError } from "@t3tools/provider-core/server/bareLaunch";
 import { ToolPolicyError } from "@t3tools/provider-core/server/toolPolicy";
@@ -246,18 +247,18 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 input.modelSelection ??
                 caller?.modelSelection ??
                 (projectDefaults
-            ? resolveNewThreadModelSelection({
-                defaultSelection: projectDefaults.defaultModelSelection,
-                fallbackSelection: projectDefaults.fallbackModelSelection,
-                providers: yield* ProviderRegistry.ProviderRegistry.pipe(
-                  Effect.flatMap((registry) => registry.getProviders),
-                ),
-                settings: projectDefaults,
-                projectId,
-                now: DateTime.toEpochMillis(yield* DateTime.now),
-              }).selection
-            : null) ??
-          undefined;
+                  ? resolveNewThreadModelSelection({
+                      defaultSelection: projectDefaults.defaultModelSelection,
+                      fallbackSelection: projectDefaults.fallbackModelSelection,
+                      providers: yield* ProviderRegistry.ProviderRegistry.pipe(
+                        Effect.flatMap((registry) => registry.getProviders),
+                      ),
+                      settings: projectDefaults,
+                      projectId,
+                      now: DateTime.toEpochMillis(yield* DateTime.now),
+                    }).selection
+                  : null) ??
+                undefined;
 
               const prism = yield* Prism.PrismService;
               const adapters = yield* ProviderAdapterRegistryV2;
@@ -381,7 +382,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         const run = result.projection.runs.find((run) => run.userMessageId === messageId);
         return {
           threadId: thread.id,
-          link: formatThreadLink(thread.id, thread.title),
+          link: formatThreadLink({ threadId: thread.id, title: thread.title }),
           projectId: thread.projectId,
           modelSelection: run?.modelSelection ?? thread.modelSelection,
           runId: run?.id ?? null,

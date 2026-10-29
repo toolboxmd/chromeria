@@ -1,3 +1,12 @@
+import { PreviewAutomationPressInput, PreviewAutomationScrollInput } from "@t3tools/contracts";
+import {
+  PreviewAutomationClickInput,
+  PreviewAutomationTypeInput,
+  PreviewAutomationHoverInput,
+  PreviewAutomationSelectInput,
+  PreviewAutomationDragInput,
+  PreviewAutomationUploadInput,
+} from "@t3tools/contracts";
 import { McpSavedSnapshotReceipt } from "@t3tools/contracts";
 import * as McpRouting from "../../McpRouting.ts";
 import {
@@ -175,6 +184,27 @@ export const PreviewSnapshotTool = safeBrowserTool(
   }).annotate(Tool.Title, "Inspect browser page"),
 );
 
+const PreviewPressTool = browserTool(
+  Tool.make("preview_press", {
+    description: "Press one key, such as {key:'Enter'} or {key:'a',modifiers:['Meta']}.",
+    parameters: McpRouting.parameters(PreviewAutomationPressInput),
+    success: PreviewActionResult,
+    failure: PreviewToolFailure,
+    dependencies,
+  }).annotate(Tool.Title, "Press key in preview page"),
+);
+
+const PreviewScrollTool = safeBrowserTool(
+  Tool.make("preview_scroll", {
+    description:
+      "Scroll the chosen tab, or one container with a locator or selector. Positive `deltaY` scrolls down. Positive `deltaX` scrolls right.",
+    parameters: McpRouting.parameters(PreviewAutomationScrollInput),
+    success: PreviewActionResult,
+    failure: PreviewToolFailure,
+    dependencies,
+  }).annotate(Tool.Title, "Scroll preview page"),
+);
+
 const PreviewClickTool = browserTool(
   Tool.make("preview_click", {
     description:
@@ -286,7 +316,8 @@ const PreviewEndLoginTool = browserTool(
 const PreviewActTool = browserTool(
   Tool.make("preview_act", {
     description:
-      "Act on the chosen tab. Target with `locator='aria-ref=<ref>'` from `preview_snapshot`; `x` and `y` go together. `timeoutMs` defaults to 15000. click: `button`, `clickCount` 1 to 3. type: literal `text`, `clear=true` replaces it. hover: shows menus or tooltips. select: `values` in one native <select>, by value or label; for a custom dropdown, click it open, then click the option. drag: `source` onto `target`. upload: absolute `paths` answer the file picker `preview_status` reports, [] cancels it, or a `locator` sets an <input type=file>. press: one `key`, such as 'Enter', with `modifiers`, to the focused element; click a field first to focus it. scroll: the tab, or one container with a locator; positive `deltaY` scrolls down, positive `deltaX` right." + COMPUTER_USE_HINT,
+      "Act on the chosen tab. Target with `locator='aria-ref=<ref>'` from `preview_snapshot`; `x` and `y` go together. `timeoutMs` defaults to 15000. click: `button`, `clickCount` 1 to 3. type: literal `text`, `clear=true` replaces it. hover: shows menus or tooltips. select: `values` in one native <select>, by value or label; for a custom dropdown, click it open, then click the option. drag: `source` onto `target`. upload: absolute `paths` answer the file picker `preview_status` reports, [] cancels it, or a `locator` sets an <input type=file>. press: one `key`, such as 'Enter', with `modifiers`, to the focused element; click a field first to focus it. scroll: the tab, or one container with a locator; positive `deltaY` scrolls down, positive `deltaX` right." +
+      COMPUTER_USE_HINT,
     parameters: PreviewAutomationActInput,
     success: Schema.Union([
       Schema.Struct({ ...PreviewAutomationSelectResult.fields, ...presentationFields }),
@@ -370,6 +401,14 @@ export const PreviewToolkit = Toolkit.make(
   PreviewSetAppearanceTool,
   PreviewSnapshotTool,
   PreviewActTool,
+  PreviewPressTool,
+  PreviewScrollTool,
+  PreviewClickTool,
+  PreviewTypeTool,
+  PreviewHoverTool,
+  PreviewSelectTool,
+  PreviewDragTool,
+  PreviewUploadTool,
   PreviewFillCredentialTool,
   PreviewEndLoginTool,
   PreviewEvaluateTool,
@@ -386,6 +425,14 @@ export const PreviewStandardToolkit = Toolkit.make(
   PreviewResizeTool,
   PreviewSetAppearanceTool,
   PreviewActTool,
+  PreviewPressTool,
+  PreviewScrollTool,
+  PreviewClickTool,
+  PreviewTypeTool,
+  PreviewHoverTool,
+  PreviewSelectTool,
+  PreviewDragTool,
+  PreviewUploadTool,
   PreviewFillCredentialTool,
   PreviewEndLoginTool,
   PreviewEvaluateTool,
