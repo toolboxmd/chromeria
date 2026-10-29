@@ -1972,6 +1972,7 @@ sources and reasons.
     "packages/client-runtime/src/state/deviceHubAccess.test.ts"
   ],
   "upstreamFiles": [
+    "packages/contracts/src/rpc.test.ts",
     "apps/server/src/mcp/delegatedTaskModes.ts",
     "apps/server/src/mcp/linkOrigin.test.ts",
     "apps/server/src/mcp/linkOrigin.ts",
