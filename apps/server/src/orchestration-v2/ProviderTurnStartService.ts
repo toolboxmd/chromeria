@@ -1087,6 +1087,7 @@ export const layer: Layer.Layer<
       };
       const prepareRetryHandoff = Effect.fn("ProviderTurnStartService.prepareRetryHandoff")(
         function* (context: ReturnType<typeof handoffContextForThread>) {
+          if (projection.thread.bare !== undefined) return [];
           const { missedRunIds, coveredItemIds, missedRuns } = context;
           const missedItems =
             missedRunIds.size === 0
