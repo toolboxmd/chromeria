@@ -253,7 +253,14 @@ const make = Effect.gen(function* () {
           message:
             "Remote secrets require the dedicated negotiated owner; generic forwarding is unsupported.",
         });
-      if (toolName === "t3_pending_request_respond" || toolName === "t3_pending_request_dismiss") {
+      if (
+        toolName === "t3_pending_request_respond" ||
+        toolName === "t3_pending_request_dismiss" ||
+        (toolName === "t3_pending_request" &&
+          Predicate.isObject(params) &&
+          "action" in params &&
+          params.action === "respond")
+      ) {
         if (peers.requirePendingRequests === undefined)
           return yield* new OrchestratorMcpFailure({
             code: "invalid_request",
@@ -1113,7 +1120,7 @@ const make = Effect.gen(function* () {
           arguments: args,
           limits,
           success: success as Schema.Decoder<unknown>,
-          ...(toolName.startsWith("t3_pending_request_") &&
+          ...((toolName === "t3_pending_request" || toolName.startsWith("t3_pending_request_")) &&
           caller.caller !== undefined &&
           isPromachosThread(caller.caller)
             ? { promachosThreadId: caller.caller.id }

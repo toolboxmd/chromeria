@@ -2002,11 +2002,25 @@ it.live.each(["android", "ios"] as const)(
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );
 
-it.live(
-  "pending532: actual source role and destination policy compose with native ancestry and concurrent answers",
-  () =>
+it.live.each(["split", "consolidated"] as const)(
+  "pending532: %s source role and destination policy compose with native ancestry and concurrent answers",
+  (surface) =>
     Effect.scoped(
       Effect.gen(function* () {
+        const readRequest = (actor: ThreadId, input: Record<string, unknown>) =>
+          nativeCall(
+            a,
+            actor,
+            surface === "split" ? "t3_pending_request_read" : "t3_pending_request",
+            { ...input, ...(surface === "split" ? {} : { action: "read" }) },
+          );
+        const respond = (input: Record<string, unknown>) =>
+          nativeCall(
+            a,
+            promachos,
+            surface === "split" ? "t3_pending_request_respond" : "t3_pending_request",
+            { ...input, ...(surface === "split" ? {} : { action: "respond" }) },
+          );
         const a = yield* makeNode(descriptorOf("pending532-a", "A", { peerAuthority: 1 }), "disk", {
           attachmentRequests: true,
           productionKernel: true,
@@ -2030,14 +2044,12 @@ it.live(
           requestTarget: { environmentId: b.environmentId, threadId: target },
         };
         // A full runtime mode does not widen the default created-work resource grant.
-        expect((yield* nativeCall(a, promachos, "t3_pending_request_read", args)).isError).toBe(
-          true,
-        );
+        expect((yield* readRequest(promachos, args)).isError).toBe(true);
         const grant = (yield* b.authority.grants)[0];
         if (grant === undefined) return yield* Effect.die("Missing fixture grant");
         yield* b.authority.setGrant({ ...grant, resourceScope: "environment-resources" });
-        expect((yield* nativeCall(a, worker, "t3_pending_request_read", args)).isError).toBe(true);
-        const read = yield* nativeCall(a, promachos, "t3_pending_request_read", args);
+        expect((yield* readRequest(worker, args)).isError).toBe(true);
+        const read = yield* readRequest(promachos, args);
         expect(read.isError, json(read)).not.toBe(true);
         const content = yield* decodePending369Content(read.structuredContent);
         const answer = {
@@ -2053,9 +2065,7 @@ it.live(
           threadId: promachos,
           interactionMode: "plan",
         });
-        expect(
-          (yield* nativeCall(a, promachos, "t3_pending_request_respond", answer)).isError,
-        ).toBe(true);
+        expect((yield* respond(answer)).isError).toBe(true);
         yield* a.threads.dispatch({
           type: "thread.interaction-mode.set",
           commandId: CommandId.make("pending532-default"),
@@ -2064,8 +2074,8 @@ it.live(
         });
         const concurrent = yield* Effect.all(
           [
-            nativeCall(a, promachos, "t3_pending_request_respond", answer),
-            nativeCall(a, promachos, "t3_pending_request_respond", {
+            respond(answer),
+            respond({
               ...answer,
               clientRequestId: "pending532-rival",
               answers: { color: "Silver" },
@@ -2101,12 +2111,8 @@ it.live(
           threadId: delegated.childId,
           requestId: childRequest,
         };
-        expect(
-          (yield* nativeCall(a, promachos, "t3_pending_request_read", childArgs)).isError,
-        ).toBe(true);
-        expect(
-          (yield* nativeCall(a, worker, "t3_pending_request_read", childArgs)).isError,
-        ).not.toBe(true);
+        expect((yield* readRequest(promachos, childArgs)).isError).toBe(true);
+        expect((yield* readRequest(worker, childArgs)).isError).not.toBe(true);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );
