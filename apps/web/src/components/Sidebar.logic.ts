@@ -606,7 +606,9 @@ export function buildMultiSelectThreadContextMenuItems(input: {
 }
 
 export function isSidebarSubagentThread(
-  thread: Pick<SidebarThreadSummary, "lineage" | "delegatedFrom">,
+  thread: Pick<SidebarThreadSummary, "lineage"> & {
+    readonly delegatedFrom?: SidebarThreadSummary["delegatedFrom"];
+  },
 ): boolean {
   return (
     thread.lineage.relationshipToParent === "subagent" ||
@@ -651,7 +653,10 @@ export function filterSidebarV2VisibleThreads<
 ): T[] {
   return threads.filter(
     (thread) =>
-      isThreadVisibleInNavigation(thread, searchQuery) &&
+      isThreadVisibleInNavigation(
+        { ...thread, delegatedFrom: thread.delegatedFrom ?? null },
+        searchQuery,
+      ) &&
       (searchQuery.trim().length > 0 ||
         !isShownUnderParent(
           { environmentId: thread.environmentId, threadId: thread.id },

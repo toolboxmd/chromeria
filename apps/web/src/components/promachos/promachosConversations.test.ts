@@ -21,6 +21,7 @@ function thread(
 ) {
   return {
     id: ThreadId.make(id),
+    delegatedFrom: null,
     lineage: {
       rootThreadId: ThreadId.make("root"),
       ...(overrides.lineage ?? { parentThreadId: null, relationshipToParent: null }),
