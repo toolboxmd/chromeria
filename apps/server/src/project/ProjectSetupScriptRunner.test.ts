@@ -13,7 +13,6 @@ import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
-import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProjectService from "./ProjectService.ts";
 import * as ProjectSetupScriptRunner from "./ProjectSetupScriptRunner.ts";
 
@@ -109,12 +108,16 @@ describe("ProjectSetupScriptRunner", () => {
     Effect.gen(function* () {
       const linked = yield* makeHarness({
         getThreadShell: (id) =>
-          Effect.succeed({ ...liveThreadShell(id), linkOrigin: { sessionId: "s", label: "Laptop" } }),
+          Effect.succeed({
+            ...liveThreadShell(id),
+            linkOrigin: { sessionId: "s", label: "Laptop" },
+          }),
       });
       expect(yield* linked.start).toEqual({ status: "skipped-for-link" });
       expect(yield* Queue.size(linked.writes)).toBe(0);
       const unread = yield* makeHarness({
-        getThreadShell: (id) => Effect.fail(new ProjectionStore.ProjectionStoreReadError({ threadId: id })),
+        getThreadShell: (id) =>
+          Effect.fail(new ProjectionStore.ProjectionStoreReadError({ threadId: id })),
       });
       const error = yield* unread.start.pipe(Effect.flip);
       expect(error._tag).toBe("ProjectSetupScriptOperationError");

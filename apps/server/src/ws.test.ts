@@ -124,7 +124,6 @@ import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as IssueLinks from "./issueLinks/IssueLinks.ts";
 import * as IssueService from "./issues/IssueService.ts";
 import * as PeerAuthority from "./peer/PeerAuthority.ts";
-import * as PeerLinks from "./peer/PeerLinks.ts";
 import * as PendingRequestService from "./childThreads/PendingRequestService.ts";
 import * as ServerBrowserStream from "./preview/ServerBrowserStream.ts";
 import * as RemoteDelegation from "./peer/RemoteDelegation.ts";

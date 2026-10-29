@@ -1,3 +1,4 @@
+import { ensurePeerLinksSchema } from "../persistence/forkPeerLinksSchema.ts";
 import * as RemoteSecretPersistence from "../secrets/remoteSecretPersistence.ts";
 import {
   ensureAutomationAuthoritySchema,
@@ -49,9 +50,13 @@ const LINK_REDIRECT_URI = "http://127.0.0.1/t3code-peer-link";
 const probeTimeout = (origin: string) =>
   isLocalLoopbackHost(new URL(origin).hostname) ? Duration.seconds(3) : Duration.seconds(10);
 
+export interface StoredPeerLink extends PeerLink {
+  readonly launchIdentity: string;
+}
+
 /** A usable link: where to reach the peer and the token to send there. */
 export interface ResolvedPeerLink {
-  readonly link: PeerLink;
+  readonly link: StoredPeerLink;
   /** The first address that answered as this peer. */
   readonly url: string;
   readonly token: string;
@@ -85,7 +90,7 @@ export class PeerLinks extends Context.Service<
     /** The stored link, without asking the peer whether it answers. */
     readonly get: (
       environmentId: EnvironmentId,
-    ) => Effect.Effect<Option.Option<PeerLink>, PeerLinkError>;
+    ) => Effect.Effect<Option.Option<StoredPeerLink>, PeerLinkError>;
     /** Forgets the link here. The peer still lists the session until it is revoked there. */
     readonly unlink: (environmentId: EnvironmentId) => Effect.Effect<boolean, PeerLinkError>;
     /** An address that answers as the linked peer, with its token, ready to call. */
@@ -189,6 +194,11 @@ const make = Effect.gen(function* () {
     Effect.map((bytes) => `peer-link-${Hex.encode(bytes)}`),
     Effect.orDie,
   );
+
+  const launchIdentity = (secretName: string) =>
+    crypto
+      .digest("SHA-256", new TextEncoder().encode(secretName))
+      .pipe(Effect.map(Hex.encode), Effect.orDie);
 
   // Only the origin `peerOrigin` checked may receive a pairing code or token:
   // a redirect could forward them anywhere, including plain http.
@@ -498,16 +508,15 @@ const make = Effect.gen(function* () {
       .set(secretName, new TextEncoder().encode(issued.access_token))
       .pipe(Effect.catch(failStorage));
     // A token no row names could never be removed.
-    const previous = yield* Effect.gen(function* () {
-      const urlsJson = yield* encodeUrls(origins).pipe(Effect.catch(failStorage));
-      const previous = yield* readRow(peer.environmentId);
-      const retainPrevious = yield* sql
-        .withTransaction(
-          Effect.gen(function* () {
-            const retain = Option.isSome(previous)
-              ? yield* retireAutomationLink(previous.value)
-              : false;
-            yield* sql`
+    const urlsJson = yield* encodeUrls(origins).pipe(Effect.catch(failStorage));
+    const previous = yield* readRow(peer.environmentId);
+    const retainPrevious = yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const retain = Option.isSome(previous)
+            ? yield* retireAutomationLink(previous.value)
+            : false;
+          yield* sql`
         INSERT INTO peer_environment_links (
           environment_id, secret_name, label, urls_json, access, linked_at, expires_at,
           last_reached_at, last_error, fenced

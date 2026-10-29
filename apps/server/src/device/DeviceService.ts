@@ -66,7 +66,6 @@ import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
-import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
@@ -92,7 +91,6 @@ import {
   DEVICE_HUB_VERSION,
   installedAgentDevice,
 } from "./DeviceToolchain.ts";
-import * as Option from "effect/Option";
 import { requestDigest } from "../mcp/McpRequestReceipts.ts";
 import { requestNamespace, requestGeneration } from "../mcp/requestIdentity.ts";
 import * as Invocation from "../mcp/McpInvocationContext.ts";
@@ -905,23 +903,25 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     }
   });
 
-  const open: DeviceService["Service"]["open"] = Effect.fn("DeviceService.open")(
-    function* (input, context) {
-      yield* recheckAction;
-      const host = yield* resolveHost(input.hostId);
-      yield* ensurePlatform(host, input.platform);
-      const ready = yield* readiness(host.id);
-      let state = yield* refresh(ready);
-      let device = findDevice(state, host.id, input.deviceId);
-      if (!device) {
-        return yield* new DeviceNotFoundError({ hostId: host.id, deviceId: input.deviceId });
-      }
-      // Hosts that route their own streams never encode emulator video with serve-emu's ffmpeg.
-      if (device.platform === "android" && !device.physical && !ready.upstream) {
-        // Resolve the override on the device host the way its hub does.
-        const encoders = yield* ready.run(ready.nodePath, [
-          "-e",
-          `const { spawnSync } = require("node:child_process");
+  const open: DeviceService["Service"]["open"] = Effect.fn("DeviceService.open")(function* (
+    input,
+    context,
+  ) {
+    yield* recheckAction;
+    const host = yield* resolveHost(input.hostId);
+    yield* ensurePlatform(host, input.platform);
+    const ready = yield* readiness(host.id);
+    let state = yield* refresh(ready);
+    let device = findDevice(state, host.id, input.deviceId);
+    if (!device) {
+      return yield* new DeviceNotFoundError({ hostId: host.id, deviceId: input.deviceId });
+    }
+    // Hosts that route their own streams never encode emulator video with serve-emu's ffmpeg.
+    if (device.platform === "android" && !device.physical && !ready.upstream) {
+      // Resolve the override on the device host the way its hub does.
+      const encoders = yield* ready.run(ready.nodePath, [
+        "-e",
+        `const { spawnSync } = require("node:child_process");
   const result = spawnSync(process.env.SERVE_EMU_FFMPEG?.trim() || "ffmpeg", ["-hide_banner", "-encoders"], {
     stdio: "inherit", timeout: 10000, killSignal: "SIGKILL",
   });

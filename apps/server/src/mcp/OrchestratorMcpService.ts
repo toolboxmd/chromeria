@@ -166,7 +166,6 @@ import {
   runtimeModeRank,
   taskPrompt,
 } from "./delegatedTaskModes.ts";
-import { isLiveCallerShell, threadNotFound } from "./threadAccess.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
@@ -1093,7 +1092,6 @@ const make = Effect.gen(function* () {
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
   const fileSystem = yield* FileSystem.FileSystem;
-  const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
 
   const bareTarget = Effect.fnUntraced(function* (selection: ModelSelection) {
     const adapter = yield* providerAdapters
@@ -1888,6 +1886,7 @@ const make = Effect.gen(function* () {
     return {
       taskId: task.id,
       childThreadId: null,
+      childRunId: task.remoteChild?.runId ?? null,
       ...(task.remoteChild === undefined
         ? {}
         : {
@@ -1907,44 +1906,51 @@ const make = Effect.gen(function* () {
         ...(task.remoteChild?.snapshot === undefined
           ? {}
           : { snapshot: task.remoteChild.snapshot }),
-        ...(task.remoteChild?.originalResult === undefined
-          ? {}
-          : { latestTerminalPurpose: task.completionSource.purpose }),
-        childNodeId: task.id,
-        status,
-        workState:
-          task.remoteChild?.snapshot?.workState ?? (terminal ? "result_available" : "working"),
-        hasPendingChildRuns:
-          (task.remoteChild?.snapshot?.pendingChildren ?? 0) > 0 ||
-          (task.remoteChild?.snapshot?.queuedRuns ?? 0) > 0 ||
-          task.remoteChild?.snapshot?.recoveryWaiting === true,
-        hasPendingApproval:
-          task.remoteChild?.availability === "current" &&
-          (task.remoteChild.snapshot?.requests.some(
-            (request) =>
-              request.responseType === "live" &&
-              request.kind !== "user_input" &&
-              request.kind !== "auth_refresh" &&
-              request.kind !== "dynamic_tool_call",
-          ) ??
-            false),
-        // Destination request ids are not local; remoteObservation routes the approval.
-        pendingApproval: null,
-        // Question counts come from qualified destination observations.
-        hasPendingQuestion: (task.remoteChild?.snapshot?.pendingQuestions ?? 0) > 0,
-        providerInstanceId: task.providerInstanceId,
-        model: task.model,
-        summary: task.result,
-        resultContextTransferId: null,
-        latestTerminalRunId: task.remoteChild?.latestResult?.runId ?? null,
-        latestTerminalStatus: task.remoteChild?.latestResult?.status ?? null,
-        latestTerminalSummary: task.remoteChild?.latestResult?.text ?? null,
-        latestTerminalResultContextTransferId: null,
-        pendingApproval: null,
-        ...(task.remoteChild?.threadId === undefined ? {} : { link: formatThreadLink({ environmentId: task.remoteChild.environmentId, threadId: task.remoteChild.threadId }) }),
-        waitTimedOut,
-      } satisfies OrchestratorMcpDelegateTaskResult;
-    });
+      },
+      ...(task.completionSource === undefined
+        ? {}
+        : { latestTerminalPurpose: task.completionSource.purpose }),
+      childNodeId: task.id,
+      status,
+      workState:
+        task.remoteChild?.snapshot?.workState ?? (terminal ? "result_available" : "working"),
+      hasPendingChildRuns:
+        (task.remoteChild?.snapshot?.pendingChildren ?? 0) > 0 ||
+        (task.remoteChild?.snapshot?.queuedRuns ?? 0) > 0 ||
+        task.remoteChild?.snapshot?.recoveryWaiting === true,
+      hasPendingApproval:
+        task.remoteChild?.availability === "current" &&
+        (task.remoteChild.snapshot?.requests.some(
+          (request) =>
+            request.responseType === "live" &&
+            request.kind !== "user_input" &&
+            request.kind !== "auth_refresh" &&
+            request.kind !== "dynamic_tool_call",
+        ) ??
+          false),
+      // Destination request ids are not local; remoteObservation routes the approval.
+      pendingApproval: null,
+      // Question counts come from qualified destination observations.
+      hasPendingQuestion: (task.remoteChild?.snapshot?.pendingQuestions ?? 0) > 0,
+      providerInstanceId: task.providerInstanceId,
+      model: task.model,
+      summary: task.result,
+      resultContextTransferId: null,
+      latestTerminalRunId: task.remoteChild?.latestResult?.runId ?? null,
+      latestTerminalStatus: task.remoteChild?.latestResult?.status ?? null,
+      latestTerminalSummary: task.remoteChild?.latestResult?.text ?? null,
+      latestTerminalResultContextTransferId: null,
+      ...(task.remoteChild?.threadId === undefined
+        ? {}
+        : {
+            link: formatThreadLink({
+              environmentId: task.remoteChild.environmentId,
+              threadId: task.remoteChild.threadId,
+            }),
+          }),
+      waitTimedOut,
+    } satisfies OrchestratorMcpDelegateTaskResult;
+  });
 
   const waitForTask = Effect.fn("OrchestratorMcpService.waitForTask")(
     function* (scope: McpThreadInvocationScope, taskId: NodeId, _timeoutMs: number) {
@@ -4050,7 +4056,13 @@ const make = Effect.gen(function* () {
         }
       }
       return {
-        thread: threadDetail(scope, target, timeline.totalItems, shell, yield* Clock.currentTimeMillis),
+        thread: threadDetail(
+          scope,
+          target,
+          timeline.totalItems,
+          shell,
+          yield* Clock.currentTimeMillis,
+        ),
         recentRuns: yield* Effect.forEach(
           target.runs
             .toSorted((left, right) => right.ordinal - left.ordinal)

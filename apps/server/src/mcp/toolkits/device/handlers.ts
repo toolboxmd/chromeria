@@ -467,5 +467,4 @@ export const layerStandard = McpToolAccess.toLayer(DeviceStandardToolkit, standa
 export const layerScreenshot = McpToolAccess.toLayer(DeviceScreenshotToolkit, {
   device_screenshot,
 });
-import * as Option from "effect/Option";
 import { CurrentRequest, externalDispatch, externalReplay } from "../../McpRequestReceipts.ts";

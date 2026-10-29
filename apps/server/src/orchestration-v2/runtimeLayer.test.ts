@@ -981,29 +981,55 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
               supportsSteeringByInterruptRestart: false,
             },
           },
-          {
-            id: EventId.make("runtime-delivery-intent-session-event"),
-            type: "provider-session.attached",
-            threadId,
-            occurredAt: now,
-            payload: providerSession,
-          },
-          {
-            id: EventId.make("runtime-delivery-intent-turn-event"),
-            type: "provider-turn.updated",
-            threadId,
-            runId: run.id,
-            occurredAt: now,
-            payload: providerTurn,
-          },
-        ],
-      });
-      const sessionSpy = vi.spyOn(sessions, "get").mockReturnValue(
-        Effect.succeedSome({
-          providerSession,
-        } as ProviderAdapter.ProviderAdapterV2SessionRuntime),
-      );
-      yield* Effect.addFinalizer(() => Effect.sync(() => sessionSpy.mockRestore()));
+          createdAt: now,
+          updatedAt: now,
+          lastError: null,
+        };
+        const providerTurn = {
+          id: ProviderTurnId.make("runtime-delivery-intent-turn"),
+          providerThreadId: providerThread.id,
+          nodeId: run.rootNodeId!,
+          runAttemptId: run.activeAttemptId,
+          nativeTurnRef: null,
+          ordinal: 1,
+          status: "running" as const,
+          startedAt: now,
+          completedAt: null,
+        };
+        yield* eventSink.write({
+          commandId: CommandId.make("runtime-delivery-intent-running"),
+          events: [
+            {
+              id: EventId.make("runtime-delivery-intent-run-event"),
+              type: "run.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: { ...run, status: "running", startedAt: now },
+            },
+            {
+              id: EventId.make("runtime-delivery-intent-session-event"),
+              type: "provider-session.attached",
+              threadId,
+              occurredAt: now,
+              payload: providerSession,
+            },
+            {
+              id: EventId.make("runtime-delivery-intent-turn-event"),
+              type: "provider-turn.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: providerTurn,
+            },
+          ],
+        });
+        const sessionSpy = vi.spyOn(sessions, "get").mockReturnValue(
+          Effect.succeedSome({
+            providerSession,
+          } as ProviderAdapter.ProviderAdapterV2SessionRuntime),
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(() => sessionSpy.mockRestore()));
 
         yield* orchestrator.dispatch({
           type: "thread.metadata.update",
@@ -7428,7 +7454,6 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         assert.equal((yield* orchestrator.getThreadProjection(threadId)).messages.length, 1);
       }),
   );
-
 });
 
 const queueResumeDisabledInstanceProjectId = ProjectId.make(
