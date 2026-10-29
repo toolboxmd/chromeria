@@ -18,62 +18,41 @@ const state = vi.hoisted(() => ({
   badge: vi.fn(),
   settingsListeners: new Set<() => void>(),
 }));
-vi.mock(import("./ui/toast"), async (original) => {
-  const actual = await original();
-  return { ...actual, toastManager: { ...actual.toastManager, add: state.toast as never } };
-});
+vi.mock("./ui/toast", () => ({ toastManager: { add: state.toast, close: vi.fn() } }));
 vi.mock("../state/server", () => ({
   serverEnvironment: {
     scheduledTasksLive: ({ environmentId }: { environmentId: string }) =>
       commandTasksAtom(environmentId),
   },
 }));
-vi.mock(import("../state/shell"), async (original) => {
-  const actual = await original();
-  return {
-    ...actual,
-    environmentShell: {
-      ...actual.environmentShell,
-      stateValueAtom: ((id: string) => shellAtom(id)) as never,
+vi.mock("../state/shell", () => ({
+  environmentShell: { stateValueAtom: (id: string) => shellAtom(id) },
+}));
+vi.mock("../state/presentation", () => ({
+  environmentSummaries: {
+    get environmentIdsAtom() {
+      return environmentIdsAtom;
     },
-  };
-});
-vi.mock(import("../state/presentation"), async (original) => {
-  const actual = await original();
-  return {
-    ...actual,
-    environmentSummaries: {
-      ...actual.environmentSummaries,
-      // Read lazily: the factory runs before this module's own bindings exist.
-      get environmentIdsAtom() {
-        return environmentIdsAtom as never;
-      },
+  },
+}));
+vi.mock("../state/threads", () => ({
+  environmentThreadShells: {
+    pendingSubagentRequestsAtom: () => noRequestsAtom,
+    get delegatedUnderParentAtom() {
+      return noDelegatedAtom;
     },
-  };
-});
-vi.mock(import("../state/threads"), async (original) => {
-  const actual = await original();
-  return {
-    ...actual,
-    environmentThreadShells: {
-      ...actual.environmentThreadShells,
-      pendingSubagentRequestsAtom: (() => noRequestsAtom) as never,
-      get delegatedUnderParentAtom() {
-        return noDelegatedAtom as never;
-      },
-    },
-  };
-});
-vi.mock(import("../hooks/useSettings"), async (original) => ({
-  ...(await original()),
-  subscribeClientSettings: ((listener: () => void) => {
+  },
+}));
+vi.mock("../hooks/useSettings", () => ({
+  subscribeClientSettings: (listener: () => void) => {
     state.settingsListeners.add(listener);
     return () => state.settingsListeners.delete(listener);
-  }) as never,
-  getClientSettings: (() => ({
+  },
+  getClientSettings: () => ({
     notificationMode: state.mode,
     inAppNotificationsEnabled: state.inApp,
-  })) as never,
+  }),
+  useClientSettings: vi.fn(),
 }));
 vi.mock(import("../threadNotifications"), async (original) => ({
   ...(await original()),
