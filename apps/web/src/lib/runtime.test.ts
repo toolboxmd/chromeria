@@ -84,11 +84,18 @@ describe("web runtime session renewal", () => {
     vi.resetModules();
     vi.stubGlobal("window", {
       location: new URL("t3code://app/"),
-      desktopBridge: { getLocalEnvironmentEnabled: () => false },
+      desktopBridge: {
+        getLocalEnvironmentEnabled: () => false,
+        getRelayTelemetryEnabled: () => false,
+      },
     });
     const { runtime } = await import("./runtime");
-    await expect(
-      runtime.runPromise(SessionRenewal.SessionRenewal.pipe(Effect.asVoid)),
-    ).resolves.toBeUndefined();
+    try {
+      await expect(
+        runtime.runPromise(SessionRenewal.SessionRenewal.pipe(Effect.asVoid)),
+      ).resolves.toBeUndefined();
+    } finally {
+      await runtime.dispose();
+    }
   });
 });
