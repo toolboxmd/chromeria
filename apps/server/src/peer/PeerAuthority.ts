@@ -1262,7 +1262,7 @@ const make = Effect.gen(function* () {
           return yield* denied("The originating delegated job was stopped or retired.");
       } else if (
         !stoppedOrigin &&
-        !record.readOnly &&
+        (!record.readOnly || record.tool === "t3_attachment_inspect") &&
         (record.originRunId === null ||
           thread.activeRunId !== record.originRunId ||
           thread.archivedAt !== null)
