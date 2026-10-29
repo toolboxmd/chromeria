@@ -144,6 +144,7 @@ export function retirementAdmission(input: {
   readonly humanOverride?: boolean;
   readonly admittedHumanRunId?: RunId;
   readonly limitRecoveryRequestId?: CommandId;
+  readonly heldProviderWake?: true;
 }): ForkCommitPlan {
   return {
     guards: [
@@ -180,7 +181,12 @@ export function retirementAdmission(input: {
             threadId: input.threadId,
             kind: "state_conflict",
           });
-        if (state.retired && !input.resume && !armedAfterStop(thread, input.limitRecoveryRequestId))
+        if (
+          state.retired &&
+          !input.resume &&
+          !input.heldProviderWake &&
+          !armedAfterStop(thread, input.limitRecoveryRequestId)
+        )
           return yield* new ForkCommitGuardRejected({ threadId: input.threadId, kind: "retired" });
       }),
     ],
