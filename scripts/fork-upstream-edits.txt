@@ -46,6 +46,7 @@ apps/server/src/orchestration-v2/EffectOutbox.ts
 apps/server/src/orchestration-v2/EffectWorker.test.ts
 apps/server/src/orchestration-v2/EffectWorker.ts
 apps/server/src/orchestration-v2/EventSink.ts
+apps/server/src/orchestration-v2/BackgroundWorkStop.integration.test.ts
 apps/server/src/orchestration-v2/FoundationPersistence.test.ts
 apps/server/src/orchestration-v2/NotificationMailbox.ts
 apps/server/src/orchestration-v2/Orchestrator.ts
