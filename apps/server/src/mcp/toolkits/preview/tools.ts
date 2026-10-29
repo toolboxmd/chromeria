@@ -51,7 +51,7 @@ import * as ServerConfig from "../../../config.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 
 const COMPUTER_USE_HINT =
-  ' For browser or desktop driving beyond a quick check, delegate with delegate_task using prismRole: "computer-use".';
+  ' For browser or desktop driving beyond a quick check, call delegate_task with prismRole: "computer-use".';
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -187,7 +187,7 @@ export const PreviewSnapshotTool = safeBrowserTool(
 const PreviewPressTool = browserTool(
   Tool.make("preview_press", {
     description:
-      "Press one key, such as {key:'Enter'} or {key:'a',modifiers:['Meta']}." + COMPUTER_USE_HINT,
+      "Press a key, such as {key:'Enter'} or {key:'a',modifiers:['Meta']}." + COMPUTER_USE_HINT,
     parameters: McpRouting.parameters(PreviewAutomationPressInput),
     success: PreviewActionResult,
     failure: PreviewToolFailure,
