@@ -19,6 +19,7 @@ const observed = vi.hoisted(() => ({
   changePrompt: undefined as ((value: string) => void) | undefined,
   inject: vi.fn(),
   refreshedAccess: null as DeviceHubAccess | null,
+  accessListeners: new Set<() => void>(),
   source: undefined as WebViewProps["source"],
 }));
 vi.mock("react-native", () => ({
@@ -86,7 +87,8 @@ vi.mock("../../components/ui/AppText", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
 }));
 vi.mock("../../lib/attachmentDownload", () => ({ downloadAndShareAttachment: observed.share }));
-vi.mock("../../state/preview", () => {
+vi.mock("../../state/preview", async () => {
+  const { useSyncExternalStore } = await import("react");
   const access = {
     httpBase: "https://a.test/api/preview-stream",
     wsBase: "wss://a.test/api/preview-stream",
@@ -97,7 +99,13 @@ vi.mock("../../state/preview", () => {
   };
   return {
     usePreviewStreamAccess: () => ({
-      access: observed.refreshedAccess ?? access,
+      access: useSyncExternalStore(
+        (listener) => {
+          observed.accessListeners.add(listener);
+          return () => observed.accessListeners.delete(listener);
+        },
+        () => observed.refreshedAccess ?? access,
+      ),
       error: null,
       refresh: observed.refresh,
     }),
@@ -174,6 +182,7 @@ it("renews expired access without replacing a background picture-in-picture docu
     const earlyAccess = { ...current, query: { viewerTicket: "before-document-ready" } };
     await act(async () => {
       observed.refreshedAccess = earlyAccess;
+      observed.accessListeners.forEach((listener) => listener());
       render();
     });
     expect(observed.inject).not.toHaveBeenCalledWith(
@@ -199,6 +208,7 @@ it("renews expired access without replacing a background picture-in-picture docu
     expect(observed.unmounts).toBe(0);
     await act(async () => {
       observed.refreshedAccess = current;
+      observed.accessListeners.forEach((listener) => listener());
       render();
     });
     expect(observed.inject).toHaveBeenCalledWith(
@@ -216,6 +226,7 @@ it("renews expired access without replacing a background picture-in-picture docu
     expect(observed.refresh).toHaveBeenCalledTimes(2);
     await act(async () => {
       observed.refreshedAccess = { ...current, query: { viewerTicket: "manual-retry" } };
+      observed.accessListeners.forEach((listener) => listener());
       render();
     });
     expect(observed.mounts).toBe(2);

@@ -21,7 +21,6 @@ const state = vi.hoisted(() => ({
   snapshots: undefined as
     | ((id: EnvironmentId) => Atom.Writable<OrchestrationV2ShellSnapshot | null>)
     | undefined,
-  listeners: new Map<string, (event: { data: { closing: boolean } }) => void>(),
   matches: [] as EnvironmentThreadSearchMatch[],
   listRenders: 0,
   selected: [] as string[],
@@ -71,10 +70,6 @@ vi.mock("@react-navigation/native", () => ({
   useNavigation: () => ({
     isFocused: () => true,
     navigate: () => undefined,
-    addListener: (type: string, listener: (event: { data: { closing: boolean } }) => void) => {
-      state.listeners.set(type, listener);
-      return () => state.listeners.delete(type);
-    },
   }),
 }));
 vi.mock("react-native-screens", () => ({ ScrollViewMarker: state.container }));
@@ -233,6 +228,7 @@ vi.mock("../../state/server", async () => {
       machineByEnvironmentId: new Map(),
       settlementEnvironmentIds: ids,
       snoozeEnvironmentIds: ids,
+      snoozePresetsByEnvironmentId: new Map(),
       pinningEnvironmentIds: ids,
       autoSettleOptOutEnvironmentIds: ids,
       pinReorderEnvironmentIds: ids,
@@ -282,6 +278,7 @@ vi.mock("../threads/thread-list-v2-items", () => ({
 
 import { HomeRouteScreen } from "./HomeRouteScreen";
 import { HomeScreen } from "./HomeScreen";
+import { recordHomeFocus, recordHomeTransitionEnd } from "./home-route-visibility";
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 
 const destination = EnvironmentId.make("destination");
@@ -315,7 +312,6 @@ beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   registry = AtomRegistry.make();
   state.matches = [];
-  state.listeners.clear();
   state.listRenders = 0;
   state.selected = [];
   registry.set(state.snapshots!(destination), {
@@ -364,9 +360,10 @@ function rows() {
   );
 }
 
-it("phone title/content search finds qualified offline children, then hides them on clear", () => {
+it("phone title/content search finds qualified offline children and restores navigation on clear", () => {
   mount();
-  expect(rows()).toEqual(["destination:fork"]);
+  const navigation = ["destination:same-id", "destination:fork", "other:same-id"];
+  expect(new Set(rows())).toEqual(new Set(navigation));
   click("Title search");
   expect(rows()).toEqual(["destination:same-id"]);
   click("Remote audit");
@@ -382,13 +379,13 @@ it("phone title/content search finds qualified offline children, then hides them
   click("Content search");
   expect(rows()).toEqual(["other:same-id"]);
   click("Clear search");
-  expect(rows()).toEqual(["destination:fork"]);
+  expect(new Set(rows())).toEqual(new Set(navigation));
 });
 
 it("phone keeps the visibility subscription guard while searching", () => {
   mount();
   click("Title search");
-  act(() => state.listeners.get("transitionEnd")!({ data: { closing: true } }));
+  act(() => recordHomeTransitionEnd(true));
   const before = state.listRenders;
   act(() =>
     registry.set(state.snapshots!(destination), {
@@ -397,7 +394,7 @@ it("phone keeps the visibility subscription guard while searching", () => {
     }),
   );
   expect(state.listRenders).toBe(before);
-  act(() => state.listeners.get("focus")!({ data: { closing: false } }));
+  act(() => recordHomeFocus());
   expect(rows()).toEqual(["destination:same-id"]);
   expect(container.textContent).toContain("Remote audit refreshed");
 });
@@ -464,9 +461,20 @@ it("phone default navigation does not rebuild for hidden-child shell updates", (
   act(() =>
     registry.set(state.snapshots!(destination), {
       ...v2ShellSnapshot,
-      threads: [{ ...rawChild, title: "Remote audit refreshed" }, rawFork],
+      threads: [
+        rawChild,
+        rawFork,
+        {
+          ...rawChild,
+          id: ThreadId.make("local-child"),
+          title: "Remote audit refreshed",
+          lineage: { ...rawChild.lineage, relationshipToParent: "subagent" },
+        },
+      ],
     }),
   );
-  expect(rows()).toEqual(["destination:fork"]);
+  expect(new Set(rows())).toEqual(
+    new Set(["destination:same-id", "destination:fork", "other:same-id"]),
+  );
   expect(state.listRenders).toBe(before);
 });
