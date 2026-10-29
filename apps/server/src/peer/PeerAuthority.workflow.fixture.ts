@@ -2013,10 +2013,14 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
             ]
           : []),
       ).pipe(
-        Layer.provide(DocumentText.layer),
-        Layer.provide(PreviewAgentActivity.layer),
-        Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
-        Layer.provide(Layer.succeedContext(services)),
+        Layer.provide(
+          Layer.mergeAll(
+            DocumentText.layer,
+            PreviewAgentActivity.layer,
+            Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+            Layer.succeedContext(services),
+          ),
+        ),
         Layer.provide(
           Layer.mergeAll(
             spectrumLayer,

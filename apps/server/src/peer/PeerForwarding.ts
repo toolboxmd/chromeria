@@ -1250,7 +1250,7 @@ const make = Effect.gen(function* () {
   });
 
   const listLinks: PeerForwarding["Service"]["links"] = (scope) =>
-    Effect.andThen(requireEnabled, links.list).pipe(
+    Effect.andThen(forwardingCaller(scope), Effect.andThen(requireEnabled, links.list)).pipe(
       Effect.mapError(
         (error) =>
           new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
