@@ -453,6 +453,7 @@ jobs:
           fi
 
       - name: Test
+        id: test
         env:
           CHROMERIA_TEST_CHROMIUM: ${{ steps.chrome_for_testing.outputs.executable }}
           T3CODE_TEST_HEADLESS_SHELL: ${{ steps.chrome_for_testing.outputs.executable }}
@@ -471,7 +472,7 @@ jobs:
           --verify-hits 1 --report "${{ runner.temp }}/test-cache-${{ matrix.shard }}.json" apps/server
 
       - name: Upload test cache measurements
-        if: always() && steps.changes.outputs.test_server != 'false'
+        if: always() && steps.test.outcome != 'skipped' && steps.changes.outputs.test_server != 'false'
         uses: actions/upload-artifact@v7
         with:
           name: test-cache-${{ matrix.shard }}
