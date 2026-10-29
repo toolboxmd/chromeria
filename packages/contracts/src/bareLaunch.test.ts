@@ -8,14 +8,16 @@ import {
 import { OrchestrationV2Command } from "./orchestrationV2.ts";
 
 const decode = Schema.decodeUnknownSync(BareLaunchRequest);
+const decodeDelegateTask = Schema.decodeSync(OrchestratorMcpDelegateTaskInput);
+const decodeCapabilities = Schema.decodeSync(OrchestratorMcpCapabilitiesResult);
+const decodeCommand = Schema.decodeSync(OrchestrationV2Command);
+const decodeReceipt = Schema.decodeSync(BareReceipt);
 describe("bare launch contracts", () => {
   it("keeps omitted intent ordinary and accepts only bounded, named additions", () => {
     expect(decode({ additions: [], nativeHomeOwnerThreadId: "caller-chosen-owner" })).toEqual({
       additions: [],
     });
-    expect(
-      Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput)({ task: "test" }),
-    ).not.toHaveProperty("bare");
+    expect(decodeDelegateTask({ task: "test" })).not.toHaveProperty("bare");
     expect(
       decode({
         additions: [
@@ -33,7 +35,7 @@ describe("bare launch contracts", () => {
     expect(() => decode({ additions: [{ type: "unknown" }] })).toThrow();
   });
   it("decodes an old peer without making it bare capable", () => {
-    const old = Schema.decodeUnknownSync(OrchestratorMcpCapabilitiesResult)({
+    const old = decodeCapabilities({
       parentThreadId: null,
       inheritedProviderInstanceId: null,
       inheritedModel: null,
@@ -54,7 +56,7 @@ describe("bare launch contracts", () => {
     expect(old.bareLaunch).toBeUndefined();
   });
   it("retains server resolved state in commands and never certifies a partial receipt", () => {
-    const command = Schema.decodeUnknownSync(OrchestrationV2Command)({
+    const command = decodeCommand({
       type: "thread.create",
       commandId: "bare-create",
       threadId: "thread-bare",
@@ -73,7 +75,7 @@ describe("bare launch contracts", () => {
       additions: [],
       nativeHomeOwnerThreadId: "thread-bare",
     });
-    const receipt = Schema.decodeUnknownSync(BareReceipt)({
+    const receipt = decodeReceipt({
       driver: "codex",
       permissions: {
         requested: null,

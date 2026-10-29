@@ -291,7 +291,6 @@ import {
   PreviewViewerCloseInput,
   PreviewViewerAccess,
   PreviewViewerUnavailableError,
-  PreviewRefreshInput,
   PreviewReportStatusInput,
   PreviewResizeInput,
   PreviewAdjustInput,
@@ -868,20 +867,8 @@ const WsPeerLinksUnlinkRpc = Rpc.make(WS_METHODS.peerLinksUnlink, {
 
 const WsServerGetSettingsRpc = Rpc.make(WS_METHODS.serverGetSettings, {
   payload: Schema.Struct({}),
-  success: Schema.Struct({ links: Schema.Array(PeerLinkSummary) }),
-  error: Schema.Union([PeerLinkError, EnvironmentAuthorizationError]),
-});
-
-const WsPeerLinksLinkRpc = Rpc.make(WS_METHODS.peerLinksLink, {
-  payload: PeerLinkCreateInput,
-  success: PeerLink,
-  error: Schema.Union([PeerLinkError, EnvironmentAuthorizationError]),
-});
-
-const WsPeerLinksUnlinkRpc = Rpc.make(WS_METHODS.peerLinksUnlink, {
-  payload: PeerLinkRemoveInput,
-  success: PeerLinkRemoveResult,
-  error: Schema.Union([PeerLinkError, EnvironmentAuthorizationError]),
+  success: ServerSettings,
+  error: Schema.Union([ServerSettingsError, EnvironmentAuthorizationError]),
 });
 
 const WsPeerLinksAnswerRequestRpc = Rpc.make(WS_METHODS.peerLinksAnswerRequest, {
@@ -2081,6 +2068,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRunStorageCleanupRpc,
   WsServerGetStorageCleanupReportRpc,
   WsServerGetDatabaseStorageRpc,
+  WsServerGetSettingsRpc,
   WsServerUpdateSettingsRpc,
   WsRemoteTaskViewRpc,
   WsRemoteTaskStopRpc,
