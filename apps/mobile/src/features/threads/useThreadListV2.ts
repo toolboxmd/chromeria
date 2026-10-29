@@ -109,7 +109,10 @@ export function useThreadListV2(input: {
   const layout = buildThreadListV2Items({
     pendingOrder: input.pendingOrder,
     projects: input.projects,
-    threads: threads.filter((thread) => isThreadVisibleInNavigation(thread, input.searchQuery)),
+    threads:
+      input.searchQuery.trim().length === 0
+        ? navigationThreads
+        : threads.filter((thread) => isThreadVisibleInNavigation(thread, input.searchQuery)),
     environmentId: input.environmentId,
     projectRefs: input.projectRefs,
     searchQuery: input.searchQuery,
