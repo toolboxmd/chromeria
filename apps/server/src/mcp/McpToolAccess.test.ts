@@ -381,6 +381,7 @@ it.effect.each([
   ["writes_environment", supervised, {}, "capability_denied"],
   ["writes_environment", plan, {}, "capability_denied"],
   ["writes_environment", fullAccessClient, {}, "ran"],
+  ["writes_environment", fullAccessLinkedClient, {}, "ran"],
   ["writes_environment", supervisedClient, {}, "capability_denied"],
 ] as const)("%s from %o with %o: %s", ([tool, scope, args, expected]) =>
   call(tool, scope, args).pipe(
@@ -513,6 +514,10 @@ it.effect.each([
   ["t3_environment_unlink", supervised, { environmentId: box }, "capability_denied"],
   ["t3_environment_link", linkedClient, { environmentId: box }, "capability_denied"],
   ["t3_environment_unlink", linkedClient, { environmentId: box }, "capability_denied"],
+  ["t3_environment_link", fullAccessLinkedClient, { environmentId: box }, "capability_denied"],
+  ["t3_environment_link", fullAccessLinkedClient, { environmentId: here }, "capability_denied"],
+  ["t3_environment_unlink", fullAccessLinkedClient, { environmentId: box }, "capability_denied"],
+  ["t3_environment_unlink", fullAccessLinkedClient, { environmentId: here }, "capability_denied"],
 
   // A thread id names a thread where the call runs, and is checked there.
   [

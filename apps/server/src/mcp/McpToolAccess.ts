@@ -382,6 +382,21 @@ export const writesEnvironment = <P, A, E, R>(
   effect: "owned" | "external-unknown" = "owned",
 ) => {
   const check = orchestratingCaller.pipe(
+    Effect.tap((caller) =>
+      McpRouting.CurrentTool.pipe(
+        Effect.flatMap((tool) =>
+          (tool?.name === "t3_environment_link" || tool?.name === "t3_environment_unlink") &&
+          callerLinkOrigin(caller) !== undefined
+            ? Effect.fail(
+                new OrchestratorMcpFailure({
+                  code: "capability_denied",
+                  message: "Linked callers cannot change this environment's links.",
+                }),
+              )
+            : Effect.void,
+        ),
+      ),
+    ),
     Effect.tap((caller) => assertNotLinked(caller, "change projects or environment settings")),
     Effect.tap((caller) => assertFullAccess(caller, fullAccessRequired)),
   );
