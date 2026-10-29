@@ -276,11 +276,16 @@ export const writes = <P, A, E, R>(
 export const writesWithCapability = <P, A, E, R>(
   handle: (params: P) => Effect.Effect<A, E, R>,
   effect: "owned" | "external-unknown" = "owned",
+  options?: { readonly linkedCallers?: "allowed" },
 ) =>
   declare(
     (params: P) =>
       writingCaller.pipe(
-        Effect.tap((caller) => assertNotLinked(caller, "start work here that is not its link's")),
+        Effect.tap((caller) =>
+          options?.linkedCallers === "allowed"
+            ? Effect.void
+            : assertNotLinked(caller, "start work here that is not its link's"),
+        ),
         Effect.flatMap(() => McpRouting.invoke(params, handle)),
       ),
     effect,

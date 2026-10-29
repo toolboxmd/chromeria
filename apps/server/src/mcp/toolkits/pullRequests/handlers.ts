@@ -550,6 +550,7 @@ const make = Effect.gen(function* () {
           return { guides };
         }),
       "external-unknown",
+      { linkedCallers: "allowed" },
     ),
     read_pull_request_guide: McpToolAccess.reads((input) =>
       Effect.gen(function* () {
