@@ -1,6 +1,5 @@
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
-import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
 import {
   isThreadVisibleInNavigation,
   resolveThreadWorkingStartedAt,
@@ -653,16 +652,14 @@ export function filterSidebarV2VisibleThreads<
 ): T[] {
   return threads.filter(
     (thread) =>
-      isThreadVisibleInNavigation(
-        { ...thread, delegatedFrom: thread.delegatedFrom ?? null },
-        searchQuery,
-      ) &&
-      (searchQuery.trim().length > 0 ||
-        !isShownUnderParent(
-          { environmentId: thread.environmentId, threadId: thread.id },
-          thread.lineage,
-          delegatedUnderParent,
-        )) &&
+      thread.archivedAt === null &&
+      (searchQuery.trim().length > 0
+        ? thread.lineage.relationshipToParent !== "subagent"
+        : !isShownUnderParent(
+            { environmentId: thread.environmentId, threadId: thread.id },
+            thread.lineage,
+            delegatedUnderParent,
+          )) &&
       (scopedProjectKeys === null ||
         scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
   );
