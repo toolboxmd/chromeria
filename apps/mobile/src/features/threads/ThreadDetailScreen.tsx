@@ -90,7 +90,6 @@ import {
   useContext,
   useEffect,
   useEffectEvent,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -362,6 +361,7 @@ function ToolArtifactButton({
 }) {
   const reference = resource._tag === "peer-attachment" ? resource.reference : resource;
   const operation = useRef<AbortController | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Abort the native artifact download when its button unmounts.
   useEffect(() => () => operation.current?.abort(), []);
   const refresh = useRefreshAssetUrl(environmentId, resource);
   const [pending, setPending] = useState(false);

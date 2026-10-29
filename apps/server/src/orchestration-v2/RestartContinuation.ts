@@ -24,7 +24,6 @@ import {
   continuationFailedBeforePrompt,
   isAwaitedWork,
   isRestartContinuationSource,
-  cancelledBeforeStart,
   isRestartNoteSource,
   neverStarted,
   restartCancelledBackgroundWorkNote,

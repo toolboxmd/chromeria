@@ -49,7 +49,9 @@ export function subagentThreadTarget(
     return { environmentId, threadId: subagent.childThreadId };
   }
   const remote = subagent.remoteChild;
-  return remote !== undefined && remote.threadId !== undefined && isKnownEnvironment(remote.environmentId)
+  return remote !== undefined &&
+    remote.threadId !== undefined &&
+    isKnownEnvironment(remote.environmentId)
     ? { environmentId: remote.environmentId, threadId: remote.threadId }
     : null;
 }
@@ -96,7 +98,7 @@ export function resolveSubagentRowPresentation(
     OrchestrationV2Subagent,
     "title" | "prompt" | "status" | "progress" | "result" | "childThreadId" | "remoteChild"
   >,
-  canOpenRemote = false,
+  _canOpenRemote = false,
 ): SubagentRowPresentation {
   const status =
     subagent.remoteChild?.snapshot !== undefined &&

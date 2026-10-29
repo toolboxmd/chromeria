@@ -33,6 +33,7 @@ export function RemoteTaskViewer(props: {
   const stop = useAtomCommand(remoteTasks.stop);
   const mayStop = useAtomValue(remoteTasks.stop.permissionAtom(props.environmentId));
   const observedSequence = props.task.remoteChild?.snapshot?.sequence;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Refresh the remote RPC read when its persisted observation sequence advances.
   useEffect(() => {
     if (observedSequence !== undefined) refresh();
   }, [observedSequence, refresh]);

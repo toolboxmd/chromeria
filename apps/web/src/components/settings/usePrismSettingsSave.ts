@@ -27,6 +27,7 @@ export function usePrismSettingsSave(): {
   const { pendingWrite, saveError, setSaveError } = useStore(prismSaveStore);
   const { environments: allEnvironments } = useEnvironments();
   const persist = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: false });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Settle the pending settings write when server environment observations acknowledge it.
   useEffect(() => {
     if (pendingWrite?.acknowledged) prismSaveStore.getState().observe(allEnvironments);
   }, [allEnvironments, pendingWrite]);

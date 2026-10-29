@@ -109,7 +109,7 @@ it.each([false, true])(
       await act(async () => target!.click());
     };
     try {
-      await using screen = await render(
+      await using _screen = await render(
         <RegistryContext.Provider value={registry}>
           <RemotePendingRequest {...props} />
         </RegistryContext.Provider>,
@@ -200,7 +200,7 @@ it("edits and sends a multiline editor prefill unchanged", async () => {
   const container = document.createElement("div");
   document.body.append(container);
   try {
-    await using screen = await render(
+    await using _screen = await render(
       <RegistryContext.Provider value={registry}>
         <RemotePendingRequest
           environmentId={EnvironmentId.make("A-only-profile")}
@@ -317,7 +317,7 @@ it.each([
   const button = (label: string) =>
     [...container.querySelectorAll("button")].find((node) => node.textContent === label)!;
   try {
-    await using screen = await render(
+    await using _screen = await render(
       <RegistryContext.Provider value={registry}>
         <RemotePendingRequest
           environmentId={EnvironmentId.make("A-only-profile")}
@@ -488,7 +488,7 @@ it("keeps source-only navigation and pagination qualified while revealing task d
     await act(async () => target!.click());
   };
   try {
-    await using screen = await render(
+    await using _screen = await render(
       <RegistryContext.Provider value={registry}>
         <RemoteTaskViewer
           environmentId={EnvironmentId.make("A-only-profile")}

@@ -1,10 +1,9 @@
 import { act, render } from "../../../test/render";
-import { RELAY_TUNNEL_RELEASED_MESSAGE, type Discovery } from "@t3tools/client-runtime/relay";
+import { type Discovery } from "@t3tools/client-runtime/relay";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
-import { EnvironmentId, ORCHESTRATION_PROTOCOL_VERSION } from "@t3tools/contracts";
+import { EnvironmentId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { useState } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 type DiscoveredEnvironments = Discovery.RelayEnvironmentDiscoveryState["environments"];
@@ -122,34 +121,9 @@ describe("cloud onboarding discovery", () => {
         await act(async () => screen.rerender(element));
       }
 
-      async function mount(refreshWhileEmpty = true) {
-        await rerender(
-          <CloudEnvironmentConnectRows
-            primaryEnvironmentId={null}
-            savedEnvironments={[]}
-            showSavedEnvironments
-            refreshWhileEmpty={refreshWhileEmpty}
-            empty={<p>Waiting for your computer to connect.</p>}
-          />,
-        );
-      }
-
       const text = () => container.textContent ?? "";
       const button = () =>
         [...container.querySelectorAll("button")].find((element) => element.textContent !== "");
-      const checkbox = () => container.querySelector<HTMLElement>('[role="checkbox"]')!;
-      const checked = () => checkbox().getAttribute("aria-checked") === "true";
-      const toggle = () => act(async () => checkbox().click());
-      function setVisibility(next: DocumentVisibilityState) {
-        visibility = next;
-        document.dispatchEvent(new Event("visibilitychange"));
-      }
-
-      async function advance(milliseconds: number) {
-        await act(async () => {
-          await vi.advanceTimersByTimeAsync(milliseconds);
-        });
-      }
 
       const base = linkedMachines.get(newMachineId)!;
       discovery.listEnvironments.mockResolvedValue(

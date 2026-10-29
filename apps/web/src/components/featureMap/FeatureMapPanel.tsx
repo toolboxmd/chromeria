@@ -113,6 +113,7 @@ export function FeatureMapPanel({
     expandRef.current?.focus();
   };
   // The interval lives with the mounted tab, so it stops when the tab closes.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Keep the mounted map query current through a timer and window focus listener.
   useEffect(() => {
     if (!supported || projectId === null) return;
     const interval = window.setInterval(refresh, FEATURE_MAP_REFRESH_MS);
@@ -405,10 +406,12 @@ function ExpandedMap({
     if (fit()) fittedRef.current = true;
   };
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Focus the expanded map close button after mounting.
   useEffect(() => {
     closeRef.current?.focus();
   }, []);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own the expanded map Escape listener until unmount.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
@@ -419,6 +422,7 @@ function ExpandedMap({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Fit the map to its measured DOM viewport and observe later resizes.
   useEffect(() => {
     const view = viewportRef.current;
     if (view === null) return;
@@ -429,6 +433,7 @@ function ExpandedMap({
     });
   }, [fit]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own wheel and click listeners on the map viewport.
   useEffect(() => {
     const view = viewportRef.current;
     if (view === null) return;
@@ -601,7 +606,7 @@ function ExpandedMap({
  */
 function FeatureMapDiagram({
   source,
-  theme,
+  theme: _theme,
   views,
   onOpen,
   onOpenThread,
@@ -632,6 +637,7 @@ function FeatureMapDiagram({
     const url = id === null ? null : (byId.get(id)?.url ?? null);
     if (url !== null) onOpen(url);
   });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Attach navigation listeners to the generated Mermaid SVG nodes.
   useEffect(() => {
     if (svg === null) return;
     const nodes = [...svg.querySelectorAll<SVGGElement>(FEATURE_MAP_NODE_SELECTOR)];
@@ -655,10 +661,12 @@ function FeatureMapDiagram({
     viewBox !== null && viewBox.width > 0 && viewBox.height > 0
       ? { width: viewBox.width, height: viewBox.height }
       : null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Notify the parent after the expanded SVG has committed to the DOM.
   useLayoutEffect(() => {
     if (!expandedLayer || svg === null) return;
     onContentReady?.();
   }, [expandedLayer, onContentReady, svg]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Measure SVG node positions for the overlay and observe layout changes.
   useEffect(() => {
     const wrapper = wrapperRef.current;
     if (svg === null || wrapper === null) return;

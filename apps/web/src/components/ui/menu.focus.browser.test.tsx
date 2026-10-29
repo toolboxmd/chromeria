@@ -1,6 +1,6 @@
 import { act, render } from "../../../test/render";
 import { useRef, useState } from "react";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 
 import {

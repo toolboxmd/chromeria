@@ -76,6 +76,8 @@ export function previewStreamDocument(configuration: string, script: string) {
 </style></head><body><script>window.addEventListener("error",function(){${failure}});window.addEventListener("unhandledrejection",function(){${failure}});\n${safeScript}\ntry{T3PreviewStream.start(${safeConfiguration});}catch{${failure}}</script></body></html>`;
 }
 
+const decodePreviewViewerResource = Schema.decodeUnknownOption(PreviewViewerResource);
+
 export function previewStreamMessage(data: string): PreviewStreamMessage | null {
   try {
     // Only our bundled viewer runs in this WebView; the remote page never does.
@@ -94,7 +96,7 @@ export function previewStreamMessage(data: string): PreviewStreamMessage | null 
       )
         return null;
       if (!("resource" in parsed)) return { type: "popup", tabId: parsed.tabId };
-      const resource = Schema.decodeUnknownOption(PreviewViewerResource)(parsed.resource);
+      const resource = decodePreviewViewerResource(parsed.resource);
       return Option.isSome(resource) && resource.value.tabId === parsed.tabId
         ? { type: "popup", tabId: parsed.tabId, resource: resource.value }
         : null;

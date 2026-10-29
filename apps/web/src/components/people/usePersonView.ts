@@ -77,6 +77,7 @@ function refreshDevicePeople() {
  * Session state has no live stream; it otherwise refetches only on reconnect.
  */
 export function useRefreshDevicePeopleOnFocus() {
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Refresh device session metadata through window focus and visibility listeners.
   useEffect(() => {
     window.addEventListener("focus", refreshDevicePeople);
     document.addEventListener("visibilitychange", refreshDevicePeople);

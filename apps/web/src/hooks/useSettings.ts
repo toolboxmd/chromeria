@@ -3,7 +3,7 @@ import {
   resolveBrowserProfiles,
   type CookieMirrorProfile,
 } from "@t3tools/contracts";
-import { useEffect, useRef, useSyncExternalStore, use } from "react";
+import { useRef, useSyncExternalStore, use } from "react";
 import { useSyncExternalStoreWithSelector } from "use-sync-external-store/with-selector";
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import {

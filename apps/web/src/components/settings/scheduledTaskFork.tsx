@@ -85,6 +85,7 @@ function CommandOutput({
   );
   const { refresh } = query;
   // Fetched on opening.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Refresh persisted command output when its viewer mounts.
   useEffect(() => {
     refresh();
   }, [refresh]);

@@ -39,6 +39,7 @@ export function useThreadIssueLinks(threadRef: ScopedThreadRef | null) {
         ]);
   const lastDerivationKey = useRef(derivationKey);
   const { refresh } = query;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Invalidate the RPC read when persisted issue links change.
   useEffect(() => {
     if (lastDerivationKey.current === derivationKey) return;
     lastDerivationKey.current = derivationKey;

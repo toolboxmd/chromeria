@@ -332,9 +332,11 @@ export function IssuesView() {
     );
   };
   // The command palette searches what the page shows while it is open.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Publish visible entries to the external command-palette registry.
   useEffect(() => {
     publishIssuePaletteSource({ entries: visible, open });
   }, [open, visible]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Remove this page from the command-palette registry when it unmounts.
   useEffect(() => () => publishIssuePaletteSource(null), []);
 
   const selectedCwd =

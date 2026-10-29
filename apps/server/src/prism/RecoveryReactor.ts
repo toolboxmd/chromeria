@@ -96,7 +96,7 @@ export const layer = Layer.effect(
         // Source eligibility and ancestry are rechecked by the composed commit plans.
         if (command !== null) yield* threads.dispatch(command);
       },
-      (effect, threadId, sourceRunId) =>
+      (effect, threadId, _sourceRunId) =>
         effect.pipe(
           Effect.catchCause((cause) =>
             Effect.logWarning("prism.recovery.reconcile-failed", { threadId, cause }),

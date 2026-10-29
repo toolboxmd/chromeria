@@ -1,7 +1,7 @@
 import markdown from "../../../../../docs/map.md?raw";
 import { render } from "../../../test/render";
 import { Suspense } from "react";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it } from "vite-plus/test";
 
 import { MermaidDiagram } from "../chat/MermaidDiagram";
 import {

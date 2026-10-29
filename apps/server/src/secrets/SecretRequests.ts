@@ -5,7 +5,6 @@ import type { AuthSessionId } from "@t3tools/contracts";
  * answer also to a one-use SecretRef. Orchestration records only the request and its status, so the
  * value never reaches the transcript, projections, clients or the tool result.
  */
-import { pipe } from "effect/Function";
 import {
   CommandId,
   SECRET_REQUEST_SINGLE_FIELD_NAME,
