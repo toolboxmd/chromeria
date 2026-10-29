@@ -481,10 +481,10 @@ export function ThreadRelationshipsPanel(props: {
     { id: "active", label: null, rows: active, expanded: true },
     { id: "previous", label: "Previous agents", rows: previous, expanded: false },
   ];
-  // Tasks running in a linked environment have no thread here; they get their own rows.
+  // Attached remote children already have relationship rows.
   const remoteSubagents = (projection?.subagents ?? []).filter(
     (agent): agent is OrchestrationV2Subagent & { remoteChild: OrchestrationV2RemoteTaskChild } =>
-      agent.remoteChild !== undefined,
+      agent.remoteChild !== undefined && subagentChildTarget(agent) === null,
   );
   const runningCount =
     (projection?.subagents.filter(
