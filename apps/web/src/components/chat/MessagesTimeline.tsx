@@ -1263,6 +1263,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     <TimelineListFooter
       composerInset={anchoredEndSpace ? 0 : contentInsetEndAdjustment}
       onGrow={onFooterGrow}
+      onInlineCardHost={onInlineCardHost}
     >
       {footer}
       {unmatchedPendingApprovals.size > 0 ? (

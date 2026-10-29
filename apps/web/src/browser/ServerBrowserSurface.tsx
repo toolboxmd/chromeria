@@ -173,11 +173,13 @@ export function ServerBrowserSurface(props: {
     pdfUrl = null,
     ref,
   } = props;
+  const unauthorizedRef = useRef(0);
+  const [accessDenied, setAccessDenied] = useState(false);
   const {
     access,
     error: accessError,
     refresh: refreshAccess,
-  } = usePreviewStreamAccessState(environmentId, props.resource, visible);
+  } = usePreviewStreamAccessState(environmentId, props.resource, visible, visible && !accessDenied);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const keySentRef = useRef(false);
@@ -203,9 +205,6 @@ export function ServerBrowserSurface(props: {
       }),
     );
   };
-  const unauthorizedRef = useRef(0);
-  const [accessDenied, setAccessDenied] = useState(false);
-  const access = usePreviewStreamAccess(environmentId, { retry: visible && !accessDenied });
   const [hostSetup, setHostSetup] = useState<PreviewStreamHostSetup | null>(null);
   const pendingMoveRef = useRef<MouseInput | null>(null);
   const pendingWheelRef = useRef<WheelInput | null>(null);
@@ -490,13 +489,6 @@ export function ServerBrowserSurface(props: {
     threadId,
     visible,
   ]);
-
-  useEffect(() => {
-    if (!visible || accessDenied || access !== null) return;
-    // A failed ticket mint, e.g. while the server restarts, never retries on its own.
-    const timer = setInterval(() => refreshAccess(), ACCESS_RETRY_MS);
-    return () => clearInterval(timer);
-  }, [access, accessDenied, refreshAccess, visible]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers a non-passive wheel listener on the canvas so it can stop the panel scrolling
   useEffect(() => {
@@ -918,10 +910,6 @@ export function ServerBrowserSurface(props: {
             onClick={() => {
               unauthorizedRef.current = 0;
               setAccessDenied(false);
-              if (accessError !== null) {
-                refreshAccess();
-                return;
-              }
               refreshAccess();
             }}
           >
