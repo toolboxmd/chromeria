@@ -275,7 +275,7 @@ describe("sidebar thread lineage helpers", () => {
     expect(isSidebarSubagentThread(child)).toBe(true);
     const all = [child, ordinary, otherEnvironment, localChild, archived];
     const scope = new Set([`${environmentId}:${projectId}`]);
-    const underParent = new Set([`${environmentId}:${child.id}`]);
+    const underParent = new Set([`${environmentId}\u0000${child.id}`]);
     expect(filterSidebarV2VisibleThreads(all, scope, new Set())).toEqual([child, ordinary]);
     expect(filterSidebarV2VisibleThreads(all, scope, underParent)).toEqual([ordinary]);
     const searchable = filterSidebarV2VisibleThreads(all, scope, underParent, "Remote audit");
@@ -319,7 +319,7 @@ describe("sidebar thread lineage helpers", () => {
       archivedAt: "2026-01-02T00:00:00.000Z",
     };
     const all = [child, fork, archivedFork];
-    const underParent = new Set([`${environmentId}:${child.id}`]);
+    const underParent = new Set([`${environmentId}\u0000${child.id}`]);
     expect(filterSidebarV2VisibleThreads(all, null, underParent)).toEqual([fork]);
     expect(isSidebarSubagentThread(fork)).toBe(false);
     expect(fork.delegatedFrom).toBe(child.delegatedFrom);
