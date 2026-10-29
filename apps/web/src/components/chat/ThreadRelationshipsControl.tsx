@@ -278,13 +278,13 @@ function RemoteSubagentRow(props: {
               size="sm"
               variant="ghost"
               part="row"
-              aria-disabled={environment === null || undefined}
+              aria-disabled={environment === null || remoteChild.threadId === undefined || undefined}
               onClick={() => {
-                if (environment === null) return;
+                if (environment === null || remoteChild.threadId === undefined) return;
                 void navigate({
                   to: "/$environmentId/$threadId",
                   params: buildThreadRouteParams(
-                    scopeThreadRef(remoteChild.environmentId, remoteChild.threadId),
+                    scopeThreadRef(remoteChild.environmentId, remoteChild.threadId!),
                   ),
                 });
               }}

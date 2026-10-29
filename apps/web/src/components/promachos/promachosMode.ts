@@ -11,7 +11,7 @@ import { promachosMultipleModelSelections } from "./promachosStart";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { useNewThreadHandler } from "../../hooks/useHandleNewThread";
 import { useClientSettings } from "../../hooks/useSettings";
-import { selectProjectGroupingSettings } from "../../logicalProject";
+import { selectProjectGroupingSettings } from "@t3tools/client-runtime/state/project-grouping";
 import { useProjects } from "../../state/entities";
 import { isInPromachosHome, promachosHomeRefs } from "./promachosConversations";
 

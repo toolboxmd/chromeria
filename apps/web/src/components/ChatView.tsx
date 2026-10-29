@@ -39,7 +39,7 @@ import {
 } from "@t3tools/contracts";
 import { usePromachosInlineCardHost } from "./promachos/PromachosChat";
 import { usePromachosPresentation } from "./promachos/promachosMode";
-import { promachosPicksModel, withPromachosStart } from "./promachos/promachosStart";
+import { promachosPicksModel } from "./promachos/promachosStart";
 import { ThreadFind, ThreadFindCanvas } from "./chat/ThreadFindProvider";
 import { closeThreadFind, openThreadFind, useThreadFindOpen } from "./chat/threadFindStore";
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";
@@ -159,10 +159,7 @@ import { copyThreadReference } from "../lib/copyThreadReference";
 import { subscribeSnapShotComposerFocus } from "../lib/desktopSnapShot";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { FileMetadataThreadProvider } from "../hooks/FileMetadataThreadProvider";
-import {
-  RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
-  type ThreadPanelPresentation,
-} from "../rightPanelLayout";
+import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import { Button } from "./ui/button";
 import { PopoverCreateHandle } from "./ui/popover";
 import {
@@ -1628,7 +1625,7 @@ export default function ChatView(props: ChatViewProps) {
   const promachosCardHost = usePromachosInlineCardHost({
     enabled: promachosChat,
     activeThreadKey,
-    displayedThreadKey: displayedTimeline.displayThreadKey,
+    displayedThreadKey: displayedTimelineKey,
   });
   const {
     worktreeSetup,
@@ -2708,7 +2705,6 @@ export default function ChatView(props: ChatViewProps) {
       limitRecoveryItems.push({
         id: `transport-recovery:${transportWait.runId}`,
         variant: "warning",
-        priority: "urgent",
         icon: <WifiOffIcon />,
         title: "Waiting to retry the connection",
         description: `Next retry ${new Date(transportWait.retryAt).toLocaleString()}. Send a message or press Stop to cancel.`,

@@ -45,6 +45,6 @@ export const mirrorDesktopCookies: ReadyHook = Effect.fn(
     });
     generation = connected.generation;
     recordCookieMirrorStatus(connected);
-  }).pipe(Effect.catchCause(() => Effect.void));
+  }).pipe(Effect.ignoreCause);
   yield* synchronize.pipe(Effect.repeat(Schedule.spaced("5 seconds")));
 });

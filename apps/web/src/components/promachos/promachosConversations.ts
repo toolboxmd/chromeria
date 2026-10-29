@@ -8,7 +8,7 @@ import type { ScopedProjectRef } from "@t3tools/contracts";
 import {
   deriveLogicalProjectKeyFromSettings,
   type ProjectGroupingSettings,
-} from "../../logicalProject";
+} from "@t3tools/client-runtime/state/project-grouping";
 import { firstValidTimestampMs } from "../Sidebar.logic";
 
 /**

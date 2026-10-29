@@ -147,6 +147,7 @@ function RootRouteBranch() {
   // A sync IPC read; the setting only changes across a relaunch.
   const [localEnvironmentDisabled] = useState(isLocalEnvironmentDisabled);
   const router = useRouter();
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retries route authentication after the server-provided delay
   useEffect(() => {
     if (authGateState.status !== "retryable") return;
     const timer = window.setTimeout(() => {
@@ -164,9 +165,9 @@ function RootRouteBranch() {
   if (pathname === GUEST_PAGE_PATH) return <Outlet />;
   if (authGateState.status === "retryable") {
     return (
-      <StandalonePage tone="pairing">
+      <StandalonePage>
         <StandalonePageHeader
-          eyebrow={APP_DISPLAY_NAME}
+          context={APP_DISPLAY_NAME}
           title="Reconnecting to this environment"
           description="Your session is temporarily unavailable. Retrying automatically."
         />

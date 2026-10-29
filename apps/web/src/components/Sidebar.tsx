@@ -605,9 +605,12 @@ function useSidebarThreads(input: {
       ...noProjectThreads,
       ...snoozedThreads,
       ...settledThreads,
-      ...filterSidebarV2VisibleThreads(threads, scopedProjectKeys, input.searchQuery).filter(
-        isSidebarSubagentThread,
-      ),
+      ...filterSidebarV2VisibleThreads(
+        threads,
+        scopedProjectKeys,
+        delegatedUnderParent,
+        input.searchQuery,
+      ).filter(isSidebarSubagentThread),
     ],
     settledVisibleCount,
     settledCount,
@@ -3392,7 +3395,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           scopeThreadRef(thread.environmentId, thread.id),
                         );
                         const isCard =
-                          section === "active" || section === "pinned" || section === "working" || section === "no-project";
+                          section === "active" ||
+                          section === "pinned" ||
+                          section === "working" ||
+                          section === "no-project";
                         const rowVariant = folderRow
                           ? folderRowsMultiline
                             ? "folder-multiline"

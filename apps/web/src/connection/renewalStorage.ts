@@ -26,17 +26,19 @@ export const layer = Layer.sync(RenewalRecordStore.RenewalRecordStore, () => {
   const bridge = typeof window === "undefined" ? undefined : window.desktopBridge;
   if (bridge?.getRenewalRecord && bridge.compareRenewalRecord) {
     return RenewalRecordStore.RenewalRecordStore.of({
-      read: (key) =>
+      read: Effect.fn("RenewalRecordStore.read")((key) =>
         Effect.tryPromise({ try: () => bridge.getRenewalRecord!(key), catch: failure }),
-      compareAndSet: (key, revision, value) =>
+      ),
+      compareAndSet: Effect.fn("RenewalRecordStore.compareAndSet")((key, revision, value) =>
         Effect.tryPromise({
           try: () => bridge.compareRenewalRecord!({ key, revision, value }),
           catch: failure,
         }),
+      ),
     });
   }
   return RenewalRecordStore.RenewalRecordStore.of({
-    read: (key) =>
+    read: Effect.fn("RenewalRecordStore.read")((key) =>
       Effect.tryPromise({
         try: async () => {
           const database = await open();
@@ -59,7 +61,8 @@ export const layer = Layer.sync(RenewalRecordStore.RenewalRecordStore, () => {
         },
         catch: failure,
       }),
-    compareAndSet: (key, revision, value) =>
+    ),
+    compareAndSet: Effect.fn("RenewalRecordStore.compareAndSet")((key, revision, value) =>
       Effect.tryPromise({
         try: async () => {
           const database = await open();
@@ -91,5 +94,6 @@ export const layer = Layer.sync(RenewalRecordStore.RenewalRecordStore, () => {
         },
         catch: failure,
       }),
+    ),
   });
 });

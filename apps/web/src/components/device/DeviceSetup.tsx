@@ -360,7 +360,7 @@ export function AgentDeviceSetupStatus(props: {
   return null;
 }
 
-function PlatformStatus(props: {
+export function PlatformStatus(props: {
   readonly platform: string;
   readonly status: { readonly ready: boolean; readonly message: string };
   readonly compact?: boolean;
