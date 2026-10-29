@@ -7,7 +7,7 @@ import { ToolPolicyError } from "@t3tools/provider-core/server/toolPolicy";
 import * as Schema from "effect/Schema";
 import { executionPurposeOf, executionPurposeWarnings } from "@t3tools/contracts";
 import * as AttachmentStaging from "../../../assets/AttachmentStaging.ts";
-import { CurrentRequest } from "../../McpRequestReceipts.ts";
+import { CurrentRequest, McpRequestReceipts } from "../../McpRequestReceipts.ts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as Prism from "../../../prism/PrismService.ts";
 import { ProviderAdapterRegistryV2 } from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -48,6 +48,8 @@ const launchCommandId = Effect.fn("mcp.launchCommandId")(function* (
   namespace: string,
   key: string,
 ) {
+  const receipts = yield* Effect.serviceOption(McpRequestReceipts);
+  if (Option.isSome(receipts)) return yield* receipts.value.launchCommandId(namespace, key);
   const crypto = yield* Crypto.Crypto;
   // @effect-diagnostics-next-line preferSchemaOverJson:off - a JSON pair keeps the caller apart from the key.
   const bytes = new TextEncoder().encode(JSON.stringify([namespace, key]));
