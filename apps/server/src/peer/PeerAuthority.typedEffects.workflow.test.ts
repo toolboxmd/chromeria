@@ -4744,7 +4744,7 @@ it.live(
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );
 
-it.live.each(["layout", "clear"] as const)(
+it.live.each(["snapshot preparation", "clear"] as const)(
   "native383-browser: actual grant retirement during %s prevents later capture or input dispatch",
   (boundary) =>
     Effect.scoped(
@@ -4770,9 +4770,9 @@ it.live.each(["layout", "clear"] as const)(
         expect(opened.isError, json(opened)).not.toBe(true);
         const { tabId } = yield* decodeTabId2(opened.structuredContent);
         const external = browserExternalContexts.at(-1)!;
-        const tool = boundary === "layout" ? "preview_snapshot" : "preview_type";
+        const tool = boundary === "snapshot preparation" ? "preview_snapshot" : "preview_type";
         const input =
-          boundary === "layout"
+          boundary === "snapshot preparation"
             ? { ...route, tabId, includeImage: false }
             : {
                 ...route,
@@ -4787,17 +4787,25 @@ it.live.each(["layout", "clear"] as const)(
         const retire = async () => {
           await nativePromise(b.authority.setGrant({ ...grant, preview: false }));
         };
-        if (boundary === "layout") external.controls.beforeLayout = retire;
+        const send = external.cdp.send;
+        if (boundary === "snapshot preparation")
+          external.cdp.send = async (method, params) => {
+            const result = await send(method, params);
+            if (method === "Page.getFrameTree") await retire();
+            return result;
+          };
         else external.controls.afterKey = retire;
         const retiredInput =
-          boundary === "layout" ? input : { ...input, clientRequestId: "browser-clear-retired" };
+          boundary === "snapshot preparation"
+            ? input
+            : { ...input, clientRequestId: "browser-clear-retired" };
         const denied = yield* nativeCall(a, parent, tool, retiredInput);
         expect(denied.isError, json(denied)).toBe(true);
         expect((yield* b.authority.grants)[0]?.preview).toBe(false);
         expect(external.effects).toEqual(
-          boundary === "layout" ? before : [...before, "key:ControlOrMeta+A"],
+          boundary === "snapshot preparation" ? before : [...before, "key:ControlOrMeta+A"],
         );
-        external.controls.beforeLayout = async () => {};
+        external.cdp.send = send;
         external.controls.afterKey = async () => {};
         yield* b.authority.setGrant({ ...grant, preview: true });
         if (boundary === "clear") {

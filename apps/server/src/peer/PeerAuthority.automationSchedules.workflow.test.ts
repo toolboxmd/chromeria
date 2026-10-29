@@ -2594,6 +2594,7 @@ it.live(
               Layer.provide(
                 Layer.mergeAll(
                   Layer.succeedContext(a.database),
+                  Layer.succeed(ServerSettings.ServerSettingsService, a.fixtureSettings),
                   Layer.succeed(
                     Secrets.ServerSecretStore,
                     Context.get(a.services, Secrets.ServerSecretStore),
