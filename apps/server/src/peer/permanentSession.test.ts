@@ -18,7 +18,7 @@ import { REUSABLE_DEV_SESSION_EXPIRES_AT } from "../auth/ReusableDevAuth.ts";
 
 const dependencies = Layer.mergeAll(
   Sqlite.layerMemory,
-  ServerSettings.layerTest(),
+  ServerSettings.layerTest({ linkedEnvironmentsEnabled: true }),
   Secrets.layer,
   Environment.layerIdentity,
 ).pipe(
