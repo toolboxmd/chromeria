@@ -15146,6 +15146,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const forkPlans = retirementPlan === undefined ? [] : [retirementPlan];
     if (command.type === "thread.stop" && "forkRetirementStop" in command)
       forkPlans.push(propagatedStopAdmission(command.threadId, command.forkRetirementStop));
+    if (
+      command.type === "delegated_task.remote.observe" &&
+      command.forkRetirementStop !== undefined
+    )
+      forkPlans.push(propagatedStopAdmission(command.parentThreadId, command.forkRetirementStop));
     if (command.type === "message.dispatch") {
       const wightPlan = wightAdmissionPlan(command);
       if (wightPlan !== null) forkPlans.push(wightPlan);

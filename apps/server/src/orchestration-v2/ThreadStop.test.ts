@@ -3549,57 +3549,90 @@ it.effect("queue resume refused by Stop remains retryable with the same command 
   }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect("Stop reaches remote work under every stopped local descendant", () =>
-  Effect.gen(function* () {
-    const orchestrator = yield* Orchestrator.OrchestratorV2;
-    const threads = yield* ThreadManagementService.ThreadManagementService;
-    const root = ThreadId.make("review-root");
-    yield* createWatchingThread(root, 900);
-    yield* send(root, "root turn", "start_immediately");
-    const child = yield* delegate(root, "local child");
-    const resumed = yield* delegate(root, "resumed child");
-    for (const parent of [root, child, resumed]) {
-      const run = (yield* orchestrator.getThreadProjection(parent)).runs.at(-1)!;
-      yield* orchestrator.dispatch({
-        type: "delegated_task.remote.request",
-        commandId: CommandId.make("remote:" + parent),
-        parentThreadId: parent,
-        parentRunId: run.id,
-        parentNodeId: run.rootNodeId!,
-        task: "remote " + parent,
-        driver: ProviderDriverKind.make("codex"),
-        modelSelection,
-        remoteChild: {
-          environmentId: EnvironmentId.make("review-remote"),
-          label: "Remote",
-          threadId: ThreadId.make("remote:" + parent),
-        },
-        completionWake: "always",
-      });
-    }
-    const stop = CommandId.make("review-stop");
-    yield* orchestrator.dispatch({ type: "thread.stop", commandId: stop, threadId: root });
-    yield* send(resumed, "explicit human revival", "start_immediately");
-    yield* threads.stopDelegatedTasks({ threadId: root, commandId: stop });
-    yield* threads.stopDelegatedTasks({ threadId: root, commandId: stop });
-    const rootRemote = (yield* orchestrator.getThreadProjection(root)).subagents.find(
-      (task) => task.remoteChild !== undefined,
-    )!;
-    const childProjection = yield* orchestrator.getThreadProjection(child);
-    const childRemote = childProjection.subagents.find((task) => task.remoteChild !== undefined)!;
-    const resumedRemote = (yield* orchestrator.getThreadProjection(resumed)).subagents.find(
-      (task) => task.remoteChild !== undefined,
-    )!;
-    assert.isUndefined(resumedRemote.remoteChild?.stop);
-    assert.isFalse(yield* isThreadRetired(resumed));
-    assert.equal(rootRemote.remoteChild?.stop?.state, "pending", "root remote task is stopped");
-    assert.equal(childProjection.runs.at(-1)?.status, "interrupted", "local child is stopped");
-    assert.equal(
-      childRemote.remoteChild?.stop?.state,
-      "pending",
-      "remote work under child must also be stopped",
-    );
-  }).pipe(Effect.provide(layerTest)),
+it.effect.each(["before propagation", "after descendant read"] as const)(
+  "Stop reaches remote work under every stopped local descendant (%s)",
+  (ordering) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threads = yield* ThreadManagementService.ThreadManagementService;
+      const root = ThreadId.make("review-root");
+      yield* createWatchingThread(root, 900);
+      yield* send(root, "root turn", "start_immediately");
+      const child = yield* delegate(root, "local child");
+      const resumed = yield* delegate(root, "resumed child");
+      for (const parent of [root, child, resumed]) {
+        const run = (yield* orchestrator.getThreadProjection(parent)).runs.at(-1)!;
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.request",
+          commandId: CommandId.make("remote:" + parent),
+          parentThreadId: parent,
+          parentRunId: run.id,
+          parentNodeId: run.rootNodeId!,
+          task: "remote " + parent,
+          driver: ProviderDriverKind.make("codex"),
+          modelSelection,
+          remoteChild: {
+            environmentId: EnvironmentId.make("review-remote"),
+            label: "Remote",
+            threadId: ThreadId.make("remote:" + parent),
+          },
+          completionWake: "always",
+        });
+      }
+      const stop = CommandId.make("review-stop");
+      yield* orchestrator.dispatch({ type: "thread.stop", commandId: stop, threadId: root });
+      yield* send(resumed, "explicit human revival", "start_immediately");
+      const reached = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const original = orchestrator.getThreadRecords;
+      let pause = ordering === "after descendant read";
+      using _read = vi
+        .spyOn(orchestrator, "getThreadRecords")
+        .mockImplementation((id, fields, filter) => {
+          const read = original(id, fields, filter);
+          if (id !== child || fields.length !== 1 || fields[0] !== "subagents" || !pause)
+            return read;
+          return Effect.gen(function* () {
+            const result = yield* read;
+            pause = false;
+            yield* Deferred.succeed(reached, undefined);
+            yield* Deferred.await(release);
+            return result;
+          });
+        });
+      const stopping = yield* threads
+        .stopDelegatedTasks({ threadId: root, commandId: stop })
+        .pipe(Effect.forkChild);
+      if (ordering === "after descendant read") {
+        yield* Deferred.await(reached);
+        yield* send(child, "human revival after descendant read", "start_immediately");
+        yield* Deferred.succeed(release, undefined);
+      }
+      yield* Fiber.join(stopping);
+      yield* threads.stopDelegatedTasks({ threadId: root, commandId: stop });
+      const rootRemote = (yield* orchestrator.getThreadProjection(root)).subagents.find(
+        (task) => task.remoteChild !== undefined,
+      )!;
+      const childProjection = yield* orchestrator.getThreadProjection(child);
+      const childRemote = childProjection.subagents.find((task) => task.remoteChild !== undefined)!;
+      const resumedRemote = (yield* orchestrator.getThreadProjection(resumed)).subagents.find(
+        (task) => task.remoteChild !== undefined,
+      )!;
+      assert.isUndefined(resumedRemote.remoteChild?.stop);
+      assert.isFalse(yield* isThreadRetired(resumed));
+      assert.equal(rootRemote.remoteChild?.stop?.state, "pending", "root remote task is stopped");
+      if (ordering === "after descendant read") {
+        assert.isFalse(yield* isThreadRetired(child));
+        assert.isUndefined(childRemote.remoteChild?.stop, "resumed child keeps its remote work");
+      } else {
+        assert.equal(childProjection.runs.at(-1)?.status, "interrupted", "local child is stopped");
+        assert.equal(
+          childRemote.remoteChild?.stop?.state,
+          "pending",
+          "remote work under child must also be stopped",
+        );
+      }
+    }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect("a retired descendant cannot create local or remote delegation", () =>

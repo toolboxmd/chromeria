@@ -3789,6 +3789,12 @@ const OrchestrationV2InternalCommand = Schema.Union([
     commandId: CommandId,
     parentThreadId: ThreadId,
     taskId: NodeId,
+    forkRetirementStop: Schema.optional(
+      Schema.Struct({
+        ancestorThreadId: ThreadId,
+        originalToken: CommandId,
+      }),
+    ),
     observation: Schema.optional(PeerTaskObservation),
     availability: Schema.optional(Schema.Literals(["current", "stale", "unsupported"])),
     stop: Schema.optional(PeerTaskStop),

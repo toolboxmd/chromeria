@@ -1440,6 +1440,7 @@ const make = Effect.gen(function* () {
     const stopRemoteTasks = Effect.fn("ThreadManagementService.stopRemoteTasks")(function* (
       parentThreadId: ThreadId,
       tasks: typeof subagents,
+      retirement?: typeof input.forkRetirementStop,
     ) {
       for (const task of tasks) {
         // A task in a linked environment ends here; its follower then stops it there.
@@ -1454,6 +1455,7 @@ const make = Effect.gen(function* () {
           commandId: CommandId.make(`${input.commandId}:stop-intent:${task.id}`),
           parentThreadId,
           taskId: task.id,
+          ...(retirement === undefined ? {} : { forkRetirementStop: retirement }),
           stop: {
             requestId: `${input.commandId}:stop:${task.id}`,
             state: "pending",
@@ -1477,7 +1479,7 @@ const make = Effect.gen(function* () {
         );
       }
     });
-    yield* stopRemoteTasks(input.threadId, subagents);
+    yield* stopRemoteTasks(input.threadId, subagents, input.forkRetirementStop);
     const provenance = input.forkRetirementStop ?? {
       ancestorThreadId: input.threadId,
       originalToken: input.commandId,
@@ -1498,7 +1500,7 @@ const make = Effect.gen(function* () {
               child.thread.forkRetirement?.token === provenance.originalToken &&
               !child.thread.forkResumedRetirements?.includes(provenance.originalToken)
             )
-              yield* stopRemoteTasks(threadId, child.subagents);
+              yield* stopRemoteTasks(threadId, child.subagents, provenance);
           }),
         ),
         Effect.catch((error) =>
