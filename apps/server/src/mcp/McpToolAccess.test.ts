@@ -445,6 +445,8 @@ const LinkedProbeToolkit = Toolkit.make(
   Tool.make("writes_threads", linkedProbe),
   Tool.make("starts_threads", linkedProbe),
   Tool.make("writes_environment", linkedProbe),
+  Tool.make("t3_environment_link", linkedProbe),
+  Tool.make("t3_environment_unlink", linkedProbe),
 );
 /** Runs here, and tells whether `environmentId` reached the handler. */
 const ranHere = <P extends object>(params: P) =>
@@ -459,6 +461,8 @@ const linkedProbeServer = McpHttpServer.toolkitRegistration(
     writes_threads: McpToolAccess.writesThreads((input) => [input.threadId], ranHere),
     starts_threads: McpToolAccess.startsThreads((input) => input, ranHere, "stamped"),
     writes_environment: McpToolAccess.writesEnvironment(ranHere),
+    t3_environment_link: McpToolAccess.writesEnvironment(ranHere),
+    t3_environment_unlink: McpToolAccess.writesEnvironment(ranHere),
   }),
 ).pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
@@ -501,6 +505,14 @@ it.effect.each([
     "writes_environment in environment-box",
   ],
   ["writes_environment", fullAccess, { environmentId: here }, "here"],
+  ["t3_environment_link", fullAccess, { environmentId: box }, "saw environmentId"],
+  ["t3_environment_link", fullAccess, { environmentId: here }, "saw environmentId"],
+  ["t3_environment_unlink", fullAccess, { environmentId: box }, "saw environmentId"],
+  ["t3_environment_unlink", fullAccess, { environmentId: here }, "saw environmentId"],
+  ["t3_environment_link", supervised, { environmentId: box }, "capability_denied"],
+  ["t3_environment_unlink", supervised, { environmentId: box }, "capability_denied"],
+  ["t3_environment_link", linkedClient, { environmentId: box }, "capability_denied"],
+  ["t3_environment_unlink", linkedClient, { environmentId: box }, "capability_denied"],
 
   // A thread id names a thread where the call runs, and is checked there.
   [
