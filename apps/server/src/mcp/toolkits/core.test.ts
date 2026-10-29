@@ -165,7 +165,7 @@ it.effect("an answered question reports already answered instead of not found", 
     });
     expect(declaredFailure(yield* respond("missing-question"))).toMatchObject({
       code: "invalid_request",
-      message: "The pending user-input request was not found.",
+      message: "The pending approval or user-input request was not found.",
     });
   }).pipe(
     Effect.provide(
@@ -486,8 +486,8 @@ it.effect("a client caller targets any thread within its ceiling and cannot act 
     });
 
     const forked = yield* call(
-      "t3_thread_transfer",
-      { action: "fork", sourcePoint: { type: "latest_stable" } },
+      "t3_thread_fork",
+      { sourcePoint: { type: "latest_stable" } },
       clientScope("auto"),
     );
     expect(declaredFailure(forked)).toMatchObject({ code: "target_required" });
@@ -532,7 +532,7 @@ it.effect("a read-only client reads threads and is refused every write before it
           Effect.provideService(McpSchema.McpServerClient, client),
         );
 
-    const configuration = yield* call("t3_thread_configure", {
+    const configuration = yield* call("t3_thread_configuration", {
       threadId: "other-project-thread",
     });
     expect(configuration.isError).toBe(false);

@@ -1,8 +1,3 @@
-import * as Path from "effect/Path";
-import * as HostProcess from "@t3tools/shared/HostProcess";
-import * as ServerConfig from "../../../config.ts";
-import { ensureAgentDeviceShim } from "../../../device/AgentDeviceShim.ts";
-import { nodeRuntimeUnavailableMessage } from "@t3tools/shared/nodeRuntime";
 import type * as Tool from "effect/ai/Tool";
 import {
   OrchestratorMcpFailure,
@@ -345,50 +340,44 @@ const handlers = {
             }
             // Target the opened device: an EAS device and its agent-device daemon
             // exist only once its session runs, and Android ids change on boot.
-            const agent = yield* devices.agentTarget({
+            const opened = {
               threadId: scope.thread.threadId,
-              hostId: device.hostId,
-              deviceId: device.id,
-            });
-            const cloud = after.hosts.some(
-              (host) => host.id === device.hostId && host.kind === "eas",
-            );
+              hostId: session.hostId,
+              deviceId: session.deviceId,
+            };
+            const agent = yield* devices.agentTarget(opened);
+            const hostKind = after.hosts.find((host) => host.id === device.hostId)?.kind;
             const targetArgs = [
               ...(agent.agentDeviceId === null
-                ? ["--platform", device.platform]
+                ? []
                 : agentDeviceTargetArgs({ ...device, id: agent.agentDeviceId })),
               ...agent.args,
             ];
-            const config = yield* ServerConfig.ServerConfig;
-            const path = yield* Path.Path;
-            const platform = yield* HostProcess.Platform;
-            const shimDir = yield* ensureAgentDeviceShim({
-              entryPath: yield* devices.agentCli,
-              stateDir: config.stateDir,
-            }).pipe(
-              Effect.mapError(
-                (error) =>
-                  new DeviceToolUnavailableError({
-                    reason:
-                      error._tag === "NodeRuntimeUnavailableError"
-                        ? nodeRuntimeUnavailableMessage("Device automation")
-                        : "Could not prepare the agent-device launcher.",
-                    cause: error,
-                  }),
-              ),
-            );
-            const command = path.join(
-              shimDir,
-              platform === "win32" ? "agent-device.cmd" : "agent-device",
-            );
+            const launcher = yield* devices.agentLauncher({ ...opened, targetArgs });
+            if (Option.isNone(launcher)) {
+              return yield* new DeviceToolUnavailableError({
+                reason:
+                  "The device was closed while device_open was preparing it. Call device_open again only if you still need it.",
+              });
+            }
+            const command = launcher.value;
             return {
               device,
-              agentDevice: { command, targetArgs },
+              agentDevice: { command, targetArgs, session: agent.session },
               quickStart: agentDeviceQuickStart(
                 device,
-                targetArgs,
+                [],
                 command,
-                cloud ? { kind: "eas" } : undefined,
+                hostKind === "simlock"
+                  ? {
+                      kind: "simlock",
+                      ...(agent.installDirectory
+                        ? { installDirectory: agent.installDirectory }
+                        : {}),
+                    }
+                  : hostKind === "eas"
+                    ? { kind: "eas" }
+                    : undefined,
               ),
             };
           }),
@@ -437,22 +426,21 @@ const handlers = {
         const scope = yield* requireDeviceAccess;
         const devices = yield* DeviceService.DeviceService;
         if (Option.isSome(yield* externalReplay())) return {};
-        const sessions = yield* devices.sessionsForThread(scope.thread.threadId);
-        const closing = sessions.filter(
-          (session) =>
-            session.threadId === scope.thread.threadId &&
-            (input.hostId === undefined || session.hostId === input.hostId) &&
-            (input.deviceId === undefined || session.deviceId === input.deviceId),
-        );
+        const deviceId = input.deviceId;
+        const open =
+          deviceId === undefined
+            ? Option.none()
+            : yield* devices
+                .locateSession({ threadId: scope.thread.threadId, deviceId, hostId: input.hostId })
+                .pipe(mapLocateErrors);
+        const hostId = Option.isSome(open) ? open.value.hostId : input.hostId;
         yield* externalDispatch(
-          closing.length === 0
-            ? Effect.void
-            : devices.close({
-                threadId: scope.thread.threadId,
-                ...(input.hostId === undefined ? {} : { hostId: input.hostId }),
-                ...(input.deviceId === undefined ? {} : { deviceId: input.deviceId }),
-                ...(input.shutdown === undefined ? {} : { shutdown: input.shutdown }),
-              }),
+          devices.close({
+            threadId: scope.thread.threadId,
+            ...(hostId === undefined ? {} : { hostId }),
+            ...(deviceId === undefined ? {} : { deviceId }),
+            ...(input.shutdown === undefined ? {} : { shutdown: input.shutdown }),
+          }),
         );
         return {};
       }).pipe(Effect.mapError(toolError)),
