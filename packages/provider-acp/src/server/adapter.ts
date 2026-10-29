@@ -2339,12 +2339,18 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           readonly reports: ReadonlyMap<string, BackgroundWorkReport>;
           readonly offered: ReadonlySet<string>;
         }>(noWakeReports);
+        const midTurnWakeReports = yield* Ref.make<ReadonlyMap<string, BackgroundWorkReport>>(
+          new Map(),
+        );
         const recordWakeReport = Effect.fnUntraced(function* (
           key: string,
           report: BackgroundWorkReport,
         ) {
           const context = yield* Ref.get(activeTurn);
-          if (context !== null && !context.promptSettled && !context.finalized) return;
+          if (context !== null && !context.promptSettled && !context.finalized) {
+            yield* Ref.update(midTurnWakeReports, (current) => new Map(current).set(key, report));
+            return;
+          }
           yield* Ref.update(wakeReports, ({ reports, offered }) => ({
             reports: new Map(reports).set(key, report),
             offered,
@@ -7545,6 +7551,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 yield* Ref.set(runningBackgroundTaskIds, new Set());
                 yield* Ref.set(endedBackgroundTaskIds, new Set());
                 yield* Ref.set(midTurnUnreportedCompletedTaskIds, new Set());
+                yield* Ref.set(midTurnWakeReports, new Map());
                 yield* Ref.set(handledBackgroundTaskIdsInActiveTurn, new Set());
                 yield* Ref.set(carryoverSubagents, null);
                 yield* Ref.set(suppressPostSettleMonitorPrompt, false);
@@ -8056,6 +8063,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               yield* Ref.set(continuationRequested, false);
               yield* Ref.set(runningBackgroundTaskIds, new Set());
               yield* Ref.set(midTurnUnreportedCompletedTaskIds, new Set());
+              yield* Ref.set(midTurnWakeReports, new Map());
               yield* Ref.set(carryoverSubagents, null);
               yield* Ref.set(lastTurnRoute, null);
             }),
@@ -8228,6 +8236,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               });
             }
           }
+          const unreadMidTurn = yield* Ref.get(midTurnUnreportedCompletedTaskIds);
+          const midTurnReports = yield* Ref.getAndSet(midTurnWakeReports, new Map());
+          const unreadReports = [...midTurnReports].filter(([taskId]) => unreadMidTurn.has(taskId));
+          if (settledStatus === "completed" && unreadReports.length > 0) {
+            yield* Ref.update(wakeReports, ({ reports, offered }) => ({
+              reports: new Map([...reports, ...unreadReports]),
+              offered,
+            }));
+          }
           yield* Ref.set(activeTurn, null);
           steerInjections.clear();
           if (
@@ -8245,6 +8262,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           }
           if (settledStatus !== "completed" || !(yield* hasRunningBackgroundProgress)) {
             yield* Ref.set(midTurnUnreportedCompletedTaskIds, new Set());
+            yield* Ref.set(midTurnWakeReports, new Map());
           }
           yield* Deferred.succeed(context.completed, undefined).pipe(Effect.ignore);
         });
@@ -8594,6 +8612,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             const isAppOwnedWakeTurn = acpIsAppOwnedWakeTurn(turnInput.message);
             if (!isAppOwnedWakeTurn) {
               yield* Ref.set(midTurnUnreportedCompletedTaskIds, new Set());
+              yield* Ref.set(midTurnWakeReports, new Map());
             }
             const continuationWasRequested = yield* continuationPermit.withPermit(
               Effect.gen(function* () {
