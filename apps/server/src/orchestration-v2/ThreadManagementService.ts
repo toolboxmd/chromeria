@@ -1436,52 +1436,71 @@ const make = Effect.gen(function* () {
     for (const task of subagents) {
       if (task.origin === "app_owned" && task.childThreadId !== null)
         stoppedChildThreadIds.add(task.childThreadId);
-      // A task in a linked environment ends here; its follower then stops it there.
-      if (
-        task.origin !== "app_owned" ||
-        task.childThreadId !== null ||
-        task.remoteChild === undefined
-      )
-        continue;
-      yield* dispatch({
-        type: "delegated_task.remote.observe",
-        commandId: CommandId.make(`${input.commandId}:stop-intent:${task.id}`),
-        parentThreadId: input.threadId,
-        taskId: task.id,
-        stop: {
-          requestId: `${input.commandId}:stop:${task.id}`,
-          state: "pending",
-          ...(input.reason === undefined ? {} : { reason: input.reason }),
-        },
-        stopResult: {
-          status: "interrupted",
-          result:
-            input.reason === undefined
-              ? "Stopped with its parent."
-              : `Stopped with its parent: ${input.reason}`,
-        },
-      }).pipe(
-        Effect.catch((error) =>
-          Effect.logWarning("Unable to stop a delegated task", {
-            parentThreadId: input.threadId,
-            taskId: task.id,
-            error,
-          }).pipe(Effect.andThen(Effect.sync(() => failures.push(error)))),
-        ),
-      );
     }
+    const stopRemoteTasks = Effect.fn("ThreadManagementService.stopRemoteTasks")(function* (
+      parentThreadId: ThreadId,
+      tasks: typeof subagents,
+    ) {
+      for (const task of tasks) {
+        // A task in a linked environment ends here; its follower then stops it there.
+        if (
+          task.origin !== "app_owned" ||
+          task.childThreadId !== null ||
+          task.remoteChild === undefined
+        )
+          continue;
+        yield* dispatch({
+          type: "delegated_task.remote.observe",
+          commandId: CommandId.make(`${input.commandId}:stop-intent:${task.id}`),
+          parentThreadId,
+          taskId: task.id,
+          stop: {
+            requestId: `${input.commandId}:stop:${task.id}`,
+            state: "pending",
+            ...(input.reason === undefined ? {} : { reason: input.reason }),
+          },
+          stopResult: {
+            status: "interrupted",
+            result:
+              input.reason === undefined
+                ? "Stopped with its parent."
+                : `Stopped with its parent: ${input.reason}`,
+          },
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("Unable to stop a delegated task", {
+              parentThreadId,
+              taskId: task.id,
+              error,
+            }).pipe(Effect.andThen(Effect.sync(() => failures.push(error)))),
+          ),
+        );
+      }
+    });
+    yield* stopRemoteTasks(input.threadId, subagents);
+    const provenance = input.forkRetirementStop ?? {
+      ancestorThreadId: input.threadId,
+      originalToken: input.commandId,
+    };
     for (const threadId of stoppedChildThreadIds) {
       yield* dispatch({
         type: "thread.stop",
         commandId: CommandId.make(`${input.commandId}:stop:${threadId}`),
         threadId,
         stopDelegatedTasks: false,
-        forkRetirementStop: input.forkRetirementStop ?? {
-          ancestorThreadId: input.threadId,
-          originalToken: input.commandId,
-        },
+        forkRetirementStop: provenance,
         ...(input.reason === undefined ? {} : { reason: input.reason }),
       }).pipe(
+        Effect.andThen(
+          Effect.gen(function* () {
+            const child = yield* orchestrator.getThreadRecords(threadId, ["subagents"]);
+            if (
+              child.thread.forkRetirement?.token === provenance.originalToken &&
+              !child.thread.forkResumedRetirements?.includes(provenance.originalToken)
+            )
+              yield* stopRemoteTasks(threadId, child.subagents);
+          }),
+        ),
         Effect.catch((error) =>
           Effect.logWarning("Unable to stop a delegated task", {
             parentThreadId: input.threadId,
