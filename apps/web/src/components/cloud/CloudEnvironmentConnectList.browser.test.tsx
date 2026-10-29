@@ -1,11 +1,11 @@
+import { act, render } from "../../../test/render";
 import { RELAY_TUNNEL_RELEASED_MESSAGE, type Discovery } from "@t3tools/client-runtime/relay";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import { EnvironmentId, ORCHESTRATION_PROTOCOL_VERSION } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { act, useState } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { useState } from "react";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 type DiscoveredEnvironments = Discovery.RelayEnvironmentDiscoveryState["environments"];
 
@@ -67,99 +67,90 @@ const linkedMachines: DiscoveredEnvironments = new Map([
   ],
 ]);
 
-let root: Root | null;
-let container: HTMLDivElement;
-let visibility: DocumentVisibilityState;
-
-function publish(state: Discovery.RelayEnvironmentDiscoveryState) {
-  discovery.state = state;
-  for (const listener of discovery.listeners) listener();
-}
-
-async function render(element: React.ReactElement) {
-  root ??= createRoot(container);
-  await act(async () => root!.render(element));
-}
-
-async function mount(refreshWhileEmpty = true) {
-  await render(
-    <CloudEnvironmentConnectRows
-      primaryEnvironmentId={null}
-      savedEnvironments={[]}
-      showSavedEnvironments
-      refreshWhileEmpty={refreshWhileEmpty}
-      empty={<p>Waiting for your computer to connect.</p>}
-    />,
-  );
-}
-
-const text = () => container.textContent ?? "";
-const button = () =>
-  [...container.querySelectorAll("button")].find((element) => element.textContent !== "");
-const checkbox = () => container.querySelector<HTMLElement>('[role="checkbox"]')!;
-const checked = () => checkbox().getAttribute("aria-checked") === "true";
-const toggle = () => act(async () => checkbox().click());
-function setVisibility(next: DocumentVisibilityState) {
-  visibility = next;
-  document.dispatchEvent(new Event("visibilitychange"));
-}
-
-async function advance(milliseconds: number) {
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(milliseconds);
-  });
-}
-
-beforeEach(() => {
-  vi.useFakeTimers();
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  visibility = "visible";
-  vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
-  container = document.createElement("div");
-  document.body.append(container);
-  root = null;
-  discovery.listeners.clear();
-  discovery.state = {
-    environments: new Map(),
-    listedSession: Option.none(),
-    refreshing: false,
-    offline: false,
-    error: Option.none(),
-  };
-  discovery.listEnvironments.mockReset().mockResolvedValue(new Map());
-  discovery.register.mockReset().mockResolvedValue(AsyncResult.success(undefined));
-  discovery.refresh.mockReset().mockImplementation(async () => {
-    publish({
-      environments: new Map(),
-      listedSession: Option.none(),
-      refreshing: true,
-      offline: false,
-      error: Option.none(),
-    });
-    const environments = await discovery.listEnvironments();
-    publish({
-      environments,
-      listedSession: Option.none(),
-      refreshing: false,
-      offline: false,
-      error: Option.none(),
-    });
-    return AsyncResult.success(undefined);
-  });
-});
-
-afterEach(async () => {
-  await act(async () => root?.unmount());
-  container.remove();
-  vi.useRealTimers();
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-});
-
 describe("cloud onboarding discovery", () => {
   it.each(["manual", "t3_relay"] as const)(
     "does not offer or auto-select a %s publishing link as a new relay",
     async (providerKind) => {
+      let visibility: DocumentVisibilityState;
+      using _cleanup = {
+        [Symbol.dispose]: () => {
+          vi.restoreAllMocks();
+          vi.unstubAllGlobals();
+        },
+      };
+
+      visibility = "visible";
+      vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+      discovery.listeners.clear();
+      discovery.state = {
+        environments: new Map(),
+        listedSession: Option.none(),
+        refreshing: false,
+        offline: false,
+        error: Option.none(),
+      };
+      discovery.listEnvironments.mockReset().mockResolvedValue(new Map());
+      discovery.register.mockReset().mockResolvedValue(AsyncResult.success(undefined));
+      discovery.refresh.mockReset().mockImplementation(async () => {
+        publish({
+          environments: new Map(),
+          listedSession: Option.none(),
+          refreshing: true,
+          offline: false,
+          error: Option.none(),
+        });
+        const environments = await discovery.listEnvironments();
+        publish({
+          environments,
+          listedSession: Option.none(),
+          refreshing: false,
+          offline: false,
+          error: Option.none(),
+        });
+        return AsyncResult.success(undefined);
+      });
+
+      await using screen = await render(null);
+      const container = screen.container;
+
+      function publish(state: Discovery.RelayEnvironmentDiscoveryState) {
+        discovery.state = state;
+        for (const listener of discovery.listeners) listener();
+      }
+
+      async function rerender(element: React.ReactElement) {
+        await act(async () => screen.rerender(element));
+      }
+
+      async function mount(refreshWhileEmpty = true) {
+        await rerender(
+          <CloudEnvironmentConnectRows
+            primaryEnvironmentId={null}
+            savedEnvironments={[]}
+            showSavedEnvironments
+            refreshWhileEmpty={refreshWhileEmpty}
+            empty={<p>Waiting for your computer to connect.</p>}
+          />,
+        );
+      }
+
+      const text = () => container.textContent ?? "";
+      const button = () =>
+        [...container.querySelectorAll("button")].find((element) => element.textContent !== "");
+      const checkbox = () => container.querySelector<HTMLElement>('[role="checkbox"]')!;
+      const checked = () => checkbox().getAttribute("aria-checked") === "true";
+      const toggle = () => act(async () => checkbox().click());
+      function setVisibility(next: DocumentVisibilityState) {
+        visibility = next;
+        document.dispatchEvent(new Event("visibilitychange"));
+      }
+
+      async function advance(milliseconds: number) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(milliseconds);
+        });
+      }
+
       const base = linkedMachines.get(newMachineId)!;
       discovery.listEnvironments.mockResolvedValue(
         new Map([
@@ -176,7 +167,7 @@ describe("cloud onboarding discovery", () => {
         ]),
       );
       const onChange = vi.fn();
-      await render(
+      await rerender(
         <CloudEnvironmentConnectRows
           primaryEnvironmentId={null}
           savedEnvironments={[]}
@@ -195,7 +186,7 @@ describe("cloud onboarding discovery", () => {
       expect(onChange).not.toHaveBeenCalled();
       expect(discovery.register).not.toHaveBeenCalled();
 
-      await render(
+      await rerender(
         <CloudEnvironmentConnectRows
           primaryEnvironmentId={null}
           savedEnvironments={[
@@ -213,5 +204,4 @@ describe("cloud onboarding discovery", () => {
       expect(discovery.register).not.toHaveBeenCalled();
     },
   );
-
 });

@@ -1915,13 +1915,16 @@ it.effect("queues a plain send behind the stopped queue and releases its hold", 
           runId: started[0]!.runId,
           holdQueue: true,
         });
-        // The provider has not stopped yet, so a plain send still resolves to a steer.
+        // The send releases the held queue, but must not steer the interrupted run.
         yield* send("sent", "auto");
         yield* worker.drain();
 
         const projection = yield* orchestrator.getThreadProjection(threadId);
         assert.deepEqual(steered, []);
-        assert.equal(started.length, 1);
+        assert.deepEqual(
+          started.map((turn) => turn.message.text),
+          ["first", "queued"],
+        );
         const queued = projection.runs
           .filter((run) => run.status === "queued")
           .sort((left, right) => (left.queuePosition ?? 0) - (right.queuePosition ?? 0));
@@ -1929,7 +1932,7 @@ it.effect("queues a plain send behind the stopped queue and releases its hold", 
           queued.map(
             (run) => projection.messages.find((message) => message.id === run.userMessageId)?.text,
           ),
-          ["queued", "sent"],
+          ["sent"],
         );
         // The user sent it, so the queue they stopped runs again once the provider stops.
         assert.isFalse(queued.some((run) => run.queueHeld === true));

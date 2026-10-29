@@ -3662,25 +3662,24 @@ const make = Effect.gen(function* () {
     });
 
   return ServerBrowser.of({
-    readWatch: (input, authorizeReader) =>
-      Effect.gen(function* () {
-        const context = yield* Effect.context<Effect.Services<typeof authorizeReader>>();
-        return yield* Effect.tryPromise({
-          try: (signal) =>
-            watches.read(
-              input,
-              async () => {
-                const result = await Effect.runPromiseWith(context)(Effect.result(authorizeReader));
-                if (result._tag === "Failure") throw result.failure;
-              },
-              signal,
-            ),
-          catch: (cause) =>
-            isWatchReadFailure(cause)
-              ? cause
-              : new PreviewWatchError({ reason: "subscription_failed" }),
-        });
-      }),
+    readWatch: Effect.fn("ServerBrowser.readWatch")(function* (input, authorizeReader) {
+      const context = yield* Effect.context<Effect.Services<typeof authorizeReader>>();
+      return yield* Effect.tryPromise({
+        try: (signal) =>
+          watches.read(
+            input,
+            async () => {
+              const result = await Effect.runPromiseWith(context)(Effect.result(authorizeReader));
+              if (result._tag === "Failure") throw result.failure;
+            },
+            signal,
+          ),
+        catch: (cause) =>
+          isWatchReadFailure(cause)
+            ? cause
+            : new PreviewWatchError({ reason: "subscription_failed" }),
+      });
+    }),
     mirrorResets: Stream.fromPubSub(mirrorResets),
     mirrorCookies: (batch) =>
       Effect.tryPromise({

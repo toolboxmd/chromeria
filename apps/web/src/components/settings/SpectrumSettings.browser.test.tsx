@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+import { act, render } from "../../../test/render";
 import {
   DEFAULT_SERVER_SETTINGS,
   DEFAULT_UNIFIED_SETTINGS,
@@ -9,9 +9,8 @@ import {
   type ServerSettingsPatch,
 } from "@t3tools/contracts";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
-import { act, type ReactNode } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { type ReactNode } from "react";
+import { expect, it, vi } from "vite-plus/test";
 import { resolveSettingsScope } from "./settingsScope";
 import { resolveScopedSettingsTargets } from "./scopedSettings";
 
@@ -70,19 +69,14 @@ vi.mock("./settingsLayout", () => ({
   ),
 }));
 import { SpectrumSettings } from "./SpectrumSettings";
-let root: Root;
-let container: HTMLDivElement;
-const render = () => act(() => root.render(<SpectrumSettings />));
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  vi.stubGlobal(
-    "ResizeObserver",
-    class {
-      observe() {}
-      disconnect() {}
-      unobserve() {}
+
+it("retains an edited draft when the displayed environment ignores the setting", async () => {
+  using _cleanup = {
+    [Symbol.dispose]: () => {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
     },
-  );
+  };
   const primary = { instanceId: ProviderInstanceId.make("codex"), model: "sol" };
   const spectrum = {
     ...DEFAULT_SPECTRUM_SETTINGS,
@@ -98,16 +92,10 @@ beforeEach(() => {
     { ...DEFAULT_SERVER_SETTINGS, spectrum },
   ];
   state.persist.mockReset();
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-afterEach(async () => {
-  await act(() => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
-it("retains an edited draft when the displayed environment ignores the setting", async () => {
+
+  await using screen = await render(null);
+  const container = screen.container;
+
   state.persist.mockImplementation(async ({ environmentId, input }) => {
     if (environmentId === ids[0]) {
       return { _tag: "Success", value: state.settings[0]! };
@@ -115,7 +103,7 @@ it("retains an edited draft when the displayed environment ignores the setting",
     state.settings[1] = applyServerSettingsPatch(state.settings[1]!, input.patch);
     return { _tag: "Success", value: state.settings[1]! };
   });
-  await render();
+  await screen.rerender(<SpectrumSettings />);
   const rounds = container.querySelector<HTMLInputElement>("#spectrum-rounds")!;
   await act(() => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(rounds, "3");
@@ -137,18 +125,43 @@ it("retains an edited draft when the displayed environment ignores the setting",
   expect(container.querySelector('[role="alert"]')?.textContent).toContain("one");
 });
 it("adopts the displayed environment's reset when another environment fails later", async () => {
+  using _cleanup = {
+    [Symbol.dispose]: () => {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    },
+  };
+  const primary = { instanceId: ProviderInstanceId.make("codex"), model: "sol" };
+  const spectrum = {
+    ...DEFAULT_SPECTRUM_SETTINGS,
+    slots: [
+      { label: "Blue", primary, fallbacks: [] },
+      { label: "Red", primary, fallbacks: [] },
+    ],
+    white: { primary: { ...primary, model: "judge" }, fallbacks: [] },
+    relayRounds: 4,
+  };
+  state.settings = [
+    { ...DEFAULT_SERVER_SETTINGS, spectrum },
+    { ...DEFAULT_SERVER_SETTINGS, spectrum },
+  ];
+  state.persist.mockReset();
+
+  await using screen = await render(null);
+  const container = screen.container;
+
   let failOther: ((response: Response) => void) | undefined;
   state.persist.mockImplementation(async ({ environmentId, input }) => {
     if (environmentId === ids[0]) {
       state.settings[0] = applyServerSettingsPatch(state.settings[0]!, input.patch);
-      await render();
+      await screen.rerender(<SpectrumSettings />);
       return { _tag: "Success", value: state.settings[0]! };
     }
     return new Promise<Response>((resolve) => {
       failOther = resolve;
     });
   });
-  await render();
+  await screen.rerender(<SpectrumSettings />);
   expect(container.querySelector<HTMLInputElement>("#spectrum-rounds")?.value).toBe("4");
   await act(() =>
     [...container.querySelectorAll("button")]

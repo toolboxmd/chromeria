@@ -83,7 +83,7 @@ export function usePromachosInlineCardHost(input: {
 }
 
 /** Keep inline question/approval card growth visible while following the chat end. */
-export function usePromachosScrollFollow(
+export function promachosScrollFollow(
   enabled: boolean,
   normal: MaintainScrollAtEndOptions,
   smooth: MaintainScrollAtEndOptions,

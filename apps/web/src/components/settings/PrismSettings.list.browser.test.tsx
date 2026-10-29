@@ -1,9 +1,6 @@
-// @vitest-environment jsdom
-
 import { ProviderDriverKind, ProviderInstanceId, type Color } from "@t3tools/contracts";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { act, render, type Screen } from "../../../test/render";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import type { ColorProviderChoice } from "./ColorPicker.logic";
 import { ColorList } from "./ColorList";
@@ -11,46 +8,24 @@ import { ColorList } from "./ColorList";
 const first = { instanceId: ProviderInstanceId.make("codex"), model: "first" };
 const second = { instanceId: ProviderInstanceId.make("opencode"), model: "second" };
 
-let root: Root;
-let container: HTMLDivElement;
-
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  vi.stubGlobal(
-    "ResizeObserver",
-    class {
-      observe() {}
-      disconnect() {}
-      unobserve() {}
-    },
-  );
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-
-afterEach(async () => {
-  await act(() => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
-
 /**
  * Mirrors the page: one write at a time, and `saving` turns on in the same render as the edit,
  * as the save store does, until its snapshot lands or it fails.
  */
 function harness(
+  screen: Screen,
   initial: readonly Color[],
   providers: readonly ColorProviderChoice[] = [],
   title = "Reviewer",
 ) {
+  const { container } = screen;
   let saved = initial;
   let saving = false;
   let settle: { resolve: () => void; reject: (cause: Error) => void } | null = null;
   const save = vi.fn((models: readonly Color[]) => {
     if (saving) return Promise.reject(new Error("Wait for the current settings update to finish."));
     saving = true;
-    root.render(element());
+    screen.rerender(element());
     return new Promise<void>((resolve, reject) => {
       settle = {
         resolve: () => {
@@ -73,7 +48,7 @@ function harness(
       save={save}
     />
   );
-  const render = () => act(() => root.render(element()));
+  const render = () => act(() => screen.rerender(element()));
   const finish = async (outcome: "success" | "failure") => {
     await act(async () => {
       if (outcome === "success") settle!.resolve();
@@ -82,27 +57,31 @@ function harness(
     saving = false;
     await render();
   };
-  return { save, render, finish };
-}
+  const rows = () => [...container.querySelectorAll("li")];
+  const order = () => rows().map((row) => row.textContent?.match(/(first|second)/)?.[1]);
+  const moveDown = (position: number) =>
+    act(() =>
+      container
+        .querySelector<HTMLButtonElement>(
+          `[aria-label="Move Reviewer preference ${position} down"]`,
+        )!
+        .click(),
+    );
+  const moveUp = (position: number) =>
+    act(() =>
+      container
+        .querySelector<HTMLButtonElement>(`[aria-label="Move Reviewer preference ${position} up"]`)!
+        .click(),
+    );
 
-const rows = () => [...container.querySelectorAll("li")];
-const order = () => rows().map((row) => row.textContent?.match(/(first|second)/)?.[1]);
-const moveDown = (position: number) =>
-  act(() =>
-    container
-      .querySelector<HTMLButtonElement>(`[aria-label="Move Reviewer preference ${position} down"]`)!
-      .click(),
-  );
-const moveUp = (position: number) =>
-  act(() =>
-    container
-      .querySelector<HTMLButtonElement>(`[aria-label="Move Reviewer preference ${position} up"]`)!
-      .click(),
-  );
+  return { save, render, finish, rows, order, moveDown, moveUp };
+}
 
 describe("ColorList while a save is pending", () => {
   it("keeps the first edit, ignores the second, and keeps rows mounted when the save lands", async () => {
-    const list = harness([first, second]);
+    await using screen = await render(null);
+    const list = harness(screen, [first, second]);
+    const { rows, order, moveDown, moveUp } = list;
     await list.render();
     const [firstRow, secondRow] = rows();
     await moveDown(1);
@@ -123,7 +102,9 @@ describe("ColorList while a save is pending", () => {
   });
 
   it("restores the last saved order when the pending save fails", async () => {
-    const list = harness([first, second]);
+    await using screen = await render(null);
+    const list = harness(screen, [first, second]);
+    const { rows, order, moveDown, moveUp } = list;
     await list.render();
     await moveDown(1);
     await list.render();
@@ -143,7 +124,9 @@ describe("ColorList adding a Color", () => {
       displayName: "Codex",
       models: [{ slug: "third", name: "Third", efforts: [] }],
     };
-    const list = harness([first, second], [codex]);
+    await using screen = await render(null);
+    const list = harness(screen, [first, second], [codex]);
+    const { rows, order, moveDown, moveUp } = list;
     await list.render();
     const [firstRow, secondRow] = rows();
     await act(() =>
@@ -162,7 +145,9 @@ describe("ColorList adding a Color", () => {
 });
 
 it("keeps Promachos rows mounted while its reordered Color draft saves", async () => {
-  const list = harness([first, second], [], "Promachos");
+  await using screen = await render(null);
+  const list = harness(screen, [first, second], [], "Promachos");
+  const { rows, order, moveDown, moveUp } = list;
   await list.render();
   const [firstRow, secondRow] = rows();
   await act(() =>

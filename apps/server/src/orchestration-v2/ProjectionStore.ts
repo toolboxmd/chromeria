@@ -1171,6 +1171,9 @@ const decodeThreadPayload = Schema.decodeUnknownEffect(
 const decodeRunPayload = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2RunJsonSchema),
 );
+const decodeRunPurpose = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Struct({ purpose: OrchestrationV2RunJsonSchema.fields.purpose })),
+);
 const decodeRunAttemptPayload = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2RunAttemptJsonSchema),
 );
@@ -2119,7 +2122,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               const current =
                 currentRows[0] === undefined
                   ? undefined
-                  : yield* decodeRunPayload(currentRows[0].payload_json);
+                  : yield* decodeRunPurpose(currentRows[0].payload_json);
               if (
                 current !== undefined &&
                 !executionPurposesEqual(current.purpose, event.payload.purpose)

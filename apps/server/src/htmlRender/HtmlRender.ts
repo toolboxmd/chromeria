@@ -437,12 +437,15 @@ const make = Effect.gen(function* () {
     return inlined.html;
   });
 
-  const publishPrepared = Effect.fn("HtmlRender.publishPrepared")(function* (input: {
-    readonly threadId: ThreadId;
-    readonly html: string;
-    readonly title: string;
-    readonly height: number;
-  }) {
+  const publishPrepared = Effect.fn("HtmlRender.publishPrepared")(function* (
+    input: {
+      readonly threadId: ThreadId;
+      readonly html: string;
+      readonly title: string;
+      readonly height: number;
+    },
+    source = input,
+  ) {
     const html = input.html;
     const sizeBytes = new TextEncoder().encode(html).byteLength;
     if (sizeBytes > MAX_PAGE_BYTES) return yield* new HtmlRenderPageTooLargeError({ sizeBytes });
@@ -496,32 +499,34 @@ const make = Effect.gen(function* () {
         return yield* fileSystem
           .writeFileString(filePath, html, request === undefined ? undefined : { flag: "wx" })
           .pipe(
-          Effect.mapError((cause) => new HtmlRenderStoreError({ cause })),
-          Effect.uninterruptible,
-          Effect.andThen(measure(html)),
-          Effect.andThen((heights) => {
-            const reference: HtmlRenderReference = {
-              ...baseReference,
-              ...(heights === undefined ? {} : { heights }),
-            };
-            return mcpSessions
-              .recordHtmlRender(input.threadId, input, reference)
-              .pipe(Effect.as(reference));
-          }),
-          // An interrupted legacy publish leaves neither an attachment nor a recoverable reference.
-          // Keyed ambiguous attempts keep their exact artifact for inspection instead.
-          Effect.onError(() =>
-            request !== undefined
-              ? Effect.void
-              : Effect.all(
-              [
-                fileSystem.remove(filePath, { force: true }).pipe(Effect.ignore),
-                mcpSessions.takeHtmlRender(input.threadId, input, baseReference).pipe(Effect.ignore),
-              ],
-              { discard: true },
+            Effect.mapError((cause) => new HtmlRenderStoreError({ cause })),
+            Effect.uninterruptible,
+            Effect.andThen(measure(html)),
+            Effect.andThen((heights) => {
+              const reference: HtmlRenderReference = {
+                ...baseReference,
+                ...(heights === undefined ? {} : { heights }),
+              };
+              return mcpSessions
+                .recordHtmlRender(input.threadId, source, reference)
+                .pipe(Effect.as(reference));
+            }),
+            // An interrupted legacy publish leaves neither an attachment nor a recoverable reference.
+            // Keyed ambiguous attempts keep their exact artifact for inspection instead.
+            Effect.onError(() =>
+              request !== undefined
+                ? Effect.void
+                : Effect.all(
+                    [
+                      fileSystem.remove(filePath, { force: true }).pipe(Effect.ignore),
+                      mcpSessions
+                        .takeHtmlRender(input.threadId, input, baseReference)
+                        .pipe(Effect.ignore),
+                    ],
+                    { discard: true },
+                  ),
             ),
-          ),
-        );
+          );
       }),
     );
   });
@@ -532,7 +537,7 @@ const make = Effect.gen(function* () {
     readonly title: string;
     readonly height: number;
   }) {
-    return yield* publishPrepared({ ...input, html: yield* prepare(input.html) });
+    return yield* publishPrepared({ ...input, html: yield* prepare(input.html) }, input);
   });
 
   const preview = Effect.fn("HtmlRender.preview")(function* (input: {

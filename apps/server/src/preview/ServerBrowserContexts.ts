@@ -56,7 +56,7 @@ class ChromeVersionMismatchError extends Error {
  * and the per-page override that adds matching `Sec-CH-UA`: sites block a user
  * agent that disagrees with its client hints.
  */
-export const chromeIdentity = (
+const chromeIdentity = (
   fullVersion: string,
   host: { readonly platform: NodeJS.Platform; readonly arch: string; readonly release: string },
 ) => {

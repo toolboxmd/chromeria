@@ -2,10 +2,10 @@ import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import type { ToolCallDiffTarget } from "../../diffPanelStore";
 import { AudioPreviewUnmountContext } from "../files/AudioPreview";
-import { PromachosInlineCardHost, usePromachosScrollFollow } from "../promachos/PromachosChat";
+import { PromachosInlineCardHost, promachosScrollFollow } from "../promachos/PromachosChat";
 import {
   promachosTimelineRows,
-  usePromachosTimelineDisclosures,
+  resolvePromachosTimelineDisclosures,
 } from "../promachos/promachosTimeline";
 import { ThreadFindTimelineContext } from "./ThreadFindProvider";
 import { MarkdownFindContext } from "./markdownFindContext";
@@ -681,12 +681,12 @@ const ConversationTimeline = memo(function ConversationTimeline({
   );
   const pendingApprovalRequestIds = new Set(pendingApprovalsByRequestId.keys());
   const promachos = presentation === "promachos";
-  const scrollFollow = usePromachosScrollFollow(
+  const scrollFollow = promachosScrollFollow(
     promachos,
     TIMELINE_MAINTAIN_SCROLL_AT_END,
     TIMELINE_MAINTAIN_SCROLL_AT_END_SMOOTH,
   );
-  const promachosDisclosures = usePromachosTimelineDisclosures(
+  const promachosDisclosures = resolvePromachosTimelineDisclosures(
     { timelineEntries, latestRun, isWorking, runlessWorkActive, runningRunId },
     promachos,
   );
