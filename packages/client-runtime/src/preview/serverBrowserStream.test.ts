@@ -15,6 +15,8 @@ import {
   type PreviewStreamDownload,
 } from "./serverBrowserStream.ts";
 
+const decodeStreamInput = Schema.decodeSync(Schema.fromJsonString(PreviewStreamInput));
+
 class FakeSocket extends EventTarget {
   static readonly OPEN = 1;
   static current: FakeSocket;
@@ -207,7 +209,7 @@ describe("preview stream control", () => {
       socket.control({ ...agent, controller: "you" });
       const text = "界".repeat(length);
       expect(client.send({ type: "text", text })).toBe(true);
-      const decode = Schema.decodeSync(Schema.fromJsonString(PreviewStreamInput));
+      const decode = decodeStreamInput;
       expect(decode(socket.sent.at(-1)!)).toEqual({ type: "text", text: "界".repeat(10_000) });
       expect(client.send({ type: "text", text: "after-paste" })).toBe(true);
       expect(decode(socket.sent.at(-1)!)).toEqual({ type: "text", text: "after-paste" });
@@ -219,7 +221,7 @@ describe("preview stream control", () => {
   it("preserves native auxiliary button bits and accumulated wheel displacement", () => {
     const { client, socket } = connect();
     socket.control({ ...agent, controller: "you" });
-    const decode = Schema.decodeSync(Schema.fromJsonString(PreviewStreamInput));
+    const decode = decodeStreamInput;
     const inputs: PreviewStreamInput[] = [
       {
         type: "mouse",
@@ -246,7 +248,7 @@ describe("preview stream control", () => {
     expect(client.send({ type: "resize", width: 80, height: 600 })).toBe(true);
     expect(socket.sent).toHaveLength(0);
     expect(client.send({ type: "resize", width: 5000.4, height: 3000.7 })).toBe(true);
-    const decode = Schema.decodeSync(Schema.fromJsonString(PreviewStreamInput));
+    const decode = decodeStreamInput;
     expect(decode(socket.sent.at(-1)!)).toEqual({ type: "resize", width: 3840, height: 2160 });
     client.stop();
   });
@@ -287,9 +289,11 @@ describe("preview stream control", () => {
     expect(client.send({ type: "dialog", accept: true, promptText: "界".repeat(16384) })).toBe(
       true,
     );
-    expect(
-      Schema.decodeSync(Schema.fromJsonString(PreviewStreamInput))(socket.sent.at(-1)!),
-    ).toEqual({ type: "dialog", accept: true, promptText: "界".repeat(16384) });
+    expect(decodeStreamInput(socket.sent.at(-1)!)).toEqual({
+      type: "dialog",
+      accept: true,
+      promptText: "界".repeat(16384),
+    });
     expect(client.send({ type: "text", text: "after-refusal" })).toBe(true);
     client.stop();
   });
