@@ -1879,7 +1879,7 @@ export const make = Effect.gen(function* () {
       }
       const rows = Math.min(input.limit + 1, PULL_REQUEST_SEARCH_MAX_ROWS);
       const variables = { q: query, first: rows, stats: false };
-      return (
+      return yield* (
         input.host.toLowerCase() === "github.com"
           ? client.PullRequestSearchWithStacks(variables)
           : client.PullRequestSearch(variables)

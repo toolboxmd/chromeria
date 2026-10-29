@@ -3762,6 +3762,7 @@ const OrchestrationV2InternalCommand = Schema.Union([
     taskId: NodeId,
     status: Schema.Literals(["completed", "failed", "cancelled", "interrupted"]),
     result: Schema.String,
+    launchError: Schema.optional(Schema.String),
     /**
      * `ran-out`: the run there ended by itself; `stopped`: a stop from here reached it. Either
      * sets `remoteChild.stoppedThere` on a task this report completes. On a task already

@@ -309,9 +309,10 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/server/src/forkWsRpc.ts"
   ],
   "upstreamFiles": [
+    "apps/server/src/provider/AgentContextBudget.test.ts",
+    "apps/server/src/provider/agentContextBudget.json",
     "apps/server/src/orchestration-v2/ThreadFind.ts",
     "apps/server/src/orchestration-v2/threadHistoryPaging.ts",
-    "apps/server/src/outboundHttp.test.ts",
     "scripts/effect-budget.json",
     "apps/web/src/components/device/DevicePanel.browser.test.tsx",
     ".github/workflows/ci.yml",
