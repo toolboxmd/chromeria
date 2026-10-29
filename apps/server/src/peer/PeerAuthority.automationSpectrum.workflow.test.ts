@@ -1084,7 +1084,7 @@ it.live.each(["council", "free"] as const)(
         for (const color of result.participants)
           expect(startedTurns.some((turn) => turn.threadId === color.threadId)).toBe(true);
         expect(settled.report).not.toBeNull();
-        const sql = Context.get(b.database, SqlClient.SqlClient);
+
         const c = yield* makeNode(
           descriptorOf("r3-onward-c", "Onward C", { peerAuthority: 1 }),
           "disk",

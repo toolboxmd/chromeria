@@ -30,6 +30,8 @@ import {
   type PreviewStreamRef,
 } from "./PreviewStreamWebView";
 
+const decodePreviewViewerResource = Schema.decodeUnknownOption(PreviewViewerResource);
+
 const BrowserPreviewStack = createNativeStackNavigator<{ BrowserPreview: undefined }>();
 
 const NO_PICTURE_IN_PICTURE: PreviewPictureInPictureState = { supported: false, active: false };
@@ -47,7 +49,8 @@ export function BrowserPreviewRouteScreen({ route }: BrowserPreviewRouteScreenPr
   const resource =
     route.params.resource === undefined
       ? undefined
-      : Option.getOrNull(Schema.decodeUnknownOption(PreviewViewerResource)(route.params.resource));
+      : Option.getOrNull(decodePreviewViewerResource(route.params.resource));
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Close the navigation route when its external resource identity is invalid.
   useEffect(() => {
     if (resource === null) onClose();
   }, [resource, onClose]);
@@ -74,6 +77,7 @@ export function BrowserPreviewRouteScreen({ route }: BrowserPreviewRouteScreenPr
               />
             ) : (
               <QualifiedBrowserPreviewScreen
+                key={JSON.stringify(resource)}
                 environmentId={EnvironmentId.make(route.params.environmentId)}
                 resource={resource}
                 onClose={onClose}
@@ -105,16 +109,13 @@ function QualifiedBrowserPreviewScreen({
   const [streaming, setStreaming] = useState(false);
   const [pictureInPicture, setPictureInPicture] = useState(NO_PICTURE_IN_PICTURE);
   const streamRef = useRef<PreviewStreamRef>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Subscribe to native foreground changes while the preview is mounted.
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) =>
       setForeground(state !== "background"),
     );
     return () => subscription.remove();
   }, []);
-  useEffect(() => {
-    setSelected(resource);
-    setTabs([resource]);
-  }, [resource]);
   const navigate = () => {
     if (!canControl || !streaming || !address.trim()) return;
     const stream = streamRef.current;

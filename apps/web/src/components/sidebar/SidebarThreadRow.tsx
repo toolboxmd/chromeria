@@ -113,7 +113,6 @@ import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuShortcut, MenuTrigger } f
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { useThreadHasUnsentDraft } from "../../composerDraftStore";
-import { useClientSettings } from "../../hooks/useSettings";
 import { SharedThreadLabel } from "../people/SharedThreadLabel";
 
 // The fields thread rows show. Provider status pushes refresh `checkedAt`,

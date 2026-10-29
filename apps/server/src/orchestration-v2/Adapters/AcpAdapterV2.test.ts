@@ -70,7 +70,6 @@ import {
   makeGrokAcpAdapterFlavor,
   normalizeXAiAcpToolCallState,
   registerXAiBackgroundTaskTracking,
-  xAiBackgroundTaskLifecycleMutation,
 } from "@t3tools/provider-grok/testing";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";

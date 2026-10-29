@@ -44,7 +44,7 @@ it("saves Fast, retains it through effort edits and remount, and restores the sp
   };
 
   await using screen = await render(null);
-  const container = screen.container;
+
   let persisted: readonly Color[] = [standard];
   const save = vi.fn(async (colors: readonly Color[]) => {
     persisted = colors;

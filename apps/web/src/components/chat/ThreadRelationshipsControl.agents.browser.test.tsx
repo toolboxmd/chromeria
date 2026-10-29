@@ -1,12 +1,6 @@
 import { act, render } from "../../../test/render";
 import { cloneElement, type ReactElement, type ReactNode } from "react";
-import {
-  EnvironmentId,
-  ThreadId,
-  type ModelSelection,
-  type ProviderOptionDescriptor,
-  type OrchestrationV2ContextTransfer,
-} from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { expect, it, vi } from "vite-plus/test";
 
@@ -126,36 +120,7 @@ it("shows a child delegated to a linked environment and opens it there", async (
   const buttons = () => [...container.querySelectorAll("button")];
   const allByLabel = (label: string) =>
     buttons().filter((button) => button.getAttribute("aria-label") === label);
-  function byLabel(label: string) {
-    const matches = allByLabel(label);
-    if (matches.length !== 1)
-      throw new Error(`Expected one "${label}" button, got ${matches.length}`);
-    return matches[0]!;
-  }
-  const sectionToggles = (expanded: boolean) =>
-    buttons().filter(
-      (button) =>
-        button.getAttribute("aria-expanded") === String(expanded) &&
-        !button.hasAttribute("aria-label"),
-    );
-  function sectionToggle(expanded: boolean) {
-    const [toggle] = sectionToggles(expanded);
-    if (!toggle) throw new Error(`No ${expanded ? "expanded" : "collapsed"} section toggle`);
-    return toggle;
-  }
-  const heading = () => container.querySelector("h3")?.textContent;
-  const buttonsWithLabel = (matches: (label: string) => boolean) =>
-    buttons().filter((button) => matches(button.getAttribute("aria-label") ?? ""));
-  // Joins rendered text nodes; `visibleOnly` drops screen-reader-only text.
-  function textNodes(separator: string, visibleOnly = false) {
-    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-    const parts: string[] = [];
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      if (visibleOnly && node.parentElement?.closest(".sr-only")) continue;
-      parts.push(node.textContent ?? "");
-    }
-    return parts.join(separator);
-  }
+
   state.navigate.mockClear();
   const agent = {
     id: "remote-agent",

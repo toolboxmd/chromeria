@@ -161,7 +161,6 @@ const layerRuntime = (dbPath: string) => {
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
-        // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
         getInstance: () => Effect.sync(() => undefined),
         listInstances: Effect.succeed([]),
         listUnavailable: Effect.succeed([]),

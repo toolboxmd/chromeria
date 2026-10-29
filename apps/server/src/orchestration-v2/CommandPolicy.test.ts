@@ -7,7 +7,6 @@ import {
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
-  ProviderTurnId,
   RunAttemptId,
   RunId,
   ThreadId,

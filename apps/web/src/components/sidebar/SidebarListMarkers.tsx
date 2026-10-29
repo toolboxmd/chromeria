@@ -128,7 +128,7 @@ export function SidebarSectionHeader(props: {
         : props.marker === "snoozed-header"
           ? "snoozed"
           : "settled";
-  const collapsedCount = props.toggle.expanded ? null : props.count;
+
   return (
     <SortableSidebarMarker
       marker={props.marker}

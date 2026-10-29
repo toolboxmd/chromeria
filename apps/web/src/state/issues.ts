@@ -142,6 +142,7 @@ export function useLinkedIssueStates(
   );
   const results = useAtomValue(linkedIssueStatesReads(key));
   const lastSyncKey = useRef(syncKey);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Invalidate registered issue-state RPC reads when persisted link state changes.
   useEffect(() => {
     if (lastSyncKey.current === syncKey) return;
     lastSyncKey.current = syncKey;

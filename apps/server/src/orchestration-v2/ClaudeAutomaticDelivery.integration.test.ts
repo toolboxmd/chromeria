@@ -142,7 +142,6 @@ it.effect.each(["active", "completed-before-effect", "completed-before-effect-se
         const _offers = [];
         const _nativeQueue = [];
         // @effect-diagnostics-next-line abortControllerInEffect:off - The fake SDK interrupts its batch independently of the test fiber.
-        // @effect-diagnostics-next-line abortControllerInEffect:off - The fake SDK interrupts its batch independently of the test fiber.
         const _batchAbort = new AbortController();
         const processedMessages = new WeakMap<SDKMessage, Deferred.Deferred<void>>();
         const offerAndWait = Effect.fnUntraced(function* (message: SDKMessage) {

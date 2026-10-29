@@ -61,6 +61,7 @@ export function WightModeControl({
   const expiresAt = mode?.expiresAt ?? null;
   // One timeout per render at most, only while a timer is pending: it updates
   // `now` at expiry (or at the setTimeout cap, which reruns this effect).
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- The mounted control owns the expiry timer and cancels it when the deadline changes.
   useEffect(() => {
     if (expiresAt === null || expiresAt <= now) return;
     const timer = window.setTimeout(

@@ -76,6 +76,7 @@ function QualifiedDevicePanel(props: DevicePanelProps & { resource: DeviceViewer
   const [captureError, setCaptureError] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
   const capture = useRef<AbortController | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Abort the screenshot operation when its owning panel unmounts.
   useEffect(() => () => capture.current?.abort(), []);
   const screenshot = () => {
     if (handle === null || capture.current !== null || !props.visible) return;

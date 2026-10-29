@@ -324,9 +324,9 @@ export const make = Effect.gen(function* () {
         }),
       );
       if (result.kind === "rejected")
-        return yield* new RenewalRejected({
-          ...("revokedSessionId" in result ? { revokedSessionId: result.revokedSessionId } : {}),
-        });
+        return yield* new RenewalRejected(
+          "revokedSessionId" in result ? { revokedSessionId: result.revokedSessionId } : {},
+        );
       if (result.kind === "pending") return yield* new RenewalPending({});
       if (result.kind === "stale") return yield* new RenewalStale({});
       return result;

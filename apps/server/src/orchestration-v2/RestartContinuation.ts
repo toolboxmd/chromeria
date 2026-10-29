@@ -22,7 +22,6 @@ import {
   cancelledTurnItemWork,
   isAwaitedWork,
   isRestartContinuationSource,
-  cancelledBeforeStart,
   isRestartNoteSource,
   neverStarted,
   restartCancelledBackgroundWorkNote,

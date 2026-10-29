@@ -4,6 +4,8 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { AssetResource } from "./assets.ts";
 
+const isAssetResource = Schema.is(AssetResource);
+const decodeAssetResourceOption = Schema.decodeUnknownOption(AssetResource);
 const decodeAssetResource = Schema.decodeUnknownSync(AssetResource);
 describe("qualified attachment assets", () => {
   const reference = {
@@ -76,12 +78,10 @@ describe("native browser download assets", () => {
   };
   it("retains the native 1 GiB boundary without raising the attachment publication limit", () => {
     expect(decodeAssetResource(download)).toEqual(download);
-    expect(Schema.is(AssetResource)({ ...download, sizeBytes: download.sizeBytes + 1 })).toBe(
-      false,
-    );
-    expect(Schema.is(AssetResource)({ ...download, sizeBytes: 0 })).toBe(true);
+    expect(isAssetResource({ ...download, sizeBytes: download.sizeBytes + 1 })).toBe(false);
+    expect(isAssetResource({ ...download, sizeBytes: 0 })).toBe(true);
     expect(
-      Schema.is(AssetResource)({
+      isAssetResource({
         _tag: "peer-attachment",
         threadId: "thread-b",
         reference: {
@@ -107,7 +107,7 @@ describe("native browser download assets", () => {
       { resource: { ...download.resource, serverEpoch: "" } },
     ]) {
       expect(
-        Option.isNone(Schema.decodeUnknownOption(AssetResource)({ ...download, ...changed })),
+        Option.isNone(decodeAssetResourceOption({ ...download, ...changed })),
         JSON.stringify(changed),
       ).toBe(true);
     }

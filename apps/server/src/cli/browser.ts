@@ -236,6 +236,10 @@ const browserSetupCommand = Command.make("setup", { baseDir: baseDirFlag }).pipe
   ),
 );
 
+const encodePublicCommitments = Schema.encodeEffect(
+  Schema.fromJsonString(BrowserRenewalCommitments.PublicCommitments),
+);
+
 const browserCommitmentsCommand = Command.make("renewal-commitments", {
   executable: Flag.String("browser-executable"),
   profileDirectory: Flag.String("profile-dir"),
@@ -256,9 +260,7 @@ const browserCommitmentsCommand = Command.make("renewal-commitments", {
           : rows.filter((row) => row.environmentId === environmentId);
       yield* Console.log(
         flags.json
-          ? yield* Schema.encodeEffect(
-              Schema.fromJsonString(BrowserRenewalCommitments.PublicCommitments),
-            )(filtered)
+          ? yield* encodePublicCommitments(filtered)
           : filtered
               .map((row) => `${row.environmentId} ${row.origin}\n  ${row.commitment}`)
               .join("\n"),

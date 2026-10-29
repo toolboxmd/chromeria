@@ -1,7 +1,6 @@
 import { Button } from "../../components/ui/Button";
 import { hasSourceRemoteTaskView } from "@t3tools/client-runtime/state/remote-tasks";
 import { RemoteTaskViewer } from "./RemoteTaskViewer";
-import { SubagentStatusDot } from "./SubagentStatusDot";
 import { ThreadSubagentGroup } from "./thread-subagent-group";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import {

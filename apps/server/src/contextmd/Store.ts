@@ -15,13 +15,10 @@ const FILE_CONCURRENCY = 8;
 const MAX_ID_CHARS = 120;
 const KEY_FIELDS = ["command", "path", "error"];
 const FIELDS = ["id", ...KEY_FIELDS, "must-know-before", "name", "applies", "target"];
-// oxlint-disable-next-line no-control-regex -- the file boundary rejects these characters in YAML headers.
 const CONTROL = /[\x00-\x08\x0a-\x1f\x7f-\x9f]/u;
 const PLAIN_INVALID = /[\uFEFF\uFFFE\uFFFF]/u;
-// oxlint-disable no-control-regex -- one explicit shared blank set rejects empty error signatures.
 const ERROR_BLANK =
   /^[\u0009-\u000d\u001c-\u001f\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+$/u;
-// oxlint-enable no-control-regex
 const NUMBER =
   /^(?:0o[0-7]+|[-+]?[0-9]+|0x[0-9a-fA-F]+|[-+]?\.(?:inf|Inf|INF)|\.nan|\.NaN|\.NAN|[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)[eE][-+]?[0-9]+|[-+]?(?:\.[0-9]+|[0-9]+\.[0-9]*))$/u;
 type Value = string | boolean | number | null | ReadonlyArray<Value>;

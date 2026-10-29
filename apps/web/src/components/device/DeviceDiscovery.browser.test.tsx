@@ -156,7 +156,6 @@ it("keeps setup progression available while showing incomplete Android discovery
   fixture.command.mockClear();
 
   await using screen = await render(null);
-  const container = screen.container;
 
   fixture.snapshot = {
     state: { ...partialState(), devices: [phone], onboardingCompleted: false },

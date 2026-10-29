@@ -87,6 +87,8 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
 } as const;
 export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 
+const isPreviewViewerOpenInput = Schema.is(PreviewViewerOpenInput);
+const isDeviceViewerOpenInput = Schema.is(DeviceViewerOpenInput);
 const decodePrepareThread = Schema.decodeUnknownSync(GitPreparePullRequestThreadInput);
 const decodeStackedAction = Schema.decodeUnknownSync(GitRunStackedActionInput);
 
@@ -96,13 +98,13 @@ export function clientRpcRequiredScopes(
 ): readonly AuthEnvironmentScope[] {
   if (
     method === WS_METHODS.previewViewerOpen &&
-    Schema.is(PreviewViewerOpenInput)(input) &&
+    isPreviewViewerOpenInput(input) &&
     input.operation === "control"
   )
     return [AuthOrchestrationReadScope, AuthPreviewOperateScope];
   if (
     method === WS_METHODS.deviceViewerOpen &&
-    Schema.is(DeviceViewerOpenInput)(input) &&
+    isDeviceViewerOpenInput(input) &&
     input.operation === "control"
   )
     return [AuthOrchestrationReadScope, AuthOrchestrationOperateScope];

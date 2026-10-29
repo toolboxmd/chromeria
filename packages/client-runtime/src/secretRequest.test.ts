@@ -5,7 +5,6 @@ import {
   secretRequestAnswerInput,
   secretRequestDisplay,
   secretRequestFailureMessage,
-  type SecretRequestItem,
 } from "./secretRequest.ts";
 
 const item = {

@@ -5,6 +5,7 @@ import { SettingsRow } from "./settingsLayout";
 
 export function ChromeCookieMirrorStatus() {
   const limitations = useCookieMirrorLimitations();
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Keep desktop cookie-mirror metadata current through its IPC bridge while mounted.
   useEffect(() => {
     const bridge = window.desktopBridge?.cookieMirrorConnection;
     if (!bridge) return;
