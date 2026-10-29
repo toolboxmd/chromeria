@@ -2897,7 +2897,7 @@ it.effect(
       ),
     );
     return Effect.gen(function* () {
-      const origin = { sessionId: "peer-schedule", label: "Peer" };
+      const origin = { sessionId: "peer-schedule", label: "Peer", access: "full-access" as const };
       const scope: Invocation.McpInvocationScope = {
         environmentId: EnvironmentId.make("destination"),
         thread: undefined,
@@ -2996,6 +2996,7 @@ it.effect(
               Layer.mergeAll(
                 Layer.succeedContext(persistedServices),
                 Layer.mock(PeerLinks.PeerLinks)({
+                  enabled: Effect.succeed(true),
                   get: () => Effect.die("Must not use onward links"),
                 }),
                 Layer.mock(PeerMcpClient.PeerMcpClient)({
