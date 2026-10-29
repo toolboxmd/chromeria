@@ -346,6 +346,12 @@ export function summarizeT3ToolCalls(
     case "environment-links":
       label = phrase("Listed", "list", `linked environments ${times}`);
       break;
+    case "environment-link":
+      label = phrase("Linked", "link", quantity(selected.length, "environment"));
+      break;
+    case "environment-unlink":
+      label = phrase("Unlinked", "unlink", quantity(selected.length, "environment"));
+      break;
     case "environment-update":
       label = phrase("Updated", "update", `environment preferences ${times}`);
       break;

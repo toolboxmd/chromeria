@@ -12,7 +12,6 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthPreviewOperateScope,
-  AuthAccessWriteScope,
   AuthSettingsWriteScope,
   AuthSourceControlWriteScope,
   ThreadId,

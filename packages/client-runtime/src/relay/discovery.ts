@@ -348,7 +348,7 @@ export const make = Effect.fn("RelayEnvironmentDiscovery.make")(function* () {
           })
         : reason === "application-active" ||
             reason === "application-active-probe" ||
-            reason === "application-active-reconnect"
+            reason === "application-active-long"
           ? refresh.pipe(Effect.forkScoped)
           : Effect.void,
     ),

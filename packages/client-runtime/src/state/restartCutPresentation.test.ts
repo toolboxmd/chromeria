@@ -138,6 +138,7 @@ describe("restart-cut client presentation", () => {
     const projection = { ...v2Projection, runs: [source], visibleTurnItems: rows };
     const state = Atom.make(
       AsyncResult.success({
+        sequence: 0,
         data: Option.some(projection),
         status: "live" as const,
         error: Option.none<string>(),
