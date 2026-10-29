@@ -473,7 +473,7 @@ export const makeGrokAdapterV2 = Effect.fn("makeGrokAdapterV2")(function* (
   return ProviderAdapter.ProviderAdapterV2.of({
     ...normal,
     bareSupport: Effect.succeed({ supported: true }),
-    openSession: (input) =>
+    openSession: Effect.fn("ProviderAdapter.ProviderAdapterV2.openSession")((input) =>
       input.runtimePolicy.bare === undefined
         ? normal.openSession(input)
         : Effect.gen(function* () {
@@ -623,7 +623,7 @@ export const makeGrokAdapterV2 = Effect.fn("makeGrokAdapterV2")(function* (
                     ? []
                     : yield* grokBareHistoryEvidence(home, cwd, sessionId).pipe(
                         Effect.provideService(FileSystem.FileSystem, fileSystem),
-                        Effect.catch(() => Effect.succeed([])),
+                        Effect.orElseSucceed(() => []),
                       );
                 return bareReceipt({
                   driver: GROK_PROVIDER,
@@ -653,6 +653,7 @@ export const makeGrokAdapterV2 = Effect.fn("makeGrokAdapterV2")(function* (
               }),
             };
           }),
+    ),
   });
 });
 

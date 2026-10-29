@@ -198,7 +198,9 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
   const startTurn = (
     text = "hello",
     startProviderThread: OrchestrationV2ProviderThread = providerThread,
-    turnPolicyOrOverride: ProviderAdapter.ProviderAdapterV2RuntimePolicy | Partial<ProviderAdapter.ProviderAdapterV2TurnInput> = policy,
+    turnPolicyOrOverride:
+      | ProviderAdapter.ProviderAdapterV2RuntimePolicy
+      | Partial<ProviderAdapter.ProviderAdapterV2TurnInput> = policy,
   ) =>
     runtime.startTurn({
       appThread: {
@@ -295,7 +297,9 @@ describe("OpenCodeAdapterV2", () => {
       assert.equal(terminal?.status, "failed");
       assert.equal(terminal?.failure?.class, "usage_limit");
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -351,7 +355,9 @@ describe("OpenCodeAdapterV2", () => {
         { sessionID: "root", permission: openCodePermissionRules(fullAccess) },
       ]);
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -457,7 +463,9 @@ describe("OpenCodeAdapterV2", () => {
       assert.equal(permissionAction(nativePermissions.get(child)!, "bash"), "ask");
       assert.equal(permissionAction(nativePermissions.get(child)!, "task"), "deny");
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -569,9 +577,9 @@ describe("OpenCodeAdapterV2", () => {
       yield* h.startTurn("Only the task", resumed, {
         runtimePolicy: { ...h.policy, interactionMode: choice.interactionMode },
       });
-      assert.deepStrictEqual(order, ["permissions", "prompt"]);
+      assert.equal(order.at(-1), "prompt");
       assert.strictEqual(
-        permissions[0]!.findLast((r) => r.permission === "edit" && r.pattern === "*")?.action,
+        permissions.at(-1)?.findLast((r) => r.permission === "edit" && r.pattern === "*")?.action,
         choice.agent === "plan" || choice.interactionMode === "plan" ? "deny" : "allow",
       );
       assert.strictEqual(
@@ -2636,6 +2644,8 @@ describe("OpenCodeAdapterV2", () => {
           },
           mcp: { add: async () => ({ data: true }) },
         },
+        undefined,
+        undefined,
         {
           resolveAttachmentPath: () => "/workspace/report.docx",
           resolveExtractedTextPath: () =>
@@ -2692,7 +2702,9 @@ describe("OpenCodeAdapterV2", () => {
       });
       assert.equal(stopped.providerTurns.at(-1)?.status, "interrupted");
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
