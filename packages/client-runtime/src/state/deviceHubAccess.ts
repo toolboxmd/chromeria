@@ -142,10 +142,12 @@ export function createResourceViewerAccessAtomFamily<
           const resolved = resourceViewerAccess(prepared.value, access, input.operation);
           const renew = options.renew;
           if (renew === undefined) return resolved;
+          const services = yield* Effect.context<never>();
+          const runPromise = Effect.runPromiseWith(services);
           return {
             ...resolved,
             requestCurrentAccess: async () => {
-              const renewed = await Effect.runPromise(
+              const renewed = await runPromise(
                 run(renew, {
                   environmentId,
                   input: { ...input, viewerId: access.viewerId },

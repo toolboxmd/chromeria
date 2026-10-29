@@ -146,7 +146,6 @@ export interface EnvironmentThreadShell {
   readonly interactionMode: OrchestrationV2ThreadShell["interactionMode"];
   readonly branch: string | null;
   readonly worktreePath: string | null;
-  readonly delegatedFrom?: OrchestrationV2ThreadShell["delegatedFrom"];
   readonly lineage: OrchestrationV2ThreadShell["lineage"];
   readonly forkedFrom: OrchestrationV2ThreadShell["forkedFrom"];
   readonly linkOrigin: OrchestrationV2ThreadShell["linkOrigin"] | null;
@@ -320,7 +319,6 @@ export function presentThreadShell(
     pullRequests: threadPullRequestsOf(thread),
     linkedPullRequest: thread.linkedPullRequest ?? null,
     branchPullRequest: thread.branchPullRequest ?? null,
-    delegatedFrom: thread.delegatedFrom,
     lineage: thread.lineage,
     forkedFrom: thread.forkedFrom,
     linkOrigin: thread.linkOrigin ?? null,
