@@ -267,7 +267,7 @@ export function isThreadVisibleInNavigation(
   return (
     thread.archivedAt === null &&
     thread.lineage.relationshipToParent !== "subagent" &&
-    (thread.delegatedFrom === undefined ||
+    (thread.delegatedFrom == null ||
       thread.lineage.relationshipToParent === "fork" ||
       searchQuery.trim().length > 0)
   );

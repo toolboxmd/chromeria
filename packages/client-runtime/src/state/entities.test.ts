@@ -8,11 +8,16 @@ import {
   RunId,
   RuntimeRequestId,
   TurnItemId,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
-import { presentThreadShell, resolveThreadWorkingStartedAt } from "./models.ts";
+import {
+  isThreadVisibleInNavigation,
+  presentThreadShell,
+  resolveThreadWorkingStartedAt,
+} from "./models.ts";
 import { v2Projection, v2ThreadShell } from "./orchestrationV2TestFixtures.ts";
 import { deriveLatestThreadRun, deriveThreadRuntime } from "./threadExecution.ts";
 import { isThreadWorking } from "./threadInbox.ts";
@@ -22,6 +27,39 @@ import { canSnooze, effectiveSnoozed } from "./threadSettled.ts";
 const environmentId = EnvironmentId.make("environment-v2");
 
 describe("V2 client presentation", () => {
+  it("keeps ordinary threads visible while hiding delegated children and preserving user forks", () => {
+    const ordinary = presentThreadShell(environmentId, v2ThreadShell);
+    expect(ordinary.delegatedFrom).toBeNull();
+    for (const delegatedFrom of [null, undefined]) {
+      expect(isThreadVisibleInNavigation({ ...ordinary, delegatedFrom })).toBe(true);
+    }
+    const remoteChild = presentThreadShell(environmentId, {
+      ...v2ThreadShell,
+      delegatedFrom: {
+        environmentId: EnvironmentId.make("remote-parent"),
+        threadId: ThreadId.make("parent"),
+        title: "Parent",
+      },
+    });
+    expect(isThreadVisibleInNavigation(remoteChild)).toBe(false);
+    expect(isThreadVisibleInNavigation(remoteChild, "child")).toBe(true);
+    const fork = {
+      ...remoteChild,
+      lineage: { ...remoteChild.lineage, relationshipToParent: "fork" as const },
+    };
+    expect(isThreadVisibleInNavigation(fork)).toBe(true);
+    expect(isThreadVisibleInNavigation({ ...fork, archivedAt: ordinary.createdAt })).toBe(false);
+    expect(
+      isThreadVisibleInNavigation(
+        {
+          ...ordinary,
+          lineage: { ...ordinary.lineage, relationshipToParent: "subagent" },
+        },
+        "child",
+      ),
+    ).toBe(false);
+  });
+
   it("keeps async questions in Working until the run completes", () => {
     const runId = RunId.make("run-async-question");
     const running = {
