@@ -27,6 +27,5 @@ export {
   makeXAiPromptCompletionRuntime,
   normalizeXAiAcpToolCallState,
   registerXAiBackgroundTaskTracking,
-  xAiBackgroundTaskLifecycleMutation,
   xAiRateLimitedErrorCode,
 } from "./server/xaiAcpExtension.ts";
