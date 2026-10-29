@@ -14,7 +14,7 @@ import type {
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useEffect, useId, useMemo, useRef } from "react";
+import { useId } from "react";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import { useEnvironmentQuery } from "./query";
@@ -189,20 +189,5 @@ export function usePreviewStreamAccess(
           }),
   );
   const access = query.isSuccess && query.data && Option.isSome(prepared) ? query.data : null;
-  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(
-    () => () => {
-      if (retryTimer.current !== null) clearTimeout(retryTimer.current);
-    },
-    [environmentId, resource, visible],
-  );
-  return {
-    access,
-    error: query.error,
-    refresh: query.refresh,
-    retryAfter: (delayMs: number) => {
-      if (retryTimer.current !== null) clearTimeout(retryTimer.current);
-      retryTimer.current = setTimeout(query.refresh, delayMs);
-    },
-  };
+  return { access, error: query.error, refresh: query.refresh };
 }

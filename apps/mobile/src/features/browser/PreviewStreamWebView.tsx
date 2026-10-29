@@ -58,7 +58,6 @@ type NativeStreamBridge = {
   readonly ref?: Ref<PreviewStreamRef>;
   readonly onUnauthorized: () => void;
   /** Asks for fresh access after a refusal, once `delayMs` has passed. */
-  readonly onRefused: (delayMs: number) => void;
   readonly onGone?: () => void;
   readonly onPopup?: (resource: PreviewViewerResource) => void;
   readonly onViewport?: (viewport: { readonly width: number; readonly height: number }) => void;
@@ -125,7 +124,7 @@ const MAX_REFUSALS = 3;
 
 export function PreviewStreamWebView(
   props: Omit<PreviewStreamConfiguration, "access"> &
-    Omit<NativeStreamBridge, "onUnauthorized" | "onRefused" | "onFileTransferChange"> & {
+    Omit<NativeStreamBridge, "onUnauthorized" | "onFileTransferChange"> & {
       readonly environmentId: EnvironmentId;
       readonly paused?: boolean;
       readonly backgrounded?: boolean;
@@ -138,7 +137,7 @@ export function PreviewStreamWebView(
   // Android backgrounds the app for its document picker. Keep this exact viewer
   // through current admission and its answer, but always honor focus loss.
   const live = !props.paused && (!props.backgrounded || pendingFiles > 0);
-  const { access, error, refresh, retryAfter } = usePreviewStreamAccess(
+  const { access, error, refresh } = usePreviewStreamAccess(
     props.environmentId,
     props.resource,
     live,
@@ -149,7 +148,6 @@ export function PreviewStreamWebView(
         {...props}
         access={access}
         onUnauthorized={refresh}
-        onRefused={retryAfter}
         onFileTransferChange={fileTransferChanged}
       />
     );
@@ -201,6 +199,7 @@ function AuthorizedPreviewStream({
   const processRetried = useRef(false);
   const unauthorized = useRef(0);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- cancels this viewer's admission retry on unmount
   useEffect(
     () => () => {
       if (refreshTimer.current !== null) clearTimeout(refreshTimer.current);
@@ -225,7 +224,11 @@ function AuthorizedPreviewStream({
       onUnauthorized={() => {
         const refusals = ++unauthorized.current;
         if (refusals >= MAX_REFUSALS) return false;
-        props.onRefused(refusals === 1 ? 0 : 1_000 * 2 ** (refusals - 1));
+        if (refreshTimer.current !== null) clearTimeout(refreshTimer.current);
+        refreshTimer.current = setTimeout(
+          props.onUnauthorized,
+          refusals === 1 ? 0 : 1_000 * 2 ** (refusals - 1),
+        );
         return true;
       }}
       onRetry={() => {
@@ -268,7 +271,7 @@ function PreviewStreamDocumentView({
   onRetry,
   onStreaming,
   onRecoverProcess,
-}: Omit<NativeStreamBridge, "onUnauthorized" | "onRefused"> & {
+}: Omit<NativeStreamBridge, "onUnauthorized"> & {
   readonly access: PreviewStreamConfiguration["access"];
   readonly configuration: string;
   readonly resource?: PreviewViewerResource;
@@ -348,6 +351,7 @@ function PreviewStreamDocumentView({
     onControl?.(null);
   });
   const previousAccess = useRef(access);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- refreshes WebView admission without replacing its PiP document
   useEffect(() => {
     if (previousAccess.current === access) return;
     previousAccess.current = access;
@@ -366,12 +370,14 @@ function PreviewStreamDocumentView({
     togglePictureInPicture: () =>
       webView.current?.injectJavaScript("window.T3PreviewStream?.pictureInPicture(); true;"),
   }));
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns the WebView stream, bootstrap timer and pending file answers until unmount
   useLayoutEffect(() => {
     active.current = true;
     const view = webView.current;
     bootstrapTimer.current = setTimeout(bootstrapTimedOut, 15_000);
     return () => {
-      clearBootstrapTimer();
+      if (bootstrapTimer.current !== null) clearTimeout(bootstrapTimer.current);
+      bootstrapTimer.current = null;
       active.current = false;
       // A pending answer can retain only this opening. Its later settlement
       // must not change the lifetime of a replacement stream.
