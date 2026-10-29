@@ -205,7 +205,9 @@ describe.skipIf(!testChromium)("ServerBrowserContexts on Chrome for Testing", ()
         expect(request.headers["user-agent"], request.path).toBe(userAgent);
       }
       const document = requests.find((request) => request.path === "/")!;
-      expect(document.headers["sec-ch-ua"]).toContain('"Google Chrome";v="154"');
+      expect(document.headers["sec-ch-ua"]).toContain(
+        `"Google Chrome";v="${testChromiumVersion.split(".")[0]}"`,
+      );
       expect(document.headers["sec-ch-ua"]).not.toContain("Headless");
     });
   });
