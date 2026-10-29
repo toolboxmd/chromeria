@@ -238,11 +238,13 @@ it.effect("registers the device tools and returns the screenshot as image conten
       expect(denied.isError).toBe(true);
       // The agent can't see Settings, and a running session keeps the capabilities it started with,
       // so the error says where the user turns access on and when it applies.
-      expect(denied.content).toEqual([
-        {
-          type: "text",
-          text: "Agent device access is turned off for this environment. Ask the user to turn on Agent device access in Settings > Integrations > Devices; it applies when the agent session next starts, such as in a new thread.",
-        },
+      expect(denied.content.map((entry) => entry.type)).toEqual(["text"]);
+      expect(
+        denied.content.map((entry) =>
+          entry.type === "text" ? decodeFailureText(entry.text).message : undefined,
+        ),
+      ).toEqual([
+        "Agent device access is turned off for this environment. Ask the user to turn on Agent device access in Settings > Integrations > Devices; it applies when the agent session next starts, such as in a new thread.",
       ]);
     }),
   ).pipe(Effect.provide(layerTest)),
