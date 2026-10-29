@@ -186,7 +186,8 @@ export const PreviewSnapshotTool = safeBrowserTool(
 
 const PreviewPressTool = browserTool(
   Tool.make("preview_press", {
-    description: "Press one key, such as {key:'Enter'} or {key:'a',modifiers:['Meta']}.",
+    description:
+      "Press one key, such as {key:'Enter'} or {key:'a',modifiers:['Meta']}." + COMPUTER_USE_HINT,
     parameters: McpRouting.parameters(PreviewAutomationPressInput),
     success: PreviewActionResult,
     failure: PreviewToolFailure,
@@ -197,7 +198,8 @@ const PreviewPressTool = browserTool(
 const PreviewScrollTool = safeBrowserTool(
   Tool.make("preview_scroll", {
     description:
-      "Scroll the chosen tab, or one container with a locator or selector. Positive `deltaY` scrolls down. Positive `deltaX` scrolls right.",
+      "Scroll the chosen tab, or one container with a locator or selector. Positive `deltaY` scrolls down. Positive `deltaX` scrolls right." +
+      COMPUTER_USE_HINT,
     parameters: McpRouting.parameters(PreviewAutomationScrollInput),
     success: PreviewActionResult,
     failure: PreviewToolFailure,
