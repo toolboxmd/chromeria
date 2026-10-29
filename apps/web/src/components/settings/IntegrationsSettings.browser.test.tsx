@@ -50,7 +50,7 @@ vi.mock(import("./SettingsScopeContext"), async (original) => ({
   useOptionalSettingsScope: () => null,
 }));
 
-import { IntegrationsSettingsPanel } from "./IntegrationsSettings";
+import { BrowserSettingsPanel } from "./IntegrationsSettings";
 
 describe("Integrations browser discovery", () => {
   it("shows every device-bound site reported by desktop main in browser settings", async () => {
@@ -72,7 +72,7 @@ describe("Integrations browser discovery", () => {
     });
     await using screen = await render(
       <StrictMode>
-        <IntegrationsSettingsPanel />
+        <BrowserSettingsPanel />
       </StrictMode>,
     );
     const { container } = screen;

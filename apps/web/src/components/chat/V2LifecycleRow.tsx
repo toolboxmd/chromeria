@@ -3,10 +3,7 @@ import { ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { AgentElapsed } from "./AgentElapsed";
 import { projectedSubagentsToRuntime } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { KeyboardEventHandler, ReactNode } from "react";
-import { useServerConfigs, useThreadShell, useProject } from "../../state/entities";
-import { useEnvironment } from "../../state/environments";
-import { buildThreadRouteParams } from "../../threadRoutes";
-import { useNavigate } from "@tanstack/react-router";
+import { useThreadShell, useProject } from "../../state/entities";
 import { SubagentTooltipContent } from "./SubagentTooltipContent";
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef, scopeProjectRef } from "@t3tools/client-runtime/environment";
@@ -434,6 +431,7 @@ function SubagentTimelineLink(props: {
   );
   // The live record outranks the turn item: a remote launch attaches its
   // thread there after the item was first projected.
+  const remote = agent?.remoteChild;
   const liveTarget = agent === null ? null : subagentChildTarget(agent);
   const targetThreadId = agent === null ? props.threadId : (liveTarget?.threadId ?? null);
   const childEnvironmentId =

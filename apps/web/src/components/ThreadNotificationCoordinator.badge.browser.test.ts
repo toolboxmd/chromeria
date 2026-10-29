@@ -22,7 +22,7 @@ vi.mock(import("./ui/toast"), async (original) => {
   const actual = await original();
   return { ...actual, toastManager: { ...actual.toastManager, add: state.toast as never } };
 });
-vi.mock(import("../state/server"), () => ({
+vi.mock("../state/server", () => ({
   serverEnvironment: {
     scheduledTasksLive: ({ environmentId }: { environmentId: string }) =>
       commandTasksAtom(environmentId),
@@ -86,7 +86,9 @@ import { startThreadNotifications } from "./ThreadNotificationCoordinator";
 
 let registry: AtomRegistry.AtomRegistry;
 const commandTasksAtom = Atom.family((_id: string) =>
-  Atom.make(AsyncResult.initial<{ tasks: ReadonlyArray<ReturnType<typeof commandTask>> }, never>()),
+  Atom.make<
+    AsyncResult.AsyncResult<{ tasks: ReadonlyArray<ReturnType<typeof commandTask>> }, never>
+  >(AsyncResult.initial()),
 );
 const shellAtom = Atom.family((_id: string) => Atom.make<unknown>(null));
 const environmentIdsAtom = Atom.make<ReadonlyArray<string>>([]);

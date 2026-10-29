@@ -161,7 +161,7 @@ function TimelineListFooter({
   children,
   onInlineCardHost,
 }: {
-  readonly onInlineCardHost?: (element: HTMLDivElement | null) => void;
+  readonly onInlineCardHost?: ((element: HTMLDivElement | null) => void) | undefined;
   readonly composerInset: number;
   readonly onGrow: (() => void) | undefined;
   readonly children?: ReactNode;

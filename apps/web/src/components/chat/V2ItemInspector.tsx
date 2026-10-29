@@ -1,11 +1,6 @@
 import type { ToolCallDiffTarget } from "../../diffPanelStore";
 import { useSubagentOpen } from "./useSubagentOpen";
-import type {
-  EnvironmentId,
-  OrchestrationV2ProjectedTurnItem,
-  RunId,
-  ThreadId,
-} from "@t3tools/contracts";
+import type { EnvironmentId, OrchestrationV2ProjectedTurnItem, ThreadId } from "@t3tools/contracts";
 import {
   toolCallLines,
   turnItemDetailRevision,
@@ -18,13 +13,14 @@ import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { subagentChildTarget } from "@t3tools/client-runtime/state/thread-relationships";
 import { isJavaScriptReplTool } from "@t3tools/shared/toolActivity";
 import { useAtomValue } from "@effect/atom-react";
-import { ExternalLinkIcon, GitBranchIcon, RotateCcwIcon } from "lucide-react";
+import { ExternalLinkIcon } from "lucide-react";
 import { memo, type ReactNode, Suspense, use } from "react";
 
 import { useRenderedAppearance } from "../../hooks/useTheme";
 import { cn } from "../../lib/utils";
 import { resolveDiffThemeName } from "../../lib/diffRendering";
 import { getSyntaxHighlighterPromise } from "../../lib/syntaxHighlighting";
+import { environmentThreadDetails } from "../../state/threads";
 import { useTurnItemDetail } from "../../state/queries";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import { Button } from "../ui/button";
@@ -436,6 +432,14 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
               ),
             )
             .join("\n\n")}
+        />
+      ) : null}
+      {item.type === "subagent" ? (
+        <SubagentOpenButton
+          environmentId={props.environmentId}
+          parentThreadId={props.projectedItem.sourceThreadId}
+          item={item}
+          onOpenThread={props.onOpenThread}
         />
       ) : null}
       {item.type === "notification" ? <StructuredValue value={item.detail} /> : null}
