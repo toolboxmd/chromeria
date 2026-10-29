@@ -15082,13 +15082,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
 
     const admissionThreadId =
-      command.type === "delegated_task.request" || command.type === "delegated_task.group.request"
+      command.type === "delegated_task.request" ||
+      command.type === "delegated_task.group.request" ||
+      command.type === "delegated_task.remote.request"
         ? command.parentThreadId
         : commandThreadId(command);
     const needsAdmission =
       command.type === "message.dispatch" ||
       command.type === "delegated_task.request" ||
       command.type === "delegated_task.group.request" ||
+      command.type === "delegated_task.remote.request" ||
       command.type === "prepared-run.release" ||
       command.type === "prepared-run.retry" ||
       command.type === "queue.resume";

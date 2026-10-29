@@ -3548,3 +3548,111 @@ it.effect("queue resume refused by Stop remains retryable with the same command 
     );
   }).pipe(Effect.provide(layerTest)),
 );
+
+it.effect("Stop reaches remote work under every stopped local descendant", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    const root = ThreadId.make("review-root");
+    yield* createWatchingThread(root, 900);
+    yield* send(root, "root turn", "start_immediately");
+    const child = yield* delegate(root, "local child");
+    const resumed = yield* delegate(root, "resumed child");
+    for (const parent of [root, child, resumed]) {
+      const run = (yield* orchestrator.getThreadProjection(parent)).runs.at(-1)!;
+      yield* orchestrator.dispatch({
+        type: "delegated_task.remote.request",
+        commandId: CommandId.make("remote:" + parent),
+        parentThreadId: parent,
+        parentRunId: run.id,
+        parentNodeId: run.rootNodeId!,
+        task: "remote " + parent,
+        driver: ProviderDriverKind.make("codex"),
+        modelSelection,
+        remoteChild: {
+          environmentId: EnvironmentId.make("review-remote"),
+          label: "Remote",
+          threadId: ThreadId.make("remote:" + parent),
+        },
+        completionWake: "always",
+      });
+    }
+    const stop = CommandId.make("review-stop");
+    yield* orchestrator.dispatch({ type: "thread.stop", commandId: stop, threadId: root });
+    yield* send(resumed, "explicit human revival", "start_immediately");
+    yield* threads.stopDelegatedTasks({ threadId: root, commandId: stop });
+    yield* threads.stopDelegatedTasks({ threadId: root, commandId: stop });
+    const rootRemote = (yield* orchestrator.getThreadProjection(root)).subagents.find(
+      (task) => task.remoteChild !== undefined,
+    )!;
+    const childProjection = yield* orchestrator.getThreadProjection(child);
+    const childRemote = childProjection.subagents.find((task) => task.remoteChild !== undefined)!;
+    const resumedRemote = (yield* orchestrator.getThreadProjection(resumed)).subagents.find(
+      (task) => task.remoteChild !== undefined,
+    )!;
+    assert.isUndefined(resumedRemote.remoteChild?.stop);
+    assert.isFalse(yield* isThreadRetired(resumed));
+    assert.equal(rootRemote.remoteChild?.stop?.state, "pending", "root remote task is stopped");
+    assert.equal(childProjection.runs.at(-1)?.status, "interrupted", "local child is stopped");
+    assert.equal(
+      childRemote.remoteChild?.stop?.state,
+      "pending",
+      "remote work under child must also be stopped",
+    );
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("a retired descendant cannot create local or remote delegation", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const root = ThreadId.make("review-admission-root");
+    yield* createWatchingThread(root, 901);
+    yield* send(root, "root turn", "start_immediately");
+    const child = yield* delegate(root, "review-admission-child");
+    const run = (yield* orchestrator.getThreadProjection(child)).runs.at(-1)!;
+    yield* orchestrator.dispatch({
+      type: "thread.stop",
+      commandId: CommandId.make("review-admission-stop"),
+      threadId: root,
+    });
+    assert.isTrue(yield* isThreadRetired(child));
+    const local = yield* Effect.result(
+      orchestrator.dispatch({
+        type: "delegated_task.request",
+        commandId: CommandId.make("review-late-local"),
+        parentThreadId: child,
+        parentRunId: run.id,
+        parentNodeId: run.rootNodeId!,
+        task: "late local",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        createdBy: "agent",
+        creationSource: "mcp",
+      }),
+    );
+    assert.equal(local._tag, "Failure", "local delegation is blocked after ancestor Stop");
+    const remote = yield* Effect.result(
+      orchestrator.dispatch({
+        type: "delegated_task.remote.request",
+        commandId: CommandId.make("review-late-remote"),
+        parentThreadId: child,
+        parentRunId: run.id,
+        parentNodeId: run.rootNodeId!,
+        task: "late remote",
+        driver: ProviderDriverKind.make("codex"),
+        modelSelection,
+        remoteChild: {
+          environmentId: EnvironmentId.make("review-remote"),
+          label: "Remote",
+          threadId: ThreadId.make("review-admission-remote"),
+        },
+      }),
+    );
+    assert.equal(
+      remote._tag,
+      "Failure",
+      "remote delegation must also be blocked after ancestor Stop",
+    );
+  }).pipe(Effect.provide(layerTest)),
+);
