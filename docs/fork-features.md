@@ -224,16 +224,12 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/desktop/package.json",
     "apps/desktop/src/app/DesktopAppIdentity.test.ts",
     "apps/desktop/src/app/DesktopAppIdentity.ts",
-    "apps/desktop/src/window/DesktopApplicationMenu.test.ts",
     "apps/desktop/src/app/DesktopClerk.test.ts",
-    "apps/desktop/src/app/DesktopPreReadyFileSystem.test.ts",
     "apps/desktop/src/app/DesktopEnvironment.ts",
     "apps/desktop/src/app/DesktopPreReadyPlatform.test.ts",
     "apps/desktop/src/app/DesktopUserData.test.ts",
     "apps/desktop/src/app/DesktopUserData.ts",
     "apps/web/index.html",
-    "apps/web/src/bootstrap.test.ts",
-    "apps/web/src/branding.test.ts",
     "apps/web/src/branding.ts",
     "apps/web/src/bundledDev.test.ts",
     "apps/web/src/components/T3Wordmark.tsx",
@@ -246,7 +242,6 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/web/src/lib/bootError.ts",
     "scripts/build-desktop-artifact.test.ts",
     "scripts/build-desktop-artifact.ts",
-    "scripts/lib/brand-assets.test.ts",
     "scripts/lib/brand-assets.ts",
     "t3.json"
   ],
@@ -306,14 +301,15 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "patches/vitest@5.0.5.patch",
     "scripts/lib/vitest-cache.test.ts",
     "apps/web/src/components/device/DeviceDiscovery.browser.test.tsx",
-    "apps/server/src/forkWsRpc.ts"
+    "apps/server/src/forkWsRpc.ts",
+    "apps/server/src/orchestration-v2/V1ImportBoundary.test.ts",
+    "apps/server/src/device/DeviceInventory.test.ts"
   ],
   "upstreamFiles": [
     "apps/server/src/provider/AgentContextBudget.test.ts",
     "apps/server/src/provider/agentContextBudget.json",
     "apps/server/src/orchestration-v2/ThreadFind.ts",
     "apps/server/src/orchestration-v2/threadHistoryPaging.ts",
-    "scripts/effect-budget.json",
     "apps/web/src/components/device/DevicePanel.browser.test.tsx",
     ".github/workflows/ci.yml",
     ".github/workflows/pr-size.yml",
@@ -323,7 +319,6 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/server/src/auth/PairingGrantStore.test.ts",
     "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts",
     "apps/server/src/testUtils/shardWeights.json",
-    "apps/server/src/orchestration-v2/V1ImportBoundary.test.ts",
     "apps/server/src/vcs/GitVcsDriverCore.test.ts",
     "knip.jsonc",
     "scripts/dev-runner.ts",
@@ -333,7 +328,6 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "packages/source-control-github/graphql.config.ts",
     "packages/source-control-github/src/server/GitHubPullRequestApi.test.ts",
     "packages/source-control-github/src/server/GitHubPullRequestApi.ts",
-    "packages/source-control-github/src/server/gitHubPullRequestJson.test.ts",
     "packages/source-control-github/src/server/gitHubPullRequestJson.ts",
     "packages/source-control-github/src/server/pullRequestBatches.graphql",
     "packages/source-control-github/src/server/pullRequestBatches.graphql.ts",
@@ -341,7 +335,6 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "packages/source-control-github/src/server/pullRequestListings.graphql.ts",
     "apps/web/src/components/device/DeviceSetup.test.ts",
     "apps/web/src/components/device/DeviceSetup.tsx",
-    "packages/ssh/src/tunnel.test.ts",
     "apps/server/src/device/DeviceService.ts",
     "apps/web/src/components/device/DevicePanel.tsx",
     "packages/contracts/src/device.ts"
@@ -419,9 +412,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "docs/user/composer.md",
     "packages/provider-opencode/src/server/v2/adapter.ts",
     "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts",
-    "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts",
-    "apps/server/src/orchestration-v2/testkit/OrchestratorReplayRestartBackgroundNote.integration.test.ts",
-    "apps/server/src/orchestration-v2/testkit/OrchestratorReplayRecovery.integration.test.ts"
+    "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts"
   ],
   "sharedFiles": [
     "packages/provider-opencode/src/server/adapter.test.ts",
@@ -494,13 +485,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
   "issues": ["https://github.com/toolboxmd/chromeria/issues/135"],
   "prs": ["https://github.com/toolboxmd/chromeria/compare/main...fix/partial-clone-identity"],
   "newFiles": [],
-  "upstreamFiles": [
-    "apps/server/src/project/RepositoryIdentityResolver.test.ts",
-    "apps/server/src/project/RepositoryIdentityResolver.ts",
-    "apps/server/src/vcs/GitVcsDriver.test.ts",
-    "apps/server/src/vcs/GitVcsDriver.ts",
-    "apps/server/src/vcs/GitVcsDriverCore.ts"
-  ],
+  "upstreamFiles": ["apps/server/src/project/RepositoryIdentityResolver.test.ts"],
   "sharedFiles": ["apps/server/src/vcs/GitVcsDriverCore.test.ts"],
   "keywords": ["partial clone", "blob:none", "partialclonefilter", "git remote -v"]
 }
@@ -545,7 +530,6 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/server/src/ws.ts",
     "apps/web/src/components/settings/ProviderSettingsPanel.tsx",
     "apps/web/src/components/settings/ProviderSettingsPanel.environment.browser.test.tsx",
-    "apps/web/src/components/settings/SettingsPanels.tsx",
     "apps/web/src/components/settings/settingsSearch.ts",
     "docs/user/updating.md"
   ],
@@ -574,7 +558,6 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/mobile/src/persistence/mobile-database.test.ts",
     "apps/mobile/src/persistence/mobile-database.ts",
     "apps/server/src/persistence/initializeV2Database.test.ts",
-    "apps/server/src/cli/config.test.ts",
     "apps/server/src/config.ts",
     "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts",
     "apps/server/src/orchestration-v2/ThreadPullRequestService.ts",
@@ -728,9 +711,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/mobile/src/features/threads/useLinkedPullRequestActions.ts",
     "apps/server/src/environment/ServerEnvironment.ts",
     "apps/server/src/mcp/McpHttpServer.ts",
-    "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
     "apps/web/src/components/ChatView.tsx",
-    "apps/web/src/components/RightPanelTabs.keyboard.browser.test.tsx",
     "apps/web/src/components/RightPanelTabs.tsx",
     "apps/web/src/components/pullRequest/ThreadPullRequestsPanel.tsx",
     "apps/web/src/reopenClosedView.test.ts",
@@ -837,9 +818,9 @@ only when that file set changes; this is not an exhaustive history of follow-ups
   ],
   "upstreamFiles": [
     "apps/web/src/components/files/BrowserDocumentFrame.tsx",
-    "apps/web/src/components/chat/HtmlRenderDialog.browser.test.tsx",
     "apps/web/src/components/ChatMarkdown.tsx",
-    "apps/web/src/lib/openPullRequestLink.ts"
+    "apps/web/src/lib/openPullRequestLink.ts",
+    "apps/web/src/components/files/BrowserDocumentFrame.browser.test.tsx"
   ],
   "sharedFiles": [
     "apps/web/src/reopenClosedView.ts",
@@ -997,7 +978,6 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/mcp/threadAccess.ts",
     "apps/server/src/mcp/toolkits/attachment/tools.ts",
     "apps/server/src/mcp/toolkits/core.test.ts",
-    "apps/server/src/mcp/toolkits/orchestrator/tools.test.ts",
     "apps/server/src/mcp/toolkits/thread/handlers.ts",
     "apps/server/src/mcp/toolkits/thread/tools.ts",
     "apps/server/src/orchestration-v2/EffectOutbox.ts",
@@ -1020,7 +1000,6 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "packages/contracts/src/orchestrationV2.ts",
     "packages/contracts/src/orchestratorMcp.ts",
     "packages/provider-core/src/server/subagentProjection.ts",
-    "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryPerformance.test.ts",
     "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts",
     "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
     "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
@@ -1223,7 +1202,6 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "packages/contracts/src/prism.ts"
   ],
   "upstreamFiles": [
-    "apps/web/src/components/settings/SettingsPanels.restore.browser.test.tsx",
     "apps/server/src/mcp/toolkits/project/tools.ts",
     "apps/server/src/orchestration-v2/runtimeLayer.ts"
   ],
@@ -1390,7 +1368,6 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
     "packages/provider-core/src/server/runtimeInstructions.ts",
     "packages/provider-core/src/server/orchestrationInstructions.ts",
-    "packages/provider-core/src/server/orchestrationInstructions.test.ts",
     "apps/server/src/orchestration-v2/testkit/ReplayRuntimeInstructions.ts",
     "apps/server/src/provider/CodexDeveloperInstructions.test.ts"
   ],
@@ -1611,7 +1588,6 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/scheduledTasks/Schedule.ts",
     "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
     "apps/web/src/components/ThreadNotificationCoordinator.badge.browser.test.ts",
-    "apps/web/src/components/ThreadNotificationCoordinator.browser.test.tsx",
     "apps/web/src/components/ThreadNotificationCoordinator.tsx",
     "apps/web/src/components/settings/ScheduledTasksSettings.tsx",
     "apps/web/src/components/settings/scheduledTasksSettings.logic.ts",
@@ -1727,7 +1703,6 @@ sources and reasons.
     "packages/provider-core/src/server/ProviderAdapter.ts",
     "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
     "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
-    "apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs",
     "apps/server/src/provider/acp/AcpJsonRpcConnection.test.ts",
     "packages/provider-acp/src/server/AcpSessionRuntime.ts"
   ],
@@ -1873,10 +1848,7 @@ sources and reasons.
   "issues": ["https://github.com/toolboxmd/chromeria/issues/249"],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/261"],
   "newFiles": [],
-  "upstreamFiles": [
-    "apps/server/src/auth/ServerSecretStore.test.ts",
-    "apps/server/src/auth/ServerSecretStore.ts"
-  ],
+  "upstreamFiles": ["apps/server/src/auth/ServerSecretStore.test.ts"],
   "sharedFiles": [],
   "keywords": ["getOrCreateRandom", "fileSystem.link", "half-written secret"]
 }
@@ -1973,7 +1945,11 @@ sources and reasons.
     "apps/server/src/http/ResourceWebSocketServer.test.ts",
     "apps/server/src/http/ResourceWebSocketServer.ts",
     "apps/server/src/preview/testing/BrowserExternal.fixture.ts",
-    "packages/client-runtime/src/state/deviceHubAccess.test.ts"
+    "packages/client-runtime/src/state/deviceHubAccess.test.ts",
+    "packages/client-runtime/src/device/screenshot.test.ts",
+    "apps/web/src/components/chat/ThreadRelationshipsControl.agents.browser.test.tsx",
+    "apps/web/src/components/LegacySidebar.tsx",
+    "packages/contracts/src/assets.test.ts"
   ],
   "upstreamFiles": [
     "apps/web/src/components/device/deviceStreamSession.ts",
@@ -1993,14 +1969,11 @@ sources and reasons.
     "apps/server/src/peer/RemoteDelegation.ts",
     "apps/web/src/components/CommandPalette.logic.ts",
     "packages/client-runtime/src/device/screenshot.ts",
-    "packages/client-runtime/src/device/screenshot.test.ts",
     "apps/web/src/state/entities.ts",
     "packages/client-runtime/src/state/subagentRuntime.ts",
     "apps/mobile/src/features/settings/SettingsEnvironmentDetailRouteScreen.tsx",
     "packages/client-runtime/src/state/commandPermissions.test.ts",
     "apps/server/src/auth/McpOAuth.ts",
-    "apps/server/src/binCli.ts",
-    "apps/server/src/cli/environment.ts",
     "apps/server/src/mcp/McpHttpServer.test.ts",
     "apps/server/src/mcp/McpInvocationContext.ts",
     "apps/server/src/mcp/McpToolAccess.test.ts",
@@ -2014,10 +1987,8 @@ sources and reasons.
     "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
     "apps/server/src/orchestration-v2/ThreadManagementService.test.ts",
     "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
-    "apps/server/src/project/ProjectEnrichmentService.ts",
     "apps/server/src/project/ProjectService.ts",
     "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
-    "apps/server/src/project/ProjectSetupScriptRunner.ts",
     "packages/client-runtime/src/t3ToolSummary.ts",
     "packages/shared/src/t3McpToolPresentation.ts",
     "apps/server/src/htmlRender/HtmlRender.ts",
@@ -2034,7 +2005,6 @@ sources and reasons.
     "apps/server/src/mcp/toolkits/previewControls/tools.ts",
     "apps/server/src/mcp/toolkits/pullRequests/tools.ts",
     "apps/server/src/mcp/toolkits/worktree/tools.ts",
-    "apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts",
     "docs/internals/remote.md",
     "packages/contracts/src/assets.ts",
     "apps/mobile/src/features/threads/SubagentRow.tsx",
@@ -2042,7 +2012,6 @@ sources and reasons.
     "apps/mobile/src/features/threads/thread-subagent-group.tsx",
     "apps/mobile/src/features/threads/threadAgentsPresentation.test.ts",
     "apps/mobile/src/features/threads/threadAgentsPresentation.ts",
-    "apps/web/src/components/chat/ThreadRelationshipsControl.agents.browser.test.tsx",
     "apps/web/src/components/chat/ThreadRelationshipsControl.tsx",
     "apps/web/src/components/chat/V2ItemInspector.tsx",
     "apps/web/src/components/chat/V2LifecycleRow.tsx",
@@ -2082,7 +2051,6 @@ sources and reasons.
     "apps/server/src/device/DeviceToolchain.ts",
     "apps/server/src/mcp/McpDeviceToolkit.test.ts",
     "apps/mobile/src/features/home/HomeRouteScreen.tsx",
-    "apps/web/src/components/LegacySidebar.tsx",
     "apps/mobile/src/features/browser/BrowserPreviewRouteScreen.tsx",
     "apps/mobile/src/features/browser/PreviewStreamWebView.tsx",
     "apps/mobile/src/features/browser/preview-stream-document.ts",
@@ -2104,7 +2072,6 @@ sources and reasons.
     "apps/server/src/preview/SessionControl.ts",
     "apps/web/src/browser/ServerBrowserSurface.tsx",
     "apps/web/src/browser/serverPictureInPicture.ts",
-    "apps/web/src/components/device/DeviceStreamView.browser.test.tsx",
     "apps/web/src/components/device/DeviceStreamView.tsx",
     "apps/web/src/components/preview/PreviewPanel.tsx",
     "apps/web/src/components/preview/ThreadPreviewMiniPlayer.tsx",
@@ -2122,7 +2089,6 @@ sources and reasons.
     "packages/client-runtime/src/state/device.ts",
     "packages/client-runtime/src/state/deviceHubAccess.ts",
     "packages/client-runtime/src/state/preview.ts",
-    "packages/contracts/src/assets.test.ts",
     "packages/contracts/src/preview.test.ts",
     "packages/contracts/src/preview.ts",
     "packages/shared/src/toolOutput.test.ts",
@@ -2261,10 +2227,7 @@ sources and reasons.
     "https://github.com/pingdotgg/t3code/pull/14263"
   ],
   "newFiles": [],
-  "upstreamFiles": [
-    "apps/server/src/cloud/serviceLauncherClient.test.ts",
-    "apps/server/src/cloud/serviceLauncherClient.ts"
-  ],
+  "upstreamFiles": [],
   "sharedFiles": [],
   "keywords": ["T3_SERVICE_LAUNCHER_CONTEXT", "resolveStartup", "ipc-unavailable"]
 }
@@ -2379,13 +2342,10 @@ sources and reasons.
   ],
   "upstreamFiles": [
     "apps/server/package.json",
-    "apps/server/src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts",
     "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
     "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
     "apps/server/src/orchestration-v2/ContextHandoffService.test.ts",
     "apps/server/src/orchestration-v2/ContextHandoffService.ts",
-    "apps/server/src/orchestration-v2/CursorOrchestratorV2.live.test.ts",
-    "apps/server/src/orchestration-v2/GrokOrchestratorV2.live.test.ts",
     "apps/server/src/orchestration-v2/ProjectSettingsUpgrade.integration.test.ts",
     "apps/server/src/orchestration-v2/ProviderSwitchService.ts",
     "apps/server/src/orchestration-v2/RuntimePolicy.test.ts",
@@ -2394,7 +2354,6 @@ sources and reasons.
     "apps/server/src/scheduledTasks/ScheduledTaskService.schedule.test.ts",
     "apps/server/src/scheduledTasks/ScheduledTaskService.test.ts",
     "apps/server/src/scheduledTasks/ScheduledTaskService.webhook.test.ts",
-    "apps/server/src/scheduling/Scheduler.integration.test.ts",
     "docs/user/outside-agents.md",
     "packages/provider-core/package.json",
     "packages/provider-core/src/server/failure.ts",
@@ -2572,7 +2531,8 @@ sources and reasons.
   ],
   "newFiles": [
     "packages/client-runtime/src/relay/eligibility.ts",
-    "packages/client-runtime/src/relay/eligibility.test.ts"
+    "packages/client-runtime/src/relay/eligibility.test.ts",
+    "apps/web/src/components/cloud/CloudEnvironmentConnectList.browser.test.tsx"
   ],
   "upstreamFiles": [
     "apps/mobile/src/features/cloud/managedRelayState.ts",
@@ -2584,7 +2544,6 @@ sources and reasons.
     "packages/client-runtime/src/relay/index.ts",
     "packages/client-runtime/src/relay/managedRelayState.test.ts",
     "packages/client-runtime/src/relay/managedRelayState.ts",
-    "apps/web/src/components/cloud/CloudEnvironmentConnectList.browser.test.tsx",
     "packages/client-runtime/src/connection/layer.ts",
     "packages/client-runtime/src/connection/onboarding.test.ts",
     "packages/client-runtime/src/connection/registry.test.ts",
@@ -2750,7 +2709,6 @@ sources and reasons.
     "apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
     "apps/desktop/src/shell/DesktopShellEnvironment.ts",
     "apps/server/src/os-jank.test.ts",
-    "packages/shared/src/shell.test.ts",
     "packages/shared/src/shell.ts"
   ],
   "sharedFiles": [],
@@ -2865,7 +2823,6 @@ sources and reasons.
     "apps/mobile/src/state/thread-outbox-model.ts",
     "apps/mobile/src/state/thread-outbox.test.ts",
     "apps/mobile/src/state/use-thread-composer-state.ts",
-    "apps/mobile/src/state/use-thread-outbox-drain.ts",
     "packages/contracts/src/threadPullRequest.ts",
     "packages/provider-core/src/server/ProviderContinuationRequests.ts",
     "packages/provider-muse/src/server/adapter.ts",
@@ -3006,11 +2963,12 @@ sources and reasons.
     "packages/contracts/src/browserCookieMirror.test.ts",
     "packages/contracts/src/browserCookieMirror.ts",
     "packages/shared/src/browserCookieMirror.test.ts",
-    "packages/shared/src/browserCookieMirror.ts"
+    "packages/shared/src/browserCookieMirror.ts",
+    "apps/desktop/src/preview/BrowserImport/ChromiumKeys.module.test.ts",
+    "apps/web/src/components/settings/IntegrationsSettings.browser.test.tsx"
   ],
   "upstreamFiles": [
     "apps/desktop/scripts/main-process-bundle.test.mjs",
-    "apps/desktop/src/preview/BrowserImport/ChromiumKeys.module.test.ts",
     "apps/desktop/src/preview/BrowserImport/ChromiumKeys.test.ts",
     "apps/desktop/vite.config.ts",
     "apps/desktop/src/backend/DesktopLocalEnvironmentAuth.ts",
@@ -3024,7 +2982,6 @@ sources and reasons.
     "apps/server/src/preview/ServerBrowser.test.ts",
     "apps/server/src/preview/ServerBrowser.ts",
     "apps/server/src/preview/ServerBrowserStream.test.ts",
-    "apps/web/src/components/settings/IntegrationsSettings.browser.test.tsx",
     "apps/web/src/connection/runtime.ts",
     "apps/web/src/hooks/useSettings.test.ts",
     "apps/web/src/hooks/useSettings.ts",
@@ -3231,7 +3188,8 @@ sources and reasons.
   "newFiles": [
     "apps/server/src/preview/ChromeForTesting.testkit.ts",
     "apps/server/src/preview/ServerBrowserContexts.integration.test.ts",
-    "apps/server/src/preview/ServerCookieMirror.test.ts"
+    "apps/server/src/preview/ServerCookieMirror.test.ts",
+    "apps/web/src/browser/previewRuntime.test.ts"
   ],
   "upstreamFiles": [
     "apps/server/src/htmlRender/headlessChrome.ts",
@@ -3239,10 +3197,7 @@ sources and reasons.
     "apps/server/src/preview/PreviewBrowser.ts",
     "apps/server/src/preview/PreviewBrowserHost.ts",
     "apps/server/src/preview/ServerBrowserContexts.test.ts",
-    "apps/web/src/browser/ElectronBrowserHost.tsx",
-    "apps/web/src/browser/previewRuntime.test.ts",
     "apps/web/src/browser/previewRuntime.ts",
-    "apps/web/src/components/preview/usePreviewSession.ts",
     "docs/user/html-renders.md"
   ],
   "sharedFiles": [
