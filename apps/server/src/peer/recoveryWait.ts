@@ -84,6 +84,7 @@ export const waitForRecovery = <E>(
     readonly events: Stream.Stream<OrchestrationV2StoredEvent, E>;
     readonly missing: (runId: RunId) => E;
     readonly loadError: (cause: unknown) => E;
+    readonly result?: Effect.Effect<OrchestrationV2Run | undefined, E>;
   },
   recovery: RecoveryWaitAccess,
   restart?: {
@@ -109,14 +110,17 @@ export const waitForRecovery = <E>(
       let selectedRunId = selected.id;
       const resolve = Effect.fn("recoveryWait.resolve")(function* (
         snapshot?: ReadonlyArray<OrchestrationV2Run>,
+        resultRunId?: RunId,
       ) {
         let current = snapshot ?? (yield* input.readRuns);
+        let currentRunId = resultRunId ?? selectedRunId;
         const seen = new Set<RunId>();
         for (;;) {
-          let run = current.find((candidate) => candidate.id === selectedRunId);
-          if (run === undefined) return yield* Effect.fail(input.missing(selectedRunId));
+          let run = current.find((candidate) => candidate.id === currentRunId);
+          if (run === undefined) return yield* Effect.fail(input.missing(currentRunId));
           run = restart?.latest(current, run) ?? run;
-          selectedRunId = run.id;
+          currentRunId = run.id;
+          if (resultRunId === undefined) selectedRunId = currentRunId;
           if (restart !== undefined && terminal(run) && (yield* restart.pending(run)))
             return { type: "native-continuation-pending" as const, run };
           if (run.status !== "failed" && run.status !== "interrupted")
@@ -140,7 +144,8 @@ export const waitForRecovery = <E>(
               next = current.find((candidate) => candidate.id === successor);
             }
             if (next === undefined) return yield* Effect.fail(input.missing(successor));
-            selectedRunId = next.id;
+            currentRunId = next.id;
+            if (resultRunId === undefined) selectedRunId = currentRunId;
             continue;
           }
           return {
@@ -152,9 +157,36 @@ export const waitForRecovery = <E>(
           };
         }
       });
-      const initial = yield* resolve(runs);
-      if (initial.type === "done")
-        return { threadId: input.threadId, run: initial.run, timedOut: false };
+      const evaluate = Effect.fn("recoveryWait.evaluate")(function* (
+        snapshot?: ReadonlyArray<OrchestrationV2Run>,
+      ) {
+        const current = yield* resolve(snapshot);
+        if (current.type !== "done" || input.result === undefined)
+          return { ...current, resultRun: undefined, waitRun: current.run };
+        const candidate = yield* input.result;
+        if (candidate === undefined)
+          return {
+            run: current.run,
+            type: "pending" as const,
+            resultRun: undefined,
+            waitRun: current.run,
+          };
+        const result = yield* resolve(undefined, candidate.id);
+        return {
+          run: current.run,
+          type: result.type,
+          resultRun: result.type === "done" ? result.run : undefined,
+          waitRun: result.run,
+        };
+      });
+      const answer = (state: Effect.Success<ReturnType<typeof evaluate>>) => ({
+        threadId: input.threadId,
+        run: state.run,
+        timedOut: state.type !== "done",
+        ...(state.resultRun === undefined ? {} : { resultRun: state.resultRun }),
+      });
+      const initial = yield* evaluate(runs);
+      if (initial.type === "done") return answer(initial);
       const waited = Option.flatten(
         yield* Stream.merge(
           Stream.make(initial),
@@ -163,6 +195,7 @@ export const waitForRecovery = <E>(
               Stream.filter((stored) => {
                 const event = stored.event;
                 return (
+                  input.result !== undefined ||
                   (event.type !== "run.updated" && event.type !== "run.created") ||
                   event.payload.id === selectedRunId ||
                   event.payload.restartContinuationOfRunId === selectedRunId ||
@@ -171,13 +204,15 @@ export const waitForRecovery = <E>(
               }),
             ),
             changes.pipe(Stream.filter((threadId) => threadId === input.threadId)),
-          ).pipe(Stream.mapEffect(() => resolve())),
+          ).pipe(Stream.mapEffect(() => evaluate())),
         ).pipe(
           Stream.switchMap((state) =>
             state.type === "native-continuation-pending" && restart !== undefined
               ? Stream.merge(
                   Stream.make(state),
-                  Stream.fromEffect(restart.await(state.run).pipe(Effect.andThen(() => resolve()))),
+                  Stream.fromEffect(
+                    restart.await(state.waitRun).pipe(Effect.andThen(() => evaluate())),
+                  ),
                 )
               : Stream.make(state),
           ),
@@ -186,9 +221,7 @@ export const waitForRecovery = <E>(
           Effect.timeoutOption(Duration.millis(Math.max(1, input.timeoutMs))),
         ),
       );
-      if (Option.isSome(waited))
-        return { threadId: input.threadId, run: waited.value.run, timedOut: false };
-      const final = yield* resolve();
-      return { threadId: input.threadId, run: final.run, timedOut: final.type !== "done" };
+      if (Option.isSome(waited)) return answer(waited.value);
+      return answer(yield* evaluate());
     }),
   );
