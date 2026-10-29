@@ -185,24 +185,6 @@ const resolveThreadId = (context: Caller, threadId: ThreadId | undefined) =>
           }),
         );
 
-// Mirrors OrchestratorMcpService.threadNotFound; importing it here closes a module cycle
-// through McpRouting and RemoteDelegation.
-const threadNotFound = Effect.fn("mcp.threadNotFound")(function* (
-  threads: Pick<ThreadManagement.ThreadManagementService["Service"], "getThreadShell">,
-  threadId: ThreadId,
-  message: string,
-) {
-  const prefixed = ThreadId.make(`mcp:${threadId}`);
-  const shell = yield* threads.getThreadShell(prefixed).pipe(Effect.orElseSucceed(() => null));
-  return yield* new OrchestratorMcpFailure({
-    code: "thread_not_found",
-    message:
-      shell === null || shell.deletedAt !== null
-        ? message
-        : `${message} Did you mean \`${prefixed}\`?`,
-  });
-});
-
 export const readThread = Effect.fn("mcp.readThread")(function* <
   K extends ProjectionRecordField = never,
 >(threadId?: ThreadId, fields: ReadonlyArray<K> = []) {

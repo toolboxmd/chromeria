@@ -38,21 +38,23 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
   description:
     "Pin, snooze, settle, archive, or mark a thread unread. Omit `threadId` for this thread. `snooze` needs `snoozedUntil`. Settling this thread applies at turn end. A failed turn or queued message leaves it active.",
-  parameters: McpRouting.parameters(Schema.Struct({
-    threadId: Schema.optional(ThreadId),
-    action: Schema.Literals([
-      "pin",
-      "unpin",
-      "snooze",
-      "unsnooze",
-      "settle",
-      "unsettle",
-      "archive",
-      "unarchive",
-      "mark_unread",
-    ]),
-    snoozedUntil: Schema.optional(IsoDateTime),
-  })),
+  parameters: McpRouting.parameters(
+    Schema.Struct({
+      threadId: Schema.optional(ThreadId),
+      action: Schema.Literals([
+        "pin",
+        "unpin",
+        "snooze",
+        "unsnooze",
+        "settle",
+        "unsettle",
+        "archive",
+        "unarchive",
+        "mark_unread",
+      ]),
+      snoozedUntil: Schema.optional(IsoDateTime),
+    }),
+  ),
   success: Schema.Union([
     OrchestrationV2DispatchCommandResult,
     Schema.Struct({ settlesWhenTurnEnds: Schema.Literal(true) }),
@@ -120,10 +122,12 @@ const QueueEditTool = Tool.make("t3_queue_edit", {
   ...commandTool,
   description:
     "Replace one queued message's text. Attachments stay. Fails if the run is no longer queued.",
-  parameters: McpRouting.parameters(Schema.Struct({
-    ...queueTarget,
-    text: Schema.String.check(Schema.isMaxLength(100000)),
-  })),
+  parameters: McpRouting.parameters(
+    Schema.Struct({
+      ...queueTarget,
+      text: Schema.String.check(Schema.isMaxLength(100000)),
+    }),
+  ),
 }).annotate(Tool.Destructive, true);
 const QueueCancelTool = Tool.make("t3_queue_cancel", {
   ...commandTool,
@@ -139,7 +143,9 @@ const QueueResumeTool = Tool.make("t3_queue_resume", {
 const QueueReorderTool = Tool.make("t3_queue_reorder", {
   ...commandTool,
   description: "Move one queued run before another, or to the end with `beforeRunId=null`.",
-  parameters: McpRouting.parameters(Schema.Struct({ ...queueTarget, beforeRunId: Schema.NullOr(RunId) })),
+  parameters: McpRouting.parameters(
+    Schema.Struct({ ...queueTarget, beforeRunId: Schema.NullOr(RunId) }),
+  ),
 }).annotate(Tool.Destructive, true);
 const QueuePromoteTool = Tool.make("t3_queue_promote_to_steer", {
   ...commandTool,
@@ -147,6 +153,28 @@ const QueuePromoteTool = Tool.make("t3_queue_promote_to_steer", {
     "Send one queued message now as steering to the given active run. An agent's promotion follows `t3_thread_send` steer rules: on Claude the message stays queued. For an urgent interruption use `t3_thread_send` with `mode:'restart'`.",
   parameters: McpRouting.parameters(Schema.Struct({ ...queueTarget, targetRunId: RunId })),
 }).annotate(Tool.Destructive, true);
+
+const PendingRequestTool = Tool.make("t3_pending_request", {
+  ...commandTool,
+  description:
+    "List pending questions and descendant approvals, read one by requestId, or respond with answers for a question or decision for an approval. Omit threadId for this thread. Preserve the qualified target, route and revision returned by read.",
+  parameters: McpRouting.parameters(
+    Schema.Struct({
+      ...PendingRequestInput.fields,
+      requestId: Schema.optional(RuntimeRequestId),
+      action: Schema.Literals(["list", "read", "respond"]),
+      answers: Schema.optional(ProviderUserInputAnswers),
+      decision: Schema.optional(ProviderApprovalDecision),
+    }),
+  ),
+  success: Schema.Union([
+    Schema.Struct({ requestIds: Schema.Array(RuntimeRequestId) }),
+    PendingRequestContent,
+    OrchestrationV2DispatchCommandResult,
+  ]),
+})
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.OpenWorld, true);
 
 export const pendingRequest = PendingRequestContent;
 const PendingRequestListTool = Tool.make("t3_pending_request_list", {
@@ -207,10 +235,12 @@ const ThreadConfigureTool = Tool.make("t3_thread_configure", {
   ...commandTool,
   description:
     "Set a thread's provider, model, and options. Omit `threadId` for this thread. Permission modes stay. Values from `orchestrator_capabilities`.",
-  parameters: McpRouting.parameters(Schema.Struct({
-    threadId: Schema.optional(ThreadId),
-    modelSelection: ModelSelection,
-  })),
+  parameters: McpRouting.parameters(
+    Schema.Struct({
+      threadId: Schema.optional(ThreadId),
+      modelSelection: ModelSelection,
+    }),
+  ),
 }).annotate(Tool.Destructive, true);
 
 const transferResult = Schema.Struct({ sequence: NonNegativeInt, targetThreadId: ThreadId });
@@ -218,22 +248,26 @@ const ThreadForkTool = Tool.make("t3_thread_fork", {
   ...commandTool,
   description:
     "Fork a thread from a stable run or checkpoint. Omit `threadId` for this thread. Keeps source setup. No turn has run yet.",
-  parameters: McpRouting.parameters(Schema.Struct({
-    threadId: Schema.optional(ThreadId),
-    sourcePoint: OrchestrationV2ThreadForkSourcePoint,
-    title: Schema.optional(TrimmedNonEmptyString),
-  })),
+  parameters: McpRouting.parameters(
+    Schema.Struct({
+      threadId: Schema.optional(ThreadId),
+      sourcePoint: OrchestrationV2ThreadForkSourcePoint,
+      title: Schema.optional(TrimmedNonEmptyString),
+    }),
+  ),
   success: transferResult,
 }).annotate(Tool.Destructive, true);
 const ThreadMergeBackTool = Tool.make("t3_thread_merge_back", {
   ...commandTool,
   description:
     "Merge context from one thread into a related thread in the same project. Omit `sourceThreadId` for this thread.",
-  parameters: McpRouting.parameters(Schema.Struct({
-    sourceThreadId: Schema.optional(ThreadId),
-    targetThreadId: ThreadId,
-    sourcePoint: OrchestrationV2ThreadForkSourcePoint,
-  })),
+  parameters: McpRouting.parameters(
+    Schema.Struct({
+      sourceThreadId: Schema.optional(ThreadId),
+      targetThreadId: ThreadId,
+      sourcePoint: OrchestrationV2ThreadForkSourcePoint,
+    }),
+  ),
   success: transferResult,
 }).annotate(Tool.Destructive, true);
 const ThreadTransfersTool = Tool.make("t3_thread_transfers", {
@@ -258,10 +292,12 @@ const ThreadSearchTool = Tool.make("t3_thread_search", {
   ...commandTool,
   description:
     "Search active threads by title, branch, PR, project, then message text. Skips subagent threads. `projectId`: one project, else yours, else all outside a thread. Not exhaustive.",
-  parameters: McpRouting.parameters(Schema.Struct({
-    ...OrchestrationSearchThreadsInput.fields,
-    projectId: Schema.optional(ProjectId),
-  })),
+  parameters: McpRouting.parameters(
+    Schema.Struct({
+      ...OrchestrationSearchThreadsInput.fields,
+      projectId: Schema.optional(ProjectId),
+    }),
+  ),
   success: Schema.Struct({
     matches: Schema.Array(
       Schema.Struct({
@@ -306,6 +342,7 @@ export const ThreadToolkit = Toolkit.make(
   ThreadTransfersTool,
   ThreadConfigurationTool,
   ThreadConfigureTool,
+  PendingRequestTool,
   PendingRequestListTool,
   PendingRequestReadTool,
   PendingRequestRespondTool,

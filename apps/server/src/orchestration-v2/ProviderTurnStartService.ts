@@ -882,16 +882,28 @@ export const layer: Layer.Layer<
       }
       let effectiveHandoffs = handoffs;
       let resumeFellBack = false;
-      const messageText = projection.thread.bare !== undefined ? message.text : projectComposerContextForProvider({
-        text: message.text,
-        records: message.context?.records ?? [],
-      });
+      const messageText =
+        projection.thread.bare !== undefined
+          ? message.text
+          : projectComposerContextForProvider({
+              text: message.text,
+              records: message.context?.records ?? [],
+            });
       // Codex and Claude parse /goal from the prompt, so it goes verbatim and history waits a turn.
       const goalDriver = session.driver === "codex" || session.driver === "claudeAgent";
       const goalCommand = goalDriver && parseGoalCommand(message) !== null;
       // The provider turn marks cancellation work delivered; restart continuations use their own text or resume natively.
-      const interruptionNote = attempt.reason === "steering_restart" ? steeringRestartNote({ requester: attempt.requestedBy ?? message, author: message, driver: session.driver, bare: projection.thread.bare }) : "";
-      const userText = interruptionNote === "" ? messageText : `${interruptionNote}\n\n${messageText}`;
+      const interruptionNote =
+        attempt.reason === "steering_restart"
+          ? steeringRestartNote({
+              requester: attempt.requestedBy ?? message,
+              author: message,
+              driver: session.driver,
+              bare: projection.thread.bare,
+            })
+          : "";
+      const userText =
+        interruptionNote === "" ? messageText : `${interruptionNote}\n\n${messageText}`;
       const noteContinuation = isRestartNoteContinuation(
         run,
         projection.runs,
@@ -1696,6 +1708,19 @@ export const layer: Layer.Layer<
             nativeInputRunIds.has(source.id) ? Math.max(ordinal, source.ordinal) : ordinal,
           0,
         );
+        const { missedRuns, missedRunIds, coveredItemIds } = handoffContext;
+        const missedItems =
+          missedRunIds.size === 0
+            ? []
+            : (yield* projectionStore.getTurnStartHistory(input.threadId, [
+                ...missedRunIds,
+              ])).filter(
+                (item) =>
+                  item.runId !== null &&
+                  missedRunIds.has(item.runId) &&
+                  !coveredItemIds.has(item.id) &&
+                  historicalMessage(item) !== null,
+              );
         const missedBareRuns = new Map(
           missedRuns
             .filter((source) => source.ordinal >= recoveredThroughOrdinal)

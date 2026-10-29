@@ -3381,7 +3381,7 @@ export const layer = Layer.unwrap(
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const pullRequests = yield* PullRequestService.PullRequestService;
     const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
-    const peerLinks = yield* PeerLinks.PeerLinks;
+
     const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
     const issueService = yield* IssueService.IssueService;
     const issueLinks = yield* IssueLinks.IssueLinks;

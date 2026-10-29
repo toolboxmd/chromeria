@@ -73,7 +73,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type * as Orchestrator from "./Orchestrator.ts";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
-import { DispatchModeLimit } from "./DispatchModeLimit.ts";
+import { exceededDispatchModeLimit, DispatchModeLimit } from "./DispatchModeLimit.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 
 export type ThreadLaunchWorkspaceStrategy =
@@ -135,10 +135,6 @@ export interface ThreadLaunchInput {
   readonly owner?: string;
   /** Fork: launched as the Promachos (toolboxmd/chromeria#532). */
   readonly prismRole?: OrchestrationV2ThreadPrismRole;
-  /** The linked environment this launch is for, if one asked for it. */
-  readonly linkOrigin?: OrchestrationV2LinkOrigin;
-  /** The parent there, when that environment's agent delegated this as a task. */
-  readonly delegatedFrom?: OrchestrationV2DelegatedFrom;
 }
 
 type PreparationInput = Pick<

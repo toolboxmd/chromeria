@@ -1,3 +1,4 @@
+import * as Predicate from "effect/Predicate";
 import { CurrentRequest } from "../../McpRequestReceipts.ts";
 import {
   type CommandId,
@@ -27,6 +28,11 @@ import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTasks from "../../../scheduledTasks/ScheduledTaskService.ts";
 import { queuedRunsInDeliveryOrder } from "../../../orchestration-v2/QueuedRunOrder.ts";
 import { ThreadToolkit } from "./tools.ts";
+
+const pendingRequestEffect = (input: unknown) =>
+  Predicate.isObject(input) && "action" in input && input.action !== "respond"
+    ? ("read" as const)
+    : ("owned" as const);
 
 function queueEntry(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,
@@ -63,6 +69,25 @@ export const layer = McpToolAccess.toLayer(
   ThreadToolkit,
   Effect.gen(function* () {
     const pending = yield* PendingRequests.PendingRequests;
+    const listPendingRequests = (input: { readonly threadId?: ThreadId | undefined }) =>
+      Effect.gen(function* () {
+        const context = yield* readThread(input.threadId, ["runtimeRequests"]);
+        const { projection } = context;
+        const answerer = yield* requestAnswerer(context, projection.thread);
+        const descendant = answerer !== undefined && answerer.kind !== "own";
+        return {
+          requestIds: projection.runtimeRequests
+            .filter(
+              (request) =>
+                request.status === "pending" &&
+                (request.kind === "user_input" ||
+                  (descendant &&
+                    request.kind !== "dynamic_tool_call" &&
+                    request.kind !== "auth_refresh")),
+            )
+            .map((request) => request.id),
+        };
+      });
     return {
       run_scheduled_task_now: McpToolAccess.writesEnvironment((input, check) =>
         Effect.gen(function* () {
@@ -135,7 +160,7 @@ export const layer = McpToolAccess.toLayer(
           return {
             matches: matches.map((match) => ({
               ...match,
-              link: formatThreadLink(match.threadId, match.title),
+              link: formatThreadLink({ threadId: match.threadId, title: match.title }),
             })),
           };
         }),
@@ -230,26 +255,37 @@ export const layer = McpToolAccess.toLayer(
           return { sequence: result.sequence };
         }),
       ),
-      t3_pending_request_list: McpToolAccess.reads((input) =>
-        Effect.gen(function* () {
-          const context = yield* readThread(input.threadId, ["runtimeRequests"]);
-          const { projection } = context;
-          const answerer = yield* requestAnswerer(context, projection.thread);
-          const descendant = answerer !== undefined && answerer.kind !== "own";
-          return {
-            requestIds: projection.runtimeRequests
-              .filter(
-                (request) =>
-                  request.status === "pending" &&
-                  (request.kind === "user_input" ||
-                    (descendant &&
-                      request.kind !== "dynamic_tool_call" &&
-                      request.kind !== "auth_refresh")),
-              )
-              .map((request) => request.id),
-          };
-        }),
+      t3_pending_request: McpToolAccess.either(
+        (input) => input.action !== "respond",
+        McpToolAccess.reads((input) =>
+          Effect.gen(function* () {
+            if (input.action === "list") return yield* listPendingRequests(input);
+            if (input.requestId === undefined)
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "Pass requestId.",
+              });
+            return yield* pending.read({ ...input, requestId: input.requestId });
+          }),
+        ),
+        McpToolAccess.writesThreads(
+          () => [],
+          (input) =>
+            Effect.gen(function* () {
+              if (input.requestId === undefined)
+                return yield* new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message: "Pass requestId.",
+                });
+              return yield* pending.respond(
+                { ...input, requestId: input.requestId },
+                { type: "respond", answers: input.answers, decision: input.decision },
+              );
+            }),
+        ),
+        pendingRequestEffect,
       ),
+      t3_pending_request_list: McpToolAccess.reads(listPendingRequests),
       t3_pending_request_read: McpToolAccess.reads((input) => pending.read(input)),
       t3_pending_request_respond: McpToolAccess.writesThreads(
         () => [],

@@ -144,6 +144,8 @@ describe("ignoreMacosTypeOfServiceEinval", () => {
         "--input-type=module",
         "--eval",
         `
+import * as NodeNet from "node:net";
+import * as NodeTls from "node:tls";
 import { ignoreMacosTypeOfServiceEinval } from ${JSON.stringify(new URL("./outboundHttp.ts", import.meta.url).href)};
 
 NodeTls.setDefaultCACertificates([${JSON.stringify(TEST_CERT)}]);

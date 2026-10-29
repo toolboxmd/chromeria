@@ -1,5 +1,6 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
+import * as Schema from "effect/Schema";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -46,6 +47,7 @@ it.effect("delegation over the server runtime names this environment to the peer
         Layer.mock(PeerLinks.PeerLinks)({
           resolve: () => Effect.succeed({ link, url: "https://peer.test", token: "token" }),
           get: () => Effect.succeedSome(link),
+          recordOutcome: () => Effect.void,
         }),
       ),
       Layer.provide(
@@ -68,5 +70,18 @@ it.effect("delegation over the server runtime names this environment to the peer
     yield* peers.requireTaskLifecycle!(peer, "generation");
 
     expect(requests).toEqual(["https://peer.test/mcp/peer-control/tasks"]);
+    requests.length = 0;
+    const refused = yield* peers
+      .call({
+        environmentId: peer,
+        expectedLinkIdentity: "replaced-generation",
+        tool: "t3_thread_launch",
+        arguments: {},
+        limits: { runtimeMode: "full-access", interactionMode: "default" },
+        success: Schema.Unknown,
+      })
+      .pipe(Effect.flip);
+    expect(refused.code).toBe("capability_denied");
+    expect(requests).toEqual([]);
   }).pipe(Effect.scoped),
 );

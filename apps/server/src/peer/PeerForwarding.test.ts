@@ -456,6 +456,7 @@ it.effect("keeps a forwarded wait short and its retries scoped to the caller", (
         environmentId: box.environmentId,
         threadId: boxThread,
         timeoutMs: 600_000,
+        untilDelegatedWorkSettled: true,
       });
       expect(waited.structuredContent).toEqual({
         threadId: boxThread,
@@ -471,6 +472,12 @@ it.effect("keeps a forwarded wait short and its retries scoped to the caller", (
         [PeerForwarding.FORWARDED_WAIT_CHUNK_MS, undefined],
         [PeerForwarding.FORWARDED_WAIT_CHUNK_MS, boxRun],
         [PeerForwarding.FORWARDED_WAIT_CHUNK_MS, boxRun],
+      ]);
+
+      expect((yield* Ref.get(seen)).waits.map((input) => input.untilDelegatedWorkSettled)).toEqual([
+        true,
+        true,
+        true,
       ]);
 
       const send = (caller: string, clientRequestId: string) =>

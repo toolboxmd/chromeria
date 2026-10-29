@@ -409,6 +409,7 @@ const layerMcpAppRequestsProvided = McpAppRequests.layer.pipe(
 );
 
 export const layer = Layer.mergeAll(
+  layerEventSink,
   layerCommandOutputHubProvided,
   // Pending request reads share the runtime's native projection and SQL snapshot.
   ProjectionStore.layer,
@@ -433,7 +434,7 @@ const layerSpectrumProvided = Spectrum.layer.pipe(
       ProjectStore.layer,
       layerBareLaunchProvided,
       layerStores,
-      layerEventSinkProvided,
+      layerEventSink,
       layerOrchestratorProvided,
       layerThreadManagementProvided,
       Prism.layer,
@@ -476,7 +477,7 @@ export const layerProduction = Layer.mergeAll(
         ProjectionStore.layer,
         layerThreadManagementProvided,
         layerOrchestratorProvided,
-        layerEventSinkProvided,
+        layerEventSink,
       ),
     ),
   ),

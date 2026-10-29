@@ -1,3 +1,5 @@
+import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
+import * as ServerSettings from "../serverSettings.ts";
 // @effect-diagnostics nodeBuiltinImport:off - Finds Playwright's installed headless shell for a real Chromium run.
 import * as NodeEvents from "node:events";
 import * as NodePath from "node:path";
@@ -212,7 +214,11 @@ const dependencies = Layer.mergeAll(
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-credential-login-" })),
   Layer.provideMerge(NodeServices.layer),
 );
-const layer = ServerBrowser.layer.pipe(Layer.provideMerge(dependencies));
+const layer = ServerBrowser.layer.pipe(
+  Layer.provide(PreviewAgentActivity.layer),
+  Layer.provide(ServerSettings.layerTest()),
+  Layer.provideMerge(dependencies),
+);
 
 type BrokerService = Broker.PreviewAutomationBroker["Service"];
 const invoke =

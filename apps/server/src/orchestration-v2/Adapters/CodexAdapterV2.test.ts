@@ -6892,7 +6892,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     (setupMode) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
-        const serverConfig = yield* makeReplayServerConfig(`bare-owner-${setupMode}`);
+        const serverConfig = yield* ProviderReplayHarness.makeReplayServerConfig(
+          `bare-owner-${setupMode}`,
+        );
         const sourceHome = yield* fs.makeTempDirectoryScoped();
         yield* fs.writeFileString(`${sourceHome}/auth.json`, "FAKE_TEST_CREDENTIAL");
         const settings = yield* decodeCodexSettings({
@@ -8820,7 +8822,9 @@ describe("CodexAdapterV2 cut-in cohort", () => {
       crypto: yield* Crypto.Crypto,
       fileSystem: yield* FileSystem.FileSystem,
       idAllocator: yield* IdAllocator.IdAllocatorV2,
-      serverConfig: yield* makeReplayServerConfig("codex-cut-in-cohort").pipe(Effect.orDie),
+      serverConfig: yield* ProviderReplayHarness.makeReplayServerConfig("codex-cut-in-cohort").pipe(
+        Effect.orDie,
+      ),
     });
     const threadId = ThreadId.make("r7-app-thread");
     const runtime = yield* adapter.openSession({

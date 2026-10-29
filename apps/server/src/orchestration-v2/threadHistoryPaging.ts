@@ -285,7 +285,9 @@ export function selectDeferredWorkPage<Row extends HistoryRow>(input: {
 }
 
 /** Notifications can start wake turns when they are the run's first input; match ProjectionStore run_starts. */
-function threadHistoryTurnStarts(items: ReadonlyArray<HistoryRow["item"]>): ReadonlyArray<boolean> {
+export function threadHistoryTurnStarts(
+  items: ReadonlyArray<HistoryRow["item"]>,
+): ReadonlyArray<boolean> {
   const startedRuns = new Set<string>();
   return items.map((item) => {
     if (item.type !== "user_message" && item.type !== "notification") return false;
