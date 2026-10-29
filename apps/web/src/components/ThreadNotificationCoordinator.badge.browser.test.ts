@@ -3,7 +3,7 @@ import type { AnyRouter } from "@tanstack/react-router";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
-import { Atom, AtomRegistry } from "effect/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 
 import { fakeTimers, stubGlobal } from "../../test/render";
@@ -22,6 +22,12 @@ vi.mock(import("./ui/toast"), async (original) => {
   const actual = await original();
   return { ...actual, toastManager: { ...actual.toastManager, add: state.toast as never } };
 });
+vi.mock(import("../state/server"), () => ({
+  serverEnvironment: {
+    scheduledTasksLive: ({ environmentId }: { environmentId: string }) =>
+      commandTasksAtom(environmentId),
+  },
+}));
 vi.mock(import("../state/shell"), async (original) => {
   const actual = await original();
   return {
@@ -79,6 +85,9 @@ vi.mock(import("../threadNotifications"), async (original) => ({
 import { startThreadNotifications } from "./ThreadNotificationCoordinator";
 
 let registry: AtomRegistry.AtomRegistry;
+const commandTasksAtom = Atom.family((_id: string) =>
+  Atom.make(AsyncResult.initial<{ tasks: ReadonlyArray<ReturnType<typeof commandTask>> }, never>()),
+);
 const shellAtom = Atom.family((_id: string) => Atom.make<unknown>(null));
 const environmentIdsAtom = Atom.make<ReadonlyArray<string>>([]);
 const noRequestsAtom = Atom.make(new Map());
@@ -265,3 +274,51 @@ vi.mock(import("../state/query"), async (original) => ({
   ...(await original()),
   useEnvironmentQuery: (() => ({ data: null })) as never,
 }));
+
+const commandTask = (failureStreak: number) => ({
+  id: "backup",
+  title: "Nightly backup",
+  command: { failureStreak, lastSuccessfulRunId: "run-1" },
+});
+
+it("observes scheduled commands with thread preferences, navigation and badge cleanup", async () => {
+  await using app = setup();
+  const receive = (failureStreak: number) =>
+    registry.set(
+      commandTasksAtom("one"),
+      AsyncResult.success({ tasks: [commandTask(failureStreak)] }),
+    );
+  receive(0);
+  app.start();
+  receive(1);
+  receive(1);
+  expect(TestNotification.sent.map((sent) => sent.title)).toEqual(["Scheduled command failed"]);
+  expect(state.badge).toHaveBeenLastCalledWith(1);
+  TestNotification.sent[0]!.dispatchEvent(new Event("click"));
+  expect(state.navigate).toHaveBeenCalledWith({
+    to: "/settings/scheduled-tasks",
+    search: { environmentId: "one" },
+  });
+  app.setEnvironmentIds(["two"]);
+  expect(TestNotification.sent[0]!.close).toHaveBeenCalled();
+  expect(state.badge).toHaveBeenLastCalledWith(0);
+  receive(0);
+  receive(1);
+  expect(TestNotification.sent).toHaveLength(1);
+  app.setEnvironmentIds(["one", "two"]);
+  receive(0);
+  state.mode = "off";
+  state.inApp = true;
+  focused = true;
+  app.changeSettings();
+  receive(1);
+  expect(state.toast).toHaveBeenCalledWith(
+    expect.objectContaining({ title: "Scheduled command failed" }),
+  );
+  expect(TestNotification.sent).toHaveLength(1);
+  state.inApp = false;
+  app.changeSettings();
+  receive(0);
+  receive(1);
+  expect(state.toast).toHaveBeenCalledTimes(1);
+});

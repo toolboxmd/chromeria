@@ -7,6 +7,11 @@ import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import type { AnyRouter } from "@tanstack/react-router";
 import type { EnvironmentId, OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
 import type { ClientSettings } from "@t3tools/contracts/settings";
+import {
+  type CommandHealth,
+  commandTasksTurnedFailing,
+} from "@t3tools/client-runtime/scheduled-task-fork";
+import { AsyncResult } from "effect/reactivity";
 import * as Option from "effect/Option";
 import type { AtomRegistry } from "effect/reactivity";
 import {
@@ -19,6 +24,7 @@ import {
 import { getClientSettings, subscribeClientSettings } from "../hooks/useSettings";
 import { isWindowsPlatform } from "../lib/utils";
 import { environmentSummaries } from "../state/presentation";
+import { serverEnvironment } from "../state/server";
 import { environmentShell } from "../state/shell";
 import { environmentThreadShells } from "../state/threads";
 import {
@@ -29,7 +35,7 @@ import {
   threadNotificationTag,
   unlockNotificationAudio,
 } from "../threadNotifications";
-import { ScheduledCommandNotifications } from "./ScheduledCommandNotifications";
+import { presentScheduledCommandFailures } from "./ScheduledCommandNotifications";
 import { resolveSidebarThreadStatus, type SidebarThreadStatus } from "./Sidebar.logic";
 import {
   createThreadNotificationGate,
@@ -269,7 +275,24 @@ export function startThreadNotifications(
       environmentThreadShells.delegatedUnderParentAtom,
       reobserve,
     );
+    let commandHealth: CommandHealth | null = null;
+    const unsubscribeCommands = registry.subscribe(
+      serverEnvironment.scheduledTasksLive({ environmentId, input: {} }),
+      (result) => {
+        if (!AsyncResult.isSuccess(result)) return;
+        const { health, failing } = commandTasksTurnedFailing(commandHealth, result.value.tasks);
+        commandHealth = health;
+        presentScheduledCommandFailures(environmentId, failing, {
+          ...getClientSettings(),
+          open: () =>
+            void router.navigate({ to: "/settings/scheduled-tasks", search: { environmentId } }),
+          onNotification: trackNotification,
+        });
+      },
+      { immediate: true },
+    );
     entry.unsubscribe = () => {
+      unsubscribeCommands();
       unsubscribeShell();
       unsubscribeRequests();
       unsubscribeDelegated();
