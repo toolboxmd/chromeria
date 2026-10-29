@@ -2,6 +2,7 @@ import { NodeHttpServer } from "@effect/platform-node";
 import { type ExecutionEnvironmentDescriptor, OrchestratorMcpFailure } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -406,6 +407,11 @@ it.effect("tells the agent to link again once the peer revokes the link or it ex
       });
       yield* probe(a);
 
+      // Finite links issued by older peers still expire locally without sending a bearer.
+      yield* a.sql`UPDATE peer_environment_links SET expires_at = ${(yield* DateTime.now).pipe(
+        DateTime.add({ days: 30 }),
+        DateTime.formatIso,
+      )}`;
       yield* TestClock.adjust(Duration.days(31));
       expect((yield* a.links.list).map((link) => link.status)).toEqual(["expired"]);
       yield* Ref.set(b.bearers, []);

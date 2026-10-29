@@ -430,7 +430,11 @@ const make = Effect.gen(function* () {
       // A pending upload lives here, so it cannot go with the call.
       const receipts = yield* Effect.serviceOption(RequestReceipts.McpRequestReceipts);
       let expectedLinkIdentity = options?.expectedLinkIdentity;
-      if (Option.isSome(receipts) && typeof args.clientRequestId === "string" && !readOnly) {
+      if (
+        Option.isSome(receipts) &&
+        typeof args.clientRequestId === "string" &&
+        (!readOnly || toolName === "preview_snapshot")
+      ) {
         const identity =
           (yield* RequestReceipts.CurrentRequest) ??
           (yield* receipts.value.identify(

@@ -366,6 +366,7 @@ const make = Effect.gen(function* () {
     if (initialized.status !== 200 || sessionId === undefined) {
       const refusal = decodeFailure(yield* initialized.text);
       if (Option.isSome(refusal)) return yield* new OrchestratorMcpFailure(refusal.value);
+      if (initialized.status === 403) return yield* linkedEnvironmentsOffThere;
       return yield* new OrchestratorMcpFailure({
         code: initialized.status === 401 ? "capability_denied" : "orchestration_error",
         message:

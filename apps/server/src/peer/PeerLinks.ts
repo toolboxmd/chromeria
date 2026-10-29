@@ -511,13 +511,13 @@ const make = Effect.gen(function* () {
     };
     // The token goes under a name of its own before the row points at it,
     // so the row and its token are replaced together.
+    const urlsJson = yield* encodeUrls(origins).pipe(Effect.catch(failStorage));
+    const previous = yield* readRow(peer.environmentId);
     const secretName = yield* newSecretName;
     yield* secrets
       .set(secretName, new TextEncoder().encode(issued.access_token))
       .pipe(Effect.catch(failStorage));
     // A token no row names could never be removed.
-    const urlsJson = yield* encodeUrls(origins).pipe(Effect.catch(failStorage));
-    const previous = yield* readRow(peer.environmentId);
     const retainPrevious = yield* sql
       .withTransaction(
         Effect.gen(function* () {
@@ -548,7 +548,10 @@ const make = Effect.gen(function* () {
           return retain;
         }),
       )
-      .pipe(Effect.catch(failStorage));
+      .pipe(
+        Effect.onError(() => secrets.remove(secretName).pipe(Effect.ignore)),
+        Effect.catch(failStorage),
+      );
     // Linking again replaces the old token. A racing link may leave its own
     // behind; it is unused either way.
     if (Option.isSome(previous) && previous.value.secret_name !== secretName && !retainPrevious) {

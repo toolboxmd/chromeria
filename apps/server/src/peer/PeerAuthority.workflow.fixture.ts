@@ -1043,9 +1043,7 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
         ),
       );
       const services = yield* RemoteDelegation.layer.pipe(
-        Layer.provideMerge(
-          attachmentRequests ? RequestRuntime.layerForwarding : PeerForwarding.layer,
-        ),
+        Layer.provideMerge(PeerForwarding.layer),
         Layer.provideMerge(faultablePeers),
         Layer.provideMerge(Layer.succeedContext(baseServices)),
         Layer.provideMerge(Layer.succeedContext(requestContext)),
@@ -3350,6 +3348,23 @@ vi.mock("../preview/ServerBrowserContexts.ts", () => ({
     }
     async contextFor() {
       const context = makeExternalBrowserContext(this.options.onContextClose);
+      const send = context.cdp.send;
+      context.cdp.send = async (method, params) => {
+        if (
+          method === "Runtime.callFunctionOn" &&
+          typeof params?.functionDeclaration === "string" &&
+          params.functionDeclaration.includes("createImageBitmap")
+        ) {
+          // The external leaf's PNG is already 1x1; its canvas returns those same valid bytes.
+          return {
+            result: {
+              value:
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=",
+            },
+          };
+        }
+        return send(method, params);
+      };
       browserExternalContexts.push(context);
       await browserExternalBoundary.beforeContextReturn();
       return context;
