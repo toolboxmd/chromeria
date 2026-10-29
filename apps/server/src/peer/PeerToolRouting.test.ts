@@ -694,9 +694,14 @@ it.effect("native guide tools reach the peer without broadening their capability
       expect(yield* Ref.get(f.seen)).toEqual([]);
       yield* f.link("full-access");
       yield* Ref.set(f.destinationCapabilities, noCapability);
-      const destinationRefused = yield* f.call("read_pull_request_guide", target, true);
-      expect(destinationRefused.isError).toBe(true);
-      expect(yield* Ref.get(f.seen)).toEqual([]);
+      for (const [name, args] of [
+        ["write_pull_request_guides", { pullRequests: [target] }],
+        ["read_pull_request_guide", target],
+      ] as const) {
+        const destinationRefused = yield* f.call(name, args, true);
+        expect(destinationRefused.isError).toBe(true);
+        expect(yield* Ref.get(f.seen)).toEqual([]);
+      }
     }),
   ).pipe(Effect.provide(Layer.merge(NodeHttpServer.layerTest, McpProviderSessions.layer))),
 );
