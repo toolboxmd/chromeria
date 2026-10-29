@@ -12,7 +12,6 @@ import {
 import { describe, expect, it } from "@effect/vitest";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
-import * as Stream from "effect/Stream";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -154,7 +153,7 @@ const makeSupervisor = Effect.fn("TestSpectrumStop.makeSupervisor")(function* (
     client,
     initialConfig: Effect.succeed({ environment: { capabilities: {} } } as never),
     subscribeServerConfig: (subscription) => client.subscribeServerConfig(subscription),
-    inboundFrames: Stream.empty,
+    inboundFrames: Effect.succeed(0),
     ready: Effect.void,
     probe: Effect.void,
     closed: Effect.never,
