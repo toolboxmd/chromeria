@@ -1,5 +1,3 @@
-import * as Clock from "effect/Clock";
-import * as Duration from "effect/Duration";
 import * as RecoveryHooks from "../prism/RecoveryHooks.ts";
 import { waitForRecovery, RecoveryWaitState } from "../peer/recoveryWait.ts";
 import type {
@@ -1128,15 +1126,35 @@ const make = Effect.gen(function* () {
         threadId: input.threadId,
         cause,
       });
-    const startedAt = yield* Clock.currentTimeMillis;
     // Taken before the first read, so a run update between that read and
     // the subscription below still replays.
     const afterSequence = yield* orchestrator
       .getThreadEventSequence(input.threadId)
       .pipe(Effect.mapError(loadError));
-    const recovered = yield* waitForRecovery<ThreadManagementError>(
+    const delegatedWorkResult = Effect.gen(function* () {
+      const records = yield* getProjectThreadRecords(
+        input,
+        ["runs", "messages", "subagents", "providerThreads"],
+        { messageRoles: ["user"] },
+      );
+      const progress = delegatedTaskProgress(records);
+      // A thread rolled back past all its work, with nothing left running, has no answer to wait for.
+      if (
+        progress.resultRun === undefined &&
+        records.runs.every((run) => isTerminalRunStatus(run.status))
+      ) {
+        return latestRun(records);
+      }
+      if (progress.state !== "result_available") return undefined;
+      const pending = yield* orchestrator
+        .delegatedTaskResultPending(input.threadId)
+        .pipe(Effect.mapError(loadError));
+      return pending ? undefined : progress.resultRun;
+    });
+    return yield* waitForRecovery<ThreadManagementError>(
       {
         ...input,
+        ...(input.untilDelegatedWorkSettled === true ? { result: delegatedWorkResult } : {}),
         readRuns: getProjectThreadRecords(input, ["runs"]).pipe(
           Effect.map((records) => records.runs),
         ),
@@ -1153,6 +1171,9 @@ const make = Effect.gen(function* () {
               "thread.runtime-mode-updated",
               "thread.model-selection-updated",
               "thread.provider-switched",
+              ...(input.untilDelegatedWorkSettled === true
+                ? (["subagent.updated", "provider-thread.updated"] as const)
+                : []),
             ] as const
           ).map((eventType) =>
             orchestrator.streamStoredEventsFrom({
@@ -1175,118 +1196,6 @@ const make = Effect.gen(function* () {
         await: (run) => orchestrator.awaitRestartContinuation(run).pipe(Effect.mapError(loadError)),
       },
     );
-    if (input.untilDelegatedWorkSettled !== true || recovered.run === null || recovered.timedOut)
-      return recovered;
-    const remaining = Math.max(0, input.timeoutMs - ((yield* Clock.currentTimeMillis) - startedAt));
-    const target = yield* getProjectThreadRecords(input, ["runs"]);
-    const selectedRun = recovered.run;
-    // A restart cuts a run and continues it as a new run. Follow that chain,
-    // so a cut run is not the answer while its continuation is pending.
-    // Runs per matching event and is already covered by the waitForThread span.
-    const outcome = Effect.fnUntraced(function* (runs: ReadonlyArray<OrchestrationV2Run>) {
-      const current = runs.find((candidate) => candidate.id === selectedRun.id);
-      if (current === undefined) {
-        return yield* new ThreadManagementRunNotFoundError({
-          threadId: input.threadId,
-          runId: selectedRun.id,
-        });
-      }
-      const run = latestRestartContinuation(runs, current);
-      const pending =
-        isTerminalRunStatus(run.status) && (yield* orchestrator.restartContinuationPending(run));
-      return { run, pending, settled: isTerminalRunStatus(run.status) && !pending };
-    });
-    const untilDelegatedWorkSettled = input.untilDelegatedWorkSettled === true;
-    const delegatedWorkResult = Effect.gen(function* () {
-      const records = yield* getProjectThreadRecords(
-        input,
-        ["runs", "messages", "subagents", "providerThreads"],
-        { messageRoles: ["user"] },
-      );
-      const progress = delegatedTaskProgress(records);
-      // A thread rolled back past all its work, with nothing left running, has no answer to wait for.
-      if (
-        progress.resultRun === undefined &&
-        records.runs.every((run) => isTerminalRunStatus(run.status))
-      ) {
-        return latestRun(records);
-      }
-      if (progress.state !== "result_available") return undefined;
-      const pending = yield* orchestrator
-        .delegatedTaskResultPending(input.threadId)
-        .pipe(Effect.mapError(loadError));
-      return pending ? undefined : progress.resultRun;
-    });
-    const evaluate = Effect.fn("orchestrationV2.threadManagement.evaluate")(function* (
-      runs: ReadonlyArray<OrchestrationV2Run>,
-    ) {
-      const current = yield* outcome(runs);
-      if (!current.settled || !untilDelegatedWorkSettled) {
-        return { ...current, resultRun: undefined };
-      }
-      const resultRun = yield* delegatedWorkResult;
-      return { ...current, settled: resultRun !== undefined, resultRun };
-    });
-    const settledResult = (current: Effect.Success<ReturnType<typeof evaluate>>) => ({
-      threadId: input.threadId,
-      run: current.run,
-      timedOut: !current.settled,
-      ...(current.resultRun === undefined ? {} : { resultRun: current.resultRun }),
-    });
-    const initial = yield* evaluate(target.runs);
-    if (initial.settled || remaining === 0) return settledResult(initial);
-
-    // A declined continuation records no event, so its effect settling wakes
-    // the wait too.
-    const wait = Stream.merge(
-      Stream.mergeAll(
-        (
-          [
-            "run.updated",
-            "thread.deleted",
-            // What delegated work reads besides runs: tasks and their
-            // deliveries, and a provider thread's background tasks.
-            ...(untilDelegatedWorkSettled
-              ? (["subagent.updated", "provider-thread.updated"] as const)
-              : []),
-          ] as const
-        ).map((eventType) =>
-          orchestrator.streamStoredEventsFrom({
-            threadId: input.threadId,
-            afterSequence,
-            eventType,
-          }),
-        ),
-        { concurrency: "unbounded" },
-      ).pipe(
-        Stream.mapError(loadError),
-        Stream.filter(
-          (stored) =>
-            untilDelegatedWorkSettled ||
-            stored.event.type !== "run.updated" ||
-            stored.event.payload.id === selectedRun.id ||
-            stored.event.payload.restartContinuationOfRunId !== undefined,
-        ),
-      ),
-      initial.pending
-        ? Stream.fromEffect(orchestrator.awaitRestartContinuation(initial.run))
-        : Stream.empty,
-    ).pipe(
-      Stream.mapEffect(() =>
-        getProjectThreadRecords(input, ["runs"]).pipe(
-          Effect.flatMap((current) => evaluate(current.runs)),
-        ),
-      ),
-      Stream.filter((current) => current.settled),
-      Stream.runHead,
-      Effect.timeoutOption(Duration.millis(remaining)),
-    );
-    const waited = Option.flatten(yield* wait);
-    if (Option.isSome(waited)) return settledResult(waited.value);
-    // The run may have reached a terminal status while the timeout was
-    // winning the race; the final projection read decides what actually
-    // happened, so only a still-active run counts as timed out.
-    return settledResult(yield* evaluate((yield* getProjectThreadRecords(input, ["runs"])).runs));
   });
 
   const settleAfterRun: ThreadManagementServiceShape["settleAfterRun"] = Effect.fn(
