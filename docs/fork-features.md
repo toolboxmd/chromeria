@@ -558,7 +558,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
 ```json
 {
   "id": "data-foundation",
-  "purpose": "Isolate the Chromeria V2 database, retain passive legacy tables and deferred settings data and provide shell-only backfills and fork-origin PR lookup.",
+  "purpose": "Isolate the Chromeria V2 database, retain passive legacy tables and deferred settings data and provide shell-only backfills and fork-origin PR lookup. Retain the mobile legacy file-cache import that upstream removed in 67661cfbb5 until every Chromeria mobile client has run it, then remove it (#620).",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/167"],
   "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...port/167-foundation"],
   "newFiles": [
