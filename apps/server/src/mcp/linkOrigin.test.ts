@@ -135,13 +135,25 @@ const layerTools = Layer.mergeAll(
   Layer.provide(layerLaunches),
   Layer.provide(NodeCrypto.layer),
   Layer.provide(
-    Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
-  ),
-  Layer.provide(
-    Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
-      list: () => Effect.succeed([]),
+    Layer.mock(ProviderRegistry.ProviderRegistry)({
+      getProviders: Effect.succeed([
+        {
+          instanceId,
+          driver: adapter.driver,
+          enabled: true,
+          installed: true,
+          version: "test",
+          status: "ready",
+          auth: { status: "authenticated" },
+          checkedAt: "2026-10-18T00:00:00Z",
+          models: [{ slug: "gpt-5", name: "test", isCustom: false, capabilities: null }],
+          skills: [],
+          slashCommands: [],
+        },
+      ]),
     }),
   ),
+  Layer.provide(ProviderAdapterRegistry.layerFromAdapters([adapter])),
   Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
   Layer.provide(
     Layer.mock(ProjectService.ProjectService)({

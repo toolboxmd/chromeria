@@ -537,9 +537,11 @@ const clientLaunchHarness = (input: {
   };
   const layerDependencies = Layer.mergeAll(
     prismDependencies,
-    Layer.mock(ProviderRegistry.ProviderRegistry)({
-      getProviders: Effect.succeed(input.providers ?? []),
-    }),
+    input.providers === undefined
+      ? Layer.empty
+      : Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Effect.succeed(input.providers),
+        }),
     ServerSettings.layerTest({
       fallbackModelSelection: input.fallbackModel ?? null,
       ...(input.defaultRuntimeMode === undefined
@@ -1074,7 +1076,14 @@ it.effect("a client launches with the fallback for an exhausted default", () =>
       version: null,
       auth: { status: "authenticated" },
       checkedAt: "2026-01-01T00:00:00Z",
-      models: [],
+      models: [
+        {
+          slug: driver === "codex" ? fallbackModel.model : "claude-opus",
+          name: "test",
+          isCustom: false,
+          capabilities: null,
+        },
+      ],
       slashCommands: [],
       skills: [],
       ...(driver === "claudeAgent"
