@@ -410,6 +410,7 @@ describe("resolveInitialServerAuthGateState", () => {
 
     const testWindow = installTestBrowser("http://localhost/");
     testWindow.desktopBridge = {
+      getLocalEnvironmentEnabled: () => true,
       getLocalEnvironmentBootstraps: () => [
         {
           id: "primary",
@@ -423,7 +424,9 @@ describe("resolveInitialServerAuthGateState", () => {
 
     const { resolveInitialServerAuthGateState } = await import("./environments/primary");
 
-    await Promise.all([resolveInitialServerAuthGateState(), resolveInitialServerAuthGateState()]);
+    await expect(
+      Promise.all([resolveInitialServerAuthGateState(), resolveInitialServerAuthGateState()]),
+    ).resolves.toEqual([{ status: "authenticated" }, { status: "authenticated" }]);
 
     expect(testApi.calls.session).toBe(2);
     expect(testApi.calls.browserSession).toMatchObject([{ credential: "desktop-bootstrap-token" }]);
