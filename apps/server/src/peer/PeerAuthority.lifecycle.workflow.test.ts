@@ -79,6 +79,7 @@ import {
   json,
   makeNode,
   nativeCall,
+  nativeInvalidParams,
   seedParent,
   selection,
   type Node,
@@ -2955,7 +2956,8 @@ it.live(
           });
           expect(later.isError, json(later)).not.toBe(true);
           const before = yield* sql`SELECT command_id FROM orchestration_command_receipts`;
-          const replay = yield* nativeCall(node, parent, "t3_thread_update", {
+          const beforeThread = yield* node.threads.getThreadShell(parent);
+          const replayInput = {
             action,
             ...(action === "rename"
               ? { title: "Original title" }
@@ -2963,10 +2965,19 @@ it.live(
                 ? { pullRequest }
                 : {}),
             clientRequestId: key,
-          });
-          expect(replay.isError).toBe(true);
-          expect(json(replay)).toContain("legacy operation");
+          };
+          if (action === "link_pull_request" || action === "unlink_pull_request") {
+            expect(
+              (yield* nativeInvalidParams(node, parent, "t3_thread_update", replayInput)).error
+                .code,
+            ).toBe(-32602);
+          } else {
+            const replay = yield* nativeCall(node, parent, "t3_thread_update", replayInput);
+            expect(replay.isError).toBe(true);
+            expect(json(replay)).toContain("legacy operation");
+          }
           expect(yield* sql`SELECT command_id FROM orchestration_command_receipts`).toEqual(before);
+          expect(yield* node.threads.getThreadShell(parent)).toEqual(beforeThread);
           expect((yield* node.threads.getThreadShell(parent))?.title).toBe(
             "Later independent title",
           );
