@@ -1298,6 +1298,7 @@ const make = Effect.gen(function* () {
         threadId: remote.threadId,
         ...(remote.runId === undefined ? {} : { runId: remote.runId }),
         timeoutMs: FOLLOW_WAIT_MS,
+        untilDelegatedWorkSettled: true,
       })
       .pipe(Effect.raceFirst(endedHere));
     // The next look reads the result and stops it there.
@@ -1317,11 +1318,15 @@ const make = Effect.gen(function* () {
       return yield* settled(parentThreadId, taskId);
     }
     if (!isTerminal(waited.status)) return false;
-    const result = yield* lastReply(scope, remote, waited.runId);
+    const resultRun = waited.resultRun ?? {
+      runId: remote.runId ?? waited.runId,
+      status: waited.status,
+    };
+    const result = yield* lastReply(scope, remote, resultRun.runId);
     yield* complete(
       parentThreadId,
       taskId,
-      terminalStatus(waited.status),
+      terminalStatus(resultRun.status),
       result ?? noReply,
       "ran-out",
     );
