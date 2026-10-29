@@ -521,17 +521,20 @@ export function createEnvironmentThreadShellAtoms(input: {
 
   let previousDelegatedUnderParent: ReadonlySet<string> = new Set();
   const delegatedUnderParentAtom = Atom.make((get) => {
-    const environmentIds = new Set(enabledEnvironmentIds(get(input.catalogValueAtom)));
+    const catalog = get(input.catalogValueAtom);
+    const environmentIds = new Set(enabledEnvironmentIds(catalog));
     const next = new Set<string>();
     for (const environmentId of environmentIds) {
       for (const thread of get(environmentThreadsAtom(environmentId))) {
         const parent = thread.delegatedFrom;
         if (
-          parent !== undefined &&
-          environmentIds.has(parent.environmentId) &&
-          // An archived parent leaves navigation; its task there stays listed on its own.
-          get(environmentThreadIndexAtom(parent.environmentId)).get(parent.threadId)?.archivedAt ===
-            null
+          parent != null &&
+          thread.lineage.relationshipToParent !== "fork" &&
+          // Unknown source environments retain default hiding; known orphaned tasks stay reachable.
+          (!catalog.entries.has(parent.environmentId) ||
+            (environmentIds.has(parent.environmentId) &&
+              get(environmentThreadIndexAtom(parent.environmentId)).get(parent.threadId)
+                ?.archivedAt === null))
         ) {
           next.add(threadKey({ environmentId, threadId: thread.id }));
         }
