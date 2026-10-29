@@ -284,14 +284,6 @@ const make = Effect.gen(function* () {
         code: "invalid_request",
         message: "Pass only answers for a question or decision for an approval.",
       });
-    if (context.request.status !== "pending")
-      return yield* new OrchestratorMcpFailure({
-        code: "invalid_request",
-        message:
-          context.request.kind === "user_input" && context.request.status === "resolved"
-            ? "The user-input request was already answered."
-            : `The request is no longer pending (${context.request.status}).`,
-      });
     const result = yield* threads
       .dispatch({
         type: action.type === "dismiss" ? "thread.user-input.dismiss" : "runtime-request.respond",
@@ -308,7 +300,19 @@ const make = Effect.gen(function* () {
           ? { answers: action.answers, decision: action.decision }
           : {}),
       })
-      .pipe(Effect.mapError(dispatchFailure));
+      .pipe(
+        Effect.mapError((error) =>
+          context.request.status === "pending"
+            ? dispatchFailure(error)
+            : new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message:
+                  context.request.kind === "user_input" && context.request.status === "resolved"
+                    ? "The user-input request was already answered."
+                    : `The request is no longer pending (${context.request.status}).`,
+              }),
+        ),
+      );
     return { sequence: result.sequence };
   }, Effect.provide(dependencies));
   const fromTask: PendingRequests["Service"]["fromTask"] = Effect.fn(
