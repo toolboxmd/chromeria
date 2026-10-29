@@ -798,7 +798,6 @@ export function createThreadOutboxDelivery(): {
         environmentId: queuedMessage.environmentId,
         input: {
           commandId: settingsCommandId(queuedMessage, "runtime-mode"),
-          purposeIntent: queuedMessage.purposeIntent,
           creationSource: "mobile",
           threadId: queuedMessage.threadId,
           runtimeMode: settings.runtimeMode,

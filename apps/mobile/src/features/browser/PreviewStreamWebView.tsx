@@ -138,7 +138,7 @@ export function PreviewStreamWebView(
   // Android backgrounds the app for its document picker. Keep this exact viewer
   // through current admission and its answer, but always honor focus loss.
   const live = !props.paused && (!props.backgrounded || pendingFiles > 0);
-  const { access, error, refresh } = usePreviewStreamAccess(
+  const { access, error, refresh, retryAfter } = usePreviewStreamAccess(
     props.environmentId,
     props.resource,
     live,
@@ -343,19 +343,18 @@ function PreviewStreamDocumentView({
   const bootstrapTimedOut = useEffectEvent(() =>
     fail("Browser viewer could not start. Reconnect to try again."),
   );
+  const streamEnded = useEffectEvent(() => {
+    onStreamingChange?.(false);
+    onControl?.(null);
+  });
   const previousAccess = useRef(access);
   useEffect(() => {
-    if (!started || previousAccess.current === access) return;
+    if (previousAccess.current === access) return;
     previousAccess.current = access;
     webView.current?.injectJavaScript(
       `window.T3PreviewStream?.updateAccess(${JSON.stringify(access)}); true;`,
     );
-  }, [access, started]);
-  useEffect(() => {
-    if (started) return;
-    const timer = setTimeout(bootstrapTimedOut, 15_000);
-    return () => clearTimeout(timer);
-  }, [started]);
+  }, [access]);
   // Access refresh replaces the socket; the document owns the PiP capture track.
   const [source] = useState(() => ({
     html: previewStreamDocument(configuration, previewStreamScript),
@@ -370,16 +369,17 @@ function PreviewStreamDocumentView({
   useLayoutEffect(() => {
     active.current = true;
     const view = webView.current;
+    bootstrapTimer.current = setTimeout(bootstrapTimedOut, 15_000);
     return () => {
+      clearBootstrapTimer();
       active.current = false;
       // A pending answer can retain only this opening. Its later settlement
       // must not change the lifetime of a replacement stream.
       for (const finish of pendingAnswers.current) finish();
       view?.injectJavaScript("window.T3PreviewStream?.stop(); true;");
+      streamEnded();
     };
   }, []);
-  useEffect(() => () => onStreamingChange?.(false), [onStreamingChange]);
-  useEffect(() => () => controlChanged(null), []);
   const processTerminated = () => {
     if (!active.current || failed.current) return;
     if (!onRecoverProcess()) fail("Browser viewer stopped. Reconnect to try again.");

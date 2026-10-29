@@ -31,10 +31,6 @@ const deviceHubAccessAtom = Atom.family((environmentId: EnvironmentId) =>
   ),
 );
 
-export function refreshDeviceHubAccess(environmentId: EnvironmentId) {
-  appAtomRegistry.refresh(deviceHubAccessAtom(environmentId));
-}
-
 const EMPTY_ACCESS = Atom.make(
   AsyncResult.initial<
     import("@t3tools/client-runtime/state/deviceHubAccess").DeviceHubAccess,
@@ -56,7 +52,7 @@ export function useDeviceHubAccess(
     ),
   );
   type AccessResult =
-    | Atom.Type<ReturnType<typeof deviceHubAccessAtom>>
+    | Atom.Type<ReturnType<ReturnType<typeof deviceHubAccessAtom>>>
     | Atom.Type<ReturnType<typeof deviceEnvironment.viewerAccess>>;
   const query = useEnvironmentQuery<
     import("@t3tools/client-runtime/state/deviceHubAccess").DeviceHubAccess,
@@ -65,7 +61,7 @@ export function useDeviceHubAccess(
     !visible
       ? EMPTY_ACCESS
       : resource === undefined
-        ? deviceHubAccessAtom(environmentId)
+        ? deviceHubAccessAtom(environmentId)(viewerKey)
         : deviceEnvironment.viewerAccess({
             environmentId,
             viewerKey,

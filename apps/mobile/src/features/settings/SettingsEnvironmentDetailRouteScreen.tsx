@@ -1,7 +1,6 @@
 import * as Dialog from "../../components/ui/Dialog";
 import { useAtom, useAtomValue } from "@effect/atom-react";
 import { PeerGrantSettings } from "./PeerGrantSettings";
-import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   AuthProvidersManageScope,

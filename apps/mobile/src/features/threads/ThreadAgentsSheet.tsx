@@ -17,7 +17,7 @@ import { StackActions, useNavigation, type StaticScreenProps } from "@react-navi
 import * as DateTime from "effect/DateTime";
 import { Atom } from "effect/reactivity";
 import * as Haptics from "expo-haptics";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Platform, Pressable, ScrollView, View } from "react-native";
 import { ScreenStack } from "react-native-screens";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
