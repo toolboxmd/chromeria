@@ -608,10 +608,15 @@ it.effect("a tab the desktop does not draw is marked headless, so the desktop st
       const { broker, tabId } = yield* ready;
       const manager = yield* Manager.PreviewManager;
       desktopRendersNext = true;
-      const desktopTab = yield* broker.invoke<PreviewAutomationStatus>({
+      const desktopTab = yield* manager.open({
+        threadId: scope.thread.threadId,
+        runtime: "server",
+      });
+      yield* broker.invoke<PreviewAutomationStatus>({
         scope,
+        tabId: PreviewTabId.make(desktopTab.tabId),
         operation: "open",
-        input: { reuseExistingTab: false, show: false },
+        input: { open: false },
       });
       const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
       const headlessOf = (id: string | null) =>

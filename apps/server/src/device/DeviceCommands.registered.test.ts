@@ -851,8 +851,8 @@ it.effect(
       expect(discovered.isError, JSON.stringify(discovered)).not.toBe(true);
       expect(discovered.structuredContent).toMatchObject({
         protocol: 1,
-        agentDeviceVersion: "0.21.25",
-        deviceHubVersion: "0.15.3",
+        agentDeviceVersion: AGENT_DEVICE_VERSION,
+        deviceHubVersion: DEVICE_HUB_VERSION,
         families: expect.arrayContaining([
           {
             name: "hover",

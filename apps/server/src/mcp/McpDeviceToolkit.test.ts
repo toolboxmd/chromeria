@@ -11,6 +11,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { McpSchema, McpServer, Tool } from "effect/ai";
 
 import * as ServerConfig from "../config.ts";
@@ -20,6 +21,10 @@ import * as McpHttpServer from "./McpHttpServer.ts";
 import { DeviceToolkit } from "./toolkits/device/tools.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
+
+const decodeFailureText = Schema.decodeSync(
+  Schema.fromJsonString(Schema.Struct({ message: Schema.String })),
+);
 
 const environmentId = EnvironmentId.make("environment-device-test");
 const threadId = ThreadId.make("thread-device-test");
@@ -431,8 +436,14 @@ describe("device targeting across hosts", () => {
       ),
     );
   };
-  const text = (result: McpSchema.CallToolResult) =>
-    result.content.flatMap((entry) => (entry.type === "text" ? [entry.text] : [])).join("\n");
+  const text = (result: McpSchema.CallToolResult) => {
+    const content = result.content
+      .flatMap((entry) => (entry.type === "text" ? [entry.text] : []))
+      .join("\n");
+    return result.isError && result.structuredContent === undefined
+      ? decodeFailureText(content).message
+      : content;
+  };
 
   it.effect("opens a device id that exists only on another host", () =>
     run([], ({ opened, call }) =>
