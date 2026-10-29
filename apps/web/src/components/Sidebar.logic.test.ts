@@ -247,7 +247,7 @@ describe("archiveSelectedThreadEntries", () => {
 });
 
 describe("sidebar thread lineage helpers", () => {
-  it("hides remote children by default but searches destination shells without the parent", () => {
+  it("hides children shown under their parent but searches destination shells directly", () => {
     const environmentId = EnvironmentId.make("destination");
     const projectId = ProjectId.make("project");
     const raw = makeThreadFixture({ environmentId, projectId, title: "Remote audit" }).source;
@@ -275,17 +275,19 @@ describe("sidebar thread lineage helpers", () => {
     expect(isSidebarSubagentThread(child)).toBe(true);
     const all = [child, ordinary, otherEnvironment, localChild, archived];
     const scope = new Set([`${environmentId}:${projectId}`]);
-    expect(filterSidebarV2VisibleThreads(all, scope, new Set())).toEqual([ordinary]);
-    const searchable = filterSidebarV2VisibleThreads(all, scope, new Set(), "Remote audit");
+    const underParent = new Set([`${environmentId}:${child.id}`]);
+    expect(filterSidebarV2VisibleThreads(all, scope, new Set())).toEqual([child, ordinary]);
+    expect(filterSidebarV2VisibleThreads(all, scope, underParent)).toEqual([ordinary]);
+    const searchable = filterSidebarV2VisibleThreads(all, scope, underParent, "Remote audit");
     expect(searchSidebarThreads(searchable, "Remote audit").titleMatches).toEqual([child]);
     expect(
       searchSidebarThreads(
-        filterSidebarV2VisibleThreads(all, scope, new Set(), "contents"),
+        filterSidebarV2VisibleThreads(all, scope, underParent, "contents"),
         "contents",
         new Set([threadSearchMatchKey({ environmentId, threadId: child.id })]),
       ).contentMatches,
     ).toEqual([child]);
-    expect(filterSidebarV2VisibleThreads(all, scope, new Set(), "  ")).toEqual([ordinary]);
+    expect(filterSidebarV2VisibleThreads(all, scope, underParent, "  ")).toEqual([ordinary]);
     expect(all).toHaveLength(5);
   });
 
@@ -317,14 +319,15 @@ describe("sidebar thread lineage helpers", () => {
       archivedAt: "2026-01-02T00:00:00.000Z",
     };
     const all = [child, fork, archivedFork];
-    expect(filterSidebarV2VisibleThreads(all, null, new Set())).toEqual([fork]);
+    const underParent = new Set([`${environmentId}:${child.id}`]);
+    expect(filterSidebarV2VisibleThreads(all, null, underParent)).toEqual([fork]);
     expect(isSidebarSubagentThread(fork)).toBe(false);
     expect(fork.delegatedFrom).toBe(child.delegatedFrom);
-    const searchable = filterSidebarV2VisibleThreads(all, null, new Set(), "User fork");
+    const searchable = filterSidebarV2VisibleThreads(all, null, underParent, "User fork");
     expect(searchSidebarThreads(searchable, "User fork").titleMatches).toEqual([fork]);
     expect(searchable.filter(isSidebarSubagentThread)).toEqual([child]);
     expect(searchSidebarThreads(searchable, "Remote child").titleMatches).toEqual([child]);
-    expect(filterSidebarV2VisibleThreads(all, null, new Set(), " ")).toEqual([fork]);
+    expect(filterSidebarV2VisibleThreads(all, null, underParent, " ")).toEqual([fork]);
   });
   it("maps an open subagent to its nearest visible ancestor's sidebar row", () => {
     const environmentId = EnvironmentId.make("environment-row");
