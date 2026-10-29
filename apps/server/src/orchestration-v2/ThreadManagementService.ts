@@ -1146,10 +1146,7 @@ const make = Effect.gen(function* () {
         return latestRun(records);
       }
       if (progress.state !== "result_available") return undefined;
-      const pending = yield* orchestrator
-        .delegatedTaskResultPending(input.threadId)
-        .pipe(Effect.mapError(loadError));
-      return pending ? undefined : progress.resultRun;
+      return progress.resultRun;
     });
     return yield* waitForRecovery<ThreadManagementError>(
       {

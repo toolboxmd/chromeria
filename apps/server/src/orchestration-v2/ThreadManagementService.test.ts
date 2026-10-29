@@ -329,7 +329,7 @@ it.effect.each(["restart", "prism"] as const)(
     }),
 );
 
-it.effect.each(["completed", "retry", "declined"] as const)(
+it.effect.each(["completed", "retry", "declined", "native-declined"] as const)(
   "waitForThread can wait past an ended run for delegated work: %s",
   (kind) =>
     Effect.gen(function* () {
@@ -340,6 +340,8 @@ it.effect.each(["completed", "retry", "declined"] as const)(
       const subscribed = yield* Deferred.make<void>();
       const inspected = yield* Deferred.make<void>();
       const recoveryChanges = yield* Queue.unbounded<ThreadId>();
+      const nativeChanges = yield* Queue.unbounded<"discarded" | "awaiting">();
+      const nativeSettled = yield* Deferred.make<void>();
       const successorId = RunId.make("run:thread-management:wait-delegated:retry");
       let pendingRecovery = true;
       const events = yield* Queue.unbounded<OrchestrationV2StoredEvent>();
@@ -362,10 +364,18 @@ it.effect.each(["completed", "retry", "declined"] as const)(
         Layer.provide(
           Layer.mock(Orchestrator.OrchestratorV2)({
             getThreadEventSequence: () => Effect.succeed(0),
-            restartContinuationPending: () => Effect.succeed(false),
-            delegatedTaskResultPending: () => Effect.succeed(false),
+            restartContinuationPending: (run) =>
+              Effect.succeed(kind === "native-declined" && run.id === wakeRunId && pendingRecovery),
+            awaitRestartContinuation: () =>
+              Queue.offer(nativeChanges, "awaiting").pipe(
+                Effect.andThen(Deferred.await(nativeSettled)),
+              ),
+            delegatedTaskResultPending: () =>
+              kind === "native-declined" && pendingRecovery
+                ? Queue.offer(nativeChanges, "discarded").pipe(Effect.as(true))
+                : Effect.succeed(false),
             streamStoredEventsFrom: (input) =>
-              input?.eventType === "subagent.updated"
+              input?.eventType === (kind === "native-declined" ? "run.updated" : "subagent.updated")
                 ? Stream.fromEffect(Deferred.succeed(subscribed, undefined)).pipe(
                     Stream.drain,
                     Stream.concat(Stream.fromQueue(events)),
@@ -445,9 +455,31 @@ it.effect.each(["completed", "retry", "declined"] as const)(
       yield* Effect.raceFirst(Deferred.await(subscribed), Fiber.await(fiber));
       // The task finishes; its delivery wakes the thread, whose next run answers.
       subagents = [{ status: "completed" }];
-      runs = [...runs, run(wakeRunId, 2, kind === "completed" ? "completed" : "failed", 3)];
-      yield* Queue.offer(events, stored(1, { type: "subagent.updated", payload: {} }));
-      if (kind !== "completed") {
+      runs = [
+        ...runs,
+        run(
+          wakeRunId,
+          2,
+          kind === "completed" ? "completed" : kind === "native-declined" ? "cancelled" : "failed",
+          3,
+        ),
+      ];
+      yield* Queue.offer(
+        events,
+        stored(
+          1,
+          kind === "native-declined"
+            ? { type: "run.updated", payload: runs.at(-1) }
+            : { type: "subagent.updated", payload: {} },
+        ),
+      );
+      if (kind === "native-declined") {
+        expect(yield* Queue.take(nativeChanges)).toBe("awaiting");
+        yield* Queue.offer(events, stored(2, { type: "run.updated", payload: runs.at(-1) }));
+        expect(yield* Queue.take(nativeChanges)).toBe("awaiting");
+        pendingRecovery = false;
+        yield* Deferred.succeed(nativeSettled, undefined);
+      } else if (kind !== "completed") {
         expect(
           yield* Effect.raceFirst(
             Fiber.await(fiber).pipe(Effect.as(false)),
@@ -469,7 +501,8 @@ it.effect.each(["completed", "retry", "declined"] as const)(
         run: { id: runId, status: "completed" },
         resultRun: {
           id: kind === "retry" ? successorId : wakeRunId,
-          status: kind === "declined" ? "failed" : "completed",
+          status:
+            kind === "declined" ? "failed" : kind === "native-declined" ? "cancelled" : "completed",
         },
       });
     }),
