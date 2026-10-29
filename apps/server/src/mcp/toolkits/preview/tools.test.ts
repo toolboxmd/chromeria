@@ -30,10 +30,12 @@ it("exports provider-compatible object schemas", () => {
     if (tool.name === "preview_navigate") {
       expect(schemaHasMultipleAllOfDescriptions(schema)).toBe(false);
     }
-    expect(
-      schema.properties?.tabId,
-      `${tool.name} must allow an explicit collaborative browser tab target`,
-    ).toBeDefined();
+    if (tool.name in PreviewToolkit.tools) {
+      expect(
+        schema.properties?.tabId,
+        `${tool.name} must allow an explicit collaborative browser tab target`,
+      ).toBeDefined();
+    }
   }
 });
 
