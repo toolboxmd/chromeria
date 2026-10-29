@@ -581,7 +581,7 @@ export function isSidebarSubagentThread(
 ): boolean {
   return (
     thread.lineage.relationshipToParent === "subagent" ||
-    (thread.delegatedFrom !== undefined && thread.lineage.relationshipToParent !== "fork")
+    (thread.delegatedFrom != null && thread.lineage.relationshipToParent !== "fork")
   );
 }
 

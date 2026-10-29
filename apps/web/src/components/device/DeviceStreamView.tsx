@@ -129,6 +129,7 @@ export function DeviceStreamView(props: {
           platform: props.platform,
           deviceId: props.deviceId,
           access,
+          refreshAccess,
           serveSimOnly: props.serveSimOnly === true,
           viewId,
         })
@@ -297,7 +298,10 @@ export function DeviceStreamView(props: {
                   screenWidth={screen?.width}
                   screenHeight={screen?.height}
                   deviceKey={deviceScreenKey(props.environmentId, props.hostId, props.deviceId)}
-                  renewAccess={() => renewDeviceHubAccess(props.environmentId, props.hostId)}
+                  renewAccess={() =>
+                    access?.requestCurrentAccess?.() ??
+                    renewDeviceHubAccess(props.environmentId, props.hostId)
+                  }
                 />
               ) : showPhone && isDuo && screen?.supportsHingeAngle ? (
                 <DeviceDuoControls

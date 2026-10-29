@@ -10,8 +10,6 @@ import type { DeviceHubAccess } from "@t3tools/client-runtime/state/deviceHubAcc
 import type { DevicePlatform, EnvironmentId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
-import { refreshDeviceHubAccess } from "~/state/device";
-
 export interface DeviceStreamState {
   readonly status: DeviceStreamStatus;
   readonly detail: string | undefined;
@@ -43,6 +41,7 @@ export interface DeviceStreamKey {
   readonly platform: DevicePlatform;
   readonly deviceId: string;
   readonly access: DeviceHubAccess;
+  readonly refreshAccess: () => void;
   /** See `DeviceStreamTarget.serveSimOnly`. */
   readonly serveSimOnly: boolean;
   /** Each mounted view owns its own client: one canvas cannot be in two places. */
@@ -111,7 +110,7 @@ export const deviceStreamSessionAtom = Atom.family((key: DeviceStreamKey) =>
           get.set(screenAtom, screen);
           update({ screen });
         },
-        onUnauthorized: () => refreshDeviceHubAccess(key.environmentId),
+        onUnauthorized: key.refreshAccess,
         onMjpegFallback: (mjpegUrl) =>
           update({ mjpegUrl, mjpegGeneration: state.mjpegGeneration + 1 }),
         onCanvasVideo: () => update({ mjpegUrl: null }),
