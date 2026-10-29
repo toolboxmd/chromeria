@@ -371,39 +371,39 @@ const make = Effect.gen(function* () {
   );
 
   return DesktopCookieMirror.of({
-    connection: (input) =>
-      lock.withPermits(1)(
-        Effect.gen(function* () {
-          const current = input.environmentId ? connections.get(input.environmentId) : undefined;
-          if (input.action === "disconnect" && current?.generation === input.generation) {
-            current.socket.close();
-            connections.delete(input.environmentId);
-          } else if (input.action === "connect") {
-            const socketUrl = yield* Effect.tryPromise({
-              try: () => requestCookieMirrorGrant(input, resolveDestination),
-              catch: () => new CookieMirrorError({ reason: "forbidden" }),
-            });
-            environments.add(input.environmentId);
-            current?.socket.close();
-            yield* synchronize(true).pipe(Effect.catchCause(() => warn("desktop-observation")));
-            const generation = (generations.get(input.environmentId) ?? 0) + 1;
-            generations.set(input.environmentId, generation);
-            const socket = yield* Effect.try({
-              try: () => new CookieMirrorSocket(socketUrl, input.environmentId, mirror),
-              catch: () => new CookieMirrorError({ reason: "unavailable" }),
-            });
-            connections.set(input.environmentId, { socket, generation });
-          }
-          return {
-            connected: input.environmentId
-              ? (connections.get(input.environmentId)?.socket.connected ?? false)
-              : false,
-            generation: input.environmentId ? (generations.get(input.environmentId) ?? 0) : 0,
-            profiles,
-            limitations: [...limitations.values()],
-          };
-        }),
-      ),
+    connection: Effect.fn("DesktopCookieMirror.connection")(
+      function* (input) {
+        const current = input.environmentId ? connections.get(input.environmentId) : undefined;
+        if (input.action === "disconnect" && current?.generation === input.generation) {
+          current.socket.close();
+          connections.delete(input.environmentId);
+        } else if (input.action === "connect") {
+          const socketUrl = yield* Effect.tryPromise({
+            try: () => requestCookieMirrorGrant(input, resolveDestination),
+            catch: () => new CookieMirrorError({ reason: "forbidden" }),
+          });
+          environments.add(input.environmentId);
+          current?.socket.close();
+          yield* synchronize(true).pipe(Effect.catchCause(() => warn("desktop-observation")));
+          const generation = (generations.get(input.environmentId) ?? 0) + 1;
+          generations.set(input.environmentId, generation);
+          const socket = yield* Effect.try({
+            try: () => new CookieMirrorSocket(socketUrl, input.environmentId, mirror),
+            catch: () => new CookieMirrorError({ reason: "unavailable" }),
+          });
+          connections.set(input.environmentId, { socket, generation });
+        }
+        return {
+          connected: input.environmentId
+            ? (connections.get(input.environmentId)?.socket.connected ?? false)
+            : false,
+          generation: input.environmentId ? (generations.get(input.environmentId) ?? 0) : 0,
+          profiles,
+          limitations: [...limitations.values()],
+        };
+      },
+      (effect) => lock.withPermits(1)(effect),
+    ),
   });
 });
 export const layer = Layer.effect(DesktopCookieMirror, make);

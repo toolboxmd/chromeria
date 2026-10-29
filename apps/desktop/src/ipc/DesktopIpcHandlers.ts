@@ -6,7 +6,6 @@ import * as DesktopIpc from "./DesktopIpc.ts";
 import { installNotificationBadge } from "./methods/notificationBadge.ts";
 import { getClientSettings, setClientSettings } from "./methods/clientSettings.ts";
 import {
-  clearConnectionCatalog,
   getRenewalRecord,
   compareRenewalRecord,
   getConnectionCatalog,

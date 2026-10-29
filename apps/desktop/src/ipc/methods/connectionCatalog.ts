@@ -28,16 +28,6 @@ export const setConnectionCatalog = DesktopIpc.makeIpcMethod({
   }),
 });
 
-export const clearConnectionCatalog = DesktopIpc.makeIpcMethod({
-  channel: IpcChannels.CLEAR_CONNECTION_CATALOG_CHANNEL,
-  payload: Schema.Void,
-  result: Schema.Void,
-  handler: Effect.fn("desktop.ipc.connectionCatalog.clear")(function* () {
-    const store = yield* DesktopConnectionCatalogStore.DesktopConnectionCatalogStore;
-    yield* store.clear;
-  }),
-});
-
 export const getRenewalRecord = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.GET_RENEWAL_RECORD_CHANNEL,
   payload: Schema.String,

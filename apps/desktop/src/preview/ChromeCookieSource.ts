@@ -55,7 +55,7 @@ export const readChromeProcessIdentity = Effect.fnUntraced(
     )).trim();
     return started ? `${target}:${started}` : undefined;
   },
-  Effect.catchCause(() => Effect.succeed(undefined)),
+  Effect.catchCause(() => Effect.void),
 );
 
 /** Chrome stores the site in the key; never select the credential protobuf. */
@@ -96,7 +96,7 @@ export const readChromeCookieSnapshot = Effect.fnUntraced(function* (
     const [meta] = yield* sql`select value from meta where key = 'version'`.pipe(
       Effect.flatMap(decodeVersion),
     );
-    if (!meta) return yield* Effect.fail(new CookieMirrorError({ reason: "unavailable" }));
+    if (!meta) return yield* new CookieMirrorError({ reason: "unavailable" });
     const columns = yield* sql<{ readonly name: string }>`pragma table_info(cookies)`;
     const hasAncestor = columns.some((column) => column.name === "has_cross_site_ancestor");
     const hasPartitions = columns.some((column) => column.name === "top_frame_site_key");
