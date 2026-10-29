@@ -2518,7 +2518,7 @@ describe("account relay route learning", () => {
         );
         yield* registry.reconcileRelayRoutes;
         expect(yield* Ref.get(harness.storedTargets)).toEqual([BEARER_TARGET]);
-        yield* registry.registerPlatform(new PrimaryConnectionRegistration({ target: TARGET }));
+        yield* registry.reconcilePlatform([new PrimaryConnectionRegistration({ target: TARGET })]);
         yield* SubscriptionRef.set(
           harness.discoveryState,
           listing(identity, [discovered({ environmentId: TARGET.environmentId })]),

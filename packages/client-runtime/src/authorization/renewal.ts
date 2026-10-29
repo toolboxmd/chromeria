@@ -316,7 +316,7 @@ const make = Effect.fn("renewal.make")(function* (allowLegacyEnrollment: boolean
       .pipe(
         Effect.timeoutOption("10 seconds"),
         Effect.asVoid,
-        Effect.catch(() => Effect.void),
+        Effect.ignore,
       );
   });
   return SessionRenewal.of({ stage, complete, ensure, enrollExisting, read: store.read });
