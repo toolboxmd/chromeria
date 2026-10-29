@@ -641,7 +641,6 @@ describe("ProviderContinuationService", () => {
     });
   });
 
-
   it.effect(
     "keeps earlier native causes for output that began before ingestion and preserves mixed or missing causes",
     () =>

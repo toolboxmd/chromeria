@@ -871,9 +871,7 @@ export const make = Effect.gen(function* () {
           if (filter.projectIds !== undefined && !filter.projectIds.includes(project.id)) continue;
           const identity = forkPullRequestIdentity(project.repositoryIdentity);
           let kind = identity?.provider;
-          const repository = sourceControlDefinitions.repositorySelector(
-            identity,
-          );
+          const repository = sourceControlDefinitions.repositorySelector(identity);
           if (!identity || kind === undefined || repository === null) continue;
           const recognized = sourceControlDefinitions.recognizeRemote(identity.locator.remoteUrl);
           const remote =

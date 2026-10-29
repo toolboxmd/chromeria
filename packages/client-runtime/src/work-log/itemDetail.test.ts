@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
-import { EnvironmentId, ThreadId, TurnItemId, type OrchestrationV2TurnItem } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ThreadId,
+  TurnItemId,
+  type OrchestrationV2TurnItem,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
 import { turnItemHasDetail, turnItemOutputImages, turnItemOutputText } from "./itemDetail.ts";

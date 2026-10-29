@@ -52,7 +52,6 @@ const recordingLayer = Staging.layer.pipe(
   ),
 );
 
-
 describe("claimPreviewRecording", () => {
   it.effect("overlapping and repeated claims return the same retained recording", () =>
     Effect.gen(function* () {

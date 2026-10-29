@@ -49,7 +49,8 @@ export function rendersServerTabNatively(
   return (
     isElectron &&
     snapshot?.runtime === "server" &&
-    !snapshot.headless && snapshot.serverPage !== true &&
+    !snapshot.headless &&
+    snapshot.serverPage !== true &&
     primaryEnvironmentId !== null &&
     environmentId === primaryEnvironmentId
   );

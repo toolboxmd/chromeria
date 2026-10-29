@@ -398,9 +398,11 @@ export type ReadPullRequestGuideResult = typeof ReadPullRequestGuideResult.Type;
 const WritePullRequestGuidesTool = Tool.make("write_pull_request_guides", {
   description:
     "Write review guides for up to 20 PRs (the tour in the PR Guide tab). Returns once runs start. Each run takes minutes in a temporary checkout. A run for the same head is joined. Read with `read_pull_request_guide`. Fails while guides are off.",
-  parameters: McpRouting.parameters(Schema.Struct({
-    pullRequests: Schema.Array(GuideTarget).check(Schema.isMinLength(1), Schema.isMaxLength(20)),
-  })),
+  parameters: McpRouting.parameters(
+    Schema.Struct({
+      pullRequests: Schema.Array(GuideTarget).check(Schema.isMinLength(1), Schema.isMaxLength(20)),
+    }),
+  ),
   success: WritePullRequestGuidesResult,
   failure: PullRequestToolError,
   dependencies: guideDependencies,

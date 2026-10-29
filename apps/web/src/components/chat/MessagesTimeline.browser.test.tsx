@@ -1029,7 +1029,6 @@ it("renders automatic compaction as one live divider that finishes with its reas
     .toBeVisible();
   expect(container.querySelectorAll('[role="separator"]')).toHaveLength(1);
   expect(container.textContent).not.toContain("Compacting before");
-
 });
 
 it("opens a remote child in its environment and disables the link after disconnect", async () => {

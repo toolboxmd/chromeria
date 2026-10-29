@@ -1560,7 +1560,7 @@ export function BrowserSettingsPanel() {
       <SettingsSection id="browser" title="Browsing">
         <SettingsUnavailableGroup message={desktopOnlyMessage}>
           {isElectron ? <ChromeCookieMirrorStatus /> : null}
-      <BrowserProfilesSetting disabled={desktopOnly} />
+          <BrowserProfilesSetting disabled={desktopOnly} />
           <BrowserLinkTargetSetting disabled={desktopOnly} />
           <BrowserAutoShowFloatingPreviewSetting disabled={desktopOnly} />
         </SettingsUnavailableGroup>

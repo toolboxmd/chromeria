@@ -252,7 +252,10 @@ export const make = Effect.gen(function* () {
           !isProviderNativeSubagentThread(projection.thread),
       );
       const recoveredRequestIds = new Set(questions.map((request) => request.id));
-      const restartProjection = { ...projection, providerSessions: sessionsLiveAtStart(projection, stoppedThisPass) };
+      const restartProjection = {
+        ...projection,
+        providerSessions: sessionsLiveAtStart(projection, stoppedThisPass),
+      };
       const decision = restartCutDecision(
         restartProjection,
         new Set(runs.map((run) => run.id)),
@@ -830,8 +833,7 @@ export const make = Effect.gen(function* () {
           .getUnresolvedRestartCuts(afterRunId, 100)
           .pipe(
             Effect.mapError(
-              (cause) =>
-                new ProviderRuntimeRecoveryError({ operation: "read-projections", cause }),
+              (cause) => new ProviderRuntimeRecoveryError({ operation: "read-projections", cause }),
             ),
           );
         for (const cut of cuts) {

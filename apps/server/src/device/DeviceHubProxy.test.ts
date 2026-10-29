@@ -247,7 +247,6 @@ it.each([
   expect(requests).toEqual([]);
 });
 
-
 it.each(["DELETE", "PUT", "PATCH"])(
   "refuses unsupported hub mutation method %s",
   async (method) => {
