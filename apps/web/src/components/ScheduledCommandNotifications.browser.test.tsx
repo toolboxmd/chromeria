@@ -25,7 +25,10 @@ const state = vi.hoisted(() => ({
 // The live task list, as the environment's scheduled task subscription delivers it.
 vi.mock("../state/query", () => ({ useEnvironmentQuery: () => ({ data: state.data }) }));
 vi.mock("../state/server", () => ({ serverEnvironment: { scheduledTasksLive: vi.fn() } }));
-vi.mock("@tanstack/react-router", () => ({ useNavigate: () => state.navigate }));
+vi.mock(import("@tanstack/react-router"), async (original) => ({
+  ...(await original()),
+  useNavigate: () => state.navigate,
+}));
 vi.mock("../hooks/useSettings", () => ({
   useClientSettings: (
     select: (
@@ -78,7 +81,6 @@ describe("scheduled command notifications", () => {
 
     // This fixture mocks router hooks and does not render links.
     await using screen = await render(null, { router: false });
-    const container = screen.container;
     async function receive(...tasks: ReadonlyArray<ReturnType<typeof commandTask>>) {
       state.data = { tasks };
       await act(() => {
@@ -137,7 +139,6 @@ describe("scheduled command notifications", () => {
 
     // This fixture mocks router hooks and does not render links.
     await using screen = await render(null, { router: false });
-    const container = screen.container;
     async function receive(...tasks: ReadonlyArray<ReturnType<typeof commandTask>>) {
       state.data = { tasks };
       await act(() => {

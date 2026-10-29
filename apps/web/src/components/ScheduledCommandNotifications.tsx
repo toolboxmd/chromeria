@@ -41,6 +41,7 @@ export function ScheduledCommandNotifications({
   // Kept across reconnects, so a failure that began while offline alerts once, not again.
   const health = useRef<CommandHealth | null>(null);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- presents imperative toasts and desktop notifications when command health changes
   useEffect(() => {
     if (data === null) return;
     const { health: next, failing } = commandTasksTurnedFailing(health.current, data.tasks);

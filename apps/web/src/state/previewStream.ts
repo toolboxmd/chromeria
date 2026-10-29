@@ -61,8 +61,8 @@ export function usePreviewStreamAccessState(
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retries failed access for a visible viewer and releases the timer when its lease changes
   useEffect(() => {
     if (!retry || query.error === null) return;
-    const timer = setTimeout(query.refresh, ACCESS_RETRY_INTERVAL_MS);
-    return () => clearTimeout(timer);
+    const timer = setInterval(query.refresh, ACCESS_RETRY_INTERVAL_MS);
+    return () => clearInterval(timer);
   }, [query.error, query.refresh, retry]);
   return {
     access: query.isSuccess ? query.data : null,
