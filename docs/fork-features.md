@@ -309,6 +309,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/server/src/forkWsRpc.ts"
   ],
   "upstreamFiles": [
+    "apps/server/src/outboundHttp.test.ts",
     "scripts/effect-budget.json",
     "apps/web/src/components/device/DevicePanel.browser.test.tsx",
     ".github/workflows/ci.yml",

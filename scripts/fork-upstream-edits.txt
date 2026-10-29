@@ -717,3 +717,4 @@ apps/server/src/peer/PeerMcpClient.ts
 apps/server/src/peer/RemoteDelegation.test.ts
 apps/server/src/peer/RemoteDelegation.ts
 packages/contracts/src/rpc.test.ts
+apps/server/src/outboundHttp.test.ts
