@@ -873,6 +873,7 @@ it.effect("remote reads return the destination's state", () =>
       }
       expect(
         (yield* Ref.get(f.seen)).every((item) => item.environmentId === box.environmentId),
+        JSON.stringify(yield* Ref.get(f.seen)),
       ).toBe(true);
     }),
   ).pipe(Effect.provide(Layer.merge(NodeHttpServer.layerTest, McpProviderSessions.layer))),
