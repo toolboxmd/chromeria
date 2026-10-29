@@ -1,4 +1,5 @@
 import { nativeRpcCall, sendResult, native383RpcGroups } from "./PeerAuthority.workflow.fixture.ts";
+import { PeerDispatchAuthority } from "./peerEffectAuthority.ts";
 import {
   instanceId,
   selection,
@@ -10785,7 +10786,7 @@ it.live.each(["unchanged", "source-ended", "scope-retired"] as const)(
                   threadId: parent,
                   commandId: CommandId.make("retire-inspection"),
                 })
-                .pipe(Effect.orDie)
+                .pipe(Effect.provideService(PeerDispatchAuthority, undefined), Effect.orDie)
             : transition === "scope-retired"
               ? b.authority
                   .setGrant({
@@ -10801,6 +10802,12 @@ it.live.each(["unchanged", "source-ended", "scope-retired"] as const)(
           source: { type: "upload", attachmentId: artifact.attachmentId, upload },
         });
         expect(reads).toBe(1);
+        if (transition === "source-ended") {
+          const sql = Context.get(a.database, SqlClient.SqlClient);
+          expect(
+            yield* sql`SELECT status FROM orchestration_command_receipts WHERE command_id='retire-inspection'`,
+          ).toEqual([{ status: "accepted" }]);
+        }
         expect(result.isError, json(result)).toBe(transition !== "unchanged");
         if (transition === "unchanged")
           expect(result.structuredContent).toMatchObject({
