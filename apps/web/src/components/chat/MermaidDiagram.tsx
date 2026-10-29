@@ -289,18 +289,18 @@ export function MermaidDiagram({
           className="flex w-full justify-center"
         />
       ) : (
-      <button
-        type="button"
-        aria-label="Expand diagram"
-        hidden={renderError !== null}
-        className="block w-full cursor-zoom-in rounded-md focus-visible:outline-2 focus-visible:outline-ring"
-        onClick={(event) => {
-          const svg = event.currentTarget.querySelector("svg");
-          if (svg) mode.onExpand?.(diagramImageUrl(svg));
-        }}
-      >
-        <span ref={mountDiagram} className="flex w-full justify-center" />
-      </button>
+        <button
+          type="button"
+          aria-label="Expand diagram"
+          hidden={renderError !== null}
+          className="block w-full cursor-zoom-in rounded-md focus-visible:outline-2 focus-visible:outline-ring"
+          onClick={(event) => {
+            const svg = event.currentTarget.querySelector("svg");
+            if (svg) mode.onExpand?.(diagramImageUrl(svg));
+          }}
+        >
+          <span ref={mountDiagram} className="flex w-full justify-center" />
+        </button>
       )}
     </div>
   );

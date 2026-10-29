@@ -1334,7 +1334,6 @@ describe("thread outbox", () => {
     ).toBe("restore");
   });
 
-
   it("retains pinned purpose intent through durable reload and rejects a malformed new envelope", () => {
     const base = queuedMessage({
       messageId: "purpose-mobile",

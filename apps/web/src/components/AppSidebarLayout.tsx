@@ -472,7 +472,11 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
           }}
           style={windowControlsInsetStyle}
         >
-          {promachosMode ? <PromachosSidebar /> : <ThreadSidebar routeReveal={sidebarRouteReveal} />}
+          {promachosMode ? (
+            <PromachosSidebar />
+          ) : (
+            <ThreadSidebar routeReveal={sidebarRouteReveal} />
+          )}
           <SidebarRail onDoubleClick={resetSidebarWidth} />
         </Sidebar>
         {children}

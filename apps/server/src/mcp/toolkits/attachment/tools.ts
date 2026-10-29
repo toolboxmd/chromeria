@@ -89,14 +89,16 @@ const AttachmentSendTool = Tool.make("t3_thread_send_attachments", {
   dependencies: [...shared.dependencies, DocumentText.DocumentText],
   description:
     "Send uploaded attachments as a new message to a permitted thread. `clientRequestId` keeps one message across retries and credential renewal. A descendant agent's send to an ordinary ancestor is a child notice queued behind active work; Stopped ancestors stay stopped. Acceptance records the message, not provider consumption. The target must stay within the caller's authority; uncertain dispatch keeps its attachment files.",
-  parameters: McpRouting.parameters(Schema.Struct({
-    threadId: Schema.optional(ThreadId),
-    message: Schema.optional(Schema.String.check(Schema.isMaxLength(120000))),
-    attachments: Schema.Array(McpAttachmentInput).check(
-      Schema.isMinLength(1),
-      Schema.isMaxLength(8),
-    ),
-  })),
+  parameters: McpRouting.parameters(
+    Schema.Struct({
+      threadId: Schema.optional(ThreadId),
+      message: Schema.optional(Schema.String.check(Schema.isMaxLength(120000))),
+      attachments: Schema.Array(McpAttachmentInput).check(
+        Schema.isMinLength(1),
+        Schema.isMaxLength(8),
+      ),
+    }),
+  ),
   success: Schema.Struct({
     threadId: ThreadId,
     messageId: MessageId,

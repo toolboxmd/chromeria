@@ -367,5 +367,4 @@ describe("resolveSubagentStopTarget", () => {
       }).canOpenThread,
     ).toBe(false);
   });
-
 });
