@@ -213,6 +213,12 @@ const fixture = Effect.gen(function* () {
           ),
         ),
         Layer.provide(PeerForwarding.layer),
+        Layer.provideMerge(
+          Settings.layerTest({
+            linkedEnvironmentsEnabled: true,
+            webResearch: { host: bestia.environmentId },
+          }),
+        ),
         Layer.provide(Layer.succeedContext(linking)),
         Layer.provide(
           Layer.mock(Threads.ThreadManagementService)({
@@ -222,7 +228,6 @@ const fixture = Effect.gen(function* () {
               ),
           }),
         ),
-        Layer.provideMerge(Settings.layerTest({ webResearch: { host: bestia.environmentId } })),
         Layer.fresh,
       ),
     );
