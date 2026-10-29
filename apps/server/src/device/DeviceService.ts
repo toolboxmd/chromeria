@@ -383,6 +383,8 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
   const statePubSub = yield* PubSub.unbounded<DeviceServiceState>();
   const initialHosts = yield* Effect.forEach(hosts.values(), (host) => host.summary);
   let publishedHosts = new Map(hosts);
+  let nextRefreshSequence = 0;
+  const publishedRefreshes = new WeakMap<DeviceHost.DeviceHost["Service"], number>();
   const stateRef = yield* SynchronizedRef.make<ServiceState>({
     state: {
       supportsHostRetry: true,
@@ -481,8 +483,59 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
           })),
     );
 
-  const readiness: DeviceService["Service"]["readiness"] = Effect.fn("DeviceService.readiness")(
-    function* (hostId) {
+  const beginRefresh = (hostId: DeviceHostId) => ({
+    host: hosts.get(hostId),
+    sequence: ++nextRefreshSequence,
+  });
+
+  type ReadinessWithRefreshAttempt<
+    K extends "readiness" | "readinessIfSupported" | "agentReadinessIfSupported",
+  > = (
+    hostId?: DeviceHostId,
+    attempt?: ReturnType<typeof beginRefresh>,
+  ) => ReturnType<DeviceService["Service"][K]>;
+
+  const canPublishRefresh = (attempt: ReturnType<typeof beginRefresh>) =>
+    readDeviceSettings.pipe(
+      Effect.map(
+        ({ enabled }) =>
+          enabled &&
+          attempt.host !== undefined &&
+          hosts.get(attempt.host.id) === attempt.host &&
+          (publishedRefreshes.get(attempt.host) ?? 0) <= attempt.sequence,
+      ),
+      Effect.orElseSucceed(() => false),
+    );
+
+  const publishRefresh = (
+    attempt: ReturnType<typeof beginRefresh>,
+    result: Effect.Effect<DeviceServiceState>,
+  ) =>
+    lifecycleLock.withPermit(
+      Effect.gen(function* () {
+        if (!(yield* canPublishRefresh(attempt)) || !attempt.host)
+          return (yield* SynchronizedRef.get(stateRef)).state;
+        publishedRefreshes.set(attempt.host, attempt.sequence);
+        return yield* result;
+      }),
+    );
+
+  // Readiness already holds the lifecycle lock; its status writes use the same attempt guard.
+  const setReadinessStatus = Effect.fn("DeviceService.setReadinessStatus")(function* (
+    hostId: DeviceHostId,
+    status: DeviceServiceState["hostStatuses"][string],
+    attempt?: ReturnType<typeof beginRefresh>,
+  ) {
+    if (attempt) {
+      if (!(yield* canPublishRefresh(attempt)) || !attempt.host)
+        return (yield* SynchronizedRef.get(stateRef)).state;
+      if (status.status === "failed") publishedRefreshes.set(attempt.host, attempt.sequence);
+    }
+    return yield* setHostStatus(hostId, status);
+  });
+
+  const readiness: ReadinessWithRefreshAttempt<"readiness"> = Effect.fn("DeviceService.readiness")(
+    function* (hostId, attempt) {
       const host = yield* resolveHost(hostId);
       if (!(yield* readDeviceSettings).enabled) {
         return yield* new DeviceHostUnavailableError({
@@ -495,17 +548,21 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       yield* recheckAction;
       const ready = yield* host
         .ensureReady((status, detail) =>
-          setHostStatus(host.id, { status, detail }).pipe(Effect.asVoid),
+          setReadinessStatus(host.id, { status, detail }, attempt).pipe(Effect.asVoid),
         )
         .pipe(
           Effect.tapError((error) =>
-            setHostStatus(host.id, {
-              status: "failed",
-              detail:
-                error._tag === "DeviceHostError" && error.step === "probe"
-                  ? sshProbeFailureMessage(error)
-                  : error.message,
-            }),
+            setReadinessStatus(
+              host.id,
+              {
+                status: "failed",
+                detail:
+                  error._tag === "DeviceHostError" && error.step === "probe"
+                    ? sshProbeFailureMessage(error)
+                    : error.message,
+              },
+              attempt,
+            ),
           ),
           Effect.mapError(
             (error) =>
@@ -530,22 +587,22 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
         });
       const { state } = yield* SynchronizedRef.get(stateRef);
       if (state.hostStatuses[host.id]?.status !== "ready") {
-        yield* setHostStatus(host.id, { status: "ready" });
+        yield* setReadinessStatus(host.id, { status: "ready" }, attempt);
       }
       return { hostId: host.id, ...ready };
     },
     lifecycleLock.withPermit,
   );
 
-  const readinessIfSupported: DeviceService["Service"]["readinessIfSupported"] = Effect.fn(
+  const readinessIfSupported: ReadinessWithRefreshAttempt<"readinessIfSupported"> = Effect.fn(
     "DeviceService.readinessIfSupported",
-  )(function* (hostId) {
+  )(function* (hostId, attempt) {
     if (!(yield* readDeviceSettings).enabled) return null;
     const host = yield* resolveHost(hostId);
     const summary = yield* host.summary;
     if (summary.kind === "local" && !summary.platforms.some((platform) => platform.available))
       return null;
-    return yield* readiness(host.id);
+    return yield* readiness(host.id, attempt);
   });
 
   const supportedAgentHost = Effect.fn("DeviceService.supportedAgentHost")(function* (
@@ -649,24 +706,28 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     yield* forgetCommandSession(session);
   });
 
-  const agentReadinessIfSupported: DeviceService["Service"]["agentReadinessIfSupported"] =
-    Effect.fn("DeviceService.agentReadinessIfSupported")(function* (hostId) {
+  const agentReadinessIfSupported: ReadinessWithRefreshAttempt<"agentReadinessIfSupported"> =
+    Effect.fn("DeviceService.agentReadinessIfSupported")(function* (hostId, attempt) {
       const host = yield* supportedAgentHost(hostId);
       if (host === undefined) return null;
       yield* recheckAction;
       const ready = yield* host
         .ensureAgentReady((phase, detail) =>
-          setHostStatus(host.id, { status: phase, detail }).pipe(Effect.asVoid),
+          setReadinessStatus(host.id, { status: phase, detail }, attempt).pipe(Effect.asVoid),
         )
         .pipe(
           Effect.tapError((error) =>
-            setHostStatus(host.id, {
-              status: "failed",
-              detail:
-                error._tag === "DeviceHostError" && error.step === "probe"
-                  ? sshProbeFailureMessage(error)
-                  : error.message,
-            }),
+            setReadinessStatus(
+              host.id,
+              {
+                status: "failed",
+                detail:
+                  error._tag === "DeviceHostError" && error.step === "probe"
+                    ? sshProbeFailureMessage(error)
+                    : error.message,
+              },
+              attempt,
+            ),
           ),
           Effect.mapError(
             (error) =>
@@ -688,8 +749,9 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
           ),
         );
       const hostSummaries = yield* Effect.forEach(hosts.values(), (candidate) => candidate.summary);
-      yield* publish((state) => ({ ...state, hosts: hostSummaries }));
-      yield* setHostStatus(host.id, { status: "ready" });
+      if (!attempt || (yield* canPublishRefresh(attempt)))
+        yield* publish((state) => ({ ...state, hosts: hostSummaries }));
+      yield* setReadinessStatus(host.id, { status: "ready" }, attempt);
       return { hostId: host.id, ...ready };
     }, lifecycleLock.withPermit);
 
@@ -710,8 +772,10 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     };
   });
 
-  const refresh = Effect.fn("DeviceService.refresh")(function* (ready: DeviceReadiness) {
-    const host = hosts.get(ready.hostId);
+  const refresh = Effect.fn("DeviceService.refresh")(function* (
+    ready: DeviceReadiness,
+    attempt = beginRefresh(ready.hostId),
+  ) {
     // A session opened while the listing ran is on a device the listing could
     // not have seen yet; only sessions from before it can be pruned by it.
     const sessionKey = (session: DeviceSession) =>
@@ -719,39 +783,35 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     const before = new Set((yield* SynchronizedRef.get(stateRef)).state.sessions.map(sessionKey));
     const { devices, detail, androidDiscoveryIncomplete } = yield* fetchDevices(ready);
     const hostSummaries = yield* Effect.forEach(hosts.values(), (host) => host.summary);
-    return yield* lifecycleLock.withPermit(
-      Effect.gen(function* () {
-        if (!(yield* readDeviceSettings).enabled || !host || hosts.get(ready.hostId) !== host)
-          return (yield* SynchronizedRef.get(stateRef)).state;
-        return yield* publish((state) => ({
-          ...state,
-          hosts: hostSummaries,
-          ...(ready.hostId === LOCAL_DEVICE_HOST_ID ? { hostStatusDetail: detail } : {}),
-          devices: [
-            ...state.devices.filter((device) => device.hostId !== ready.hostId),
-            ...devices,
-          ],
-          // A host that ends devices itself (EAS stops sessions at their limits)
-          // leaves sessions on devices it no longer lists with nothing to stream.
-          // Other hosts can miss a device for one listing, so theirs stay.
-          sessions: ready.devices.endsDevices
-            ? state.sessions.filter(
-                (session) =>
-                  session.hostId !== ready.hostId ||
-                  !before.has(sessionKey(session)) ||
-                  devices.some((device) => device.id === session.deviceId),
-              )
-            : state.sessions,
-          hostStatuses: {
-            ...state.hostStatuses,
-            [ready.hostId]: {
-              status: "ready",
-              ...(detail ? { detail } : {}),
-              ...(androidDiscoveryIncomplete ? { androidDiscoveryIncomplete } : {}),
-            },
+    return yield* publishRefresh(
+      attempt,
+      publish((state) => ({
+        ...state,
+        hosts: hostSummaries,
+        ...(ready.hostId === LOCAL_DEVICE_HOST_ID
+          ? { hostStatus: "ready", hostStatusDetail: detail }
+          : {}),
+        devices: [...state.devices.filter((device) => device.hostId !== ready.hostId), ...devices],
+        // A host that ends devices itself (EAS stops sessions at their limits)
+        // leaves sessions on devices it no longer lists with nothing to stream.
+        // Other hosts can miss a device for one listing, so theirs stay.
+        sessions: ready.devices.endsDevices
+          ? state.sessions.filter(
+              (session) =>
+                session.hostId !== ready.hostId ||
+                !before.has(sessionKey(session)) ||
+                devices.some((device) => device.id === session.deviceId),
+            )
+          : state.sessions,
+        hostStatuses: {
+          ...state.hostStatuses,
+          [ready.hostId]: {
+            status: "ready",
+            ...(detail ? { detail } : {}),
+            ...(androidDiscoveryIncomplete ? { androidDiscoveryIncomplete } : {}),
           },
-        }));
-      }),
+        },
+      })),
     );
   });
 
@@ -761,16 +821,23 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       hosts.values(),
       (host) =>
         Effect.gen(function* () {
-          const ready = yield* readinessIfSupported(host.id);
-          if (ready) yield* refresh(ready);
-        }).pipe(
-          Effect.catch((error) =>
-            setHostStatus(host.id, {
-              status: "failed",
-              detail: error._tag === "DeviceHostUnavailableError" ? error.reason : error.message,
-            }),
-          ),
-        ),
+          const attempt = beginRefresh(host.id);
+          yield* Effect.gen(function* () {
+            const ready = yield* readinessIfSupported(host.id, attempt);
+            if (ready) yield* refresh(ready, attempt);
+          }).pipe(
+            Effect.catch((error) =>
+              publishRefresh(
+                attempt,
+                setHostStatus(host.id, {
+                  status: "failed",
+                  detail:
+                    error._tag === "DeviceHostUnavailableError" ? error.reason : error.message,
+                }),
+              ),
+            ),
+          );
+        }),
       { concurrency: 4 },
     );
     return (yield* SynchronizedRef.get(stateRef)).state;
@@ -812,16 +879,21 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     function* (hostId) {
       yield* resolveHost(hostId);
       if (!(yield* readDeviceSettings).enabled) return (yield* SynchronizedRef.get(stateRef)).state;
+      const attempt = beginRefresh(hostId);
       yield* Effect.gen(function* () {
         const ready =
-          (yield* agentReadinessIfSupported(hostId)) ?? (yield* readinessIfSupported(hostId));
-        if (ready) yield* refresh(ready);
+          (yield* agentReadinessIfSupported(hostId, attempt)) ??
+          (yield* readinessIfSupported(hostId, attempt));
+        if (ready) yield* refresh(ready, attempt);
       }).pipe(
         Effect.catch((error) =>
-          setHostStatus(hostId, {
-            status: "failed",
-            detail: error._tag === "DeviceHostUnavailableError" ? error.reason : error.message,
-          }),
+          publishRefresh(
+            attempt,
+            setHostStatus(hostId, {
+              status: "failed",
+              detail: error._tag === "DeviceHostUnavailableError" ? error.reason : error.message,
+            }),
+          ),
         ),
       );
       return (yield* SynchronizedRef.get(stateRef)).state;
