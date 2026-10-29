@@ -5,7 +5,26 @@ import * as Schema from "effect/Schema";
 import { ORCHESTRATION_V2_WS_METHODS } from "./orchestrationV2.ts";
 import { WS_METHODS, WsRpcGroup } from "./rpc.ts";
 
+const getSettings = WsRpcGroup.requests.get(WS_METHODS.serverGetSettings);
+if (getSettings === undefined) throw new Error("server.getSettings is not registered");
+const decodeSettings = Schema.decodeSync(getSettings.successSchema);
+const decodeSettingsError = Schema.decodeExit(getSettings.errorSchema);
+
 describe("WebSocket RPC contracts", () => {
+  it("reads settings through the settings RPC and preserves settings errors", () => {
+    const settings = decodeSettings({});
+    expect(settings).toHaveProperty("providerInstances");
+    expect(
+      Exit.isSuccess(
+        decodeSettingsError({
+          _tag: "ServerSettingsError",
+          settingsPath: "/settings.json",
+          operation: "read-file",
+        }),
+      ),
+    ).toBe(true);
+  });
+
   it("rejects server-internal commands sent to dispatchCommand", () => {
     const dispatchCommand = WsRpcGroup.requests.get(ORCHESTRATION_V2_WS_METHODS.dispatchCommand);
     if (dispatchCommand === undefined) throw new Error("dispatchCommand is not registered");
