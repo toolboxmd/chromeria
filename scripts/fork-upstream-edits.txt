@@ -718,3 +718,7 @@ apps/server/src/peer/RemoteDelegation.test.ts
 apps/server/src/peer/RemoteDelegation.ts
 packages/contracts/src/rpc.test.ts
 apps/server/src/outboundHttp.test.ts
+apps/web/src/components/device/deviceStreamSession.ts
+apps/server/src/peer/PeerLinkRequests.test.ts
+apps/server/src/orchestration-v2/ThreadFind.ts
+apps/server/src/orchestration-v2/threadHistoryPaging.ts
