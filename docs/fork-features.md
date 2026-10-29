@@ -567,6 +567,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/server/src/persistence/forkV1Migrations.ts"
   ],
   "upstreamFiles": [
+    "apps/mobile/src/persistence/mobile-database.test.ts",
+    "apps/mobile/src/persistence/mobile-database.ts",
     "apps/server/src/persistence/initializeV2Database.test.ts",
     "apps/server/src/cli/config.test.ts",
     "apps/server/src/config.ts",
@@ -1604,7 +1606,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/mobile/src/features/settings/scheduledTaskDraft.ts",
     "apps/server/src/scheduledTasks/Schedule.ts",
     "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
-    "apps/web/src/components/ThreadNotificationCoordinator.badge.browser.test.tsx",
+    "apps/web/src/components/ThreadNotificationCoordinator.badge.browser.test.ts",
     "apps/web/src/components/ThreadNotificationCoordinator.browser.test.tsx",
     "apps/web/src/components/ThreadNotificationCoordinator.tsx",
     "apps/web/src/components/settings/ScheduledTasksSettings.tsx",
@@ -1926,10 +1928,6 @@ sources and reasons.
     "apps/web/src/components/chat/BackgroundSubagentOpenButton.tsx",
     "apps/mobile/src/state/remote-tasks.ts",
     "apps/mobile/src/features/threads/RemoteTaskViewer.tsx",
-    "apps/server/src/mcp/delegatedTaskModes.ts",
-    "apps/server/src/mcp/linkOrigin.test.ts",
-    "apps/server/src/mcp/linkOrigin.ts",
-    "apps/server/src/orchestration-v2/RemoteDelegatedTask.test.ts",
     "apps/server/src/peer/*",
     "apps/web/src/components/settings/PeerGrantSettings.tsx",
     "apps/server/src/persistence/forkPeerLinksSchema.test.ts",
@@ -1974,6 +1972,18 @@ sources and reasons.
     "packages/client-runtime/src/state/deviceHubAccess.test.ts"
   ],
   "upstreamFiles": [
+    "apps/server/src/mcp/delegatedTaskModes.ts",
+    "apps/server/src/mcp/linkOrigin.test.ts",
+    "apps/server/src/mcp/linkOrigin.ts",
+    "apps/server/src/orchestration-v2/RemoteDelegatedTask.test.ts",
+    "apps/server/src/peer/PeerForwarding.test.ts",
+    "apps/server/src/peer/PeerForwarding.ts",
+    "apps/server/src/peer/PeerLinks.test.ts",
+    "apps/server/src/peer/PeerLinks.testkit.ts",
+    "apps/server/src/peer/PeerLinks.ts",
+    "apps/server/src/peer/PeerMcpClient.ts",
+    "apps/server/src/peer/RemoteDelegation.test.ts",
+    "apps/server/src/peer/RemoteDelegation.ts",
     "apps/web/src/components/CommandPalette.logic.ts",
     "packages/client-runtime/src/device/screenshot.ts",
     "packages/client-runtime/src/device/screenshot.test.ts",
@@ -2840,6 +2850,7 @@ sources and reasons.
     "packages/contracts/src/nativeExecution.ts"
   ],
   "upstreamFiles": [
+    "apps/mobile/src/state/threadOutboxDelivery.ts",
     "apps/mobile/src/features/threads/McpAppWebView.tsx",
     "apps/mobile/src/features/threads/NewTaskDraftScreen.tsx",
     "apps/mobile/src/state/pending-thread-creation.ts",

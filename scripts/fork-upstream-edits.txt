@@ -212,7 +212,7 @@ apps/mobile/src/features/settings/SettingsScheduledTasksRouteScreen.tsx
 apps/mobile/src/features/settings/scheduledTaskDraft.ts
 apps/server/src/scheduledTasks/Schedule.ts
 apps/server/src/scheduledTasks/ScheduledTaskService.ts
-apps/web/src/components/ThreadNotificationCoordinator.badge.browser.test.tsx
+apps/web/src/components/ThreadNotificationCoordinator.badge.browser.test.ts
 apps/web/src/components/ThreadNotificationCoordinator.browser.test.tsx
 apps/web/src/components/ThreadNotificationCoordinator.tsx
 apps/web/src/components/settings/ScheduledTasksSettings.tsx
@@ -699,3 +699,20 @@ apps/web/src/components/device/DevicePanel.browser.test.tsx
 apps/server/src/persistence/Migrations/066_RepairClientSettlementTimestamps.test.ts
 scripts/effect-budget.json
 apps/mobile/src/lib/protectedData.test.ts
+
+# Upstream absorption at 6d82a22: retained mobile cache bridge and carried hooks (#620).
+apps/mobile/src/persistence/mobile-database.test.ts
+apps/mobile/src/persistence/mobile-database.ts
+apps/mobile/src/state/threadOutboxDelivery.ts
+apps/server/src/mcp/delegatedTaskModes.ts
+apps/server/src/mcp/linkOrigin.test.ts
+apps/server/src/mcp/linkOrigin.ts
+apps/server/src/orchestration-v2/RemoteDelegatedTask.test.ts
+apps/server/src/peer/PeerForwarding.test.ts
+apps/server/src/peer/PeerForwarding.ts
+apps/server/src/peer/PeerLinks.test.ts
+apps/server/src/peer/PeerLinks.testkit.ts
+apps/server/src/peer/PeerLinks.ts
+apps/server/src/peer/PeerMcpClient.ts
+apps/server/src/peer/RemoteDelegation.test.ts
+apps/server/src/peer/RemoteDelegation.ts

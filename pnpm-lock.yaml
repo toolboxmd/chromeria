@@ -928,12 +928,12 @@ importers:
       proper-lockfile:
         specifier: 4.1.2
         version: 4.1.2
-      saxes:
-        specifier: 6.0.0
-        version: 6.0.0
       robots-parser:
         specifier: 3.0.1
         version: 3.0.1
+      saxes:
+        specifier: 6.0.0
+        version: 6.0.0
       stream-chain:
         specifier: ^4.2.5
         version: 4.2.5
