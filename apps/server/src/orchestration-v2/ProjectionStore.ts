@@ -7261,7 +7261,10 @@ function needsRecovery(
         );
       const restartResultNeedsRecovery =
         latestResult !== undefined &&
-        latestResult.restartCut?.reason !== RESTART_CUT_REASONS.TASK_SETTLED &&
+        !(
+          latestResult.restartCut?.continuation === "declined" &&
+          latestResult.restartCut.reason === RESTART_CUT_REASONS.TASK_SETTLED
+        ) &&
         ((latestResult.status === "cancelled" && latestResult.restartCut !== undefined) ||
           latestResult.restartContinuationOfRunId !== undefined) &&
         !projection.runs.some(
