@@ -11,6 +11,17 @@ const decodeSettings = Schema.decodeSync(getSettings.successSchema);
 const decodeSettingsError = Schema.decodeExit(getSettings.errorSchema);
 
 describe("WebSocket RPC contracts", () => {
+  it("lists scheduled tasks through a non-stream RPC alongside subscriptions", () => {
+    expect(WS_METHODS).toHaveProperty("scheduledTasksList", "scheduledTasks.list");
+    const list = WsRpcGroup.requests.get("scheduledTasks.list");
+    if (list === undefined) throw new Error("scheduledTasks.list is not registered");
+    const decodeInput = Schema.decodeUnknownSync(list.payloadSchema);
+    const decodeResult = Schema.decodeUnknownSync(list.successSchema);
+    expect(decodeInput({})).toEqual({});
+    expect(decodeResult({ tasks: [] })).toEqual({ tasks: [] });
+    expect(WsRpcGroup.requests.has(WS_METHODS.scheduledTasksSubscribe)).toBe(true);
+  });
+
   it("reads settings through the settings RPC and preserves settings errors", () => {
     const settings = decodeSettings({});
     expect(settings).toHaveProperty("providerInstances");
