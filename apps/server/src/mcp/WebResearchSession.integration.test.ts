@@ -513,7 +513,9 @@ const modernPeerServices = (
           getDescriptor: Effect.succeed(environment),
         }),
       ),
-      Layer.provide(Settings.layerTest({ enableAgentBrowserAccess: true })),
+      Layer.provide(
+        Settings.layerTest({ enableAgentBrowserAccess: true, linkedEnvironmentsEnabled: true }),
+      ),
       Layer.provideMerge(Config.layerTest(process.cwd(), { prefix: "session446-authority-" })),
       Layer.provideMerge(NodeServices.layer),
       Layer.fresh,
