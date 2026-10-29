@@ -14,10 +14,9 @@ import type {
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useId, useMemo } from "react";
+import { useEffect, useId, useMemo, useRef } from "react";
 
 import { connectionAtomRuntime } from "../connection/runtime";
-import { appAtomRegistry } from "./atom-registry";
 import { useEnvironmentQuery } from "./query";
 import { environmentSession, usePreparedConnection } from "./session";
 
@@ -141,23 +140,14 @@ export function useThreadServerBrowserTabs(input: {
   return { tabs: sessions, loaded: tabs.listed };
 }
 
-// The earliest time the next access request may go out.
-const previewStreamNotBeforeAtom = Atom.family((environmentId: EnvironmentId) =>
-  Atom.make(0).pipe(Atom.withLabel(`mobile-preview-stream-retry:${environmentId}`)),
-);
-
 const previewStreamAccessAtom = Atom.family((environmentId: EnvironmentId) =>
   connectionAtomRuntime
     .atom((get) => {
       const prepared = Option.getOrNull(
         get(environmentSession.preparedConnectionValueAtom(environmentId)),
       );
-      const notBefore = get(previewStreamNotBeforeAtom(environmentId));
       if (prepared === null) return Effect.never;
-      const resolve = resolveDeviceHubAccess({ prepared, hubBasePath: PREVIEW_STREAM_BASE_PATH });
-      // A recompute interrupts the wait, so only the newest retry resolves.
-      const wait = notBefore - Date.now();
-      return wait > 0 ? Effect.andThen(Effect.sleep(wait), resolve) : resolve;
+      return resolveDeviceHubAccess({ prepared, hubBasePath: PREVIEW_STREAM_BASE_PATH });
     })
     .pipe(Atom.setIdleTTL(60_000), Atom.withLabel(`mobile-preview-stream-access:${environmentId}`)),
 );
@@ -199,5 +189,20 @@ export function usePreviewStreamAccess(
           }),
   );
   const access = query.isSuccess && query.data && Option.isSome(prepared) ? query.data : null;
-  return { access, error: query.error, refresh: query.refresh };
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (retryTimer.current !== null) clearTimeout(retryTimer.current);
+    },
+    [environmentId, resource, visible],
+  );
+  return {
+    access,
+    error: query.error,
+    refresh: query.refresh,
+    retryAfter: (delayMs: number) => {
+      if (retryTimer.current !== null) clearTimeout(retryTimer.current);
+      retryTimer.current = setTimeout(query.refresh, delayMs);
+    },
+  };
 }

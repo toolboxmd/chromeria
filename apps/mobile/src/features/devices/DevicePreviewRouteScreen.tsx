@@ -11,10 +11,10 @@ import { DeviceViewerResource, EnvironmentId, ThreadId } from "@t3tools/contract
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 import * as Cause from "effect/Cause";
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import * as Haptics from "expo-haptics";
 import { Accelerometer } from "expo-sensors";
-import { Pressable, StatusBar, View } from "react-native";
+import { AppState, Pressable, StatusBar, View } from "react-native";
 import Animated, { FadeIn, FadeOut, ReduceMotion } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -466,6 +466,7 @@ function OpenDevicePreview({
   readonly resource?: DeviceViewerResource;
   readonly preview: {
     readonly session: Pick<ThreadDevicePreview["session"], "hostId" | "deviceId" | "platform">;
+    readonly serveSimOnly?: boolean;
   };
   readonly streamRef: RefObject<DeviceStreamRef | null>;
   readonly onInputConnected: (connected: boolean) => Promise<void>;
@@ -475,7 +476,6 @@ function OpenDevicePreview({
   const { access, error, refresh } = useDeviceHubAccess(environmentId, session.hostId, resource);
   const onUnauthorized = useCallback(async () => refresh(), [refresh]);
   useEffect(() => {
-    if (resource === undefined) refreshDeviceHubAccess(environmentId);
     return () => void onInputConnected(false);
   }, [environmentId, resource, onInputConnected]);
   return access ? (

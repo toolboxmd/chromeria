@@ -395,22 +395,14 @@ export function NewTaskDraftScreen(props: {
     props.incomingShareId,
     requestedInitialProjectAvailable,
   ]);
-  const [purposeScope, setPurposeScope] = useState<ExecutionPurposeScope>(() => {
-    const intent = flow.editingPendingTask?.purposeIntent?.intent;
-    return intent?.type === "reference"
-      ? { type: "single", reference: intent.reference }
-      : { type: "unscoped", reason: "deliberate" };
+  const [purposeScope, setPurposeScope] = useState<ExecutionPurposeScope>({
+    type: "unscoped",
+    reason: "deliberate",
   });
-  const pendingPurposeId = flow.editingPendingTask?.messageId ?? null;
-  const [purposeDraftSourceId, setPurposeDraftSourceId] = useState(pendingPurposeId);
-  if (purposeDraftSourceId !== pendingPurposeId) {
-    setPurposeDraftSourceId(pendingPurposeId);
-    const intent = flow.editingPendingTask?.purposeIntent?.intent;
-    setPurposeScope(
-      intent?.type === "reference"
-        ? { type: "single", reference: intent.reference }
-        : { type: "unscoped", reason: "deliberate" },
-    );
+  const [purposeDraftSourceId, setPurposeDraftSourceId] = useState(flow.draftKey);
+  if (purposeDraftSourceId !== flow.draftKey) {
+    setPurposeDraftSourceId(flow.draftKey);
+    setPurposeScope({ type: "unscoped", reason: "deliberate" });
   }
   const supportsExecutionPurpose =
     selectedEnvironmentServerConfig?.environment.capabilities.executionPurposeVersions?.includes(

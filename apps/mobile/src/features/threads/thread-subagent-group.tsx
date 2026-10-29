@@ -13,13 +13,13 @@ import type {
   ServerProvider,
 } from "@t3tools/contracts";
 import { Pressable, View, type ColorValue } from "react-native";
+import { useState } from "react";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { cn } from "../../lib/cn";
 import type { ThreadFeedActivity } from "../../lib/threadActivity";
-import { useServerConfigs } from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
 import { environmentThreadDetails } from "../../state/threads";
 import { subagentCardElapsed } from "./subagent-card-presentation";
@@ -76,7 +76,6 @@ export function ThreadSubagentGroup(props: {
 }) {
   const [remoteTaskId, setRemoteTaskId] = useState<string | null>(null);
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
-  const serverConfigs = useServerConfigs();
   const navigation = useNavigation();
   const openInspector = useOpenThreadInspector();
   const members = props.activities.flatMap(({ projectedItem }) =>
@@ -184,7 +183,9 @@ export function ThreadSubagentGroup(props: {
               presentationById.has(id),
             );
             const resolvedTarget = subagentChildTarget(agent);
-            const unreachable = resolvedTarget?.environmentId != null && !presentationById.has(resolvedTarget.environmentId);
+            const unreachable =
+              resolvedTarget?.environmentId != null &&
+              !presentationById.has(resolvedTarget.environmentId);
             const target = hasSourceRemoteTaskView(agent) ? resolvedTarget : localTarget;
             return (
               <Pressable
@@ -194,7 +195,7 @@ export function ThreadSubagentGroup(props: {
                 accessibilityHint={
                   unreachable
                     ? !hasSourceRemoteTaskView(agent)
-                      ? `Runs on ${agent.remoteChild?.label ?? "another machine"}, which this device is not connected to`
+                      ? `Runs on another machine, which this device is not connected to`
                       : `Runs on ${agent.remoteChild.label}, available through this conversation`
                     : target === null
                       ? agent.remoteChild
@@ -214,7 +215,7 @@ export function ThreadSubagentGroup(props: {
                       { environmentId: props.environmentId, threadId: members[0]!.threadId },
                       {
                         type: "thread",
-                        environmentId: target.environmentId,
+                        environmentId: target.environmentId ?? props.environmentId,
                         threadId: target.threadId,
                       },
                     )
