@@ -1,4 +1,6 @@
 import * as DateTime from "effect/DateTime";
+import * as Crypto from "effect/Crypto";
+import * as Hex from "effect/encoding/Hex";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import { BareLaunchError } from "@t3tools/provider-core/server/bareLaunch";
 import { ToolPolicyError } from "@t3tools/provider-core/server/toolPolicy";
@@ -33,7 +35,6 @@ import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
-import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { resolveRuntimeMode } from "../../delegatedTaskModes.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
@@ -42,6 +43,17 @@ import { ProjectToolkit } from "./tools.ts";
 
 const isBareLaunchError = Schema.is(BareLaunchError);
 const isToolPolicyError = Schema.is(ToolPolicyError);
+
+const launchCommandId = Effect.fn("mcp.launchCommandId")(function* (
+  namespace: string,
+  key: string,
+) {
+  const crypto = yield* Crypto.Crypto;
+  // @effect-diagnostics-next-line preferSchemaOverJson:off - a JSON pair keeps the caller apart from the key.
+  const bytes = new TextEncoder().encode(JSON.stringify([namespace, key]));
+  const digest = yield* crypto.digest("SHA-256", bytes).pipe(Effect.mapError(unavailable));
+  return CommandId.make(`mcp:launch:${Hex.encode(digest)}`);
+});
 
 function launchFailure(error: ThreadLaunch.ThreadLaunchError) {
   return new OrchestratorMcpFailure({
@@ -122,9 +134,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         const commandId =
           input.clientRequestId === undefined
             ? yield* newCommandId()
-            : CommandId.make(
-                `mcp:launch:${encodeURIComponent(scope.requestNamespace)}:${encodeURIComponent(input.clientRequestId)}`,
-              );
+            : yield* launchCommandId(scope.requestNamespace, input.clientRequestId);
         const threadId = ThreadId.make(commandId);
         const messageId = MessageId.make(commandId);
         if (scope.authority !== undefined) {
@@ -378,12 +388,11 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               error._tag === "ThreadLaunchError" ? launchFailure(error) : error,
             ),
           );
-        const environmentId = scope.environmentId;
         const thread = result.projection.thread;
         const run = result.projection.runs.find((run) => run.userMessageId === messageId);
         return {
           threadId: thread.id,
-          link: formatThreadLink({ environmentId, threadId: thread.id }, thread.title),
+          link: McpInvocationContext.threadLinkFor(scope, thread.id),
           projectId: thread.projectId,
           modelSelection: run?.modelSelection ?? thread.modelSelection,
           runId: run?.id ?? null,

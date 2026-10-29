@@ -38,7 +38,11 @@ export const callerLinkOrigin = (
   return (
     caller.caller?.linkOrigin ??
     (caller.scope.client?.linked === true
-      ? { sessionId: caller.scope.client.sessionId, label: caller.scope.client.label }
+      ? {
+          sessionId: caller.scope.client.sessionId,
+          label: caller.scope.client.label,
+          access: caller.scope.client.access,
+        }
       : undefined)
   );
 };
@@ -72,7 +76,9 @@ export const assertSameLink = Effect.fn("linkOrigin.assertSameLink")(function* <
   // A modern record must never fall back to one copied linkOrigin.
   if (
     caller.scope.authority === undefined &&
-    (origin === undefined || target.linkOrigin?.sessionId === origin.sessionId)
+    (origin === undefined ||
+      directFullAccessPeer(caller) ||
+      target.linkOrigin?.sessionId === origin.sessionId)
   )
     return;
   return yield* new OrchestratorMcpFailure({
