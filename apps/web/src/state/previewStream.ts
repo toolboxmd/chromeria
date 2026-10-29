@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useEffect, useId } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import { PREVIEW_STREAM_BASE_PATH } from "@t3tools/client-runtime/preview/server-browser-stream";
 import {
@@ -30,41 +30,12 @@ const previewStreamAccessAtom = Atom.family((environmentId: EnvironmentId) =>
     .pipe(Atom.setIdleTTL(60_000), Atom.withLabel(`preview-stream-access:${environmentId}`)),
 );
 
-// Only a surface the user is looking at retries a failed lookup; one-shot readers such as
-// picture-in-picture see the failure at once.
-const retryingPreviewStreamAccessAtom = Atom.family((environmentId: EnvironmentId) =>
-  Atom.make((get) => {
-    const access = previewStreamAccessAtom(environmentId);
-    const result = get(access);
-    if (AsyncResult.isFailure(result)) {
-      const timer = setTimeout(() => get.refresh(access), ACCESS_RETRY_INTERVAL_MS);
-      get.addFinalizer(() => clearTimeout(timer));
-    }
-    return result;
-  }),
-);
-
-export function usePreviewStreamAccess(
-  environmentId: EnvironmentId,
-  options?: { readonly retry: boolean },
-): DeviceHubAccess | null {
-  const result = useAtomValue(
-    options?.retry
-      ? retryingPreviewStreamAccessAtom(environmentId)
-      : previewStreamAccessAtom(environmentId),
-  );
-  return AsyncResult.isSuccess(result) ? result.value : null;
-}
-
-export function refreshPreviewStreamAccess(environmentId: EnvironmentId): void {
-  appAtomRegistry.refresh(previewStreamAccessAtom(environmentId));
-}
-
 const EMPTY_ACCESS = Atom.make(AsyncResult.initial<DeviceHubAccess, never>());
 export function usePreviewStreamAccessState(
   environmentId: EnvironmentId,
   resource?: PreviewViewerResource,
   visible = true,
+  retry = visible,
 ) {
   const viewerKey = useId();
   const canControl = useAtomValue(
@@ -87,6 +58,12 @@ export function usePreviewStreamAccessState(
             input: { resource, operation: canControl ? "control" : "view" },
           }),
   );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retries failed access for a visible viewer and releases the timer when its lease changes
+  useEffect(() => {
+    if (!retry || query.error === null) return;
+    const timer = setTimeout(query.refresh, ACCESS_RETRY_INTERVAL_MS);
+    return () => clearTimeout(timer);
+  }, [query.error, query.refresh, retry]);
   return {
     access: query.isSuccess ? query.data : null,
     error: query.error,

@@ -428,6 +428,9 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                                 >
                                   {SETTINGS_SECTION_LABELS[to]}
                                 </span>
+                                {to === "/settings/prism" ? (
+                                  <ChromeriaFeatureMark focusable={false} />
+                                ) : null}
                               </SidebarMenuButton>
                             </SidebarMenuItem>
                           );
