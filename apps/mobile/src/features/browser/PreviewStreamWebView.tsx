@@ -287,6 +287,7 @@ function PreviewStreamDocumentView({
   const failed = useRef(false);
   const bootstrapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [status, setStatus] = useState<"connecting" | "streaming" | "error">("connecting");
+  const [started, setStarted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [gone, setGone] = useState(false);
   const [hostSetup, setHostSetup] = useState<PreviewStreamHostSetup | null>(null);
@@ -353,12 +354,12 @@ function PreviewStreamDocumentView({
   const previousAccess = useRef(access);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- refreshes WebView admission without replacing its PiP document
   useEffect(() => {
-    if (previousAccess.current === access) return;
+    if (!started || previousAccess.current === access) return;
     previousAccess.current = access;
     webView.current?.injectJavaScript(
       `window.T3PreviewStream?.updateAccess(${JSON.stringify(access)}); true;`,
     );
-  }, [access]);
+  }, [access, started]);
   // Access refresh replaces the socket; the document owns the PiP capture track.
   const [source] = useState(() => ({
     html: previewStreamDocument(configuration, previewStreamScript),
@@ -498,6 +499,7 @@ function PreviewStreamDocumentView({
                 onPictureInPicture?.(message, message.detail);
                 return;
               case "status":
+                setStarted(true);
                 clearBootstrapTimer();
                 if (message.status === "error") {
                   fail(message.detail ?? "Browser stream failed.");

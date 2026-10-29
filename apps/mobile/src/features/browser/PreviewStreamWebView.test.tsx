@@ -171,10 +171,21 @@ it("renews expired access without replacing a background picture-in-picture docu
   try {
     await act(async () => render());
     const source = observed.source;
+    const earlyAccess = { ...current, query: { viewerTicket: "before-document-ready" } };
+    await act(async () => {
+      observed.refreshedAccess = earlyAccess;
+      render();
+    });
+    expect(observed.inject).not.toHaveBeenCalledWith(
+      `window.T3PreviewStream?.updateAccess(${JSON.stringify(earlyAccess)}); true;`,
+    );
     await act(async () => {
       message({ type: "status", status: "streaming" });
       message({ type: "pictureInPicture", supported: true, active: true });
     });
+    expect(observed.inject).toHaveBeenCalledWith(
+      `window.T3PreviewStream?.updateAccess(${JSON.stringify(earlyAccess)}); true;`,
+    );
     await act(async () => {
       observed.appState = "background";
       for (const listener of observed.listeners) listener("background");
