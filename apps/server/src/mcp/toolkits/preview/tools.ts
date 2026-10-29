@@ -273,7 +273,7 @@ const PreviewUploadTool = browserTool(
     parameters: McpRouting.parameters(PreviewAutomationUploadInput).check(
       Schema.makeFilter(
         (value) =>
-          Schema.is(PreviewAutomationUploadInput)(value) ||
+          isPreviewAutomationUpload(value) ||
           "Provide either local paths or qualified artifacts for their exact browser resource, within 20 files/100 MiB.",
       ),
     ),
@@ -481,3 +481,5 @@ export const PreviewWatchToolkit = Toolkit.make(
     .annotate(Tool.Destructive, false)
     .annotate(Tool.Idempotent, true),
 );
+
+const isPreviewAutomationUpload = Schema.is(PreviewAutomationUploadInput);
