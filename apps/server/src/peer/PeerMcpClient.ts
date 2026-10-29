@@ -847,10 +847,10 @@ const make = Effect.gen(function* () {
             "The linked environment no longer accepts this link. It may have been revoked there; link it again.",
         });
       }
-      if (response.status === 403) return yield* linkedEnvironmentsOffThere;
       if (response.status !== 200) {
         const refusal = decodeFailure(yield* response.text);
         if (Option.isSome(refusal)) return yield* new OrchestratorMcpFailure(refusal.value);
+        if (response.status === 403) return yield* linkedEnvironmentsOffThere;
         return yield* new OrchestratorMcpFailure({
           code: "orchestration_error",
           message: `The linked environment answered HTTP ${response.status}.`,
