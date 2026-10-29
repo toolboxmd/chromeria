@@ -276,6 +276,9 @@ const invokeRouted: <P, A, E, R>(
       return handle(local as P);
     });
     const tool = yield* CurrentTool;
+    // Link operations name a local subject, not a dispatch destination.
+    if (tool?.name === "t3_environment_link" || tool?.name === "t3_environment_unlink")
+      return yield* handle(params);
     const decoded = target(params);
     if (tool === undefined || Option.isNone(decoded)) return yield* here;
     const scopeOption = yield* Effect.serviceOption(Invocation.McpInvocationContext);
