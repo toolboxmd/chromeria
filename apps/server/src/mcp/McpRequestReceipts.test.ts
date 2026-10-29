@@ -11,6 +11,8 @@ import * as Sqlite from "../persistence/Sqlite.ts";
 import * as Config from "../config.ts";
 import * as Receipts from "./McpRequestReceipts.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
+import * as NodeCrypto from "node:crypto";
+import { requestNamespace } from "./requestIdentity.ts";
 
 const scope: McpInvocationScope = {
   environmentId: EnvironmentId.make("receipts-a"),
@@ -188,19 +190,38 @@ it.effect("fails closed for a registered external operation without its receipt 
   }),
 );
 
-it.effect(
-  "refuses imported legacy keys without guessing ownership or rewriting accepted receipts",
-  () =>
+it.effect.each(["encoded", "hashed", "hashed-peer"] as const)(
+  "refuses imported %s legacy keys without guessing ownership or rewriting accepted receipts",
+  (format) =>
     Effect.scoped(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        const legacyId = "mcp:launch:client%3Aold-grant:imported-key";
+        const caller =
+          format === "hashed-peer"
+            ? {
+                ...scope,
+                requestNamespace: "upgraded-source-owner",
+                client: {
+                  sessionId: "old-grant",
+                  label: "Peer",
+                  access: "full-access" as const,
+                  linked: true,
+                },
+              }
+            : scope;
+        const namespace = format === "hashed-peer" ? "client:old-grant" : caller.requestNamespace;
+        const legacyId =
+          format === "encoded"
+            ? "mcp:launch:client%3Aold-grant:imported-key"
+            : `mcp:launch:${NodeCrypto.createHash("sha256")
+                .update(JSON.stringify([namespace, "imported-key"]))
+                .digest("hex")}`;
         yield* sql`INSERT INTO orchestration_command_receipts (command_id,aggregate_kind,aggregate_id,command_type,accepted_at,result_sequence,status,error)
       VALUES (${legacyId},'thread','original-thread','thread.create','2026-01-01T00:00:00.000Z',1,'accepted',NULL)`;
         const receipts = yield* reconstruct;
         const result = yield* Effect.result(
           receipts.identify(
-            scope,
+            caller,
             "t3_thread_launch",
             { message: "same key cannot prove same intent" },
             "imported-key",
@@ -216,7 +237,7 @@ it.effect(
             ?.aggregate_id,
         ).toBe("original-thread");
         const fresh = yield* receipts.identify(
-          scope,
+          caller,
           "t3_thread_launch",
           { message: "independent new intent" },
           "fresh-key",
@@ -229,3 +250,26 @@ it.effect(
 it("canonical request keys use locale-independent UTF-16 order", () => {
   expect(Receipts.canonicalRequest({ ą: 3, a: 2, Z: 1 })).toBe('{"Z":1,"a":2,"ą":3}');
 });
+
+it.effect("retains an accepted encoded launch id after upgrading a verified request binding", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const caller = { ...scope, thread: undefined, requestNamespace: "client:upgrade" };
+      const namespace = requestNamespace(caller);
+      const key = "accepted-before-upgrade";
+      const input = { message: "once" };
+      const receipts = yield* reconstruct;
+      const identity = yield* receipts.identify(caller, "t3_thread_launch", input, key);
+      const legacyId = `mcp:launch:${encodeURIComponent(namespace)}:${encodeURIComponent(key)}`;
+      yield* sql`INSERT INTO orchestration_command_receipts (command_id,aggregate_kind,aggregate_id,command_type,accepted_at,result_sequence,status,error)
+        VALUES (${legacyId},'thread','original-thread','thread.create','2026-01-01T00:00:00.000Z',1,'accepted',NULL)`;
+      const rebuilt = yield* reconstruct;
+      expect(yield* rebuilt.identify(caller, "t3_thread_launch", input, key)).toEqual(identity);
+      expect(yield* rebuilt.launchCommandId(namespace, key)).toBe(legacyId);
+      expect(yield* rebuilt.launchCommandId(namespace, "fresh-key")).toMatch(
+        /^mcp:launch:[0-9a-f]{64}$/,
+      );
+    }),
+  ).pipe(Effect.provide(database)),
+);

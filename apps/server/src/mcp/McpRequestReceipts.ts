@@ -1,6 +1,6 @@
 import { interactiveAuthority } from "../peer/PeerAuthorityRecord.ts";
 import { isSqlError } from "effect/sql/SqlError";
-import { OrchestratorMcpFailure } from "@t3tools/contracts";
+import { CommandId, OrchestratorMcpFailure } from "@t3tools/contracts";
 import { sha256 } from "@noble/hashes/sha2";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -92,6 +92,10 @@ const unknownOutcome = (identity: RequestIdentity) =>
 export class McpRequestReceipts extends Context.Service<
   McpRequestReceipts,
   {
+    readonly launchCommandId: (
+      namespace: string,
+      key: string,
+    ) => Effect.Effect<CommandId, OrchestratorMcpFailure>;
     readonly identify: (
       scope: McpInvocationScope,
       tool: string,
@@ -157,6 +161,23 @@ const make = Effect.gen(function* () {
   ) {
     const encoded = encodeURIComponent(key);
     if (tables.has("orchestration_command_receipts")) {
+      if (tool === "t3_thread_launch") {
+        // Linked calls used the destination client namespace before carrying a source owner.
+        const namespaces = new Set([
+          scope.requestNamespace,
+          ...(scope.client?.linked === true ? [`client:${scope.client.sessionId}`] : []),
+        ]);
+        for (const namespace of namespaces) {
+          const commandId = `mcp:launch:${requestDigest([namespace, key])}`;
+          const modernId = requestDigest([namespace, tool, key]);
+          if (
+            (yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE command_id=${commandId}`)
+              .length > 0 &&
+            (yield* sql`SELECT id FROM mcp_request_receipts WHERE id=${modernId}`).length === 0
+          )
+            return true;
+        }
+      }
       const candidates = yield* sql<{
         command_id: string;
       }>`SELECT command_id FROM orchestration_command_receipts
@@ -395,7 +416,24 @@ const make = Effect.gen(function* () {
       ? Option.none()
       : Option.some({ environmentId: rows[0].environment_id, generation: rows[0].generation });
   });
+  const launchCommandId = Effect.fn("McpRequestReceipts.launchCommandId")(function* (
+    namespace: string,
+    key: string,
+  ) {
+    const legacyId = yield* Effect.try(
+      () => `mcp:launch:${encodeURIComponent(namespace)}:${encodeURIComponent(key)}`,
+    ).pipe(Effect.mapError(unavailable));
+    if (
+      tables.has("orchestration_command_receipts") &&
+      (yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE command_id=${legacyId}`.pipe(
+        Effect.mapError(unavailable),
+      )).length > 0
+    )
+      return CommandId.make(legacyId);
+    return CommandId.make(`mcp:launch:${requestDigest([namespace, key])}`);
+  });
   return McpRequestReceipts.of({
+    launchCommandId,
     identify,
     replay,
     external,
