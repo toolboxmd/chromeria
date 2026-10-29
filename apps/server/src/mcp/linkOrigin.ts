@@ -132,7 +132,7 @@ export const assertNotLinked = (
       return;
     return yield* new OrchestratorMcpFailure({
       code: "capability_denied",
-      message: `The caller's current authority cannot ${what}.`,
+      message: `The caller's current authority${origin === undefined ? "" : ` (${origin.label})`} cannot ${what}.`,
     });
   });
 };
