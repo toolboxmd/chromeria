@@ -541,6 +541,20 @@ const clientLaunchHarness = (input: {
   const projectDefaults: { model: ModelSelection | null } = {
     model: input.overrideModel === undefined ? modelSelection : null,
   };
+  const launchResult = (launch: ThreadLaunch.ThreadLaunchInput) =>
+    ({
+      threadId: launch.threadId,
+      projection: {
+        thread: {
+          id: launch.threadId,
+          projectId: launch.projectId,
+          title: launch.title ?? "New thread",
+          modelSelection: launch.modelSelection,
+        },
+        runs: [],
+      },
+      resumed: false,
+    }) as unknown as ThreadLaunch.ThreadLaunchResult;
   const layerDependencies = Layer.mergeAll(
     prismDependencies,
     input.providers === undefined
@@ -592,7 +606,13 @@ const clientLaunchHarness = (input: {
       },
     }),
     Layer.mock(ThreadLaunch.ThreadLaunchService)({
-      replayOrLaunch: (_input, launch) => launch,
+      replayOrLaunch: (request, launch) =>
+        Effect.suspend(() => {
+          const accepted = input.launched.find((entry) => entry.commandId === request.commandId);
+          if (accepted === undefined) return launch;
+          input.launched.push(accepted);
+          return Effect.succeed(launchResult(accepted));
+        }),
       checkWorktreeBase: input.checkWorktreeBase ?? (() => Effect.void),
       launch: (launch) => {
         input.launched.push(launch);
@@ -613,20 +633,7 @@ const clientLaunchHarness = (input: {
             }),
           );
         }
-        return Effect.succeed({
-          threadId: launch.threadId,
-          projection: {
-            thread: {
-              id: launch.threadId,
-              projectId: launch.projectId,
-              // A launched projection always has a title; untitled launches get the default.
-              title: launch.title ?? "New thread",
-              modelSelection: launch.modelSelection,
-            },
-            runs: [],
-          },
-          resumed: false,
-        } as unknown as ThreadLaunch.ThreadLaunchResult);
+        return Effect.succeed(launchResult(launch));
       },
     }),
     Layer.mock(Project.ProjectService)({

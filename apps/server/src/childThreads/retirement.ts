@@ -144,7 +144,7 @@ export function retirementAdmission(input: {
   readonly humanOverride?: boolean;
   readonly admittedHumanRunId?: RunId;
   readonly limitRecoveryRequestId?: CommandId;
-  readonly heldProviderWake?: true;
+  readonly heldProviderWake?: true | undefined;
 }): ForkCommitPlan {
   return {
     guards: [
