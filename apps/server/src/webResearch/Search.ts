@@ -602,24 +602,23 @@ const make = Effect.gen(function* () {
             ),
         }),
         Effect.catchTags({
-          SearchProviderFailure: (error) =>
-            Effect.gen(function* () {
-              const queuedDelay =
-                error.reason === "queue" ? (yield* Clock.currentTimeMillis) - queuedAt : delayMs;
-              return {
-                results: [] as Result[],
-                engines: (source === "tinyfish" ? ["tinyfish"] : SEARXNG_ENGINES).map((engine) =>
-                  engineFailure(
-                    engine,
-                    error.status,
-                    error.reason,
-                    error.httpStatus,
-                    queuedDelay,
-                    error.retryAfterMs,
-                  ),
+          SearchProviderFailure: Effect.fn("SearchProviderFailure")(function* (error) {
+            const queuedDelay =
+              error.reason === "queue" ? (yield* Clock.currentTimeMillis) - queuedAt : delayMs;
+            return {
+              results: [] as Result[],
+              engines: (source === "tinyfish" ? ["tinyfish"] : SEARXNG_ENGINES).map((engine) =>
+                engineFailure(
+                  engine,
+                  error.status,
+                  error.reason,
+                  error.httpStatus,
+                  queuedDelay,
+                  error.retryAfterMs,
                 ),
-              };
-            }),
+              ),
+            };
+          }),
         }),
       );
   });

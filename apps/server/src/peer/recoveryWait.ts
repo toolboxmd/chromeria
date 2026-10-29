@@ -50,7 +50,7 @@ export const layer = Layer.effect(
     const signals = yield* RecoveryWaitSignals;
     return {
       subscribe: signals.subscribe,
-      read: (threadId: ThreadId, runId: RunId) =>
+      read: Effect.fn("RecoveryWaitState.read")((threadId: ThreadId, runId: RunId) =>
         hooks
           .holdsFinalization(threadId, runId)
           .pipe(
@@ -61,6 +61,7 @@ export const layer = Layer.effect(
             ),
             Effect.provideService(RecoveryWaitSignals, signals),
           ),
+      ),
     };
   }),
 );

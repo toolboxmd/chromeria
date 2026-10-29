@@ -1,3 +1,5 @@
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
 import { expect, it } from "@effect/vitest";
 import {
   CheckpointScopeId,
@@ -141,6 +143,7 @@ it.effect.each([
                   sink,
                   stores,
                   IdAllocator.layer,
+                  Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({}),
                   ThreadCommands.layer,
                   Layer.mock(GitVcsDriver.GitVcsDriver)({}),
                 ),
@@ -160,6 +163,7 @@ it.effect.each([
         })),
       ).pipe(Layer.provide(clockLayer));
       const execution = RunExecution.layer.pipe(
+        Layer.provide(PreviewAgentActivity.layer),
         Layer.provide(
           Layer.mergeAll(
             ingestor,

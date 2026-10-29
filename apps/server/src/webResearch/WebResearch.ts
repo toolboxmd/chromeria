@@ -239,10 +239,9 @@ const make = Effect.gen(function* () {
     });
     // Once acquired, cancel the queue deadline; the lock still owns cleanup on cancellation.
     const acquired = yield* Deferred.make<void>();
-    const deadline = Effect.raceFirst(
-      Effect.sleep(maxQueueWaitMs).pipe(Effect.as(true)),
-      Deferred.await(acquired).pipe(Effect.as(false)),
-    ).pipe(
+    const deadline = Deferred.await(acquired).pipe(
+      Effect.as(false),
+      Effect.timeoutOrElse({ duration: maxQueueWaitMs, orElse: () => Effect.succeed(true) }),
       // Once acquired wins, the sleep is cancelled. Contention has no known retry duration.
       Effect.flatMap((expired) => (expired ? refuse(null) : Effect.never)),
     );
@@ -397,16 +396,15 @@ const make = Effect.gen(function* () {
               cause,
             }),
           ),
-        OriginQueueWaitError: (cause) =>
-          Effect.gen(function* () {
-            yield* Ref.update(delay, (ms) => ms + cause.delayMs);
-            return yield* new PublicRender.PublicRenderError({
-              status: "challenge",
-              httpStatus: null,
-              retryAfterMs: cause.retryAfterMs,
-              cause,
-            });
-          }),
+        OriginQueueWaitError: Effect.fn("OriginQueueWaitError")(function* (cause) {
+          yield* Ref.update(delay, (ms) => ms + cause.delayMs);
+          return yield* new PublicRender.PublicRenderError({
+            status: "challenge",
+            httpStatus: null,
+            retryAfterMs: cause.retryAfterMs,
+            cause,
+          });
+        }),
         ReadStopped: (cause) =>
           Effect.fail(
             new PublicRender.PublicRenderError({
@@ -546,7 +544,7 @@ const make = Effect.gen(function* () {
         },
         PublicRenderError: (error) => {
           // Only a queue refusal that fails the render prevents caching its result.
-          if (Schema.is(OriginQueueWaitError)(error.cause)) cacheable = false;
+          if (isOriginQueueWaitError(error.cause)) cacheable = false;
           httpStatus = error.httpStatus;
           retryAfterMs = error.retryAfterMs;
           return Effect.succeed({ status: error.status, title: "", text: "" });
@@ -565,11 +563,11 @@ const make = Effect.gen(function* () {
         content.status,
       )
     ) {
-      const childFailure = (
+      const childFailure = Effect.fn("childFailure")(function* (
         error: TinyFish.TinyFishBudgetError | TinyFish.TinyFishProviderError,
-      ) => {
+      ) {
         // A root failure stays explicit; an optional child must not discard prior pages.
-        if (sameOrigin === undefined) return Effect.fail(error);
+        if (sameOrigin === undefined) return yield* error;
         cacheable = false;
         providerError = {
           provider: "tinyfish",
@@ -581,8 +579,8 @@ const make = Effect.gen(function* () {
         };
         retryAfterMs = error._tag === "TinyFishBudgetError" ? error.retryAfterMs : null;
         content = { status: "provider_error", title: "", text: "" };
-        return Effect.succeed(undefined);
-      };
+        return;
+      });
       const hosted = yield* tinyfish
         .fetch({
           url: new URL(finalUrl),
@@ -906,3 +904,5 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(WebResearch, make);
+
+const isOriginQueueWaitError = Schema.is(OriginQueueWaitError);

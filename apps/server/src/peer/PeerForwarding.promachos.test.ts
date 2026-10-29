@@ -49,7 +49,8 @@ it.effect.each([
     const sent: Array<ThreadId | undefined> = [];
     const call: PeerMcpClient.PeerMcpClient["Service"]["call"] = (input) => {
       sent.push(input.promachosThreadId);
-      return Schema.decodeUnknownEffect(input.success)({ ok: true }).pipe(
+      // oxlint-disable-next-line t3code/no-inline-schema-compile -- The fake peer decodes the schema supplied by each call.
+      return Schema.decodeEffect(input.success)({ ok: true }).pipe(
         Effect.mapError(
           () => new OrchestratorMcpFailure({ code: "orchestration_error", message: "fixture" }),
         ),
@@ -65,7 +66,7 @@ it.effect.each([
             uploadAttachment: () => Effect.die("No attachment transfer in this focused fixture"),
             start: Effect.void,
           }),
-          Layer.mock(PeerLinks.PeerLinks)({}),
+          Layer.mock(PeerLinks.PeerLinks)({ enabled: Effect.succeed(true) }),
           Layer.mock(ThreadManagement.ThreadManagementService)({
             getThreadShell: () =>
               Effect.succeed({

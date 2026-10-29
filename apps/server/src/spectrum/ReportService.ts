@@ -272,11 +272,15 @@ const make = Effect.gen(function* () {
         ),
       );
   return SpectrumReportService.of({
-    settle: (threadId, text, outcome = "completed") =>
+    settle: Effect.fn("SpectrumReportService.settle")((threadId, text, outcome = "completed") =>
       serialized(threadId, settle(threadId, text, outcome)),
-    deliver: (threadId) => serialized(threadId, deliver(threadId)),
-    abandon: (threadId, commandId, person) =>
+    ),
+    deliver: Effect.fn("SpectrumReportService.deliver")((threadId) =>
+      serialized(threadId, deliver(threadId)),
+    ),
+    abandon: Effect.fn("SpectrumReportService.abandon")((threadId, commandId, person) =>
       serialized(threadId, abandon(threadId, commandId, person)),
+    ),
   });
 });
 

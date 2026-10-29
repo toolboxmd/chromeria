@@ -64,7 +64,7 @@ it.effect(
       );
       const dependencies = Layer.mergeAll(ports, BareLaunch.layer.pipe(Layer.provide(ports)));
       const layer = Layer.fresh(ScheduledTasks.layer).pipe(Layer.provide(dependencies));
-      const input = yield* Schema.decodeUnknownEffect(ScheduledTaskUpsertInput)({
+      const input = yield* decodeScheduledTaskUpsertInput({
         purposeIntent: { version: 1, intent: { type: "unscoped" } },
         id: "scheduled-task:bare",
         title: "Bare",
@@ -115,3 +115,5 @@ it.effect(
       }).pipe(Effect.provide(Layer.fresh(ScheduledTasks.layer).pipe(Layer.provide(dependencies))));
     }).pipe(Effect.provide(Sqlite.layerMemory)),
 );
+
+const decodeScheduledTaskUpsertInput = Schema.decodeEffect(ScheduledTaskUpsertInput);

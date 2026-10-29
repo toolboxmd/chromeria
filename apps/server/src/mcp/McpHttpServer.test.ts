@@ -1,3 +1,4 @@
+import { PreviewWatchToolkit } from "./toolkits/preview/tools.ts";
 import * as Option from "effect/Option";
 import { McpSavedSnapshotReceipt } from "@t3tools/contracts";
 import * as PlatformError from "effect/PlatformError";
@@ -92,6 +93,7 @@ const layerSnapshotTest = (
   fileSystem: Layer.Layer<FileSystem.FileSystem> | Layer.Layer<never> = Layer.empty,
 ) =>
   McpHttpServer.layerPreviewToolkit.pipe(
+    Layer.provide(ServerSettings.layerTest()),
     Layer.provideMerge(McpServer.McpServer.layer),
     Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
     Layer.provideMerge(PreviewAutomationBroker.layer),
@@ -482,7 +484,10 @@ it.effect("refuses preview tools to a client outside a thread before they run", 
 it.effect("advertises the compact input schema for every registered tool", () =>
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
-    const tools: Record<string, Tool.Any> = PreviewToolkit.tools;
+    const tools: Record<string, Tool.Any> = {
+      ...PreviewToolkit.tools,
+      ...PreviewWatchToolkit.tools,
+    };
 
     expect(server.tools.length).toBe(Object.keys(tools).length);
     for (const { tool } of server.tools) {
@@ -1350,9 +1355,10 @@ it.effect("hides tools for links and refuses another environment while the beta 
       yield* settings.updateSettings({ linkedEnvironmentsEnabled: true });
       expect(yield* listed()).toEqual(["links", "where"]);
       // On, the call goes on to the forwarding, which this server lacks.
-      expect(yield* ranIn(elsewhere)).toMatchObject({
-        isError: true,
-        content: [{ text: expect.stringContaining("cannot reach linked environments") }],
+      const unavailable = yield* ranIn(elsewhere);
+      expect(unavailable.isError).toBe(true);
+      expect(JSON.parse(unavailable.content[0]!.text)).toMatchObject({
+        code: "orchestration_error",
       });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),

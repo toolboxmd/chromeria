@@ -1,3 +1,4 @@
+import * as ServerSettings from "../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "@effect/vitest";
 import {
@@ -367,6 +368,7 @@ describe("fillCredential in a real browser", () => {
       getClient: Effect.die("unused"),
     });
     const layer = McpHttpServer.layerPreviewToolkit.pipe(
+      Layer.provide(ServerSettings.layerTest()),
       Layer.provideMerge(McpServer.McpServer.layer),
       Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
       Layer.provideMerge(PreviewAutomationBroker.layer),

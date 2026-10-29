@@ -3526,21 +3526,27 @@ const make = Effect.gen(function* () {
       return deadlines.length === 0 ? null : Math.min(...deadlines);
     }),
     pendingAutomationDisables: automation.pending,
-    acknowledgeAutomationDisable: (acknowledgement, peer, generation) =>
-      automation
-        .acknowledge(acknowledgement, peer, generation)
-        .pipe(Effect.tap(() => wakeDisables)),
-    receiveAutomationDisable: (input, identity) =>
-      automation.receiveDisable(input, identity).pipe(Effect.tap(() => wakeDisables)),
+    acknowledgeAutomationDisable: Effect.fn("PeerAuthority.acknowledgeAutomationDisable")(
+      (acknowledgement, peer, generation) =>
+        automation
+          .acknowledge(acknowledgement, peer, generation)
+          .pipe(Effect.tap(() => wakeDisables)),
+    ),
+    receiveAutomationDisable: Effect.fn("PeerAuthority.receiveAutomationDisable")(
+      (input, identity) =>
+        automation.receiveDisable(input, identity).pipe(Effect.tap(() => wakeDisables)),
+    ),
     captureAutomation,
-    automationAdmission: (value, binding, actionId) =>
-      Effect.sync(() => {
-        const record = executionRecord(value.certificate, actionId);
-        return {
-          record,
-          commit: automation.accept(value, binding).pipe(Effect.andThen(save(record))),
-        };
-      }),
+    automationAdmission: Effect.fn("PeerAuthority.automationAdmission")(
+      (value, binding, actionId) =>
+        Effect.sync(() => {
+          const record = executionRecord(value.certificate, actionId);
+          return {
+            record,
+            commit: automation.accept(value, binding).pipe(Effect.andThen(save(record))),
+          };
+        }),
+    ),
     automationExecution: Effect.fn("PeerAuthority.automationExecution")(
       function* (certificateId, actionId) {
         const certificate = yield* automation.claim(certificateId);
@@ -3552,12 +3558,17 @@ const make = Effect.gen(function* () {
     ),
     recheckInvocation,
     acquirePreviewWatchAuthority,
-    pendingWithinTask: (resource, target) => ancestor({ type: "thread", ...resource }, target),
-    checkRecord: (id) => Effect.flatMap(read(id), validate).pipe(Effect.asVoid),
-    checkInteractiveRecord: (id) =>
+    pendingWithinTask: Effect.fn("PeerAuthority.pendingWithinTask")((resource, target) =>
+      ancestor({ type: "thread", ...resource }, target),
+    ),
+    checkRecord: Effect.fn("PeerAuthority.checkRecord")((id) =>
+      Effect.flatMap(read(id), validate).pipe(Effect.asVoid),
+    ),
+    checkInteractiveRecord: Effect.fn("PeerAuthority.checkInteractiveRecord")((id) =>
       Effect.flatMap(read(id), (record) =>
         validate(record, undefined, undefined, "interactive"),
       ).pipe(Effect.asVoid),
+    ),
     authorizeTaskStop: Effect.fn("PeerAuthority.authorizeTaskStop")(function* (scope, input) {
       yield* verifyTask(scope, input);
       const rows = yield* sql<{
@@ -3617,7 +3628,9 @@ const make = Effect.gen(function* () {
     }),
     pendingActor,
     verifyTask,
-    verifyTaskReceipt: (scope, input) => verifyTask(scope, input, true),
+    verifyTaskReceipt: Effect.fn("PeerAuthority.verifyTaskReceipt")((scope, input) =>
+      verifyTask(scope, input, true),
+    ),
     checkEffect,
     authorizeStopEffect: Effect.fn("PeerAuthority.authorizeStopEffect")(
       function* (effectId, threadId) {
@@ -3633,7 +3646,9 @@ const make = Effect.gen(function* () {
         return record.id;
       },
     ),
-    legacyCeiling: (threadId) => legacy(threadId).pipe(Effect.map((record) => record?.ceiling)),
+    legacyCeiling: Effect.fn("PeerAuthority.legacyCeiling")((threadId) =>
+      legacy(threadId).pipe(Effect.map((record) => record?.ceiling)),
+    ),
     checkThread,
     enroll,
     exchange,
@@ -3706,7 +3721,9 @@ const make = Effect.gen(function* () {
         ? yield* checkThread(threadId)
         : record;
     }),
-    checkTarget: (scope, target) => checkBinding(scope, loadResource(target)).pipe(Effect.asVoid),
+    checkTarget: Effect.fn("PeerAuthority.checkTarget")((scope, target) =>
+      checkBinding(scope, loadResource(target)).pipe(Effect.asVoid),
+    ),
     historicalScheduleReceipt: Effect.fn("PeerAuthority.historicalScheduleReceipt")(
       function* (scope, request, expectedProjectId) {
         const accepted = yield* ScheduleReceipts.acceptance(request).pipe(
@@ -3794,7 +3811,7 @@ const make = Effect.gen(function* () {
         ),
       );
     }),
-    setGrant: (input) =>
+    setGrant: Effect.fn("PeerAuthority.setGrant")((input) =>
       sql
         .withTransaction(
           Effect.gen(function* () {
@@ -3820,6 +3837,7 @@ const make = Effect.gen(function* () {
           Effect.catchTags({ SqlError: () => Effect.fail(unavailable()) }),
           Effect.tap(() => wakeDisables),
         ),
+    ),
   });
 });
 export const layer = Layer.effect(

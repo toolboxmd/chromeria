@@ -162,7 +162,7 @@ const make = Effect.gen(function* () {
     );
 
   return IssueClosingReferences.of({
-    issuesClosedBy: ({ pullRequest, version }) =>
+    issuesClosedBy: Effect.fn("IssueClosingReferences.issuesClosedBy")(({ pullRequest, version }) =>
       orNone(
         api.credential(pullRequest.host.toLowerCase()).pipe(
           Effect.flatMap(({ fingerprint }) =>
@@ -179,6 +179,7 @@ const make = Effect.gen(function* () {
           ),
         ),
       ),
+    ),
   });
 });
 

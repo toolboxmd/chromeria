@@ -51,8 +51,9 @@ export const layer = Layer.effect(
     const projections = yield* Projection.ProjectionStoreV2;
     const sql = yield* SqlClient.SqlClient;
     return {
-      readRunRecovery: (run) =>
+      readRunRecovery: Effect.fn("RecoveryHooks.readRunRecovery")((run) =>
         History.readRunRecovery(run).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      ),
       holdsFinalization: Effect.fn("RecoveryHooks.holdsFinalization")(function* (
         threadId: ThreadId,
         expectedRunId: RunId,

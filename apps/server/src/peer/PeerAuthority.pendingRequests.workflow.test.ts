@@ -32,7 +32,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
+
 import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -851,29 +851,27 @@ it.live(
         const callbacks: Array<Adapter.ProviderAdapterV2RuntimeRequestResponseInput> = [];
         const sessions = Context.get(b.runtime, ProviderSessionManager.ProviderSessionManagerV2);
         const spy = vi.spyOn(sessions, "get").mockReturnValue(
-          Effect.succeed(
-            Option.some({
-              providerSession,
-              instanceId,
-              driver,
-              providerSessionId,
-              events: Stream.empty,
-              ensureThread: () => Effect.die("No external provider process in this proof"),
-              resumeThread: () => Effect.die("No external provider process in this proof"),
-              startTurn: () => Effect.die("No external provider process in this proof"),
-              steerTurn: () => Effect.die("No external provider process in this proof"),
-              interruptTurn: () => Effect.die("No external provider process in this proof"),
-              readThreadSnapshot: () => Effect.die("No external provider process in this proof"),
-              rollbackThread: () => Effect.die("No external provider process in this proof"),
-              forkThread: () => Effect.die("No external provider process in this proof"),
-              respondToRuntimeRequest: (
-                input: Adapter.ProviderAdapterV2RuntimeRequestResponseInput,
-              ) =>
-                Effect.sync(() => {
-                  callbacks.push(input);
-                }),
-            } satisfies Adapter.ProviderAdapterV2SessionRuntime),
-          ),
+          Effect.succeedSome({
+            providerSession,
+            instanceId,
+            driver,
+            providerSessionId,
+            events: Stream.empty,
+            ensureThread: () => Effect.die("No external provider process in this proof"),
+            resumeThread: () => Effect.die("No external provider process in this proof"),
+            startTurn: () => Effect.die("No external provider process in this proof"),
+            steerTurn: () => Effect.die("No external provider process in this proof"),
+            interruptTurn: () => Effect.die("No external provider process in this proof"),
+            readThreadSnapshot: () => Effect.die("No external provider process in this proof"),
+            rollbackThread: () => Effect.die("No external provider process in this proof"),
+            forkThread: () => Effect.die("No external provider process in this proof"),
+            respondToRuntimeRequest: (
+              input: Adapter.ProviderAdapterV2RuntimeRequestResponseInput,
+            ) =>
+              Effect.sync(() => {
+                callbacks.push(input);
+              }),
+          } satisfies Adapter.ProviderAdapterV2SessionRuntime),
         );
         yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()));
         const native = yield* RuntimeRequests.layer.pipe(

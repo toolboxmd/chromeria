@@ -404,6 +404,8 @@ const make = Effect.gen(function* () {
     locks
       .withLock(id, effect)
       .pipe(Effect.mapError((cause) => new SpectrumControllerError({ threadId: id, cause })));
-  return SpectrumController.of({ resume: (id) => guarded(id, pump(id)) });
+  return SpectrumController.of({
+    resume: Effect.fn("SpectrumController.resume")((id) => guarded(id, pump(id))),
+  });
 });
 export const layer = Layer.effect(SpectrumController, make);

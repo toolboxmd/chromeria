@@ -14,7 +14,7 @@ import { HARNESSES } from "./Harnesses.ts";
 import * as Select from "./Select.ts";
 import type { Candidate, Profile, Selection } from "./Selection.ts";
 import { ServingState, type Reply, type SessionInstructions } from "./ServingState.ts";
-const corpus = Schema.decodeUnknownSync(
+const corpus = Schema.decodeSync(
   Schema.fromJsonString(
     Schema.Array(
       Schema.Struct({

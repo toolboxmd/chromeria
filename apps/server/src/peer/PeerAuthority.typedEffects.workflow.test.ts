@@ -1723,9 +1723,7 @@ it.live(
         };
         const stopped = yield* nativeCall(a, parent, "preview_recording_stop", input);
         expect(stopped.isError, json(stopped)).not.toBe(true);
-        const { resource } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PeerAttachmentReference }),
-        )(stopped.structuredContent);
+        const { resource } = yield* decodeAttachmentResource(stopped.structuredContent);
         expect(resource).toMatchObject({
           environmentId: b.environmentId,
           name: "recording.webm",
@@ -2031,9 +2029,7 @@ it.live(
         };
         const first = yield* nativeCall(a, parent, "html_render", input, capabilities, credential);
         expect(first.isError, json(first)).not.toBe(true);
-        const result = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ htmlRender: Schema.Struct({ attachmentId: Schema.String }) }),
-        )(first.structuredContent);
+        const result = yield* decodeRenderedAttachment(first.structuredContent);
         const path = resolveAttachmentPathById({
           attachmentsDir: a.config.attachmentsDir,
           attachmentId: result.htmlRender.attachmentId,
@@ -2350,9 +2346,7 @@ it.live("named382: registered title-only project creation replays its exact nati
       const input = { title: "Isolated named request", clientRequestId: "named382-original" };
       const first = yield* nativeCall(node, parent, "t3_project_create", input);
       expect(first.isError, json(first)).not.toBe(true);
-      const created = yield* Schema.decodeUnknownEffect(
-        ProjectToolkit.tools.t3_project_create.successSchema,
-      )(first.structuredContent);
+      const created = yield* decodeCreatedProject(first.structuredContent);
       const sql = Context.get(node.database, SqlClient.SqlClient);
       const rows = yield* sql<{
         project_id: string;
@@ -2821,9 +2815,7 @@ it.live(
         // The approved direct full-access peer exception remains supported.
         const accepted = yield* nativeCall(a, parent, "t3_environment_preferences_update", input);
         expect(accepted.isError, json(accepted)).not.toBe(true);
-        const decoded = yield* Schema.decodeUnknownEffect(
-          EnvironmentToolkit.tools.t3_environment_preferences_update.successSchema,
-        )(accepted.structuredContent);
+        const decoded = yield* decodeUpdatedPreferences(accepted.structuredContent);
         expect(decoded).toMatchObject({
           type: "confirmed-operation",
           applied: true,
@@ -2904,9 +2896,7 @@ it.live(
           input,
         );
         expect(response.isError, json(response)).not.toBe(true);
-        const receipt = yield* Schema.decodeUnknownEffect(
-          EnvironmentToolkit.tools.t3_environment_preferences_update.successSchema,
-        )(response.structuredContent);
+        const receipt = yield* decodeUpdatedPreferences(response.structuredContent);
         expect(receipt).toMatchObject({
           type: "confirmed-operation",
           applied: true,
@@ -3213,9 +3203,7 @@ it.live(
               clientRequestId: `media-upload-${index}`,
             });
             expect(prepared.isError, json(prepared.content)).not.toBe(true);
-            const issued = yield* Schema.decodeUnknownEffect(
-              Schema.Struct({ attachmentId: Schema.String, relativeUrl: Schema.String }),
-            )(prepared.structuredContent);
+            const issued = yield* decodeIssuedUpload(prepared.structuredContent);
             expect(
               (yield* http.execute(
                 HttpClientRequest.post(`${a.url}${issued.relativeUrl}`).pipe(
@@ -3496,9 +3484,7 @@ it.live(
           clientRequestId: "source-upload",
         });
         expect(prepared.isError, json(prepared.content)).not.toBe(true);
-        const upload = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ attachmentId: Schema.String, relativeUrl: Schema.String }),
-        )(prepared.structuredContent);
+        const upload = yield* decodeIssuedUpload(prepared.structuredContent);
         const http = yield* HttpClient.HttpClient;
         const stored = yield* http.execute(
           HttpClientRequest.post(`${a.url}${upload.relativeUrl}`).pipe(
@@ -4502,9 +4488,7 @@ it.live(
           credential,
         );
         expect(opened.isError, json(opened)).not.toBe(true);
-        const status = yield* Schema.decodeUnknownEffect(Schema.Struct({ tabId: Schema.String }))(
-          opened.structuredContent,
-        );
+        const status = yield* decodeTabId(opened.structuredContent);
         const external = browserExternalContexts.at(-1)!;
         const click = (key: string) =>
           nativeCall(
@@ -4579,9 +4563,7 @@ it.live(
           clientRequestId: "browser-identity-open",
         });
         expect(opened.isError, json(opened)).not.toBe(true);
-        const status = yield* Schema.decodeUnknownEffect(Schema.Struct({ tabId: Schema.String }))(
-          opened.structuredContent,
-        );
+        const status = yield* decodeTabId(opened.structuredContent);
         const external = browserExternalContexts.at(-1)!;
         const intent = {
           tabId: status.tabId,
@@ -4681,9 +4663,7 @@ it.live(
           clientRequestId: "browser-identity-reopen",
         });
         expect(next.isError, json(next)).not.toBe(true);
-        const nextStatus = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ tabId: Schema.String }),
-        )(next.structuredContent);
+        const nextStatus = yield* decodeTabId2(next.structuredContent);
         expect(nextStatus.tabId).not.toBe(status.tabId);
         expect(
           (yield* call("t3_preview_close", {
@@ -4743,9 +4723,7 @@ it.live(
           clientRequestId: "browser-generation-lawful-open",
         });
         expect(legitimate.isError, json(legitimate)).not.toBe(true);
-        const finalStatus = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ tabId: Schema.String }),
-        )(legitimate.structuredContent);
+        const finalStatus = yield* decodeTabId2(legitimate.structuredContent);
         expect(
           (yield* nativeCall(a, parent, "preview_click", {
             ...replacementRoute,
@@ -4790,9 +4768,7 @@ it.live.each(["layout", "clear"] as const)(
           clientRequestId: `browser-${boundary}-open`,
         });
         expect(opened.isError, json(opened)).not.toBe(true);
-        const { tabId } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ tabId: Schema.String }),
-        )(opened.structuredContent);
+        const { tabId } = yield* decodeTabId2(opened.structuredContent);
         const external = browserExternalContexts.at(-1)!;
         const tool = boundary === "layout" ? "preview_snapshot" : "preview_type";
         const input =
@@ -4913,9 +4889,7 @@ it.live(
           clientRequestId: "browser-human-view-open",
         });
         expect(opened.isError, json(opened)).not.toBe(true);
-        const { tabId } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ tabId: Schema.String }),
-        )(opened.structuredContent);
+        const { tabId } = yield* decodeTabId2(opened.structuredContent);
         const issued = yield* b.auth.issueSession({
           scopes: ["orchestration:read", "preview:operate"],
         });
@@ -4993,9 +4967,7 @@ it.live(
           clientRequestId: "browser-viewer-tool-open",
         });
         expect(opened.isError, json(opened)).not.toBe(true);
-        const { resource } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PreviewViewerResource }),
-        )(opened.structuredContent);
+        const { resource } = yield* decodeBrowserResource(opened.structuredContent);
         const owner = yield* a.auth.issueSession({
           scopes: ["orchestration:read", "preview:operate"],
         });
@@ -5068,9 +5040,7 @@ it.live(
           operation: "view",
         });
         expect(permittedView.exit?._tag).toBe("Success");
-        const readViewer = yield* Schema.decodeUnknownEffect(PreviewViewerAccess)(
-          permittedView.exit?.value,
-        );
+        const readViewer = yield* decodePreviewViewerAccess(permittedView.exit?.value);
         expect(
           (yield* readRpc(WS_METHODS.previewViewerClose, { viewerId: readViewer.viewerId })).exit
             ?.value,
@@ -5080,7 +5050,7 @@ it.live(
           operation: "control",
         });
         expect(admitted.exit?._tag, json(admitted)).toBe("Success");
-        const viewer = yield* Schema.decodeUnknownEffect(PreviewViewerAccess)(admitted.exit?.value);
+        const viewer = yield* decodePreviewViewerAccess(admitted.exit?.value);
         expect(viewer.streamBasePath).toBe("/api/preview-stream");
         expect(json(viewer)).not.toContain(b.url);
         const signed = yield* a.fixtureBrowserViewerSessions!.authenticateViewerToken(
@@ -5215,9 +5185,7 @@ it.live(
           });
         const renewedReply = yield* renewViewer();
         expect(renewedReply.exit?._tag, json(renewedReply)).toBe("Success");
-        const renewed = yield* Schema.decodeUnknownEffect(PreviewViewerAccess)(
-          renewedReply.exit?.value,
-        );
+        const renewed = yield* decodePreviewViewerAccess(renewedReply.exit?.value);
         expect(renewed.viewerId).toBe(viewer.viewerId);
         expect(renewed.ticket).not.toBe(viewer.ticket);
         const freshParams = new URLSearchParams(params);
@@ -5266,9 +5234,7 @@ it.live(
         yield* TestClock.adjust("65 seconds");
         const cancelReply = yield* renewViewer();
         expect(cancelReply.exit?._tag).toBe("Success");
-        const cancelAccess = yield* Schema.decodeUnknownEffect(PreviewViewerAccess)(
-          cancelReply.exit?.value,
-        );
+        const cancelAccess = yield* decodePreviewViewerAccess(cancelReply.exit?.value);
         expect(cancelAccess.viewerId).toBe(viewer.viewerId);
         const cancelParams = new URLSearchParams(freshParams);
         cancelParams.set("viewerTicket", cancelAccess.ticket);
@@ -5298,9 +5264,7 @@ it.live(
         expect((yield* pickerHttp.get(downloadUrl(cancelAccess.ticket))).status).toBe(403);
         const downloadReply = yield* renewViewer();
         expect(downloadReply.exit?._tag).toBe("Success");
-        const downloadAccess = yield* Schema.decodeUnknownEffect(PreviewViewerAccess)(
-          downloadReply.exit?.value,
-        );
+        const downloadAccess = yield* decodePreviewViewerAccess(downloadReply.exit?.value);
         expect(downloadAccess.viewerId).toBe(viewer.viewerId);
         const fetchedDownload = yield* pickerHttp.get(downloadUrl(downloadAccess.ticket));
         expect(fetchedDownload.status).toBe(200);
@@ -5423,9 +5387,7 @@ it.live(
           operation: "view",
         });
         expect(reopenedReply.exit?._tag).toBe("Success");
-        const reopened = yield* Schema.decodeUnknownEffect(PreviewViewerAccess)(
-          reopenedReply.exit?.value,
-        );
+        const reopened = yield* decodePreviewViewerAccess(reopenedReply.exit?.value);
         expect(reopened.viewerId).not.toBe(viewer.viewerId);
         const before = [...external.effects];
         for (const suffix of [`&tabId=other`, `&device=alternate`, `&viewerTicket=duplicate`]) {
@@ -5463,9 +5425,7 @@ it.live.each(["messages", "bytes", "progress"] as const)(
           clientRequestId: "backlog-open",
         });
         expect(opened.isError, json(opened)).not.toBe(true);
-        const { resource } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PreviewViewerResource }),
-        )(opened.structuredContent);
+        const { resource } = yield* decodeBrowserResource(opened.structuredContent);
         const owner = yield* a.auth.issueSession({
           scopes: ["orchestration:read", "preview:operate"],
         });
@@ -5693,9 +5653,7 @@ it.live.each([5, 20])(
           clientRequestId: "download-fetch-open",
         });
         expect(opened.isError, json(opened)).not.toBe(true);
-        const { resource: browser } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PreviewViewerResource }),
-        )(opened.structuredContent);
+        const { resource: browser } = yield* decodeBrowserResource(opened.structuredContent);
         expect(browser.threadId).toBe(child);
         const fs = yield* FileSystem.FileSystem;
         const bytes = Uint8Array.from([11, 22, 33, 44]);
@@ -5711,13 +5669,7 @@ it.live.each([5, 20])(
           tabId: browser.tabId,
         });
         expect(status.isError, json(status)).not.toBe(true);
-        const { downloads } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({
-            downloads: Schema.Array(
-              Schema.Struct({ resource: NativeBrowserDownloadAssetResource }),
-            ),
-          }),
-        )(status.structuredContent);
+        const { downloads } = yield* decodeNativeDownloads(status.structuredContent);
         expect(resourcesFromToolItem({ status: "completed", output: status }).length).toBe(2);
         for (let i = 1; i < count; i++) {
           const extra = makeExternalBrowserDownload((path) =>
@@ -5733,13 +5685,7 @@ it.live.each([5, 20])(
           tabId: browser.tabId,
         });
         expect(finalStatus.isError, json(finalStatus)).not.toBe(true);
-        const actual = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({
-            downloads: Schema.Array(
-              Schema.Struct({ resource: NativeBrowserDownloadAssetResource }),
-            ),
-          }),
-        )(finalStatus.structuredContent);
+        const actual = yield* decodeNativeDownloads(finalStatus.structuredContent);
         expect(actual.downloads.length).toBe(count);
         const now = yield* DateTime.now;
         const itemId = TurnItemId.make("resource-links383-downloads-item");
@@ -6019,9 +5965,7 @@ it.live(
           clientRequestId: "popup-agent-open",
         });
         expect(opened.isError, json(opened)).not.toBe(true);
-        const { resource } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PreviewViewerResource }),
-        )(opened.structuredContent);
+        const { resource } = yield* decodeBrowserResource(opened.structuredContent);
         const opener = browserExternalContexts.at(-1)!;
         const issued = yield* b.auth.issueSession({
           scopes: ["orchestration:read", "preview:operate"],
@@ -6168,14 +6112,7 @@ it.live(
         ).toBe(204);
         const staged = yield* nativeCall(a, parent, "t3_attachment_inspect", inspect);
         expect(staged.isError, json(staged)).not.toBe(true);
-        const { inspection } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({
-            inspection: Schema.Struct({
-              stage: Schema.Literal("staged"),
-              reference: PeerAttachmentReference,
-            }),
-          }),
-        )(staged.structuredContent);
+        const { inspection } = yield* decodeStagedInspection(staged.structuredContent);
         expect(inspection.reference.environmentId).toBe(a.environmentId);
         expect(inspection.reference.digest).toBe(yield* typed383Digest(bytes));
         const before = yield* footprint();
@@ -6236,12 +6173,7 @@ it.live(
         expect(raw, raw).not.toContain('"error"');
         const acquired = (yield* sendResult(raw)).result;
         expect(acquired.isError, json(acquired)).not.toBe(true);
-        const value = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({
-            resource: Schema.Struct({ reference: PeerAttachmentReference }),
-            path: Schema.String,
-          }),
-        )(acquired.structuredContent);
+        const value = yield* decodeAcquiredAttachment(acquired.structuredContent);
         expect(value.resource.reference.environmentId).toBe(a.environmentId);
         expect(value.resource.reference.digest).toBe(artifact.digest);
         expect(value.path).toBe(
@@ -6330,9 +6262,7 @@ it.live.each(["agent", "human"] as const)(
           clientRequestId: "download-open",
         });
         expect(opened.isError, json(opened)).not.toBe(true);
-        const { resource } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PreviewViewerResource }),
-        )(opened.structuredContent);
+        const { resource } = yield* decodeBrowserResource(opened.structuredContent);
         const external = browserExternalContexts.at(-1)!;
         const fs = yield* FileSystem.FileSystem;
         const bytes = new TextEncoder().encode("native download bytes");
@@ -6425,9 +6355,7 @@ it.live(
           clientRequestId: "download-reference-open",
         });
         expect(opened.isError, json(opened)).not.toBe(true);
-        const { resource } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PreviewViewerResource }),
-        )(opened.structuredContent);
+        const { resource } = yield* decodeBrowserResource(opened.structuredContent);
         const fs = yield* FileSystem.FileSystem;
         const bytes = new TextEncoder().encode("portable browser download");
         const download = makeExternalBrowserDownload((path) =>
@@ -6471,9 +6399,7 @@ it.live(
           clientRequestId: "download-fetch-open",
         });
         expect(opened.isError, json(opened)).not.toBe(true);
-        const { resource: browser } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PreviewViewerResource }),
-        )(opened.structuredContent);
+        const { resource: browser } = yield* decodeBrowserResource(opened.structuredContent);
         const fs = yield* FileSystem.FileSystem;
         const bytes = Uint8Array.from({ length: 2 * 1024 * 1024 + 7 }, (_, index) => index % 251);
         const download = makeExternalBrowserDownload((path) =>
@@ -6487,13 +6413,7 @@ it.live(
           tabId: browser.tabId,
         });
         expect(status.isError, json(status)).not.toBe(true);
-        const { downloads } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({
-            downloads: Schema.Array(
-              Schema.Struct({ resource: NativeBrowserDownloadAssetResource }),
-            ),
-          }),
-        )(status.structuredContent);
+        const { downloads } = yield* decodeNativeDownloads(status.structuredContent);
         const resource = downloads[0]!.resource;
         expect(resource.sizeBytes).toBe(bytes.length);
         expect(resource.digest).toBe(yield* typed383Digest(bytes));
@@ -6581,9 +6501,7 @@ it.live(
           clientRequestId: "download-acquire",
         });
         expect(acquired.isError, json(acquired)).not.toBe(true);
-        const acquiredValue = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ path: Schema.String, resource: PeerAttachmentAssetResource }),
-        )(acquired.structuredContent);
+        const acquiredValue = yield* decodeAttachmentAsset(acquired.structuredContent);
         expect(acquiredValue.resource.reference.environmentId).toBe(a.environmentId);
         expect(yield* typed383Digest(yield* fs.readFile(acquiredValue.path))).toBe(resource.digest);
         expect(
@@ -6631,9 +6549,7 @@ it.live(
           clientRequestId: "download-gib-open",
         });
         expect(opened.isError, json(opened)).not.toBe(true);
-        const { resource: browser } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PreviewViewerResource }),
-        )(opened.structuredContent);
+        const { resource: browser } = yield* decodeBrowserResource(opened.structuredContent);
         const fs = yield* FileSystem.FileSystem;
         const size = 1024 * 1024 * 1024;
         const external = browserExternalContexts.at(-1)!;
@@ -6651,13 +6567,7 @@ it.live(
           tabId: browser.tabId,
         });
         expect(status.isError, json(status)).not.toBe(true);
-        const { downloads } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({
-            downloads: Schema.Array(
-              Schema.Struct({ resource: NativeBrowserDownloadAssetResource }),
-            ),
-          }),
-        )(status.structuredContent);
+        const { downloads } = yield* decodeNativeDownloads(status.structuredContent);
         expect(downloads).toHaveLength(1);
         const resource = downloads[0]!.resource;
         expect(resource.sizeBytes).toBe(size);
@@ -6796,11 +6706,7 @@ it.live(
           ...route,
           tabId: browser.tabId,
         });
-        expect(
-          (yield* Schema.decodeUnknownEffect(
-            Schema.Struct({ downloads: Schema.Array(Schema.Unknown) }),
-          )(remaining.structuredContent)).downloads,
-        ).toHaveLength(1);
+        expect((yield* decodeDownloads(remaining.structuredContent)).downloads).toHaveLength(1);
         const closed = yield* nativeCall(a, parent, "t3_preview_close", {
           ...route,
           tabId: browser.tabId,
@@ -6832,9 +6738,7 @@ it.live(
           clientRequestId: "browser-input-open",
         });
         expect(opened.isError, json(opened)).not.toBe(true);
-        const { resource } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PreviewViewerResource }),
-        )(opened.structuredContent);
+        const { resource } = yield* decodeBrowserResource(opened.structuredContent);
         const bytes = new Uint8Array([7, 8, 9, 10]);
         const upload = {
           type: "file" as const,
@@ -6861,14 +6765,7 @@ it.live(
           source: { type: "upload", attachmentId: issued.attachmentId, upload },
         });
         expect(staged.isError, json(staged)).not.toBe(true);
-        const { inspection } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({
-            inspection: Schema.Struct({
-              stage: Schema.Literal("staged"),
-              reference: PeerAttachmentReference,
-            }),
-          }),
-        )(staged.structuredContent);
+        const { inspection } = yield* decodeStagedInspection(staged.structuredContent);
         const external = browserExternalContexts.at(-1)!;
         const fs = yield* FileSystem.FileSystem;
         const observed: Array<ReadonlyArray<number>> = [];
@@ -6922,14 +6819,7 @@ it.live(
             const staged = yield* nativeCall(a, parent, "t3_attachment_inspect", {
               source: { type: "upload", attachmentId: issued.attachmentId, upload },
             });
-            const { inspection } = yield* Schema.decodeUnknownEffect(
-              Schema.Struct({
-                inspection: Schema.Struct({
-                  stage: Schema.Literal("staged"),
-                  reference: PeerAttachmentReference,
-                }),
-              }),
-            )(staged.structuredContent);
+            const { inspection } = yield* decodeStagedInspection(staged.structuredContent);
             return inspection.reference;
           });
         const second = yield* stageAnother("second.txt");
@@ -7020,11 +6910,10 @@ it.live(
           ...route,
           tabId: resource.tabId,
         });
-        expect(
-          (yield* Schema.decodeUnknownEffect(Schema.Struct({ fileChooser: Schema.Unknown }))(
-            beforeCancel.structuredContent,
-          )).fileChooser,
-        ).toEqual({ multiple: false, accept: "" });
+        expect((yield* decodeFileChooser(beforeCancel.structuredContent)).fileChooser).toEqual({
+          multiple: false,
+          accept: "",
+        });
         const { locator: _locator, ...cancel } = clear;
         expect(
           (yield* nativeCall(activeA, parent, "preview_upload", {
@@ -7037,11 +6926,7 @@ it.live(
           ...route,
           tabId: resource.tabId,
         });
-        expect(
-          (yield* Schema.decodeUnknownEffect(Schema.Struct({ fileChooser: Schema.Unknown }))(
-            afterCancel.structuredContent,
-          )).fileChooser,
-        ).toBeNull();
+        expect((yield* decodeFileChooser(afterCancel.structuredContent)).fileChooser).toBeNull();
         yield* b.authority.setGrant({ ...grant, preview: false });
         expect((yield* nativeCall(activeA, parent, "preview_upload", lostInput)).isError).toBe(
           true,
@@ -7091,9 +6976,9 @@ it.live(
           clientRequestId: "browser-input-new-open",
         });
         expect(newOpening.isError, json(newOpening)).not.toBe(true);
-        const { resource: newResource } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PreviewViewerResource }),
-        )(newOpening.structuredContent);
+        const { resource: newResource } = yield* decodeBrowserResource(
+          newOpening.structuredContent,
+        );
         expect(
           (yield* nativeCall(activeA, parent, "preview_upload", {
             ...newRoute,
@@ -7125,9 +7010,7 @@ it.live("native383-input: whole mixed browser batch is verified before new sourc
         clientRequestId: "batch-open",
       });
       expect(opened.isError, json(opened)).not.toBe(true);
-      const { resource } = yield* Schema.decodeUnknownEffect(
-        Schema.Struct({ resource: PreviewViewerResource }),
-      )(opened.structuredContent);
+      const { resource } = yield* decodeBrowserResource(opened.structuredContent);
       const http = yield* HttpClient.HttpClient;
       const stage = (remote: boolean, name: string, bytes: Uint8Array) =>
         Effect.gen(function* () {
@@ -7158,14 +7041,7 @@ it.live("native383-input: whole mixed browser batch is verified before new sourc
             source: { type: "upload", attachmentId: issued.attachmentId, upload },
           });
           expect(inspected.isError, json(inspected)).not.toBe(true);
-          return (yield* Schema.decodeUnknownEffect(
-            Schema.Struct({
-              inspection: Schema.Struct({
-                stage: Schema.Literal("staged"),
-                reference: PeerAttachmentReference,
-              }),
-            }),
-          )(inspected.structuredContent)).inspection.reference;
+          return (yield* decodeStagedInspection(inspected.structuredContent)).inspection.reference;
         });
       const local = yield* stage(false, "source.txt", new Uint8Array([1, 2]));
       const destination = yield* stage(true, "destination.txt", new Uint8Array([3, 4]));
@@ -7256,9 +7132,7 @@ it.live(
           clientRequestId: "partial-open",
         });
         expect(opened.isError, json(opened)).not.toBe(true);
-        const { resource } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PreviewViewerResource }),
-        )(opened.structuredContent);
+        const { resource } = yield* decodeBrowserResource(opened.structuredContent);
         const http = yield* HttpClient.HttpClient;
         const artifacts = [];
         for (const name of ["first.txt", "second.txt"]) {
@@ -7287,14 +7161,7 @@ it.live(
             source: { type: "upload", attachmentId: issued.attachmentId, upload },
           });
           artifacts.push(
-            (yield* Schema.decodeUnknownEffect(
-              Schema.Struct({
-                inspection: Schema.Struct({
-                  stage: Schema.Literal("staged"),
-                  reference: PeerAttachmentReference,
-                }),
-              }),
-            )(inspected.structuredContent)).inspection.reference,
+            (yield* decodeStagedInspection(inspected.structuredContent)).inspection.reference,
           );
         }
         const external = browserExternalContexts.at(-1)!;
@@ -7924,9 +7791,7 @@ it.live.each([false, true])(
           expect(stops, "revoked replay must not stop the renderer again").toBe(1);
         } else {
           expect(stopped.isError, json(stopped)).not.toBe(true);
-          const { resource } = yield* Schema.decodeUnknownEffect(
-            Schema.Struct({ resource: PeerAttachmentReference }),
-          )(stopped.structuredContent);
+          const { resource } = yield* decodeAttachmentResource(stopped.structuredContent);
           expect(published).toEqual([
             {
               id: resource.attachmentId,
@@ -8038,12 +7903,17 @@ it.live.each(["preview_upload", "preview_navigate"] as const)(
     Effect.scoped(
       Effect.gen(function* () {
         const nativePromise = yield* makeNativePromiseBridge;
-        const { a, b, parent, child, route } = yield* typed383Pair(
-          "native383-browser-input",
-          false,
-          false,
-          { source: false, destination: false, destinationBrowser: true },
-        );
+        const {
+          a,
+          b,
+          parent,
+          child: _child,
+          route,
+        } = yield* typed383Pair("native383-browser-input", false, false, {
+          source: false,
+          destination: false,
+          destinationBrowser: true,
+        });
         const grant = (yield* b.authority.grants)[0]!;
         yield* b.authority.setGrant({ ...grant, preview: true });
         const opened = yield* nativeCall(a, parent, "preview_open", {
@@ -8052,9 +7922,7 @@ it.live.each(["preview_upload", "preview_navigate"] as const)(
           clientRequestId: "browser-input-open",
         });
         expect(opened.isError, json(opened)).not.toBe(true);
-        const { resource } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PreviewViewerResource }),
-        )(opened.structuredContent);
+        const { resource } = yield* decodeBrowserResource(opened.structuredContent);
         const bytes = new Uint8Array([7, 8, 9, 10]);
         const upload = {
           type: "file" as const,
@@ -8081,14 +7949,7 @@ it.live.each(["preview_upload", "preview_navigate"] as const)(
           source: { type: "upload", attachmentId: issued.attachmentId, upload },
         });
         expect(staged.isError, json(staged)).not.toBe(true);
-        const { inspection } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({
-            inspection: Schema.Struct({
-              stage: Schema.Literal("staged"),
-              reference: PeerAttachmentReference,
-            }),
-          }),
-        )(staged.structuredContent);
+        const { inspection } = yield* decodeStagedInspection(staged.structuredContent);
         const external = browserExternalContexts.at(-1)!;
         const fs = yield* FileSystem.FileSystem;
         const observed: Array<ReadonlyArray<number>> = [];
@@ -8167,12 +8028,14 @@ it.live.each(["preview_upload", "preview_navigate"] as const)(
 it.live("review534-r3: failed source device admission closes the already opened B viewer", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const { a, b, parent, child, route, open } = yield* typed383Pair(
-        "device-partial-open",
-        false,
-        false,
-        true,
-      );
+      const {
+        a,
+        b,
+        parent: _parent,
+        child,
+        route: _route,
+        open,
+      } = yield* typed383Pair("device-partial-open", false, false, true);
       const opened = yield* open("device-partial-native-open");
       expect(opened.isError, json(opened)).not.toBe(true);
       const { target } = yield* decodeTyped383Open(opened.structuredContent);
@@ -8262,9 +8125,7 @@ it.live.each([
           credential,
         );
         expect(opened.isError, json(opened)).not.toBe(true);
-        const { resource } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PreviewViewerResource }),
-        )(opened.structuredContent);
+        const { resource } = yield* decodeBrowserResource(opened.structuredContent);
         const owner = yield* a.auth.issueSession({
           scopes: ["orchestration:read", "preview:operate"],
         });
@@ -8504,9 +8365,7 @@ it.live(
           credential,
         );
         expect(opened.isError, json(opened)).not.toBe(true);
-        const { resource } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PreviewViewerResource }),
-        )(opened.structuredContent);
+        const { resource } = yield* decodeBrowserResource(opened.structuredContent);
         const issued = yield* b.auth.issueSession({
           scopes: ["orchestration:read", "preview:operate"],
         });
@@ -8634,9 +8493,7 @@ it.live.each([10_000, 10_001, 20_000])(
           credential,
         );
         expect(opened.isError, json(opened)).not.toBe(true);
-        const { resource } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PreviewViewerResource }),
-        )(opened.structuredContent);
+        const { resource } = yield* decodeBrowserResource(opened.structuredContent);
         const owner = yield* a.auth.issueSession({
           scopes: ["orchestration:read", "preview:operate"],
         });
@@ -8798,9 +8655,7 @@ it.live.each([
           credential,
         );
         expect(opened.isError, json(opened)).not.toBe(true);
-        const { resource } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PreviewViewerResource }),
-        )(opened.structuredContent);
+        const { resource } = yield* decodeBrowserResource(opened.structuredContent);
         const owner = yield* a.auth.issueSession({
           scopes: ["orchestration:read", "preview:operate"],
         });
@@ -9029,9 +8884,7 @@ it.live.each([
         credential,
       );
       expect(opened.isError, json(opened)).not.toBe(true);
-      const { resource } = yield* Schema.decodeUnknownEffect(
-        Schema.Struct({ resource: PreviewViewerResource }),
-      )(opened.structuredContent);
+      const { resource } = yield* decodeBrowserResource(opened.structuredContent);
       const external = browserExternalContexts.at(-1)!;
       const destination = probe.route === "qualified" ? a : b;
       const issued = yield* destination.auth.issueSession({
@@ -9219,8 +9072,8 @@ it.live.each([
   ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );
 
-it.live.each([
-  ...[1, 2].flatMap((wait) =>
+it.live.each(
+  [1, 2].flatMap((wait) =>
     [
       "unchanged",
       "handoff-original",
@@ -9229,7 +9082,7 @@ it.live.each([
       "same-controller-return",
     ].map((transition) => ({ wait, transition })),
   ),
-])("dialog383-r11: $transition during authorization $wait", ({ wait, transition }) =>
+)("dialog383-r11: $transition during authorization $wait", ({ wait, transition }) =>
   Effect.scoped(
     Effect.gen(function* () {
       const nativePromise = yield* makeNativePromiseBridge;
@@ -9247,9 +9100,7 @@ it.live.each([
         clientRequestId: "r11-dialog-open",
       });
       expect(opened.isError, json(opened)).not.toBe(true);
-      const { resource } = yield* Schema.decodeUnknownEffect(
-        Schema.Struct({ resource: PreviewViewerResource }),
-      )(opened.structuredContent);
+      const { resource } = yield* decodeBrowserResource(opened.structuredContent);
       const issued = yield* b.auth.issueSession({
         scopes: ["orchestration:read", "preview:operate"],
       });
@@ -9431,9 +9282,7 @@ it.live.each([
           clientRequestId: "r12-input-open",
         });
         expect(opened.isError, json(opened)).not.toBe(true);
-        const { resource } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PreviewViewerResource }),
-        )(opened.structuredContent);
+        const { resource } = yield* decodeBrowserResource(opened.structuredContent);
         const issued = yield* b.auth.issueSession({
           scopes: ["orchestration:read", "preview:operate"],
         });
@@ -9568,8 +9417,8 @@ it.live.each([
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );
 
-it.live.each([
-  ...[
+it.live.each(
+  [
     {
       kind: "text",
       one: { type: "text", text: "first" },
@@ -9621,7 +9470,7 @@ it.live.each([
       expected: ["mousePressed", "mouseReleased"],
     },
   ].flatMap((entry) => [false, true].map((held) => ({ ...entry, held }))),
-])("order383-r13: $kind held-first=$held", ({ kind, one, two, expected, held }) =>
+)("order383-r13: $kind held-first=$held", ({ kind, one, two, expected, held }) =>
   Effect.scoped(
     Effect.gen(function* () {
       const nativePromise = yield* makeNativePromiseBridge;
@@ -9639,9 +9488,7 @@ it.live.each([
         clientRequestId: "r13-order-open",
       });
       expect(opened.isError, json(opened)).not.toBe(true);
-      const { resource } = yield* Schema.decodeUnknownEffect(
-        Schema.Struct({ resource: PreviewViewerResource }),
-      )(opened.structuredContent);
+      const { resource } = yield* decodeBrowserResource(opened.structuredContent);
       const issued = yield* b.auth.issueSession({
         scopes: ["orchestration:read", "preview:operate"],
       });
@@ -9687,8 +9534,8 @@ it.live.each([
         },
       });
       yield* viewer.input({ type: "takeControl" });
-      const firstInput = yield* Schema.decodeUnknownEffect(PreviewStreamInput)(one);
-      const secondInput = yield* Schema.decodeUnknownEffect(PreviewStreamInput)(two);
+      const firstInput = yield* decodePreviewStreamInput(one);
+      const secondInput = yield* decodePreviewStreamInput(two);
       const external = browserExternalContexts.at(-1)!;
       const start = external.inputs.length;
       armed = true;
@@ -9748,9 +9595,7 @@ it.live.each([
         clientRequestId: "r14-control-open",
       });
       expect(opened.isError, json(opened)).not.toBe(true);
-      const { resource } = yield* Schema.decodeUnknownEffect(
-        Schema.Struct({ resource: PreviewViewerResource }),
-      )(opened.structuredContent);
+      const { resource } = yield* decodeBrowserResource(opened.structuredContent);
       const issued = yield* b.auth.issueSession({
         scopes: ["orchestration:read", "preview:operate"],
       });
@@ -9790,8 +9635,8 @@ it.live.each([
           }
         },
       });
-      const take = yield* Schema.decodeUnknownEffect(PreviewStreamInput)({ type: "takeControl" });
-      const release = yield* Schema.decodeUnknownEffect(PreviewStreamInput)({
+      const take = yield* decodePreviewStreamInput2({ type: "takeControl" });
+      const release = yield* decodePreviewStreamInput2({
         type: "releaseControl",
       });
       if (kind === "release") yield* viewer.input(take);
@@ -9872,9 +9717,7 @@ it.live.each(["preview", "device"] as const)(
             clientRequestId: "idle-open",
           });
           expect(opened.isError, json(opened)).not.toBe(true);
-          const { resource } = yield* Schema.decodeUnknownEffect(
-            Schema.Struct({ resource: PreviewViewerResource }),
-          )(opened.structuredContent);
+          const { resource } = yield* decodeBrowserResource(opened.structuredContent);
           expect(resource).toMatchObject({ environmentId: b.environmentId, threadId: child });
           expect(browserExternalContexts).toHaveLength(contextsBefore + 1);
           const action = yield* call("preview_type", {
@@ -10296,9 +10139,7 @@ it.live.each(["preview", "device"] as const)(
         const active = yield* open("active-control");
         expect(active.isError).not.toBe(true);
         if (capability === "preview") {
-          const { resource } = yield* Schema.decodeUnknownEffect(
-            Schema.Struct({ resource: PreviewViewerResource }),
-          )(active.structuredContent);
+          const { resource } = yield* decodeBrowserResource(active.structuredContent);
           expect(
             (yield* call("t3_preview_close", {
               tabId: resource.tabId,
@@ -10328,9 +10169,7 @@ it.live.each(["preview", "device"] as const)(
         expect(json(refused)).toContain("parent_not_active");
         expect(opened.isError, json(opened)).not.toBe(true);
         if (capability === "preview") {
-          const { resource } = yield* Schema.decodeUnknownEffect(
-            Schema.Struct({ resource: PreviewViewerResource }),
-          )(opened.structuredContent);
+          const { resource } = yield* decodeBrowserResource(opened.structuredContent);
           expect(
             (yield* call("preview_type", {
               tabId: resource.tabId,
@@ -10395,9 +10234,7 @@ it.live.each(["source", "destination", "mixed"] as const)(
           nativeCall(a, parent, name, input, caps, credential);
         const opened = yield* call("preview_open", { show: false, clientRequestId: "open" });
         expect(opened.isError, json(opened)).not.toBe(true);
-        const { resource } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ resource: PreviewViewerResource }),
-        )(opened.structuredContent);
+        const { resource } = yield* decodeBrowserResource(opened.structuredContent);
         const artifacts = [];
         const expected = [];
         if (where !== "destination") {
@@ -10758,9 +10595,7 @@ it.live.each(["preview", "device"] as const)(
         const input =
           capability === "preview"
             ? {
-                ...(yield* Schema.decodeUnknownEffect(
-                  Schema.Struct({ resource: PreviewViewerResource }),
-                )(opened.structuredContent)),
+                ...(yield* decodeBrowserResource(opened.structuredContent)),
                 artifacts: [artifact],
                 locator: "input[type=file]",
               }
@@ -11108,3 +10943,55 @@ it.live(
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );
+
+const decodeAttachmentResource = Schema.decodeUnknownEffect(
+  Schema.Struct({ resource: PeerAttachmentReference }),
+);
+const decodeRenderedAttachment = Schema.decodeUnknownEffect(
+  Schema.Struct({ htmlRender: Schema.Struct({ attachmentId: Schema.String }) }),
+);
+const decodeCreatedProject = Schema.decodeUnknownEffect(
+  ProjectToolkit.tools.t3_project_create.successSchema,
+);
+const decodeUpdatedPreferences = Schema.decodeUnknownEffect(
+  EnvironmentToolkit.tools.t3_environment_preferences_update.successSchema,
+);
+const decodeIssuedUpload = Schema.decodeUnknownEffect(
+  Schema.Struct({ attachmentId: Schema.String, relativeUrl: Schema.String }),
+);
+const decodeTabId = Schema.decodeUnknownEffect(Schema.Struct({ tabId: Schema.String }));
+const decodeTabId2 = Schema.decodeUnknownEffect(Schema.Struct({ tabId: Schema.String }));
+const decodeBrowserResource = Schema.decodeUnknownEffect(
+  Schema.Struct({ resource: PreviewViewerResource }),
+);
+const decodePreviewViewerAccess = Schema.decodeUnknownEffect(PreviewViewerAccess);
+const decodeNativeDownloads = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    downloads: Schema.Array(Schema.Struct({ resource: NativeBrowserDownloadAssetResource })),
+  }),
+);
+const decodeStagedInspection = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    inspection: Schema.Struct({
+      stage: Schema.Literal("staged"),
+      reference: PeerAttachmentReference,
+    }),
+  }),
+);
+const decodeAcquiredAttachment = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    resource: Schema.Struct({ reference: PeerAttachmentReference }),
+    path: Schema.String,
+  }),
+);
+const decodeAttachmentAsset = Schema.decodeUnknownEffect(
+  Schema.Struct({ path: Schema.String, resource: PeerAttachmentAssetResource }),
+);
+const decodeDownloads = Schema.decodeUnknownEffect(
+  Schema.Struct({ downloads: Schema.Array(Schema.Unknown) }),
+);
+const decodeFileChooser = Schema.decodeUnknownEffect(
+  Schema.Struct({ fileChooser: Schema.Unknown }),
+);
+const decodePreviewStreamInput = Schema.decodeUnknownEffect(PreviewStreamInput);
+const decodePreviewStreamInput2 = Schema.decodeEffect(PreviewStreamInput);

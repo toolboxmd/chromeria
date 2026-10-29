@@ -225,7 +225,7 @@ const RequestSecretTool = Tool.make("request_secret", {
 const CreateThreadsTool = Tool.make("create_threads", {
   description:
     "Create new top-level threads in this checkout. Not delegation. One thread or its own worktree: `t3_thread_launch`. Project, branch, and worktree inherit.",
-  parameters: OrchestratorMcpCreateThreadsInput,
+  parameters: McpRouting.parameters(OrchestratorMcpCreateThreadsInput),
   success: OrchestratorMcpCreateThreadsResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
@@ -371,6 +371,7 @@ export const OrchestratorToolkit = Toolkit.make(
   BackgroundWaitTool,
   ScheduleTaskTool,
   ListScheduledTasksTool,
+  UpdateScheduledTaskTool,
   DeleteScheduledTaskTool,
   RequestSecretTool,
   CreateThreadsTool,

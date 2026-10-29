@@ -328,9 +328,9 @@ const make = Effect.gen(function* () {
             : {}),
         });
         if (returned !== undefined)
-          return yield* Schema.decodeUnknownEffect(success as Schema.Decoder<unknown>)(
-            returned,
-          ).pipe(Effect.mapError(unavailable));
+          return yield* Schema.decodeEffect(success as Schema.Decoder<unknown>)(returned).pipe(
+            Effect.mapError(unavailable),
+          );
       }
       const caller = yield* forwardingCaller(scope);
       const limits = caller.limits;
@@ -488,15 +488,11 @@ const make = Effect.gen(function* () {
       if (toolName === "device_execute" || toolName === "preview_upload") {
         const intent =
           toolName === "device_execute"
-            ? yield* Schema.decodeUnknownEffect(DeviceCommandInput)(args).pipe(
-                Effect.mapError(unavailable),
-              )
+            ? yield* decodeDeviceCommandInput(args).pipe(Effect.mapError(unavailable))
             : undefined;
         const preview =
           toolName === "preview_upload"
-            ? yield* Schema.decodeUnknownEffect(PreviewAutomationUploadInput)(args).pipe(
-                Effect.mapError(unavailable),
-              )
+            ? yield* decodePreviewAutomationUploadInput(args).pipe(Effect.mapError(unavailable))
             : undefined;
         if (preview?.paths !== undefined && preview.paths.length > 0)
           return yield* new OrchestratorMcpFailure({
@@ -1173,10 +1169,19 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  const call: PeerForwarding["Service"]["call"] = (scope, tool, environmentId, params, options) =>
+  const call: PeerForwarding["Service"]["call"] = <T extends Tool.Any>(
+    scope: McpInvocationContext.McpInvocationScope,
+    tool: T,
+    environmentId: EnvironmentId,
+    params: Tool.Parameters<T>,
+    options?: {
+      readonly expectedLinkIdentity: string;
+      readonly pair?: PeerAuthority.Authority["pair"];
+    },
+  ) =>
     Effect.andThen(
       requireEnabled,
-      forward(
+      forward<Tool.Success<T>>(
         scope,
         tool.name,
         tool.parametersSchema,
@@ -1251,9 +1256,10 @@ const make = Effect.gen(function* () {
 
   const listLinks: PeerForwarding["Service"]["links"] = (scope) =>
     Effect.andThen(forwardingCaller(scope), Effect.andThen(requireEnabled, links.list)).pipe(
-      Effect.mapError(
-        (error) =>
-          new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
+      Effect.mapError((error) =>
+        error._tag === "OrchestratorMcpFailure"
+          ? error
+          : new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
       ),
       Effect.map((listed) => ({
         environmentId: scope.environmentId,
@@ -1355,3 +1361,7 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(PeerForwarding, make);
+
+const decodeDeviceCommandInput = Schema.decodeUnknownEffect(DeviceCommandInput);
+
+const decodePreviewAutomationUploadInput = Schema.decodeEffect(PreviewAutomationUploadInput);

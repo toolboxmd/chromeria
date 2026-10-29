@@ -48,24 +48,30 @@ const make = Effect.gen(function* () {
         receipt.value.commandType !== "spectrum.transcript.append" ||
         receipt.value.status !== "accepted"
       )
-        return yield* Effect.fail(
-          new SpectrumTranscriptError({ threadId, commandId, cause: "Receipt mismatch" }),
-        );
+        return yield* new SpectrumTranscriptError({
+          threadId,
+          commandId,
+          cause: "Receipt mismatch",
+        });
       return receipt.value;
     }
     const found = yield* readSpectrum(threadId).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
     );
     if (Option.isNone(found))
-      return yield* Effect.fail(
-        new SpectrumTranscriptError({ threadId, commandId, cause: "Spectrum is not registered" }),
-      );
+      return yield* new SpectrumTranscriptError({
+        threadId,
+        commandId,
+        cause: "Spectrum is not registered",
+      });
     const state = found.value;
     const pending = state.outbox.find((command) => command.commandId === commandId);
     if (pending?.type !== "spectrum.transcript.append")
-      return yield* Effect.fail(
-        new SpectrumTranscriptError({ threadId, commandId, cause: "Missing durable command" }),
-      );
+      return yield* new SpectrumTranscriptError({
+        threadId,
+        commandId,
+        cause: "Missing durable command",
+      });
     const command = yield* decodeAppend(pending);
     const thread = yield* projections.getThread(threadId);
     const now = yield* DateTime.now;
@@ -84,16 +90,15 @@ const make = Effect.gen(function* () {
       result.receipt.commandType !== command.type ||
       result.receipt.status !== "accepted"
     )
-      return yield* Effect.fail(
-        new SpectrumTranscriptError({ threadId, commandId, cause: "Receipt mismatch" }),
-      );
+      return yield* new SpectrumTranscriptError({ threadId, commandId, cause: "Receipt mismatch" });
     return result.receipt;
   });
   return SpectrumTranscriptService.of({
-    dispatch: (threadId, commandId) =>
+    dispatch: Effect.fn("SpectrumTranscriptService.dispatch")((threadId, commandId) =>
       dispatch(threadId, commandId).pipe(
         Effect.mapError((cause) => new SpectrumTranscriptError({ threadId, commandId, cause })),
       ),
+    ),
   });
 });
 

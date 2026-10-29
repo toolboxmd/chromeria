@@ -193,8 +193,8 @@ export const servePeer = <E, R>(
           }),
           options?.registry === undefined
             ? Layer.mock(McpSessionRegistry.McpSessionRegistry)({
-                resolve: () => Effect.succeed(undefined),
-                scopeForThread: options?.scopeForThread ?? (() => Effect.succeed(undefined)),
+                resolve: () => Effect.sync(() => undefined),
+                scopeForThread: options?.scopeForThread ?? (() => Effect.sync(() => undefined)),
               })
             : Layer.succeed(McpSessionRegistry.McpSessionRegistry, options.registry),
         ),

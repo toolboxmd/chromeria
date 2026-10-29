@@ -1,3 +1,4 @@
+import * as DocumentText from "../provider/DocumentText.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -62,6 +63,7 @@ const makeSource = (environment = a) =>
       Layer.provideMerge(PeerMcpClient.layer),
       Layer.provideMerge(PeerAuthority.layer),
       Layer.provideMerge(PeerLinks.layer),
+      Layer.provide(Settings.layerTest({ linkedEnvironmentsEnabled: true })),
       Layer.provideMerge(Sqlite.layerMemory),
       Layer.provide(projections),
       Layer.provide(threadService),
@@ -92,6 +94,7 @@ const makeDestination = (modern = true, environment = b, controlStreamUnavailabl
     const captured = yield* Ref.make<PeerAuthority.Authority | undefined>(undefined);
     const callingThread = yield* Ref.make<ThreadId | undefined>(undefined);
     const tools = McpHttpServer.layerProjectRegistration.pipe(
+      Layer.provide(DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
       Layer.provide(threadService),
       Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
       Layer.provide(

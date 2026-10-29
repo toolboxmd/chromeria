@@ -74,7 +74,7 @@ const make = Effect.gen(function* () {
   const random = yield* SecureRandom.SecureRandom;
   const fileSystem = yield* FileSystem.FileSystem;
   const nativeReceipts = yield* Effect.serviceOption(CommandReceipts.CommandReceiptStoreV2);
-  const path = yield* Path.Path;
+  const _path = yield* Path.Path;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const projects = yield* ProjectService.ProjectService;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
@@ -366,7 +366,7 @@ const make = Effect.gen(function* () {
                             ? removeCreatedWorktree
                             : Effect.void,
                         ),
-                        Effect.catch(() => Effect.void),
+                        Effect.ignore,
                       ),
             ),
           );

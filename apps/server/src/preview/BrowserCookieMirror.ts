@@ -80,7 +80,7 @@ const make = Effect.gen(function* () {
         .pipe(Effect.mapError(() => new CookieMirrorError({ reason: "unavailable" })));
       return { ticket: ticket.token, environmentId };
     }),
-    open: (session) =>
+    open: Effect.fn("BrowserCookieMirror.open")((session) =>
       lock.withPermits(1)(
         Effect.gen(function* () {
           const parent = parents.get(session.sessionId);
@@ -127,6 +127,7 @@ const make = Effect.gen(function* () {
           };
         }),
       ),
+    ),
   });
 });
 export const layer = Layer.effect(BrowserCookieMirror, make);

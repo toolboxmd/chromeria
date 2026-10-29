@@ -66,7 +66,9 @@ export const readLayer = (
   });
   return Layer.mergeAll(
     Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
-      resolve: (cwd) => Effect.succeed(identities[cwd] ?? null),
+      resolve: Effect.fn("RepositoryIdentityResolver.RepositoryIdentityResolver.resolve")((cwd) =>
+        Effect.succeed(identities[cwd] ?? null),
+      ),
     }),
     Layer.unwrap(
       Effect.map(ProjectionStore.ProjectionStoreV2, (store) =>

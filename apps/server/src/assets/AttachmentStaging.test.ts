@@ -41,16 +41,21 @@ const database = Sqlite.layerMemory.pipe(
   Layer.provideMerge(DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
   Layer.provideMerge(Secrets.layer),
   Layer.provideMerge(Config.layerTest(process.cwd(), { prefix: "t3-staging-" })),
-  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(
+    Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+  ),
 );
 const layer = Staging.layer.pipe(Layer.provideMerge(database));
 const keyedLayer = Requests.layer.pipe(Layer.provideMerge(layer));
 const recordingClaimsLayer = Staging.layer.pipe(
+  Layer.provideMerge(DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
   Layer.provideMerge(
     Sqlite.layerConfig.pipe(
       Layer.provideMerge(Secrets.layer),
       Layer.provideMerge(Config.layerTest(process.cwd(), { prefix: "t3-recording-claim-" })),
-      Layer.provideMerge(NodeServices.layer),
+      Layer.provideMerge(
+        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+      ),
     ),
   ),
 );
@@ -532,7 +537,12 @@ it.effect.each(["fresh", "pending", "started", "removed"] as const)(
                 Sqlite.layerConfig.pipe(
                   Layer.provideMerge(Secrets.layer),
                   Layer.provideMerge(Config.layerTest(process.cwd(), { prefix: "t3-discard-s7-" })),
-                  Layer.provideMerge(NodeServices.layer),
+                  Layer.provideMerge(
+                    Layer.merge(
+                      NodeServices.layer,
+                      DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -605,10 +615,9 @@ it.effect.each([false, true])(
           ),
           Staging.AttachmentStaging,
         );
-        const results = yield* Effect.all(
-          [one, two].map((identity) =>
-            Effect.result(native.discard(scope, attachment.id, identity)),
-          ),
+        const results = yield* Effect.forEach(
+          [one, two],
+          (identity) => Effect.result(native.discard(scope, attachment.id, identity)),
           { concurrency: "unbounded" },
         );
         expect(results.filter((result) => result._tag === "Success")).toHaveLength(rival ? 1 : 2);

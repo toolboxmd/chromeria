@@ -314,36 +314,50 @@ const make = Effect.gen(function* () {
   );
   if (Option.isNone(opened)) {
     return ContextmdServing.of({
-      moment: () => Effect.succeed({ status: 204 } as const),
-      nativeSessionRegistered: () => Effect.void,
-      settle: () => Effect.succeed({ status: 404 } as const),
-      release: () => Effect.succeed({ status: 404 } as const),
-      pointerApplying: () => Effect.succeed({ status: 409 } as const),
-      pointerSettle: () => Effect.succeed({ status: 409 } as const),
-      pointerRelease: () => Effect.succeed({ status: 409 } as const),
-      currentInstructions: () => Effect.succeed(undefined),
-      stageSessionInstructions: () => Effect.succeed({ reservation: null, text: undefined }),
-      recordInstallations: (receipts) =>
-        receipts.length === 0
-          ? Effect.void
-          : Effect.fail(
-              new SessionInstructionsError({
-                operation: "record",
-                cause: new Error("Serving state unavailable"),
-              }),
-            ),
-      attachSessionInstructions: (input) =>
-        input.driver !== "grok"
-          ? Effect.void
-          : Effect.fail(
-              new SessionInstructionsError({
-                operation: "attach",
-                cause: new Error("Serving state unavailable"),
-              }),
-            ),
-      releaseSessionInstructions: () => Effect.void,
-      recordNativeFork: () => Effect.void,
-      rejected: () => Effect.void,
+      moment: Effect.fn("ContextmdServing.moment")(() => Effect.succeed({ status: 204 } as const)),
+      nativeSessionRegistered: Effect.fn("ContextmdServing.nativeSessionRegistered")(
+        () => Effect.void,
+      ),
+      settle: Effect.fn("ContextmdServing.settle")(() => Effect.succeed({ status: 404 } as const)),
+      release: Effect.fn("ContextmdServing.release")(() =>
+        Effect.succeed({ status: 404 } as const),
+      ),
+      pointerApplying: Effect.fn("ContextmdServing.pointerApplying")(() =>
+        Effect.succeed({ status: 409 } as const),
+      ),
+      pointerSettle: Effect.fn("ContextmdServing.pointerSettle")(() =>
+        Effect.succeed({ status: 409 } as const),
+      ),
+      pointerRelease: Effect.fn("ContextmdServing.pointerRelease")(() =>
+        Effect.succeed({ status: 409 } as const),
+      ),
+      currentInstructions: Effect.fn("ContextmdServing.currentInstructions")(() =>
+        Effect.sync(() => undefined),
+      ),
+      stageSessionInstructions: Effect.fn("ContextmdServing.stageSessionInstructions")(() =>
+        Effect.succeed({ reservation: null, text: undefined }),
+      ),
+      recordInstallations: Effect.fn("ContextmdServing.recordInstallations")(function* (receipts) {
+        if (receipts.length > 0)
+          return yield* new SessionInstructionsError({
+            operation: "record",
+            cause: new Error("Serving state unavailable"),
+          });
+      }),
+      attachSessionInstructions: Effect.fn("ContextmdServing.attachSessionInstructions")(
+        function* (input) {
+          if (input.driver === "grok")
+            return yield* new SessionInstructionsError({
+              operation: "attach",
+              cause: new Error("Serving state unavailable"),
+            });
+        },
+      ),
+      releaseSessionInstructions: Effect.fn("ContextmdServing.releaseSessionInstructions")(
+        () => Effect.void,
+      ),
+      recordNativeFork: Effect.fn("ContextmdServing.recordNativeFork")(() => Effect.void),
+      rejected: Effect.fn("ContextmdServing.rejected")(() => Effect.void),
       checkShown: Effect.void,
     });
   }
@@ -1424,18 +1438,21 @@ const make = Effect.gen(function* () {
       ),
     );
   return ContextmdServing.of({
-    moment: (request) => serveMoment(request),
+    moment: Effect.fn("ContextmdServing.moment")((request) => serveMoment(request)),
     nativeSessionRegistered,
     settle,
     release,
     rejected,
     checkShown,
-    pointerApplying: (delivery) =>
+    pointerApplying: Effect.fn("ContextmdServing.pointerApplying")((delivery) =>
       pointerTransition(delivery, (now) => state.markPointerApplying(delivery, now)),
-    pointerSettle: (delivery) =>
+    ),
+    pointerSettle: Effect.fn("ContextmdServing.pointerSettle")((delivery) =>
       pointerTransition(delivery, (now) => state.settlePointer(delivery, now)),
-    pointerRelease: (delivery, reason) =>
+    ),
+    pointerRelease: Effect.fn("ContextmdServing.pointerRelease")((delivery, reason) =>
       pointerTransition(delivery, () => state.releasePointer(delivery, reason)),
+    ),
     currentInstructions,
     stageSessionInstructions,
     recordInstallations,

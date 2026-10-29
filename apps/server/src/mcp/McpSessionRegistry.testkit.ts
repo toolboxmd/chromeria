@@ -19,11 +19,12 @@ export const layer = Layer.succeed(
           browserToolsAvailable: true,
         },
       }),
-    resolve: () => Effect.undefined,
+    // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
+    resolve: () => Effect.sync(() => undefined),
     touch: () => Effect.void,
     revokeProviderSession: () => Effect.void,
     revokeThread: () => Effect.void,
-    scopeForThread: () => Effect.succeed(undefined),
+    scopeForThread: () => Effect.sync(() => undefined),
     revokeAll: Effect.void,
   }),
 );

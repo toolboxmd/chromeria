@@ -863,7 +863,7 @@ it.live(
           })).isError,
         ).toBe(true);
         expect(
-          (yield* nativeCall(a, parent, "update_scheduled_task", {
+          (yield* nativeCall(a, parent, "schedule_task", {
             ...input,
             scheduledTaskId: "unknown-task",
             clientRequestId: "wrong-family",

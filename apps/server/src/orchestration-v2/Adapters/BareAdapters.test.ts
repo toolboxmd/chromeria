@@ -369,14 +369,14 @@ it.layer(NodeServices.layer)("bare homes", (it) => {
         const root = yield* fs.makeTempDirectoryScoped();
         yield* fs.makeDirectory(`${root}/native`);
         yield* fs.writeFileString(`${root}/native/auth.json`, "FAKE_TEST_CREDENTIAL");
-        yield* Effect.all(
-          [1, 2].map(() =>
+        yield* Effect.forEach(
+          [1, 2],
+          () =>
             prepareCodexBareHome({
               home: `${root}/bare`,
               sourceHome: `${root}/native`,
               managed: false,
             }),
-          ),
           { concurrency: "unbounded" },
         );
         expect(yield* fs.readLink(`${root}/bare/auth.json`)).toBe(`${root}/native/auth.json`);
@@ -419,14 +419,16 @@ it.layer(NodeServices.layer)("bare homes", (it) => {
       expect(yield* fs.exists(`${environment.XDG_CONFIG_HOME}/opencode`)).toBe(false);
       expect(environment.HOME).toBe(root);
       expect(environment).not.toHaveProperty("OPENCODE_CONFIG");
-      const config = yield* Schema.decodeUnknownEffect(
-        Schema.fromJsonString(
-          Schema.Struct({
-            agent: Schema.Struct({ plan: Schema.Struct({ prompt: Schema.String }) }),
-          }),
-        ),
-      )(environment.OPENCODE_CONFIG_CONTENT);
+      const config = yield* decodeAgentplanprompt(environment.OPENCODE_CONFIG_CONTENT);
       expect(config.agent.plan.prompt).toBe(".");
     }),
   );
 });
+
+const decodeAgentplanprompt = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      agent: Schema.Struct({ plan: Schema.Struct({ prompt: Schema.String }) }),
+    }),
+  ),
+);

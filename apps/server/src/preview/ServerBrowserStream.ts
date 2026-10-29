@@ -386,10 +386,11 @@ export const layerViewers = Layer.effect(
           scope,
         });
       }),
-      close: (sessionId, id) =>
+      close: Effect.fn("PreviewViewers.close")((sessionId, id) =>
         sessions
           .closeViewer(sessionId, id)
           .pipe(Effect.flatMap((closed) => (closed ? retire(id) : Effect.succeed(false)))),
+      ),
       resolve: Effect.fn("ServerBrowserStream.resolve")(function* (id, input, generation) {
         const binding = bindings.get(id)?.binding;
         if (
@@ -742,6 +743,7 @@ const makeHandler = Effect.fn("ServerBrowserStream.makeHandler")(
       }));
     const { canOperate } = viewing;
     const recheck: PreviewRecheck = viewing.recheck;
+    const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
     const invalidated: PreviewInvalidation = viewing.invalidated;
     yield* recheck;
     const threadId = params.get("threadId") ?? "";
@@ -756,7 +758,7 @@ const makeHandler = Effect.fn("ServerBrowserStream.makeHandler")(
             threadId,
             tabId,
             canOperate,
-            authorize: () => Effect.runPromise(recheck),
+            authorize: () => runPromise(recheck),
             resourceViewerId: viewing.viewerId,
             maxWidth: intParam(params, "maxWidth", 1280, 7680),
             maxHeight: intParam(params, "maxHeight", 800, 4320),
@@ -848,7 +850,7 @@ const makeHandler = Effect.fn("ServerBrowserStream.makeHandler")(
             }
           }),
         );
-        const receive = (chunk: Uint8Array | string) => {
+        const receive = Effect.fn("receive")((chunk: Uint8Array | string) => {
           if (access !== undefined && !validViewerMessage(chunk, canOperate))
             return Effect.interrupt;
           const message = parseMessage(chunk);
@@ -878,7 +880,7 @@ const makeHandler = Effect.fn("ServerBrowserStream.makeHandler")(
             ack ? Effect.forkScoped(ack) : Effect.void,
             next ? sendFrame(next) : Effect.void,
           );
-        };
+        });
         const receiveInput = reader.pull.pipe(
           Effect.flatMap((chunks) => Effect.forEach(chunks, receive, { discard: true })),
         );
@@ -894,7 +896,7 @@ const makeHandler = Effect.fn("ServerBrowserStream.makeHandler")(
             Effect.as(HttpServerResponse.text("Service Unavailable", { status: 503 })),
           ),
       }),
-      Effect.catch(() => Effect.succeed(HttpServerResponse.empty())),
+      Effect.orElseSucceed(() => HttpServerResponse.empty()),
     );
   },
   Effect.catchTags({
@@ -1042,12 +1044,13 @@ const receiveUpload = Effect.fn("ServerBrowserStream.receiveUpload")(function* (
         })),
       ),
   );
+  const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
   const answered = yield* browser.answerFileChooser({
     threadId: params.get("threadId") ?? "",
     tabId: params.get("tabId") ?? "",
     chooserId: params.get("chooser") ?? "",
     files,
-    authorize: () => Effect.runPromise(recheck),
+    authorize: () => runPromise(recheck),
     ...(resourceViewerId === undefined ? {} : { resourceViewerId }),
   });
   yield* recheck;

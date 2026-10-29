@@ -1,3 +1,4 @@
+import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
@@ -673,7 +674,8 @@ function layerTest(input: {
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
-          getInstance: () => Effect.undefined,
+          // @effect-diagnostics-next-line effectSucceedWithVoid:off - Optional instances require undefined rather than void.
+          getInstance: () => Effect.sync(() => undefined),
         }),
         layerConfiguredEventSink,
         IdAllocator.layer,
@@ -4250,6 +4252,7 @@ it.effect.each([
           }),
       });
       const layer = RunExecutionService.layer.pipe(
+        Layer.provideMerge(PreviewAgentActivity.layer),
         Layer.provideMerge(TurnItemPositionStore.layer.pipe(Layer.provide(layerTestDatabase))),
         Layer.provideMerge(
           Layer.mergeAll(
@@ -4450,6 +4453,7 @@ it.effect(
           }),
       });
       const layer = RunExecutionService.layer.pipe(
+        Layer.provideMerge(PreviewAgentActivity.layer),
         Layer.provideMerge(TurnItemPositionStore.layer.pipe(Layer.provide(layerTestDatabase))),
         Layer.provideMerge(
           Layer.mergeAll(
@@ -4728,7 +4732,7 @@ it.effect(
             Layer.provide(
               Layer.mock(PeerAuthority.PeerAuthority)({
                 forThread: () => Ref.get(owner),
-                legacyCeiling: () => Effect.succeed(undefined),
+                legacyCeiling: () => Effect.sync(() => undefined),
               }),
             ),
           ),

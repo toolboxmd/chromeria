@@ -69,7 +69,7 @@ const readRetirementChain = Effect.fn("childThreads.readRetirementChain")(functi
     const parent = yield* projections
       .getThread(parentId)
       .pipe(
-        Effect.map(Option.some),
+        Effect.asSome,
         Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeedNone }),
       );
     if (parent._tag === "None") break;
@@ -205,7 +205,7 @@ export function propagatedStopAdmission(
         const ancestor = yield* projections
           .getThread(provenance.ancestorThreadId)
           .pipe(
-            Effect.map(Option.some),
+            Effect.asSome,
             Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeedNone }),
           );
         const child = yield* projections.getThread(threadId);

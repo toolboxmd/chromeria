@@ -1,3 +1,4 @@
+import { LINKED_ENVIRONMENTS_OFF } from "../peer/PeerLinks.ts";
 import * as RemoteSecretRelay from "../secrets/RemoteSecretRelay.ts";
 import { interactiveAuthority } from "../peer/PeerAuthorityRecord.ts";
 import { PeerDispatchAuthority } from "../peer/peerEffectAuthority.ts";
@@ -281,6 +282,8 @@ const invokeRouted: <P, A, E, R>(
     if (Option.isNone(scopeOption)) return yield* here;
     const scope = scopeOption.value;
     const environmentId = PeerForwarding.remoteTarget(scope, decoded.value.environmentId);
+    if (environmentId !== undefined && scope.linkedEnvironments === false)
+      return yield* denied(LINKED_ENVIRONMENTS_OFF);
     if ((tool.name === "web_read" || tool.name === "web_search") && environmentId !== undefined)
       return yield* new OrchestratorMcpFailure({
         code: "invalid_request",

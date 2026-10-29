@@ -834,8 +834,12 @@ const make = Effect.gen(function* () {
   return DestinationAutomationAuthority.of({
     accept,
     claim,
-    birth: (id) => claimBirthCertificate(id).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
-    facts: (id) => read(id).pipe(Effect.map((value) => value.certificate)),
+    birth: Effect.fn("DestinationAutomationAuthority.birth")((id) =>
+      claimBirthCertificate(id).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+    ),
+    facts: Effect.fn("DestinationAutomationAuthority.facts")((id) =>
+      read(id).pipe(Effect.map((value) => value.certificate)),
+    ),
     current,
     disableLocal,
     registerRecovery,

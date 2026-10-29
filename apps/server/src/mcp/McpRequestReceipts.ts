@@ -204,12 +204,10 @@ const make = Effect.gen(function* () {
         const namespace = parts[spectrum ? 1 : 2]!;
         // A verified modern caller owns its namespace, never this raw key in
         // every other namespace. Missing ownership remains safe unsupported.
-        let decoded: string;
-        try {
-          decoded = decodeURIComponent(namespace);
-        } catch {
-          return true;
-        }
+        const decoded = yield* Effect.try(() => decodeURIComponent(namespace)).pipe(
+          Effect.orElseSucceed(() => undefined),
+        );
+        if (decoded === undefined) return true;
         const modernId = requestDigest([decoded, tool, key]);
         if ((yield* sql`SELECT id FROM mcp_request_receipts WHERE id=${modernId}`).length === 0)
           return true;

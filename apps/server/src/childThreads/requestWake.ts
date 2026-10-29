@@ -164,7 +164,7 @@ export const reconcileSubtreeChildRequests = Effect.fn("childThreads.reconcileSu
         projections
           .getThread(id)
           .pipe(
-            Effect.map(Option.some),
+            Effect.asSome,
             Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeedNone }),
           ),
     );

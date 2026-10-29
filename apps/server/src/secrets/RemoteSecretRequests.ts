@@ -458,9 +458,11 @@ const make = Effect.gen(function* () {
             );
             if (next?.deadline == null) yield* PubSub.take(changes);
             else
-              yield* Effect.raceFirst(
-                PubSub.take(changes),
-                Effect.sleep(Math.max(0, next.deadline - (yield* Clock.currentTimeMillis))),
+              yield* PubSub.take(changes).pipe(
+                Effect.timeoutOrElse({
+                  duration: Math.max(0, next.deadline - (yield* Clock.currentTimeMillis)),
+                  orElse: () => Effect.void,
+                }),
               );
           }
           retryCleanup = yield* reconcileBatch;

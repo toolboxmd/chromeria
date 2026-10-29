@@ -641,56 +641,53 @@ const make = Effect.gen(function* () {
         launch.lifecycleVersion === 1
           ? requireLifecycle(remote.environmentId, launch.linkIdentity)
           : Effect.void
-      )
-        .pipe(
-          Effect.andThen(
-            forwarding.call(
-              scope,
-              ProjectToolkit.tools.t3_thread_launch,
-              remote.environmentId,
-              {
-                projectId: launch.projectId,
-                ...(launch.bare === undefined ? {} : { bare: launch.bare }),
-                ...(tools === undefined ? {} : { tools }),
-                title: launch.title,
-                ...(launch.modelSelection === undefined
-                  ? {}
-                  : { modelSelection: launch.modelSelection }),
-                ...(launch.prismRole === undefined ? {} : { prismRole: launch.prismRole }),
-                ...(launch.lane === undefined ? {} : { lane: launch.lane }),
-                ...(launch.workspaceStrategy === undefined
-                  ? {}
-                  : { workspaceStrategy: launch.workspaceStrategy }),
-                ...(launch.runtimeMode === undefined ? {} : { runtimeMode: launch.runtimeMode }),
-                ...(launch.interactionMode === undefined
-                  ? {}
-                  : { interactionMode: launch.interactionMode }),
-                delegatedFrom: launch.delegatedFrom,
-                ...(launch.delegatedFrom.purposeLaunch === undefined
-                  ? {}
-                  : {
-                      purposeIntent: { version: 1, intent: { type: "inherit" } },
-                    }),
-                message: task.prompt,
-                clientRequestId: launch.clientRequestId,
-              },
-              { expectedLinkIdentity: launch.linkIdentity, pair: { parentThreadId, taskId } },
-            ),
-          ),
-        )
-        .pipe(
-          Effect.catchTags({
-            OrchestratorMcpFailure: (error) => {
-              if (isFinal(error) || isModeRefusal(error) || error.code === "invalid_request") {
-                const message = `${error.message} The remote launch could not be confirmed. If it was already accepted, work may still be running on ${remote.label}.`;
-                return complete(parentThreadId, taskId, "failed", message, undefined, message).pipe(
-                  Effect.andThen(Effect.fail(error)),
-                );
-              }
-              return Effect.fail(error);
+      ).pipe(
+        Effect.andThen(
+          forwarding.call(
+            scope,
+            ProjectToolkit.tools.t3_thread_launch,
+            remote.environmentId,
+            {
+              projectId: launch.projectId,
+              ...(launch.bare === undefined ? {} : { bare: launch.bare }),
+              ...(tools === undefined ? {} : { tools }),
+              title: launch.title,
+              ...(launch.modelSelection === undefined
+                ? {}
+                : { modelSelection: launch.modelSelection }),
+              ...(launch.prismRole === undefined ? {} : { prismRole: launch.prismRole }),
+              ...(launch.lane === undefined ? {} : { lane: launch.lane }),
+              ...(launch.workspaceStrategy === undefined
+                ? {}
+                : { workspaceStrategy: launch.workspaceStrategy }),
+              ...(launch.runtimeMode === undefined ? {} : { runtimeMode: launch.runtimeMode }),
+              ...(launch.interactionMode === undefined
+                ? {}
+                : { interactionMode: launch.interactionMode }),
+              delegatedFrom: launch.delegatedFrom,
+              ...(launch.delegatedFrom.purposeLaunch === undefined
+                ? {}
+                : {
+                    purposeIntent: { version: 1, intent: { type: "inherit" } },
+                  }),
+              message: task.prompt,
+              clientRequestId: launch.clientRequestId,
             },
-          }),
-        );
+            { expectedLinkIdentity: launch.linkIdentity, pair: { parentThreadId, taskId } },
+          ),
+        ),
+        Effect.catchTags({
+          OrchestratorMcpFailure: (error) => {
+            if (isFinal(error) || isModeRefusal(error) || error.code === "invalid_request") {
+              const message = `${error.message} The remote launch could not be confirmed. If it was already accepted, work may still be running on ${remote.label}.`;
+              return complete(parentThreadId, taskId, "failed", message, undefined, message).pipe(
+                Effect.andThen(Effect.fail(error)),
+              );
+            }
+            return Effect.fail(error);
+          },
+        }),
+      );
       yield* threads.dispatch({
         type: "delegated_task.remote.attach",
         commandId: CommandId.make(`command:remote-task-attach:${taskId}:${launched.threadId}`),
@@ -814,22 +811,21 @@ const make = Effect.gen(function* () {
         // `false` means it is still running there: follow again straight away.
         Effect.repeat({ while: (done) => !done }),
         Effect.catchTags({
-          OrchestratorMcpFailure: (error) =>
-            Effect.gen(function* () {
-              const current = (yield* threads.getThreadRecords(parentThreadId, [
-                "subagents",
-              ])).subagents.find((task) => task.id === taskId);
-              if (current?.remoteChild?.launch !== undefined) {
-                yield* observe(parentThreadId, taskId, {
-                  availability: error.code === "invalid_request" ? "unsupported" : "stale",
-                });
-                return yield* error;
-              }
-              const reason = yield* finalReason(parentThreadId, taskId, error);
-              if (reason === undefined) return yield* error;
-              // Gone there, or no link to reach it by: nothing left to stop there.
-              yield* complete(parentThreadId, taskId, "failed", reason, "stopped");
-            }),
+          OrchestratorMcpFailure: Effect.fn("OrchestratorMcpFailure")(function* (error) {
+            const current = (yield* threads.getThreadRecords(parentThreadId, [
+              "subagents",
+            ])).subagents.find((task) => task.id === taskId);
+            if (current?.remoteChild?.launch !== undefined) {
+              yield* observe(parentThreadId, taskId, {
+                availability: error.code === "invalid_request" ? "unsupported" : "stale",
+              });
+              return yield* error;
+            }
+            const reason = yield* finalReason(parentThreadId, taskId, error);
+            if (reason === undefined) return yield* error;
+            // Gone there, or no link to reach it by: nothing left to stop there.
+            yield* complete(parentThreadId, taskId, "failed", reason, "stopped");
+          }),
         }),
         Effect.retry(backoff),
         Effect.ignoreCause({ log: true }),
@@ -999,7 +995,7 @@ const make = Effect.gen(function* () {
                     task.completionDelivery?.state)),
           ),
           Stream.runHead,
-          Effect.as(undefined),
+          Effect.map(() => undefined),
         );
       const response = yield* watch(remote.environmentId, launch.linkIdentity, {
         pair: pairFor(parentThreadId, task),

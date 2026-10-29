@@ -1679,7 +1679,7 @@ export const layer = Layer.effect(
                               .pipe(
                                 Effect.catch((error) =>
                                   replay
-                                    ? Effect.succeed(undefined)
+                                    ? Effect.void
                                     : Effect.fail(taskError(error.message, { taskId: id })),
                                 ),
                               );
@@ -2250,7 +2250,7 @@ export const layer = Layer.effect(
       } else if (decision?._tag === "fork") {
         // Exact policy admission is durable. A retry observes it without
         // repeating a possibly external command; the policy owns its recovery.
-        yield* decision.dispatch.pipe(Effect.catch(() => Effect.void));
+        yield* decision.dispatch.pipe(Effect.ignore);
       }
       const receipt = {
         requestId: request.clientRequestId,
@@ -3326,8 +3326,9 @@ export const layer = Layer.effect(
     yield* scheduler.register("webhook-coalescing", dispatchPending());
 
     return ScheduledTaskService.of({
-      mutationReceipt: (request) =>
+      mutationReceipt: Effect.fn("ScheduledTaskService.mutationReceipt")((request) =>
         MutationReceipts.confirmed(request).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      ),
       list,
       subscribeList,
       upsert,

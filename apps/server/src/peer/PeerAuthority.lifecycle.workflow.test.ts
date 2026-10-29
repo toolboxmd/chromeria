@@ -1,3 +1,4 @@
+import * as DocumentText from "../provider/DocumentText.ts";
 import type * as Adapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 vi.mock("effect/Queue", { spy: true });
@@ -399,7 +400,11 @@ it.live(
           nextTextOffset: null,
         });
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(
+      Effect.provide(
+        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+      ),
+    ),
 );
 
 it.live("lifecycle381: finished jobs watching there never hold back a live job's Stop", () =>
@@ -468,7 +473,11 @@ it.live("lifecycle381: finished jobs watching there never hold back a live job's
       yield* resumed.requestStop(parentId, liveId, "quiet-live-stop", undefined);
       yield* recorded(liveId, (task) => task.remoteChild?.stop?.state === "acknowledged");
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(
+    Effect.provide(
+      Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+    ),
+  ),
 );
 
 it.live("lifecycle381: a stopped job with new work there is not held back by finished jobs", () =>
@@ -567,7 +576,11 @@ it.live("lifecycle381: a stopped job with new work there is not held back by fin
         (task) => task.remoteChild?.latestResult?.text === "restarted-later-result",
       );
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(
+    Effect.provide(
+      Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+    ),
+  ),
 );
 
 it.live(
@@ -789,7 +802,11 @@ it.live(
         )!;
         expect(wake.purpose?.scope).toEqual(scope(379));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(
+      Effect.provide(
+        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+      ),
+    ),
 );
 
 it.live("lifecycle381: a valid old-peer result has unknown follow-up purpose", () =>
@@ -919,7 +936,11 @@ it.live("lifecycle381: a valid old-peer result has unknown follow-up purpose", (
         summary: "old-purpose-original",
       });
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(
+    Effect.provide(
+      Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+    ),
+  ),
 );
 
 it.live(
@@ -1015,7 +1036,11 @@ it.live(
           ),
         ).toBe(true);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(
+      Effect.provide(
+        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+      ),
+    ),
 );
 
 it.live(
@@ -1277,7 +1302,11 @@ it.live(
         }).pipe(Effect.result);
         expect(forged._tag).toBe("Failure");
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(
+      Effect.provide(
+        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+      ),
+    ),
 );
 
 it.live(
@@ -1421,7 +1450,11 @@ it.live(
         ).toEqual(notices);
         expect(yield* a.orchestrator.getThreadShell(childId)).toBe(null);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(
+      Effect.provide(
+        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+      ),
+    ),
 );
 
 it.live(
@@ -1488,7 +1521,11 @@ it.live(
         }
         expect(combined === text).toBe(true);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(
+      Effect.provide(
+        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+      ),
+    ),
 );
 
 it.live(
@@ -1654,7 +1691,11 @@ it.live(
           "Cancelled.",
         );
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(
+      Effect.provide(
+        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+      ),
+    ),
 );
 
 it.live(
@@ -1977,7 +2018,11 @@ it.live(
         yield* denied({ pair, operation: { type: "stop", requestId: "new-deliberate-stop381" } });
         expect(yield* state()).toBe(afterNewStopSequence);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(
+      Effect.provide(
+        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+      ),
+    ),
 );
 
 it.live(
@@ -2166,7 +2211,11 @@ it.live(
 
         expect((yield* a.threads.getThreadShell(parentId))?.activeRunId).toBeNull();
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(
+      Effect.provide(
+        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+      ),
+    ),
 );
 
 it.live("lifecycle381: same public cancellation replays after an in-flight launch attaches", () =>
@@ -2330,7 +2379,11 @@ it.live("lifecycle381: same public cancellation replays after an in-flight launc
         )?.remoteChild?.stop?.requestId,
       ).toBe("client-stop:attachment-newer");
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(
+    Effect.provide(
+      Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+    ),
+  ),
 );
 
 it.live(
@@ -2498,7 +2551,15 @@ it.live("reviewer382: separate callers may reuse a local request key", () =>
       }
       expect((yield* node.scheduled.list()).tasks).toHaveLength(2);
     }),
-  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  ).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        FetchHttpClient.layer,
+        DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+      ),
+    ),
+  ),
 );
 
 it.live("reviewer382: legacy metadata replay preserves later title", () =>
@@ -2542,7 +2603,15 @@ it.live("reviewer382: legacy metadata replay preserves later title", () =>
       const shell = yield* node.threads.getThreadShell(parent);
       expect(shell?.title, json(replay)).toBe("Later independent title");
     }),
-  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  ).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        FetchHttpClient.layer,
+        DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+      ),
+    ),
+  ),
 );
 
 it.live("reviewer382: concurrent keyed field edits retain both intents", () =>
@@ -2605,7 +2674,15 @@ it.live("reviewer382: concurrent keyed field edits retain both intents", () =>
         prompt: "Prompt B",
       });
     }),
-  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  ).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        FetchHttpClient.layer,
+        DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+      ),
+    ),
+  ),
 );
 
 it.live("runtime382-F1: remote scheduler validation leaves SQLite free for reverse control", () =>
@@ -2668,7 +2745,15 @@ it.live("runtime382-F1: remote scheduler validation leaves SQLite free for rever
         (yield* b.scheduled.list()).tasks.find((t) => t.id === receipt.scheduledTaskId)?.title,
       ).toBe("Later independent title");
     }),
-  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  ).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        FetchHttpClient.layer,
+        DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+      ),
+    ),
+  ),
 );
 
 it.live("toggle584: a retried keyed disable replays its receipt after a later enable", () =>
@@ -2722,7 +2807,15 @@ it.live("toggle584: a retried keyed disable replays its receipt after a later en
         true,
       );
     }),
-  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  ).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        FetchHttpClient.layer,
+        DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+      ),
+    ),
+  ),
 );
 
 it.live(
@@ -2791,7 +2884,15 @@ it.live(
         expect(removed.isError, json(removed)).not.toBe(true);
         expect((yield* b.scheduled.list()).tasks).toHaveLength(0);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          FetchHttpClient.layer,
+          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -2877,7 +2978,15 @@ it.live(
           expect(unrelated.isError, json(unrelated)).not.toBe(true);
         }
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          FetchHttpClient.layer,
+          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -2937,7 +3046,15 @@ it.live(
         const sql = Context.get(node.database, SqlClient.SqlClient);
         expect(yield* sql`SELECT * FROM scheduled_mutation_receipts`).toHaveLength(1);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          FetchHttpClient.layer,
+          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+        ),
+      ),
+    ),
 );
 
 it.live("Grok382-G1: owner-proved preview nondelivery leaves the same key retryable", () =>
@@ -3036,7 +3153,15 @@ it.live("Grok382-G1: owner-proved preview nondelivery leaves the same key retrya
       expect(replay.structuredContent).toEqual(accepted.structuredContent);
       expect(clicks).toBe(1);
     }),
-  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  ).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        FetchHttpClient.layer,
+        DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+      ),
+    ),
+  ),
 );
 
 it.live.each(["reserve", "discard"] as const)(
@@ -3063,9 +3188,7 @@ it.live.each(["reserve", "discard"] as const)(
           clientRequestId: "race382-upload",
         });
         expect(prepared.isError, json(prepared)).not.toBe(true);
-        const issued = yield* Schema.decodeUnknownEffect(PeerAttachmentUploadResult)(
-          prepared.structuredContent,
-        );
+        const issued = yield* decodePeerAttachmentUploadResult(prepared.structuredContent);
         const http = yield* HttpClient.HttpClient;
         expect(
           (yield* http.execute(
@@ -3231,7 +3354,15 @@ it.live.each(["reserve", "discard"] as const)(
           expect(Array.from(yield* fs.readFile(file))).toEqual([9, 8, 7, 6]);
         }
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          FetchHttpClient.layer,
+          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -3305,7 +3436,15 @@ it.live(
         );
         expect(yield* Ref.get(other.deviceHostStarts)).toBe(prepared);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          FetchHttpClient.layer,
+          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -3419,7 +3558,15 @@ it.live(
         expect(yield* sql`SELECT request_id FROM scheduled_mutation_receipts`).toHaveLength(3);
         expect((yield* b.scheduled.list()).tasks).toHaveLength(0);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          FetchHttpClient.layer,
+          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+        ),
+      ),
+    ),
 );
 
 it.live.each(["single", "bulk", "replacement"] as const)(
@@ -3555,7 +3702,15 @@ it.live.each(["single", "bulk", "replacement"] as const)(
         expect((yield* c.scheduled.list()).tasks).toHaveLength(0);
         expect(yield* sql`SELECT request_id FROM scheduled_mutation_receipts`).toHaveLength(2);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          FetchHttpClient.layer,
+          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+        ),
+      ),
+    ),
 );
 
 it.live("reviewer382-r2: saved PNG replays through registered transport without its renderer", () =>
@@ -3672,7 +3827,15 @@ it.live("reviewer382-r2: saved PNG replays through registered transport without 
       expect(json(narrowed)).not.toContain(receipt.artifact.screenshotPath);
       expect(screenshots).toBe(1);
     }),
-  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  ).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        FetchHttpClient.layer,
+        DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+      ),
+    ),
+  ),
 );
 
 it.live("reviewer382-r2: manual admission rechecks a replacement schedule target", () =>
@@ -3772,7 +3935,15 @@ it.live("reviewer382-r2: manual admission rechecks a replacement schedule target
       expect(json(fresh)).toContain("resource scope");
       expect(yield* sql`SELECT request_id FROM scheduled_manual_requests`).toHaveLength(0);
     }),
-  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  ).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        FetchHttpClient.layer,
+        DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+      ),
+    ),
+  ),
 );
 
 it.live(
@@ -3882,7 +4053,15 @@ it.live(
         expect(json(fresh)).toContain("resource scope");
         expect(yield* sql`SELECT request_id FROM scheduled_manual_requests`).toHaveLength(0);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          FetchHttpClient.layer,
+          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -4037,7 +4216,15 @@ it.live(
         ]);
         expect(yield* fs.readDirectory(a.config.browserArtifactsDir)).toHaveLength(1);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          FetchHttpClient.layer,
+          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -4124,7 +4311,15 @@ it.live(
         });
         expect(yield* fs.exists(a.config.browserArtifactsDir)).toBe(false);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          FetchHttpClient.layer,
+          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -4229,7 +4424,15 @@ it.live(
           yield* sql`SELECT consumer,discard_receipt,discard_cleanup FROM attachment_staging WHERE id=${issued.attachmentId}`,
         ).toEqual(accepted);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          FetchHttpClient.layer,
+          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -4298,9 +4501,7 @@ it.live(
         const input = { clientRequestId: "recording382-local-keyed" };
         const first = yield* nativeCall(node, parent, "preview_recording_stop", input);
         expect(first.isError, json(first)).not.toBe(true);
-        const result = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ id: Schema.String, path: Schema.String }),
-        )(first.structuredContent);
+        const result = yield* decodeIdpath(first.structuredContent);
         const fs = yield* FileSystem.FileSystem;
         expect(Array.from(yield* fs.readFile(result.path))).toEqual(Array.from(bytes));
         yield* fs.writeFile(result.path, new Uint8Array([9, 8, 7, 6, 5, 4, 3, 2, 1, 0]));
@@ -4316,5 +4517,18 @@ it.live(
         expect(rendererCalls).toBe(2); // A deliberate unkeyed action still reaches its renderer.
         expect(Array.from(yield* fs.readFile(result.path))).toEqual([9, 8, 7, 6, 5, 4, 3, 2, 1, 0]);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          FetchHttpClient.layer,
+          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+        ),
+      ),
+    ),
+);
+
+const decodePeerAttachmentUploadResult = Schema.decodeUnknownEffect(PeerAttachmentUploadResult);
+const decodeIdpath = Schema.decodeUnknownEffect(
+  Schema.Struct({ id: Schema.String, path: Schema.String }),
 );

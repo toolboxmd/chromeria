@@ -79,8 +79,7 @@ const reader = (http: HttpClient.HttpClient) =>
     Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),
     Layer.provide(
       Layer.mock(Secrets.ServerSecretStore)({
-        get: () =>
-          Effect.succeed(Option.some(new TextEncoder().encode("fixture-only-host-secret"))),
+        get: () => Effect.succeedSome(new TextEncoder().encode("fixture-only-host-secret")),
       }),
     ),
     Layer.provide(

@@ -922,93 +922,97 @@ const make = Effect.gen(function* () {
         ? { stage: "staged" as const, digest: row!.digest }
         : { stage: "awaiting-bytes" as const };
     }),
-    reserveTransfer: (scope, consumer, destination, attachments, references) =>
-      sql
-        .withTransaction(
-          Effect.gen(function* () {
-            if (references !== undefined && references.length !== attachments.length)
-              return yield* denied();
-            yield* bindIntent(scope, consumer, destination, attachments);
-            for (const [index, attachment] of attachments.entries()) {
-              if (references !== undefined) {
-                const reference = references[index];
-                const native = yield* read(attachment.id);
+    reserveTransfer: Effect.fn("AttachmentStaging.reserveTransfer")(
+      (scope, consumer, destination, attachments, references) =>
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              if (references !== undefined && references.length !== attachments.length)
+                return yield* denied();
+              yield* bindIntent(scope, consumer, destination, attachments);
+              for (const [index, attachment] of attachments.entries()) {
+                if (references !== undefined) {
+                  const reference = references[index];
+                  const native = yield* read(attachment.id);
+                  if (
+                    reference === undefined ||
+                    !owned(scope, native) ||
+                    native!.digest === null ||
+                    native!.manifest !== manifest(attachment) ||
+                    reference.attachmentId !== attachment.id ||
+                    reference.environmentId !== scope.environmentId ||
+                    reference.owner !== native!.owner ||
+                    reference.digest !== native!.digest ||
+                    reference.name !== attachment.name ||
+                    reference.mimeType !== attachment.mimeType ||
+                    reference.sizeBytes !== attachment.sizeBytes
+                  )
+                    return yield* denied();
+                }
+                const binding = transferBinding(scope, destination, attachment);
+                const prior = (yield* sql<{
+                  binding: string;
+                }>`SELECT binding FROM attachment_transfers WHERE consumer=${consumer} AND attachment_id=${attachment.id}`.pipe(
+                  Effect.mapError(unavailable),
+                ))[0];
+                if (prior !== undefined) {
+                  if (prior.binding !== binding) return yield* denied();
+                  continue;
+                }
+                const row = yield* read(attachment.id);
                 if (
-                  reference === undefined ||
-                  !owned(scope, native) ||
-                  native!.digest === null ||
-                  native!.manifest !== manifest(attachment) ||
-                  reference.attachmentId !== attachment.id ||
-                  reference.environmentId !== scope.environmentId ||
-                  reference.owner !== native!.owner ||
-                  reference.digest !== native!.digest ||
-                  reference.name !== attachment.name ||
-                  reference.mimeType !== attachment.mimeType ||
-                  reference.sizeBytes !== attachment.sizeBytes
+                  row !== undefined &&
+                  (!owned(scope, row) ||
+                    row.digest === null ||
+                    row.manifest !== manifest(attachment) ||
+                    (row.consumer !== null &&
+                      (row.consumer !== consumer || row.target !== destination)))
                 )
                   return yield* denied();
-              }
-              const binding = transferBinding(scope, destination, attachment);
-              const prior = (yield* sql<{
-                binding: string;
-              }>`SELECT binding FROM attachment_transfers WHERE consumer=${consumer} AND attachment_id=${attachment.id}`.pipe(
-                Effect.mapError(unavailable),
-              ))[0];
-              if (prior !== undefined) {
-                if (prior.binding !== binding) return yield* denied();
-                continue;
-              }
-              const row = yield* read(attachment.id);
-              if (
-                row !== undefined &&
-                (!owned(scope, row) ||
-                  row.digest === null ||
-                  row.manifest !== manifest(attachment) ||
-                  (row.consumer !== null &&
-                    (row.consumer !== consumer || row.target !== destination)))
-              )
-                return yield* denied();
-              // This exact source access/byte proof is retained before destination staging.
-              // A retry can compare it with the destination's real staged/native owner,
-              // even after an ephemeral pending source has been swept.
-              const source = yield* verify(scope, attachment);
-              if (row !== undefined) {
-                yield* sql`UPDATE attachment_staging SET consumer=${consumer},target=${destination} WHERE id=${attachment.id} AND consumer IS NULL`.pipe(
+                // This exact source access/byte proof is retained before destination staging.
+                // A retry can compare it with the destination's real staged/native owner,
+                // even after an ephemeral pending source has been swept.
+                const source = yield* verify(scope, attachment);
+                if (row !== undefined) {
+                  yield* sql`UPDATE attachment_staging SET consumer=${consumer},target=${destination} WHERE id=${attachment.id} AND consumer IS NULL`.pipe(
+                    Effect.mapError(unavailable),
+                  );
+                  const reserved = yield* read(attachment.id);
+                  if (reserved?.consumer !== consumer || reserved.target !== destination)
+                    return yield* denied();
+                }
+                yield* sql`INSERT INTO attachment_transfers (consumer,attachment_id,binding,digest) VALUES (${consumer},${attachment.id},${binding},${source.digest})`.pipe(
                   Effect.mapError(unavailable),
                 );
-                const reserved = yield* read(attachment.id);
-                if (reserved?.consumer !== consumer || reserved.target !== destination)
-                  return yield* denied();
               }
-              yield* sql`INSERT INTO attachment_transfers (consumer,attachment_id,binding,digest) VALUES (${consumer},${attachment.id},${binding},${source.digest})`.pipe(
-                Effect.mapError(unavailable),
+            }),
+          )
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "OrchestratorMcpFailure" ? error : unavailable(error),
+            ),
+          ),
+    ),
+    bindConsumption: Effect.fn("AttachmentStaging.bindConsumption")(
+      (scope, commandId, threadId, attachments) =>
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              yield* bindIntent(scope, commandId, threadId, attachments);
+              // Reserve the complete manifest atomically before any filesystem work.
+              yield* Effect.forEach(
+                attachments,
+                (attachment) => reserve(scope, commandId, threadId, attachment),
+                { discard: true },
               );
-            }
-          }),
-        )
-        .pipe(
-          Effect.mapError((error) =>
-            error._tag === "OrchestratorMcpFailure" ? error : unavailable(error),
+            }),
+          )
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "OrchestratorMcpFailure" ? error : unavailable(error),
+            ),
           ),
-        ),
-    bindConsumption: (scope, commandId, threadId, attachments) =>
-      sql
-        .withTransaction(
-          Effect.gen(function* () {
-            yield* bindIntent(scope, commandId, threadId, attachments);
-            // Reserve the complete manifest atomically before any filesystem work.
-            yield* Effect.forEach(
-              attachments,
-              (attachment) => reserve(scope, commandId, threadId, attachment),
-              { discard: true },
-            );
-          }),
-        )
-        .pipe(
-          Effect.mapError((error) =>
-            error._tag === "OrchestratorMcpFailure" ? error : unavailable(error),
-          ),
-        ),
+    ),
     reserve,
     discard: Effect.fn("AttachmentStaging.discard")(function* (scope, id, request) {
       if (request !== undefined && request.generation !== requestGeneration(scope))

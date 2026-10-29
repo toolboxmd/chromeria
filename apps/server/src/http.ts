@@ -508,10 +508,8 @@ export const layerAssetRoute = Layer.unwrap(
               request.headers["if-range"],
             );
           }).pipe(
-            Effect.catch(() =>
-              Effect.succeed(
-                HttpServerResponse.empty({ status: 403, headers: { "cache-control": "no-store" } }),
-              ),
+            Effect.orElseSucceed(() =>
+              HttpServerResponse.empty({ status: 403, headers: { "cache-control": "no-store" } }),
             ),
           );
         }
@@ -584,10 +582,8 @@ export const layerAssetRoute = Layer.unwrap(
                 message: error.message,
               }),
             ),
-            Effect.catch(() =>
-              Effect.succeed(
-                HttpServerResponse.empty({ status: 403, headers: { "cache-control": "no-store" } }),
-              ),
+            Effect.orElseSucceed(() =>
+              HttpServerResponse.empty({ status: 403, headers: { "cache-control": "no-store" } }),
             ),
           );
         }

@@ -6195,7 +6195,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                         ...failure,
                         resetAt: failureResetAt(failure, yield* Ref.get(rateLimitSnapshot)),
                       }
-                    : failure,
+                    : failure.code === "serverOverloaded" &&
+                        input.context.capacityRetryAttempt === CODEX_CAPACITY_MAX_RETRIES
+                      ? { ...failure, retryable: true }
+                      : failure,
                 ...(input.providerRetry === undefined
                   ? {}
                   : {
@@ -7969,6 +7972,24 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ),
           interruptTurn: Effect.fn("CodexAdapterV2.interruptTurn")(
             function* (requestedInput) {
+              const nativeThreadId = requestedInput.providerThread.nativeThreadRef?.nativeId;
+              const capacityRetry =
+                nativeThreadId == null
+                  ? undefined
+                  : capacityContinuations.get(nativeThreadId)?.context;
+              const startingRetry =
+                capacityRetry?.providerTurnId === latestRunTurnId(requestedInput.providerTurnId)
+                  ? capacityRetry
+                  : undefined;
+              if (startingRetry?.capacityRetryPending !== undefined) {
+                const started = yield* Deferred.await(startingRetry.capacityRetryPending).pipe(
+                  Effect.timeoutOption("10 seconds"),
+                );
+                if (Option.isNone(started))
+                  return yield* toProtocolError(
+                    "Codex did not start the capacity retry within 10 seconds; Stop could not be delivered.",
+                  );
+              }
               const cutInCall = requestedInput.replacementFollows === true;
               const threadKey = requestedInput.providerThread.id;
               const exit = yield* Deferred.make<void>();
@@ -8024,6 +8045,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     const lineageRoots = Array.from(
                       new Set([
                         ...(activeTurn === undefined ? [] : [activeTurn]),
+                        ...(startingRetry === undefined ? [] : [startingRetry]),
                         ...goalTurns,
                         ...(threadCutIn?.roots ?? []),
                       ]),
@@ -8333,6 +8355,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 yield* Effect.gen(function* () {
                   for (const target of interruptTargets) {
                     const context = target.context;
+                    if (context.capacityRetryPending !== undefined) {
+                      yield* finalizeCodexTurn({
+                        context,
+                        nativeTurnId: context.nativeTurnId,
+                        status: "interrupted",
+                        completedAt: yield* DateTime.now,
+                      });
+                      continue;
+                    }
                     // A null start timestamp acknowledges a queued turn; Codex cannot interrupt it
                     // until turn/started confirms that the native task exists.
                     if (context.nativeStartReady !== undefined) {
@@ -8457,14 +8488,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     const failed = (yield* terminateTrackedTerminals()).find(
                       (result) => !result.success,
                     );
-                    if (failed !== undefined && !failed.success)
-                      return yield* Effect.fail(failed.error);
+                    if (failed !== undefined && !failed.success) return yield* failed.error;
                   }
                   yield* finalizeRemainingInterruptLineage;
                   const terminationResults = yield* terminateTrackedTerminals();
                   const failedTermination = terminationResults.find((result) => !result.success);
                   if (failedTermination !== undefined && !failedTermination.success) {
-                    return yield* Effect.fail(failedTermination.error);
+                    return yield* failedTermination.error;
                   }
                   yield* turnTerminalizationPermit.withPermits(1)(
                     Effect.gen(function* () {

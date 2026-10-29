@@ -141,7 +141,7 @@ const make = Effect.gen(function* () {
   });
 
   return StreamStatsStore.of({
-    record: (stats) =>
+    record: Effect.fn("StreamStatsStore.record")((stats) =>
       insert(stats).pipe(
         Effect.map((rows) => rows.length > 0),
         Effect.mapError(
@@ -153,6 +153,7 @@ const make = Effect.gen(function* () {
             }),
         ),
       ),
+    ),
     healthySamples: healthy(undefined).pipe(
       Effect.mapError((cause) => new StreamStatsReadError({ cause })),
     ),

@@ -1,3 +1,5 @@
+import * as PeerLinkRequests from "../peer/PeerLinkRequests.ts";
+import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
@@ -410,6 +412,12 @@ const withParent = <A, E>(
         ),
       );
       const layerTest = McpHttpServer.layerOrchestratorToolkit.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(PeerLinks.PeerLinks)({}),
+            Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+          ),
+        ),
         Layer.provide(SqlitePersistence.layerMemory),
         Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
         Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),

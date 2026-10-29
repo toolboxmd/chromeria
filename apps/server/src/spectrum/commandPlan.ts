@@ -375,12 +375,13 @@ const providerlessMessages = Layer.effect(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     return {
-      contains: (threadId: ThreadId) =>
+      contains: Effect.fn("ForkProviderlessMessages.contains")((threadId: ThreadId) =>
         readSpectrum(threadId).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.map(Option.isSome),
           Effect.mapError((cause) => new ForkProviderlessMessageReadError({ threadId, cause })),
         ),
+      ),
     };
   }),
 );
@@ -390,12 +391,13 @@ export const layer = Layer.merge(
     Effect.gen(function* () {
       const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
       return {
-        plan: (command: OrchestrationV2ServerCommand) =>
+        plan: Effect.fn("ForkCommandInterceptor.plan")((command: OrchestrationV2ServerCommand) =>
           Option.isNone(authority)
             ? plan(command)
             : plan(command).pipe(
                 Effect.provideService(PeerAuthority.PeerAuthority, authority.value),
               ),
+        ),
       };
     }),
   ),

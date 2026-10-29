@@ -1,5 +1,6 @@
 import * as NodeURL from "node:url";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as DocumentText from "../provider/DocumentText.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -26,7 +27,6 @@ import {
   EnvironmentId,
   isProviderNativeSubagentThread,
   MessageId,
-  NodeId,
   type ModelSelection,
   OrchestratorMcpDelegateTaskResult,
   OrchestratorMcpThreadInterruptResult,
@@ -80,11 +80,17 @@ import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinkRequests from "../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
-import { delegatedTaskRun, hasPendingChildRuns } from "./OrchestratorMcpService.ts";
+
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      Layer.mock(PeerLinks.PeerLinks)({}),
+      Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+    ),
+  ),
   Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
   Layer.provide(PrismServerSettings.layerTest()),
@@ -145,7 +151,7 @@ const readDelegatedTaskStatusTranscript = Effect.fn("readDelegatedTaskStatusTran
       entries: transcript.entries.filter((entry) => entry.type !== "runtime_exit"),
     };
   },
-  Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+  Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, DocumentText.layer.pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))))),
 );
 
 function makeProviderSnapshot(input: {
@@ -529,6 +535,12 @@ describe("orchestrator MCP toolkit", () => {
         );
         const layers = Layer.merge(
           McpHttpServer.layerOrchestratorToolkit.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.mock(PeerLinks.PeerLinks)({}),
+                Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+              ),
+            ),
             Layer.provide(SqlitePersistence.layerMemory),
             Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
           ),
@@ -878,7 +890,11 @@ describe("orchestrator MCP toolkit", () => {
           expect(declaredFailure(oldCaller)).toMatchObject({ code: "parent_not_active" });
         }).pipe(Effect.provide(layers));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(
+      Effect.provide(
+        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+      ),
+    ),
   );
 
   it.live.each([

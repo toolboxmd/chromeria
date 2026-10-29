@@ -51,10 +51,9 @@ const make = Effect.gen(function* () {
   const read = (threadId: ThreadId) =>
     readSpectrum(threadId).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
-      Effect.flatMap((state) =>
-        Option.isSome(state)
-          ? Effect.succeed(state.value)
-          : Effect.fail(new SpectrumRoundError({ threadId, cause: "Spectrum is not registered" })),
+      Effect.flatMap(Effect.fromOption),
+      Effect.mapError(
+        () => new SpectrumRoundError({ threadId, cause: "Spectrum is not registered" }),
       ),
     );
   /** Admission refused the start: nothing of it committed, and its command can never commit. */
@@ -239,14 +238,16 @@ const make = Effect.gen(function* () {
     }
   });
   return SpectrumRoundService.of({
-    prepare: (threadId) =>
+    prepare: Effect.fn("SpectrumRoundService.prepare")((threadId) =>
       locks
         .withLock(threadId, prepare(threadId))
         .pipe(Effect.mapError((cause) => new SpectrumRoundError({ threadId, cause }))),
-    dispatch: (threadId, commandId) =>
+    ),
+    dispatch: Effect.fn("SpectrumRoundService.dispatch")((threadId, commandId) =>
       locks
         .withLock(threadId, dispatch(threadId, commandId))
         .pipe(Effect.mapError((cause) => new SpectrumRoundError({ threadId, cause }))),
+    ),
   });
 });
 
