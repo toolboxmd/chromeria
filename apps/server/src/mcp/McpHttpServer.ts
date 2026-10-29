@@ -57,7 +57,6 @@ import {
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
-import * as ServerSettings from "../serverSettings.ts";
 import * as DeviceService from "../device/DeviceService.ts";
 import * as HtmlRender from "../htmlRender/HtmlRender.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
@@ -413,7 +412,10 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
       bound = verified.success;
     }
     return yield* httpEffect.pipe(
-      Effect.provideService(McpInvocationContext.McpInvocationContext, { ...bound, linkedEnvironments }),
+      Effect.provideService(McpInvocationContext.McpInvocationContext, {
+        ...bound,
+        linkedEnvironments,
+      }),
       Effect.map(normalizeMcpHttpResponse),
       Effect.map((response) =>
         Option.isSome(authority)
@@ -1476,7 +1478,12 @@ export const toolkitRegistration = <Tools extends Record<string, Tool.Any>, EX, 
   // Return-mode registration keeps declared error fields (durable outcome receipts) on the
   // wire for MCP peers; error mode would emit only Error.message.
   const registration = Layer.effectDiscard(
-    withToolAnalytics(withAdvertisedSchemas(wireToolkit(toolkit), McpServer.registerToolkit(decodeAsAdvertised(wireToolkit(toolkit)))))),
+    withToolAnalytics(
+      withAdvertisedSchemas(
+        wireToolkit(toolkit),
+        McpServer.registerToolkit(decodeAsAdvertised(wireToolkit(toolkit))),
+      ),
+    ),
   ).pipe(Layer.provide(McpServer.McpServer.layer));
   // @effect-diagnostics-next-line unsafeEffectTypeAssertion:off - the auth middleware provides it per request.
   const registered = registration as Layer.Layer<

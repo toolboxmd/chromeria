@@ -34,7 +34,6 @@ import {
   type EnvironmentInternalError,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as DateTime from "effect/DateTime";
