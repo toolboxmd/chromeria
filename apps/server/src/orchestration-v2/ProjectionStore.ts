@@ -6,7 +6,7 @@ import { pendingGuestMessageCount } from "@t3tools/contracts";
 import { executionPurposesEqual, NativeExecutionSegment } from "@t3tools/contracts";
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
 import { keepContinuationSource } from "../prism/continuationProjection.ts";
-import { mergeRestartCut } from "@t3tools/shared/restartCut";
+import { mergeRestartCut, RESTART_CUT_REASONS } from "@t3tools/shared/restartCut";
 import { projectTurnItemForWire } from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -19,6 +19,7 @@ import type {
 import {
   latestRootProviderFailure,
   latestUnheldRun,
+  runRanAfter,
   threadErrorSummary,
   usageLimitRunPresentedAsLatest,
 } from "@t3tools/shared/orchestrationV2ThreadError";
@@ -7231,34 +7232,71 @@ function needsRecovery(
       return projection.runs.some((run) => run.delegatedCompletion?.delivery != null);
     case "subagent-results": {
       const parentThreadId = projection.thread.lineage.parentThreadId;
-      const originalTaskId =
-        projection.thread.forkedFrom?.type === "node"
-          ? projection.thread.forkedFrom.nodeId
-          : undefined;
+      if (
+        projection.thread.lineage.relationshipToParent !== "subagent" ||
+        parentThreadId === null ||
+        projection.thread.forkedFrom?.type !== "node"
+      ) {
+        return false;
+      }
+      const transfers = [...projection.contextTransfers, ...(parent?.contextTransfers ?? [])];
+      const monitorRunIds = new Set(
+        projection.messages
+          .filter((message) => message.notification?.source.kind === "monitor")
+          .map((message) => message.runId),
+      );
+      const latestResult = projection.runs
+        .filter(
+          (run) =>
+            ["completed", "interrupted", "failed", "cancelled"].includes(run.status) &&
+            (run.startedAt !== null ||
+              run.ordinal === 1 ||
+              run.restartContinuationOfRunId !== undefined ||
+              (run.status === "cancelled" && run.restartCut !== undefined)) &&
+            !monitorRunIds.has(run.id),
+        )
+        .reduce<OrchestrationV2Run | undefined>(
+          (latest, run) => (latest === undefined || runRanAfter(run, latest) ? run : latest),
+          undefined,
+        );
+      const restartResultNeedsRecovery =
+        latestResult !== undefined &&
+        latestResult.restartCut?.reason !== RESTART_CUT_REASONS.TASK_SETTLED &&
+        ((latestResult.status === "cancelled" && latestResult.restartCut !== undefined) ||
+          latestResult.restartContinuationOfRunId !== undefined) &&
+        !projection.runs.some(
+          (run) =>
+            !monitorRunIds.has(run.id) &&
+            (["preparing", "starting", "running", "waiting"].includes(run.status) ||
+              (run.status === "queued" && run.queueHeld !== true)),
+        ) &&
+        !transfers.some(
+          (transfer) =>
+            transfer.type === "subagent_result" &&
+            transfer.sourceThreadId === projection.thread.id &&
+            transfer.targetThreadId === parentThreadId &&
+            transfer.sourcePoint.runId === latestResult.id,
+        );
+      const originalTaskId = projection.thread.forkedFrom.nodeId;
       return (
-        (projection.thread.lineage.relationshipToParent === "subagent" &&
-          parentThreadId !== null &&
-          projection.thread.forkedFrom?.type === "node" &&
-          (parent?.subagents ?? []).some(
-            (task) =>
-              task.origin === "app_owned" &&
-              task.childThreadId === projection.thread.id &&
-              (task.result === null || task.id === originalTaskId) &&
-              untransferredDelegatedRuns(projection, task.id, parent?.contextTransfers ?? [])
-                .length > 0,
-          )) ||
-        (projection.thread.lineage.relationshipToParent === "subagent" &&
-          parentThreadId !== null &&
-          projection.thread.forkedFrom?.type === "node" &&
-          ["completed", "interrupted", "failed", "cancelled", "rolled_back"].includes(
-            latestUnheldRun(projection.runs)?.status ?? "idle",
-          ) &&
-          ![...projection.contextTransfers, ...(parent?.contextTransfers ?? [])].some(
+        (parent?.subagents ?? []).some(
+          (task) =>
+            task.origin === "app_owned" &&
+            task.childThreadId === projection.thread.id &&
+            (task.result === null || task.id === originalTaskId) &&
+            untransferredDelegatedRuns(projection, task.id, parent?.contextTransfers ?? []).length >
+              0,
+        ) ||
+        (["completed", "interrupted", "failed", "cancelled", "rolled_back"].includes(
+          latestUnheldRun(projection.runs)?.status ?? "idle",
+        ) &&
+          !transfers.some(
             (transfer) =>
               transfer.type === "subagent_result" &&
               transfer.sourceThreadId === projection.thread.id &&
               transfer.targetThreadId === parentThreadId,
-          ))
+          )) ||
+        restartResultNeedsRecovery
       );
     }
     case "runtime":
