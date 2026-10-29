@@ -77,7 +77,7 @@ export const assertSameLink = Effect.fn("linkOrigin.assertSameLink")(function* <
   if (
     caller.scope.authority === undefined &&
     (origin === undefined ||
-      directFullAccessPeer(caller) ||
+      (!("schedule" in target) && directFullAccessPeer(caller)) ||
       target.linkOrigin?.sessionId === origin.sessionId)
   )
     return;
@@ -90,7 +90,7 @@ export const assertSameLink = Effect.fn("linkOrigin.assertSameLink")(function* <
 /** Direct peer calls may use the full access granted by the user.
  * Descendants retain their origin fence; narrowed/plan calls never qualify.
  */
-const directFullAccessPeer = (caller: Pick<Caller, "scope" | "caller">) => {
+const directFullAccessPeer = (caller: Pick<Caller, "scope"> & { readonly caller: unknown }) => {
   const ceiling = intersectModes(
     clientModeCeiling(caller.scope.client),
     caller.scope.authority?.ceiling,
