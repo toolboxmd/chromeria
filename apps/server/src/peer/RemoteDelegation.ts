@@ -732,20 +732,22 @@ const make = Effect.gen(function* () {
 
   /**
    * The last reply `runId` gave on the task's thread there, which is its
-   * result, read whole however long it is. A read only pages forward, so
-   * it pages through the thread.
+   * result, read whole however long it is. A failed run prefers its error
+   * from the activity view over an earlier reply, without taking another run's.
    */
   const lastReply = Effect.fn("RemoteDelegation.lastReply")(function* (
     scope: ThreadScope,
     remote: OrchestrationV2RemoteTaskChild & { readonly threadId: ThreadId },
     runId: RunId | null,
+    failed = false,
   ) {
     let reply: OrchestratorMcpThreadTimelineItem | undefined;
+    let error: OrchestratorMcpThreadTimelineItem | undefined;
     let afterPosition: number | undefined;
     while (true) {
       const read = yield* forwarding.readThread(scope, remote.environmentId, {
         threadId: remote.threadId,
-        view: "messages",
+        view: failed ? "activity" : "messages",
         limit: 100,
         ...(afterPosition === undefined ? {} : { afterPosition }),
       });
@@ -753,9 +755,16 @@ const make = Effect.gen(function* () {
         read.items.findLast(
           (item) => item.type === "assistant_message" && (runId === null || item.runId === runId),
         ) ?? reply;
+      if (failed) {
+        error =
+          read.items.findLast(
+            (item) => item.type === "error" && (runId === null || item.runId === runId),
+          ) ?? error;
+      }
       if (!read.hasMore || read.nextPosition === null) break;
       afterPosition = read.nextPosition;
     }
+    reply = error ?? reply;
     if (reply === undefined) return undefined;
     let text = reply.text ?? "";
     let textOffset = reply.textTruncated ? (reply.nextTextOffset ?? null) : null;
@@ -1319,10 +1328,10 @@ const make = Effect.gen(function* () {
     }
     if (!isTerminal(waited.status)) return false;
     const resultRun = waited.resultRun ?? {
-      runId: remote.runId ?? waited.runId,
+      runId: waited.runId,
       status: waited.status,
     };
-    const result = yield* lastReply(scope, remote, resultRun.runId);
+    const result = yield* lastReply(scope, remote, resultRun.runId, resultRun.status === "failed");
     yield* complete(
       parentThreadId,
       taskId,
