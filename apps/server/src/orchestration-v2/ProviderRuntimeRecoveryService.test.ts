@@ -479,6 +479,7 @@ it.effect("recovery closes a secret card's form but leaves a link card open", ()
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getRecoveryThreadIds: () => Effect.succeed([threadId]),
           getRuntimeRecoveryProjection: () => Effect.succeed(projection),
+          getUnresolvedRestartCuts: () => Effect.succeed([]),
         }),
         Layer.mock(EventSink.EventSinkV2)({
           commitCommand: (input) => {
@@ -491,6 +492,7 @@ it.effect("recovery closes a secret card's form but leaves a link card open", ()
           runRecoveryOnce: Effect.succeed(false),
         }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({
+          get: () => Effect.succeedNone,
           listByCommandId: () => Effect.succeed([]),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
         }),
