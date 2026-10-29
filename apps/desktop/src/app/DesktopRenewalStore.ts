@@ -38,6 +38,12 @@ const CommitmentEntries = Schema.Array(
   }),
 );
 const Commitments = Schema.Struct({ stateDir: Schema.String, entries: CommitmentEntries });
+const RenewalRecordJson = Schema.fromJsonString(AuthRenewalLocalRecord);
+const decodeRenewalRecord = Schema.decodeEffect(RenewalRecordJson);
+const encodeRenewalRecord = Schema.encodeEffect(RenewalRecordJson);
+const CommitmentsJson = Schema.fromJsonString(Commitments);
+const decodeCommitments = Schema.decodeEffect(CommitmentsJson);
+const encodeCommitments = Schema.encodeEffect(CommitmentsJson);
 const make = Effect.gen(function* () {
   const { stateDir, path } = yield* DesktopEnvironment.DesktopEnvironment;
   const fs = yield* FileSystem.FileSystem;
@@ -45,14 +51,13 @@ const make = Effect.gen(function* () {
   const lock = yield* Semaphore.make(1);
   const directory = path.join(stateDir, "session-renewal");
   const publicPath = path.join(stateDir, "renewal-commitments.json");
-  const decode = Schema.decodeUnknownEffect(Schema.fromJsonString(AuthRenewalLocalRecord));
   const read = Effect.fn("DesktopRenewalStore.read")(
     function* (key: string) {
       const file = path.join(directory, `${renewalCommitment(key)}.json`);
       if (!(yield* fs.exists(file))) return null;
       const encrypted = yield* fs.readFileString(file);
       const bytes = yield* Effect.fromResult(Base64.decode(encrypted));
-      return yield* decode(yield* safe.decryptString(bytes));
+      return yield* decodeRenewalRecord(yield* safe.decryptString(bytes));
     },
     Effect.mapError((cause) => new DesktopRenewalStorageError({ cause })),
   );
@@ -67,9 +72,7 @@ const make = Effect.gen(function* () {
         if ((old?.revision ?? null) !== input.revision) return false;
         if (!(yield* safe.isEncryptionAvailable))
           return yield* new DesktopRenewalStorageError({ cause: "encryption unavailable" });
-        const raw = yield* Schema.encodeEffect(Schema.fromJsonString(AuthRenewalLocalRecord))(
-          input.value,
-        );
+        const raw = yield* encodeRenewalRecord(input.value);
         const bytes = yield* safe.encryptString(raw);
         yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
         const file = path.join(directory, `${renewalCommitment(input.key)}.json`);
@@ -77,9 +80,7 @@ const make = Effect.gen(function* () {
         yield* fs.writeFileString(temp, Base64.encode(bytes), { mode: 0o600 });
         yield* fs.rename(temp, file);
         const existing = (yield* fs.exists(publicPath))
-          ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Commitments))(
-              yield* fs.readFileString(publicPath),
-            )
+          ? yield* decodeCommitments(yield* fs.readFileString(publicPath))
           : { stateDir, entries: [] };
         const slots = [
           ...input.value.provisional,
@@ -97,7 +98,7 @@ const make = Effect.gen(function* () {
         ];
         yield* fs.writeFileString(
           `${publicPath}.tmp`,
-          yield* Schema.encodeEffect(Schema.fromJsonString(Commitments))({
+          yield* encodeCommitments({
             stateDir,
             entries: commitments,
           }),
