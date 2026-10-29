@@ -422,16 +422,15 @@ const make = Effect.gen(function* () {
   ) {
     const legacyId = yield* Effect.try(
       () => `mcp:launch:${encodeURIComponent(namespace)}:${encodeURIComponent(key)}`,
-    ).pipe(Effect.mapError(unavailable));
+    );
     if (
       tables.has("orchestration_command_receipts") &&
-      (yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE command_id=${legacyId}`.pipe(
-        Effect.mapError(unavailable),
-      )).length > 0
+      (yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE command_id=${legacyId}`)
+        .length > 0
     )
       return CommandId.make(legacyId);
     return CommandId.make(`mcp:launch:${requestDigest([namespace, key])}`);
-  });
+  }, Effect.mapError(unavailable));
   return McpRequestReceipts.of({
     launchCommandId,
     identify,
