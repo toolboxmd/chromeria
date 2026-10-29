@@ -83,7 +83,7 @@ const fixture = Effect.fnUntraced(function* (
   cacheLayer: typeof PageCache.layer = PageCache.layer,
 ) {
   const requests = yield* Queue.unbounded<{ url: string; at: number }>();
-  const fallbacks = yield* Queue.unbounded<string>();
+  const fallbacks: Array<string> = [];
   const observed: Array<{ url: string; at: number }> = [];
   const http = PublicHttp.PublicHttp.of({
     get: (url) =>
@@ -108,7 +108,11 @@ const fixture = Effect.fnUntraced(function* (
     Layer.provide(
       // An unconfigured TinyFish provider leaves the rendered page's classification intact.
       Layer.succeed(TinyFish.TinyFish, {
-        fetch: ({ url }) => Queue.offer(fallbacks, url.href).pipe(Effect.as(undefined)),
+        fetch: ({ url }) =>
+          Effect.sync(() => {
+            fallbacks.push(url.href);
+            return undefined;
+          }),
       }),
     ),
     Layer.provide(cacheLayer),
@@ -1066,15 +1070,14 @@ describe("web_read at the registered MCP seam", () => {
         const first = yield* finish(read({ url: "https://wall.example/" }), f.requests);
         expect(first).toMatchObject({ status, text: "", totalChars: 0, nextOffset: null });
         expect(first.nextAction).toBe(status === "login" ? "needs_session" : undefined);
-        expect(yield* Queue.takeBetween(f.fallbacks, 0, Infinity)).toEqual(
-          status === "thin" || status === "consent" ? ["https://wall.example/"] : [],
-        );
         expect(yield* read({ url: "https://wall.example/" })).toMatchObject({
           status,
           rung: "cache",
           text: "",
         });
-        expect(yield* Queue.size(f.fallbacks)).toBe(0);
+        expect(f.fallbacks).toEqual(
+          status === "thin" || status === "consent" ? ["https://wall.example/"] : [],
+        );
       }).pipe(Effect.provide(f.layer));
     }),
   );
@@ -1192,9 +1195,7 @@ describe("web_read at the registered MCP seam", () => {
             totalChars: 0,
           },
         );
-        expect(yield* Queue.takeBetween(f.fallbacks, 0, Infinity)).toEqual([
-          "https://noscript.example/",
-        ]);
+        expect(f.fallbacks).toEqual(["https://noscript.example/"]);
       }).pipe(Effect.provide(f.layer));
     }),
   );
