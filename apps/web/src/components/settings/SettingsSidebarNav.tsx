@@ -424,7 +424,9 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                                 >
                                   {SETTINGS_SECTION_LABELS[to]}
                                 </span>
-                                {to === "/settings/prism" ? (
+                                {to === "/settings/prism" ||
+                                to === "/settings/promachos" ||
+                                to === "/settings/spectrum" ? (
                                   <ChromeriaFeatureMark focusable={false} />
                                 ) : null}
                               </SidebarMenuButton>

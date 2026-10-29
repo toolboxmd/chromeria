@@ -27,7 +27,6 @@ import { tickTextContent } from "~/lib/tickTextContent";
 import { cn } from "~/lib/utils";
 import { Button, InlineButton } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { BackgroundSubagentOpenButton } from "./BackgroundSubagentOpenButton";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
 import type { ThreadNowItem } from "./ThreadNow";
 
@@ -98,7 +97,6 @@ export function remoteInputBannerItem(input: {
   return {
     id: `remote-input:${input.task.id}`,
     variant: "info",
-    priority: "activity",
     icon: <MessageCircleIcon />,
     title: "Remote task needs input",
     description: (

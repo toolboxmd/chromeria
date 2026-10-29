@@ -1,11 +1,12 @@
+import { captureDeviceScreenshot } from "@t3tools/client-runtime/device/screenshot";
 import type { DevicePlatform, EnvironmentId, DeviceViewerResource } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
-import { renewDeviceHubAccess, useDeviceHubAccess } from "~/state/device";
+import { renewDeviceHubAccess, useDeviceHubAccessState } from "~/state/device";
 import { resolveDeviceShape } from "@t3tools/client-runtime/device/shape-profile";
 import { deviceKeyboard, deviceModel } from "./deviceModels";
 import { fitDeviceFrame } from "./deviceFrameLayout";
@@ -93,6 +94,8 @@ export function DeviceStreamView(props: {
   readonly allowPhoneView?: boolean;
   readonly renderControls?: (view: DeviceViewControls) => ReactNode;
   readonly axOverlay?: boolean;
+  readonly onHandle?: (handle: DeviceStreamHandle | null) => void;
+  readonly onScreen?: (screen: DeviceScreenSize | null) => void;
   /** Lets a parent read this view's own stream state, such as its screen size. */
   readonly viewId?: string;
   /** The host serves only serve-sim's stream and input socket (Simlock). */
@@ -111,7 +114,11 @@ export function DeviceStreamView(props: {
   const onInputCancel = (cancel: (() => void) | null) => {
     cancelPhoneInputRef.current = cancel;
   };
-  const access = useDeviceHubAccess(props.environmentId, props.hostId);
+  const {
+    access,
+    error: accessError,
+    refresh: refreshAccess,
+  } = useDeviceHubAccessState(props.environmentId, props.hostId, props.resource, props.visible);
   const ownViewId = useId();
   const viewId = props.viewId ?? ownViewId;
   const session = useAtomValue(
@@ -132,6 +139,35 @@ export function DeviceStreamView(props: {
   const { status, detail, hasFrame, screen, mjpegUrl, mjpegGeneration, duoControl } =
     session?.state ?? IDLE_DEVICE_STREAM_STATE;
   const inputState = session?.state.input ?? IDLE_DEVICE_STREAM_STATE.input;
+  const { onHandle, onScreen } = props;
+  const handle: DeviceStreamHandle | null =
+    client && access
+      ? {
+          pressButton: client.pressButton,
+          rotate: client.rotate,
+          inputConnected: inputState.connected,
+          screenshot: (signal) =>
+            captureDeviceScreenshot(
+              {
+                access,
+                platform: props.platform,
+                deviceId: props.deviceId,
+                serveSimOnly: props.serveSimOnly === true,
+              },
+              signal,
+            ),
+        }
+      : null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- publishes this view's live stream controls to its owning panel and releases them on unmount
+  useEffect(() => {
+    onHandle?.(handle);
+    return () => onHandle?.(null);
+  }, [handle, onHandle]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- publishes this stream's dimensions to the floating player's layout
+  useEffect(() => {
+    onScreen?.(screen);
+    return () => onScreen?.(null);
+  }, [screen, onScreen]);
   const phoneUnavailable = session?.state.phoneUnavailable ?? false;
   const foldAngle = useAtomValue(
     androidFoldViewAtom(deviceScreenKey(props.environmentId, props.hostId, props.deviceId)),
@@ -288,13 +324,7 @@ export function DeviceStreamView(props: {
                 : null,
             showPhone: () => setPresentation("phone"),
             showFlat: () => setPresentation("flat"),
-            handle: client
-              ? {
-                  pressButton: client.pressButton,
-                  rotate: client.rotate,
-                  inputConnected: inputState.connected,
-                }
-              : null,
+            handle,
           }}
           onResetView={resetView}
         />
@@ -493,7 +523,8 @@ export function DeviceStreamView(props: {
                   onClick={() => {
                     // An expired ticket surfaces as unauthorized on restart and
                     // refreshes access, which starts a new session.
-                    session?.reconnect();
+                    if (accessError !== null) refreshAccess();
+                    else session?.reconnect();
                   }}
                 >
                   Reconnect

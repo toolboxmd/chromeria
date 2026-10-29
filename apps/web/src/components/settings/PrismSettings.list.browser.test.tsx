@@ -80,6 +80,7 @@ function harness(
 describe("ColorList while a save is pending", () => {
   it("keeps the first edit, ignores the second, and keeps rows mounted when the save lands", async () => {
     await using screen = await render(null);
+    const { container } = screen;
     const list = harness(screen, [first, second]);
     const { rows, order, moveDown, moveUp } = list;
     await list.render();
@@ -104,7 +105,7 @@ describe("ColorList while a save is pending", () => {
   it("restores the last saved order when the pending save fails", async () => {
     await using screen = await render(null);
     const list = harness(screen, [first, second]);
-    const { rows, order, moveDown, moveUp } = list;
+    const { order, moveDown, moveUp } = list;
     await list.render();
     await moveDown(1);
     await list.render();
@@ -125,8 +126,9 @@ describe("ColorList adding a Color", () => {
       models: [{ slug: "third", name: "Third", efforts: [] }],
     };
     await using screen = await render(null);
+    const { container } = screen;
     const list = harness(screen, [first, second], [codex]);
-    const { rows, order, moveDown, moveUp } = list;
+    const { rows } = list;
     await list.render();
     const [firstRow, secondRow] = rows();
     await act(() =>
@@ -146,8 +148,9 @@ describe("ColorList adding a Color", () => {
 
 it("keeps Promachos rows mounted while its reordered Color draft saves", async () => {
   await using screen = await render(null);
+  const { container } = screen;
   const list = harness(screen, [first, second], [], "Promachos");
-  const { rows, order, moveDown, moveUp } = list;
+  const { rows } = list;
   await list.render();
   const [firstRow, secondRow] = rows();
   await act(() =>

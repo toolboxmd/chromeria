@@ -134,6 +134,8 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
     paths: [
       "/settings/providers",
       "/settings/prism",
+      "/settings/promachos",
+      "/settings/spectrum",
       "/settings/threads",
       "/settings/browser",
       "/settings/devices",
