@@ -2334,7 +2334,6 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               resolveAttachmentPath: host.resolveAttachmentPath,
               resolveExtractedTextPath: host.resolveExtractedTextPath,
             }),
-            runOrdinal: turnInput.runOrdinal,
             hasT3Mcp: turnInput.runtimePolicy.bare === undefined && mcpServers !== undefined,
             hasDeviceTools,
             orchestrationDelivered: delivered.orchestration,

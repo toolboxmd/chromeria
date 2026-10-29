@@ -1516,7 +1516,7 @@ export const makeXAiPromptCompletionRuntime = Effect.fn("makeXAiPromptCompletion
           Effect.gen(function* () {
             const complete = yield* decodeXAiSessionUpdateNotification(params).pipe(
               Effect.map(xAiPromptCompleteFromSessionUpdate),
-              Effect.catch(() => Effect.succeed(null)),
+              Effect.orElseSucceed(() => null),
             );
             if (complete !== null) yield* settleFromPromptComplete(complete);
             const accepted = yield* Effect.forEach(
