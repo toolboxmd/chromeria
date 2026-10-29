@@ -211,7 +211,7 @@ it.effect.each([
         activeProviderThreadId: providerThreadId,
         modelSelection: { instanceId: providerInstanceId, model: "test-model" },
       },
-      providerThread: projection.providerThreads[0],
+      providerThread,
       providerSession: undefined,
       checkpoint: { id: checkpointId, scopeId, status: "ready", appRunOrdinal: 0 },
       scope: { id: scopeId, cwd: worktreePath },
@@ -826,7 +826,7 @@ it.effect.each([
           getCheckpointRollbackContext: () =>
             Effect.succeed({
               thread: projection.thread,
-              providerThread,
+              providerThread: projection.providerThreads[0],
               checkpoint: projection.checkpoints[0],
               scope: projection.checkpointScopes[0],
               targetAttempt: undefined,
