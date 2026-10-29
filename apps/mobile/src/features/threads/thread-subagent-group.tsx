@@ -182,6 +182,7 @@ export function ThreadSubagentGroup(props: {
             const localTarget = subagentThreadTarget(agent, props.environmentId, (id) =>
               presentationById.has(id),
             );
+            const remoteLabel = agent.remoteChild?.label ?? "another machine";
             const resolvedTarget = subagentChildTarget(agent);
             const unreachable =
               resolvedTarget?.environmentId != null &&
@@ -195,7 +196,7 @@ export function ThreadSubagentGroup(props: {
                 accessibilityHint={
                   unreachable
                     ? !hasSourceRemoteTaskView(agent)
-                      ? `Runs on another machine, which this device is not connected to`
+                      ? `Runs on ${remoteLabel}, which this device is not connected to`
                       : `Runs on ${agent.remoteChild.label}, available through this conversation`
                     : target === null
                       ? agent.remoteChild

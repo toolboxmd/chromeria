@@ -33,7 +33,6 @@ import { useAppForeground } from "../../lib/appState";
 import { useHardwareBack } from "../../lib/backHandler";
 import { deriveBottomControlInsets } from "../../lib/reserved-regions";
 import { useNativeColumnLayoutMetrics } from "../../native/native-layout-metrics";
-import { uuidv4 } from "../../lib/uuid";
 import { deviceEnvironment, useDeviceHubAccess } from "../../state/device";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -49,6 +48,8 @@ import { createShakeDetector } from "./shakeDetector";
 const OVERLAY_ENTERING = FadeIn.duration(160).reduceMotion(ReduceMotion.System);
 const OVERLAY_EXITING = FadeOut.duration(120).reduceMotion(ReduceMotion.System);
 
+const decodeDeviceResource = Schema.decodeUnknownOption(DeviceViewerResource);
+
 type DevicePreviewRouteScreenProps = StaticScreenProps<{
   readonly environmentId: string;
   readonly threadId: string;
@@ -63,10 +64,11 @@ export function DevicePreviewRouteScreen({ route }: DevicePreviewRouteScreenProp
   const resource =
     route.params.resource === undefined
       ? undefined
-      : Option.getOrNull(Schema.decodeUnknownOption(DeviceViewerResource)(route.params.resource));
+      : Option.getOrNull(decodeDeviceResource(route.params.resource));
   // A hand-typed deep link can carry a blank ID, which the branded IDs reject.
   const isBlankLink =
     environmentId.trim().length === 0 || threadId.trim().length === 0 || resource === null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- dismisses invalid routes from the native navigator
   useEffect(() => {
     if (isBlankLink) onClose();
   }, [isBlankLink, onClose]);
@@ -102,6 +104,7 @@ function QualifiedDevicePreviewScreen({
   const [foreground, setForeground] = useState(AppState.currentState !== "background");
   const [inputConnected, setInputConnected] = useState(false);
   const streamRef = useRef<DeviceStreamRef>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- mounts the qualified device viewer only while the native app is active
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) =>
       setForeground(state !== "background"),
@@ -475,9 +478,8 @@ function OpenDevicePreview({
   const { themeVariables } = useAppearancePreferences();
   const { access, error, refresh } = useDeviceHubAccess(environmentId, session.hostId, resource);
   const onUnauthorized = useCallback(async () => refresh(), [refresh]);
-  useEffect(() => {
-    return () => void onInputConnected(false);
-  }, [environmentId, resource, onInputConnected]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- clears native device input availability when its viewer unmounts
+  useEffect(() => () => void onInputConnected(false), [onInputConnected]);
   return access ? (
     <DeviceStreamWebView
       ref={streamRef}
