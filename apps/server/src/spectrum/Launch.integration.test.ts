@@ -415,6 +415,7 @@ it.effect("persists peer origin on the Spectrum and Colors, fencing each descend
                   getThreadShell: () => Effect.succeed(shell),
                 }),
                 Layer.mock(PeerLinks.PeerLinks)({
+                  enabled: Effect.succeed(true),
                   get: () => Effect.die("Must not use onward links"),
                 }),
                 Layer.mock(PeerMcpClient.PeerMcpClient)({

@@ -30,6 +30,11 @@ it.effect("links, lists and unlinks headlessly; CLI revocation cuts off a perman
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-peer-cli-" });
+      yield* fs.makeDirectory(`${baseDir}/userdata`, { recursive: true });
+      yield* fs.writeFileString(
+        `${baseDir}/userdata/settings.json`,
+        JSON.stringify({ linkedEnvironmentsEnabled: true }),
+      );
       const peer = yield* servePeer(descriptorOf("environment-cli-peer", "CLI peer"), Layer.empty, {
         persisted: true,
       });

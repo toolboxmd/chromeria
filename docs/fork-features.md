@@ -2552,8 +2552,7 @@ sources and reasons.
     "packages/client-runtime/src/relay/discovery.test.ts",
     "packages/client-runtime/src/relay/discovery.ts",
     "packages/client-runtime/src/state/threads-atoms.test.ts",
-    "apps/web/src/components/settings/AddEnvironmentDialog.tsx",
-    "packages/client-runtime/src/relay/errorPresentation.ts"
+    "apps/web/src/components/settings/AddEnvironmentDialog.tsx"
   ],
   "sharedFiles": [
     "docs/user/remote-access.md",
