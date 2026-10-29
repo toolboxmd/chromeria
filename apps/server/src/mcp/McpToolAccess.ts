@@ -278,7 +278,11 @@ export const writesWithCapability = <P, A, E, R>(
   effect: "owned" | "external-unknown" = "owned",
 ) =>
   declare(
-    (params: P) => writingCaller.pipe(Effect.flatMap(() => McpRouting.invoke(params, handle))),
+    (params: P) =>
+      writingCaller.pipe(
+        Effect.tap((caller) => assertNotLinked(caller, "start work here that is not its link's")),
+        Effect.flatMap(() => McpRouting.invoke(params, handle)),
+      ),
     effect,
   );
 

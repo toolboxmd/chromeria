@@ -8,9 +8,7 @@ import {
   RuntimeMode,
   ThreadId,
 } from "@t3tools/contracts";
-import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
@@ -439,6 +437,7 @@ const linkedProbe = {
   }),
 };
 const LinkedProbeToolkit = Toolkit.make(
+  Tool.make("acts_as_caller", linkedProbe),
   Tool.make("reads", linkedProbe),
   Tool.make("writes", linkedProbe),
   Tool.make("writes_with_capability", linkedProbe),
@@ -455,6 +454,7 @@ const ranHere = <P extends object>(params: P) =>
 const linkedProbeServer = McpHttpServer.toolkitRegistration(
   LinkedProbeToolkit,
   McpToolAccess.toLayer(LinkedProbeToolkit, {
+    acts_as_caller: McpToolAccess.actsAsCaller(ranHere),
     reads: McpToolAccess.reads(ranHere),
     writes: McpToolAccess.writes(ranHere),
     writes_with_capability: McpToolAccess.writesWithCapability(ranHere),
@@ -536,14 +536,10 @@ it.effect.each([
 
 it.effect("refuses a linked environment to a tool that acts as its calling thread", () =>
   Effect.gen(function* () {
-    const CallerToolkit = Toolkit.make(Tool.make("acts_as_caller", linkedProbe));
-    const built = yield* Layer.build(
-      McpToolAccess.HandlersLayer.layer(
-        McpToolAccess.toLayer(CallerToolkit, {
-          acts_as_caller: McpToolAccess.actsAsCaller(ranHere),
-        }),
-      ),
-    ).pipe(Effect.scoped, Effect.exit);
-    expect(Exit.isFailure(built) && Cause.hasDies(built.cause)).toBe(true);
-  }),
+    for (const scope of [linkedClient, fullAccessLinkedClient]) {
+      expect(
+        yield* call("acts_as_caller", scope, { environmentId: EnvironmentId.make("other") }),
+      ).toBe("thread_credential_required");
+    }
+  }).pipe(Effect.provide(linkedProbeServer)),
 );
