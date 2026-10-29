@@ -6,7 +6,7 @@ import { pendingGuestMessageCount } from "@t3tools/contracts";
 import { executionPurposesEqual, NativeExecutionSegment } from "@t3tools/contracts";
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
 import { keepContinuationSource } from "../prism/continuationProjection.ts";
-import { mergeRestartCut, RESTART_CUT_REASONS } from "@t3tools/shared/restartCut";
+import { mergeRestartCut } from "@t3tools/shared/restartCut";
 import { projectTurnItemForWire } from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -19,7 +19,6 @@ import type {
 import {
   latestRootProviderFailure,
   latestUnheldRun,
-  runRanAfter,
   threadErrorSummary,
   usageLimitRunPresentedAsLatest,
 } from "@t3tools/shared/orchestrationV2ThreadError";

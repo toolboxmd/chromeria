@@ -1,3 +1,4 @@
+import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as RecoveryHooks from "../prism/RecoveryHooks.ts";
 import { waitForRecovery, RecoveryWaitState } from "../peer/recoveryWait.ts";
@@ -1127,25 +1128,58 @@ const make = Effect.gen(function* () {
         threadId: input.threadId,
         cause,
       });
+    const startedAt = yield* Clock.currentTimeMillis;
     // Taken before the first read, so a run update between that read and
     // the subscription below still replays.
     const afterSequence = yield* orchestrator
       .getThreadEventSequence(input.threadId)
       .pipe(Effect.mapError(loadError));
+    const recovered = yield* waitForRecovery<ThreadManagementError>(
+      {
+        ...input,
+        readRuns: getProjectThreadRecords(input, ["runs"]).pipe(
+          Effect.map((records) => records.runs),
+        ),
+        latest: (runs) => latestRun({ runs }),
+        events: Stream.mergeAll(
+          (
+            [
+              "run.updated",
+              "run.created",
+              "thread.metadata-updated",
+              "thread.deleted",
+              "thread.settled",
+              "thread.archived",
+              "thread.runtime-mode-updated",
+              "thread.model-selection-updated",
+              "thread.provider-switched",
+            ] as const
+          ).map((eventType) =>
+            orchestrator.streamStoredEventsFrom({
+              threadId: input.threadId,
+              afterSequence,
+              eventType,
+            }),
+          ),
+          { concurrency: "unbounded" },
+        ).pipe(Stream.mapError(loadError)),
+        missing: (runId) =>
+          new ThreadManagementRunNotFoundError({ threadId: input.threadId, runId }),
+        loadError,
+      },
+      recoveryWait,
+      {
+        latest: latestRestartContinuation,
+        pending: (run) =>
+          orchestrator.restartContinuationPending(run).pipe(Effect.mapError(loadError)),
+        await: (run) => orchestrator.awaitRestartContinuation(run).pipe(Effect.mapError(loadError)),
+      },
+    );
+    if (input.untilDelegatedWorkSettled !== true || recovered.run === null || recovered.timedOut)
+      return recovered;
+    const remaining = Math.max(0, input.timeoutMs - ((yield* Clock.currentTimeMillis) - startedAt));
     const target = yield* getProjectThreadRecords(input, ["runs"]);
-    const selectedRun =
-      input.runId === undefined
-        ? latestRun(target)
-        : target.runs.find((candidate) => candidate.id === input.runId);
-    if (input.runId !== undefined && selectedRun === undefined) {
-      return yield* new ThreadManagementRunNotFoundError({
-        threadId: input.threadId,
-        runId: input.runId,
-      });
-    }
-    if (selectedRun === undefined) {
-      return { threadId: input.threadId, run: null, timedOut: false };
-    }
+    const selectedRun = recovered.run;
     // A restart cuts a run and continues it as a new run. Follow that chain,
     // so a cut run is not the answer while its continuation is pending.
     // Runs per matching event and is already covered by the waitForThread span.
@@ -1200,7 +1234,7 @@ const make = Effect.gen(function* () {
       ...(current.resultRun === undefined ? {} : { resultRun: current.resultRun }),
     });
     const initial = yield* evaluate(target.runs);
-    if (initial.settled) return settledResult(initial);
+    if (initial.settled || remaining === 0) return settledResult(initial);
 
     // A declined continuation records no event, so its effect settling wakes
     // the wait too.
@@ -1245,7 +1279,7 @@ const make = Effect.gen(function* () {
       ),
       Stream.filter((current) => current.settled),
       Stream.runHead,
-      Effect.timeoutOption(Duration.millis(Math.max(1, input.timeoutMs))),
+      Effect.timeoutOption(Duration.millis(remaining)),
     );
     const waited = Option.flatten(yield* wait);
     if (Option.isSome(waited)) return settledResult(waited.value);

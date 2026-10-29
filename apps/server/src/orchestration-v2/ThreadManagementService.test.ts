@@ -1,3 +1,4 @@
+import { RecoveryWaitState } from "../peer/recoveryWait.ts";
 import { expect, it } from "@effect/vitest";
 import {
   CommandId,
@@ -216,75 +217,116 @@ it.effect(
   },
 );
 
-it.effect("waitForThread follows a restart continuation instead of the cut run", () =>
-  Effect.gen(function* () {
-    const projectId = ProjectId.make("project:thread-management:wait-restart");
-    const threadId = ThreadId.make("thread:thread-management:wait-restart");
-    const runId = RunId.make("run:thread-management:wait-restart");
-    const continuationId = RunId.make("run:thread-management:wait-restart:2");
-    const subscribed = yield* Deferred.make<void>();
-    const events = yield* Queue.unbounded<OrchestrationV2StoredEvent>();
-    let runs: Array<{
-      id: RunId;
-      status: OrchestrationV2Run["status"];
-      restartContinuationOfRunId?: RunId;
-    }> = [{ id: runId, status: "cancelled" }];
-    let pending = true;
-    const stored = (sequence: number, event: object) =>
-      ({ sequence, event: { threadId, ...event } }) as unknown as OrchestrationV2StoredEvent;
-    const layerTest = ThreadManagementService.layer.pipe(
-      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
-      Layer.provide(
-        Layer.mock(Orchestrator.OrchestratorV2)({
-          getThreadEventSequence: () => Effect.succeed(0),
-          restartContinuationPending: (run) => Effect.succeed(pending && run.id === runId),
-          awaitRestartContinuation: () => Effect.never,
-          streamStoredEventsFrom: (input) =>
-            input?.eventType === "run.updated"
-              ? Stream.fromEffect(Deferred.succeed(subscribed, undefined)).pipe(
-                  Stream.drain,
-                  Stream.concat(Stream.fromQueue(events)),
-                )
-              : Stream.never,
-          getThreadRecords: () =>
-            Effect.sync(
-              () =>
-                ({
-                  thread: { id: threadId, projectId, deletedAt: null },
-                  runs,
-                }) as unknown as OrchestrationV2ThreadProjection,
-            ),
-        }),
-      ),
-      Layer.provide(ServerSettings.layerTest()),
-      Layer.provide(layerReceiptsTest),
-    );
-    const service = yield* ThreadManagementService.ThreadManagementService.pipe(
-      Effect.provide(layerTest),
-    );
-    const fiber = yield* service
-      .waitForThread({ projectId, threadId, runId, timeoutMs: 60 * 60 * 1_000 })
-      .pipe(Effect.forkChild);
-    yield* Deferred.await(subscribed);
-    const continuation = { id: continuationId, restartContinuationOfRunId: runId };
-    runs = [...runs, { ...continuation, status: "running" }];
-    pending = false;
-    yield* Queue.offer(
-      events,
-      stored(1, { type: "run.updated", payload: { ...continuation, status: "running" } }),
-    );
-    runs = [runs[0]!, { ...continuation, status: "completed" }];
-    yield* Queue.offer(
-      events,
-      stored(2, { type: "run.updated", payload: { ...continuation, status: "completed" } }),
-    );
-    const result = yield* Fiber.join(fiber);
+it.effect.each(["restart", "prism"] as const)(
+  "waitForThread follows a %s continuation instead of the cut run",
+  (kind) =>
+    Effect.gen(function* () {
+      const projectId = ProjectId.make("project:thread-management:wait-restart");
+      const threadId = ThreadId.make("thread:thread-management:wait-restart");
+      const runId = RunId.make("run:thread-management:wait-restart");
+      const continuationId = RunId.make("run:thread-management:wait-restart:2");
+      const subscribed = yield* Deferred.make<void>();
+      const events = yield* Queue.unbounded<OrchestrationV2StoredEvent>();
+      let runs: Array<{
+        id: RunId;
+        status: OrchestrationV2Run["status"];
+        restartContinuationOfRunId?: RunId;
+        forkPrismContinuationSourceRunId?: RunId;
+      }> = [{ id: runId, status: kind === "restart" ? "cancelled" : "failed" }];
+      let pending = true;
+      const stored = (sequence: number, event: object) =>
+        ({ sequence, event: { threadId, ...event } }) as unknown as OrchestrationV2StoredEvent;
+      const layerTest = ThreadManagementService.layer.pipe(
+        Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+        Layer.provide(
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            getThreadEventSequence: () => Effect.succeed(0),
+            restartContinuationPending: (run) =>
+              Effect.succeed(kind === "restart" && pending && run.id === runId),
+            awaitRestartContinuation: () => Effect.never,
+            streamStoredEventsFrom: (input) =>
+              input?.eventType === "run.updated"
+                ? Stream.fromEffect(Deferred.succeed(subscribed, undefined)).pipe(
+                    Stream.drain,
+                    Stream.concat(Stream.fromQueue(events)),
+                  )
+                : Stream.never,
+            getThreadRecords: () =>
+              Effect.sync(
+                () =>
+                  ({
+                    thread: { id: threadId, projectId, deletedAt: null },
+                    runs,
+                  }) as unknown as OrchestrationV2ThreadProjection,
+              ),
+          }),
+        ),
+        Layer.provide(
+          Layer.succeed(RecoveryWaitState, {
+            subscribe: Effect.succeed(Stream.never),
+            read: (_thread, source) =>
+              Effect.succeed({
+                decision:
+                  kind !== "prism" || source !== runId
+                    ? null
+                    : pending
+                      ? {
+                          sourceRunId: runId,
+                          threadId,
+                          status: "pending" as const,
+                          reason: "decision" as const,
+                        }
+                      : {
+                          sourceRunId: runId,
+                          threadId,
+                          status: "decided" as const,
+                          outcome: "retried" as const,
+                          successorRunId: continuationId,
+                        },
+                admittedContinuations: [],
+                pendingRecovery: null,
+              }),
+          }),
+        ),
+        Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(layerReceiptsTest),
+      );
+      const service = yield* ThreadManagementService.ThreadManagementService.pipe(
+        Effect.provide(layerTest),
+      );
+      const fiber = yield* service
+        .waitForThread({ projectId, threadId, runId, timeoutMs: 60 * 60 * 1_000 })
+        .pipe(Effect.forkChild);
+      expect(
+        yield* Effect.raceFirst(
+          Fiber.await(fiber).pipe(Effect.as(false)),
+          Deferred.await(subscribed).pipe(Effect.as(true)),
+        ),
+      ).toBe(true);
+      const continuation = {
+        id: continuationId,
+        ...(kind === "restart"
+          ? { restartContinuationOfRunId: runId }
+          : { forkPrismContinuationSourceRunId: runId }),
+      };
+      runs = [...runs, { ...continuation, status: "running" }];
+      pending = false;
+      yield* Queue.offer(
+        events,
+        stored(1, { type: "run.updated", payload: { ...continuation, status: "running" } }),
+      );
+      runs = [runs[0]!, { ...continuation, status: "completed" }];
+      yield* Queue.offer(
+        events,
+        stored(2, { type: "run.updated", payload: { ...continuation, status: "completed" } }),
+      );
+      const result = yield* Fiber.join(fiber);
 
-    expect(result).toMatchObject({
-      timedOut: false,
-      run: { id: continuationId, status: "completed" },
-    });
-  }),
+      expect(result).toMatchObject({
+        timedOut: false,
+        run: { id: continuationId, status: "completed" },
+      });
+    }),
 );
 
 it.effect("waitForThread can wait past an ended run for the thread's delegated work", () =>
@@ -432,51 +474,90 @@ it.effect("waitForThread settles delegated work on a thread rolled back past its
   }),
 );
 
-it.effect("waitForThread returns the cut run once its continuation is declined", () =>
-  Effect.gen(function* () {
-    const projectId = ProjectId.make("project:thread-management:wait-declined");
-    const threadId = ThreadId.make("thread:thread-management:wait-declined");
-    const runId = RunId.make("run:thread-management:wait-declined");
-    const subscribed = yield* Deferred.make<void>();
-    const declined = yield* Deferred.make<void>();
-    let pending = true;
-    const layerTest = ThreadManagementService.layer.pipe(
-      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
-      Layer.provide(
-        Layer.mock(Orchestrator.OrchestratorV2)({
-          getThreadEventSequence: () => Effect.succeed(0),
-          restartContinuationPending: () => Effect.succeed(pending),
-          awaitRestartContinuation: () => Deferred.await(declined),
-          streamStoredEventsFrom: (input) =>
-            input?.eventType === "run.updated"
-              ? Stream.fromEffect(Deferred.succeed(subscribed, undefined)).pipe(
-                  Stream.drain,
-                  Stream.concat(Stream.never),
-                )
-              : Stream.never,
-          getThreadRecords: () =>
-            Effect.succeed({
-              thread: { id: threadId, projectId, deletedAt: null },
-              runs: [{ id: runId, status: "cancelled" }],
-            } as unknown as OrchestrationV2ThreadProjection),
-        }),
-      ),
-      Layer.provide(ServerSettings.layerTest()),
-      Layer.provide(layerReceiptsTest),
-    );
-    const service = yield* ThreadManagementService.ThreadManagementService.pipe(
-      Effect.provide(layerTest),
-    );
-    const fiber = yield* service
-      .waitForThread({ projectId, threadId, runId, timeoutMs: 60 * 60 * 1_000 })
-      .pipe(Effect.forkChild);
-    yield* Deferred.await(subscribed);
-    pending = false;
-    yield* Deferred.succeed(declined, undefined);
-    const result = yield* Fiber.join(fiber);
+it.effect.each(["restart", "prism"] as const)(
+  "waitForThread returns the cut run once its %s continuation is declined",
+  (kind) =>
+    Effect.gen(function* () {
+      const projectId = ProjectId.make("project:thread-management:wait-declined");
+      const threadId = ThreadId.make("thread:thread-management:wait-declined");
+      const runId = RunId.make("run:thread-management:wait-declined");
+      const subscribed = yield* Deferred.make<void>();
+      const declined = yield* Deferred.make<void>();
+      let pending = true;
+      const layerTest = ThreadManagementService.layer.pipe(
+        Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+        Layer.provide(
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            getThreadEventSequence: () => Effect.succeed(0),
+            restartContinuationPending: () => Effect.succeed(kind === "restart" && pending),
+            awaitRestartContinuation: () => Deferred.await(declined),
+            streamStoredEventsFrom: (input) =>
+              input?.eventType === "run.updated"
+                ? Stream.fromEffect(Deferred.succeed(subscribed, undefined)).pipe(
+                    Stream.drain,
+                    Stream.concat(Stream.never),
+                  )
+                : Stream.never,
+            getThreadRecords: () =>
+              Effect.succeed({
+                thread: { id: threadId, projectId, deletedAt: null },
+                runs: [{ id: runId, status: kind === "restart" ? "cancelled" : "failed" }],
+              } as unknown as OrchestrationV2ThreadProjection),
+          }),
+        ),
+        Layer.provide(
+          Layer.succeed(RecoveryWaitState, {
+            subscribe: Effect.succeed(
+              Stream.fromEffect(Deferred.await(declined)).pipe(Stream.as(threadId)),
+            ),
+            read: () =>
+              Effect.succeed({
+                decision:
+                  kind !== "prism"
+                    ? null
+                    : pending
+                      ? {
+                          sourceRunId: runId,
+                          threadId,
+                          status: "pending" as const,
+                          reason: "decision" as const,
+                        }
+                      : {
+                          sourceRunId: runId,
+                          threadId,
+                          status: "decided" as const,
+                          outcome: "not_retryable" as const,
+                          reason: "opted_out" as const,
+                        },
+                admittedContinuations: [],
+                pendingRecovery: null,
+              }),
+          }),
+        ),
+        Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(layerReceiptsTest),
+      );
+      const service = yield* ThreadManagementService.ThreadManagementService.pipe(
+        Effect.provide(layerTest),
+      );
+      const fiber = yield* service
+        .waitForThread({ projectId, threadId, runId, timeoutMs: 60 * 60 * 1_000 })
+        .pipe(Effect.forkChild);
+      expect(
+        yield* Effect.raceFirst(
+          Fiber.await(fiber).pipe(Effect.as(false)),
+          Deferred.await(subscribed).pipe(Effect.as(true)),
+        ),
+      ).toBe(true);
+      pending = false;
+      yield* Deferred.succeed(declined, undefined);
+      const result = yield* Fiber.join(fiber);
 
-    expect(result).toMatchObject({ timedOut: false, run: { id: runId, status: "cancelled" } });
-  }),
+      expect(result).toMatchObject({
+        timedOut: false,
+        run: { id: runId, status: kind === "restart" ? "cancelled" : "failed" },
+      });
+    }),
 );
 
 it.effect.each(["live", "no-session", "unsupported-runtime"] as const)(

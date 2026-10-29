@@ -514,8 +514,7 @@ export const layerApi = HttpApiBuilder.group(
                       new EnvironmentOperationForbiddenError({
                         code: "operation_forbidden",
                         reason:
-                          Schema.is(OrchestratorMcpFailure)(error) &&
-                          error.code === "invalid_request"
+                          isOrchestratorMcpFailure(error) && error.code === "invalid_request"
                             ? "device_viewer_unsupported"
                             : "device_viewer_unavailable",
                         traceId,
@@ -1171,3 +1170,5 @@ export const layer = HttpRouter.use((router) =>
     yield* router.add("*", `${DeviceService.DEVICE_HUB_ROUTE_PREFIX}/*`, serve);
   }),
 );
+
+const isOrchestratorMcpFailure = Schema.is(OrchestratorMcpFailure);
