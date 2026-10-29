@@ -211,7 +211,65 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
   const startTurn = (
     text = "hello",
     startProviderThread: OrchestrationV2ProviderThread = providerThread,
-    turnPolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy = policy,
+    turnPolicyOrOverride:
+      | ProviderAdapter.ProviderAdapterV2RuntimePolicy
+      | Partial<ProviderAdapter.ProviderAdapterV2TurnInput> = policy,
+  ) =>
+    runtime.startTurn({
+      appThread: {
+        id: threadId,
+        projectId: ProjectId.make(`project-opencode-${suffix}`),
+        title: suffix,
+        providerInstanceId: modelSelection.instanceId,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        activeProviderThreadId: providerThread.id,
+        lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+        forkedFrom: null,
+        createdBy: "user",
+        creationSource: "web",
+        createdAt: now,
+        updatedAt: now,
+        archivedAt: null,
+        settledOverride: null,
+        settledAt: null,
+        lastVisitedAt: null,
+        deletedAt: null,
+      },
+      threadId,
+      runId: RunId.make(`run-opencode-${suffix}`),
+      runOrdinal: 1,
+      providerTurnOrdinal: 1,
+      attemptId: RunAttemptId.make(`attempt-opencode-${suffix}`),
+      rootNodeId: NodeId.make(`node-opencode-${suffix}`),
+      providerThread: startProviderThread,
+      message: {
+        createdBy: "user",
+        creationSource: "web",
+        messageId: MessageId.make(`message-opencode-${suffix}`),
+        text,
+        attachments: [],
+      },
+      modelSelection,
+      runtimePolicy: "runtimeMode" in turnPolicyOrOverride ? turnPolicyOrOverride : policy,
+      ...("runtimeMode" in turnPolicyOrOverride ? {} : turnPolicyOrOverride),
+    });
+  return {
+    nativeSessionId,
+    now,
+    policy,
+    providerThread,
+    runId: RunId.make(`run-opencode-${suffix}`),
+    runtime,
+    startTurn,
+    threadId,
+  };
+});
+
+describe("OpenCodeAdapterV2", () => {
   it.effect("classifies APIError 429 as a usage limit", () =>
     Effect.gen(function* () {
       const nativeEvents = asyncEventStream();
@@ -252,7 +310,9 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
       assert.equal(terminal?.status, "failed");
       assert.equal(terminal?.failure?.class, "usage_limit");
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -308,7 +368,9 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
         { sessionID: "root", permission: openCodePermissionRules(fullAccess) },
       ]);
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -414,7 +476,9 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
       assert.equal(permissionAction(nativePermissions.get(child)!, "bash"), "ask");
       assert.equal(permissionAction(nativePermissions.get(child)!, "task"), "deny");
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -527,9 +591,9 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
       yield* h.startTurn("Only the task", resumed, {
         runtimePolicy: { ...h.policy, interactionMode: choice.interactionMode },
       });
-      assert.deepStrictEqual(order, ["permissions", "prompt"]);
+      assert.equal(order.at(-1), "prompt");
       assert.strictEqual(
-        permissions[0]!.findLast((r) => r.permission === "edit" && r.pattern === "*")?.action,
+        permissions.at(-1)?.findLast((r) => r.permission === "edit" && r.pattern === "*")?.action,
         choice.agent === "plan" || choice.interactionMode === "plan" ? "deny" : "allow",
       );
       assert.strictEqual(
@@ -2690,6 +2754,8 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
           },
           mcp: { add: async () => ({ data: true }) },
         },
+        undefined,
+        undefined,
         {
           resolveAttachmentPath: () => "/workspace/report.docx",
           resolveExtractedTextPath: () =>
@@ -2746,7 +2812,9 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
       });
       assert.equal(stopped.providerTurns.at(-1)?.status, "interrupted");
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );

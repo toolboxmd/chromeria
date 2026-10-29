@@ -10,13 +10,11 @@ import {
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
-import { CursorSettings } from "../settings.ts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -24,7 +22,6 @@ import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderS
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { makeCursorAdapterV2 } from "./adapter.ts";
 import * as CursorAgentSdk from "./CursorAgentSdk.ts";
-const decodeCursorSettings = Schema.decodeEffect(CursorSettings);
 
 it.effect.each([
   { diagnostic: "Error: RetriableError: WritableIterable is closed", retryable: null },
@@ -50,7 +47,6 @@ it.effect.each([
       });
       const adapter = yield* makeCursorAdapterV2({
         instanceId,
-        settings: yield* decodeCursorSettings({}),
         environment: { HOME: workspace },
       }).pipe(
         Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, {
