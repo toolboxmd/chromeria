@@ -5,6 +5,7 @@ import {
   ProjectId,
   OrchestratorMcpDelegateTaskInput,
   OrchestrationV2RemoteTaskLaunch,
+  OrchestrationV2RemoteTaskChild,
 } from "./index.ts";
 import {
   Color,
@@ -29,6 +30,7 @@ const decodeUnknownServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeStored = Schema.decodeUnknownSync(StoredPrismRole);
 const decodeRole = Schema.decodeUnknownSync(PrismRole);
 const decodeRemoteLaunch = Schema.decodeUnknownSync(OrchestrationV2RemoteTaskLaunch);
+const decodeRemoteChild = Schema.decodeUnknownSync(OrchestrationV2RemoteTaskChild);
 const decodeDelegate = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
 
 describe("Prism role kits", () => {
@@ -174,6 +176,18 @@ describe("Prism role kits", () => {
       delegatedFrom: { environmentId: "env", threadId: "thread", title: "Parent" },
     });
     expect(launch.prismRole).toBe("worker");
+    const pendingChild = {
+      environmentId: "env",
+      label: "Remote",
+      launch,
+      launchStarted: true,
+      launchError: "Acceptance unknown",
+      stoppedThere: false,
+      stopCount: 2,
+    };
+    expect(decodeRemoteChild(pendingChild)).toEqual(pendingChild);
+    const attachedChild = { ...pendingChild, threadId: "child", runId: "run" };
+    expect(decodeRemoteChild(attachedChild)).toEqual(attachedChild);
     expect(() => decodeRole("dispatcher")).toThrow();
   });
 
