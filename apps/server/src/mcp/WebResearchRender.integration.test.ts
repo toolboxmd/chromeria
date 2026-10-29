@@ -103,6 +103,7 @@ const fixture = Effect.fnUntraced(function* (
   robots = "User-agent: *\nAllow: /",
 ) {
   const requests = yield* Queue.unbounded<{ url: string; at: number }>();
+  const fallbacks: Array<string> = [];
   const runtime = Replay.layerWithRegistry(
     { name: "render-read" },
     Registry.layerFromAdapters([]),
@@ -111,7 +112,13 @@ const fixture = Effect.fnUntraced(function* (
   const reader = WebResearch.layer.pipe(
     Layer.provide(Layer.mock(Search.Search)({})),
     Layer.provide(
-      Layer.succeed(TinyFish.TinyFish, { fetch: () => Effect.die("Unused TinyFish fetch") }),
+      Layer.succeed(TinyFish.TinyFish, {
+        fetch: ({ url }) =>
+          Effect.sync(() => {
+            fallbacks.push(url.href);
+            return undefined;
+          }),
+      }),
     ),
     Layer.provide(PageCache.layer),
     Layer.provide(Layer.succeed(PublicRender.PublicRender, { render })),
@@ -162,7 +169,7 @@ const fixture = Effect.fnUntraced(function* (
     expect((yield* Queue.take(requests)).url).toBe(url);
     return fiber;
   });
-  return { layer, requests, setup, start };
+  return { layer, requests, setup, start, fallbacks };
 });
 
 it.effect.each([
@@ -328,6 +335,7 @@ it.effect(
           });
           if (result.status === "login") expect(result.nextAction).toBe("needs_session");
         }
+        expect(f.fallbacks).toEqual([0, 1, 3, 4, 5, 6].map((i) => `https://wall${i}.example/${i}`));
       }).pipe(Effect.provide(f.layer));
     }),
 );
@@ -456,6 +464,11 @@ it.effect("the render deadline includes queuing and closes timed-out work", () =
       expect(active).toBe(0);
       const cached = yield* read({ url: "https://timeout3.example/" });
       expect(cached).toMatchObject({ rung: "cache", status: "timeout", sourceRung: "render" });
+      expect(f.fallbacks.toSorted()).toEqual([
+        "https://timeout1.example/",
+        "https://timeout2.example/",
+        "https://timeout3.example/",
+      ]);
     }).pipe(Effect.provide(f.layer));
   }),
 );
