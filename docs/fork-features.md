@@ -2069,6 +2069,7 @@ sources and reasons.
     "apps/server/src/project/ManagedProjectFolders.test.ts",
     "apps/server/src/project/ManagedProjectFolders.ts",
     "apps/mobile/src/features/threads/ThreadDetailScreen.tsx",
+    "packages/client-runtime/src/state/entities.test.ts",
     "packages/client-runtime/src/state/models.ts",
     "packages/client-runtime/src/state/threadShell.test.ts",
     "packages/client-runtime/src/state/threadShell.ts",
