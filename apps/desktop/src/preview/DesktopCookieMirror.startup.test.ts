@@ -37,6 +37,7 @@ import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 import * as DesktopSshEnvironment from "../ssh/DesktopSshEnvironment.ts";
 import * as DesktopWslBackend from "../wsl/DesktopWslBackend.ts";
 import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
+import { createInitialDesktopUpdateState } from "../updates/updateMachine.ts";
 import * as DesktopSnapShot from "../snapShot/DesktopSnapShot.ts";
 import * as DesktopRendererHistory from "../telemetry/DesktopRendererHistory.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
@@ -271,10 +272,21 @@ it.effect.each([
       Layer.mock(ElectronApp.ElectronApp, {
         setPath: () => Effect.void,
         whenReady: Effect.void,
+        on: () => Effect.void,
       }),
       Layer.mock(ElectronSafeStorage.ElectronSafeStorage, {}),
       Layer.mock(ElectronDialog.ElectronDialog, {}),
-      Layer.mock(DesktopUpdates.DesktopUpdates, { configure: Effect.void }),
+      Layer.mock(DesktopUpdates.DesktopUpdates, {
+        configure: Effect.void,
+        subscribe: Effect.succeed({
+          latest: createInitialDesktopUpdateState(
+            "0.1.0",
+            { hostArch: "arm64", appArch: "arm64", runningUnderArm64Translation: false },
+            "latest",
+          ),
+          changes: Stream.empty,
+        }),
+      }),
       Layer.mock(PreviewPasskeys.PreviewPasskeys, {
         configure: Effect.void,
         bridgeEnabled: false,
@@ -319,7 +331,7 @@ it.effect.each([
       // The enabled scan reaches the unresolved key before app bootstrap starts.
       if (command?.length) yield* Deferred.await(keyStarted);
       const app = yield* DesktopApp.program.pipe(Effect.forkScoped);
-      yield* Deferred.await(healthy);
+      yield* Effect.raceFirst(Deferred.await(healthy), Fiber.join(app));
       expect(windowCreated).toHaveBeenCalledOnce();
       expect((yield* backend.snapshot).ready).toBe(true);
       if (command?.length) expect(readKey).toHaveBeenCalledOnce();
