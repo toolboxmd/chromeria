@@ -337,7 +337,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/web/src/components/device/DeviceSetup.tsx",
     "apps/server/src/device/DeviceService.ts",
     "apps/web/src/components/device/DevicePanel.tsx",
-    "packages/contracts/src/device.ts"
+    "packages/contracts/src/device.ts",
+    "evals/mcp-tool-use/devices.test.ts"
   ],
   "sharedFiles": [],
   "keywords": [

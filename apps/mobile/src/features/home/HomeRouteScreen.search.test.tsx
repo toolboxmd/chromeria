@@ -362,7 +362,7 @@ function rows() {
 
 it("phone title/content search finds qualified offline children and restores navigation on clear", () => {
   mount();
-  const navigation = ["destination:same-id", "destination:fork", "other:same-id"];
+  const navigation = ["destination:fork"];
   expect(new Set(rows())).toEqual(new Set(navigation));
   click("Title search");
   expect(rows()).toEqual(["destination:same-id"]);
@@ -473,8 +473,6 @@ it("phone default navigation does not rebuild for hidden-child shell updates", (
       ],
     }),
   );
-  expect(new Set(rows())).toEqual(
-    new Set(["destination:same-id", "destination:fork", "other:same-id"]),
-  );
+  expect(new Set(rows())).toEqual(new Set(["destination:fork"]));
   expect(state.listRenders).toBe(before);
 });

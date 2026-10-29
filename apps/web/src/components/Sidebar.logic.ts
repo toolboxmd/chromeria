@@ -558,21 +558,6 @@ export async function archiveSelectedThreadEntries<
   return { archivedThreadKeys, mutationFailure: null, followupFailures };
 }
 
-export function buildMultiSelectThreadContextMenuItems(input: {
-  count: number;
-  hasRunningThread: boolean;
-}): readonly ContextMenuItem<"mark-unread" | "archive" | "delete">[] {
-  return [
-    { id: "mark-unread", label: `Mark unread (${input.count})` },
-    {
-      id: "archive",
-      label: `Archive (${input.count})`,
-      disabled: input.hasRunningThread,
-    },
-    { id: "delete", label: `Delete (${input.count})`, destructive: true },
-  ];
-}
-
 export function isSidebarSubagentThread(
   thread: Pick<SidebarThreadSummary, "lineage"> & {
     readonly delegatedFrom?: SidebarThreadSummary["delegatedFrom"];

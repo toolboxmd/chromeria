@@ -673,3 +673,4 @@ apps/server/src/provider/AgentContextBudget.test.ts
 apps/server/src/provider/agentContextBudget.json
 
 apps/web/src/components/files/BrowserDocumentFrame.browser.test.tsx
+evals/mcp-tool-use/devices.test.ts

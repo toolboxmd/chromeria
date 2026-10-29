@@ -1440,6 +1440,7 @@ export const DeviceToolOpenResult = Schema.Union([
       command: Schema.String,
       /** Flags that pin every command to this device, e.g. `--udid <id>`. */
       targetArgs: Schema.Array(Schema.String),
+      session: Schema.optional(Schema.String),
     }),
     quickStart: Schema.String,
   }),

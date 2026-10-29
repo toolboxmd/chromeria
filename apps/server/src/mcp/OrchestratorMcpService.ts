@@ -292,7 +292,7 @@ function failure(code: OrchestratorMcpFailure["code"], message: string): Orchest
  * bare uuid. The id is never rewritten, so permission checks keyed on it still
  * hold; the miss only names a live thread the caller could read by its full id.
  */
-export const threadNotFound = Effect.fn("OrchestratorMcpService.threadNotFound")(function* (
+const threadNotFound = Effect.fn("OrchestratorMcpService.threadNotFound")(function* (
   threads: Pick<ThreadManagementService.ThreadManagementService["Service"], "getThreadShell">,
   threadId: ThreadId,
   message: string,
@@ -504,7 +504,7 @@ function taskStatusForRun(
   }
 }
 
-export function delegatedTaskRun(
+function delegatedTaskRun(
   childProjection: Pick<OrchestrationV2ThreadProjection, "runs" | "contextTransfers"> &
     Partial<Pick<OrchestrationV2ThreadProjection, "thread">>,
   task: OrchestrationV2Subagent,
@@ -533,7 +533,7 @@ export function delegatedTaskRun(
     : childProjection.runs.find((run) => run.id === spawnTransfer.targetRunId);
 }
 
-export function hasPendingChildRuns(
+function hasPendingChildRuns(
   childProjection: Pick<OrchestrationV2ThreadProjection, "runs"> &
     Partial<Pick<OrchestrationV2ThreadProjection, "messages">>,
   delegatedRun: OrchestrationV2Run | undefined,

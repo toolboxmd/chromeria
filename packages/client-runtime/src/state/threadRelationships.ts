@@ -219,18 +219,6 @@ export function deriveThreadRelationshipGraph(input: {
   return { nodes, edges: [...edgesByKey.values()] };
 }
 
-export function relatedThreadIds(
-  graph: ThreadRelationshipGraph,
-  threadId: ThreadId,
-): ReadonlyArray<ThreadId> {
-  const ids = new Set<ThreadId>();
-  for (const edge of graph.edges) {
-    if (edge.sourceThreadId === threadId) ids.add(edge.targetThreadId);
-    if (edge.targetThreadId === threadId) ids.add(edge.sourceThreadId);
-  }
-  return [...ids];
-}
-
 function relatedNodeRef(
   edge: ThreadRelationshipEdge,
   currentThreadId: ThreadId,
@@ -249,42 +237,6 @@ function relatedNodeRef(
     return { threadId: edge.sourceThreadId, environmentId: edge.sourceEnvironmentId };
   }
   return null;
-}
-
-export function walkThreadRelationships(
-  graph: ThreadRelationshipGraph,
-  threadId: ThreadId,
-): ReadonlyArray<ThreadRelationshipWalkRow> {
-  const visited = new Set<string>([threadRelationshipNodeKey(threadId, null)]);
-  const pending: Array<{
-    readonly threadId: ThreadId;
-    readonly environmentId: EnvironmentId | null;
-    readonly depth: number;
-  }> = [{ threadId, environmentId: null, depth: 0 }];
-  const rows: ThreadRelationshipWalkRow[] = [];
-
-  for (let index = 0; index < pending.length; index += 1) {
-    const current = pending[index];
-    if (current === undefined) continue;
-    for (const edge of graph.edges) {
-      const related = relatedNodeRef(edge, current.threadId, current.environmentId);
-      if (related === null) continue;
-      const relatedKey = threadRelationshipNodeKey(related.threadId, related.environmentId);
-      if (visited.has(relatedKey)) continue;
-      visited.add(relatedKey);
-      const depth = current.depth + 1;
-      rows.push({
-        threadId: related.threadId,
-        environmentId: related.environmentId,
-        fromThreadId: current.threadId,
-        depth,
-        edge,
-      });
-      pending.push({ threadId: related.threadId, environmentId: related.environmentId, depth });
-    }
-  }
-
-  return rows;
 }
 
 export function immediateThreadRelationships(

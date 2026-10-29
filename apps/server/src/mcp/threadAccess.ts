@@ -3,7 +3,6 @@ import {
   CommandId,
   OrchestratorMcpFailure,
   type ProjectId,
-  type ProviderInstanceId,
   type ProviderInteractionMode,
   type RuntimeMode,
   ThreadId,
@@ -125,23 +124,6 @@ export const assertTargetWithinLimits = (
     Effect.andThen(resolveInteractionMode(limits.interactionMode, target.interactionMode)),
     Effect.asVoid,
   );
-
-/** Background subagents retain credentials until provider exit; archived threads and other instances cannot act. */
-export const isLiveCallerShell = (
-  shell: Pick<
-    OrchestrationV2ThreadShell,
-    "archivedAt" | "activeRunId" | "providerInstanceId" | "pendingBackgroundTasks"
-  > | null,
-  providerInstanceId: ProviderInstanceId | undefined,
-) =>
-  shell !== null &&
-  shell.archivedAt === null &&
-  shell.providerInstanceId === providerInstanceId &&
-  (shell.activeRunId !== null ||
-    (shell.pendingBackgroundTasks?.some(
-      (task) => task.kind === "subagent" && task.providerInstanceId === providerInstanceId,
-    ) ??
-      false));
 
 /** Thread callers need a live run or its background subagent in an unarchived thread. OAuth clients rely on their session and ceiling. */
 export function assertLiveCaller({ caller, scope }: Caller) {
