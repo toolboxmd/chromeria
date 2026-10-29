@@ -15130,6 +15130,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const explicitResume = command.type === "message.dispatch" && explicitMessage(command);
     const resume = explicitResume || armedContinuation;
     const humanOverride = command.type === "message.dispatch" && humanMessage(command);
+    const heldProviderWake =
+      state?.retired === true &&
+      command.type === "message.dispatch" &&
+      command.createdBy === "agent" &&
+      command.creationSource === "provider" &&
+      command.dispatchMode.type === "queue_after_active";
     const retirementPlan =
       state === undefined
         ? undefined
@@ -15138,6 +15144,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             expectedTokens: state.tokens,
             resume: explicitResume,
             humanOverride,
+            heldProviderWake: heldProviderWake ? true : undefined,
             ...(limitRecoveryRequestId === undefined ? {} : { limitRecoveryRequestId }),
             ...(command.type === "prepared-run.release"
               ? { admittedHumanRunId: command.runId }
@@ -15156,6 +15163,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (wightPlan !== null) forkPlans.push(wightPlan);
     }
     const plan = yield* Effect.gen(function* () {
+      if (heldProviderWake && command.type === "message.dispatch") {
+        const planned = yield* dispatchOnce(command);
+        const wake = planned.events.find(
+          (event) =>
+            event.type === "run.created" &&
+            event.threadId === command.threadId &&
+            event.payload.userMessageId === command.messageId,
+        );
+        // Buffered provider output may persist after Stop, but cannot start work or resume it.
+        if (
+          wake?.type !== "run.created" ||
+          wake.payload.status !== "queued" ||
+          wake.payload.queueHeld !== true ||
+          planned.effects.length !== 0
+        )
+          return yield* new OrchestratorCommandRejectedError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "Fork transaction rejected: retired.",
+          });
+        return planned;
+      }
       // Core restart handling records a cancelled continuation when Stop won.
       // Preserve that cleanup without letting it reach feature interceptors.
       if (
