@@ -364,7 +364,13 @@ const makeLaptop = Effect.gen(function* () {
         ),
         Effect.provideService(McpSchema.McpServerClient, mcpClient),
       );
-  return { links: Context.get(linking, PeerLinks.PeerLinks), call };
+  return {
+    links: Context.get(linking, PeerLinks.PeerLinks),
+    call,
+    scopeOf,
+    forwarding: Context.get(here, PeerForwarding.PeerForwarding),
+    settings: Context.get(linking, ServerSettings.ServerSettingsService),
+  };
 });
 
 const failureOf = (result: McpSchema.CallToolResult) => {
@@ -385,6 +391,7 @@ it.effect("an agent here works on a linked environment's threads within its own 
       const listed = yield* a.call("thread:laptop-full", "t3_environment_links", {});
       expect(listed.structuredContent).toMatchObject({
         environmentId: laptop.environmentId,
+        notListed: expect.stringContaining("Not listed: not linked yet"),
         links: [
           { environmentId: box.environmentId, label: "Box", status: "reachable", access: "auto" },
         ],
@@ -438,6 +445,34 @@ it.effect("an agent here works on a linked environment's threads within its own 
         `thread.stop ${boxThread}`,
         `delegated-tasks.stop ${boxThread}`,
       ]);
+      yield* a.settings.updateSettings({ linkedEnvironmentsEnabled: false });
+      const before = yield* Ref.get(seen);
+      const blocked = yield* a.call("thread:laptop-full", "t3_thread_send", {
+        environmentId: box.environmentId,
+        threadId: boxThread,
+        message: "Blocked.",
+        clientRequestId: "disabled-send",
+      });
+      expect(failureOf(blocked)).toMatchObject({ code: "capability_denied" });
+      expect(
+        failureOf(yield* a.call("thread:laptop-full", "t3_environment_links", {})),
+      ).toMatchObject({ code: "capability_denied" });
+      expect((yield* Ref.get(seen)).sends).toEqual(before.sends);
+      const recoveryScope = a.scopeOf("thread:laptop-full");
+      expect(
+        (yield* a.forwarding.readThread(recoveryScope, box.environmentId, { threadId: boxThread }))
+          .threadId,
+      ).toBe(boxThread);
+      expect(
+        (yield* a.forwarding.waitForThread(recoveryScope, box.environmentId, {
+          threadId: boxThread,
+        })).timedOut,
+      ).toBe(false);
+      yield* a.forwarding.interruptThread(recoveryScope, box.environmentId, {
+        threadId: boxThread,
+        stop: true,
+        clientRequestId: "disabled-recovery-stop",
+      });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
@@ -523,7 +558,7 @@ it.effect("launches in a linked environment with the caller's modes, retry-safe"
         });
 
       const first = yield* launch("thread:laptop-plan");
-      expect(first.isError).toBe(false);
+      expect(first.isError, JSON.stringify(first)).toBe(false);
       expect(first.structuredContent).toMatchObject({
         projectId: boxProject,
         modelSelection: codex,

@@ -3131,10 +3131,8 @@ export const layerWsRpc = (
           ),
         [WS_METHODS.previewOpen]: (input) =>
           previewManager.open({ ...input, authorize: authorizePreviewClient }),
-        [WS_METHODS.previewNavigate]: (input) => previewManager.navigate(input),
         [WS_METHODS.previewResize]: (input) => previewManager.resize(input, authorizePreviewClient),
         [WS_METHODS.previewAdjust]: (input) => previewManager.adjust(input, authorizePreviewClient),
-        [WS_METHODS.previewRefresh]: (input) => previewManager.refresh(input),
         [WS_METHODS.previewClose]: (input) => previewManager.close(input),
         [WS_METHODS.previewList]: (input) => previewManager.list(input),
         [WS_METHODS.previewClearProfile]: (input) => serverBrowser.clearProfile(input.profileId),
