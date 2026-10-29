@@ -1104,7 +1104,10 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           mcpSession !== undefined &&
           !connection.external &&
           (bare === undefined || namesT3Mcp(bare));
-        const orchestrationSystemPrompt = t3OrchestrationSystemPrompt(hasT3Mcp, mcpSession?.capabilities?.has("device") === true);
+        const orchestrationSystemPrompt = t3OrchestrationSystemPrompt(
+          hasT3Mcp,
+          mcpSession?.capabilities?.has("device") === true,
+        );
         if (hasT3Mcp) {
           yield* OpenCodeRuntime.runOpenCodeSdk("mcp.add", () =>
             client.mcp.add({
@@ -1367,7 +1370,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             return firstFailure ?? failures.find((failure) => failure !== undefined);
           });
           const failure = yield* visit(rootId, false);
-          if (failure) return yield* Effect.fail(failure);
+          if (failure) return yield* failure;
         }, Effect.timeout("15 seconds"));
 
         const updateProviderSession =
