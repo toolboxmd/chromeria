@@ -2010,7 +2010,7 @@ const make = Effect.gen(function* () {
     return {
       taskId: task.id,
       childThreadId: null,
-      childRunId: task.remoteChild?.runId ?? null,
+      childRunId: null,
       ...(task.remoteChild === undefined
         ? {}
         : {
@@ -2027,6 +2027,11 @@ const make = Effect.gen(function* () {
           }),
       remoteObservation: {
         availability: task.remoteChild?.availability ?? "stale",
+        ...(task.remoteChild?.runId === undefined ? {} : { originalRunId: task.remoteChild.runId }),
+        ...(task.remoteChild?.latestResult === undefined
+          ? {}
+          : { latestResult: task.remoteChild.latestResult }),
+        ...(task.remoteChild?.stop === undefined ? {} : { stop: task.remoteChild.stop }),
         ...(task.remoteChild?.snapshot === undefined
           ? {}
           : { snapshot: task.remoteChild.snapshot }),
