@@ -12,6 +12,7 @@ import * as HttpServerResponse from "effect/http/HttpServerResponse";
 
 import {
   AuthAccessTokenResult,
+  AuthClientSession,
   AuthSessionRenewRequest,
   AuthSessionRenewResult,
   AuthRenewalEnrollmentRequest,
