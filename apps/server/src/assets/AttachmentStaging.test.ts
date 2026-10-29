@@ -1,3 +1,4 @@
+import * as DocumentText from "../provider/DocumentText.ts";
 import * as Fiber from "effect/Fiber";
 import { createAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -37,6 +38,7 @@ const scope: Invocation.McpInvocationScope = {
   capabilities: new Set(["orchestration"]),
 };
 const database = Sqlite.layerMemory.pipe(
+  Layer.provideMerge(DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
   Layer.provideMerge(Secrets.layer),
   Layer.provideMerge(Config.layerTest(process.cwd(), { prefix: "t3-staging-" })),
   Layer.provideMerge(NodeServices.layer),

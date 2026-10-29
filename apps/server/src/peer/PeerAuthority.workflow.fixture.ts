@@ -1,3 +1,6 @@
+import * as DocumentText from "../provider/DocumentText.ts";
+import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
+import * as PeerLinkRequests from "./PeerLinkRequests.ts";
 import * as Clock from "effect/Clock";
 import * as OrchestratorService from "../mcp/OrchestratorMcpService.ts";
 import * as OrchestratorHandlers from "../mcp/toolkits/orchestrator/handlers.ts";
@@ -2010,6 +2013,10 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
             ]
           : []),
       ).pipe(
+        Layer.provide(DocumentText.layer),
+        Layer.provide(PreviewAgentActivity.layer),
+        Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
+        Layer.provide(Layer.succeedContext(services)),
         Layer.provide(
           Layer.mergeAll(
             spectrumLayer,

@@ -1,7 +1,6 @@
 import { BareLaunchError } from "@t3tools/provider-core/server/bareLaunch";
 import { CommandId } from "@t3tools/contracts";
 import * as AdapterRegistry from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
-import { ProviderDriverKind } from "@t3tools/contracts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as Database from "../../../persistence/Sqlite.ts";

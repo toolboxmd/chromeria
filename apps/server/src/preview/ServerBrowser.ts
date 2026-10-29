@@ -1850,9 +1850,6 @@ const make = Effect.gen(function* () {
     // A popup in a profile with a login publishes no URL.
     const url = profileLogins.has(opener.profileKey) ? "" : popup.url();
 
-    const controller = [...opener.viewers].find(
-      (viewer) => viewer.id === opener.control.controller,
-    );
     await runPromise(
       openTab({
         threadId: opener.threadId,
@@ -3635,12 +3632,10 @@ const make = Effect.gen(function* () {
     const pushStill = async () => {
       const data = await withCaptureLock(tab, () =>
         ServerBrowserPage.captureViewport(
-          tab.page,
           session,
           {
             format: "jpeg",
             quality,
-            scale: 1,
           },
           authorize,
         ),

@@ -1,3 +1,4 @@
+import { AuthAccessReadScope } from "@t3tools/contracts";
 import {
   authScopeRequiredResponse,
   AuthAccessWriteScope,

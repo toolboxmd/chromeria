@@ -3569,7 +3569,7 @@ export const layer = Layer.unwrap(
     const npmRelease = yield* NpmRelease.NpmRelease;
     const pullRequests = yield* PullRequestService.PullRequestService;
     const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
-    const peerLinks = yield* PeerLinks.PeerLinks;
+
     const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
     const issueService = yield* IssueService.IssueService;
     const issueLinks = yield* IssueLinks.IssueLinks;
