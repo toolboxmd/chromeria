@@ -79,7 +79,8 @@ it.effect.each([{ bare: {} }, { threads: [{ bare: {} }] }, { colors: [{ bare: {}
               })
             : { ok: true };
         expect(input.limits.runtimeMode).toBe("approval-required");
-        return Schema.decodeUnknownEffect(input.success)(result).pipe(
+        // oxlint-disable-next-line t3code/no-inline-schema-compile -- The fake peer decodes the schema supplied by each call.
+        return Schema.decodeEffect(input.success)(result).pipe(
           Effect.mapError(
             () =>
               new OrchestratorMcpFailure({
@@ -98,7 +99,7 @@ it.effect.each([{ bare: {} }, { threads: [{ bare: {} }] }, { colors: [{ bare: {}
               uploadAttachment: () => Effect.die("unused attachment transport"),
               call,
             }),
-            Layer.mock(PeerLinks.PeerLinks)({}),
+            Layer.mock(PeerLinks.PeerLinks)({ enabled: Effect.succeed(true) }),
             Layer.mock(ThreadManagement.ThreadManagementService)({
               getThreadShell: () =>
                 Effect.succeed(

@@ -44,6 +44,7 @@ import { ProjectToolkit } from "./tools.ts";
 import { liveThreadShell } from "../../McpToolAccess.testkit.ts";
 
 const prismDependencies = Layer.mergeAll(
+  DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
   Database.layerMemory,
   Layer.mock(AdapterRegistry.ProviderAdapterRegistryV2)({
     get: (instanceId) =>
@@ -271,9 +272,10 @@ it.effect("attributes a launched thread's first message to the calling thread", 
     );
     const toolkit = yield* ProjectToolkit.pipe(
       Effect.provide(
-        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer)
-          .pipe(Layer.provide(prismDependencies))
-          .pipe(Layer.provide(layerDependencies)),
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+          Layer.provide(prismDependencies),
+          Layer.provide(layerDependencies),
+        ),
       ),
     );
     const result = yield* toolkit
@@ -365,9 +367,10 @@ it.effect("launches a scratch thread into the Scratch project", () =>
     );
     const toolkit = yield* ProjectToolkit.pipe(
       Effect.provide(
-        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer)
-          .pipe(Layer.provide(prismDependencies))
-          .pipe(Layer.provide(layerDependencies)),
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+          Layer.provide(prismDependencies),
+          Layer.provide(layerDependencies),
+        ),
       ),
     );
     const handle = (params: Parameters<typeof toolkit.handle<"t3_thread_launch">>[1]) =>
@@ -474,9 +477,10 @@ it.effect("starts a project from just a title when workspaceRoot is omitted", ()
     );
     const toolkit = yield* ProjectToolkit.pipe(
       Effect.provide(
-        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer)
-          .pipe(Layer.provide(prismDependencies))
-          .pipe(Layer.provide(layerDependencies)),
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+          Layer.provide(prismDependencies),
+          Layer.provide(layerDependencies),
+        ),
       ),
     );
     const handle = (params: Parameters<typeof toolkit.handle<"t3_project_create">>[1]) =>
@@ -931,9 +935,10 @@ it.effect("a launch binds only an existing checkout that is one of the project's
     }
     const toolkit = yield* ProjectToolkit.pipe(
       Effect.provide(
-        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer)
-          .pipe(Layer.provide(prismDependencies))
-          .pipe(Layer.provide(dependencies)),
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+          Layer.provide(prismDependencies),
+          Layer.provide(dependencies),
+        ),
       ),
     );
     const launchInto = (worktreePath: string) =>

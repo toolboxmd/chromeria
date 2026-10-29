@@ -78,10 +78,67 @@ it.effect("delegation over the server runtime names this environment to the peer
         tool: "t3_thread_launch",
         arguments: {},
         limits: { runtimeMode: "full-access", interactionMode: "default" },
-        success: Schema.Unknown,
+        success: Schema.Struct({}),
       })
       .pipe(Effect.flip);
     expect(refused.code).toBe("capability_denied");
     expect(requests).toEqual([]);
   }).pipe(Effect.scoped),
 );
+
+it.effect.each(["structured", "legacy", "invalid"] as const)(
+  "decodes %s tool replies while keeping presentation text separate",
+  (kind) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const response = {
+          result: {
+            content: [
+              {
+                type: "text",
+                text: kind !== "structured" ? '{"answer":42}' : "Peer image result.",
+              },
+            ],
+            ...(kind === "legacy"
+              ? {}
+              : { structuredContent: { answer: kind === "invalid" ? "wrong" : 42 } }),
+          },
+        };
+        const services = yield* PeerMcpClient.layerOver(runtime).pipe(
+          Layer.provide(
+            Layer.mock(PeerLinks.PeerLinks)({
+              resolve: () => Effect.succeed({ link, url: "https://peer.test", token: "token" }),
+              recordOutcome: () => Effect.void,
+            }),
+          ),
+          Layer.provide(
+            Layer.succeed(
+              HttpClient.HttpClient,
+              HttpClient.make((request) =>
+                Effect.succeed(
+                  HttpClientResponse.fromWeb(
+                    request,
+                    Response.json(response, { headers: { "mcp-session-id": "fixture-session" } }),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Layer.provide(NodeCrypto.layer),
+          Layer.build,
+        );
+        const result = yield* Context.get(services, PeerMcpClient.PeerMcpClient)
+          .call({
+            environmentId: peer,
+            tool: "read_fixture",
+            arguments: {},
+            limits: { runtimeMode: "full-access", interactionMode: "default" },
+            success: replySchema,
+          })
+          .pipe(Effect.result);
+        if (kind === "invalid") expect(result._tag).toBe("Failure");
+        else expect(result).toMatchObject({ _tag: "Success", success: { answer: 42 } });
+      }),
+    ),
+);
+const replySchema = Schema.Struct({ answer: Schema.Number });

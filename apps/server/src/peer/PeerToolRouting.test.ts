@@ -1,3 +1,5 @@
+import * as DocumentText from "../provider/DocumentText.ts";
+import * as PeerLinkRequests from "./PeerLinkRequests.ts";
 import * as Database from "../persistence/Sqlite.ts";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -156,10 +158,17 @@ const registrations = Layer.mergeAll(
   McpHttpServer.toolkitRegistration(WorktreeToolkit, WorktreeHandlers.layer),
   McpHttpServer.toolkitRegistration(PreviewStandardToolkit, PreviewHandlers.layerStandard),
   McpHttpServer.toolkitRegistration(PreviewControlsToolkit, PreviewControlsHandlers.layer),
-  McpHttpServer.layerDeviceToolkit,
+  McpHttpServer.layerDeviceToolkit.pipe(
+    Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
+    Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
+  ),
   McpHttpServer.toolkitRegistration(HtmlPreviewToolkit, HtmlHandlers.layerPreview),
   McpHttpServer.toolkitRegistration(HtmlRenderToolkit, HtmlHandlers.layerRender),
-).pipe(Layer.provide(Database.layerMemory));
+).pipe(
+  Layer.provide(Database.layerMemory),
+  Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
+  Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
+);
 
 type Seen = { operation: string; environmentId: string; threadId?: string; input?: unknown };
 const makeFixture = (realHtml = false) =>
@@ -201,6 +210,7 @@ const makeFixture = (realHtml = false) =>
       // Fakes stop at domain services. Tool schemas, declarations, routing, peer HTTP,
       // OAuth and mode narrowing are real on both sides.
       const dependencies = Layer.mergeAll(
+        DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
         Layer.mock(ManagedFolders.ManagedProjectFolders)({ namedProjectsRoot: "/box/folders" }),
         Layer.mock(Launches.ThreadLaunchService)({}),
         Layer.mock(Adapters.ProviderAdapterRegistryV2)({}),
@@ -271,7 +281,7 @@ const makeFixture = (realHtml = false) =>
         Layer.mock(Projects.ProjectService)({
           getById: () => record("project-read", Option.some(project)),
           update: (input) => record("project-update", project, input),
-          getShell: () => Effect.succeed(Option.none()),
+          getShell: () => Effect.succeedNone,
           listShells: () => Effect.succeed([projectShell]),
         }),
         Layer.mock(ReviewGuides.PullRequestReviewGuideService)({
@@ -369,6 +379,18 @@ const makeFixture = (realHtml = false) =>
                     },
                   ]
                 : [],
+            ),
+          locateSession: (input) =>
+            Effect.succeed(
+              input.threadId === threadId && input.deviceId === "device"
+                ? Option.some({
+                    threadId,
+                    hostId: "local",
+                    deviceId: "device",
+                    platform: "ios" as const,
+                    openedAt: "2026-10-14T00:00:00Z",
+                  })
+                : Option.none(),
             ),
           screenshot: (input) =>
             record(

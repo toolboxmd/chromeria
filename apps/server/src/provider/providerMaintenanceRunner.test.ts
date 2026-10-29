@@ -1120,7 +1120,7 @@ it.effect.each([false, true])(
                 ),
                 Effect.as(runtime),
               ),
-            get: () => Effect.succeed(Option.some(runtime)),
+            get: () => Effect.succeedSome(runtime),
           }),
         ),
         ProviderSessionManager.ProviderSessionManagerV2,

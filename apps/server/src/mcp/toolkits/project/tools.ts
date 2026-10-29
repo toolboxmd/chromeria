@@ -178,6 +178,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
   }),
   dependencies: [
     ...shared.dependencies,
+    PeerForwarding.PeerForwarding,
     ThreadLaunchService.ThreadLaunchService,
     ProviderRegistry.ProviderRegistry,
     ProviderAdapterRegistryV2,

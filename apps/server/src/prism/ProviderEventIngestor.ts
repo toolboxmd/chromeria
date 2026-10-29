@@ -11,18 +11,20 @@ export const layer = Layer.effect(
     const clock = yield* StreamClock.StreamClock;
     return ProviderEventIngestor.ProviderEventIngestorV2.of({
       normalize: ingestor.normalize,
-      ingestNormalized: (input) =>
-        ingestor
-          .ingestNormalized(input)
-          .pipe(
-            Effect.tap((stored) =>
-              stored.length > 0 || input.event.type === "turn.terminal"
-                ? Effect.flatMap(StreamClock.StreamClockAttempt, (attemptId) =>
-                    clock.observe(input, attemptId),
-                  )
-                : Effect.void,
+      ingestNormalized: Effect.fn("ProviderEventIngestor.ProviderEventIngestorV2.ingestNormalized")(
+        (input) =>
+          ingestor
+            .ingestNormalized(input)
+            .pipe(
+              Effect.tap((stored) =>
+                stored.length > 0 || input.event.type === "turn.terminal"
+                  ? Effect.flatMap(StreamClock.StreamClockAttempt, (attemptId) =>
+                      clock.observe(input, attemptId),
+                    )
+                  : Effect.void,
+              ),
             ),
-          ),
+      ),
     });
   }),
 );

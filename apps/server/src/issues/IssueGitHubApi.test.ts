@@ -1,3 +1,4 @@
+import * as GitHubAppSignIn from "../../../../packages/source-control-github/src/server/GitHubAppSignIn.ts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -19,7 +20,11 @@ const decodeRequest = Schema.decodeUnknownEffect(jsonCodec);
 function harness(answer: () => unknown) {
   const requests: Array<HttpClientRequest.HttpClientRequest> = [];
   const dependencies = Layer.mergeAll(
-    Layer.succeed(GitHubCredentials.GitHubCredentials, {
+    Layer.mock(GitHubAppSignIn.GitHubAppSignIn)({
+      enabled: false,
+      token: () => Effect.succeedNone,
+    }),
+    Layer.mock(GitHubCredentials.GitHubCredentials)({
       get: (host) =>
         Effect.succeed({
           host,
@@ -27,6 +32,8 @@ function harness(answer: () => unknown) {
           source: "gh" as const,
           fingerprint: host,
         }),
+      saved: () => Effect.succeedNone,
+      fingerprint: (host) => Effect.succeed(host),
       invalidate: () => Effect.void,
     }),
     Layer.succeed(

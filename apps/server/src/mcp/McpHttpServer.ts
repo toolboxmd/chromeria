@@ -1142,6 +1142,7 @@ const registerImageTool = Effect.fn("McpHttpServer.registerImageTool")(function*
 });
 
 const registerDeviceScreenshot = Effect.fn("McpHttpServer.registerDeviceScreenshot")(function* () {
+  const settings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
   const devices = yield* DeviceService.DeviceService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const built = yield* decodeAsAdvertised(DeviceScreenshotToolkit);
@@ -1153,6 +1154,10 @@ const registerDeviceScreenshot = Effect.fn("McpHttpServer.registerDeviceScreensh
         .pipe(Stream.unwrap, Stream.run(Sink.last()), Effect.flatMap(Effect.fromOption)),
     (effect) =>
       effect.pipe(
+        (effect) =>
+          Option.isSome(settings)
+            ? Effect.provideService(effect, ServerSettings.ServerSettingsService, settings.value)
+            : effect,
         Effect.provideService(DeviceService.DeviceService, devices),
         Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
       ),
@@ -1697,7 +1702,7 @@ const layerSavedPreviewAuthorization = Layer.unwrap(
             Effect.provideService(ServerSettings.ServerSettingsService, settings.value),
           );
           return HttpServerResponse.jsonUnsafe({ ...input, authorized: true });
-        }).pipe(Effect.catch((error) => Effect.succeed(peerAuthorityFailure(error))));
+        }).pipe(Effect.orElseSucceed((error) => peerAuthorityFailure(error)));
       }),
     );
     return Layer.merge(support, authorize).pipe(
@@ -1749,7 +1754,7 @@ const layerPreviewViewerAuthorization = Layer.unwrap(
               ),
             );
             return HttpServerResponse.jsonUnsafe(yield* viewers.value.accept(scope, input));
-          }).pipe(Effect.catch((error) => Effect.succeed(peerAuthorityFailure(error))));
+          }).pipe(Effect.orElseSucceed((error) => peerAuthorityFailure(error)));
         }),
       ),
       HttpRouter.add(
@@ -1763,7 +1768,7 @@ const layerPreviewViewerAuthorization = Layer.unwrap(
           return HttpServerResponse.jsonUnsafe(
             yield* viewers.value.close(AuthSessionId.make(scope.client.sessionId), input.viewerId),
           );
-        }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 400 })))),
+        }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
       ),
     ).pipe(
       Layer.provide(layerMcpAuthMiddleware),
@@ -1865,7 +1870,7 @@ const layerDeviceViewerAuthorization = Layer.unwrap(
               ),
             );
             return HttpServerResponse.jsonUnsafe(yield* viewers.value.accept(scope, input));
-          }).pipe(Effect.catch((error) => Effect.succeed(peerAuthorityFailure(error))));
+          }).pipe(Effect.orElseSucceed((error) => peerAuthorityFailure(error)));
         }),
       ),
       HttpRouter.add(
@@ -1875,13 +1880,11 @@ const layerDeviceViewerAuthorization = Layer.unwrap(
           const request = yield* HttpServerRequest.HttpServerRequest;
           const scope = yield* McpInvocationContext.McpInvocationContext;
           if (scope.client?.linked !== true) return HttpServerResponse.empty({ status: 403 });
-          const input = yield* Schema.decodeUnknownEffect(DeviceViewerCloseInput)(
-            yield* request.json,
-          );
+          const input = yield* decodeDeviceViewerCloseInput(yield* request.json);
           return HttpServerResponse.jsonUnsafe(
             yield* viewers.value.close(AuthSessionId.make(scope.client.sessionId), input.viewerId),
           );
-        }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 400 })))),
+        }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
       ),
     ).pipe(
       Layer.provide(layerMcpAuthMiddleware),
@@ -1926,7 +1929,7 @@ const layerPeerControl = Layer.unwrap(
           yield* decodeSecretControl(yield* request.json),
         );
         return HttpServerResponse.jsonUnsafe(result);
-      }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 403 })))),
+      }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 403 }))),
     );
     const secretReceipt = HttpRouter.add(
       "POST",
@@ -1942,7 +1945,7 @@ const layerPeerControl = Layer.unwrap(
         return Option.isSome(receipt)
           ? HttpServerResponse.jsonUnsafe(receipt.value)
           : HttpServerResponse.empty({ status: 204 });
-      }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 403 })))),
+      }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 403 }))),
     );
     const secretRetirement = HttpRouter.add(
       "POST",
@@ -2009,7 +2012,7 @@ const layerPeerControl = Layer.unwrap(
             },
           },
         );
-      }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 403 })))),
+      }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 403 }))),
     );
     const lifecycle = yield* Effect.serviceOption(PeerTaskLifecycle.PeerTaskLifecycle);
     const pendingRequests = yield* Effect.serviceOption(PendingRequests);
@@ -2046,7 +2049,7 @@ const layerPeerControl = Layer.unwrap(
           return yield* Effect.gen(function* () {
             const input = yield* decodeTaskLifecycle(yield* request.json);
             return HttpServerResponse.jsonUnsafe(yield* lifecycle.value.execute(scope, input));
-          }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 403 }))));
+          }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 403 })));
         }),
       ),
     );
@@ -2147,7 +2150,7 @@ const layerPeerControl = Layer.unwrap(
               "x-content-type-options": "nosniff",
             },
           });
-        }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 403 })))),
+        }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 403 }))),
       ),
     );
     return Layer.mergeAll(
@@ -2198,3 +2201,5 @@ export const layerTools = Layer.mergeAll(
 );
 
 export const layer = layerTools.pipe(Layer.provideMerge(layerMcpTransport));
+
+const decodeDeviceViewerCloseInput = Schema.decodeUnknownEffect(DeviceViewerCloseInput);

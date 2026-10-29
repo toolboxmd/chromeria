@@ -92,7 +92,7 @@ export const DeviceScreenshotTool = Tool.make("device_screenshot", {
 const DeviceCloseTool = Tool.make("device_close", {
   description:
     "Remove a device from this thread's Device panel. `shutdown=true` also turns it off.",
-  parameters: DeviceToolCloseInput,
+  parameters: McpRouting.parameters(DeviceToolCloseInput),
   success: Schema.Record(Schema.String, Schema.Never),
   failure: DeviceToolFailure,
   dependencies,

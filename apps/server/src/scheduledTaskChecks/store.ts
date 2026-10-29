@@ -95,15 +95,12 @@ export const consumeSlot = Effect.fn("ScheduledTaskChecks.consumeSlot")(function
   const sql = yield* SqlClient.SqlClient;
   let next: string | null = null;
   if (task.enabled) {
-    try {
+    next = yield* Effect.try(() => {
       const at = nextScheduledRunAt(task.schedule, now);
-      next =
-        at !== null && Number.isFinite(DateTime.toEpochMillis(at))
-          ? DateTime.formatIso(DateTime.toUtc(at))
-          : null;
-    } catch {
-      next = null;
-    }
+      return at !== null && Number.isFinite(DateTime.toEpochMillis(at))
+        ? DateTime.formatIso(DateTime.toUtc(at))
+        : null;
+    }).pipe(Effect.orElseSucceed(() => null));
   }
   yield* sql`
     UPDATE scheduled_tasks

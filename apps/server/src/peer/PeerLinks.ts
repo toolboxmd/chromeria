@@ -218,6 +218,14 @@ const make = Effect.gen(function* () {
     yield* sql`ALTER TABLE fork_automation_retired_links ADD COLUMN paired_primary_origin TEXT`.pipe(
       Effect.catch(failStorage),
     );
+  if (
+    !(yield* sql<{ name: string }>`PRAGMA table_info(fork_automation_retired_links)`).some(
+      (column) => column.name === "fenced",
+    )
+  )
+    yield* sql`ALTER TABLE fork_automation_retired_links ADD COLUMN fenced INTEGER NOT NULL DEFAULT 1`.pipe(
+      Effect.catch(failStorage),
+    );
   // Route knowledge outlives ordinary links only while an original disable
   // remains unacknowledged. It never retains a replacement's bearer or alternates.
   const rememberRecoveryPrimary = (environmentId: string, primary: string) =>
@@ -380,7 +388,7 @@ const make = Effect.gen(function* () {
           ),
         );
     },
-    (effect, origin, input, clientName) =>
+    (effect, origin, _input, _clientName) =>
       effect.pipe(
         Effect.catchTags({
           SchemaError: (cause) =>

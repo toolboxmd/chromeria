@@ -88,6 +88,7 @@ describe("RPC authorization scopes", () => {
 });
 
 it("requires operate permission for host retry while preserving read-only listing", () => {
+  expect(requiredScopeForRpcMethod(WS_METHODS.scheduledTasksList)).toBe(AuthOrchestrationReadScope);
   expect(requiredScopeForDeviceList({})).toBe(AuthOrchestrationReadScope);
   expect(requiredScopeForDeviceList({ retryHostId: "remote-host" })).toBe(
     AuthOrchestrationOperateScope,

@@ -19,7 +19,9 @@ export const layerSignals = Layer.effect(
   Effect.gen(function* () {
     const changes = yield* PubSub.unbounded<ThreadId>();
     return {
-      publish: (threadId: ThreadId) => PubSub.publish(changes, threadId).pipe(Effect.asVoid),
+      publish: Effect.fn("RecoveryWaitSignals.publish")((threadId: ThreadId) =>
+        PubSub.publish(changes, threadId).pipe(Effect.asVoid),
+      ),
       subscribe: PubSub.subscribe(changes).pipe(Effect.map(Stream.fromSubscription)),
     };
   }),

@@ -268,7 +268,7 @@ const ToolCallResponse = Schema.Struct({
 const decodeExchange = Schema.decodeUnknownEffect(
   Schema.fromJsonString(PeerAuthority.ExchangeResult),
 );
-const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+const _decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeToolCallResponse = Schema.decodeUnknownEffect(Schema.fromJsonString(ToolCallResponse));
 const decodeFailure = Schema.decodeUnknownOption(
   Schema.fromJsonString(
@@ -538,11 +538,11 @@ const make = Effect.gen(function* () {
       });
     });
     yield* streaming.pipe(
-      Effect.catch((error) =>
-        error._tag === "SchemaError" ||
-        (error._tag === "OrchestratorMcpFailure" && error.code === "capability_denied")
-          ? Effect.fail(error)
-          : polling,
+      Effect.catchIf(
+        (error) =>
+          error._tag !== "SchemaError" &&
+          !(error._tag === "OrchestratorMcpFailure" && error.code === "capability_denied"),
+        () => polling,
       ),
       Effect.retry({
         schedule: Schedule.spaced("1 second"),
@@ -623,9 +623,7 @@ const make = Effect.gen(function* () {
   });
   const deliverAutomationDisableBatch = Effect.gen(function* () {
     if (Option.isNone(authority)) return false;
-    const secretPending = yield* deliverSecretRetirements.pipe(
-      Effect.catch(() => Effect.succeed(true)),
-    );
+    const secretPending = yield* deliverSecretRetirements.pipe(Effect.orElseSucceed(() => true));
     const batch = yield* authority.value.pendingAutomationDisables;
     yield* Effect.forEach(
       batch,
@@ -683,9 +681,11 @@ const make = Effect.gen(function* () {
             : null;
           if (deadline === null) yield* Queue.take(disableWakeups);
           else
-            yield* Effect.raceFirst(
-              Queue.take(disableWakeups),
-              Effect.sleep(Math.max(0, deadline - (yield* Clock.currentTimeMillis))),
+            yield* Queue.take(disableWakeups).pipe(
+              Effect.timeoutOrElse({
+                duration: Math.max(0, deadline - (yield* Clock.currentTimeMillis)),
+                orElse: () => Effect.void,
+              }),
             );
         }).pipe(
           Effect.catch(() =>
@@ -733,19 +733,18 @@ const make = Effect.gen(function* () {
             updates,
           ).pipe(
             Stream.runForEach((id) =>
-              Queue.offer(disableWakeups, undefined)
-                .pipe(Effect.andThen(reconnect(id)))
-                .pipe(
-                  Effect.retry({
-                    schedule: Schedule.spaced("2 seconds"),
-                    while: (error) =>
-                      error._tag === "HttpClientError" ||
-                      (error._tag === "OrchestratorMcpFailure" &&
-                        error.code === "orchestration_error"),
-                  }),
-                  Effect.ignoreCause({ log: true }),
-                  Effect.forkIn(lifetime),
-                ),
+              Queue.offer(disableWakeups, undefined).pipe(
+                Effect.andThen(reconnect(id)),
+                Effect.retry({
+                  schedule: Schedule.spaced("2 seconds"),
+                  while: (error) =>
+                    error._tag === "HttpClientError" ||
+                    (error._tag === "OrchestratorMcpFailure" &&
+                      error.code === "orchestration_error"),
+                }),
+                Effect.ignoreCause({ log: true }),
+                Effect.forkIn(lifetime),
+              ),
             ),
           );
         }).pipe(Effect.ignoreCause({ log: true })),
@@ -885,7 +884,9 @@ const make = Effect.gen(function* () {
             });
       }
       const success = Schema.fromJsonString(input.success);
-      return yield* Schema.decodeEffect(success)(text).pipe(
+      const decoded = yield* Schema.decodeEffect(success)(
+        body.result.structuredContent === undefined ? text : json(body.result.structuredContent),
+      ).pipe(
         Effect.mapError(
           () =>
             new OrchestratorMcpFailure({
@@ -895,6 +896,11 @@ const make = Effect.gen(function* () {
             }),
         ),
       );
+      return input.tool === "t3_attachment_prepare_upload" &&
+        typeof decoded === "object" &&
+        decoded !== null
+        ? { ...decoded, uploadOrigin: new URL(resolved.url).origin }
+        : decoded;
     },
     (effect, input) =>
       effect.pipe(
@@ -1145,7 +1151,7 @@ const make = Effect.gen(function* () {
           message:
             "The destination does not support authenticated device viewing; no viewer was admitted.",
         });
-      yield* Schema.decodeUnknownEffect(
+      yield* Schema.decodeEffect(
         Schema.fromJsonString(
           input.request.resource.type === "device" ? DeviceViewerProtocol : PreviewViewerProtocol,
         ),
@@ -1188,7 +1194,7 @@ const make = Effect.gen(function* () {
     },
     Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
     Effect.mapError((error) =>
-      Schema.is(OrchestratorMcpFailure)(error)
+      isOrchestratorMcpFailure(error)
         ? error
         : new OrchestratorMcpFailure({
             code: "orchestration_error",
@@ -1214,9 +1220,7 @@ const make = Effect.gen(function* () {
         ),
       );
       if (response.status !== 200) return false;
-      return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Boolean))(
-        yield* deviceViewerReply(response),
-      );
+      return yield* decodeBoolean(yield* deviceViewerReply(response));
     },
     Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
     Effect.mapError(
@@ -1230,7 +1234,7 @@ const make = Effect.gen(function* () {
   const openDeviceViewer: NonNullable<PeerMcpClient["Service"]["openDeviceViewer"]> = (input) =>
     openViewer(input).pipe(
       Effect.flatMap(({ origin, text }) =>
-        Schema.decodeUnknownEffect(Schema.fromJsonString(DeviceViewerAccess))(text).pipe(
+        decodeDeviceViewerAccess(text).pipe(
           Effect.map((access) => ({ origin, access })),
           Effect.mapError(
             () =>
@@ -1245,7 +1249,7 @@ const make = Effect.gen(function* () {
   const openPreviewViewer: NonNullable<PeerMcpClient["Service"]["openPreviewViewer"]> = (input) =>
     openViewer(input).pipe(
       Effect.flatMap(({ origin, text }) =>
-        Schema.decodeUnknownEffect(Schema.fromJsonString(PreviewViewerAccess))(text).pipe(
+        decodePreviewViewerAccess(text).pipe(
           Effect.map((access) => ({ origin, access })),
           Effect.mapError(
             () =>
@@ -1541,9 +1545,7 @@ const make = Effect.gen(function* () {
           message: "The qualified attachment is unavailable to its current reader.",
         });
       }
-      const producer = yield* Schema.decodeUnknownEffect(Schema.Literals(["device", "preview"]))(
-        response.headers["t3-attachment-producer"],
-      );
+      const producer = yield* decodeValue3(response.headers["t3-attachment-producer"]);
       const state = yield* response.stream.pipe(
         Stream.runFoldEffect(
           () => ({ size: 0, chunks: new Array<Uint8Array>() }),
@@ -1785,19 +1787,21 @@ const make = Effect.gen(function* () {
     call,
     start,
     drainAutomationDisables,
-    requirePendingRequests: (environmentId, generation) =>
-      lifecycleRequest(environmentId, generation, undefined, true).pipe(
-        Effect.flatMap(decodeLifecycleVersion),
-        Effect.asVoid,
-        Effect.mapError((error) =>
-          error._tag === "OrchestratorMcpFailure"
-            ? error
-            : new OrchestratorMcpFailure({
-                code: "invalid_request",
-                message: "The peer does not support verified pending request actions.",
-              }),
+    requirePendingRequests: Effect.fn("PeerMcpClient.requirePendingRequests")(
+      (environmentId, generation) =>
+        lifecycleRequest(environmentId, generation, undefined, true).pipe(
+          Effect.flatMap(decodeLifecycleVersion),
+          Effect.asVoid,
+          Effect.mapError((error) =>
+            error._tag === "OrchestratorMcpFailure"
+              ? error
+              : new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message: "The peer does not support verified pending request actions.",
+                }),
+          ),
         ),
-      ),
+    ),
     requireTaskLifecycle,
     taskLifecycle,
     uploadAttachment,
@@ -1825,3 +1829,11 @@ export const layerOver = <ROut, E, RIn>(
     RIn
   >,
 ) => layer.pipe(Layer.provide(PeerNoticeDelivery.layer), Layer.provideMerge(runtime));
+
+const isOrchestratorMcpFailure = Schema.is(OrchestratorMcpFailure);
+const decodeBoolean = Schema.decodeEffect(Schema.fromJsonString(Schema.Boolean));
+
+const decodeDeviceViewerAccess = Schema.decodeEffect(Schema.fromJsonString(DeviceViewerAccess));
+
+const decodePreviewViewerAccess = Schema.decodeEffect(Schema.fromJsonString(PreviewViewerAccess));
+const decodeValue3 = Schema.decodeUnknownEffect(Schema.Literals(["device", "preview"]));

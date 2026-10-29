@@ -1,3 +1,4 @@
+import * as ServerSettings from "../serverSettings.ts";
 import { AuthStandardClientScopes } from "@t3tools/contracts";
 import * as Sessions from "../auth/SessionStore.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -17,6 +18,7 @@ import { REUSABLE_DEV_SESSION_EXPIRES_AT } from "../auth/ReusableDevAuth.ts";
 
 const dependencies = Layer.mergeAll(
   Sqlite.layerMemory,
+  ServerSettings.layerTest(),
   Secrets.layer,
   Environment.layerIdentity,
 ).pipe(

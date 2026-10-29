@@ -1165,6 +1165,6 @@ const layerMakeServer = Layer.unwrap(
       Layer.provideMerge(layerPlatformServices),
     );
   }),
-).pipe(Layer.provide(ProcessRunner.layer));
+).pipe(Layer.provide(layerServerSettings), Layer.provide(ProcessRunner.layer));
 
 export const runServer = Layer.launch(layerMakeServer);

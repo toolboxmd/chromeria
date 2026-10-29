@@ -1,3 +1,4 @@
+import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
 // @effect-diagnostics nodeBuiltinImport:off - Synthetic Chromium integration owns its private browser resources.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
@@ -19,7 +20,7 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as Context from "effect/Context";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
-import * as Option from "effect/Option";
+
 import * as Schema from "effect/Schema";
 import * as DateTime from "effect/DateTime";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
@@ -108,7 +109,7 @@ const fixture = () =>
       AuthSessions.layer,
       Layer.succeed(PreviewBrowser.PreviewBrowser, {
         executable: Effect.succeed(process.env.CHROMERIA_WATCH_TEST_CHROME!),
-        installed: Effect.succeed(Option.some(process.env.CHROMERIA_WATCH_TEST_CHROME!)),
+        installed: Effect.succeedSome(process.env.CHROMERIA_WATCH_TEST_CHROME!),
       }),
       Layer.mock(Desktop.DesktopBrowserChannel)({
         available: false,
@@ -123,6 +124,7 @@ const fixture = () =>
       Layer.provideMerge(deps),
     );
     const native = ServerBrowser.layer.pipe(
+      Layer.provideMerge(PreviewAgentActivity.layer),
       Layer.provideMerge(Broker.layer),
       Layer.provideMerge(authority),
       Layer.provideMerge(

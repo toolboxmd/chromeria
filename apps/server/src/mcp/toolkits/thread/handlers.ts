@@ -69,25 +69,26 @@ export const layer = McpToolAccess.toLayer(
   ThreadToolkit,
   Effect.gen(function* () {
     const pending = yield* PendingRequests.PendingRequests;
-    const listPendingRequests = (input: { readonly threadId?: ThreadId | undefined }) =>
-      Effect.gen(function* () {
-        const context = yield* readThread(input.threadId, ["runtimeRequests"]);
-        const { projection } = context;
-        const answerer = yield* requestAnswerer(context, projection.thread);
-        const descendant = answerer !== undefined && answerer.kind !== "own";
-        return {
-          requestIds: projection.runtimeRequests
-            .filter(
-              (request) =>
-                request.status === "pending" &&
-                (request.kind === "user_input" ||
-                  (descendant &&
-                    request.kind !== "dynamic_tool_call" &&
-                    request.kind !== "auth_refresh")),
-            )
-            .map((request) => request.id),
-        };
-      });
+    const listPendingRequests = Effect.fn("listPendingRequests")(function* (input: {
+      readonly threadId?: ThreadId | undefined;
+    }) {
+      const context = yield* readThread(input.threadId, ["runtimeRequests"]);
+      const { projection } = context;
+      const answerer = yield* requestAnswerer(context, projection.thread);
+      const descendant = answerer !== undefined && answerer.kind !== "own";
+      return {
+        requestIds: projection.runtimeRequests
+          .filter(
+            (request) =>
+              request.status === "pending" &&
+              (request.kind === "user_input" ||
+                (descendant &&
+                  request.kind !== "dynamic_tool_call" &&
+                  request.kind !== "auth_refresh")),
+          )
+          .map((request) => request.id),
+      };
+    });
     return {
       run_scheduled_task_now: McpToolAccess.writesEnvironment((input, check) =>
         Effect.gen(function* () {
@@ -150,17 +151,18 @@ export const layer = McpToolAccess.toLayer(
       ),
       t3_thread_search: McpToolAccess.reads((input) =>
         Effect.gen(function* () {
-          const { caller } = yield* readCaller();
+          const { caller, scope } = yield* readCaller();
           // Like the other project tools, an omitted project means the caller's own; a client
           // outside a thread searches every project.
           const threadSearch = yield* ThreadSearch.ThreadSearch;
           const { matches } = yield* threadSearch
             .searchThreads({ ...input, projectId: input.projectId ?? caller?.projectId })
             .pipe(Effect.mapError(unavailable));
+          const environmentId = scope.environmentId;
           return {
             matches: matches.map((match) => ({
               ...match,
-              link: formatThreadLink({ threadId: match.threadId }, match.title),
+              link: formatThreadLink({ environmentId, threadId: match.threadId }, match.title),
             })),
           };
         }),
@@ -243,6 +245,13 @@ export const layer = McpToolAccess.toLayer(
             threads,
             projection: { thread },
           } = yield* readThread(input.threadId);
+          if (input.modelSelection === undefined)
+            return {
+              threadId: thread.id,
+              modelSelection: thread.modelSelection,
+              runtimeMode: thread.runtimeMode,
+              interactionMode: thread.interactionMode,
+            };
           const type = modelSelectionCommandType(thread.providerInstanceId, input.modelSelection);
           const result = yield* threads
             .dispatch({

@@ -321,18 +321,21 @@ const make = Effect.gen(function* () {
           Effect.asVoid,
         );
   return StreamClock.of({
-    beginAttempt: (identity) =>
+    beginAttempt: Effect.fn("StreamClock.beginAttempt")((identity) =>
       Clock.currentTimeMillis.pipe(
         Effect.flatMap((now) => record(state.beginAttempt(identity, now))),
       ),
-    observe: (input, attemptId) =>
+    ),
+    observe: Effect.fn("StreamClock.observe")((input, attemptId) =>
       Clock.currentTimeMillis.pipe(
         Effect.flatMap((now) => record(state.observe(input, now, attemptId))),
       ),
-    endAttempt: (threadId, runId, attemptId) =>
+    ),
+    endAttempt: Effect.fn("StreamClock.endAttempt")((threadId, runId, attemptId) =>
       Clock.currentTimeMillis.pipe(
         Effect.flatMap((now) => record(state.endAttempt(threadId, runId, attemptId, now))),
       ),
+    ),
     liveness: Effect.sync(state.liveness),
     healthySamples: Effect.sync(() =>
       [...samples.values()].flatMap((models) => [...models.values()]),

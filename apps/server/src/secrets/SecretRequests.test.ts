@@ -498,9 +498,8 @@ it.effect("drops request files once they expire, and directories the agent empti
     yield* write(unrelated, now - 25 * 60 * 60 * 1000);
 
     // Building the service runs the first sweep.
-    yield* Effect.gen(function* () {
-      yield* SecretRequests.SecretRequests;
-    }).pipe(
+    yield* SecretRequests.SecretRequests.pipe(
+      Effect.asVoid,
       Effect.provide(
         SecretRequests.layer.pipe(
           Layer.provide(Layer.mock(ThreadManagementService.ThreadManagementService)({})),
@@ -594,12 +593,12 @@ it.effect("an answer whose record failed never deletes what a racing answer save
     ({ service }) =>
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
-        const results = yield* Effect.all(
-          ["value-a", "value-b"].map((secret) =>
+        const results = yield* Effect.forEach(
+          ["value-a", "value-b"],
+          (secret) =>
             Effect.result(
               service.answer({ threadId, turnItemId, answer: { type: "save", secret } }),
             ),
-          ),
           { concurrency: "unbounded" },
         );
         assert.deepEqual(results.map((result) => result._tag).toSorted(), ["Failure", "Success"]);
@@ -628,9 +627,8 @@ it.effect("a directory the sweep cannot read does not keep it from the rest", ()
     const old = (now - 25 * 60 * 60 * 1000) / 1000;
     yield* fileSystem.utimes(`${root}/${stale}/token`, old, old);
 
-    yield* Effect.gen(function* () {
-      yield* SecretRequests.SecretRequests;
-    }).pipe(
+    yield* SecretRequests.SecretRequests.pipe(
+      Effect.asVoid,
       Effect.provide(
         SecretRequests.layer.pipe(
           Layer.provide(Layer.mock(ThreadManagementService.ThreadManagementService)({})),

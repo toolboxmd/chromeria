@@ -354,7 +354,9 @@ const handlers = {
               (host) => host.id === device.hostId && host.kind === "eas",
             );
             const targetArgs = [
-              ...agentDeviceTargetArgs({ ...device, id: agent.agentDeviceId }),
+              ...(agent.agentDeviceId === null
+                ? ["--platform", device.platform]
+                : agentDeviceTargetArgs({ ...device, id: agent.agentDeviceId })),
               ...agent.args,
             ];
             const config = yield* ServerConfig.ServerConfig;

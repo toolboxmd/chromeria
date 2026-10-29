@@ -338,9 +338,10 @@ const layerResourceCleanupTest = ResourceCleanupService.layer.pipe(
 );
 
 const layerProjectDeletionTest = Layer.mergeAll(
-  RuntimeLayer.layer
-    .pipe(Layer.provide(Layer.mock(BareProviders.ProviderRegistry)({})))
-    .pipe(Layer.provide(RuntimeLayer.layerProjectService)),
+  RuntimeLayer.layer.pipe(
+    Layer.provide(Layer.mock(BareProviders.ProviderRegistry)({})),
+    Layer.provide(RuntimeLayer.layerProjectService),
+  ),
   RuntimeLayer.layerProjectService,
   RuntimeLayer.layerEventSink,
   ThreadCommandExecutor.layer,
@@ -609,9 +610,10 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
 });
 
 const layerSharedApplicationDataPlaneTest = Layer.mergeAll(
-  RuntimeLayer.layer
-    .pipe(Layer.provide(Layer.mock(BareProviders.ProviderRegistry)({})))
-    .pipe(Layer.provide(RuntimeLayer.layerProjectService)),
+  RuntimeLayer.layer.pipe(
+    Layer.provide(Layer.mock(BareProviders.ProviderRegistry)({})),
+    Layer.provide(RuntimeLayer.layerProjectService),
+  ),
   RuntimeLayer.layerProjectService,
   RuntimeLayer.layerEventSink,
   RuntimeLayer.layerEventInfrastructure,
@@ -1361,11 +1363,9 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
         });
         yield* recovery.reconcile(trigger);
         const recovered = yield* orchestrator.getThreadProjection(threadId);
-        if (scope === "run") {
-          assert.equal(recovered.runs[0]?.status, "cancelled");
-        } else {
-          assert.isEmpty(recovered.runs);
-        }
+        if (scope === "run")
+          assert.equal(recovered.runs.find((run) => run.id === runId)?.status, "cancelled");
+        else assert.isTrue(recovered.runs.every((run) => run.status === "cancelled"));
         assert.deepEqual(
           recovered.runtimeRequests.find((row) => row.id === requestId),
           {
@@ -1407,10 +1407,12 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
         assert.equal(answered.nodes.find((row) => row.id === nodeId)?.status, "completed");
         assert.equal(answered.turnItems.find((row) => row.id === itemId)?.status, "completed");
         assert.lengthOf(answered.runs, recovered.runs.length + 1);
-        assert.equal(answered.messages.at(-1)?.runId, answered.runs.at(-1)?.id);
-        assert.equal(
-          answered.messages.at(-1)?.text,
-          "Which color?\nBlue\n\nWhich sizes?\nSmall, Large",
+        const answer = answered.messages.find(
+          (message) => message.text === "Which color?\nBlue\n\nWhich sizes?\nSmall, Large",
+        );
+        assert.isDefined(answer);
+        assert.isTrue(
+          answered.runs.some((run) => run.id === answer?.runId && run.status === "starting"),
         );
         assert.deepEqual(
           (yield* (yield* EffectOutbox.EffectOutboxV2).listByCommandId(

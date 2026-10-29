@@ -403,16 +403,10 @@ const make = Effect.gen(function* () {
   );
   const read: PendingRequests["Service"]["read"] = (input) =>
     execute(input, { type: "read" }).pipe(
-      Effect.flatMap((result) =>
-        "kind" in result ? Effect.succeed(result) : Effect.fail(unavailable()),
-      ),
+      Effect.filterOrFail((result) => "kind" in result, unavailable),
     );
   const respond: PendingRequests["Service"]["respond"] = (input, action) =>
-    execute(input, action).pipe(
-      Effect.flatMap((result) =>
-        "sequence" in result ? Effect.succeed(result) : Effect.fail(unavailable()),
-      ),
-    );
+    execute(input, action).pipe(Effect.filterOrFail((result) => "sequence" in result, unavailable));
   return PendingRequests.of({ read, respond, fromTask });
 });
 export const layer = Layer.effect(PendingRequests, make);

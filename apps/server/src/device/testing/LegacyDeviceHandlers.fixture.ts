@@ -203,7 +203,9 @@ const handlers = {
                   candidate.hostId === session.hostId && candidate.id === session.deviceId,
               ) ?? target;
             const targetArgs = [
-              ...agentDeviceTargetArgs({ ...device, id: agentArgs.agentDeviceId }),
+              ...(agentArgs.agentDeviceId === null
+                ? ["--platform", device.platform]
+                : agentDeviceTargetArgs({ ...device, id: agentArgs.agentDeviceId })),
               ...agentArgs.args,
             ];
             const config = yield* ServerConfig.ServerConfig;

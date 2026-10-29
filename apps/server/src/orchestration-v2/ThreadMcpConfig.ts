@@ -26,9 +26,9 @@ const make = Effect.gen(function* () {
     id: string,
     servers: ThreadMcpServers,
   ) {
-    const json = yield* Schema.encodeEffect(codec)(servers).pipe(Effect.mapError(failure));
-    yield* secrets.set(key(id), new TextEncoder().encode(json)).pipe(Effect.mapError(failure));
-  });
+    const json = yield* Schema.encodeEffect(codec)(servers);
+    yield* secrets.set(key(id), new TextEncoder().encode(json));
+  }, Effect.mapError(failure));
   return ThreadMcpConfig.of({
     prepare: Effect.fn("ThreadMcpConfig.prepare")(function* (request) {
       if (request.mcpServers === undefined) return { allow: request.allow };
@@ -39,7 +39,7 @@ const make = Effect.gen(function* () {
     read: Effect.fn("ThreadMcpConfig.read")(function* (id) {
       const value = yield* secrets.get(key(id)).pipe(Effect.mapError(failure));
       if (Option.isNone(value)) return yield* failure();
-      return yield* Schema.decodeUnknownEffect(codec)(new TextDecoder().decode(value.value)).pipe(
+      return yield* Schema.decodeEffect(codec)(new TextDecoder().decode(value.value)).pipe(
         Effect.mapError(failure),
       );
     }),

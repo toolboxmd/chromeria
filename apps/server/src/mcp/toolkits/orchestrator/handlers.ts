@@ -154,6 +154,13 @@ const handlers = {
       return yield* service.listScheduledTasks(scope, input);
     }),
   ),
+  update_scheduled_task: McpToolAccess.writes((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+      return yield* service.updateScheduledTask(scope, input);
+    }),
+  ),
   delete_scheduled_task: McpToolAccess.writes((input) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.McpInvocationContext;
@@ -236,7 +243,12 @@ const handlers = {
   ),
   t3_environment_links: McpToolAccess.reads(() =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const scope = yield* McpInvocationContext.requireMcpCapability("orchestration").pipe(
+        Effect.mapError(
+          (error) =>
+            new OrchestratorMcpFailure({ code: "capability_denied", message: error.message }),
+        ),
+      );
       const forwarding = yield* PeerForwarding.PeerForwarding;
       return yield* forwarding.links(scope);
     }),

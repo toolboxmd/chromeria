@@ -229,8 +229,8 @@ export const layer = Layer.unwrap(
       Effect.logWarning(error.message, error.cause).pipe(
         Effect.as(
           PageCache.of({
-            get: () => Effect.fail(error),
-            put: () => Effect.fail(error),
+            get: Effect.fn("PageCache.get")(() => Effect.fail(error)),
+            put: Effect.fn("PageCache.put")(() => Effect.fail(error)),
           }),
         ),
       ),

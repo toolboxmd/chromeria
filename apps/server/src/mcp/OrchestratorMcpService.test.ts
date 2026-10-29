@@ -36,7 +36,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as FileSystem from "effect/FileSystem";
-import * as Option from "effect/Option";
+
 import * as ServerConfig from "../config.ts";
 
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -1369,18 +1369,16 @@ describe("OrchestratorMcpService provider resolution", () => {
           adapterRegistryLayer([codexInstanceId]),
           Layer.mock(ProjectService.ProjectService)({
             getById: (id) =>
-              Effect.succeed(
-                Option.some({
-                  id,
-                  title: "Isolation test",
-                  workspaceRoot: id === projectId ? parentRoot : destinationRoot,
-                  defaultModelSelection: null,
-                  scripts: [],
-                  createdAt: "2026-10-18T00:00:00Z",
-                  updatedAt: "2026-10-18T00:00:00Z",
-                  deletedAt: null,
-                }),
-              ),
+              Effect.succeedSome({
+                id,
+                title: "Isolation test",
+                workspaceRoot: id === projectId ? parentRoot : destinationRoot,
+                defaultModelSelection: null,
+                scripts: [],
+                createdAt: "2026-10-18T00:00:00Z",
+                updatedAt: "2026-10-18T00:00:00Z",
+                deletedAt: null,
+              }),
           }),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
@@ -3195,21 +3193,20 @@ describe("OrchestratorMcpService provider resolution", () => {
           assert.equal(yield* Ref.get(dispatched), 1);
         }).pipe(
           Effect.provide(
-            layerOrchestratorService
-              .pipe(
-                Layer.provide(
-                  ServerSettings.layerTest({
-                    prismRoles: {
-                      worker: {
-                        lanes: {
-                          medium: [{ instanceId: claudeInstanceId, model: "claude-opus-5-5" }],
-                        },
+            layerOrchestratorService.pipe(
+              Layer.provide(
+                ServerSettings.layerTest({
+                  prismRoles: {
+                    worker: {
+                      lanes: {
+                        medium: [{ instanceId: claudeInstanceId, model: "claude-opus-5-5" }],
                       },
                     },
-                  }),
-                ),
-              )
-              .pipe(Layer.provide(layerDependencies)),
+                  },
+                }),
+              ),
+              Layer.provide(layerDependencies),
+            ),
           ),
         );
       }),

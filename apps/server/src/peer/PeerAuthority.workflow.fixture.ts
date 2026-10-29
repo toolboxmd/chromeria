@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as DocumentText from "../provider/DocumentText.ts";
 import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
 import * as PeerLinkRequests from "./PeerLinkRequests.ts";
@@ -467,7 +468,9 @@ export const automationReply = Effect.fn("PeerAuthority.automationReply")(functi
 
 const graphConnections = new WeakMap<Scope.Scope, Set<Scope.Closeable>>();
 
-const layerFixtureHostServices = Layer.merge(
+const layerFixtureHostServices = Layer.mergeAll(
+  DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+  PreviewAgentActivity.layer,
   McpProviderSessions.layer,
   // Fixture repositories have no forge; pull request reads are mocked per test.
   Layer.succeed(BuiltInDrivers.SourceControlDrivers, []),
@@ -522,14 +525,19 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
     } = {},
   ) {
     // Closures rebuilt later reuse this node's instances; provider sessions keep per-thread state.
-    // Pick only these two: the ambient context also holds an HttpClient that would shadow peerHttp.
+    // The ambient HttpClient would shadow peerHttp if captured here.
     const hostServices = Layer.succeedContext(
       Context.pick(
         McpProviderSessions.McpProviderSessions,
         BuiltInDrivers.SourceControlDrivers,
+        DocumentText.DocumentText,
+        PreviewAgentActivity.PreviewAgentActivity,
       )(
         yield* Effect.context<
-          McpProviderSessions.McpProviderSessions | BuiltInDrivers.SourceControlDrivers
+          | McpProviderSessions.McpProviderSessions
+          | BuiltInDrivers.SourceControlDrivers
+          | DocumentText.DocumentText
+          | PreviewAgentActivity.PreviewAgentActivity
         >(),
       ),
     );
@@ -606,17 +614,28 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
       ? yield* realSettingsLayer.pipe(Layer.fresh, Layer.build)
       : yield* Settings.layerTest({
           providerInstances: { [instanceId]: { driver, enabled: true } },
+          linkedEnvironmentsEnabled: true,
           enableAgentBrowserAccess: true,
           enableAgentDeviceAccess: true,
         }).pipe(Layer.fresh, Layer.build);
+    if (preferencesOwner) {
+      yield* Context.get(settingsContext, Settings.ServerSettingsService).updateSettings({
+        linkedEnvironmentsEnabled: true,
+      });
+      yield* Ref.set(settingsWrites, 0);
+    }
     const settings = Layer.succeedContext(settingsContext);
     const enrichment = ProjectEnrichment.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
           RepositoryIdentity.layer,
           Layer.succeed(ProjectFavicon.ProjectFaviconResolver, {
-            resolvePath: () => Effect.succeed(null),
-            invalidate: () => Effect.void,
+            resolvePath: Effect.fn("ProjectFavicon.ProjectFaviconResolver.resolvePath")(() =>
+              Effect.succeed(null),
+            ),
+            invalidate: Effect.fn("ProjectFavicon.ProjectFaviconResolver.invalidate")(
+              () => Effect.void,
+            ),
           }),
         ),
       ),
@@ -630,7 +649,7 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
           Layer.provide(db),
         )
       : Layer.mock(Projects.ProjectService)({
-          getById: () => Effect.succeed(Option.some(project)),
+          getById: () => Effect.succeedSome(project),
           listPage: () => Effect.succeed({ projects: [project], nextCursor: null }),
         });
     const actualGit = Git.layer.pipe(Layer.provide(VcsProcess.layer));
@@ -722,7 +741,9 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
     ).pipe(
       Layer.provide(
         Layer.succeed(Instances.ProviderInstanceRegistry, {
-          getInstance: (id) => Effect.succeed(id === instanceId ? testInstance : undefined),
+          getInstance: Effect.fn("Instances.ProviderInstanceRegistry.getInstance")((id) =>
+            Effect.succeed(id === instanceId ? testInstance : undefined),
+          ),
           listInstances: Effect.succeed([testInstance]),
           listUnavailable: Effect.succeed([]),
           streamChanges: Stream.empty,
@@ -816,7 +837,7 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
         )
       : Layer.mock(Folders.ManagedProjectFolders)({
           namedProjectsRoot: "/unused",
-          folderForThread: () => Effect.succeed(Option.none()),
+          folderForThread: () => Effect.succeedNone,
           isScratchProject: () => Effect.succeed(false),
         });
     const noticeFailure = yield* Deferred.make<unknown>();
@@ -825,10 +846,12 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
       Effect.gen(function* () {
         const delivery = yield* PeerNoticeDelivery.PeerNoticeDelivery;
         return {
-          deliver: (...args: Parameters<typeof delivery.deliver>) =>
-            delivery
-              .deliver(...args)
-              .pipe(Effect.tapError((error) => Deferred.succeed(noticeFailure, error))),
+          deliver: Effect.fn("PeerNoticeDelivery.PeerNoticeDelivery.deliver")(
+            (...args: Parameters<typeof delivery.deliver>) =>
+              delivery
+                .deliver(...args)
+                .pipe(Effect.tapError((error) => Deferred.succeed(noticeFailure, error))),
+          ),
         };
       }),
     ).pipe(Layer.provide(PeerNoticeDelivery.layer));
@@ -1095,7 +1118,7 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
     yield* Effect.addFinalizer(() => Scope.close(secretOwnerScope, Exit.void));
     const faultSecretStore = Layer.succeed(Secrets.ServerSecretStore, {
       ...actualSecretStore,
-      create: (name, bytes) =>
+      create: Effect.fn("Secrets.ServerSecretStore.create")((name, bytes) =>
         actualSecretStore.create(name, bytes).pipe(
           Effect.andThen(
             Effect.gen(function* () {
@@ -1119,6 +1142,7 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
             }),
           ),
         ),
+      ),
       remove: Effect.fn("PeerAuthority.remove")(
         function* (name) {
           if (
@@ -1215,7 +1239,7 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
     const actualLaunch = Context.get(launches, ThreadLaunch.ThreadLaunchService);
     const scheduledLaunch = Layer.succeed(ThreadLaunch.ThreadLaunchService, {
       ...actualLaunch,
-      launch: (input) =>
+      launch: Effect.fn("ThreadLaunch.ThreadLaunchService.launch")((input) =>
         actualLaunch.launch(input).pipe(
           Effect.tap(() =>
             Effect.gen(function* () {
@@ -1229,6 +1253,7 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
             }),
           ),
         ),
+      ),
     });
     const holdManualSend = yield* Ref.make(false);
     const manualSendHeld = yield* Deferred.make<void>();
@@ -1980,7 +2005,9 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
                   IssueLinks.layer.pipe(
                     Layer.provide(
                       Layer.succeed(ClosingReferences.IssueClosingReferences, {
-                        issuesClosedBy: () => Effect.succeed([]),
+                        issuesClosedBy: Effect.fn(
+                          "ClosingReferences.IssueClosingReferences.issuesClosedBy",
+                        )(() => Effect.succeed([])),
                       }),
                     ),
                   ),
@@ -2059,8 +2086,12 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
           attachmentRequests ? Adapters.layerFromAdapters([providerAdapter]) : Layer.empty,
         ),
         Layer.provide(layerLaunchCatalog),
-        Layer.provide(Layer.mock(Git.GitVcsDriver)({})),
-        Layer.provide(Layer.mock(Repositories.SourceControlRepositoryService)({})),
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(Git.GitVcsDriver)({}),
+            Layer.mock(Repositories.SourceControlRepositoryService)({}),
+          ),
+        ),
       );
     const tools = toolsFor(schedules);
     const lifecycleContext = Context.mergeAll(
@@ -2113,8 +2144,8 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
         return yield* Effect.die("Expected native RPC fixture socket");
       nativeViewerRpcUrl = `ws://127.0.0.1:${address.port}`;
       const viewerHandlers = HttpRouter.use((router) =>
-        Effect.gen(function* () {
-          yield* router.add(
+        router
+          .add(
             "GET",
             "/ws",
             Effect.gen(function* () {
@@ -2169,8 +2200,8 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
                 () => fixtureBrowserViewerSessions!.markDisconnected(session.sessionId),
               );
             }),
-          );
-        }),
+          )
+          .pipe(Effect.asVoid),
       );
       yield* HttpRouter.serve(viewerHandlers, { disableListenLog: true, disableLogger: true }).pipe(
         Layer.provide(Layer.succeedContext(http)),
@@ -2657,7 +2688,7 @@ export const drainStops = (node: Node) =>
       EffectWorker.layerWithOptions({ maxAttempts: 1 }).pipe(
         Layer.provide(
           Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, {
-            execute: (effect) =>
+            execute: Effect.fn("EffectWorker.OrchestrationEffectExecutorV2.execute")((effect) =>
               effect.request.type === "delegated-tasks.stop"
                 ? node.threads
                     .stopDelegatedTasks({
@@ -2677,6 +2708,7 @@ export const drainStops = (node: Node) =>
                       ),
                     )
                 : Effect.void,
+            ),
           }),
         ),
         Layer.provide(Layer.succeed(PeerAuthority.PeerAuthority, node.authority)),
@@ -3041,7 +3073,7 @@ export const activeProvider = Effect.fn("PeerAuthority.activeProvider")(function
   const spy = vi
     .spyOn(sessions, "get")
     .mockReturnValue(
-      Effect.succeed(Option.some({ providerSession } as Adapter.ProviderAdapterV2SessionRuntime)),
+      Effect.succeedSome({ providerSession } as Adapter.ProviderAdapterV2SessionRuntime),
     );
   yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()));
 
@@ -3548,12 +3580,14 @@ export const stageInput383 = Effect.fn("PeerAuthority.stageInput383")(function* 
     source: { type: "upload", attachmentId: issued.attachmentId, upload },
   });
   expect(inspected.isError, json(inspected)).not.toBe(true);
-  return (yield* Schema.decodeUnknownEffect(
-    Schema.Struct({
-      inspection: Schema.Struct({
-        stage: Schema.Literal("staged"),
-        reference: PeerAttachmentReference,
-      }),
-    }),
-  )(inspected.structuredContent)).inspection.reference;
+  return (yield* decodeStagedInspection(inspected.structuredContent)).inspection.reference;
 });
+
+const decodeStagedInspection = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    inspection: Schema.Struct({
+      stage: Schema.Literal("staged"),
+      reference: PeerAttachmentReference,
+    }),
+  }),
+);

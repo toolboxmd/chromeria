@@ -319,14 +319,13 @@ export const layer = HttpApiBuilder.group(
           ),
           Effect.catchTags({
             RenewalRejected: () => failEnvironmentAuthInvalid("invalid_credential"),
-            RenewalPending: () =>
-              Effect.gen(function* () {
-                return yield* new EnvironmentOperationForbiddenError({
-                  code: "operation_forbidden",
-                  reason: "renewal_pending_approval",
-                  traceId: yield* currentEnvironmentTraceId,
-                });
-              }),
+            RenewalPending: Effect.fn("RenewalPending")(function* () {
+              return yield* new EnvironmentOperationForbiddenError({
+                code: "operation_forbidden",
+                reason: "renewal_pending_approval",
+                traceId: yield* currentEnvironmentTraceId,
+              });
+            }),
             RenewalStale: () =>
               Effect.fail(new EnvironmentHttpConflictError({ message: "renewal_stale" })),
             RenewalStorageError: (error) => failEnvironmentInternal("internal_error", error),

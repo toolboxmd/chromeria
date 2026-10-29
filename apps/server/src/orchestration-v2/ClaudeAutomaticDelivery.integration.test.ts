@@ -139,10 +139,11 @@ it.effect.each(["active", "completed-before-effect", "completed-before-effect-se
       Effect.gen(function* () {
         const cwd = yield* checkpointWorkspace("claude-earlier-run-detach");
         const sdkMessages = yield* Queue.unbounded<SDKMessage>();
-        const offers: SDKUserMessage[] = [];
-        const nativeQueue: SDKUserMessage[] = [];
+        const _offers = [];
+        const _nativeQueue = [];
         // @effect-diagnostics-next-line abortControllerInEffect:off - The fake SDK interrupts its batch independently of the test fiber.
-        const batchAbort = new AbortController();
+        // @effect-diagnostics-next-line abortControllerInEffect:off - The fake SDK interrupts its batch independently of the test fiber.
+        const _batchAbort = new AbortController();
         const processedMessages = new WeakMap<SDKMessage, Deferred.Deferred<void>>();
         const offerAndWait = Effect.fnUntraced(function* (message: SDKMessage) {
           const processed = yield* Deferred.make<void>();
@@ -1314,6 +1315,7 @@ it.effect.each([
       const sdkMessages = yield* Queue.unbounded<SDKMessage>();
       const offers: SDKUserMessage[] = [];
       const nativeQueue: SDKUserMessage[] = [];
+      // @effect-diagnostics-next-line abortControllerInEffect:off - The fake SDK interrupts its batch independently of the test fiber.
       const batchAbort = new AbortController();
       const urgent =
         kind === "agent restart" ||
