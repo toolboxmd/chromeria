@@ -1,7 +1,7 @@
+import { act, render } from "../../../test/render";
 import { EnvironmentId, ThreadId, type DeviceServiceState } from "@t3tools/contracts";
-import { act, useSyncExternalStore } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { useSyncExternalStore } from "react";
+import { expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
 import "~/index.css";
 
@@ -76,22 +76,7 @@ const phone = {
   booted: true,
   physical: true,
 };
-let container: HTMLDivElement;
-let root: Root;
 
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  fixture.snapshot = { state: partialState(), loaded: true };
-  fixture.command.mockClear();
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
 const panel = () => (
   <DevicePanel
     mode="embedded"
@@ -107,7 +92,20 @@ const publish = (state: DeviceServiceState) => {
 };
 
 it("distinguishes an empty partial remote scan and clears the labeled warning after recovery", async () => {
-  await act(async () => root.render(panel()));
+  using _cleanup = {
+    [Symbol.dispose]: () => {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    },
+  };
+
+  fixture.snapshot = { state: partialState(), loaded: true };
+  fixture.command.mockClear();
+
+  await using screen = await render(null);
+  const container = screen.container;
+
+  await act(async () => screen.rerender(panel()));
   expect(container.textContent).toContain("incomplete");
   expect(container.textContent).not.toContain("No simulators or emulators were found");
   const diagnostic = [...container.querySelectorAll('[role="alert"]')].find((element) =>
@@ -126,19 +124,45 @@ it("distinguishes an empty partial remote scan and clears the labeled warning af
 });
 
 it("keeps the known phone actionable alongside the remote discovery warning", async () => {
+  using _cleanup = {
+    [Symbol.dispose]: () => {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    },
+  };
+
+  fixture.snapshot = { state: partialState(), loaded: true };
+  fixture.command.mockClear();
+
+  await using screen = await render(null);
+  const container = screen.container;
+
   fixture.snapshot = { state: { ...partialState(), devices: [phone] }, loaded: true };
-  await act(async () => root.render(panel()));
+  await act(async () => screen.rerender(panel()));
   await expect.element(page.getByRole("button", { name: "Open Pixel phone" })).toBeEnabled();
   expect(container.textContent).toContain(warning);
   expect(container.textContent).toContain("Remote Mac");
 });
 
 it("keeps setup progression available while showing incomplete Android discovery with a phone", async () => {
+  using _cleanup = {
+    [Symbol.dispose]: () => {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    },
+  };
+
+  fixture.snapshot = { state: partialState(), loaded: true };
+  fixture.command.mockClear();
+
+  await using screen = await render(null);
+  const container = screen.container;
+
   fixture.snapshot = {
     state: { ...partialState(), devices: [phone], onboardingCompleted: false },
     loaded: true,
   };
-  await act(async () => root.render(panel()));
+  await act(async () => screen.rerender(panel()));
   const dialog = page.getByRole("dialog");
   await expect.element(dialog).toMatchTextContent("may be incomplete");
   await expect.element(dialog).not.toMatchTextContent("SDK and Emulator are available");
@@ -148,9 +172,22 @@ it("keeps setup progression available while showing incomplete Android discovery
 });
 
 it("shows uncertainty in the compact Integrations platform status until discovery recovers", async () => {
+  using _cleanup = {
+    [Symbol.dispose]: () => {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    },
+  };
+
+  fixture.snapshot = { state: partialState(), loaded: true };
+  fixture.command.mockClear();
+
+  await using screen = await render(null);
+  const container = screen.container;
+
   const state = { ...partialState(), devices: [phone] };
   await act(async () =>
-    root.render(
+    screen.rerender(
       <PlatformStatus compact platform="Android" status={platformSetupStatus(state, "android")} />,
     ),
   );
@@ -158,7 +195,7 @@ it("shows uncertainty in the compact Integrations platform status until discover
   expect(container.textContent).not.toContain("Ready");
   expect(container.textContent).not.toContain("SDK and Emulator are available");
   await act(async () =>
-    root.render(
+    screen.rerender(
       <PlatformStatus
         compact
         platform="Android"

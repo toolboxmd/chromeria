@@ -1,8 +1,8 @@
+import { act, render } from "../../test/render";
 import type { ClientSettings } from "@t3tools/contracts/settings";
 import { EnvironmentId } from "@t3tools/contracts";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+
+import { describe, expect, it, vi } from "vite-plus/test";
 
 const state = vi.hoisted(() => ({
   mode: "off" as ClientSettings["notificationMode"],
@@ -44,8 +44,6 @@ import { ScheduledCommandNotifications } from "./ScheduledCommandNotifications";
 
 const environmentId = EnvironmentId.make("env-1");
 const onNotification = vi.fn();
-let root: Root;
-let container: HTMLDivElement;
 
 /** A command task as the live list carries it: no output, only its health. */
 const commandTask = (failureStreak: number, lastSuccessfulRunId: string | null) => ({
@@ -54,42 +52,46 @@ const commandTask = (failureStreak: number, lastSuccessfulRunId: string | null) 
   command: { command: "make backup", run: null, failureStreak, lastSuccessfulRunId },
 });
 
-async function receive(...tasks: ReadonlyArray<ReturnType<typeof commandTask>>) {
-  state.data = { tasks };
-  await act(() => {
-    const element = (
-      <ScheduledCommandNotifications
-        environmentId={environmentId}
-        onNotification={onNotification}
-      />
-    );
-    root.render(element);
-  });
-}
-
-beforeEach(() => {
-  vi.clearAllMocks();
-  Object.assign(state, { mode: "off", inApp: true, focused: true, visible: "visible", data: null });
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-  vi.spyOn(window, "focus").mockImplementation(() => {});
-  vi.spyOn(document, "visibilityState", "get").mockImplementation(
-    () => state.visible as DocumentVisibilityState,
-  );
-  vi.spyOn(document, "hasFocus").mockImplementation(() => state.focused);
-  vi.stubGlobal("Notification", Object.assign(state.notification, { permission: "granted" }));
-});
-
-afterEach(async () => {
-  await act(() => root.unmount());
-  container.remove();
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-});
-
 describe("scheduled command notifications", () => {
   it("alert once in the app when a command turns from passing to failing, and open scheduled tasks", async () => {
+    using _cleanup = {
+      [Symbol.dispose]: () => {
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+      },
+    };
+
+    vi.clearAllMocks();
+    Object.assign(state, {
+      mode: "off",
+      inApp: true,
+      focused: true,
+      visible: "visible",
+      data: null,
+    });
+    vi.spyOn(window, "focus").mockImplementation(() => {});
+    vi.spyOn(document, "visibilityState", "get").mockImplementation(
+      () => state.visible as DocumentVisibilityState,
+    );
+    vi.spyOn(document, "hasFocus").mockImplementation(() => state.focused);
+    vi.stubGlobal("Notification", Object.assign(state.notification, { permission: "granted" }));
+
+    // This fixture mocks router hooks and does not render links.
+    await using screen = await render(null, { router: false });
+    const container = screen.container;
+    async function receive(...tasks: ReadonlyArray<ReturnType<typeof commandTask>>) {
+      state.data = { tasks };
+      await act(() => {
+        const element = (
+          <ScheduledCommandNotifications
+            environmentId={environmentId}
+            onNotification={onNotification}
+          />
+        );
+        screen.rerender(element);
+      });
+    }
+
     state.mode = "sound";
     await receive(commandTask(0, "run:1"));
     expect(state.add).not.toHaveBeenCalled();
@@ -111,6 +113,44 @@ describe("scheduled command notifications", () => {
   });
 
   it("show a desktop notification in the background and hand it to the badge count", async () => {
+    using _cleanup = {
+      [Symbol.dispose]: () => {
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+      },
+    };
+
+    vi.clearAllMocks();
+    Object.assign(state, {
+      mode: "off",
+      inApp: true,
+      focused: true,
+      visible: "visible",
+      data: null,
+    });
+    vi.spyOn(window, "focus").mockImplementation(() => {});
+    vi.spyOn(document, "visibilityState", "get").mockImplementation(
+      () => state.visible as DocumentVisibilityState,
+    );
+    vi.spyOn(document, "hasFocus").mockImplementation(() => state.focused);
+    vi.stubGlobal("Notification", Object.assign(state.notification, { permission: "granted" }));
+
+    // This fixture mocks router hooks and does not render links.
+    await using screen = await render(null, { router: false });
+    const container = screen.container;
+    async function receive(...tasks: ReadonlyArray<ReturnType<typeof commandTask>>) {
+      state.data = { tasks };
+      await act(() => {
+        const element = (
+          <ScheduledCommandNotifications
+            environmentId={environmentId}
+            onNotification={onNotification}
+          />
+        );
+        screen.rerender(element);
+      });
+    }
+
     state.mode = "notifications";
     state.focused = false;
     state.visible = "hidden";

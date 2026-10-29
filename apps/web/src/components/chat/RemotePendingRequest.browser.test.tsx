@@ -12,8 +12,8 @@ import { createRuntimeCommand } from "@t3tools/client-runtime/state/runtime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
-import { act, type ComponentProps } from "react";
-import { createRoot } from "react-dom/client";
+import { type ComponentProps } from "react";
+import { act, render } from "../../../test/render";
 import { expect, it, vi } from "vite-plus/test";
 const state = vi.hoisted(() => ({
   nextKey: 0,
@@ -35,7 +35,6 @@ import { RemotePendingRequest } from "./RemotePendingRequest";
 it.each([false, true])(
   "answers offered empty=%s from the source card, preserves retry identity, and refreshes before a new action",
   async (empty) => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     const registry = AtomRegistry.make();
     const calls: Array<{ environmentId: EnvironmentId; input: RemotePendingRequestInput }> = [];
     let fail = true;
@@ -84,7 +83,6 @@ it.each([false, true])(
     let resolved = 0;
     const container = document.createElement("div");
     document.body.append(container);
-    const root = createRoot(container);
     const props: ComponentProps<typeof RemotePendingRequest> = {
       environmentId: EnvironmentId.make("A-only-profile"),
       task: { id: NodeId.make("A-task"), threadId: ThreadId.make("A-parent") },
@@ -111,13 +109,12 @@ it.each([false, true])(
       await act(async () => target!.click());
     };
     try {
-      await act(async () => {
-        root.render(
-          <RegistryContext.Provider value={registry}>
-            <RemotePendingRequest {...props} />
-          </RegistryContext.Provider>,
-        );
-      });
+      await using screen = await render(
+        <RegistryContext.Provider value={registry}>
+          <RemotePendingRequest {...props} />
+        </RegistryContext.Provider>,
+        { container },
+      );
       expect(container.textContent).not.toContain("C-no-profile");
       const sendButton = () => button("Send answer");
       expect(sendButton()?.disabled).toBe(true);
@@ -162,16 +159,12 @@ it.each([false, true])(
       expect(calls[2]?.input.operation).not.toEqual(calls[1]?.input.operation);
       expect(calls.every((call) => call.environmentId === props.environmentId)).toBe(true);
     } finally {
-      await act(async () => root.unmount());
-      container.remove();
       registry.dispose();
-      vi.unstubAllGlobals();
     }
   },
 );
 
 it("edits and sends a multiline editor prefill unchanged", async () => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const registry = AtomRegistry.make();
   const calls: RemotePendingRequestInput[] = [];
   const content = {
@@ -206,28 +199,26 @@ it("edits and sends a multiline editor prefill unchanged", async () => {
   });
   const container = document.createElement("div");
   document.body.append(container);
-  const root = createRoot(container);
   try {
-    await act(async () => {
-      root.render(
-        <RegistryContext.Provider value={registry}>
-          <RemotePendingRequest
-            environmentId={EnvironmentId.make("A-only-profile")}
-            task={{ id: NodeId.make("A-task"), threadId: ThreadId.make("A-parent") }}
-            request={{
-              environmentId: EnvironmentId.make("C-no-profile"),
-              threadId: ThreadId.make("C-child"),
-              requestId: content.requestId,
-              revision: 3,
-              kind: "user_input",
-              responseType: "live",
-              route: [],
-            }}
-            onResolved={() => {}}
-          />
-        </RegistryContext.Provider>,
-      );
-    });
+    await using screen = await render(
+      <RegistryContext.Provider value={registry}>
+        <RemotePendingRequest
+          environmentId={EnvironmentId.make("A-only-profile")}
+          task={{ id: NodeId.make("A-task"), threadId: ThreadId.make("A-parent") }}
+          request={{
+            environmentId: EnvironmentId.make("C-no-profile"),
+            threadId: ThreadId.make("C-child"),
+            requestId: content.requestId,
+            revision: 3,
+            kind: "user_input",
+            responseType: "live",
+            route: [],
+          }}
+          onResolved={() => {}}
+        />
+      </RegistryContext.Provider>,
+      { container },
+    );
     const field = container.querySelector<HTMLInputElement | HTMLTextAreaElement>(
       '[id="C-editor:note"]',
     )!;
@@ -246,10 +237,7 @@ it("edits and sends a multiline editor prefill unchanged", async () => {
       answers: { note: "first line\nsecond line\nthird line" },
     });
   } finally {
-    await act(async () => root.unmount());
-    container.remove();
     registry.dispose();
-    vi.unstubAllGlobals();
   }
 });
 
@@ -288,7 +276,6 @@ it.each([
   { name: "add to initial selection", initialAnswer: "Blue", toggle: "Green", complete: true },
   { name: "remove initial selection", initialAnswer: "Blue", toggle: "Blue", complete: false },
 ])("handles $name using the effective answer", async (scenario) => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const registry = AtomRegistry.make();
   const calls: RemotePendingRequestInput[] = [];
   const content = {
@@ -327,30 +314,28 @@ it.each([
   Object.assign(state.remoteTasks, remote);
   const container = document.createElement("div");
   document.body.append(container);
-  const root = createRoot(container);
   const button = (label: string) =>
     [...container.querySelectorAll("button")].find((node) => node.textContent === label)!;
   try {
-    await act(async () => {
-      root.render(
-        <RegistryContext.Provider value={registry}>
-          <RemotePendingRequest
-            environmentId={EnvironmentId.make("A-only-profile")}
-            task={{ id: NodeId.make("A-task"), threadId: ThreadId.make("A-parent") }}
-            request={{
-              environmentId: EnvironmentId.make("C-no-profile"),
-              threadId: ThreadId.make("C-child"),
-              requestId: content.requestId,
-              revision: 3,
-              kind: "user_input",
-              responseType: "live",
-              route: [],
-            }}
-            onResolved={() => {}}
-          />
-        </RegistryContext.Provider>,
-      );
-    });
+    await using screen = await render(
+      <RegistryContext.Provider value={registry}>
+        <RemotePendingRequest
+          environmentId={EnvironmentId.make("A-only-profile")}
+          task={{ id: NodeId.make("A-task"), threadId: ThreadId.make("A-parent") }}
+          request={{
+            environmentId: EnvironmentId.make("C-no-profile"),
+            threadId: ThreadId.make("C-child"),
+            requestId: content.requestId,
+            revision: 3,
+            kind: "user_input",
+            responseType: "live",
+            route: [],
+          }}
+          onResolved={() => {}}
+        />
+      </RegistryContext.Provider>,
+      { container },
+    );
     expect(button("Send answer").disabled).toBe(false);
     if (scenario.edit !== undefined) {
       const field = container.querySelector<HTMLInputElement | HTMLTextAreaElement>(
@@ -401,10 +386,7 @@ it.each([
       }
     }
   } finally {
-    await act(async () => root.unmount());
-    container.remove();
     registry.dispose();
-    vi.unstubAllGlobals();
   }
 });
 
@@ -419,7 +401,6 @@ vi.mock("../ui/dialog", () => ({
 import { RemoteTaskViewer } from "./RemoteTaskViewer";
 
 it("keeps source-only navigation and pagination qualified while revealing task diagnostics on demand", async () => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const registry = AtomRegistry.make();
   const queries: unknown[] = [];
   const view = Atom.make(
@@ -477,7 +458,6 @@ it("keeps source-only navigation and pagination qualified while revealing task d
   Object.assign(state.remoteTasks, remote);
   const container = document.createElement("div");
   document.body.append(container);
-  const root = createRoot(container);
   const task = {
     id: NodeId.make("A-task"),
     threadId: ThreadId.make("A-parent"),
@@ -508,17 +488,16 @@ it("keeps source-only navigation and pagination qualified while revealing task d
     await act(async () => target!.click());
   };
   try {
-    await act(async () => {
-      root.render(
-        <RegistryContext.Provider value={registry}>
-          <RemoteTaskViewer
-            environmentId={EnvironmentId.make("A-only-profile")}
-            task={task}
-            onClose={() => {}}
-          />
-        </RegistryContext.Provider>,
-      );
-    });
+    await using screen = await render(
+      <RegistryContext.Provider value={registry}>
+        <RemoteTaskViewer
+          environmentId={EnvironmentId.make("A-only-profile")}
+          task={task}
+          onClose={() => {}}
+        />
+      </RegistryContext.Provider>,
+      { container },
+    );
     expect(container.textContent).toContain("Useful answer");
     expect(container.textContent).toContain("Original result text");
     expect(container.textContent).toContain("Latest follow-up result");
@@ -552,9 +531,6 @@ it("keeps source-only navigation and pagination qualified while revealing task d
       input: { parentThreadId: "A-parent", taskId: "A-task", after: 0, textOffset: 0 },
     });
   } finally {
-    await act(async () => root.unmount());
-    container.remove();
     registry.dispose();
-    vi.unstubAllGlobals();
   }
 });

@@ -1,5 +1,5 @@
-import { act, cloneElement, type ReactElement, type ReactNode } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import { act, render } from "../../../test/render";
+import { cloneElement, type ReactElement, type ReactNode } from "react";
 import {
   EnvironmentId,
   ThreadId,
@@ -8,7 +8,7 @@ import {
   type OrchestrationV2ContextTransfer,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { expect, it, vi } from "vite-plus/test";
 
 import "~/index.css";
 
@@ -93,62 +93,14 @@ vi.mock(import("../ui/tooltip"), async () => {
 
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
 
-let root: Root;
-let container: HTMLDivElement;
-let current: ReactElement;
+it("shows a child delegated to a linked environment and opens it there", async () => {
+  using _cleanup = {
+    [Symbol.dispose]: () => {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    },
+  };
 
-async function render(element: ReactElement) {
-  current = element;
-  await act(async () => root.render(element));
-}
-// The mocked hooks read `state` while rendering, so a new element picks up changes.
-const update = () => act(async () => root.render(cloneElement(current)));
-const click = (element: HTMLElement) => act(async () => element.click());
-const buttons = () => [...container.querySelectorAll("button")];
-const allByLabel = (label: string) =>
-  buttons().filter((button) => button.getAttribute("aria-label") === label);
-function byLabel(label: string) {
-  const matches = allByLabel(label);
-  if (matches.length !== 1)
-    throw new Error(`Expected one "${label}" button, got ${matches.length}`);
-  return matches[0]!;
-}
-const sectionToggles = (expanded: boolean) =>
-  buttons().filter(
-    (button) =>
-      button.getAttribute("aria-expanded") === String(expanded) &&
-      !button.hasAttribute("aria-label"),
-  );
-function sectionToggle(expanded: boolean) {
-  const [toggle] = sectionToggles(expanded);
-  if (!toggle) throw new Error(`No ${expanded ? "expanded" : "collapsed"} section toggle`);
-  return toggle;
-}
-const heading = () => container.querySelector("h3")?.textContent;
-const buttonsWithLabel = (matches: (label: string) => boolean) =>
-  buttons().filter((button) => matches(button.getAttribute("aria-label") ?? ""));
-// Joins rendered text nodes; `visibleOnly` drops screen-reader-only text.
-function textNodes(separator: string, visibleOnly = false) {
-  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-  const parts: string[] = [];
-  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    if (visibleOnly && node.parentElement?.closest(".sr-only")) continue;
-    parts.push(node.textContent ?? "");
-  }
-  return parts.join(separator);
-}
-
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
   state.shells = [];
   state.projects = [];
   state.configs.clear();
@@ -159,10 +111,51 @@ afterEach(async () => {
   state.workflowCommand.mockReset().mockResolvedValue({ _tag: "Success" });
   state.toast.mockClear();
   state.projection = null;
-});
 
-it("shows a child delegated to a linked environment and opens it there", async () => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  await using screen = await render(null);
+  const container = screen.container;
+  let current: ReactElement;
+
+  async function rerender(element: ReactElement) {
+    current = element;
+    await act(async () => screen.rerender(element));
+  }
+  // The mocked hooks read `state` while rendering, so a new element picks up changes.
+  const update = () => act(async () => screen.rerender(cloneElement(current)));
+  const click = (element: HTMLElement) => act(async () => element.click());
+  const buttons = () => [...container.querySelectorAll("button")];
+  const allByLabel = (label: string) =>
+    buttons().filter((button) => button.getAttribute("aria-label") === label);
+  function byLabel(label: string) {
+    const matches = allByLabel(label);
+    if (matches.length !== 1)
+      throw new Error(`Expected one "${label}" button, got ${matches.length}`);
+    return matches[0]!;
+  }
+  const sectionToggles = (expanded: boolean) =>
+    buttons().filter(
+      (button) =>
+        button.getAttribute("aria-expanded") === String(expanded) &&
+        !button.hasAttribute("aria-label"),
+    );
+  function sectionToggle(expanded: boolean) {
+    const [toggle] = sectionToggles(expanded);
+    if (!toggle) throw new Error(`No ${expanded ? "expanded" : "collapsed"} section toggle`);
+    return toggle;
+  }
+  const heading = () => container.querySelector("h3")?.textContent;
+  const buttonsWithLabel = (matches: (label: string) => boolean) =>
+    buttons().filter((button) => matches(button.getAttribute("aria-label") ?? ""));
+  // Joins rendered text nodes; `visibleOnly` drops screen-reader-only text.
+  function textNodes(separator: string, visibleOnly = false) {
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    const parts: string[] = [];
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (visibleOnly && node.parentElement?.closest(".sr-only")) continue;
+      parts.push(node.textContent ?? "");
+    }
+    return parts.join(separator);
+  }
   state.navigate.mockClear();
   const agent = {
     id: "remote-agent",
@@ -212,7 +205,7 @@ it("shows a child delegated to a linked environment and opens it there", async (
     contextTransfers: [],
     subagents: [agent],
   };
-  await render(
+  await rerender(
     <ThreadRelationshipsPanel
       environmentId={EnvironmentId.make("test")}
       threadId={ThreadId.make("parent")}

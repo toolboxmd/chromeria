@@ -1,13 +1,7 @@
 import { DEFAULT_CLIENT_SETTINGS, DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts";
-import {
-  createMemoryHistory,
-  createRootRoute,
-  createRouter,
-  RouterProvider,
-} from "@tanstack/react-router";
-import { act, StrictMode } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { StrictMode } from "react";
+import { render, stubGlobal } from "../../../test/render";
+import { describe, expect, it, vi } from "vite-plus/test";
 import "../../index.css";
 
 const { listBrowserImportSources } = vi.hoisted(() => ({
@@ -58,61 +52,30 @@ vi.mock(import("./SettingsScopeContext"), async (original) => ({
 
 import { IntegrationsSettingsPanel } from "./IntegrationsSettings";
 
-let root: Root;
-let container: HTMLDivElement;
-
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  listBrowserImportSources.mockClear();
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
-
-async function openSettings() {
-  const router = createRouter({
-    routeTree: createRootRoute({ component: IntegrationsSettingsPanel }),
-    history: createMemoryHistory(),
-  });
-  await router.load();
-  await act(async () =>
-    root.render(
-      <StrictMode>
-        <RouterProvider router={router} />
-      </StrictMode>,
-    ),
-  );
-  await vi.waitFor(() => expect(container.querySelector("section#browser")).not.toBeNull());
-}
-
 describe("Integrations browser discovery", () => {
   it("shows every device-bound site reported by desktop main in browser settings", async () => {
-    vi.stubGlobal("desktopBridge", undefined);
-    Object.defineProperty(window, "desktopBridge", {
-      configurable: true,
-      value: {
-        getClientSettings: async () => DEFAULT_CLIENT_SETTINGS,
-        setClientSettings: async () => undefined,
-        getConnectionCatalog: async () => null,
-        getLocalEnvironmentBootstraps: () => [],
-        cookieMirrorConnection: vi.fn(async () => ({
-          connected: false,
-          generation: 0,
-          profiles: [],
-          limitations: [
-            { host: "accounts.google.com", reason: "device-bound, not mirrored" },
-            { host: "work.example.test", reason: "device-bound, not mirrored" },
-          ],
-        })),
-      },
+    listBrowserImportSources.mockClear();
+    using _bridge = stubGlobal("desktopBridge", {
+      getClientSettings: async () => DEFAULT_CLIENT_SETTINGS,
+      setClientSettings: async () => undefined,
+      getConnectionCatalog: async () => null,
+      getLocalEnvironmentBootstraps: () => [],
+      cookieMirrorConnection: vi.fn(async () => ({
+        connected: false,
+        generation: 0,
+        profiles: [],
+        limitations: [
+          { host: "accounts.google.com", reason: "device-bound, not mirrored" },
+          { host: "work.example.test", reason: "device-bound, not mirrored" },
+        ],
+      })),
     });
-    await openSettings();
+    await using screen = await render(
+      <StrictMode>
+        <IntegrationsSettingsPanel />
+      </StrictMode>,
+    );
+    const { container } = screen;
     await vi.waitFor(() => {
       expect(container.textContent).toContain("accounts.google.com");
       expect(container.textContent).toContain("work.example.test");

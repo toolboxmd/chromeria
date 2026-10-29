@@ -2073,7 +2073,7 @@ it.effect("queues a plain send behind the stopped queue and releases its hold", 
           runId: started[0]!.runId,
           holdQueue: true,
         });
-        // The provider has not stopped yet, so a plain send still resolves to a steer.
+        // The send releases the held queue, but must not steer the interrupted run.
         yield* send("sent", "auto");
         // Once the stop settles, the run-update reactor promotes the queue on
         // its own fiber, so read the queue while the provider is still stopping.
@@ -2089,7 +2089,7 @@ it.effect("queues a plain send behind the stopped queue and releases its hold", 
           queued.map(
             (run) => projection.messages.find((message) => message.id === run.userMessageId)?.text,
           ),
-          ["queued", "sent"],
+          ["sent"],
         );
         // The user sent it, so the queue they stopped runs again once the provider stops.
         assert.isFalse(queued.some((run) => run.queueHeld === true));

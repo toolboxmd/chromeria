@@ -294,7 +294,7 @@ export function extractXAiMonitorTaskId(toolCall: AcpToolCallState): string | un
 }
 
 /** Persistent monitors must not hold root-turn deferred finalize. */
-export function isXAiPersistentMonitor(toolCall: AcpToolCallState): boolean {
+function isXAiPersistentMonitor(toolCall: AcpToolCallState): boolean {
   if (!isXAiMonitorTool(toolCall)) return false;
   const rawOutput = unknownRecord(toolCall.data.rawOutput);
   if (rawOutput !== undefined && nonEmptyString(rawOutput.type)?.toLowerCase() === "monitor") {

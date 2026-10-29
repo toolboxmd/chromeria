@@ -1,6 +1,6 @@
-import { act, useRef, useState } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { act, render } from "../../../test/render";
+import { useRef, useState } from "react";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 
 import {
@@ -12,22 +12,6 @@ import {
   MenuSubTrigger,
   MenuTrigger,
 } from "./menu";
-
-let root: Root;
-let container: HTMLDivElement;
-
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-
-afterEach(async () => {
-  await act(() => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
 
 function completion() {
   let resolve!: () => void;
@@ -93,11 +77,13 @@ async function setup({ hover = false, submenu = false, modal = false } = {}) {
       </>
     );
   }
-  await act(() => root.render(<Fixture />));
+  await using stack = new AsyncDisposableStack();
+  const screen = stack.use(await render(<Fixture />));
+  const { container } = screen;
   const input = container.querySelector("input")!;
   const elsewhere = container.querySelector<HTMLButtonElement>("button")!;
   await hoverElement(elsewhere);
-  return {
+  return Object.assign(stack.move(), {
     get trigger() {
       return container.querySelector<HTMLButtonElement>('[data-slot="menu-trigger"]')!;
     },
@@ -108,7 +94,7 @@ async function setup({ hover = false, submenu = false, modal = false } = {}) {
     childOpened,
     childClosed,
     changes,
-  };
+  });
 }
 
 async function press(key: string, options: KeyboardEventInit = {}) {
@@ -132,9 +118,7 @@ async function complete(milestone: Promise<void>) {
 }
 
 async function hoverElement(element: Element, force = false) {
-  await act(async () => {
-    await userEvent.hover(element, { force });
-  });
+  await userEvent.hover(element, { force });
 }
 
 async function openFromInput(fixture: Awaited<ReturnType<typeof setup>>) {
@@ -149,7 +133,7 @@ describe("menu close focus", () => {
   it.each(["over", "away"])(
     "returns focus after Escape with the pointer %s the popup",
     async (pointer) => {
-      const fixture = await setup();
+      await using fixture = await setup();
       const menu = await openFromInput(fixture);
       if (pointer === "over") await hoverElement(menu);
       await press("Escape");
@@ -160,7 +144,7 @@ describe("menu close focus", () => {
   );
 
   it("respects focus moved elsewhere during Escape close", async () => {
-    const fixture = await setup();
+    await using fixture = await setup();
     const menu = await openFromInput(fixture);
     await hoverElement(menu);
     await press("Escape");
@@ -172,22 +156,18 @@ describe("menu close focus", () => {
   });
 
   it("keeps click-open behavior and outside-click focus", async () => {
-    const fixture = await setup({ modal: false });
-    await act(async () => {
-      await userEvent.click(fixture.trigger);
-    });
+    await using fixture = await setup({ modal: false });
+    await userEvent.click(fixture.trigger);
     await complete(fixture.opened.promise);
     expect(document.querySelector('[role="menu"]:not([data-closed])')).not.toBeNull();
-    await act(async () => {
-      await userEvent.click(fixture.elsewhere);
-    });
+    await userEvent.click(fixture.elsewhere);
     await complete(fixture.closed.promise);
     expect(document.querySelector('[role="menu"]')).toBeNull();
     expect(document.activeElement).toBe(fixture.elsewhere);
   });
 
   it("dismisses a genuinely hover-opened menu when leaving it", async () => {
-    const fixture = await setup({ hover: true, modal: false });
+    await using fixture = await setup({ hover: true, modal: false });
     await hoverElement(fixture.trigger);
     await complete(fixture.opened.promise);
     await hoverElement(document.querySelector('[role="menu"]')!);
@@ -199,7 +179,7 @@ describe("menu close focus", () => {
   });
 
   it("allows keyboard entry, pointer movement into a focused submenu, and Escape back", async () => {
-    const fixture = await setup({ submenu: true });
+    await using fixture = await setup({ submenu: true });
     await openFromInput(fixture);
     await press("ArrowDown");
     await press("ArrowDown");

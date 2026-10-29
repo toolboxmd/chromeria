@@ -211,7 +211,7 @@ it.effect.each([
         activeProviderThreadId: providerThreadId,
         modelSelection: { instanceId: providerInstanceId, model: "test-model" },
       },
-      providerThread,
+      providerThread: projection.providerThreads[0],
       providerSession: undefined,
       checkpoint: { id: checkpointId, scopeId, status: "ready", appRunOrdinal: 0 },
       scope: { id: scopeId, cwd: worktreePath },
@@ -740,139 +740,157 @@ it.effect.each([
   { failBind: false, bare: false },
   { failBind: true, bare: false },
   { failBind: false, bare: true },
-])(
-  "rolls back a Grok session with its instructions and records them, %s",
-  ({ failBind, bare }) => {
-    const threadId = ThreadId.make("rewind-grok");
-    const providerThreadId = ProviderThreadId.make("rewind-grok-provider");
-    const providerSessionId = ProviderSessionId.make("rewind-grok-session");
-    const instanceId = ProviderInstanceId.make("rewind-grok-instance");
-    const checkpointId = CheckpointId.make("rewind-grok-start");
-    const scopeId = CheckpointScopeId.make("rewind-grok-scope");
-    const calls: string[] = [];
-    const providerThread = {
-      id: providerThreadId,
-      providerSessionId,
-      providerInstanceId: instanceId,
-    };
-    const projection = {
-      thread: {
-        worktreePath: process.cwd(),
-        activeProviderThreadId: providerThreadId,
-        modelSelection: { instanceId, model: "test" },
-        ...(bare ? { bare: { additions: [] } } : {}),
-      },
-      providerThreads: [providerThread],
-      providerSessions: [],
-      providerTurns: [1, 2, 3].map((ordinal) => ({
-        id: `turn-${ordinal}`,
-        providerThreadId,
-        runAttemptId: `attempt-${ordinal}`,
-        ordinal,
-        status: "completed",
-      })),
-      nodes: [],
-      attempts: [1, 2, 3].map((ordinal) => ({ id: `attempt-${ordinal}`, runId: `run-${ordinal}` })),
-      checkpoints: [{ id: checkpointId, scopeId, status: "ready", appRunOrdinal: null }],
-      checkpointScopes: [{ id: scopeId, cwd: process.cwd() }],
-      runs: [1, 2, 3].map((ordinal) => ({
-        id: `run-${ordinal}`,
-        ordinal,
-        status: ordinal === 3 ? "rolled_back" : "completed",
-        rootNodeId: null,
-        activeAttemptId: `attempt-${ordinal}`,
-      })),
-    } as unknown as OrchestrationV2ThreadProjection;
-    const layerTest = CheckpointRollbackService.layer.pipe(
-      Layer.provide(
-        Layer.mock(ContextmdServing.ContextmdServing)({
-          currentInstructions: () =>
+])("rolls back a Grok session with its instructions and records them, %s", ({ failBind, bare }) => {
+  const threadId = ThreadId.make("rewind-grok");
+  const providerThreadId = ProviderThreadId.make("rewind-grok-provider");
+  const providerSessionId = ProviderSessionId.make("rewind-grok-session");
+  const instanceId = ProviderInstanceId.make("rewind-grok-instance");
+  const checkpointId = CheckpointId.make("rewind-grok-start");
+  const scopeId = CheckpointScopeId.make("rewind-grok-scope");
+  const calls: string[] = [];
+  const providerThread = {
+    id: providerThreadId,
+    providerSessionId,
+    providerInstanceId: instanceId,
+  };
+  const projection = {
+    thread: {
+      worktreePath: process.cwd(),
+      activeProviderThreadId: providerThreadId,
+      modelSelection: { instanceId, model: "test" },
+      ...(bare ? { bare: { additions: [] } } : {}),
+    },
+    providerThreads: [providerThread],
+    providerSessions: [],
+    providerTurns: [1, 2, 3].map((ordinal) => ({
+      id: `turn-${ordinal}`,
+      providerThreadId,
+      runAttemptId: `attempt-${ordinal}`,
+      ordinal,
+      status: "completed",
+    })),
+    nodes: [],
+    attempts: [1, 2, 3].map((ordinal) => ({ id: `attempt-${ordinal}`, runId: `run-${ordinal}` })),
+    checkpoints: [{ id: checkpointId, scopeId, status: "ready", appRunOrdinal: null }],
+    checkpointScopes: [{ id: scopeId, cwd: process.cwd() }],
+    runs: [1, 2, 3].map((ordinal) => ({
+      id: `run-${ordinal}`,
+      ordinal,
+      status: ordinal === 3 ? "rolled_back" : "completed",
+      rootNodeId: null,
+      activeAttemptId: `attempt-${ordinal}`,
+    })),
+  } as unknown as OrchestrationV2ThreadProjection;
+  const layerTest = CheckpointRollbackService.layer.pipe(
+    Layer.provide(
+      Layer.mock(ContextmdServing.ContextmdServing)({
+        currentInstructions: () =>
+          Effect.sync(() => {
+            calls.push("instructions");
+            return "rules A";
+          }),
+        recordInstallations: (receipts) =>
+          Effect.gen(function* () {
+            calls.push("bind");
+            assert.deepEqual(receipts, [
+              { nativeSessionId: "replacement", text: "rules A", site: "rollback" },
+            ]);
+            if (failBind)
+              return yield* new ContextmdServing.SessionInstructionsError({
+                operation: "record",
+                cause: "unwritable",
+              });
+          }),
+      }),
+    ),
+    Layer.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(ServerConfig.ServerConfig)({ worktreesDir: "/synthetic-worktrees" } as never),
+        ServerSettings.layerTest(),
+        Layer.mock(GitWorkflow.GitWorkflowService)({}),
+        Layer.mock(ProjectStore.ProjectStoreV2)({ get: () => Effect.succeed(unrelatedProject) }),
+        ThreadCommandExecutor.layer,
+        Layer.mock(CheckpointService.CheckpointServiceV2)({}),
+        Layer.mock(EventSink.EventSinkV2)({
+          write: () =>
             Effect.sync(() => {
-              calls.push("instructions");
-              return "rules A";
-            }),
-          recordInstallations: (receipts) =>
-            Effect.gen(function* () {
-              calls.push("bind");
-              assert.deepEqual(receipts, [
-                { nativeSessionId: "replacement", text: "rules A", site: "rollback" },
-              ]);
-              if (failBind)
-                return yield* new ContextmdServing.SessionInstructionsError({
-                  operation: "record",
-                  cause: "unwritable",
-                });
+              calls.push("projection");
+              return [];
             }),
         }),
+        IdAllocator.layer,
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getThreadRecords: () => Effect.succeed(projection),
+          getThread: () => Effect.succeed(projection.thread),
+          getCheckpointRollbackContext: () =>
+            Effect.succeed({
+              thread: projection.thread,
+              providerThread,
+              checkpoint: projection.checkpoints[0],
+              scope: projection.checkpointScopes[0],
+              targetAttempt: undefined,
+              providerTurns: projection.providerTurns,
+              providerSession: undefined,
+              rolledBackAttemptIds: projection.attempts
+                .filter((attempt) =>
+                  projection.runs.some(
+                    (run) => run.id === attempt.runId && run.status === "rolled_back",
+                  ),
+                )
+                .map((attempt) => attempt.id),
+              rootNodes: projection.nodes,
+              runsToRollback: projection.runs.filter((run) => run.status !== "rolled_back"),
+              staleCheckpoints: [],
+            }),
+          getThreadProviderContext: () => Effect.succeed({ providerSessions: [] } as never),
+          getCheckpointContext: () =>
+            Effect.succeed({
+              checkpointScopes: [{ cwd: process.cwd() }],
+              runs: [],
+              checkpoints: [],
+            } as never),
+          getShellSnapshot: () =>
+            Effect.succeed({
+              schemaVersion: 1,
+              snapshotSequence: 0,
+              threads: [],
+              archivedThreads: [],
+            }),
+        }),
+        Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+          open: () =>
+            Effect.succeed({
+              driver: "grok",
+              createdSessions: () => [
+                { nativeSessionId: "replacement", text: "rules A", site: "rollback" as const },
+              ],
+              rollbackThread: (input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput) =>
+                Effect.sync(() => {
+                  if (bare) assert.notProperty(input, "newSessionInstructions");
+                  else assert.equal(input.newSessionInstructions, "rules A");
+                  calls.push("provider");
+                  return { providerThread };
+                }),
+            } as never),
+        }),
+        Layer.mock(RuntimePolicy.RuntimePolicyV2)({ resolve: () => Effect.succeed({} as never) }),
       ),
-      Layer.provide(
-        Layer.mergeAll(
-          NodeServices.layer,
-          Layer.mock(ServerConfig.ServerConfig)({ worktreesDir: "/synthetic-worktrees" } as never),
-          ServerSettings.layerTest(),
-          Layer.mock(GitWorkflow.GitWorkflowService)({}),
-          Layer.mock(ProjectStore.ProjectStoreV2)({ get: () => Effect.succeed(unrelatedProject) }),
-          ThreadCommandExecutor.layer,
-          Layer.mock(CheckpointService.CheckpointServiceV2)({}),
-          Layer.mock(EventSink.EventSinkV2)({
-            write: () =>
-              Effect.sync(() => {
-                calls.push("projection");
-                return [];
-              }),
-          }),
-          IdAllocator.layer,
-          Layer.mock(ProjectionStore.ProjectionStoreV2)({
-            getThreadRecords: () => Effect.succeed(projection),
-            getThreadProviderContext: () => Effect.succeed({ providerSessions: [] } as never),
-            getCheckpointContext: () =>
-              Effect.succeed({
-                checkpointScopes: [{ cwd: process.cwd() }],
-                runs: [],
-                checkpoints: [],
-              } as never),
-            getShellSnapshot: () =>
-              Effect.succeed({
-                schemaVersion: 1,
-                snapshotSequence: 0,
-                threads: [],
-                archivedThreads: [],
-              }),
-          }),
-          Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
-            open: () =>
-              Effect.succeed({
-                driver: "grok",
-                createdSessions: () => [
-                  { nativeSessionId: "replacement", text: "rules A", site: "rollback" as const },
-                ],
-                rollbackThread: (input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput) =>
-                  Effect.sync(() => {
-                    if (bare) assert.notProperty(input, "newSessionInstructions");
-                    else assert.equal(input.newSessionInstructions, "rules A");
-                    calls.push("provider");
-                    return { providerThread };
-                  }),
-              } as never),
-          }),
-          Layer.mock(RuntimePolicy.RuntimePolicyV2)({ resolve: () => Effect.succeed({} as never) }),
-        ),
-      ),
+    ),
+  );
+  return Effect.gen(function* () {
+    const service = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
+    const input = { threadId, providerThreadId, checkpointId, scopeId, restoreFiles: false };
+    if (failBind) {
+      const error = yield* Effect.flip(service.execute(input));
+      assert.equal(error.reason, "unexpected-failure");
+      assert.deepEqual(calls, ["instructions", "provider", "bind"]);
+      return;
+    }
+    yield* service.execute(input);
+    assert.deepEqual(
+      calls,
+      bare ? ["provider", "projection"] : ["instructions", "provider", "bind", "projection"],
     );
-    return Effect.gen(function* () {
-      const service = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
-      const input = { threadId, providerThreadId, checkpointId, scopeId, restoreFiles: false };
-      if (failBind) {
-        const error = yield* Effect.flip(service.execute(input));
-        assert.equal(error.reason, "unexpected-failure");
-        assert.deepEqual(calls, ["instructions", "provider", "bind"]);
-        return;
-      }
-      yield* service.execute(input);
-      assert.deepEqual(
-        calls,
-        bare ? ["provider", "projection"] : ["instructions", "provider", "bind", "projection"],
-      );
-    }).pipe(Effect.provide(layerTest));
-  },
-);
+  }).pipe(Effect.provide(layerTest));
+});

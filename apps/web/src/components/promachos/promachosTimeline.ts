@@ -66,7 +66,7 @@ export function promachosTimelineDisclosures(input: FoldInput) {
 }
 
 /** Stable sets keep streamed text from invalidating the timeline's disclosure fast path. */
-export function usePromachosTimelineDisclosures(input: FoldInput, enabled: boolean) {
+export function resolvePromachosTimelineDisclosures(input: FoldInput, enabled: boolean) {
   const disclosures = enabled ? promachosTimelineDisclosures(input) : null;
   const runsKey = disclosures ? [...disclosures.runs].join("\n") : null;
   const attemptsKey = disclosures ? [...disclosures.attempts].join("\n") : null;

@@ -1,9 +1,9 @@
-import { act, cloneElement, type ReactElement, type ReactNode } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import { act, render } from "../../../test/render";
+import { cloneElement, type ReactElement, type ReactNode } from "react";
 import { EnvironmentId, NodeId, ThreadId, type PeerTaskSnapshot } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import * as DateTime from "effect/DateTime";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { expect, it, vi } from "vite-plus/test";
 
 const state = vi.hoisted(() => ({
   subagents: [] as unknown[],
@@ -81,23 +81,6 @@ vi.mock("../ui/dialog", () => ({
 import { BackgroundSubagentOpenButton } from "./BackgroundSubagentOpenButton";
 import { NotificationSubagentOpenButton, SubagentNotificationLink } from "./V2LifecycleRow";
 
-let root: Root;
-let container: HTMLDivElement;
-
-beforeEach(() => {
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  state.subagents = [];
-  state.configs = new Map();
-  state.queries = [];
-});
-
 const remoteAgent = {
   threadId: ThreadId.make("parent"),
   id: NodeId.make("remote-agent"),
@@ -124,18 +107,31 @@ const remoteAgent = {
 
 const parentRef = scopeThreadRef(EnvironmentId.make("test"), ThreadId.make("parent"));
 
-function buttonsByLabel(label: string) {
-  return [...container.querySelectorAll("button")].filter(
-    (button) => button.getAttribute("aria-label") === label,
-  );
-}
-
 it("opens a remote delegated task's notification card in its own environment", async () => {
+  using _cleanup = {
+    [Symbol.dispose]: () => {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    },
+  };
+
+  state.subagents = [];
+  state.configs = new Map();
+  state.queries = [];
+
+  await using screen = await render(null);
+  const container = screen.container;
+  function buttonsByLabel(label: string) {
+    return [...container.querySelectorAll("button")].filter(
+      (button) => button.getAttribute("aria-label") === label,
+    );
+  }
+
   state.subagents = [remoteAgent];
   state.configs = new Map([["cavallo", {}]]);
   const onOpenThread = vi.fn();
   await act(async () => {
-    root.render(
+    screen.rerender(
       <SubagentNotificationLink
         parentRef={parentRef}
         subagentId={NodeId.make("remote-agent")}
@@ -157,11 +153,30 @@ it("opens a remote delegated task's notification card in its own environment", a
 });
 
 it("renders no link for a remote notification when the client is not connected there", async () => {
+  using _cleanup = {
+    [Symbol.dispose]: () => {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    },
+  };
+
+  state.subagents = [];
+  state.configs = new Map();
+  state.queries = [];
+
+  await using screen = await render(null);
+  const container = screen.container;
+  function buttonsByLabel(label: string) {
+    return [...container.querySelectorAll("button")].filter(
+      (button) => button.getAttribute("aria-label") === label,
+    );
+  }
+
   state.subagents = [remoteAgent];
   const onOpenThread = vi.fn();
-  const render = () =>
+  const rerender = () =>
     act(async () => {
-      root.render(
+      screen.rerender(
         <NotificationSubagentOpenButton
           parentRef={parentRef}
           subagentId={NodeId.make("remote-agent")}
@@ -169,13 +184,13 @@ it("renders no link for a remote notification when the client is not connected t
         />,
       );
     });
-  await render();
+  await rerender();
   expect(buttonsByLabel("Open subagent thread")).toHaveLength(0);
 
   // The native config atom publishes a new snapshot when membership changes.
   // In-place edits hide those changes from the compiler's cached consumer.
   state.configs = new Map([["cavallo", {}]]);
-  await render();
+  await rerender();
   const buttons = buttonsByLabel("Open subagent thread");
   expect(buttons).toHaveLength(1);
   await act(async () => buttons[0]!.click());
@@ -186,7 +201,7 @@ it("renders no link for a remote notification when the client is not connected t
 
   onOpenThread.mockClear();
   state.configs = new Map();
-  await render();
+  await rerender();
   expect(buttonsByLabel("Open subagent thread")).toHaveLength(0);
   expect(onOpenThread).not.toHaveBeenCalled();
 });
@@ -195,7 +210,24 @@ const entries = ["transcript", "notification", "background"] as const;
 it.each([false, true].flatMap((connected) => entries.map((entry) => ({ connected, entry }))))(
   "opens $entry through A for a negotiated job when B connected=$connected",
   async ({ connected, entry }) => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    using _cleanup = {
+      [Symbol.dispose]: () => {
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+      },
+    };
+
+    state.subagents = [];
+    state.configs = new Map();
+    state.queries = [];
+
+    await using screen = await render(null);
+    const container = screen.container;
+    function buttonsByLabel(label: string) {
+      return [...container.querySelectorAll("button")].filter(
+        (button) => button.getAttribute("aria-label") === label,
+      );
+    }
     state.subagents = [
       {
         ...remoteAgent,
@@ -206,7 +238,7 @@ it.each([false, true].flatMap((connected) => entries.map((entry) => ({ connected
     const onOpenThread = vi.fn();
     const common = { parentRef, subagentId: NodeId.make("remote-agent"), onOpenThread };
     await act(async () => {
-      root.render(
+      screen.rerender(
         entry === "transcript" ? (
           <SubagentNotificationLink
             {...common}
@@ -257,7 +289,24 @@ it.each(
 )(
   "retains local=$local $entry navigation with B connected=$connected",
   async ({ connected, local, entry }) => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    using _cleanup = {
+      [Symbol.dispose]: () => {
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+      },
+    };
+
+    state.subagents = [];
+    state.configs = new Map();
+    state.queries = [];
+
+    await using screen = await render(null);
+    const container = screen.container;
+    function buttonsByLabel(label: string) {
+      return [...container.querySelectorAll("button")].filter(
+        (button) => button.getAttribute("aria-label") === label,
+      );
+    }
     state.subagents = [
       local
         ? {
@@ -271,7 +320,7 @@ it.each(
     const onOpenThread = vi.fn();
     const common = { parentRef, subagentId: NodeId.make("remote-agent"), onOpenThread };
     await act(async () => {
-      root.render(
+      screen.rerender(
         entry === "transcript" ? (
           <SubagentNotificationLink
             {...common}
