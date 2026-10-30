@@ -565,9 +565,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/chromeria/issues/167",
     "https://github.com/toolboxmd/chromeria/issues/620"
   ],
-  "prs": [
-    "https://github.com/toolboxmd/chromeria/compare/fork/v2...port/167-foundation"
-  ],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...port/167-foundation"],
   "newFiles": [
     "apps/server/src/persistence/forkV1Backfills.test.ts",
     "apps/server/src/persistence/forkV1Backfills.ts",
