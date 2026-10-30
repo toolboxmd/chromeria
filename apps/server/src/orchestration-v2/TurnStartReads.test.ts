@@ -198,7 +198,7 @@ it.effect.each(["sqlite", "memory"] as const)(
           (turn_item_id, thread_id, run_id, node_id, provider_thread_id, provider_turn_id,
             type, status, ordinal, updated_at, payload_json)
           VALUES ('obsolete-tool', ${threadId}, ${oldRunId}, NULL, NULL, NULL,
-            'tool_call', 'completed', 2, ${DateTime.formatIso(now)}, '{"obsolete":true}')`;
+            'dynamic_tool', 'completed', 2, ${DateTime.formatIso(now)}, '{"obsolete":true}')`;
         assert.equal((yield* Effect.exit(store.getThreadProjection(threadId)))._tag, "Failure");
       }
       const selected = yield* store.getThreadRecords(threadId, ["runs", "messages"], {
@@ -268,6 +268,17 @@ it.effect.each(["sqlite", "memory"] as const)(
       );
       assert.equal(page.hasMore, storage === "sqlite");
       assert.equal(page.totalItems, storage === "sqlite" ? 2 : 1);
+      if (storage === "sqlite")
+        assert.equal(
+          (yield* store
+            .getTimelinePage(threadId, {
+              view: "activity",
+              limit: 1,
+              afterPosition: page.items[0]!.position,
+            })
+            .pipe(Effect.result))._tag,
+          "Failure",
+        );
       assert.deepEqual(
         (yield* store.getTimelinePage(threadId, { view: "messages", limit: 1 })).items,
         [],

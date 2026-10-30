@@ -557,17 +557,17 @@ export const makeNode = (
     const settingsPath = Context.get(nodeConfigContext, Config.ServerConfig).settingsPath;
     const settingsFs = {
       ...actualFs,
-      rename: (from: string, to: string) =>
-        actualFs.rename(from, to).pipe(
+      link: (from: string, to: string) =>
+        actualFs.link(from, to).pipe(
           Effect.tap(() =>
             Effect.gen(function* () {
-              if (to !== settingsPath) return;
+              if (to !== settingsPath || !from.endsWith("contents.tmp")) return;
               yield* Ref.update(settingsWrites, (n) => n + 1);
               if (yield* Ref.getAndSet(loseSettingsConfirmation, false))
                 return yield* PlatformError.systemError({
                   _tag: "Unknown",
                   module: "FileSystem",
-                  method: "rename",
+                  method: "link",
                   description: "Isolated confirmation loss after settings replacement",
                 });
             }),
