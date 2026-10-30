@@ -367,15 +367,17 @@ it.live.each(["thread", "shell"] as const)(
 // than the deleted rows still replays each message where the client would
 // first have seen it (reducers append on first sight) and reaches the same
 // final state. No snapshot fallback is needed.
-it.effect("thread resume across compacted history keeps message order and final state", () =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
-    const now = "2026-10-13T00:00:00.000Z";
-    const threadId = ThreadId.make("thread:compacted");
-    const insertMessage = (version: number, id: string, text: string) => sql<{
-      sequence: number;
-    }>`
+it.effect(
+  "thread resume across retained rollback history keeps message order and final state",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+      const now = "2026-10-13T00:00:00.000Z";
+      const threadId = ThreadId.make("thread:compacted");
+      const insertMessage = (version: number, id: string, text: string) => sql<{
+        sequence: number;
+      }>`
       INSERT INTO orchestration_events (
         event_id, aggregate_kind, stream_id, stream_version, event_type,
         occurred_at, actor_kind, payload_json, metadata_json, application_event_version
@@ -397,13 +399,13 @@ it.effect("thread resume across compacted history keeps message order and final 
         })}, '{}', 2
       ) RETURNING sequence
     `;
-    const [first] = yield* insertMessage(0, "message:a", "a created");
-    const [second] = yield* insertMessage(1, "message:b", "b created");
-    yield* insertMessage(2, "message:a", "a superseded");
-    const [head] = yield* insertMessage(3, "message:a", "a final");
-    // thread.deleted is never superseded: clients switch on the event type.
-    for (const version of [0, 1]) {
-      yield* sql`
+      const [first] = yield* insertMessage(0, "message:a", "a created");
+      const [second] = yield* insertMessage(1, "message:b", "b created");
+      const [intermediate] = yield* insertMessage(2, "message:a", "a superseded");
+      const [head] = yield* insertMessage(3, "message:a", "a final");
+      // thread.deleted is never superseded: clients switch on the event type.
+      for (const version of [0, 1]) {
+        yield* sql`
         INSERT INTO orchestration_events (
           event_id, aggregate_kind, stream_id, stream_version, event_type,
           occurred_at, actor_kind, payload_json, metadata_json, application_event_version
@@ -412,45 +414,51 @@ it.effect("thread resume across compacted history keeps message order and final 
           ${now}, 'server', '{}', '{}', 2
         )
       `;
-    }
-    // Only the event between a's first and newest is deleted.
-    assert.equal((yield* maintenance.compactEventStore).deletedEventCount, 1);
+      }
+      assert.include(
+        (yield* maintenance.compactEventStore.pipe(Effect.flip)).operation,
+        "disabled",
+      );
 
-    const items = yield* subscribeOrchestrationV2Thread({
-      threadId,
-      afterSequence: first!.sequence - 1,
-      requestCompletionMarker: true,
+      const items = yield* subscribeOrchestrationV2Thread({
+        threadId,
+        afterSequence: first!.sequence - 1,
+        requestCompletionMarker: true,
+      }).pipe(
+        Effect.flatMap((stream) =>
+          stream.pipe(
+            Stream.takeUntil((item) => item.kind === "synchronized"),
+            Stream.runCollect,
+          ),
+        ),
+        Effect.provideService(ThreadManagement.ThreadManagementService, {
+          ensureLegacyTranscript: () => Effect.void,
+          streamStoredEventsFrom: () => Stream.never,
+        } as unknown as ThreadManagement.ThreadManagementService["Service"]),
+      );
+      assert.deepEqual(
+        Array.from(items, (item) =>
+          item.kind === "event"
+            ? [
+                item.sequence,
+                item.event.type === "message.updated" ? item.event.payload.text : null,
+              ]
+            : [item.kind],
+        ),
+        [
+          [first!.sequence, "a created"],
+          [second!.sequence, "b created"],
+          [intermediate!.sequence, "a superseded"],
+          [head!.sequence, "a final"],
+          ["synchronized"],
+        ],
+      );
     }).pipe(
-      Effect.flatMap((stream) =>
-        stream.pipe(
-          Stream.takeUntil((item) => item.kind === "synchronized"),
-          Stream.runCollect,
+      Effect.provide(
+        ProjectionMaintenance.layer.pipe(
+          Layer.provide(Layer.merge(EventStore.layer, ProjectionStore.layer)),
+          Layer.provideMerge(ReplayTestLayer),
         ),
       ),
-      Effect.provideService(ThreadManagement.ThreadManagementService, {
-        ensureLegacyTranscript: () => Effect.void,
-        streamStoredEventsFrom: () => Stream.never,
-      } as unknown as ThreadManagement.ThreadManagementService["Service"]),
-    );
-    assert.deepEqual(
-      Array.from(items, (item) =>
-        item.kind === "event"
-          ? [item.sequence, item.event.type === "message.updated" ? item.event.payload.text : null]
-          : [item.kind],
-      ),
-      [
-        [first!.sequence, "a created"],
-        [second!.sequence, "b created"],
-        [head!.sequence, "a final"],
-        ["synchronized"],
-      ],
-    );
-  }).pipe(
-    Effect.provide(
-      ProjectionMaintenance.layer.pipe(
-        Layer.provide(Layer.merge(EventStore.layer, ProjectionStore.layer)),
-        Layer.provideMerge(ReplayTestLayer),
-      ),
     ),
-  ),
 );

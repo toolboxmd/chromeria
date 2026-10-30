@@ -2866,6 +2866,11 @@ it.live(
           applied: true,
           stage: "confirmed",
         });
+        const destinationSettings = yield* b.rebuildSettings;
+        expect(
+          (yield* Context.get(destinationSettings, Settings.ServerSettingsService).getSettings)
+            .sourceControlWritingStyle.customInstructions,
+        ).toBe(input.sourceControlWritingStyle.customInstructions);
         const writes = yield* Ref.get(b.settingsWrites);
         expect(writes).toBeGreaterThan(0);
         expect(
@@ -2958,6 +2963,11 @@ it.live(
           "stage",
           "type",
         ]);
+        const initialSettings = yield* node.rebuildSettings;
+        expect(
+          (yield* Context.get(initialSettings, Settings.ServerSettingsService).getSettings)
+            .sourceControlWritingStyle.customInstructions,
+        ).toBe(firstPrivate);
         const writes = yield* Ref.get(node.settingsWrites);
         expect(writes).toBeGreaterThan(0);
         const sql = Context.get(node.database, SqlClient.SqlClient);
@@ -3003,6 +3013,7 @@ it.live(
         });
         expect(later.structuredContent).not.toHaveProperty("type");
         const afterLater = yield* Ref.get(node.settingsWrites);
+        expect(afterLater).toBeGreaterThan(writes);
         expect(
           (yield* nativeCall(node, parent, "t3_environment_preferences_update", input))
             .structuredContent,
@@ -3029,6 +3040,7 @@ it.live(
         );
         expect(failed.isError).toBe(true);
         const ambiguousWrites = yield* Ref.get(node.settingsWrites);
+        expect(ambiguousWrites).toBeGreaterThan(afterLater);
         // Reopen the actual settings owner and observe that the write happened despite failed acknowledgement.
         const freshSettings = yield* node.rebuildSettings;
         expect(

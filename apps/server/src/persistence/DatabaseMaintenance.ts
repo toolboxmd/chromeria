@@ -12,6 +12,8 @@ import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProjectionMaintenance from "../orchestration-v2/ProjectionMaintenance.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 
+const isProjectionMaintenanceError = Schema.is(ProjectionMaintenance.ProjectionMaintenanceError);
+
 export class DatabaseMissingError extends Schema.TaggedError<DatabaseMissingError>()(
   "DatabaseMissingError",
   { path: Schema.String },
@@ -53,6 +55,8 @@ export class DatabaseCompactError extends Schema.TaggedError<DatabaseCompactErro
   { path: Schema.String, cause: Schema.Defect() },
 ) {
   override get message() {
+    if (isProjectionMaintenanceError(this.cause))
+      return `Database compaction failed: ${this.cause.operation}.`;
     return "Database compaction failed. Check that no other process has the database open and enough disk space is available.";
   }
 }

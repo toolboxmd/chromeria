@@ -3,12 +3,14 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  AgentSessionImportSource,
   type OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
+import * as Schema from "effect/Schema";
 
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -18,6 +20,7 @@ import * as AgentSessionImporter from "./AgentSessionImporter.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
 import * as ProjectService from "./ProjectService.ts";
 
+const decodeImportSourceOption = Schema.decodeUnknownOption(AgentSessionImportSource);
 const projectId = ProjectId.make("agent-session-import-project");
 const providerInstanceId = ProviderInstanceId.make("codex");
 const providerSessionId = "native-codex-thread";
@@ -26,24 +29,30 @@ const threadId = ThreadId.make(`import:${providerInstanceId}:${providerSessionId
 it.effect("imports messages once and preserves the provider native resume binding", () => {
   const writes: Array<ReadonlyArray<OrchestrationV2DomainEvent>> = [];
   const upserts: Array<unknown> = [];
-  const recorded: Array<unknown> = [];
+  const recorded: Array<{ readonly source: AgentSessionImportSource }> = [];
+  const seenSources: Array<ReadonlyArray<AgentSessionImportSource>> = [];
   let imported = false;
+  let candidateSize = 100;
+  let duplicate = false;
   const scanner = AgentSessionScanner.AgentSessionScanner.of({
     scan: Effect.die("unused"),
-    recentThreads: () =>
-      Stream.succeed({
+    recentThreads: (_, completed = []) => {
+      seenSources.push(completed);
+      const source = {
+        provider: "codex" as const,
+        providerInstanceId,
+        providerSessionId,
+        filePath: "/tmp/native-codex-thread.jsonl",
+        size: candidateSize,
+        mtimeMs: 2,
+        device: 3,
+        inode: "10000000000000000",
+        birthtimeMs: 1,
+      };
+      if (duplicate) return Stream.succeed({ _tag: "Duplicate", source });
+      return Stream.succeed({
         _tag: "Importable",
-        source: {
-          provider: "codex",
-          providerInstanceId,
-          providerSessionId,
-          filePath: "/tmp/native-codex-thread.jsonl",
-          size: 100,
-          mtimeMs: 2,
-          device: 3,
-          inode: 4,
-          birthtimeMs: 1,
-        },
+        source,
         thread: {
           source: "codex",
           providerInstanceId,
@@ -57,7 +66,8 @@ it.effect("imports messages once and preserves the provider native resume bindin
             { role: "assistant", text: "Fixed", createdAt: "2026-09-01T10:01:00.000Z" },
           ],
         },
-      }),
+      });
+    },
   });
   const layerTest = AgentSessionImporter.layer.pipe(
     Layer.provide(
@@ -86,7 +96,19 @@ it.effect("imports messages once and preserves the provider native resume bindin
             }),
         }),
         Layer.mock(ProviderSessionRuntime.ProviderSessionRuntimeRepository)({
-          list: () => Effect.succeed([]),
+          list: () =>
+            Effect.succeed(
+              recorded.length === 0
+                ? []
+                : ([
+                    {
+                      runtimePayload: {
+                        cwd: "/workspace/project",
+                        importedTranscripts: recorded.map((entry) => entry.source),
+                      },
+                    },
+                  ] as never),
+            ),
           upsert: (input) => Effect.sync(() => void upserts.push(input)),
           recordImportedTranscript: (input) => Effect.sync(() => void recorded.push(input)),
         }),
@@ -106,6 +128,17 @@ it.effect("imports messages once and preserves the provider native resume bindin
       skippedCount: 0,
     });
 
+    candidateSize = 101;
+    expect((yield* importer.importRecentAgentThreads({ projectId }).pipe(Effect.result))._tag).toBe(
+      "Failure",
+    );
+    candidateSize = 100;
+    duplicate = true;
+    expect(yield* importer.importRecentAgentThreads({ projectId })).toEqual({
+      importedCount: 0,
+      skippedCount: 1,
+    });
+    duplicate = false;
     expect(writes).toHaveLength(1);
     expect(writes[0]?.map((event) => event.type)).toEqual([
       "thread.created",
@@ -143,5 +176,12 @@ it.effect("imports messages once and preserves the provider native resume bindin
       }),
     ]);
     expect(recorded).toHaveLength(2);
+    expect(seenSources[1]?.[0]?.inode).toBe("10000000000000000");
+    expect(decodeImportSourceOption({ ...recorded[0]!.source, inode: {} })._tag).toBe("None");
+    recorded.push({ source: { ...recorded[0]!.source, inode: 9007199254740992 } });
+    expect((yield* importer.importRecentAgentThreads({ projectId }).pipe(Effect.result))._tag).toBe(
+      "Failure",
+    );
+    expect(writes).toHaveLength(1);
   }).pipe(Effect.provide(layerTest));
 });

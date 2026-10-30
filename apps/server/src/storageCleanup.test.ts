@@ -271,6 +271,7 @@ const cleanupFixture = (
     let openSessionCwd: string | null = null;
     let sessionLive = true;
     let fullStatusCalls = 0;
+    let branchReadStderr: string | null = null;
     let snapshotReads = 0;
     let events: Stream.Stream<OrchestrationV2DomainEvent> = Stream.empty;
     const activated = yield* Deferred.make<void>();
@@ -279,6 +280,8 @@ const cleanupFixture = (
         ...git,
         execute: (input) =>
           Effect.gen(function* () {
+            if (input.operation === "StorageCleanup.branchChanged" && branchReadStderr !== null)
+              return { stdout: "", stderr: branchReadStderr, exitCode: 128 };
             if (editBeforeRemoval && input.args.includes("remove"))
               yield* fs.writeFileString(`${worktree}/tracked.txt`, "late edit\n");
             return yield* git.execute(input);
@@ -414,6 +417,9 @@ const cleanupFixture = (
         openSessionCwd = cwd;
       },
       fullStatusCalls: () => fullStatusCalls,
+      setBranchReadStderr: (stderr: string | null) => {
+        branchReadStderr = stderr;
+      },
       snapshotReads: () => snapshotReads,
       activate: (domainEvents: Stream.Stream<OrchestrationV2DomainEvent>) => {
         events = domainEvents;
@@ -1356,7 +1362,7 @@ describe("storage cleanup reports and local file policies", () => {
   it.live("compares the checked-out branch without a full status", () =>
     runCleanupTest(
       Effect.gen(function* () {
-        const { service, fs, worktree, command, setThreads, fullStatusCalls } =
+        const { service, fs, worktree, command, setThreads, fullStatusCalls, setBranchReadStderr } =
           yield* cleanupFixture();
         const changed = { outcome: "kept", reason: "Repository or branch changed" };
         yield* command(worktree, ["checkout", "--detach"]);
@@ -1381,6 +1387,21 @@ describe("storage cleanup reports and local file policies", () => {
         yield* fs.writeFileString(`${worktree}/.git`, "gitdir: /missing-git-directory\n");
         expect((yield* service.runNow).entries[0]).toMatchObject(changed);
         yield* fs.writeFileString(`${worktree}/.git`, gitFile);
+        for (const stderr of [
+          "fatal: not a git repository (or any of the parent directories): .git",
+          `fatal: gitfile does not point to a valid repository: ${worktree}/.git`,
+        ]) {
+          setBranchReadStderr(stderr);
+          expect((yield* service.runNow).entries[0]).toMatchObject(changed);
+          expect(yield* fs.readFileString(`${worktree}/tracked.txt`)).toBe("original\n");
+        }
+        const stderr = "fatal: detected dubious ownership in repository";
+        setBranchReadStderr(stderr);
+        expect((yield* service.runNow).entries[0]).toMatchObject({
+          outcome: "failed",
+          reason: `git: ${stderr}`,
+        });
+        setBranchReadStderr(null);
         expect((yield* service.runNow).entries[0]).toMatchObject({ outcome: "removed" });
         expect(fullStatusCalls()).toBe(0);
       }),

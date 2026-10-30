@@ -665,9 +665,20 @@ layer("OrchestrationEventStore", (it) => {
         if (reader === "agent") {
           assert.deepEqual(yield* read(baseline, highWater, true, 2), [before]);
         }
+        if (aggregateKind === "thread") {
+          const nested = yield* insertRow(1_005, "turn-item.updated", '{"type":"link_request"}');
+          assert.deepEqual(yield* read(highWater + 1, nested, true), []);
+          assert.isTrue(
+            isPersistenceDecodeError(yield* read(highWater + 1, nested).pipe(Effect.flip)),
+          );
+          yield* sql`UPDATE orchestration_events SET occurred_at = 'invalid' WHERE sequence = ${nested}`;
+          assert.isTrue(
+            isPersistenceDecodeError(yield* read(highWater + 1, nested, true).pipe(Effect.flip)),
+          );
+        }
         const beforeBroken = yield* store.latestApplicationSequence;
         const broken = yield* insertRow(
-          1_005,
+          1_006,
           aggregateKind === "thread" ? "thread.metadata-updated" : "project.created",
           "{}",
         );

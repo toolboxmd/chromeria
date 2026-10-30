@@ -41,7 +41,8 @@ import * as ProjectService from "./ProjectService.ts";
 const IMPORT_EVENT_PREFIX = "agent-session-import:v2";
 const CLAUDE_SESSION_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const decodeImportedTranscriptPayload = Schema.decodeUnknownOption(
+const isAgentSessionScanError = Schema.is(AgentSessionScanError);
+const decodeImportedTranscriptPayload = Schema.decodeUnknownEffect(
   Schema.Struct({
     cwd: Schema.optional(Schema.String),
     importedTranscripts: Schema.optional(Schema.Array(AgentSessionImportSource)),
@@ -199,20 +200,32 @@ const make = Effect.gen(function* () {
           (cause) => new AgentSessionScanError({ operation: "read-projects", cause }),
         ),
       );
-    const completedSources = runtimeRows.flatMap((runtime) => {
-      const payload = decodeImportedTranscriptPayload(runtime.runtimePayload);
-      if (
-        Option.isNone(payload) ||
-        payload.value.cwd === undefined ||
-        normalizeProjectPathForComparison(payload.value.cwd) !==
-          normalizeProjectPathForComparison(project.workspaceRoot)
-      ) {
-        return [];
-      }
-      return payload.value.importedTranscripts ?? [];
-    });
+    const completedSources = (yield* Effect.forEach(runtimeRows, (runtime) =>
+      Effect.gen(function* () {
+        const raw = runtime.runtimePayload;
+        if (typeof raw !== "object" || raw === null || !("importedTranscripts" in raw)) return [];
+        const payload = yield* decodeImportedTranscriptPayload(raw).pipe(
+          Effect.mapError(
+            (cause) => new AgentSessionScanError({ operation: "read-projects", cause }),
+          ),
+        );
+        if (
+          payload.importedTranscripts?.some(
+            (source) => typeof source.inode === "number" && !Number.isSafeInteger(source.inode),
+          )
+        )
+          return yield* new AgentSessionScanError({
+            operation: "read-projects",
+            cause: "A legacy transcript inode has no exact integer identity; import is fenced.",
+          });
+        return payload.cwd !== undefined &&
+          normalizeProjectPathForComparison(payload.cwd) ===
+            normalizeProjectPathForComparison(project.workspaceRoot)
+          ? (payload.importedTranscripts ?? [])
+          : [];
+      }),
+    )).flat();
     const outcomes = scanner.recentThreads(project.workspaceRoot, completedSources);
-    const importedThreadIds = new Set<ThreadId>();
     let importedCount = 0;
     let skippedCount = 0;
 
@@ -227,14 +240,14 @@ const make = Effect.gen(function* () {
           `import:${source.providerInstanceId}:${source.providerSessionId}`,
         );
         if (outcome._tag === "AlreadyImported") {
-          importedThreadIds.add(threadId);
           importedCount += 1;
           return;
         }
         if (outcome._tag === "Duplicate") {
-          if (importedThreadIds.has(threadId)) {
-            yield* runtimes.recordImportedTranscript({ threadId, source }).pipe(Effect.ignore);
-          }
+          skippedCount += 1;
+          yield* Effect.logWarning(
+            "Duplicate native transcript provenance is deferred until roll-forward",
+          );
           return;
         }
 
@@ -260,6 +273,21 @@ const make = Effect.gen(function* () {
             }
             if (existing.value.thread.historyOrigin !== "v1_import") {
               return yield* new AgentSessionThreadModifiedError({ threadId });
+            }
+            if (
+              !completedSources.some(
+                (completed) =>
+                  completed.provider === source.provider &&
+                  completed.providerInstanceId === source.providerInstanceId &&
+                  completed.providerSessionId === source.providerSessionId &&
+                  AgentSessionScanner.sameTranscriptIdentity(completed, source),
+              )
+            ) {
+              return yield* new AgentSessionScanError({
+                operation: "read-projects",
+                cause:
+                  "Changed native history requires guarded replacement and is deferred until roll-forward.",
+              });
             }
             yield* runtimes.recordImportedTranscript({ threadId, source });
             return true;
@@ -377,15 +405,18 @@ const make = Effect.gen(function* () {
           return true;
         }).pipe(
           Effect.catch((cause) =>
-            Effect.logWarning("Could not import an agent session", {
-              provider: outcome.thread.source,
-              sessionId: outcome.thread.providerSessionId,
-              cause,
-            }).pipe(Effect.as(false)),
+            Effect.gen(function* () {
+              if (isAgentSessionScanError(cause)) return yield* cause;
+              yield* Effect.logWarning("Could not import an agent session", {
+                provider: outcome.thread.source,
+                sessionId: outcome.thread.providerSessionId,
+                cause,
+              });
+              return false;
+            }),
           ),
         );
         if (imported) {
-          importedThreadIds.add(threadId);
           importedCount += 1;
         } else {
           skippedCount += 1;

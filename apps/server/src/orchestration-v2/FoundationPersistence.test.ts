@@ -499,7 +499,110 @@ it.effect("verifies thread membership using only the thread-created partial inde
   }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect("keeps other database work runnable while discovering compaction candidates", () =>
+it.effect("rollback rebuild retains newer facts introduced by a known partial event", () =>
+  Effect.gen(function* () {
+    const sink = yield* EventSink.EventSinkV2;
+    const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+    const sql = yield* SqlClient.SqlClient;
+    const now = yield* DateTime.now;
+    const threadId = ThreadId.make("thread:rollback-partial-rebuild");
+    const iso = "2026-10-30T00:00:00Z";
+    const watch = {
+      startedAt: iso,
+      headSha: "one",
+      failedChecks: [],
+      passed: false,
+      passedChecks: [],
+      remarksThrough: iso,
+      remarkIds: [],
+      conflicting: false,
+      wakes: 0,
+    };
+    const link = {
+      host: "github.com",
+      repository: "fixture/project",
+      number: 1,
+      url: "https://fixture.invalid/pull/1",
+      source: "manual" as const,
+      linkedAt: iso,
+      snapshot: null,
+      stack: null,
+      watch,
+    };
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("event:rollback-partial-rebuild:create"),
+          type: "thread.created",
+          threadId,
+          occurredAt: now,
+          payload: { ...makeThread(threadId, now), pullRequests: [link] },
+        },
+      ],
+    });
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("event:rollback-partial-rebuild:update"),
+          type: "thread.pull-request-link-updated",
+          threadId,
+          occurredAt: now,
+          payload: { ...link, watch: { ...watch, headSha: "two" } },
+        },
+      ],
+    });
+    yield* sql`UPDATE orchestration_events SET payload_json = json_set(payload_json,
+      '$.repositoryWebUrl', 'https://fixture.invalid/repository', '$.watch.owedChecks', json('["advisory"]'), '$.watch.checksAwaitedSince', ${iso})
+      WHERE event_id = 'event:rollback-partial-rebuild:update'`;
+    assert.isTrue((yield* maintenance.rebuild).valid);
+    const [row] = yield* sql<{
+      payload_json: string;
+    }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id = ${threadId}`;
+    const rebuilt = JSON.parse(row!.payload_json).pullRequests[0];
+    assert.equal(rebuilt.repositoryWebUrl, "https://fixture.invalid/repository");
+    assert.deepEqual(rebuilt.watch.owedChecks, ["advisory"]);
+    assert.equal(rebuilt.watch.checksAwaitedSince, iso);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("rollback strict receipt reads and rebuild preserve the database on newer events", () =>
+  Effect.gen(function* () {
+    const sink = yield* EventSink.EventSinkV2;
+    const events = yield* EventStore.EventStoreV2;
+    const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+    const sql = yield* SqlClient.SqlClient;
+    const now = yield* DateTime.now;
+    const threadId = ThreadId.make("thread:rollback-rebuild");
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("event:rollback-rebuild:create"),
+          type: "thread.created",
+          threadId,
+          occurredAt: now,
+          payload: makeThread(threadId, now),
+        },
+      ],
+    });
+    yield* sql`INSERT INTO orchestration_events (event_id,aggregate_kind,stream_id,stream_version,event_type,occurred_at,actor_kind,payload_json,metadata_json,application_event_version,command_id)
+      VALUES ('event:newer', 'thread', ${threadId}, 2, 'thread.guest-share-updated', ${DateTime.formatIso(now)}, 'server', '{}', '{}', 2, 'command:newer')`;
+    const before = yield* sql`SELECT * FROM orchestration_v2_projection_threads`;
+    assert.equal(
+      (yield* events
+        .readByCommandId({ commandId: CommandId.make("command:newer") })
+        .pipe(Stream.runCollect, Effect.result))._tag,
+      "Failure",
+    );
+    assert.equal((yield* maintenance.rebuild.pipe(Effect.result))._tag, "Failure");
+    assert.deepEqual(yield* sql`SELECT * FROM orchestration_v2_projection_threads`, before);
+    assert.equal(
+      (yield* sql`SELECT * FROM orchestration_events WHERE event_id = 'event:newer'`).length,
+      1,
+    );
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("rollback refuses compaction before scanning or deleting retained history", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -527,59 +630,19 @@ it.effect("keeps other database work runnable while discovering compaction candi
         SELECT 'retained:' || n, 'thread', 'thread:retained', ${now}, n, 'accepted', 'thread.create'
         FROM history
       `;
-      const discoveryStarted = {
-        events: yield* Deferred.make<void>(),
-        receipts: yield* Deferred.make<void>(),
-      };
-      const queries = { events: 0, receipts: 0 };
-      let finished = false;
-      const tracer = Tracer.make({
-        span(options) {
-          const span = new Tracer.NativeSpan(options);
-          const end = span.end.bind(span);
-          span.end = (endTime, exit) => {
-            end(endTime, exit);
-            const query = span.attributes.get("db.query.text");
-            if (typeof query !== "string" || !query.trimStart().startsWith("SELECT")) return;
-            if (query.includes("MAX(")) return;
-            const table = query.includes("FROM orchestration_command_receipts")
-              ? "receipts"
-              : query.includes("FROM orchestration_events")
-                ? "events"
-                : undefined;
-            if (table === undefined) return;
-            queries[table] += 1;
-            Deferred.doneUnsafe(discoveryStarted[table], Effect.void);
-          };
-          return span;
-        },
-      });
-      const probes = yield* Effect.forEach(["events", "receipts"] as const, (table) =>
-        Effect.gen(function* () {
-          yield* Deferred.await(discoveryStarted[table]);
-          const result = yield* sql<{ readonly responsive: number }>`SELECT 1 AS responsive`;
-          assert.equal(result[0]?.responsive, 1);
-          return { table, queriesAtProbe: queries[table], finished };
-        }).pipe(Effect.forkScoped),
+      const before =
+        yield* sql`SELECT event_id, payload_json FROM orchestration_events ORDER BY sequence`;
+      const receipts = yield* sql`SELECT * FROM orchestration_command_receipts ORDER BY command_id`;
+      const failure = yield* maintenance.compactEventStore.pipe(Effect.flip);
+      assert.include(failure.operation, "disabled");
+      assert.deepEqual(
+        yield* sql`SELECT event_id, payload_json FROM orchestration_events ORDER BY sequence`,
+        before,
       );
-
-      const summary = yield* maintenance.compactEventStore.pipe(
-        Effect.withTracer(tracer),
-        Effect.provideService(Scheduler.MaxOpsBeforeYield, Number.POSITIVE_INFINITY),
-        Effect.tap(() =>
-          Effect.sync(() => {
-            finished = true;
-          }),
-        ),
+      assert.deepEqual(
+        yield* sql`SELECT * FROM orchestration_command_receipts ORDER BY command_id`,
+        receipts,
       );
-      assert.equal(summary.deletedEventCount, 0);
-      assert.equal(summary.deletedReceiptCount, 0);
-      for (const probe of probes) {
-        const result = yield* Fiber.join(probe);
-        assert.isFalse(result.finished);
-        assert.isAtLeast(result.queriesAtProbe, 1);
-        assert.isBelow(result.queriesAtProbe, queries[result.table]);
-      }
     }),
   ).pipe(Effect.provide(layerTest)),
 );
@@ -1535,7 +1598,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
     }),
   );
 
-  it.effect("compacts superseded state events, imported v1 events, and legacy receipts", () =>
+  it.effect("rollback retains superseded state, imported v1 events and legacy receipts", () =>
     Effect.gen(function* () {
       const eventSink = yield* EventSink.EventSinkV2;
       const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
@@ -1685,54 +1748,20 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         ON CONFLICT(command_id) DO NOTHING
       `;
 
-      const summary = yield* maintenance.compactEventStore;
-      // Superseded state spans several discovery pages. Both turn-item updates
-      // stay, and so do the first message and node events (replay order). The
-      // rename stays too: visits are read state and only supersede each other.
-      assert.isAtLeast(summary.deletedEventCount, 504);
-      assert.isAtLeast(summary.deletedReceiptCount, 1);
-
-      const remaining = yield* sql<{ readonly event_id: string }>`
-        SELECT event_id
-        FROM orchestration_events
-        WHERE aggregate_kind = 'thread'
-          AND stream_id = ${threadId}
-        ORDER BY sequence ASC
-      `;
-      assert.deepEqual(
-        remaining.map((row) => row.event_id),
-        [
-          "event:foundation-compact:create",
-          "event:foundation-compact:meta",
-          "event:foundation-compact:message-1",
-          "event:foundation-compact:node-1",
-          "event:foundation-compact:item-1",
-          "event:foundation-compact:visit-2",
-          "event:foundation-compact:message-2",
-          "event:foundation-compact:node-2",
-          "event:foundation-compact:item-2",
-        ],
+      const retainedEvents = yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`;
+      const retainedReceipts =
+        yield* sql`SELECT * FROM orchestration_command_receipts ORDER BY command_id`;
+      assert.include(
+        (yield* maintenance.compactEventStore.pipe(Effect.flip)).operation,
+        "disabled",
       );
-
-      const remainingV1 = yield* sql<{ readonly stream_id: string }>`
-        SELECT stream_id
-        FROM orchestration_events
-        WHERE application_event_version = 1
-          AND stream_id IN (${importedV1ThreadId}, ${pendingV1ThreadId})
-      `;
       assert.deepEqual(
-        remainingV1.map((row) => row.stream_id),
-        [pendingV1ThreadId],
+        yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`,
+        retainedEvents,
       );
-
-      const remainingReceipts = yield* sql<{ readonly command_id: string }>`
-        SELECT command_id
-        FROM orchestration_command_receipts
-        WHERE command_id IN ('command:foundation-compact:legacy', 'command:foundation-compact:pending')
-      `;
       assert.deepEqual(
-        remainingReceipts.map((row) => row.command_id),
-        ["command:foundation-compact:pending"],
+        yield* sql`SELECT * FROM orchestration_command_receipts ORDER BY command_id`,
+        retainedReceipts,
       );
 
       assert.isTrue((yield* maintenance.verify).valid);

@@ -104,6 +104,143 @@ const recordProviderUsage = (provider: string, instanceId: string | null = provi
 
 it.layer(NodeServices.layer)("server settings", (it) => {
   it.effect(
+    "rollback settings writes retain newer root and nested keys while clearing old keys",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const secrets = yield* ServerSecretStore.ServerSecretStore;
+        yield* fs.writeFileString(
+          config.settingsPath,
+          JSON.stringify({
+            guestSharingEnabled: false,
+            threadTitleInstructions: "Keep this instruction",
+            projectSettingsOverrides: {
+              project: {
+                threadTitleInstructions: "Keep project instruction",
+                defaultAutoPull: true,
+              },
+            },
+            deviceHosts: [
+              { id: "host-compat", label: "Old host", target: "fixture.invalid", kind: "ssh" },
+            ],
+            responseStreamingMode: "turn",
+          }),
+        );
+        assert.isTrue(
+          (yield* service.getSettings).projectSettingsOverrides[ProjectId.make("project")]
+            ?.defaultAutoPull,
+        );
+        yield* service.updateSettings({ responseStreamingMode: "paragraph" });
+        const raw = JSON.parse(yield* fs.readFileString(config.settingsPath));
+        assert.isFalse(raw.guestSharingEnabled);
+        assert.equal(raw.threadTitleInstructions, "Keep this instruction");
+        assert.equal(
+          raw.projectSettingsOverrides.project.threadTitleInstructions,
+          "Keep project instruction",
+        );
+        assert.isTrue(raw.projectSettingsOverrides.project.defaultAutoPull);
+        assert.equal(raw.deviceHosts[0].kind, "ssh");
+        assert.notEqual(raw.responseStreamingMode, "turn");
+        yield* service.updateSettings({
+          projectSettingsOverrides: { [ProjectId.make("project")]: null },
+        });
+        const cleared = JSON.parse(yield* fs.readFileString(config.settingsPath));
+        assert.equal(
+          cleared.projectSettingsOverrides.project.threadTitleInstructions,
+          "Keep project instruction",
+        );
+        assert.isUndefined(cleared.projectSettingsOverrides.project.defaultAutoPull);
+        const changed = JSON.stringify({ ...cleared, continueThreadsAfterServerUpdate: false });
+        yield* fs.writeFileString(config.settingsPath, changed);
+        assert.equal(
+          (yield* service.updateSettings({ responseStreamingMode: "turn" }).pipe(Effect.result))
+            ._tag,
+          "Failure",
+        );
+        assert.equal(yield* fs.readFileString(config.settingsPath), changed);
+        assert.isFalse((yield* service.getSettings).continueThreadsAfterServerUpdate);
+        yield* service.updateSettings({ responseStreamingMode: "turn" });
+        assert.isFalse(
+          JSON.parse(yield* fs.readFileString(config.settingsPath))
+            .continueThreadsAfterServerUpdate,
+        );
+        const secretName = sourceControlHostSecretName({
+          kind: "github",
+          field: "tokens",
+          serverHost: "github.com",
+        });
+        yield* service.updateSettings({
+          sourceControlHosts: { github: { tokens: { "github.com": "s4-kept-secret" } } },
+        });
+        const keptSecret = yield* secrets.get(secretName);
+        assert.equal(new TextDecoder().decode(Option.getOrThrow(keptSecret)), "s4-kept-secret");
+        yield* fs.remove(config.settingsPath);
+        const removed = yield* service
+          .updateSettings({
+            responseStreamingMode: "turn",
+            sourceControlHosts: { github: { tokens: { "github.com": "s4-staged-secret" } } },
+          })
+          .pipe(Effect.flip);
+        assert.include(
+          JSON.stringify(removed),
+          "Settings were removed since the read; reload before writing.",
+        );
+        assert.isFalse(yield* fs.exists(config.settingsPath));
+        assert.deepEqual(yield* secrets.get(secretName), keptSecret);
+        assert.equal(
+          (yield* service.getSettings).responseStreamingMode,
+          DEFAULT_SERVER_SETTINGS.responseStreamingMode,
+        );
+        assert.isFalse(yield* fs.exists(config.settingsPath));
+        yield* service.updateSettings({ responseStreamingMode: "turn" });
+        assert.equal(
+          JSON.parse(yield* fs.readFileString(config.settingsPath)).responseStreamingMode,
+          "turn",
+        );
+        assert.deepEqual(yield* secrets.get(secretName), keptSecret);
+
+        yield* fs.remove(config.settingsPath);
+        assert.equal(
+          (yield* service.updateSettings({ responseStreamingMode: "turn" }).pipe(Effect.result))
+            ._tag,
+          "Failure",
+        );
+        yield* service.getSettings;
+        const replacement = JSON.stringify({
+          projectSettingsFolded: true,
+          guestSharingEnabled: true,
+          threadTitleInstructions: "S4 external replacement",
+        });
+        yield* fs.writeFileString(config.settingsPath, replacement);
+        assert.equal(
+          (yield* service.updateSettings({ responseStreamingMode: "turn" }).pipe(Effect.result))
+            ._tag,
+          "Failure",
+        );
+        assert.equal(yield* fs.readFileString(config.settingsPath), replacement);
+        assert.deepEqual(yield* secrets.get(secretName), keptSecret);
+        const broken = '{"deviceHosts":[{"id":"invalid:id"}],"guestSharingEnabled":false}';
+        yield* fs.writeFileString(config.settingsPath, broken);
+        assert.equal(
+          (yield* service.updateSettings({ responseStreamingMode: "turn" }).pipe(Effect.result))
+            ._tag,
+          "Failure",
+        );
+        assert.equal(yield* fs.readFileString(config.settingsPath), broken);
+        yield* service.getSettings;
+        assert.equal(
+          (yield* service.updateSettings({ responseStreamingMode: "turn" }).pipe(Effect.result))
+            ._tag,
+          "Failure",
+        );
+        assert.equal(yield* fs.readFileString(config.settingsPath), broken);
+        assert.deepEqual(yield* secrets.get(secretName), keptSecret);
+      }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
+  );
+
+  it.effect(
     "persists the search endpoint independently of research host selection and clearing",
     () =>
       Effect.gen(function* () {
@@ -2035,82 +2172,125 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       assert.include(persisted, '"valueRedacted": true');
     }).pipe(Effect.provide(layerServerSettings())),
   );
-  it.effect("rolls back provider secret changes when the settings file commit fails", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      let failRename = false;
-      let settingsPathToFail: string | undefined;
-      const writeFailure = PlatformError.systemError({
-        _tag: "PermissionDenied",
-        module: "FileSystem",
-        method: "rename",
-        description: "Forced settings write failure.",
-      });
-      const failingFileSystem = FileSystem.FileSystem.of({
-        ...fileSystem,
-        rename: (fromPath, toPath) =>
-          failRename && toPath === settingsPathToFail
-            ? Effect.fail(writeFailure)
-            : fileSystem.rename(fromPath, toPath),
-      });
-      const instanceId = ProviderInstanceId.make("antigravity_write_failure");
-      const layerSettings = layerServerSettings().pipe(
-        Layer.provideMerge(Layer.succeed(FileSystem.FileSystem, failingFileSystem)),
-      );
-
-      yield* Effect.gen(function* () {
-        const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
-        settingsPathToFail = (yield* ServerConfig.ServerConfig).settingsPath;
-        yield* serverSettings.updateProviderInstance({
-          operation: "upsert",
-          instanceId,
-          instance: {
-            driver: ProviderDriverKind.make("antigravity"),
-            environment: [{ name: "OPENROUTER_API_KEY", value: "sk-kept", sensitive: true }],
-            config: { apiKey: "config-kept" },
-          },
+  it.effect.each(["io", "external-edit"] as const)(
+    "rolls back provider secret changes when the settings file commit fails: %s",
+    (failureMode) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        let failCommit = false;
+        let settingsPathToFail: string | undefined;
+        let externalRevision = 0;
+        const writeFailure = PlatformError.systemError({
+          _tag: "PermissionDenied",
+          module: "FileSystem",
+          method: "link",
+          description: "Forced settings write failure.",
         });
+        const failingFileSystem = FileSystem.FileSystem.of({
+          ...fileSystem,
+          link: (fromPath, toPath) =>
+            failCommit &&
+            failureMode === "io" &&
+            fromPath.endsWith("contents.tmp") &&
+            toPath === settingsPathToFail
+              ? Effect.fail(writeFailure)
+              : fileSystem.link(fromPath, toPath),
+          writeFileString: (file, contents, options) =>
+            fileSystem.writeFileString(file, contents, options).pipe(
+              Effect.andThen(
+                Effect.suspend(() => {
+                  if (
+                    !failCommit ||
+                    failureMode !== "external-edit" ||
+                    settingsPathToFail === undefined ||
+                    !file.startsWith(settingsPathToFail + ".") ||
+                    !file.endsWith("contents.tmp")
+                  )
+                    return Effect.void;
+                  return fileSystem.readFileString(settingsPathToFail).pipe(
+                    Effect.flatMap((raw) =>
+                      fileSystem.writeFileString(
+                        settingsPathToFail!,
+                        JSON.stringify({
+                          ...JSON.parse(raw),
+                          guestSharingEnabled: true,
+                          threadTitleInstructions: "External revision " + ++externalRevision,
+                        }),
+                      ),
+                    ),
+                  );
+                }),
+              ),
+            ),
+        });
+        const instanceId = ProviderInstanceId.make("antigravity_write_failure");
+        const layerSettings = layerServerSettings().pipe(
+          Layer.provideMerge(Layer.succeed(FileSystem.FileSystem, failingFileSystem)),
+        );
 
-        failRename = true;
-        const failedUpdate = yield* serverSettings
-          .updateProviderInstance({
+        yield* Effect.gen(function* () {
+          const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+          settingsPathToFail = (yield* ServerConfig.ServerConfig).settingsPath;
+          yield* serverSettings.updateProviderInstance({
             operation: "upsert",
             instanceId,
             instance: {
               driver: ProviderDriverKind.make("antigravity"),
-              environment: [{ name: "OPENROUTER_API_KEY", value: "sk-new", sensitive: true }],
-              config: { apiKey: "config-new" },
+              environment: [{ name: "OPENROUTER_API_KEY", value: "sk-kept", sensitive: true }],
+              config: { apiKey: "config-kept" },
             },
-          })
-          .pipe(Effect.result);
-        assert.equal(failedUpdate._tag, "Failure");
-        assert.equal(
-          (yield* serverSettings.getSettings).providerInstances[instanceId]?.environment?.[0]
-            ?.value,
-          "sk-kept",
-        );
-        assert.propertyVal(
-          (yield* serverSettings.getSettings).providerInstances[instanceId]?.config,
-          "apiKey",
-          "config-kept",
-        );
+          });
 
-        const failed = yield* serverSettings
-          .updateProviderInstance({ operation: "remove", instanceId })
-          .pipe(Effect.result);
-        assert.equal(failed._tag, "Failure");
-        assert.equal(
-          (yield* serverSettings.getSettings).providerInstances[instanceId]?.environment?.[0]
-            ?.value,
-          "sk-kept",
-        );
-        assert.propertyVal(
-          (yield* serverSettings.getSettings).providerInstances[instanceId]?.config,
-          "apiKey",
-          "config-kept",
-        );
-      }).pipe(Effect.provide(layerSettings));
-    }),
+          failCommit = true;
+          const failedUpdate = yield* serverSettings
+            .updateProviderInstance({
+              operation: "upsert",
+              instanceId,
+              instance: {
+                driver: ProviderDriverKind.make("antigravity"),
+                environment: [{ name: "OPENROUTER_API_KEY", value: "sk-new", sensitive: true }],
+                config: { apiKey: "config-new" },
+              },
+            })
+            .pipe(Effect.result);
+          assert.equal(failedUpdate._tag, "Failure");
+          if (failureMode === "external-edit") {
+            const raw = JSON.parse(yield* fileSystem.readFileString(settingsPathToFail!));
+            assert.isTrue(raw.guestSharingEnabled);
+            assert.equal(raw.threadTitleInstructions, "External revision 1");
+          }
+          assert.equal(
+            (yield* serverSettings.getSettings).providerInstances[instanceId]?.environment?.[0]
+              ?.value,
+            "sk-kept",
+          );
+          assert.propertyVal(
+            (yield* serverSettings.getSettings).providerInstances[instanceId]?.config,
+            "apiKey",
+            "config-kept",
+          );
+
+          const failed = yield* serverSettings
+            .updateProviderInstance({ operation: "remove", instanceId })
+            .pipe(Effect.result);
+          assert.equal(failed._tag, "Failure");
+          if (failureMode === "external-edit") {
+            const raw = JSON.parse(yield* fileSystem.readFileString(settingsPathToFail!));
+            assert.isTrue(raw.guestSharingEnabled);
+            assert.equal(raw.threadTitleInstructions, "External revision 2");
+          }
+          assert.equal(
+            (yield* serverSettings.getSettings).providerInstances[instanceId]?.environment?.[0]
+              ?.value,
+            "sk-kept",
+          );
+          assert.propertyVal(
+            (yield* serverSettings.getSettings).providerInstances[instanceId]?.config,
+            "apiKey",
+            "config-kept",
+          );
+        }).pipe(Effect.provide(layerSettings));
+      }),
   );
 
   it.effect.each(["response materialization", "partially committed write"] as const)(

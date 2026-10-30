@@ -182,3 +182,93 @@ it.effect("succeeds when the write lands but its temp directory cannot be remove
     assert.deepStrictEqual(removed, ["/home/settings.json.abc123"]);
   }),
 );
+
+it.layer(NodeServices.layer)("conditional file replacement", (it) => {
+  it.effect.each([
+    "staged",
+    "captured",
+    "publishing",
+    "published",
+    "displaced-inode",
+    "missing",
+  ] as const)("retains external bytes and refuses a conflict at %s", (boundary) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-conditional-write-" });
+      const target = path.join(root, "settings.json");
+      if (boundary !== "missing") yield* fs.writeFileString(target, "before");
+      let previous: string | undefined;
+      let injected = false;
+      const wrapped = FileSystem.FileSystem.of({
+        ...fs,
+        writeFileString: (file, value, options) =>
+          fs.writeFileString(file, value, options).pipe(
+            Effect.andThen(
+              Effect.suspend(() => {
+                if (!file.endsWith("contents.tmp") || !["staged", "missing"].includes(boundary))
+                  return Effect.void;
+                injected = true;
+                return fs.writeFileString(target, "external");
+              }),
+            ),
+          ),
+        rename: (from, to) =>
+          fs.rename(from, to).pipe(
+            Effect.andThen(
+              Effect.suspend(() => {
+                if (from !== target || !to.endsWith("previous")) return Effect.void;
+                previous = to;
+                if (boundary !== "captured") return Effect.void;
+                injected = true;
+                return fs.writeFileString(target, "external");
+              }),
+            ),
+          ),
+        link: (from, to) =>
+          Effect.gen(function* () {
+            if (from.endsWith("contents.tmp") && to === target && boundary === "publishing") {
+              injected = true;
+              yield* fs.writeFileString(target, "external");
+            }
+            yield* fs.link(from, to);
+            if (
+              from.endsWith("contents.tmp") &&
+              to === target &&
+              ["published", "displaced-inode"].includes(boundary)
+            ) {
+              injected = true;
+              yield* fs.writeFileString(
+                boundary === "displaced-inode" ? previous! : target,
+                "external",
+              );
+            }
+          }),
+      });
+      const result = yield* writeFileStringAtomically({
+        filePath: target,
+        contents: "after",
+        expectedContents: boundary === "missing" ? null : "before",
+      }).pipe(Effect.provideService(FileSystem.FileSystem, wrapped), Effect.result);
+      assert.isTrue(injected);
+      assert.equal(result._tag, "Failure");
+      const values: Array<string> = [];
+      for (const entry of yield* fs.readDirectory(root)) {
+        const file = path.join(root, entry);
+        if ((yield* fs.stat(file)).type === "Directory") {
+          assert.equal((yield* fs.stat(file)).mode & 0o077, 0);
+          for (const name of yield* fs.readDirectory(file))
+            values.push(yield* fs.readFileString(path.join(file, name)));
+        } else values.push(yield* fs.readFileString(file));
+      }
+      assert.include(values, "external");
+      if (boundary === "staged" || boundary === "missing")
+        assert.equal(yield* fs.readFileString(target), "external");
+      if (result._tag === "Failure") {
+        assert.equal(result.failure._tag, "ConditionalWriteError");
+        assert.include(result.failure.message, "Conditional file replacement");
+        if (boundary !== "missing") assert.include(result.failure.message, "Retained files:");
+      }
+    }).pipe(Effect.scoped),
+  );
+});

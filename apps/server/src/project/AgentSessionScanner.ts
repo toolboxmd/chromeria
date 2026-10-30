@@ -541,7 +541,7 @@ function transcriptIdentity(filePath: string, stats: FileSystem.File.Info) {
     size: Number(stats.size),
     mtimeMs: Option.match(stats.mtime, { onNone: () => null, onSome: (date) => date.getTime() }),
     device: Number(stats.dev),
-    inode: Option.match(stats.ino, { onNone: () => null, onSome: Number }),
+    inode: Option.match(stats.ino, { onNone: () => null, onSome: String }),
     birthtimeMs: Option.match(stats.birthtime, {
       onNone: () => null,
       onSome: (date) => date.getTime(),
@@ -549,16 +549,24 @@ function transcriptIdentity(filePath: string, stats: FileSystem.File.Info) {
   };
 }
 
-function sameTranscriptIdentity(
-  left: ReturnType<typeof transcriptIdentity>,
-  right: ReturnType<typeof transcriptIdentity>,
+export function sameTranscriptIdentity(
+  left: Pick<
+    AgentSessionImportSource,
+    "filePath" | "size" | "mtimeMs" | "device" | "inode" | "birthtimeMs"
+  >,
+  right: Pick<
+    AgentSessionImportSource,
+    "filePath" | "size" | "mtimeMs" | "device" | "inode" | "birthtimeMs"
+  >,
 ): boolean {
   return (
     left.filePath === right.filePath &&
     left.size === right.size &&
     left.mtimeMs === right.mtimeMs &&
     left.device === right.device &&
-    left.inode === right.inode &&
+    (left.inode === null
+      ? right.inode === null
+      : right.inode !== null && String(left.inode) === String(right.inode)) &&
     left.birthtimeMs === right.birthtimeMs
   );
 }

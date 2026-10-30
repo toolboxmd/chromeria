@@ -676,3 +676,26 @@ apps/web/src/browser/ElectronBrowserHost.tsx
 apps/web/src/browser/previewRuntime.test.ts
 apps/web/src/browser/previewRuntime.ts
 apps/web/src/components/preview/usePreviewSession.ts
+
+# Issue #620: bounded old-based persistence compatibility, data-foundation owner.
+apps/server/src/orchestration-v2/ProjectionMaintenance.ts
+apps/server/src/orchestration-v2/ThreadFind.ts
+apps/server/src/persistence/DatabaseStorage.ts
+apps/server/src/persistence/OrchestrationEventStore.test.ts
+apps/server/src/persistence/OrchestrationEventStore.ts
+apps/server/src/project/AgentSessionImporter.test.ts
+apps/server/src/project/AgentSessionImporter.ts
+apps/server/src/project/AgentSessionScanner.test.ts
+apps/server/src/project/AgentSessionScanner.ts
+apps/server/src/ws.test.ts
+packages/contracts/src/agentSessions.ts
+
+# Issue #620: existing maintenance/read regression seams and pinned forward Git error fix.
+apps/server/src/persistence/DatabaseMaintenance.test.ts
+apps/server/src/orchestration-v2/CheckpointCaptureService.test.ts
+apps/server/src/storageCleanup.ts
+apps/server/src/storageCleanup.test.ts
+apps/server/src/persistence/DatabaseMaintenance.ts
+packages/shared/src/atomicWrite.ts
+packages/shared/src/atomicWrite.test.ts
+apps/server/src/orchestration-v2/TurnStartReads.test.ts

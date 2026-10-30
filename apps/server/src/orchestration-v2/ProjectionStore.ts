@@ -1,3 +1,9 @@
+import {
+  decodeReadableTurnItem,
+  knownTurnItemTypes,
+  isUnknownTurnItem,
+  makeRetainedPayloads,
+} from "../persistence/rollbackCompatibility.ts";
 import { NativeExecutionSegment } from "@t3tools/contracts";
 import { applyThreadPullRequestLinkUpdate } from "@t3tools/shared/threadPullRequests";
 import { executionPurposesEqual } from "@t3tools/contracts";
@@ -1248,6 +1254,9 @@ type ShellRunItemCountRow = {
   readonly item_count: number;
 };
 
+const encodeUnknownPayload = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeUnknownPayload = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+
 const encodeTimelineSources = Schema.encodeEffect(
   Schema.fromJsonString(
     Schema.Array(Schema.Struct({ threadId: Schema.String, id: Schema.String })),
@@ -1392,6 +1401,12 @@ const decodeRows =
           }),
       ),
     );
+
+const decodeReadableTurnItemRows = (threadId: ThreadId) => (rows: ReadonlyArray<PayloadRow>) =>
+  decodeRows(
+    decodeReadableTurnItem,
+    threadId,
+  )(rows).pipe(Effect.map((items) => items.filter((item) => item !== null)));
 
 function messageIdForTurnItem(item: OrchestrationV2TurnItem): string | null {
   switch (item.type) {
@@ -2122,6 +2137,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
 
     const apply: ProjectionStoreV2Shape["apply"] = (event) =>
       Effect.gen(function* () {
+        const retain = (json: string, type: string = event.type) =>
+          makeRetainedPayloads(sql)(type, json, {
+            threadId: event.threadId,
+            eventId: event.id,
+            occurredAt: DateTime.formatIso(event.occurredAt),
+          });
         switch (event.type) {
           case "thread.pull-request-link-updated": {
             const thread = yield* getThread(event.threadId);
@@ -2153,7 +2174,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           case "thread.interaction-mode-updated":
           case "thread.model-selection-updated":
           case "thread.provider-switched": {
-            const payloadJson = yield* encodeThreadPayload(event.payload);
+            const payloadJson = yield* encodeThreadPayload(event.payload).pipe(
+              Effect.flatMap(retain),
+            );
             const payload = parseEncodedPayload(payloadJson);
             yield* sql`
               INSERT INTO orchestration_v2_projection_threads (
@@ -2218,7 +2241,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             ) {
               return yield* new ProjectionStoreApplyEventError({ eventType: event.type });
             }
-            const payloadJson = yield* encodeRunPayload(event.payload);
+            const payloadJson = yield* encodeRunPayload(event.payload).pipe(Effect.flatMap(retain));
             const payload = parseEncodedPayload(payloadJson);
             yield* sql`
               INSERT INTO orchestration_v2_projection_runs (
@@ -2269,8 +2292,17 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           }
           case "run.background-work-cancelled": {
             // Only this field changes, so a concurrent lifecycle write is never regressed.
-            const workJson = yield* encodeRestartCancelledBackgroundWork(
+            const encodedWork = yield* encodeRestartCancelledBackgroundWork(
               event.payload.restartCancelledBackgroundWork,
+            );
+            const retained = yield* retain(
+              yield* encodeUnknownPayload({
+                runId: event.payload.runId,
+                restartCancelledBackgroundWork: yield* decodeUnknownPayload(encodedWork),
+              }),
+            );
+            const workJson = yield* encodeUnknownPayload(
+              parseEncodedPayload(retained).restartCancelledBackgroundWork,
             );
             yield* sql`
               UPDATE orchestration_v2_projection_runs
@@ -2285,7 +2317,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           }
           case "run-attempt.created":
           case "run-attempt.updated": {
-            const payloadJson = yield* encodeRunAttemptPayload(event.payload);
+            const payloadJson = yield* encodeRunAttemptPayload(event.payload).pipe(
+              Effect.flatMap(retain),
+            );
             yield* sql`
               INSERT INTO orchestration_v2_projection_run_attempts (
                 attempt_id,
@@ -2329,7 +2363,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             break;
           }
           case "node.updated": {
-            const payloadJson = yield* encodeNodePayload(event.payload);
+            const payloadJson = yield* encodeNodePayload(event.payload).pipe(
+              Effect.flatMap(retain),
+            );
             const payload = parseEncodedPayload(payloadJson);
             yield* sql`
               INSERT INTO orchestration_v2_projection_nodes (
@@ -2392,7 +2428,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 : yield* decodeSubagentPayload(existing.payload_json);
             const payloadJson = yield* encodeSubagentPayload(
               preserveCompletionDelivery(previous, event.payload),
-            );
+            ).pipe(Effect.flatMap(retain));
             const payload = parseEncodedPayload(payloadJson);
             yield* sql`
               INSERT INTO orchestration_v2_projection_subagents (
@@ -2462,7 +2498,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           }
           case "provider-session.attached":
           case "provider-session.updated": {
-            const payloadJson = yield* encodeProviderSessionPayload(event.payload);
+            const payloadJson = yield* encodeProviderSessionPayload(event.payload).pipe(
+              Effect.flatMap(retain),
+            );
             const payload = parseEncodedPayload(payloadJson);
             yield* sql`
               INSERT INTO orchestration_v2_projection_provider_sessions (
@@ -2527,7 +2565,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 : yield* decodeProviderThreadPayload(existing.payload_json);
             const payloadJson = yield* encodeProviderThreadPayload(
               preserveProviderThreadEvidence(previous, event.payload),
-            );
+            ).pipe(Effect.flatMap(retain));
             const payload = parseEncodedPayload(payloadJson);
             yield* sql`
               INSERT INTO orchestration_v2_projection_provider_threads (
@@ -2590,7 +2628,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   activeProviderThreadId: event.payload.id,
                   updatedAt: event.payload.updatedAt,
                 };
-                const updatedThreadPayloadJson = yield* encodeThreadPayload(updatedThread);
+                const updatedThreadPayloadJson = yield* encodeThreadPayload(updatedThread).pipe(
+                  Effect.flatMap((json) => retain(json, "thread.metadata-updated")),
+                );
                 yield* sql`
                   UPDATE orchestration_v2_projection_threads
                   SET
@@ -2618,7 +2658,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     [yield* decodeProviderTurnPayload(existing.payload_json)],
                     event.payload,
                   )[0]!;
-            const payloadJson = yield* encodeProviderTurnPayload(providerTurn);
+            const payloadJson = yield* encodeProviderTurnPayload(providerTurn).pipe(
+              Effect.flatMap(retain),
+            );
             const payload = parseEncodedPayload(payloadJson);
             yield* sql`
               INSERT INTO orchestration_v2_projection_provider_turns (
@@ -2660,7 +2702,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             break;
           }
           case "runtime-request.updated": {
-            const payloadJson = yield* encodeRuntimeRequestPayload(event.payload);
+            const payloadJson = yield* encodeRuntimeRequestPayload(event.payload).pipe(
+              Effect.flatMap(retain),
+            );
             const payload = parseEncodedPayload(payloadJson);
             yield* sql`
               INSERT INTO orchestration_v2_projection_runtime_requests (
@@ -2699,7 +2743,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             break;
           }
           case "message.updated": {
-            const payloadJson = yield* encodeMessagePayload(event.payload);
+            const payloadJson = yield* encodeMessagePayload(event.payload).pipe(
+              Effect.flatMap(retain),
+            );
             const payload = parseEncodedPayload(payloadJson);
             yield* sql`
               INSERT INTO orchestration_v2_projection_messages (
@@ -2738,7 +2784,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             break;
           }
           case "plan.updated": {
-            const payloadJson = yield* encodePlanPayload(event.payload);
+            const payloadJson = yield* encodePlanPayload(event.payload).pipe(
+              Effect.flatMap(retain),
+            );
             yield* sql`
               INSERT INTO orchestration_v2_projection_plans (
                 plan_id,
@@ -2770,7 +2818,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             break;
           }
           case "turn-item.updated": {
-            const payloadJson = yield* encodeTurnItemPayload(event.payload);
+            const payloadJson = yield* encodeTurnItemPayload(event.payload).pipe(
+              Effect.flatMap(retain),
+            );
             const payload = parseEncodedPayload(payloadJson);
             yield* sql`
               INSERT INTO orchestration_v2_projection_turn_items (
@@ -2814,11 +2864,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 status = excluded.status,
                 updated_at = excluded.updated_at,
                 payload_json = excluded.payload_json
+              WHERE orchestration_v2_projection_turn_items.type IN ${sql.in(knownTurnItemTypes)}
             `;
             break;
           }
           case "checkpoint-scope.created": {
-            const payloadJson = yield* encodeCheckpointScopePayload(event.payload);
+            const payloadJson = yield* encodeCheckpointScopePayload(event.payload).pipe(
+              Effect.flatMap(retain),
+            );
             const payload = parseEncodedPayload(payloadJson);
             yield* sql`
               INSERT INTO orchestration_v2_projection_checkpoint_scopes (
@@ -2863,7 +2916,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             break;
           }
           case "checkpoint.captured": {
-            const payloadJson = yield* encodeCheckpointPayload(event.payload);
+            const payloadJson = yield* encodeCheckpointPayload(event.payload).pipe(
+              Effect.flatMap(retain),
+            );
             const payload = parseEncodedPayload(payloadJson);
             yield* sql`
               INSERT INTO orchestration_v2_projection_checkpoints (
@@ -2910,7 +2965,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           case "checkpoint.rollback-requested":
             break;
           case "context-handoff.updated": {
-            const payloadJson = yield* encodeContextHandoffPayload(event.payload);
+            const payloadJson = yield* encodeContextHandoffPayload(event.payload).pipe(
+              Effect.flatMap(retain),
+            );
             const payload = parseEncodedPayload(payloadJson);
             yield* sql`
               INSERT INTO orchestration_v2_projection_context_handoffs (
@@ -2947,7 +3004,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           }
           case "context-transfer.created":
           case "context-transfer.updated": {
-            const payloadJson = yield* encodeContextTransferPayload(event.payload);
+            const payloadJson = yield* encodeContextTransferPayload(event.payload).pipe(
+              Effect.flatMap(retain),
+            );
             const payload = parseEncodedPayload(payloadJson);
             yield* sql`
               INSERT INTO orchestration_v2_projection_context_transfers (
@@ -3250,7 +3309,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               `;
         // Reuse the decoded items for cohort IDs and the resulting projection.
         // Parsing these rows separately duplicates every retained tool output.
-        const turnItems = yield* decodeRows(decodeTurnItemPayload, threadId)(boundedTurnItemRows);
+        const turnItems = yield* decodeReadableTurnItemRows(threadId)(boundedTurnItemRows);
         const cohortJson = (field: string) =>
           JSON.stringify(
             turnItems.flatMap((payload) => {
@@ -4170,7 +4229,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           {
             name: "turn_items",
             id: "turn_item_id",
-            decode: (payload) => decodeTurnItemPayload(payload),
+            decode: (payload) => decodeReadableTurnItem(payload),
           },
           {
             name: "checkpoint_scopes",
@@ -4312,7 +4371,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             const turnItems = yield* sql<PayloadRow>`
               SELECT payload_json FROM orchestration_v2_projection_turn_items
               WHERE thread_id = ${threadId} AND run_id = ${runId} ORDER BY ordinal ASC, turn_item_id ASC
-            `.pipe(Effect.flatMap(decodeRows(decodeTurnItemPayload, threadId)));
+            `.pipe(Effect.flatMap(decodeReadableTurnItemRows(threadId)));
             const providerSessions = yield* sql<PayloadRow>`
               SELECT sessions.payload_json FROM orchestration_v2_projection_provider_sessions AS sessions
               INNER JOIN orchestration_v2_projection_provider_session_bindings AS bindings
@@ -4372,7 +4431,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             AND ${runIds === undefined ? sql`1` : sql`run_id IN ${sql.in(runIds)}`}
           ORDER BY ordinal ASC, turn_item_id ASC
         `;
-        return yield* decodeRows(decodeTurnItemPayload, threadId)(rows);
+        return yield* decodeReadableTurnItemRows(threadId)(rows);
       }).pipe(Effect.mapError((cause) => new ProjectionStoreReadError({ threadId, cause })));
 
     const getThreadProjection: ProjectionStoreV2Shape["getThreadProjection"] = (threadId) =>
@@ -4664,7 +4723,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           decodeRows(decodeProviderTurnPayload, threadId)(providerTurnRows),
           decodeRows(decodeRuntimeRequestPayload, threadId)(runtimeRequestRows),
           decodeRows(decodeMessagePayload, threadId)(messageRows),
-          decodeRows(decodeTurnItemPayload, threadId)(turnItemRows),
+          decodeReadableTurnItemRows(threadId)(turnItemRows),
         ]);
         return {
           thread,
@@ -4750,7 +4809,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             return {
               runtimeRequests,
               nodes: yield* decodeRows(decodeNodePayload, threadId)(nodeRows),
-              turnItems: (yield* decodeRows(decodeTurnItemPayload, threadId)(itemRows)).filter(
+              turnItems: (yield* decodeReadableTurnItemRows(threadId)(itemRows)).filter(
                 (item) => item.type === "user_input_request" && requestIds.has(item.requestId),
               ),
             };
@@ -5144,7 +5203,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         Effect.flatMap((rows) =>
           rows[0] === undefined
             ? Effect.succeed(null)
-            : decodeTurnItemPayload(rows[0].payload_json),
+            : decodeReadableTurnItem(rows[0].payload_json),
         ),
         Effect.mapError(controlReadError(threadId)),
       );
@@ -5271,16 +5330,18 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           CASE WHEN type IN ('user_message', 'assistant_message') THEN json_extract(payload_json, '$.messageId') END AS message_id
         FROM orchestration_v2_projection_turn_items WHERE thread_id = ${threadId}
         ORDER BY ordinal ASC, turn_item_id ASC`;
-        const items: Array<TimelineIndexItem> = rows.map((row) => ({
-          id: TurnItemId.make(row.turn_item_id),
-          threadId,
-          runId: row.run_id === null ? null : RunId.make(row.run_id),
-          nodeId: row.node_id === null ? null : NodeId.make(row.node_id),
-          type: row.type,
-          ...(row.input_intent === null ? {} : { inputIntent: row.input_intent }),
-          ...(row.created_by === null ? {} : { createdBy: row.created_by }),
-          ...(row.message_id === null ? {} : { messageId: MessageId.make(row.message_id) }),
-        }));
+        const items: Array<TimelineIndexItem> = rows
+          .filter((row) => !isUnknownTurnItem({ type: row.type }))
+          .map((row) => ({
+            id: TurnItemId.make(row.turn_item_id),
+            threadId,
+            runId: row.run_id === null ? null : RunId.make(row.run_id),
+            nodeId: row.node_id === null ? null : NodeId.make(row.node_id),
+            type: row.type,
+            ...(row.input_intent === null ? {} : { inputIntent: row.input_intent }),
+            ...(row.created_by === null ? {} : { createdBy: row.created_by }),
+            ...(row.message_id === null ? {} : { messageId: MessageId.make(row.message_id) }),
+          }));
         const local: Array<TimelineIndexRow> = items.map((item) => ({
           sourceThreadId: threadId,
           sourceItemId: item.id,
@@ -5418,7 +5479,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   row.synthetic ??
                   (payload === undefined
                     ? yield* new ProjectionStoreReadError({ threadId })
-                    : yield* decodeTurnItemPayload(payload));
+                    : yield* decodeReadableTurnItem(payload));
+                if (item === null) return null;
                 return {
                   position: row.canonicalPosition,
                   visibility: row.visibility,
@@ -5428,14 +5490,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 };
               }),
             );
+            const readableItems = items.filter((item) => item !== null);
             if (hasUserTurns)
               return {
                 ...page,
                 snapshotSequence,
-                items: items.map((row, position) => ({ ...row, position })),
+                items: readableItems.map((row, position) => ({ ...row, position })),
               };
             const bounded = selectRecentTimelineWindow({
-              items,
+              items: readableItems,
               snapshotSequence,
               policy: {
                 ...THREAD_HISTORY_PAGE_POLICY,
@@ -6053,6 +6116,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       WHERE origin = 'app_owned'
         AND child_thread_id IS NULL
         AND json_type(payload_json, '$.remoteChild') = 'object'
+        AND json_type(payload_json, '$.remoteChild.stopCount') IS NULL
         AND json_extract(payload_json, '$.remoteChild.stop.state') IS NOT 'not_started'
         AND ((json_type(payload_json, '$.remoteChild.threadId') = 'text' AND json_extract(payload_json, '$.remoteChild.launch.lifecycleVersion') = 1) OR json_extract(payload_json, '$.result') IS NULL OR json_extract(payload_json, '$.remoteChild.stop.state') IN ('pending','unconfirmed','acknowledged') OR (status IN ('cancelled','interrupted') AND json_extract(payload_json, '$.remoteChild.stoppedThere') IS NOT 1))
     `.pipe(

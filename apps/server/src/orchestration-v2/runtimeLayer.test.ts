@@ -5216,8 +5216,7 @@ it.layer(Layer.fresh(layerSharedApplicationDataPlaneTest))("compact PR events", 
         (yield* orchestrator.getThreadShell(threadId))?.pullRequests,
         after?.pullRequests,
       );
-      // Later syncs of the same link supersede the ones between the first
-      // (kept for replay order) and the newest.
+      // Rollback retains every sync until the forward runtime resumes maintenance.
       for (const [commandId, title] of [
         ["compact-pr-sync-again", "Still open PR"],
         ["compact-pr-sync-merged", "Merged PR"],
@@ -5241,7 +5240,10 @@ it.layer(Layer.fresh(layerSharedApplicationDataPlaneTest))("compact PR events", 
         });
       }
       const latest = yield* orchestrator.getThreadShell(threadId);
-      yield* maintenance.compactEventStore;
+      assert.include(
+        (yield* maintenance.compactEventStore.pipe(Effect.flip)).operation,
+        "disabled",
+      );
       const linkEvents = yield* sql<{ command_id: string }>`
         SELECT command_id FROM orchestration_events
         WHERE stream_id = ${threadId} AND event_type = 'thread.pull-request-link-updated'
@@ -5249,7 +5251,7 @@ it.layer(Layer.fresh(layerSharedApplicationDataPlaneTest))("compact PR events", 
       `;
       assert.deepEqual(
         linkEvents.map((row) => row.command_id),
-        ["compact-pr-sync", "compact-pr-sync-merged"],
+        ["compact-pr-sync", "compact-pr-sync-again", "compact-pr-sync-merged"],
       );
       assert.isTrue((yield* maintenance.rebuild).valid);
       assert.deepEqual(
@@ -5257,9 +5259,7 @@ it.layer(Layer.fresh(layerSharedApplicationDataPlaneTest))("compact PR events", 
         latest?.pullRequests,
       );
 
-      // A later visit is read state only: clients keep updatedAt from the
-      // rename, so compaction must keep the rename. Two visits supersede each
-      // other, and a later rename supersedes a visit.
+      // Read-state and activity events both survive compatibility rollback.
       const threadEvents = () => sql<{ event_type: string }>`
         SELECT event_type FROM orchestration_events
         WHERE stream_id = ${threadId}
@@ -5283,10 +5283,13 @@ it.layer(Layer.fresh(layerSharedApplicationDataPlaneTest))("compact PR events", 
           visitedAt,
         });
       }
-      yield* maintenance.compactEventStore;
+      assert.include(
+        (yield* maintenance.compactEventStore.pipe(Effect.flip)).operation,
+        "disabled",
+      );
       assert.deepEqual(
         (yield* threadEvents()).map((row) => row.event_type),
-        ["thread.metadata-updated", "thread.visited"],
+        ["thread.metadata-updated", "thread.visited", "thread.visited"],
       );
       yield* orchestrator.dispatch({
         type: "thread.metadata.update",
@@ -5294,10 +5297,13 @@ it.layer(Layer.fresh(layerSharedApplicationDataPlaneTest))("compact PR events", 
         threadId,
         title: "Renamed after visit",
       });
-      yield* maintenance.compactEventStore;
+      assert.include(
+        (yield* maintenance.compactEventStore.pipe(Effect.flip)).operation,
+        "disabled",
+      );
       assert.deepEqual(
         (yield* threadEvents()).map((row) => row.event_type),
-        ["thread.metadata-updated"],
+        ["thread.metadata-updated", "thread.visited", "thread.visited", "thread.metadata-updated"],
       );
     }),
   );
