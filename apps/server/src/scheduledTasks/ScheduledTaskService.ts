@@ -1,3 +1,5 @@
+import { retainNewerFields } from "../persistence/rollbackCompatibility.ts";
+import * as SchemaAST from "effect/SchemaAST";
 import * as RemoteSecretRequests from "../secrets/RemoteSecretRequests.ts";
 import * as Automation from "./DestinationAutomationAuthority.ts";
 import * as PeerAuthority from "../peer/PeerAuthority.ts";
@@ -75,7 +77,6 @@ import {
 import { constantTimeEquals, verifyWebhookSignature } from "./webhookVerification.ts";
 
 export const WEBHOOK_ROUTE_PREFIX = "/api/hooks";
-const WEBHOOK_DELIVERY_RETENTION = 50;
 const WEBHOOK_DELIVERY_LOG_BODY_LIMIT = 64 * 1024;
 const WEBHOOK_DELIVERY_LOG_PROMPT_LIMIT = 64 * 1024;
 const WEBHOOK_MAX_QUEUED_PER_TASK = 20;
@@ -86,6 +87,7 @@ interface WebhookOrigin {
   readonly relayHookBaseUrl: string | null;
 }
 
+const isScheduledTaskError = Schema.is(ScheduledTaskError);
 const ENDPOINT_KEY = /^[0-9a-f]{16}$/;
 
 export function relayHookBaseUrl(input: {
@@ -434,6 +436,67 @@ export const layer = Layer.effect(
       ? peerAuthority.value.notifyAutomationChanges
       : Effect.void;
     const crypto = yield* Crypto.Crypto;
+    const hasDeliveryCorrelation = (yield* sql<{
+      name: string;
+    }>`PRAGMA table_info(scheduled_tasks)`).some(
+      (column) => column.name === "last_run_webhook_delivery_id",
+    );
+    const hasPendingDeliveries =
+      (yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'scheduled_task_webhook_pending'`)
+        .length > 0;
+    const hasReplayKeys =
+      (yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'scheduled_task_webhook_replay_keys'`)
+        .length > 0;
+    const deferredTaskIds = () =>
+      hasPendingDeliveries
+        ? sql<{
+            task_id: string;
+          }>`SELECT DISTINCT task_id FROM scheduled_task_webhook_pending `.pipe(
+            Effect.map((rows) => new Set(rows.map((row) => row.task_id))),
+          )
+        : Effect.succeed(new Set<string>());
+    const checkDeferredTask = Effect.fnUntraced(
+      function* (id: ScheduledTaskId) {
+        if ((yield* deferredTaskIds()).has(id))
+          return yield* taskError("Newer webhook work is deferred until roll-forward.", {
+            taskId: id,
+          });
+      },
+      Effect.mapError((cause) =>
+        isScheduledTaskError(cause)
+          ? cause
+          : taskError("Could not check deferred webhook work.", { cause }),
+      ),
+    );
+    const rawObject = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown));
+    const decodeRawObject = Schema.decodeUnknownEffect(rawObject);
+    const retainScheduleJson = Effect.fnUntraced(
+      function* (id: ScheduledTaskId, encoded: string) {
+        const [row] = yield* sql<{
+          schedule_json: string;
+        }>`SELECT schedule_json FROM scheduled_tasks WHERE task_id = ${id}`;
+        if (row === undefined) return encoded;
+        const stored = yield* decodeRawObject(row.schedule_json);
+        const next = yield* decodeRawObject(encoded);
+        const before = stored.type === "destination-automation-v1" ? stored.schedule : stored;
+        const after = next.type === "destination-automation-v1" ? next.schedule : next;
+        const schedule = yield* Effect.try({
+          try: () =>
+            retainNewerFields(
+              SchemaAST.toEncoded(ScheduledTask.fields.schedule.ast),
+              before,
+              after,
+            ),
+          catch: (cause) =>
+            taskError("Could not retain newer schedule settings.", { taskId: id, cause }),
+        });
+        return yield* encodeAutomationStamp(
+          next.type === "destination-automation-v1" ? { ...next, schedule } : schedule,
+        );
+      },
+      Effect.mapError((cause) => taskError("Could not retain newer schedule settings.", { cause })),
+    );
+
     yield* MutationReceipts.schema.pipe(Effect.orDie);
     const nativeReceipts = yield* Effect.serviceOption(CommandReceipts.CommandReceiptStoreV2);
     // New authenticated admissions establish prospective ownership for imported
@@ -586,7 +649,14 @@ export const layer = Layer.effect(
       },
       bareReadGrant: BareReadGrant | undefined,
     ) =>
-      sql<{ task_id: string }>`
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const scheduleJson = yield* retainScheduleJson(
+              task.id,
+              yield* encodeAutomationStamp(task.schedule),
+            );
+            return yield* sql<{ task_id: string }>`
         INSERT INTO scheduled_tasks (
           task_id,
           title,
@@ -619,18 +689,18 @@ export const layer = Layer.effect(
           ${task.title},
           ${task.prompt},
           ${task.enabled ? 1 : 0},
-          ${JSON.stringify(task.schedule)},
+          ${scheduleJson},
           ${task.purposeIntent === undefined ? null : encodePurposeIntentJson(task.purposeIntent)},
           ${task.projectId},
           ${task.threadId},
-          ${JSON.stringify(task.workspaceStrategy)},
-          ${JSON.stringify(task.modelSelection)},
+          ${yield* encodeAutomationStamp(task.workspaceStrategy)},
+          ${yield* encodeAutomationStamp(task.modelSelection)},
           ${task.runtimeMode},
           ${task.interactionMode},
           ${task.createdBy},
           ${task.creationSource},
           ${task.bare === undefined || bareReadGrant === undefined ? null : encodeScheduledBare({ request: task.bare, readGrant: bareReadGrant })},
-          ${task.linkOrigin === undefined ? null : JSON.stringify(task.linkOrigin)},
+          ${task.linkOrigin === undefined ? null : yield* encodeAutomationStamp(task.linkOrigin)},
           ${task.createdAt},
           ${task.updatedAt},
           ${task.nextRunAt},
@@ -671,22 +741,47 @@ export const layer = Layer.effect(
           END
         RETURNING task_id
       `.pipe(
-        Effect.mapError((cause) =>
-          taskError("Could not save schedule task.", { taskId: task.id, cause }),
-        ),
-        Effect.flatMap((rows) =>
-          rows.length > 0
-            ? Effect.void
-            : taskError("Schedule task not found.", { taskId: task.id }),
-        ),
-      );
+              Effect.mapError((cause) =>
+                taskError("Could not save schedule task.", { taskId: task.id, cause }),
+              ),
+              Effect.flatMap((rows) =>
+                rows.length > 0
+                  ? Effect.void
+                  : taskError("Schedule task not found.", { taskId: task.id }),
+              ),
+            );
+          }),
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not save schedule task.", { taskId: task.id, cause }),
+          ),
+        );
 
     const deleteRow = (id: ScheduledTaskId) =>
       sql
         .withTransaction(
-          sql`DELETE FROM scheduled_task_webhook_deliveries WHERE task_id = ${id}`.pipe(
-            Effect.andThen(sql`DELETE FROM scheduled_tasks WHERE task_id = ${id}`),
-          ),
+          Effect.gen(function* () {
+            yield* checkDeferredTask(id);
+            if (
+              hasReplayKeys &&
+              (yield* sql`SELECT 1 FROM scheduled_task_webhook_replay_keys WHERE task_id = ${id} LIMIT 1`)
+                .length > 0
+            )
+              return yield* taskError(
+                "Newer webhook replay state is retained until roll-forward; disable this task instead.",
+                { taskId: id },
+              );
+            if (
+              (yield* sql`SELECT 1 FROM scheduled_task_webhook_deliveries WHERE task_id = ${id} LIMIT 1`)
+                .length > 0
+            )
+              return yield* taskError(
+                "Delivery history is retained until roll-forward; disable this task instead.",
+                { taskId: id },
+              );
+            yield* sql`DELETE FROM scheduled_tasks WHERE task_id = ${id}`;
+          }),
         )
         .pipe(
           Effect.mapError((cause) =>
@@ -694,30 +789,35 @@ export const layer = Layer.effect(
           ),
         );
 
-    const markRunning = (id: ScheduledTaskId, startedAtIso: string) =>
+    const markRunning = (id: ScheduledTaskId, startedAtIso: string, deliveryId?: string) =>
       sql.withTransaction(
-        sql<{ task_id: string }>`
+        checkDeferredTask(id).pipe(
+          Effect.andThen(
+            sql<{ task_id: string }>`
         UPDATE scheduled_tasks
         SET updated_at = ${startedAtIso},
             last_run_at = ${startedAtIso},
             last_run_status = 'running',
             last_run_error = NULL
+            ${hasDeliveryCorrelation ? sql`, last_run_webhook_delivery_id = ${deliveryId ?? null}` : sql``}
         WHERE task_id = ${id}
         RETURNING task_id
       `.pipe(
-          Effect.mapError((cause) =>
-            taskError("Could not mark schedule task as running.", { taskId: id, cause }),
-          ),
-          // A task deleted after the re-read must not be dispatched from the stale snapshot.
-          Effect.flatMap((rows) =>
-            rows.length > 0
-              ? sql`UPDATE scheduled_task_request_incarnations SET active_request_id=NULL WHERE task_id=${id}`.pipe(
-                  Effect.asVoid,
-                  Effect.mapError((cause) =>
-                    taskError("Could not bind schedule run.", { taskId: id, cause }),
-                  ),
-                )
-              : taskError("Schedule task not found.", { taskId: id }),
+              Effect.mapError((cause) =>
+                taskError("Could not mark schedule task as running.", { taskId: id, cause }),
+              ),
+              // A task deleted after the re-read must not be dispatched from the stale snapshot.
+              Effect.flatMap((rows) =>
+                rows.length > 0
+                  ? sql`UPDATE scheduled_task_request_incarnations SET active_request_id=NULL WHERE task_id=${id}`.pipe(
+                      Effect.asVoid,
+                      Effect.mapError((cause) =>
+                        taskError("Could not bind schedule run.", { taskId: id, cause }),
+                      ),
+                    )
+                  : taskError("Schedule task not found.", { taskId: id }),
+              ),
+            ),
           ),
         ),
       );
@@ -1051,7 +1151,7 @@ export const layer = Layer.effect(
           .pipe(Effect.mapError((error) => taskError(error.message, { taskId: active.id })));
         if (decision._tag === "skip") return active;
 
-        yield* markRunning(active.id, startedAtIso);
+        yield* markRunning(active.id, startedAtIso, webhook?.deliveryId);
         yield* notifyChanged;
 
         const fireKey =
@@ -1171,8 +1271,16 @@ export const layer = Layer.effect(
           (row) => row.task_id,
         ),
       );
+      const deferred = yield* deferredTaskIds();
+      if (deferred.size > 0)
+        yield* Effect.logWarning("Newer pending webhook work deferred until roll-forward", {
+          taskIds: [...deferred],
+        });
       const stuck = rows.filter(
-        (row) => row.last_run_status === "running" && !keyed.has(row.task_id ?? ""),
+        (row) =>
+          row.last_run_status === "running" &&
+          !keyed.has(row.task_id ?? "") &&
+          !deferred.has(row.task_id ?? ""),
       );
       if (stuck.length === 0) return;
       const now = yield* localNow;
@@ -1503,7 +1611,7 @@ export const layer = Layer.effect(
                     taskError("Could not encode the accepted schedule.", { taskId: id, cause }),
                   ),
                 );
-                yield* sql`UPDATE scheduled_tasks SET schedule_json=${stamp} WHERE task_id=${id}`;
+                yield* sql`UPDATE scheduled_tasks SET schedule_json=${yield* retainScheduleJson(id, stamp)} WHERE task_id=${id}`;
               }
               yield* notifyChanged;
               return { task: (yield* findTask(id)) ?? task };
@@ -2103,7 +2211,22 @@ export const layer = Layer.effect(
         WHERE task_id = ${input.id}
         ORDER BY received_at DESC, rowid DESC
       `.pipe(
-        Effect.map((rows) => ({ deliveries: rows.map(decodeDeliverySummary) })),
+        Effect.tap((rows) => {
+          const deferredCount = rows.filter((row) =>
+            ["duplicate", "coalesced", "filtered"].includes(row.outcome),
+          ).length;
+          return deferredCount === 0
+            ? Effect.void
+            : Effect.logWarning("Newer delivery history retained until roll-forward", {
+                taskId: input.id,
+                deferredCount,
+              });
+        }),
+        Effect.map((rows) => ({
+          deliveries: rows
+            .filter((row) => !["duplicate", "coalesced", "filtered"].includes(row.outcome))
+            .map(decodeDeliverySummary),
+        })),
         Effect.mapError((cause) =>
           taskError("Could not list webhook deliveries.", { taskId: input.id, cause }),
         ),
@@ -2123,6 +2246,11 @@ export const layer = Layer.effect(
         if (row === undefined) {
           return yield* taskError("Webhook delivery not found.", { taskId: input.id });
         }
+        if (["duplicate", "coalesced", "filtered"].includes(row.outcome))
+          return yield* taskError(
+            "Newer delivery history is retained and deferred until roll-forward.",
+            { taskId: input.id },
+          );
         return {
           delivery: {
             ...decodeDeliverySummary(row),
@@ -2180,17 +2308,6 @@ export const layer = Layer.effect(
                 rendered_prompt = excluded.rendered_prompt,
                 error = excluded.error
             `;
-            yield* sql`
-            DELETE FROM scheduled_task_webhook_deliveries
-            WHERE task_id = ${input.taskId}
-              AND delivery_id NOT IN (
-                SELECT delivery_id FROM scheduled_task_webhook_deliveries
-                WHERE task_id = ${input.taskId}
-                -- rowid breaks timestamp ties in arrival order; delivery ids are random.
-                ORDER BY received_at DESC, rowid DESC
-                LIMIT ${WEBHOOK_DELIVERY_RETENTION}
-              )
-          `;
           }),
         )
         .pipe(
@@ -2356,6 +2473,35 @@ export const layer = Layer.effect(
         // is never released.
         return yield* Effect.uninterruptible(
           Effect.gen(function* () {
+            const persistedSchedule = yield* decodeRawObject(row.schedule_json).pipe(
+              Effect.mapError((cause) =>
+                taskError("Could not read stored webhook settings.", { taskId: task.id, cause }),
+              ),
+            );
+            const rawSchedule =
+              persistedSchedule.type === "destination-automation-v1"
+                ? persistedSchedule.schedule
+                : persistedSchedule;
+            if (
+              typeof rawSchedule === "object" &&
+              rawSchedule !== null &&
+              ("dedupe" in rawSchedule || "filters" in rawSchedule)
+            )
+              return yield* taskError(
+                "Newer webhook filtering/deduplication is deferred until roll-forward.",
+                { taskId: task.id },
+              );
+            if (
+              (yield* sql`SELECT 1 FROM scheduled_task_webhook_deliveries WHERE delivery_id = ${deliveryId} AND outcome <> 'rate_limited' LIMIT 1`.pipe(
+                Effect.mapError((cause) =>
+                  taskError("Could not check retained delivery.", { taskId: task.id, cause }),
+                ),
+              )).length > 0
+            ) {
+              yield* observe("duplicate");
+              return { _tag: "accepted" as const, deliveryId, outcome: "duplicate" as const };
+            }
+            yield* checkDeferredTask(task.id);
             if (request.relayDeliveryId !== undefined) {
               const claimed = yield* sql<{ relay_delivery_id: string }>`
                 INSERT INTO scheduled_task_webhook_relay_deliveries

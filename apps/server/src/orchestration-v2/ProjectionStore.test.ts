@@ -39,6 +39,7 @@ import { pendingDelegatedChildTasks } from "../childThreads/delegatedFollowups.t
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as DurableEvents from "../persistence/OrchestrationEventStore.ts";
 import {
   buildBoundedThreadProjection,
   decodeThreadHistoryCursor,
@@ -185,6 +186,380 @@ const addRolledBackRecoveryCandidate = Effect.fn("addRolledBackRecoveryCandidate
 
   return threadId;
 });
+
+it.effect("rollback reads hide newer items without losing their identity or ordinal", () =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const sql = yield* SqlClient.SqlClient;
+    const events = yield* DurableEvents.OrchestrationEventStore;
+    const threadId = yield* addRolledBackRecoveryCandidate("rollback-readable");
+    yield* sql`INSERT INTO orchestration_v2_projection_turn_items
+      (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json)
+      SELECT 'future:item', thread_id, run_id, 2, 'link_request', 'waiting', updated_at,
+        json_set(payload_json, '$.id', 'future:item', '$.type', 'link_request', '$.ordinal', 2)
+      FROM orchestration_v2_projection_turn_items WHERE thread_id = ${threadId}`;
+    const before =
+      yield* sql`SELECT payload_json FROM orchestration_v2_projection_turn_items WHERE turn_item_id = 'future:item'`;
+    const projection = yield* store.getThreadProjection(threadId);
+    assert.lengthOf(projection.turnItems, 1);
+    assert.isNull(yield* store.getTurnItem({ threadId, itemId: TurnItemId.make("future:item") }));
+    assert.equal(yield* store.getNextTurnItemOrdinal(threadId), 3);
+    const item = projection.turnItems[0]!;
+    const attempted = yield* store
+      .apply({
+        id: EventId.make("event:rollback-fenced"),
+        type: "turn-item.updated",
+        threadId,
+        occurredAt: projection.updatedAt,
+        payload: { ...item, id: TurnItemId.make("future:item"), ordinal: 2 },
+      })
+      .pipe(Effect.result);
+    assert.equal(attempted._tag, "Failure");
+    const beforeEvents = yield* sql`SELECT event_id FROM orchestration_events`;
+    assert.equal(
+      (yield* events
+        .appendAgentEvents({
+          events: [
+            {
+              id: EventId.make("event:rollback:before-fence"),
+              type: "thread.metadata-updated",
+              threadId,
+              occurredAt: projection.updatedAt,
+              payload: { ...projection.thread, title: "Must roll back" },
+            },
+            {
+              id: EventId.make("event:rollback:event-fenced"),
+              type: "turn-item.updated",
+              threadId,
+              occurredAt: projection.updatedAt,
+              payload: { ...item, id: TurnItemId.make("future:item"), ordinal: 2 },
+            },
+          ],
+        })
+        .pipe(Effect.result))._tag,
+      "Failure",
+    );
+    assert.deepEqual(yield* sql`SELECT event_id FROM orchestration_events`, beforeEvents);
+    assert.deepEqual(
+      yield* sql`SELECT payload_json FROM orchestration_v2_projection_turn_items WHERE turn_item_id = 'future:item'`,
+      before,
+    );
+    yield* sql`UPDATE orchestration_v2_projection_turn_items SET payload_json = '{"type":"command_execution"}' WHERE turn_item_id = 'future:item'`;
+    assert.equal((yield* store.getThreadProjection(threadId).pipe(Effect.result))._tag, "Failure");
+  }).pipe(
+    Effect.provide(
+      Layer.merge(
+        layerTest,
+        DurableEvents.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+      ),
+    ),
+  ),
+);
+
+it.effect("rollback defers remote stop correlation that old services cannot interpret", () =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const events = yield* DurableEvents.OrchestrationEventStore;
+    const sql = yield* SqlClient.SqlClient;
+    const threadId = yield* addRolledBackRecoveryCandidate("rollback-remote");
+    const now = (yield* store.getThreadProjection(threadId)).updatedAt;
+    const remoteChild = {
+      environmentId: EnvironmentId.make("fixture:remote"),
+      threadId: ThreadId.make("thread:remote"),
+      label: "Deferred remote",
+      stoppedThere: false,
+    };
+    const event: OrchestrationV2DomainEvent = {
+      id: EventId.make("event:rollback:remote"),
+      type: "subagent.updated",
+      threadId,
+      occurredAt: now,
+      payload: {
+        id: NodeId.make("task:remote"),
+        threadId,
+        runId: null,
+        parentNodeId: NodeId.make("node:remote:parent"),
+        origin: "app_owned",
+        createdBy: "agent",
+        driver,
+        providerInstanceId,
+        providerThreadId: null,
+        childThreadId: null,
+        nativeTaskRef: null,
+        prompt: "Deferred remote",
+        title: "Remote",
+        model: null,
+        status: "running",
+        result: null,
+        startedAt: now,
+        completedAt: null,
+        updatedAt: now,
+        remoteChild,
+      },
+    };
+    yield* store.apply(event);
+    yield* sql`UPDATE orchestration_v2_projection_subagents SET payload_json = json_set(payload_json, '$.remoteChild.stopCount', 2) WHERE subagent_id = 'task:remote'`;
+    assert.deepEqual(yield* store.getOpenRemoteDelegatedTasks, []);
+    const before =
+      yield* sql`SELECT payload_json FROM orchestration_v2_projection_subagents WHERE subagent_id = 'task:remote'`;
+    const changed = {
+      ...event,
+      id: EventId.make("event:rollback:remote-stop"),
+      payload: { ...event.payload, remoteChild: { ...remoteChild, stoppedThere: true } },
+    };
+    assert.equal(
+      (yield* events.appendAgentEvents({ events: [changed] }).pipe(Effect.result))._tag,
+      "Failure",
+    );
+    assert.equal((yield* store.apply(changed).pipe(Effect.result))._tag, "Failure");
+    assert.deepEqual(
+      yield* sql`SELECT payload_json FROM orchestration_v2_projection_subagents WHERE subagent_id = 'task:remote'`,
+      before,
+    );
+  }).pipe(
+    Effect.provide(
+      Layer.merge(
+        layerTest,
+        DurableEvents.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+      ),
+    ),
+  ),
+);
+
+it.effect(
+  "rollback cancellation carries awaited provenance through roster clearing in one batch",
+  () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const events = yield* DurableEvents.OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = yield* addRolledBackRecoveryCandidate("rollback-roster");
+      const projection = yield* store.getThreadProjection(threadId);
+      const at = projection.updatedAt;
+      const id = ProviderThreadId.make("provider-thread:rollback-roster");
+      const providerThread: OrchestrationV2ProviderThread = {
+        id,
+        driver,
+        providerInstanceId,
+        providerSessionId: null,
+        appThreadId: threadId,
+        ownerNodeId: null,
+        nativeThreadRef: null,
+        nativeConversationHeadRef: null,
+        status: "idle",
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: at,
+        updatedAt: at,
+        pendingBackgroundTasks: [{ kind: "command", taskId: "task:awaited" }],
+      };
+      yield* store.apply({
+        id: EventId.make("event:rollback-roster:provider"),
+        type: "provider-thread.updated",
+        threadId,
+        occurredAt: at,
+        payload: providerThread,
+      });
+      yield* sql`UPDATE orchestration_v2_projection_provider_threads SET payload_json = json_set(payload_json, '$.pendingBackgroundTasks[0].awaited', json('true')) WHERE provider_thread_id = ${id}`;
+      const runId = projection.runs[0]!.id;
+      yield* sql`UPDATE orchestration_v2_projection_runs SET provider_thread_id = ${id}, payload_json = json_set(payload_json, '$.providerThreadId', ${id}) WHERE run_id = ${runId}`;
+      const batch: Array<OrchestrationV2DomainEvent> = [
+        {
+          id: EventId.make("event:rollback-roster:clear"),
+          type: "provider-thread.updated",
+          threadId,
+          occurredAt: at,
+          payload: { ...providerThread, pendingBackgroundTasks: [] },
+        },
+        {
+          id: EventId.make("event:rollback-roster:cancel"),
+          type: "run.background-work-cancelled",
+          threadId,
+          occurredAt: at,
+          payload: {
+            runId,
+            restartCancelledBackgroundWork: [
+              { kind: "shell", id: "task:awaited", label: "Cancelled shell" },
+            ],
+          },
+        },
+      ];
+      yield* events.appendAgentEvents({ events: batch });
+      for (const event of batch) yield* store.apply(event);
+      const [row] = yield* sql<{
+        payload_json: string;
+      }>`SELECT payload_json FROM orchestration_v2_projection_runs WHERE run_id = ${runId}`;
+      const [event] = yield* sql<{
+        payload_json: string;
+      }>`SELECT payload_json FROM orchestration_events WHERE event_id = 'event:rollback-roster:cancel'`;
+      assert.isTrue(JSON.parse(row!.payload_json).restartCancelledBackgroundWork[0].awaited);
+      assert.isTrue(JSON.parse(event!.payload_json).restartCancelledBackgroundWork[0].awaited);
+      assert.deepEqual(
+        (yield* store.getThreadProjection(threadId)).providerThreads[0]!.pendingBackgroundTasks,
+        [],
+      );
+    }).pipe(
+      Effect.provide(
+        Layer.merge(
+          layerTest,
+          DurableEvents.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+        ),
+      ),
+    ),
+);
+
+it.effect("rollback PR head reset uses event time and sequences same-batch partial updates", () =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const events = yield* DurableEvents.OrchestrationEventStore;
+    const sql = yield* SqlClient.SqlClient;
+    const threadId = yield* addRolledBackRecoveryCandidate("rollback-pr-time");
+    const iso = "2026-10-30T00:00:00Z";
+    const watch = {
+      startedAt: iso,
+      headSha: "one",
+      failedChecks: [],
+      passed: false,
+      passedChecks: [],
+      remarksThrough: iso,
+      remarkIds: [],
+      conflicting: false,
+      wakes: 0,
+    };
+    const link: ThreadPullRequestLink = {
+      host: "github.com",
+      repository: "fixture/project",
+      number: 1,
+      url: "https://fixture.invalid/pull/1",
+      source: "manual",
+      linkedAt: iso,
+      snapshot: null,
+      stack: null,
+      watch,
+    };
+    yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = json_set(payload_json, '$.pullRequests', json(${JSON.stringify([{ ...link, watch: { ...watch, owedChecks: ["advisory"], checksAwaitedSince: iso } }])})) WHERE thread_id = ${threadId}`;
+    const occurredAt = DateTime.makeUnsafe("2026-10-30T00:02:00Z");
+    const nextLink = { ...link, watch: { ...watch, headSha: "two" } };
+    const batch: Array<OrchestrationV2DomainEvent> = [
+      {
+        id: EventId.make("event:rollback-pr:one"),
+        type: "thread.pull-request-link-updated",
+        threadId,
+        occurredAt,
+        payload: nextLink,
+      },
+      {
+        id: EventId.make("event:rollback-pr:two"),
+        type: "thread.pull-request-link-updated",
+        threadId,
+        occurredAt,
+        payload: nextLink,
+      },
+    ];
+    yield* events.appendAgentEvents({ events: batch });
+    for (const event of batch) yield* store.apply(event);
+    const rows = yield* sql<{
+      payload_json: string;
+    }>`SELECT payload_json FROM orchestration_events WHERE event_id IN ('event:rollback-pr:one','event:rollback-pr:two') ORDER BY sequence`;
+    for (const row of rows) {
+      assert.deepEqual(JSON.parse(row.payload_json).watch.owedChecks, []);
+      assert.equal(
+        Date.parse(JSON.parse(row.payload_json).watch.checksAwaitedSince),
+        Date.parse("2026-10-30T00:02:00Z"),
+      );
+    }
+    const [projected] = yield* sql<{
+      payload_json: string;
+    }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id = ${threadId}`;
+    assert.equal(
+      Date.parse(JSON.parse(projected!.payload_json).pullRequests[0].watch.checksAwaitedSince),
+      Date.parse("2026-10-30T00:02:00Z"),
+    );
+  }).pipe(
+    Effect.provide(
+      Layer.merge(
+        layerTest,
+        DurableEvents.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+      ),
+    ),
+  ),
+);
+
+it.effect("rollback retains nested facts and sequences archive clears across one event batch", () =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const events = yield* DurableEvents.OrchestrationEventStore;
+    const sql = yield* SqlClient.SqlClient;
+    const threadId = yield* addRolledBackRecoveryCandidate("rollback-retain");
+    const share = {
+      id: "share:retained",
+      host: "fixture.invalid",
+      createdAt: "2026-10-30T00:00:00Z",
+      expiresAt: "2030-01-01T00:00:00Z",
+      guestName: null,
+      messages: [
+        {
+          id: "guest:pending",
+          text: "Fixture guest",
+          submittedAt: "2026-10-30T00:00:00Z",
+          status: "pending",
+        },
+      ],
+    };
+    yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = json_set(payload_json,
+      '$.guestShare', json(${JSON.stringify(share)}), '$.opens', json('{"openedAt":0,"score":4,"picks":[{"query":"rollback","at":0}]}'),
+      '$.linkOrigin', json('{"sessionId":"session:1","label":"Test link","access":"read-only"}'))
+      WHERE thread_id = ${threadId}`;
+    const { thread, updatedAt } = yield* store.getThreadProjection(threadId);
+    const renamed = { ...thread, title: "Edited during rollback" };
+    const rename = {
+      id: EventId.make("event:compat:rename"),
+      type: "thread.metadata-updated" as const,
+      threadId,
+      occurredAt: updatedAt,
+      payload: renamed,
+    };
+    yield* events.appendAgentEvents({ events: [rename] });
+    yield* store.apply(rename);
+    const [raw] = yield* sql<{
+      payload_json: string;
+    }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id = ${threadId}`;
+    assert.deepEqual(JSON.parse(raw!.payload_json).guestShare, share);
+    assert.equal(JSON.parse(raw!.payload_json).linkOrigin.access, "read-only");
+    const archived = { ...renamed, archivedAt: updatedAt };
+    yield* events.appendAgentEvents({
+      events: [
+        {
+          ...rename,
+          id: EventId.make("event:compat:archive"),
+          type: "thread.archived",
+          payload: archived,
+        },
+        {
+          ...rename,
+          id: EventId.make("event:compat:unarchive"),
+          type: "thread.unarchived",
+          payload: { ...archived, archivedAt: null },
+        },
+      ],
+    });
+    const rows = yield* sql<{
+      payload_json: string;
+    }>`SELECT payload_json FROM orchestration_events WHERE event_id IN ('event:compat:rename','event:compat:archive','event:compat:unarchive') ORDER BY sequence`;
+    assert.deepEqual(JSON.parse(rows[0]!.payload_json).guestShare, share);
+    assert.isNull(JSON.parse(rows[1]!.payload_json).guestShare);
+    assert.isNull(JSON.parse(rows[2]!.payload_json).guestShare);
+  }).pipe(
+    Effect.provide(
+      Layer.merge(
+        layerTest,
+        DurableEvents.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+      ),
+    ),
+  ),
+);
 
 it.effect.each([
   ["memory", ProjectionStore.layerMemory],

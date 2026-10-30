@@ -11,7 +11,6 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { resolveHostCliCommand } from "../cli/invocation.ts";
 import * as ServerConfig from "../config.ts";
-import * as ProjectionMaintenance from "../orchestration-v2/ProjectionMaintenance.ts";
 import { forkParked } from "../serverActivation.ts";
 
 /** Pages returned per reclaim pass; one minute of churn, not a backlog. */
@@ -28,14 +27,10 @@ export class DatabaseStorage extends Context.Service<
 >()("t3/persistence/DatabaseStorage") {}
 
 /**
- * Deletes superseded history every few hours and hands freed pages back to
- * the filesystem every minute. Deleted events are always superseded by a
- * retained event with a higher sequence, so a client replaying from an older
- * cursor still reaches the same state; no replay boundary is published.
+ * Reclaims free pages without compacting events during compatibility rollback.
  */
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
   const config = yield* ServerConfig.ServerConfig;
   const path = yield* Path.Path;
   const statusRef = yield* SubscriptionRef.make<DatabaseStorageStatus | null>(null);
@@ -89,24 +84,6 @@ const make = Effect.gen(function* () {
     Effect.catch((cause) => Effect.logWarning("Database space reclamation failed", { cause })),
   );
 
-  const compact = maintenance.compactEventStore.pipe(
-    Effect.tap((result) =>
-      result.deletedEventCount > 0 || result.deletedReceiptCount > 0
-        ? Effect.logInfo("Compacted orchestration history", result)
-        : Effect.void,
-    ),
-    Effect.catch((cause) =>
-      Effect.logWarning("Orchestration history compaction failed", { cause }),
-    ),
-  );
-
-  yield* forkParked(
-    Effect.sleep("1 minute").pipe(
-      Effect.andThen(
-        compact.pipe(Effect.andThen(publishStatus), Effect.repeat(Schedule.spaced("6 hours"))),
-      ),
-    ),
-  );
   yield* forkParked(
     publishStatus.pipe(
       Effect.andThen(Effect.sleep("1 minute")),

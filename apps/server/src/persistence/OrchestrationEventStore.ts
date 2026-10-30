@@ -1,3 +1,4 @@
+import { isUnknownTurnItem, makeRetainedPayloads } from "./rollbackCompatibility.ts";
 import {
   ApplicationEventMetadata,
   ApplicationProjectEvent,
@@ -195,14 +196,12 @@ function metadataForV2Event(event: OrchestrationV2DomainEvent): Record<string, u
   };
 }
 
-const rowToV2StoredEvent = Effect.fn("OrchestrationEventStore.rowToV2StoredEvent")(function* (
-  row: ApplicationEventRow,
-) {
+const rowToV2EventValue = Effect.fnUntraced(function* (row: ApplicationEventRow) {
   const payload = yield* decodeJson(row.payload_json);
   const metadata = yield* decodeJson(row.metadata_json);
   const values =
     typeof metadata === "object" && metadata !== null ? (metadata as Record<string, unknown>) : {};
-  const event = yield* decodeV2EventJson({
+  return {
     id: row.event_id,
     threadId: row.stream_id,
     type: row.event_type,
@@ -215,13 +214,23 @@ const rowToV2StoredEvent = Effect.fn("OrchestrationEventStore.rowToV2StoredEvent
       ? {}
       : { providerInstanceId: values.providerInstanceId }),
     ...(values.rawEventId === undefined ? {} : { rawEventId: values.rawEventId }),
-  });
-  return yield* decodeV2StoredEvent({
-    sequence: row.sequence,
-    commandId: row.command_id,
-    event,
-  });
+  };
 });
+
+const rowToV2StoredEvent = Effect.fn("OrchestrationEventStore.rowToV2StoredEvent")(function* (
+  row: ApplicationEventRow,
+) {
+  const event = yield* decodeV2EventJson(yield* rowToV2EventValue(row));
+  return yield* decodeV2StoredEvent({ sequence: row.sequence, commandId: row.command_id, event });
+});
+const replayEnvelope = () => {
+  for (const member of OrchestrationV2DomainEventJson.members) {
+    if ("literal" in member.fields.type && member.fields.type.literal === "turn-item.updated")
+      return Schema.Struct({ ...member.fields, payload: Schema.Unknown });
+  }
+  throw new Error("Missing turn-item event schema");
+};
+const decodeReplayEnvelope = Schema.decodeUnknownEffect(replayEnvelope());
 
 const rowToProjectEvent = Effect.fn("OrchestrationEventStore.rowToProjectEvent")(function* (
   row: ApplicationEventRow,
@@ -249,17 +258,28 @@ function rowToApplicationStoredEvent(
 
 const isKnownProjectEventType = Schema.is(ProjectEventType);
 
-const keepReplayRow = (row: ApplicationEventRow, skipUnknownEventTypes?: boolean) =>
-  skipUnknownEventTypes !== true ||
-  (row.aggregate_kind === "project"
-    ? isKnownProjectEventType(row.event_type)
-    : isKnownOrchestrationV2EventType(row.event_type))
-    ? Effect.succeed(true)
-    : Effect.logWarning("Skipping an application event row with an unknown event type", {
-        aggregateKind: row.aggregate_kind,
-        sequence: row.sequence,
-        eventTypeLength: row.event_type.length,
-      }).pipe(Effect.as(false));
+const keepReplayRow = Effect.fnUntraced(
+  function* (row: ApplicationEventRow, skipUnknownEventTypes?: boolean) {
+    if (skipUnknownEventTypes !== true) return true;
+    const known =
+      row.aggregate_kind === "project"
+        ? isKnownProjectEventType(row.event_type)
+        : isKnownOrchestrationV2EventType(row.event_type);
+    if (known) {
+      if (row.aggregate_kind !== "thread" || row.event_type !== "turn-item.updated") return true;
+      const value = yield* rowToV2EventValue(row);
+      if (!isUnknownTurnItem(value.payload)) return true;
+      yield* decodeReplayEnvelope(value);
+    }
+    yield* Effect.logWarning("Deferring an application event unknown to the rollback runtime", {
+      aggregateKind: row.aggregate_kind,
+      sequence: row.sequence,
+      eventTypeLength: row.event_type.length,
+    });
+    return false;
+  },
+  Effect.mapError(toPersistenceDecodeError("OrchestrationEventStore.replay:decode")),
+);
 
 function inferActorKind(event: UnsequencedProjectEvent): typeof ActorKind.Type {
   if (event.commandId !== null && event.commandId.startsWith("provider:")) {
@@ -443,37 +463,49 @@ const makeEventStore = Effect.gen(function* () {
     `;
 
   const appendAgentEvents: OrchestrationEventStore["Service"]["appendAgentEvents"] = (input) =>
-    Effect.forEach(
-      input.events,
-      (event) =>
-        Effect.gen(function* () {
-          const encoded = yield* encodeV2EventJson(event);
-          const subagent =
-            encoded.type === "subagent.updated"
-              ? encoded.payload
-              : encoded.type === "turn-item.updated" && encoded.payload.type === "subagent"
-                ? encoded.payload
-                : undefined;
-          const promptKey = subagent === undefined ? undefined : `${event.type}:${subagent.id}`;
-          const hint = promptKey === undefined ? undefined : promptHints.get(promptKey);
-          const payloadJson = yield* encodeJson(encoded.payload);
-          // Progress ticks repeat an unchanged prompt, so store it once and point
-          // later rows at it. ProjectionMaintenance never deletes these anchor
-          // rows.
-          const storedPayload =
-            hint !== undefined && subagent !== undefined
-              ? sql`CASE WHEN EXISTS (
+    sql
+      .withTransaction(
+        Effect.suspend(() => {
+          const retain = makeRetainedPayloads(sql);
+          return Effect.forEach(
+            input.events,
+            (event) =>
+              Effect.gen(function* () {
+                const encoded = yield* encodeV2EventJson(event);
+                const subagent =
+                  encoded.type === "subagent.updated"
+                    ? encoded.payload
+                    : encoded.type === "turn-item.updated" && encoded.payload.type === "subagent"
+                      ? encoded.payload
+                      : undefined;
+                const promptKey =
+                  subagent === undefined ? undefined : `${event.type}:${subagent.id}`;
+                const hint = promptKey === undefined ? undefined : promptHints.get(promptKey);
+                const payloadJson = yield* encodeJson(encoded.payload).pipe(
+                  Effect.flatMap((json) =>
+                    retain(event.type, json, {
+                      threadId: event.threadId,
+                      occurredAt: encoded.occurredAt,
+                    }),
+                  ),
+                );
+                // Progress ticks repeat an unchanged prompt, so store it once and point
+                // later rows at it. ProjectionMaintenance never deletes these anchor
+                // rows.
+                const storedPayload =
+                  hint !== undefined && subagent !== undefined
+                    ? sql`CASE WHEN EXISTS (
                   SELECT 1 FROM orchestration_events
                   WHERE sequence = ${hint}
                     AND json_type(payload_json, '$.promptSequence') IS NULL
                     AND json_extract(payload_json, '$.prompt') = ${subagent.prompt}
                 ) THEN json_set(${payloadJson}, '$.prompt', '', '$.promptSequence', CAST(${hint} AS INTEGER))
                 ELSE ${payloadJson} END`
-              : sql`${payloadJson}`;
-          const rows = yield* sql<{
-            readonly sequence: number;
-            readonly stores_full_prompt?: number;
-          }>`
+                    : sql`${payloadJson}`;
+                const rows = yield* sql<{
+                  readonly sequence: number;
+                  readonly stores_full_prompt?: number;
+                }>`
             INSERT INTO orchestration_events (
               event_id,
               aggregate_kind,
@@ -517,33 +549,43 @@ const makeEventStore = Effect.gen(function* () {
                 : sql`, json_type(payload_json, '$.promptSequence') IS NULL AS stores_full_prompt`
             }
           `;
-          const row = rows[0];
-          if (promptKey !== undefined && row !== undefined) {
-            promptHints.delete(promptKey);
-            promptHints.set(
-              promptKey,
-              hint === undefined || row.stores_full_prompt === 1 ? row.sequence : hint,
-            );
-            if (promptHints.size > 4096) {
-              const oldest = promptHints.keys().next().value;
-              if (oldest !== undefined) promptHints.delete(oldest);
-            }
-          }
-          return yield* decodeV2StoredEvent({
-            sequence: rows[0]?.sequence,
-            commandId: input.commandId ?? null,
-            event,
-          });
+                const row = rows[0];
+                if (promptKey !== undefined && row !== undefined) {
+                  promptHints.delete(promptKey);
+                  promptHints.set(
+                    promptKey,
+                    hint === undefined || row.stores_full_prompt === 1 ? row.sequence : hint,
+                  );
+                  if (promptHints.size > 4096) {
+                    const oldest = promptHints.keys().next().value;
+                    if (oldest !== undefined) promptHints.delete(oldest);
+                  }
+                }
+                return yield* decodeV2StoredEvent({
+                  sequence: rows[0]?.sequence,
+                  commandId: input.commandId ?? null,
+                  event,
+                });
+              }),
+            { concurrency: 1 },
+          ).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "OrchestrationEventStore.appendAgentEvents:insert",
+                "OrchestrationEventStore.appendAgentEvents:decode",
+              ),
+            ),
+          );
         }),
-      { concurrency: 1 },
-    ).pipe(
-      Effect.mapError(
-        toPersistenceSqlOrDecodeError(
-          "OrchestrationEventStore.appendAgentEvents:insert",
-          "OrchestrationEventStore.appendAgentEvents:decode",
+      )
+      .pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "OrchestrationEventStore.appendAgentEvents:transaction",
+            "OrchestrationEventStore.appendAgentEvents:decode",
+          ),
         ),
-      ),
-    );
+      );
 
   const readAgentEvents: OrchestrationEventStore["Service"]["readAgentEvents"] = (input) => {
     const totalLimit =

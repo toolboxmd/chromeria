@@ -561,15 +561,22 @@ only when that file set changes; this is not an exhaustive history of follow-ups
 {
   "id": "data-foundation",
   "purpose": "Isolate the Chromeria V2 database, retain passive legacy tables and deferred settings data and provide shell-only backfills and fork-origin PR lookup.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/167"],
-  "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...port/167-foundation"],
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/167",
+    "https://github.com/toolboxmd/chromeria/issues/620"
+  ],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/compare/fork/v2...port/167-foundation"
+  ],
   "newFiles": [
     "apps/server/src/persistence/forkV1Backfills.test.ts",
     "apps/server/src/persistence/forkV1Backfills.ts",
     "apps/server/src/persistence/forkV1Snapshot.testFixtures.ts",
     "apps/server/src/pullRequest/forkRepositoryIdentity.ts",
     "packages/contracts/src/forkSettings.ts",
-    "apps/server/src/persistence/forkV1Migrations.ts"
+    "apps/server/src/persistence/forkV1Migrations.ts",
+    "apps/server/src/persistence/rollbackCompatibility.ts",
+    "apps/server/src/persistence/rollbackCompatibility.test.ts"
   ],
   "upstreamFiles": [
     "apps/server/src/persistence/initializeV2Database.test.ts",
@@ -584,9 +591,28 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/server/src/serverSettings.test.ts",
     "packages/contracts/src/settings.ts",
     "apps/server/src/persistence/Migrations/063_DropUnusedV1Projections.ts",
-    "apps/server/src/persistence/Migrations/063_DropUnusedV1Projections.test.ts"
+    "apps/server/src/persistence/Migrations/063_DropUnusedV1Projections.test.ts",
+    "apps/server/src/orchestration-v2/ProjectionMaintenance.ts",
+    "apps/server/src/orchestration-v2/ThreadFind.ts",
+    "apps/server/src/persistence/DatabaseStorage.ts",
+    "apps/server/src/persistence/OrchestrationEventStore.test.ts",
+    "apps/server/src/persistence/OrchestrationEventStore.ts",
+    "apps/server/src/project/AgentSessionImporter.test.ts",
+    "apps/server/src/project/AgentSessionImporter.ts",
+    "apps/server/src/project/AgentSessionScanner.test.ts",
+    "apps/server/src/project/AgentSessionScanner.ts",
+    "apps/server/src/ws.test.ts",
+    "packages/contracts/src/agentSessions.ts"
   ],
-  "sharedFiles": [],
+  "sharedFiles": [
+    "apps/server/src/orchestration-v2/FoundationPersistence.test.ts",
+    "apps/server/src/orchestration-v2/ProjectionStore.test.ts",
+    "apps/server/src/orchestration-v2/ProjectionStore.ts",
+    "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+    "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
+    "apps/server/src/scheduledTasks/ScheduledTaskService.webhook.test.ts",
+    "apps/server/src/serverSettings.ts"
+  ],
   "keywords": [
     "chromeria-v2.sqlite",
     "forkV1Backfills",

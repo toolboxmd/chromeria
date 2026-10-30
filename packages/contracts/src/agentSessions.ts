@@ -13,7 +13,7 @@ export const AgentSessionImportSource = Schema.Struct({
   size: NonNegativeInt,
   mtimeMs: Schema.NullOr(Schema.Number),
   device: Schema.Number,
-  inode: Schema.NullOr(Schema.Number),
+  inode: Schema.NullOr(Schema.Union([Schema.String, Schema.Number])),
   birthtimeMs: Schema.NullOr(Schema.Number),
 });
 export type AgentSessionImportSource = typeof AgentSessionImportSource.Type;

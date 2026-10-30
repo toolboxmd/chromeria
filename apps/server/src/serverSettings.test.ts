@@ -104,6 +104,79 @@ const recordProviderUsage = (provider: string, instanceId: string | null = provi
 
 it.layer(NodeServices.layer)("server settings", (it) => {
   it.effect(
+    "rollback settings writes retain newer root and nested keys while clearing old keys",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.writeFileString(
+          config.settingsPath,
+          JSON.stringify({
+            guestSharingEnabled: false,
+            threadTitleInstructions: "Keep this instruction",
+            projectSettingsOverrides: {
+              project: {
+                threadTitleInstructions: "Keep project instruction",
+                defaultAutoPull: true,
+              },
+            },
+            deviceHosts: [
+              { id: "host-compat", label: "Old host", target: "fixture.invalid", kind: "ssh" },
+            ],
+            responseStreamingMode: "turn",
+          }),
+        );
+        assert.isTrue(
+          (yield* service.getSettings).projectSettingsOverrides[ProjectId.make("project")]
+            ?.defaultAutoPull,
+        );
+        yield* service.updateSettings({ responseStreamingMode: "paragraph" });
+        const raw = JSON.parse(yield* fs.readFileString(config.settingsPath));
+        assert.isFalse(raw.guestSharingEnabled);
+        assert.equal(raw.threadTitleInstructions, "Keep this instruction");
+        assert.equal(
+          raw.projectSettingsOverrides.project.threadTitleInstructions,
+          "Keep project instruction",
+        );
+        assert.isTrue(raw.projectSettingsOverrides.project.defaultAutoPull);
+        assert.equal(raw.deviceHosts[0].kind, "ssh");
+        assert.notEqual(raw.responseStreamingMode, "turn");
+        yield* service.updateSettings({
+          projectSettingsOverrides: { [ProjectId.make("project")]: null },
+        });
+        const cleared = JSON.parse(yield* fs.readFileString(config.settingsPath));
+        assert.equal(
+          cleared.projectSettingsOverrides.project.threadTitleInstructions,
+          "Keep project instruction",
+        );
+        assert.isUndefined(cleared.projectSettingsOverrides.project.defaultAutoPull);
+        const changed = JSON.stringify({ ...cleared, continueThreadsAfterServerUpdate: false });
+        yield* fs.writeFileString(config.settingsPath, changed);
+        assert.equal(
+          (yield* service.updateSettings({ responseStreamingMode: "turn" }).pipe(Effect.result))
+            ._tag,
+          "Failure",
+        );
+        assert.equal(yield* fs.readFileString(config.settingsPath), changed);
+        assert.isFalse((yield* service.getSettings).continueThreadsAfterServerUpdate);
+        yield* service.updateSettings({ responseStreamingMode: "turn" });
+        assert.isFalse(
+          JSON.parse(yield* fs.readFileString(config.settingsPath))
+            .continueThreadsAfterServerUpdate,
+        );
+        const broken = '{"deviceHosts":[{"id":"invalid:id"}],"guestSharingEnabled":false}';
+        yield* fs.writeFileString(config.settingsPath, broken);
+        assert.equal(
+          (yield* service.updateSettings({ responseStreamingMode: "turn" }).pipe(Effect.result))
+            ._tag,
+          "Failure",
+        );
+        assert.equal(yield* fs.readFileString(config.settingsPath), broken);
+      }).pipe(Effect.provide(layerServerSettings())),
+  );
+
+  it.effect(
     "persists the search endpoint independently of research host selection and clearing",
     () =>
       Effect.gen(function* () {

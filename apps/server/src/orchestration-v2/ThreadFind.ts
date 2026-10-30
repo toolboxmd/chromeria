@@ -1,3 +1,4 @@
+import { isUnknownTurnItem } from "../persistence/rollbackCompatibility.ts";
 import {
   OrchestrationV2TurnItemJson,
   type OrchestrationV2ProjectedTurnItem,
@@ -374,6 +375,7 @@ export const makeThreadFind = Effect.fn("makeThreadFind")(function* (
         }
         const rows = payloads.filter(
           (row) =>
+            !isUnknownTurnItem({ type: row.type }) &&
             row.type !== "user_input_request" &&
             !(row.type === "user_message" && foldedAnswers.has(row.entryId)),
         );

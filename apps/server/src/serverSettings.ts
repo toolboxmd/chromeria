@@ -1,3 +1,5 @@
+import { retainNewerSettings } from "./persistence/rollbackCompatibility.ts";
+import * as SchemaAST from "effect/SchemaAST";
 import {
   DEFAULT_SERVER_SETTINGS,
   ModelSelection,
@@ -65,6 +67,11 @@ export {
 const encodeServerSettings = Schema.encodeEffect(ServerSettings);
 const encodeServerSettingsJson = Schema.encodeUnknownEffect(fromJsonStringPretty(ServerSettings));
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
+const decodeRawSettingsRecord = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+);
+const decodeSettingsJsonValue = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+const encodeRetainedSettingsJson = Schema.encodeEffect(fromJsonStringPretty(Schema.Unknown));
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -592,7 +599,13 @@ const make = Effect.gen(function* () {
     ),
   );
 
+  let settingsReadIdentity: string | undefined;
   const readRawConfig = fs.readFileString(settingsPath).pipe(
+    Effect.tap((raw) =>
+      Effect.sync(() => {
+        settingsReadIdentity = raw;
+      }),
+    ),
     Effect.mapError(
       (cause) =>
         new ServerSettingsError({
@@ -604,17 +617,56 @@ const make = Effect.gen(function* () {
   );
 
   const writeSettingsAtomically = Effect.fnUntraced(
-    function* (settings: ServerSettings) {
+    function* (
+      settings: ServerSettings,
+      retiredFields: readonly ("providers" | "bitbucket" | "github")[] = [],
+    ) {
+      const expectedIdentity = settingsReadIdentity;
       const sparseSettingsJson = yield* encodeServerSettingsJson(
         stripDefaultServerSettings(settings, DEFAULT_SERVER_SETTINGS) ?? {},
       );
 
+      const persisted = yield* Effect.gen(function* () {
+        if (!(yield* fs.exists(settingsPath))) {
+          if (expectedIdentity !== undefined)
+            return yield* new ServerSettingsError({
+              settingsPath,
+              operation: "write-file",
+              cause: "Settings were removed since the read; reload before writing.",
+            });
+          return {};
+        }
+        const raw = yield* readRawConfig;
+        if (raw !== expectedIdentity)
+          return yield* new ServerSettingsError({
+            settingsPath,
+            operation: "write-file",
+            cause: "Settings changed since the read; reload before writing.",
+          });
+        const decoded = decodeServerSettingsJsonExit(raw);
+        if (Exit.isFailure(decoded)) return yield* Effect.failCause(decoded.cause);
+        return yield* decodeRawSettingsRecord(raw);
+      });
+      const next = yield* decodeSettingsJsonValue(sparseSettingsJson);
+      const retainedSource = { ...persisted };
+      for (const field of retiredFields) delete retainedSource[field];
+      const retained = yield* Effect.try({
+        try: () =>
+          retainNewerSettings(SchemaAST.toEncoded(ServerSettings.ast), retainedSource, next),
+        catch: (cause) => new ServerSettingsError({ settingsPath, operation: "write-file", cause }),
+      });
+      const contents = yield* encodeRetainedSettingsJson(retained);
       return yield* writeFileStringAtomically({
         filePath: settingsPath,
-        contents: `${sparseSettingsJson}\n`,
+        contents: `${contents}\n`,
       }).pipe(
         Effect.provideService(FileSystem.FileSystem, fs),
         Effect.provideService(Path.Path, pathService),
+        Effect.tap(() =>
+          Effect.sync(() => {
+            settingsReadIdentity = `${contents}\n`;
+          }),
+        ),
       );
     },
     Effect.mapError(
@@ -786,7 +838,10 @@ const make = Effect.gen(function* () {
       (settingsFileTrusted && (legacyProviders !== undefined || spectrumWhiteLabel)) ||
       hasLegacySourceControl
     ) {
-      yield* writeSettingsAtomically(migrated);
+      yield* writeSettingsAtomically(migrated, [
+        ...(legacyProviders === undefined ? [] : (["providers"] as const)),
+        ...(hasLegacySourceControl ? (["bitbucket", "github"] as const) : []),
+      ]);
       for (const move of sourceControlMigration.secretMoves) {
         yield* secretStore.remove(move.from).pipe(Effect.ignore);
       }
@@ -1019,6 +1074,7 @@ const make = Effect.gen(function* () {
             }
             const writeExit = yield* Effect.exit(writeSettingsAtomically(next));
             if (Exit.isFailure(writeExit)) {
+              yield* Cache.invalidate(settingsCache, cacheKey);
               yield* rollbackSecretChanges;
               return yield* Effect.failCause(writeExit.cause);
             }

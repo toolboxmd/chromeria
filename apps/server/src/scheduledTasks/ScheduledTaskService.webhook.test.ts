@@ -14,6 +14,7 @@ import * as Metric from "effect/Metric";
 import * as Queue from "effect/Queue";
 import * as EffectScheduler from "effect/Scheduler";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
@@ -67,10 +68,12 @@ const withService = <A, E>(
     readonly service: ScheduledTaskService.ScheduledTaskService["Service"];
     readonly launches: Queue.Queue<LaunchInput>;
     readonly secretsByRef: Map<string, string>;
+    readonly sql: SqlClient.SqlClient;
   }) => Effect.Effect<A, E, never>,
   options: { readonly gate?: Deferred.Deferred<void>; readonly relayHookBaseUrl?: string } = {},
 ) =>
   Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     const launches = yield* Queue.unbounded<LaunchInput>();
     const secretsByRef = new Map<string, string>();
     const layerDependencies = Layer.mergeAll(
@@ -100,7 +103,7 @@ const withService = <A, E>(
     );
     return yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
-      return yield* body({ service, launches, secretsByRef });
+      return yield* body({ service, launches, secretsByRef, sql });
     }).pipe(
       Effect.provide(
         ScheduledTaskService.layer.pipe(
@@ -110,6 +113,99 @@ const withService = <A, E>(
       ),
     );
   }).pipe(Effect.provide(SqlitePersistence.layerMemory));
+
+it.effect(
+  "rollback schedule saves retain filters and clear stale delivery correlation on an ordinary run",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`ALTER TABLE scheduled_tasks ADD COLUMN last_run_webhook_delivery_id TEXT`;
+      yield* withService(({ service }) =>
+        Effect.gen(function* () {
+          const { task } = yield* service.upsert(yield* webhookTaskInput());
+          yield* sql`UPDATE scheduled_tasks SET schedule_json = json_set(schedule_json, '$.dedupe', json('{"coalesceWindowSeconds":120}'), '$.filters', json('[{"path":"action","op":"equals","value":"opened"}]')), last_run_webhook_delivery_id = 'newer:delivery' WHERE task_id = ${task.id}`;
+          yield* service.upsert(yield* webhookTaskInput({ title: "Edited" }));
+          const [saved] = yield* sql<{
+            schedule_json: string;
+          }>`SELECT schedule_json FROM scheduled_tasks WHERE task_id = ${task.id}`;
+          assert.deepEqual(JSON.parse(saved!.schedule_json).dedupe, { coalesceWindowSeconds: 120 });
+          assert.deepEqual(JSON.parse(saved!.schedule_json).filters, [
+            { path: "action", op: "equals", value: "opened" },
+          ]);
+          assert.equal(
+            (yield* service.triggerWebhook(requestFor(task)).pipe(Effect.result))._tag,
+            "Failure",
+          );
+          yield* service.upsert(
+            yield* webhookTaskInput({ schedule: { type: "interval", everyMs: 60000 } }),
+          );
+          yield* service.runNow({ id: task.id });
+          const [running] = yield* sql<{
+            last_run_webhook_delivery_id: string | null;
+          }>`SELECT last_run_webhook_delivery_id FROM scheduled_tasks WHERE task_id = ${task.id}`;
+          assert.isNull(running!.last_run_webhook_delivery_id);
+        }),
+      );
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect.each(["pending", "dispatching", "running", "completed", "failed"])(
+  "rollback defers newer %s delivery rows without completing or deleting them",
+  (state) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`ALTER TABLE scheduled_tasks ADD COLUMN last_run_webhook_delivery_id TEXT`;
+      yield* sql`CREATE TABLE scheduled_task_webhook_pending (delivery_id TEXT PRIMARY KEY,task_id TEXT,coalesce_key TEXT,due_at INTEGER,state TEXT,task_json TEXT,request_json TEXT,delivery_ids_json TEXT)`;
+      yield* sql`CREATE TABLE scheduled_task_webhook_replay_keys (task_id TEXT,replay_key TEXT,delivery_id TEXT,expires_at INTEGER)`;
+      yield* withService(({ service }) =>
+        Effect.gen(function* () {
+          const { task } = yield* service.upsert(yield* webhookTaskInput());
+          yield* sql`UPDATE scheduled_tasks SET last_run_status = 'running', last_run_webhook_delivery_id = 'newer:pending' WHERE task_id = ${task.id}`;
+          yield* sql`INSERT INTO scheduled_task_webhook_pending VALUES ('newer:pending',${task.id},'fixture',0,${state},${JSON.stringify(task)},'{"fixture":true}','["newer:pending"]')`;
+        }),
+      );
+      const before = yield* sql`SELECT * FROM scheduled_task_webhook_pending`;
+      yield* withService(({ service, launches }) =>
+        Effect.gen(function* () {
+          assert.equal((yield* service.list()).tasks[0]!.lastRunStatus, "running");
+          const task = (yield* service.list()).tasks[0]!;
+          assert.equal(
+            (yield* service.triggerWebhook(requestFor(task)).pipe(Effect.result))._tag,
+            "Failure",
+          );
+          assert.equal(
+            (yield* service.delete({ id: task.id }).pipe(Effect.result))._tag,
+            "Failure",
+          );
+          const { task: ordinary } = yield* service.upsert(
+            yield* webhookTaskInput({
+              id: "scheduled-task:ordinary",
+              schedule: { type: "interval", everyMs: 60000 },
+            }),
+          );
+          yield* service.runNow({ id: ordinary.id });
+          assert.isDefined(yield* Queue.take(launches));
+          yield* sql`INSERT INTO scheduled_task_webhook_replay_keys VALUES (${ordinary.id}, 'fixture:key', 'fixture:delivery', 9999999999999)`;
+          assert.equal(
+            (yield* service.delete({ id: ordinary.id }).pipe(Effect.result))._tag,
+            "Failure",
+          );
+          assert.equal(
+            (yield* sql`SELECT * FROM scheduled_task_webhook_replay_keys WHERE task_id = ${ordinary.id}`)
+              .length,
+            1,
+          );
+        }),
+      );
+      assert.deepEqual(yield* sql`SELECT * FROM scheduled_task_webhook_pending`, before);
+      const [task] = yield* sql<{
+        last_run_status: string;
+        last_run_webhook_delivery_id: string;
+      }>`SELECT last_run_status,last_run_webhook_delivery_id FROM scheduled_tasks WHERE task_id = 'scheduled-task:hook'`;
+      assert.equal(task!.last_run_status, "running");
+      assert.equal(task!.last_run_webhook_delivery_id, "newer:pending");
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
 
 it.effect("dispatches exactly the rendered prompt and logs the delivery", () =>
   withService(({ service, launches }) =>
@@ -330,15 +426,15 @@ it.effect("a save carrying a stale token cannot undo a rotation", () =>
   ),
 );
 
-it.effect("keeps the newest 50 deliveries when they share a timestamp", () =>
-  withService(({ service }) =>
+it.effect("rollback preserves all delivery history when timestamps match", () =>
+  withService(({ service, sql }) =>
     Effect.gen(function* () {
       const { task } = yield* service.upsert(yield* webhookTaskInput({ enabled: false }));
       const ids = yield* Effect.forEach(Array.from({ length: 55 }), (_, index) =>
         service.triggerWebhook(requestFor(task, { query: `n=${index}` })).pipe(Effect.as(index)),
       );
       const { deliveries } = yield* service.listWebhookDeliveries({ id: task.id });
-      assert.equal(deliveries.length, 50);
+      assert.equal(deliveries.length, 55);
       const first = yield* service.getWebhookDelivery({
         id: task.id,
         deliveryId: deliveries[0]!.id,
@@ -348,7 +444,20 @@ it.effect("keeps the newest 50 deliveries when they share a timestamp", () =>
         deliveryId: deliveries.at(-1)!.id,
       });
       assert.equal(first.delivery.query, `n=${ids.at(-1)}`);
-      assert.equal(last.delivery.query, "n=5");
+      assert.equal(last.delivery.query, "n=0");
+      yield* sql`UPDATE scheduled_task_webhook_deliveries SET outcome = 'coalesced' WHERE delivery_id = ${last.delivery.id}`;
+      assert.equal((yield* service.listWebhookDeliveries({ id: task.id })).deliveries.length, 54);
+      assert.equal(
+        (yield* service
+          .getWebhookDelivery({ id: task.id, deliveryId: last.delivery.id })
+          .pipe(Effect.result))._tag,
+        "Failure",
+      );
+      assert.equal(
+        (yield* sql`SELECT * FROM scheduled_task_webhook_deliveries WHERE task_id = ${task.id}`)
+          .length,
+        55,
+      );
     }),
   ),
 );
@@ -701,13 +810,14 @@ it.effect("runs a held request of any age when no max age is set", () =>
   ),
 );
 
-it.effect("deleting a task removes its delivery log", () =>
+it.effect("rollback refuses task deletion that would erase delivery history", () =>
   withService(({ service }) =>
     Effect.gen(function* () {
       const { task } = yield* service.upsert(yield* webhookTaskInput({ enabled: false }));
       yield* service.triggerWebhook(requestFor(task));
-      yield* service.delete({ id: task.id });
-      assert.equal((yield* service.listWebhookDeliveries({ id: task.id })).deliveries.length, 0);
+      assert.equal((yield* service.delete({ id: task.id }).pipe(Effect.result))._tag, "Failure");
+      assert.equal((yield* service.listWebhookDeliveries({ id: task.id })).deliveries.length, 1);
+      assert.isFalse((yield* service.list()).tasks[0]!.enabled);
     }),
   ),
 );
