@@ -110,6 +110,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         const service = yield* ServerSettingsModule.ServerSettingsService;
         const config = yield* ServerConfig.ServerConfig;
         const fs = yield* FileSystem.FileSystem;
+        const secrets = yield* ServerSecretStore.ServerSecretStore;
         yield* fs.writeFileString(
           config.settingsPath,
           JSON.stringify({
@@ -165,6 +166,61 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           JSON.parse(yield* fs.readFileString(config.settingsPath))
             .continueThreadsAfterServerUpdate,
         );
+        const secretName = sourceControlHostSecretName({
+          kind: "github",
+          field: "tokens",
+          serverHost: "github.com",
+        });
+        yield* service.updateSettings({
+          sourceControlHosts: { github: { tokens: { "github.com": "s4-kept-secret" } } },
+        });
+        const keptSecret = yield* secrets.get(secretName);
+        assert.equal(new TextDecoder().decode(Option.getOrThrow(keptSecret)), "s4-kept-secret");
+        yield* fs.remove(config.settingsPath);
+        const removed = yield* service
+          .updateSettings({
+            responseStreamingMode: "turn",
+            sourceControlHosts: { github: { tokens: { "github.com": "s4-staged-secret" } } },
+          })
+          .pipe(Effect.flip);
+        assert.include(
+          JSON.stringify(removed),
+          "Settings were removed since the read; reload before writing.",
+        );
+        assert.isFalse(yield* fs.exists(config.settingsPath));
+        assert.deepEqual(yield* secrets.get(secretName), keptSecret);
+        assert.equal(
+          (yield* service.getSettings).responseStreamingMode,
+          DEFAULT_SERVER_SETTINGS.responseStreamingMode,
+        );
+        assert.isFalse(yield* fs.exists(config.settingsPath));
+        yield* service.updateSettings({ responseStreamingMode: "turn" });
+        assert.equal(
+          JSON.parse(yield* fs.readFileString(config.settingsPath)).responseStreamingMode,
+          "turn",
+        );
+        assert.deepEqual(yield* secrets.get(secretName), keptSecret);
+
+        yield* fs.remove(config.settingsPath);
+        assert.equal(
+          (yield* service.updateSettings({ responseStreamingMode: "turn" }).pipe(Effect.result))
+            ._tag,
+          "Failure",
+        );
+        yield* service.getSettings;
+        const replacement = JSON.stringify({
+          projectSettingsFolded: true,
+          guestSharingEnabled: true,
+          threadTitleInstructions: "S4 external replacement",
+        });
+        yield* fs.writeFileString(config.settingsPath, replacement);
+        assert.equal(
+          (yield* service.updateSettings({ responseStreamingMode: "turn" }).pipe(Effect.result))
+            ._tag,
+          "Failure",
+        );
+        assert.equal(yield* fs.readFileString(config.settingsPath), replacement);
+        assert.deepEqual(yield* secrets.get(secretName), keptSecret);
         const broken = '{"deviceHosts":[{"id":"invalid:id"}],"guestSharingEnabled":false}';
         yield* fs.writeFileString(config.settingsPath, broken);
         assert.equal(
@@ -173,7 +229,15 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           "Failure",
         );
         assert.equal(yield* fs.readFileString(config.settingsPath), broken);
-      }).pipe(Effect.provide(layerServerSettings())),
+        yield* service.getSettings;
+        assert.equal(
+          (yield* service.updateSettings({ responseStreamingMode: "turn" }).pipe(Effect.result))
+            ._tag,
+          "Failure",
+        );
+        assert.equal(yield* fs.readFileString(config.settingsPath), broken);
+        assert.deepEqual(yield* secrets.get(secretName), keptSecret);
+      }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
   );
 
   it.effect(

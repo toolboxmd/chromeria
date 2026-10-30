@@ -754,6 +754,8 @@ const make = Effect.gen(function* () {
       } else {
         settings = decoded.value;
       }
+    } else {
+      settingsReadIdentity = undefined;
     }
 
     const providerHistory = yield* sql<{
