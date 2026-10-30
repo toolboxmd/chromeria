@@ -600,7 +600,14 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/server/src/project/AgentSessionScanner.test.ts",
     "apps/server/src/project/AgentSessionScanner.ts",
     "apps/server/src/ws.test.ts",
-    "packages/contracts/src/agentSessions.ts"
+    "packages/contracts/src/agentSessions.ts",
+    "apps/server/src/persistence/DatabaseMaintenance.test.ts",
+    "apps/server/src/orchestration-v2/CheckpointCaptureService.test.ts",
+    "apps/server/src/storageCleanup.ts",
+    "apps/server/src/storageCleanup.test.ts",
+    "apps/server/src/persistence/DatabaseMaintenance.ts",
+    "packages/shared/src/atomicWrite.ts",
+    "packages/shared/src/atomicWrite.test.ts"
   ],
   "sharedFiles": [
     "apps/server/src/orchestration-v2/FoundationPersistence.test.ts",

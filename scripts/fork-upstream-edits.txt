@@ -689,3 +689,12 @@ apps/server/src/project/AgentSessionScanner.test.ts
 apps/server/src/project/AgentSessionScanner.ts
 apps/server/src/ws.test.ts
 packages/contracts/src/agentSessions.ts
+
+# Issue #620: existing maintenance/read regression seams and pinned forward Git error fix.
+apps/server/src/persistence/DatabaseMaintenance.test.ts
+apps/server/src/orchestration-v2/CheckpointCaptureService.test.ts
+apps/server/src/storageCleanup.ts
+apps/server/src/storageCleanup.test.ts
+apps/server/src/persistence/DatabaseMaintenance.ts
+packages/shared/src/atomicWrite.ts
+packages/shared/src/atomicWrite.test.ts

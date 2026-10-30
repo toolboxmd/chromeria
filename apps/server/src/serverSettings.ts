@@ -38,7 +38,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
-import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
+import { ConditionalWriteError, writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { resolveSymlinkTarget } from "@t3tools/shared/symlink";
 import * as ServerConfig from "./config.ts";
 import { type DeepPartial, deepMerge } from "@t3tools/shared/Struct";
@@ -64,6 +64,7 @@ export {
   resolveSourceControlWriterModelSelection,
 } from "@t3tools/shared/serverSettings";
 
+const isConditionalWriteError = Schema.is(ConditionalWriteError);
 const encodeServerSettings = Schema.encodeEffect(ServerSettings);
 const encodeServerSettingsJson = Schema.encodeUnknownEffect(fromJsonStringPretty(ServerSettings));
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
@@ -659,6 +660,7 @@ const make = Effect.gen(function* () {
       return yield* writeFileStringAtomically({
         filePath: settingsPath,
         contents: `${contents}\n`,
+        expectedContents: expectedIdentity ?? null,
       }).pipe(
         Effect.provideService(FileSystem.FileSystem, fs),
         Effect.provideService(Path.Path, pathService),
@@ -669,6 +671,14 @@ const make = Effect.gen(function* () {
         ),
       );
     },
+    Effect.tapError((cause) =>
+      isConditionalWriteError(cause)
+        ? Effect.logWarning("Conditional settings replacement refused", {
+            settingsPath,
+            recoveryDirectory: cause.recoveryDirectory,
+          })
+        : Effect.void,
+    ),
     Effect.mapError(
       (cause) =>
         new ServerSettingsError({

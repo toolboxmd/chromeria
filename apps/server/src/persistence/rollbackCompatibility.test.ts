@@ -74,6 +74,46 @@ it("rollback PR retention follows link/watch identity, head reset, end and remov
       },
     ],
   });
+  const restartedAt = "2026-10-30T00:01:00Z";
+  const freshWatch = {
+    ...watch,
+    startedAt: restartedAt,
+    remarksThrough: restartedAt,
+    headSha: null,
+  };
+  const resumedWatch = {
+    ...original.pullRequests[0]!.watch,
+    startedAt: restartedAt,
+    remarksThrough: restartedAt,
+  };
+  const resumed = retainNewerFields(
+    threadAst,
+    ended,
+    { id: "thread:one", updatedAt: restartedAt, pullRequests: [{ ...link, watch: freshWatch }] },
+    [],
+    restartedAt,
+  );
+  assert.deepEqual(resumed, {
+    id: "thread:one",
+    updatedAt: restartedAt,
+    pullRequests: [{ ...link, repositoryWebUrl: "https://fixture.invalid", watch: resumedWatch }],
+  });
+  assert.deepEqual(
+    retainNewerFields(
+      threadAst,
+      resumed,
+      { id: "thread:one", updatedAt: restartedAt, pullRequests: [link] },
+      [],
+      restartedAt,
+    ),
+    {
+      id: "thread:one",
+      updatedAt: restartedAt,
+      pullRequests: [
+        { ...link, repositoryWebUrl: "https://fixture.invalid", endedWatch: resumedWatch },
+      ],
+    },
+  );
   const moved = retainNewerFields(
     threadAst,
     original,

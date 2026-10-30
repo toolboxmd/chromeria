@@ -193,6 +193,14 @@ it.effect("rollback reads hide newer items without losing their identity or ordi
     const sql = yield* SqlClient.SqlClient;
     const events = yield* DurableEvents.OrchestrationEventStore;
     const threadId = yield* addRolledBackRecoveryCandidate("rollback-readable");
+    const initial = yield* store.getThreadProjection(threadId);
+    yield* store.apply({
+      id: EventId.make("event:rollback-readable:running"),
+      type: "run.updated",
+      threadId,
+      occurredAt: initial.updatedAt,
+      payload: { ...initial.runs[0]!, status: "running", completedAt: null },
+    });
     yield* sql`INSERT INTO orchestration_v2_projection_turn_items
       (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json)
       SELECT 'future:item', thread_id, run_id, 2, 'link_request', 'waiting', updated_at,
@@ -205,6 +213,61 @@ it.effect("rollback reads hide newer items without losing their identity or ordi
     assert.isNull(yield* store.getTurnItem({ threadId, itemId: TurnItemId.make("future:item") }));
     assert.equal(yield* store.getNextTurnItemOrdinal(threadId), 3);
     const item = projection.turnItems[0]!;
+    yield* store.apply({
+      id: EventId.make("event:rollback-readable:last"),
+      type: "turn-item.updated",
+      threadId,
+      occurredAt: projection.updatedAt,
+      payload: { ...item, id: TurnItemId.make("known:last"), ordinal: 3 },
+    });
+    assert.equal(yield* store.getNextTurnItemOrdinal(threadId), 4);
+    const firstPage = yield* store.getTimelinePage(threadId, {
+      view: "activity",
+      limit: 1,
+      afterPosition: -1,
+    });
+    assert.equal(firstPage.totalItems, 2);
+    assert.isTrue(firstPage.hasMore);
+    assert.equal(firstPage.items[0]!.sourceItemId, item.id);
+    const secondPage = yield* store.getTimelinePage(threadId, {
+      view: "activity",
+      limit: 1,
+      afterPosition: firstPage.items[0]!.position,
+    });
+    assert.equal(secondPage.items[0]!.sourceItemId, "known:last");
+    assert.isFalse(secondPage.hasMore);
+    assert.lengthOf(
+      (yield* store.getTimelinePage(threadId, {
+        view: "activity",
+        limit: 10,
+        itemId: TurnItemId.make("future:item"),
+      })).items,
+      0,
+    );
+    const forkId = ThreadId.make("thread:rollback-readable:fork");
+    yield* store.apply({
+      id: EventId.make("event:rollback-readable:fork"),
+      type: "thread.created",
+      threadId: forkId,
+      occurredAt: projection.updatedAt,
+      payload: {
+        ...projection.thread,
+        id: forkId,
+        forkedFrom: { type: "run", threadId, runId: projection.runs[0]!.id },
+      },
+    });
+    const inherited = yield* store.getTimelinePage(forkId, {
+      view: "activity",
+      limit: 10,
+      afterPosition: -1,
+    });
+    assert.deepEqual(
+      inherited.items
+        .filter((row) => row.visibility === "inherited")
+        .map((row) => row.sourceItemId),
+      [item.id, "known:last"],
+    );
+    assert.isFalse(inherited.items.some((row) => row.sourceItemId === "future:item"));
     const attempted = yield* store
       .apply({
         id: EventId.make("event:rollback-fenced"),
@@ -246,6 +309,17 @@ it.effect("rollback reads hide newer items without losing their identity or ordi
     );
     yield* sql`UPDATE orchestration_v2_projection_turn_items SET payload_json = '{"type":"command_execution"}' WHERE turn_item_id = 'future:item'`;
     assert.equal((yield* store.getThreadProjection(threadId).pipe(Effect.result))._tag, "Failure");
+    yield* sql`UPDATE orchestration_v2_projection_turn_items SET payload_json = '{"type":"command_execution"}' WHERE turn_item_id = ${item.id}`;
+    assert.equal(
+      (yield* store.getTimelinePage(threadId, { view: "activity", limit: 10 }).pipe(Effect.result))
+        ._tag,
+      "Failure",
+    );
+    assert.equal(
+      (yield* store.getTimelinePage(forkId, { view: "activity", limit: 10 }).pipe(Effect.result))
+        ._tag,
+      "Failure",
+    );
   }).pipe(
     Effect.provide(
       Layer.merge(

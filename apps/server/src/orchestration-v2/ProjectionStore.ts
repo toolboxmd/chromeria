@@ -1,6 +1,7 @@
 import {
   decodeReadableTurnItem,
   knownTurnItemTypes,
+  isUnknownTurnItem,
   makeRetainedPayloads,
 } from "../persistence/rollbackCompatibility.ts";
 import { NativeExecutionSegment } from "@t3tools/contracts";
@@ -5329,16 +5330,18 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           CASE WHEN type IN ('user_message', 'assistant_message') THEN json_extract(payload_json, '$.messageId') END AS message_id
         FROM orchestration_v2_projection_turn_items WHERE thread_id = ${threadId}
         ORDER BY ordinal ASC, turn_item_id ASC`;
-        const items: Array<TimelineIndexItem> = rows.map((row) => ({
-          id: TurnItemId.make(row.turn_item_id),
-          threadId,
-          runId: row.run_id === null ? null : RunId.make(row.run_id),
-          nodeId: row.node_id === null ? null : NodeId.make(row.node_id),
-          type: row.type,
-          ...(row.input_intent === null ? {} : { inputIntent: row.input_intent }),
-          ...(row.created_by === null ? {} : { createdBy: row.created_by }),
-          ...(row.message_id === null ? {} : { messageId: MessageId.make(row.message_id) }),
-        }));
+        const items: Array<TimelineIndexItem> = rows
+          .filter((row) => !isUnknownTurnItem({ type: row.type }))
+          .map((row) => ({
+            id: TurnItemId.make(row.turn_item_id),
+            threadId,
+            runId: row.run_id === null ? null : RunId.make(row.run_id),
+            nodeId: row.node_id === null ? null : NodeId.make(row.node_id),
+            type: row.type,
+            ...(row.input_intent === null ? {} : { inputIntent: row.input_intent }),
+            ...(row.created_by === null ? {} : { createdBy: row.created_by }),
+            ...(row.message_id === null ? {} : { messageId: MessageId.make(row.message_id) }),
+          }));
         const local: Array<TimelineIndexRow> = items.map((item) => ({
           sourceThreadId: threadId,
           sourceItemId: item.id,

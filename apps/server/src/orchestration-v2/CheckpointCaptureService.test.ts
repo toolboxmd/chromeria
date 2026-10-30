@@ -257,13 +257,31 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
           VALUES ('obsolete-history', ${threadId}, ${runId}, ${rootNodeId}, NULL, NULL,
             NULL, 1, 'assistant_message', 'completed', ${DateTime.formatIso(now)}, '{"obsolete":true}')`;
         yield* sql`UPDATE orchestration_v2_projection_checkpoints
-          SET payload_json = json_set(payload_json, '$.files', 'obsolete file summary')
+          SET payload_json = json_set(payload_json, '$.files', 'obsolete file summary', '$.newerCheckpointFact', 'retained')
           WHERE checkpoint_id = ${readyBaseline.id}`;
         assert.equal(
           (yield* Effect.exit(projectionStore.getThreadProjection(threadId)))._tag,
           "Failure",
         );
 
+        const beforeMalformed =
+          yield* sql`SELECT payload_json FROM orchestration_v2_projection_checkpoints WHERE checkpoint_id = ${readyBaseline.id}`;
+        assert.equal(
+          (yield* projectionStore
+            .apply({
+              id: EventId.make("event:checkpoint-capture:malformed-incoming"),
+              type: "checkpoint.captured",
+              threadId,
+              occurredAt: now,
+              payload: { ...readyBaseline, files: "malformed incoming files" as never },
+            })
+            .pipe(Effect.result))._tag,
+          "Failure",
+        );
+        assert.deepEqual(
+          yield* sql`SELECT payload_json FROM orchestration_v2_projection_checkpoints WHERE checkpoint_id = ${readyBaseline.id}`,
+          beforeMalformed,
+        );
         const committed = yield* Ref.make<ReadonlyArray<OrchestrationV2DomainEvent>>([]);
         const layerCapture = CheckpointCaptureService.layer.pipe(
           Layer.provide(
@@ -322,6 +340,11 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
             .pipe(Effect.flip);
           assert.instanceOf(incomplete, CheckpointCaptureService.CheckpointCaptureExecutionError);
           yield* service.execute({ threadId, runId, scopeId });
+          const [baselineFacts] = yield* sql<{
+            payload_json: string;
+          }>`SELECT payload_json FROM orchestration_v2_projection_checkpoints WHERE checkpoint_id = ${readyBaseline.id}`;
+          assert.equal(JSON.parse(baselineFacts!.payload_json).newerCheckpointFact, "retained");
+          assert.equal(JSON.parse(baselineFacts!.payload_json).files, "obsolete file summary");
 
           const events = yield* Ref.get(committed);
           const runUpdated = events.find((event) => event.type === "run.updated");

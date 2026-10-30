@@ -754,7 +754,9 @@ export const layer = Layer.effect(
         )
         .pipe(
           Effect.mapError((cause) =>
-            taskError("Could not save schedule task.", { taskId: task.id, cause }),
+            isScheduledTaskError(cause)
+              ? cause
+              : taskError("Could not save schedule task.", { taskId: task.id, cause }),
           ),
         );
 

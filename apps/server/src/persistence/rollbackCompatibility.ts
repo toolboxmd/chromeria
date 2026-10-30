@@ -124,12 +124,29 @@ function retainWatch(
   retained: Record<string, unknown>,
   at: unknown,
 ) {
-  if (!object(stored.watch)) return retained;
-  if (!object(next.watch)) return { ...retained, endedWatch: stored.watch };
-  const watch = decodeObject(retained.watch);
+  if (!object(next.watch))
+    return object(stored.watch) ? { ...retained, endedWatch: stored.watch } : retained;
+  const { endedWatch: _ended, ...active } = retained;
+  const watch = decodeObject(active.watch);
+  if (!object(stored.watch)) {
+    if (!object(stored.endedWatch)) return active;
+    const resumed = new Map(Object.entries(watch));
+    for (const key of [
+      "headSha",
+      "failedChecks",
+      "passed",
+      "passedChecks",
+      "conflicting",
+      "owedChecks",
+      "checksAwaitedSince",
+    ]) {
+      if (Object.hasOwn(stored.endedWatch, key)) resumed.set(key, stored.endedWatch[key]);
+    }
+    return { ...active, watch: Object.fromEntries(resumed) };
+  }
   if (stored.watch.startedAt !== next.watch.startedAt) {
     const { owedChecks: _owed, checksAwaitedSince: _since, ...fresh } = watch;
-    return { ...retained, endedWatch: stored.watch, watch: fresh };
+    return { ...active, watch: fresh };
   }
   if (stored.watch.headSha !== next.watch.headSha) {
     const hasChecks =
@@ -139,7 +156,7 @@ function retainWatch(
         next.snapshot.checksState != null &&
         next.snapshot.checksState !== "none");
     return {
-      ...retained,
+      ...active,
       watch: {
         ...watch,
         owedChecks: [],
@@ -149,7 +166,7 @@ function retainWatch(
       },
     };
   }
-  return retained;
+  return active;
 }
 
 export function retainNewerFields(
@@ -313,7 +330,8 @@ export const makeRetainedPayloads = (sql: SqlClient.SqlClient) => {
         }),
       );
     }
-    if (stored !== undefined) yield* owner.decode(stored);
+    // Retention examines raw prior facts; unrelated obsolete known fields may be replaced.
+    if (typeof next.id === "string") yield* owner.decode(next);
     if (
       object(stored) &&
       object(stored.remoteChild) &&
@@ -456,8 +474,16 @@ export const makeRetainedPayloads = (sql: SqlClient.SqlClient) => {
       });
     }
     if (typeof next.id !== "string") return encoded;
+    // Resume also restores known PR fields; project the committed link state after old decoding.
+    const incoming =
+      durable !== undefined &&
+      type.startsWith("thread.") &&
+      object(baseline) &&
+      Array.isArray(baseline.pullRequests)
+        ? { ...next, pullRequests: baseline.pullRequests }
+        : next;
     let retained = decodeObject(
-      yield* retainValue(owner.ast, baseline, next, [], context.occurredAt ?? next.updatedAt),
+      yield* retainValue(owner.ast, baseline, incoming, [], context.occurredAt ?? next.updatedAt),
     );
     if (type.startsWith("thread.") && (next.archivedAt != null || next.deletedAt != null))
       retained = { ...retained, guestShare: null };
