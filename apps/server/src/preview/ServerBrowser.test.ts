@@ -1455,9 +1455,13 @@ it.effect.each([
     Effect.gen(function* () {
       const { browser, tabId } = yield* ready;
       let authorized = true;
+      let pauseAuthorization: (() => Promise<void>) | undefined;
       const viewer = yield* browser.attachViewer({
         ...viewerInput(tabId, true),
         authorize: async () => {
+          const pause = pauseAuthorization;
+          pauseAuthorization = undefined;
+          await pause?.();
           if (!authorized) throw new Error("grant revoked");
         },
       });
@@ -1528,6 +1532,44 @@ it.effect.each([
       expect(session.send.mock.calls.filter(([method]) => method.startsWith("Input."))).toEqual([
         ["Input.insertText", { text: "active" }],
       ]);
+      yield* viewer.input(input);
+      expect(session.send).toHaveBeenCalledWith(
+        "Input.dispatchMouseEvent",
+        expect.objectContaining({ x: 7 }),
+      );
+      session.send.mockClear();
+      const authorizing = Promise.withResolvers<void>();
+      const proceed = Promise.withResolvers<void>();
+      yield* Effect.addFinalizer(() => Effect.sync(() => proceed.resolve()));
+      pauseAuthorization = async () => {
+        authorizing.resolve();
+        await proceed.promise;
+      };
+      const authorizingInput = yield* viewer
+        .input(input)
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      yield* Effect.promise(() => authorizing.promise);
+      yield* Queue.clear(viewer.output);
+      const releaseDuringAuthorization = yield* viewer
+        .input({ type: "releaseControl" })
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      expect(yield* Queue.take(viewer.output)).toMatchObject({
+        _tag: "control",
+        controller: "agent",
+      });
+      const retakeDuringAuthorization = yield* viewer
+        .input({ type: "takeControl" })
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      expect(yield* Queue.take(viewer.output)).toMatchObject({
+        _tag: "control",
+        controller: "you",
+      });
+      proceed.resolve();
+      yield* Effect.forEach(
+        [authorizingInput, releaseDuringAuthorization, retakeDuringAuthorization],
+        Fiber.join,
+      );
+      expect(session.send.mock.calls.filter(([method]) => method.startsWith("Input."))).toEqual([]);
       yield* viewer.input(input);
       expect(session.send).toHaveBeenCalledWith(
         "Input.dispatchMouseEvent",
@@ -2742,11 +2784,12 @@ it.effect.each(["desktop", "context", "cdp"] as const)(
           runtime: "server",
           ...(stage === "desktop" ? {} : { profileId: "incognito" }),
           authorize: async () => {
-            const acquired = stage === "desktop"
-              ? desktopConnections.length > 0
-              : stage === "context"
-                ? contexts.length > 0
-                : (contexts.at(-1)?.sessions.length ?? 0) > 0;
+            const acquired =
+              stage === "desktop"
+                ? desktopConnections.length > 0
+                : stage === "context"
+                  ? contexts.length > 0
+                  : (contexts.at(-1)?.sessions.length ?? 0) > 0;
             if (acquired) {
               refused.resolve();
               throw new Error("setup grant revoked");
@@ -2754,7 +2797,9 @@ it.effect.each(["desktop", "context", "cdp"] as const)(
           },
         });
         yield* Effect.promise(() => refused.promise);
-        expect(yield* browser.attachViewer(viewerInput(snapshot.tabId, false)).pipe(Effect.result)).toMatchObject({
+        expect(
+          yield* browser.attachViewer(viewerInput(snapshot.tabId, false)).pipe(Effect.result),
+        ).toMatchObject({
           _tag: "Failure",
           failure: { _tag: "ServerBrowserLaunchError" },
         });

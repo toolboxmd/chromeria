@@ -1077,35 +1077,38 @@ const make = Effect.gen(function* () {
     await authorize();
     const adopted = adoptedPages.get(tabKey(snapshot.threadId, snapshot.tabId));
     adoptedPages.delete(tabKey(snapshot.threadId, snapshot.tabId));
-    const desktop =
-      adopted === undefined && (await desktopRenders(snapshot))
-        ? await connectDesktop(snapshot)
-        : null;
-    // Otherwise a desktop that attaches late shows its own page, and the agent drives another.
-    if (!desktop && desktopChannel.available) {
-      await runPromise(
-        manager
-          .markHeadless({ threadId: ThreadId.make(snapshot.threadId), tabId: snapshot.tabId })
-          .pipe(Effect.ignore),
-      );
-    }
-    const isolatedContext =
-      adopted === undefined &&
-      desktop === null &&
-      ((snapshot.automationOwner !== undefined && snapshot.profileId === undefined) ||
-        snapshot.profileId === INCOGNITO_BROWSER_PROFILE_ID);
-    await authorize();
-    const context =
-      adopted?.page.context() ??
-      desktop?.page.context() ??
-      (await contexts.contextFor(
-        snapshot.profileId ?? "default",
-        isolatedContext ? tabKey(snapshot.threadId, snapshot.tabId) : undefined,
-      ));
-    let pendingPage: Page | undefined;
+    let desktop: Awaited<ReturnType<typeof connectDesktop>> | null = null;
+    let context: BrowserContext | undefined;
+    let isolatedContext = false;
+    let pendingPage: Page | undefined = adopted?.page;
     let pendingCdp: CDPSession | undefined;
     let createdTab: ServerTab | undefined;
     try {
+      desktop =
+        adopted === undefined && (await desktopRenders(snapshot))
+          ? await connectDesktop(snapshot)
+          : null;
+      // Otherwise a desktop that attaches late shows its own page, and the agent drives another.
+      if (!desktop && desktopChannel.available) {
+        await runPromise(
+          manager
+            .markHeadless({ threadId: ThreadId.make(snapshot.threadId), tabId: snapshot.tabId })
+            .pipe(Effect.ignore),
+        );
+      }
+      isolatedContext =
+        adopted === undefined &&
+        desktop === null &&
+        ((snapshot.automationOwner !== undefined && snapshot.profileId === undefined) ||
+          snapshot.profileId === INCOGNITO_BROWSER_PROFILE_ID);
+      await authorize();
+      context =
+        adopted?.page.context() ??
+        desktop?.page.context() ??
+        (await contexts.contextFor(
+          snapshot.profileId ?? "default",
+          isolatedContext ? tabKey(snapshot.threadId, snapshot.tabId) : undefined,
+        ));
       await authorize();
       if (adopted?.page.isClosed()) throw new Error("The popup closed before it opened.");
       // The desktop page already has its own clipboard.
@@ -1355,7 +1358,7 @@ const make = Effect.gen(function* () {
         await pendingCdp?.detach().catch(constVoid);
         if (desktop) await desktop.close().catch(constVoid);
         else await pendingPage?.close().catch(constVoid);
-        if (isolatedContext) await context.close().catch(constVoid);
+        if (isolatedContext) await context?.close().catch(constVoid);
       }
       throw cause;
     }
@@ -3805,7 +3808,15 @@ const make = Effect.gen(function* () {
                 }),
               );
             } else {
-              await tab.control.human(viewer.id, () => dispatch(message), authorizeInput);
+              await tab.control.human(
+                viewer.id,
+                () => dispatchViewerInput(tab, session, viewer, message, authorize),
+                async () => {
+                  await authorize();
+                  assertCurrentInput();
+                  await authorize();
+                },
+              );
             }
             return;
           }
