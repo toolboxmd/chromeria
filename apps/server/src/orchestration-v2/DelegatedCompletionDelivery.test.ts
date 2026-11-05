@@ -47,6 +47,7 @@ import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
 import * as RuntimeLayer from "./runtimeLayer.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
@@ -1490,6 +1491,7 @@ it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
         (run) => run.userMessageId === delivery.messageId,
       )!;
       const childRun = (yield* orchestrator.getThreadProjection(sibling.childThreadId!)).runs[0]!;
+      assert.equal(childRun.delegatedTaskId, sibling.id);
       const completeSibling = Effect.gen(function* () {
         const afterSequence = yield* sink.latestSequence();
         yield* sink.write({
@@ -1886,7 +1888,37 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
             attachments: [],
             dispatchMode: { type: "queue_after_active" },
           });
-        yield* send("active");
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        const statements: string[] = [];
+        const tracer = Tracer.make({
+          span(options) {
+            const span = new Tracer.NativeSpan(options);
+            const end = span.end.bind(span);
+            span.end = (time, exit) => {
+              end(time, exit);
+              const query = span.attributes.get("db.query.text");
+              if (typeof query === "string") statements.push(query);
+            };
+            return span;
+          },
+        });
+        const read = store.getThreadRecords;
+        const readWithTrace: typeof read = (threadId, fields, filter) => {
+          const records = read(threadId, fields, filter);
+          return threadId === parentThreadId && fields.some((field) => field === "subagents")
+            ? records.pipe(Effect.withTracer(tracer))
+            : records;
+        };
+        yield* Effect.acquireUseRelease(
+          Effect.sync(() => vi.spyOn(store, "getThreadRecords").mockImplementation(readWithTrace)),
+          () => send("active"),
+          (spy) => Effect.sync(() => spy.mockRestore()),
+        );
+        const taskReads = statements.filter((query) =>
+          /SELECT\s+payload_json\s+FROM\s+orchestration_v2_projection_subagents/.test(query),
+        );
+        assert.isNotEmpty(taskReads);
+        assert.isTrue(taskReads.every((query) => query.includes("subagent_id IN")));
         yield* send("queued");
         const before = yield* orchestrator.getThreadProjection(child.childThreadId);
         const active = before.runs.find((run) => run.ordinal === 2)!;
