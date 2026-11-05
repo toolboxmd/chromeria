@@ -2144,11 +2144,16 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
         );
       const tools = toolsFor(schedules);
       const uploadRoutes = ServerHttp.layerAttachmentUploadRoute.pipe(
-        Layer.provide(DocumentText.layer),
-        Layer.provide(Layer.succeedContext(requestContext)),
-        Layer.provide(nodeConfig),
-        Layer.provide(signerLayer),
-        Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+        HttpRouter.provideRequest(
+          Layer.mergeAll(
+            DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+            Layer.succeedContext(requestContext),
+            nodeConfig,
+            signerLayer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
       );
       const lifecycleContext = Context.mergeAll(
         services,
