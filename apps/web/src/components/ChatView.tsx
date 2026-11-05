@@ -29,11 +29,7 @@ import { type TerminalLaunchContext, useChatTerminalActions } from "./chat/useCh
 import { useComposerSend } from "./chat/useComposerSend";
 import { useComposerResume } from "./chat/useComposerResume";
 import { useImplementPlanInNewThread } from "./chat/useProposedPlanSend";
-import {
-  purposeSelectionOf,
-  savedPurposeIntentForScope,
-  type PurposeIntent,
-} from "@t3tools/contracts";
+import { useStartTurnWithPurpose } from "./chat/useStartTurnWithPurpose";
 import { usePromachosInlineCardHost } from "./promachos/PromachosChat";
 import { usePromachosPresentation } from "./promachos/promachosMode";
 import { promachosPicksModel } from "./promachos/promachosStart";
@@ -237,7 +233,6 @@ import { useKnownTerminalSessions, useThreadRunningTerminalIds } from "../state/
 import { useEnvironmentQuery } from "../state/query";
 import { useEnvironmentScope } from "~/state/session";
 import {
-  environmentServerConfigsAtom,
   primaryServerAvailableEditorsAtom,
   primaryServerKeybindingsAtom,
   serverEnvironment,
@@ -447,9 +442,6 @@ export default function ChatView(props: ChatViewProps) {
     reportFailure: false,
   });
   const setThreadInteractionMode = useOrchestrationCommand(threadEnvironment.setInteractionMode, {
-    reportFailure: false,
-  });
-  const dispatchThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
     reportFailure: false,
   });
   const createAttachmentAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, {
@@ -1217,30 +1209,7 @@ export default function ChatView(props: ChatViewProps) {
     (providerEnvironmentId === undefined
       ? undefined
       : providersByEnvironment.get(providerEnvironmentId)) ?? EMPTY_PROVIDERS;
-  const currentPurposeSelection = purposeSelectionOf(activeThread ?? {});
-  const startThreadTurn = useStableCallback((request: Parameters<typeof dispatchThreadTurn>[0]) => {
-    const supportsPurpose =
-      appAtomRegistry
-        .get(environmentServerConfigsAtom)
-        .get(request.environmentId)
-        ?.environment.capabilities.executionPurposeVersions?.includes(1) === true;
-    if (!supportsPurpose || request.input.purposeIntent !== undefined)
-      return dispatchThreadTurn(request);
-    const purposeIntent: PurposeIntent =
-      request.input.manualContinuationOfRunId !== undefined
-        ? { version: 1, intent: { type: "inherit" } }
-        : request.input.dispatchMode === "steer" || request.input.dispatchMode === "restart"
-          ? { version: 1, intent: { type: "target" } }
-          : isServerThread &&
-              request.input.threadId === activeThread?.id &&
-              request.input.bootstrap?.createThread === undefined
-            ? {
-                version: 1,
-                intent: { type: "selection", expectedRevision: currentPurposeSelection.revision },
-              }
-            : savedPurposeIntentForScope(currentPurposeSelection.scope);
-    return dispatchThreadTurn({ ...request, input: { ...request.input, purposeIntent } });
-  });
+  const startThreadTurn = useStartTurnWithPurpose(activeThread, isServerThread);
   const selectedProviderByThreadId = composerActiveProvider ?? null;
   const threadProvider =
     activeThread?.modelSelection.instanceId ??
@@ -2886,8 +2855,10 @@ export default function ChatView(props: ChatViewProps) {
     activeProject,
     activeEnvironmentUnavailable,
     defaultRuntimeMode,
+    startThreadTurn,
   });
   const { onSend } = useComposerSend({
+    startThreadTurn,
     environmentId,
     routeThreadKey,
     currentRouteThreadKeyRef,

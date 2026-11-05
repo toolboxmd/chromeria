@@ -41,11 +41,13 @@ import {
 } from "../ChatView.logic";
 import { draftSendState } from "./chatViewSend";
 import type { useLocalDispatchState } from "./useLocalDispatchState";
+import type { StartTurnWithPurpose } from "./useStartTurnWithPurpose";
 import type { useTimelineFollow } from "./useTimelineFollow";
 
 type LocalDispatchState = ReturnType<typeof useLocalDispatchState>;
 
 interface PlanSendBase {
+  readonly startThreadTurn: StartTurnWithPurpose;
   readonly environmentId: EnvironmentId;
   readonly routeThreadKey: string;
   readonly activeThread: EnvironmentThreadShell | undefined;
@@ -79,6 +81,7 @@ interface PlanFollowUpSendInput extends PlanSendBase {
  */
 export function usePlanFollowUpSend(input: PlanFollowUpSendInput) {
   const {
+    startThreadTurn,
     environmentId,
     routeThreadKey,
     activeThread,
@@ -95,9 +98,6 @@ export function usePlanFollowUpSend(input: PlanFollowUpSendInput) {
     anchorNewTurn,
     persistThreadSettingsForNextTurn,
   } = input;
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
-    reportFailure: false,
-  });
   const setComposerDraftInteractionMode = useComposerDraftStore(
     (store) => store.setInteractionMode,
   );
@@ -245,6 +245,7 @@ interface ImplementPlanInNewThreadInput extends PlanSendBase {
  */
 export function useImplementPlanInNewThread(input: ImplementPlanInNewThreadInput) {
   const {
+    startThreadTurn,
     environmentId,
     routeThreadKey,
     activeThread,
@@ -262,9 +263,6 @@ export function useImplementPlanInNewThread(input: ImplementPlanInNewThreadInput
   const navigate = useNavigate();
   const createThread = useOrchestrationCommand(threadEnvironment.create, { reportFailure: false });
   const deleteThread = useOrchestrationCommand(threadEnvironment.delete, { reportFailure: false });
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
-    reportFailure: false,
-  });
   const { sendInFlight: sendInFlightRef } = draftSendState(routeThreadKey);
 
   return async () => {

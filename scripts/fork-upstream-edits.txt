@@ -627,6 +627,8 @@ apps/web/src/components/chat/TimelineWorkEntryRow.tsx
 apps/web/src/components/chat/TimelineWorkGroupRows.tsx
 apps/web/src/components/chat/timelineRowContext.ts
 apps/web/src/components/chat/useComposerSend.ts
+apps/web/src/components/chat/useMultipleModelSend.ts
+apps/web/src/components/chat/useProposedPlanSend.ts
 apps/web/src/components/chat/useThreadLifecycle.tsx
 apps/web/src/components/device/DevicePanel.tsx
 apps/web/src/components/device/DeviceSetup.test.ts

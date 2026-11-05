@@ -109,6 +109,7 @@ import { fileAttachmentCapabilityBlockReason } from "./composerAttachmentFiles";
 import { useLinkedEnvironments } from "../../state/peerLinks";
 import { readEnvironmentScope } from "../../state/session";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
+import type { StartTurnWithPurpose } from "./useStartTurnWithPurpose";
 import {
   ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
   threadContextsOutsideEnvironment,
@@ -161,6 +162,7 @@ type UsageLimitsPanel = ReturnType<typeof useUsageLimitsPanel>;
 type TimelineFollow = ReturnType<typeof useTimelineFollow>;
 
 interface ComposerSendInput {
+  readonly startThreadTurn: StartTurnWithPurpose;
   readonly environmentId: EnvironmentId;
   readonly routeThreadKey: string;
   readonly currentRouteThreadKeyRef: { readonly current: string | null };
@@ -257,6 +259,7 @@ interface ComposerSendInput {
  */
 export function useComposerSend(input: ComposerSendInput) {
   const {
+    startThreadTurn,
     environmentId,
     routeThreadKey,
     currentRouteThreadKeyRef,
@@ -333,9 +336,6 @@ export function useComposerSend(input: ComposerSendInput) {
   const navigate = useNavigate();
   const clientSettingsHydrated = useClientSettingsHydrated();
   const planModeEnabled = useEnvironmentSettings(environmentId, selectPlanModeEnabled);
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
-    reportFailure: false,
-  });
   const uploadThreadFeedback = useOrchestrationCommand(threadEnvironment.uploadFeedback, {
     reportFailure: false,
   });
@@ -353,6 +353,7 @@ export function useComposerSend(input: ComposerSendInput) {
   );
   const clearComposerDraftContent = useComposerDraftStore((store) => store.clearComposerContent);
   const sendToMultipleModels = useMultipleModelSend({
+    startThreadTurn,
     environmentId,
     routeThreadKey,
     currentRouteThreadKeyRef,
@@ -366,6 +367,7 @@ export function useComposerSend(input: ComposerSendInput) {
     setThreadError,
   });
   const submitPlanFollowUp = usePlanFollowUpSend({
+    startThreadTurn,
     environmentId,
     routeThreadKey,
     activeThread,
