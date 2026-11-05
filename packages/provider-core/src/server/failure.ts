@@ -98,6 +98,10 @@ function curatedCauseMessages(cause: unknown): {
       if (typeof cause !== "object") break;
       const tag = (cause as Record<string, unknown>)._tag;
       switch (tag) {
+        case "BareLaunchError":
+          return { known: stringField(cause, "reason"), category: categoryMessage() };
+        case "BareHistoryTransferUnsupported":
+          return { known: "bare history transfer unsupported", category: categoryMessage() };
         case "ContextHandoffBudgetError":
           return { known: new ContextHandoffBudgetError().message, category: categoryMessage() };
         case "ContextHandoffBackgroundWorkError":
@@ -186,7 +190,10 @@ export function knownProviderFailureMessage(cause: unknown): string | undefined 
   return curatedCauseMessages(cause).known;
 }
 
-function stringField(value: unknown, key: "message" | "code"): string | undefined {
+function stringField(
+  value: unknown,
+  key: "message" | "code" | "reason" | "errorMessage",
+): string | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   try {
     const candidate = (value as Record<string, unknown>)[key];
@@ -194,6 +201,32 @@ function stringField(value: unknown, key: "message" | "code"): string | undefine
   } catch {
     return undefined;
   }
+}
+
+// Only explicit network diagnostics qualify; a generic SDK/ACP failure can also be auth or setup.
+const networkDiagnostic =
+  /\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ENETUNREACH|EHOSTUNREACH|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET|httpConnectionFailed|responseStreamConnectionFailed|responseStreamDisconnected|responseStreamTooManyFailedAttempts)\b|can't reach (?:the )?api server|\bfetch failed\b|\bnetwork (?:error|request failed|is unreachable)\b|ConnectError: \[unavailable\]/i;
+
+function hasNetworkDiagnostic(cause: unknown): boolean {
+  const seen = new Set<unknown>();
+  for (let depth = 0; depth < 16 && cause != null && !seen.has(cause); depth++) {
+    seen.add(cause);
+    if (typeof cause === "string") return networkDiagnostic.test(cause);
+    if (
+      networkDiagnostic.test(stringField(cause, "code") ?? "") ||
+      networkDiagnostic.test(stringField(cause, "message") ?? "") ||
+      networkDiagnostic.test(stringField(cause, "errorMessage") ?? "")
+    )
+      return true;
+    try {
+      if (Cause.isCause(cause)) cause = Cause.squash(cause);
+      else if (typeof cause === "object") cause = (cause as { readonly cause?: unknown }).cause;
+      else break;
+    } catch {
+      break;
+    }
+  }
+  return false;
 }
 
 function redactUrl(match: string): string {
@@ -269,12 +302,18 @@ export function makeProviderFailure(input: {
   const rawCode = input.code ?? stringField(input.cause, "code") ?? null;
   const code =
     rawCode === null ? null : boundedText(rawCode, MAX_PROVIDER_FAILURE_CODE_LENGTH) || null;
+  const network =
+    (input.class === undefined ||
+      ["unknown", "provider_error", "transport_error"].includes(input.class)) &&
+    (hasNetworkDiagnostic(input.cause) ||
+      hasNetworkDiagnostic(input.message) ||
+      hasNetworkDiagnostic(input.code));
 
   return {
-    class: input.class ?? "unknown",
+    class: network ? "transport_error" : (input.class ?? "unknown"),
     message: message || DEFAULT_PROVIDER_FAILURE_MESSAGE,
     code,
-    retryable: input.retryable ?? null,
+    retryable: network ? true : (input.retryable ?? null),
     ...(input.class === "usage_limit" &&
     input.resetAt != null &&
     Number.isFinite(Date.parse(input.resetAt))
