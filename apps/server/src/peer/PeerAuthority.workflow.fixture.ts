@@ -2580,6 +2580,8 @@ export const automationWorkspace = Effect.gen(function* () {
       "Fixture baseline",
     ])).code,
   ).toBe(0);
+  expect((yield* git(["remote", "add", "origin", root])).code).toBe(0);
+  expect((yield* git(["fetch", "--quiet", "origin", "main"])).code).toBe(0);
   return root;
 });
 

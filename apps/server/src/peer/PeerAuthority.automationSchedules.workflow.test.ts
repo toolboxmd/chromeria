@@ -13,11 +13,9 @@ import { SecretRef } from "@t3tools/contracts";
 import * as ScheduleMutation from "../scheduledTasks/mutationReceipts.ts";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Sink from "effect/Sink";
-import * as ProcessRunner from "../processRunner.ts";
 import * as AutomationAuthority from "../scheduledTasks/DestinationAutomationAuthority.ts";
 import * as CheckStore from "../scheduledTaskChecks/store.ts";
 import * as RequestReceipts from "../mcp/McpRequestReceipts.ts";
-import * as FileSystem from "effect/FileSystem";
 import * as Clock from "effect/Clock";
 import * as TestClock from "effect/testing/TestClock";
 import * as Deferred from "effect/Deferred";
@@ -219,28 +217,7 @@ it.live(
           "disk",
           { productionKernel: true, attachmentRequests: true },
         );
-        const fs = yield* FileSystem.FileSystem;
-        const root = yield* fs.makeTempDirectoryScoped({ prefix: "automation384-native-" });
-        const git = (args: ReadonlyArray<string>) =>
-          ProcessRunner.ProcessRunner.pipe(
-            Effect.flatMap((runner) => runner.run({ command: "git", args: ["-C", root, ...args] })),
-            Effect.provide(ProcessRunner.layer),
-          );
-        expect((yield* git(["init", "--quiet", "--initial-branch=main"])).code).toBe(0);
-        yield* fs.writeFileString(`${root}/README.md`, "Isolated automation fixture");
-        expect((yield* git(["add", "README.md"])).code).toBe(0);
-        expect(
-          (yield* git([
-            "-c",
-            "user.name=Fixture",
-            "-c",
-            "user.email=fixture@example.invalid",
-            "commit",
-            "--quiet",
-            "-m",
-            "Fixture baseline",
-          ])).code,
-        ).toBe(0);
+        const root = yield* automationWorkspace;
         const started: Adapter.ProviderAdapterV2TurnInput[] = [];
         const opened: Adapter.ProviderAdapterV2OpenSessionInput[] = [];
         const b = yield* makeNode(
