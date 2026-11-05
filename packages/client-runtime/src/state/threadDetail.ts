@@ -33,6 +33,7 @@ import {
   derivePendingThreadRequests,
   type PendingThreadRequests,
 } from "./threadRequests.ts";
+import { createRestartCutProjector } from "./restartCutPresentation.ts";
 import { arrayElementsEqual, parseThreadKey, threadKey } from "./entities.ts";
 import { getProjectionArrayReplacementIndex } from "./orchestrationV2Projection.ts";
 
@@ -300,9 +301,15 @@ export function createEnvironmentThreadDetailAtoms<E>(
 
   const visibleTurnItemsAtomFamily = Atom.family((key: string) => {
     const projectQuestionHistory = createQuestionHistoryProjector();
+    const projectRestartCuts = createRestartCutProjector();
     return Atom.make((get): OrchestrationV2ThreadProjection["visibleTurnItems"] => {
       const projection = Option.getOrNull(get(threadStateValueAtomFamily(key)).data);
-      return projection === null ? EMPTY_VISIBLE_TURN_ITEMS : projectQuestionHistory(projection);
+      return projection === null
+        ? EMPTY_VISIBLE_TURN_ITEMS
+        : projectRestartCuts({
+            ...projection,
+            visibleTurnItems: projectQuestionHistory(projection),
+          });
     }).pipe(Atom.setIdleTTL(0), Atom.withLabel(`environment-thread-visible-turn-items:${key}`));
   });
 
@@ -416,6 +423,30 @@ export function createEnvironmentThreadDetailAtoms<E>(
     }).pipe(Atom.setIdleTTL(0), Atom.withLabel(`environment-thread-queue-count:${key}`));
   });
 
+  const pendingRemoteTasksAtomFamily = Atom.family((key: string) => {
+    let previous: OrchestrationV2ThreadProjection["subagents"] | undefined;
+    let value: OrchestrationV2ThreadProjection["subagents"] = [];
+    return Atom.make((get) => {
+      const tasks = Option.getOrNull(get(threadStateValueAtomFamily(key)).data)?.subagents;
+      if (tasks !== previous) {
+        previous = tasks;
+        value =
+          tasks?.filter(
+            (task) =>
+              task.remoteChild?.availability === "current" &&
+              task.remoteChild.stop === undefined &&
+              task.completionDelivery?.state !== "disposed" &&
+              task.remoteChild.snapshot?.requests.some(
+                (request) =>
+                  request.responseType === "live" &&
+                  request.kind !== "auth_refresh" &&
+                  request.kind !== "dynamic_tool_call",
+              ),
+          ) ?? [];
+      }
+      return value;
+    }).pipe(Atom.setIdleTTL(0));
+  });
   const turnSubagentsAtomFamily = Atom.family((key: string) => {
     let previous: Pick<OrchestrationV2ThreadProjection, "runs" | "subagents"> | null = null;
     let value: ThreadTurnSubagents | null = null;
@@ -555,6 +586,7 @@ export function createEnvironmentThreadDetailAtoms<E>(
     turnSubagentsAtom: (ref: ScopedThreadRef) => turnSubagentsAtomFamily(threadKey(ref)),
     checkpointSummariesAtom: (ref: ScopedThreadRef) =>
       checkpointSummariesAtomFamily(threadKey(ref)),
+    pendingRemoteTasksAtom: (ref: ScopedThreadRef) => pendingRemoteTasksAtomFamily(threadKey(ref)),
     stateAtom: (ref: ScopedThreadRef) => threadStateValueAtomFamily(threadKey(ref)),
     threadAtom: (ref: ScopedThreadRef) => threadAtomFamily(threadKey(ref)),
     quietThreadAtom: (ref: ScopedThreadRef) => quietThreadAtomFamily(threadKey(ref)),

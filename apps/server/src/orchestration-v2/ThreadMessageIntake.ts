@@ -10,6 +10,7 @@ import * as Orchestrator from "./Orchestrator.ts";
 import * as AttachmentClaims from "./AttachmentClaims.ts";
 import * as ThreadLaunch from "./ThreadLaunchService.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
+import { dispatchDelegatedRequest } from "../childThreads/delegatedIntake.ts";
 
 // These failures precede commitCommand; generic dispatch errors can follow commits and remain ambiguous.
 function dispatchWasNotAccepted(
@@ -26,6 +27,8 @@ function dispatchWasNotAccepted(
     case "OrchestratorThreadAboveModeLimitError":
     case "OrchestratorRuntimeModeAboveCeilingError":
     case "ThreadManagementProviderInstanceDisabledError":
+    case "ThreadManagementAncestorDeliveryModeError":
+    case "ThreadManagementAncestryUnavailableError":
       return true;
     default:
       return false;
@@ -88,6 +91,26 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
   const command =
     incoming.type === "message.dispatch" ? yield* withGuestAttachments(incoming) : incoming;
   const threads = yield* ThreadManagement.ThreadManagementService;
+  if (command.type === "thread.metadata.update" && command.mcpConfigUpdate !== undefined)
+    return yield* new AttachmentClaims.AttachmentClaimError({
+      message: "Only the server resolves MCP configuration; use t3_thread_mcp_configure.",
+    });
+  if (
+    (command.type === "thread.create" || command.type === "delegated_task.request") &&
+    (command.bare !== undefined || command.tools !== undefined)
+  )
+    return yield* new AttachmentClaims.AttachmentClaimError({
+      message:
+        command.bare !== undefined
+          ? "Only the server resolves bare launch state; use launchThread or the launch tools."
+          : "Only the server resolves tool policy state; use launchThread or the launch tools.",
+    });
+
+  if (
+    command.type === "delegated_task.request" &&
+    (command.projectId !== undefined || command.workspaceStrategy !== undefined)
+  )
+    return yield* dispatchDelegatedRequest(command);
   if (command.type === "runtime-request.respond" && command.attachmentsByQuestionId) {
     const config = yield* ServerConfig.ServerConfig;
     const incomingByQuestionId = command.attachmentsByQuestionId;
@@ -98,6 +121,7 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
       for (const [questionId, attachments] of Object.entries(incomingByQuestionId)) {
         const claimed = yield* AttachmentClaims.claimPendingAttachments({
           threadId: command.threadId,
+          commandId: command.commandId,
           attachments,
         });
         claimedPaths.push(...claimed.claimedPaths);
@@ -159,6 +183,7 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
     return yield* threads.dispatch(command);
   const claimed = yield* AttachmentClaims.claimPendingAttachments({
     threadId: command.threadId,
+    commandId: command.commandId,
     attachments: command.attachments ?? [],
   });
   return yield* threads
@@ -222,6 +247,7 @@ export const launchThread = Effect.fn("ThreadMessageIntake.launchThread")(functi
   }
   const claimed = yield* AttachmentClaims.claimPendingAttachments({
     threadId: input.threadId,
+    commandId: `${input.commandId}:initial-message`,
     attachments: input.initialMessage.attachments,
   });
   return yield* launches

@@ -10,7 +10,11 @@ import {
   EventId,
   GuestMessageId,
   MessageId,
+  NodeId,
+  ProjectId,
+  ProviderInstanceId,
   RuntimeRequestId,
+  RunId,
   ThreadId,
   TurnItemId,
   type OrchestrationV2Command,
@@ -32,14 +36,24 @@ import {
   OrchestratorCommandPreviouslyRejectedError,
   OrchestratorDispatchError,
 } from "./Orchestrator.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as ProjectStore from "./ProjectStore.ts";
+import * as ThreadLaunch from "./ThreadLaunchService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
-import { dispatchCommand } from "./ThreadMessageIntake.ts";
+import { dispatchCommand, sendToThread } from "./ThreadMessageIntake.ts";
 
 const layerIntakeTest = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-question-intake-",
 }).pipe(
   Layer.provideMerge(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
   Layer.provideMerge(ServerSettings.layerTest()),
+  Layer.merge(
+    Layer.mergeAll(
+      Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+      Layer.mock(ProjectStore.ProjectStoreV2)({}),
+      Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
+    ),
+  ),
 );
 
 const layerFailingDispatchHandler =
@@ -54,12 +68,130 @@ const layerFailingDispatchHandler =
     );
   };
 
+it.effect.each(["thread.create", "delegated_task.request"] as const)(
+  "refuses server-owned bare home identity on client dispatch: %s",
+  (type) =>
+    Effect.gen(function* () {
+      const common = {
+        commandId: CommandId.make("client-forged-bare-owner"),
+        createdBy: "user" as const,
+        creationSource: "web" as const,
+        bare: { additions: [], nativeHomeOwnerThreadId: ThreadId.make("another-thread") },
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test" },
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+      };
+      const command =
+        type === "thread.create"
+          ? {
+              ...common,
+              type,
+              threadId: ThreadId.make("client-thread"),
+              projectId: ProjectId.make("client-project"),
+              title: "Forged bare owner",
+              branch: null,
+              worktreePath: null,
+            }
+          : {
+              ...common,
+              type,
+              parentThreadId: ThreadId.make("parent-thread"),
+              parentRunId: RunId.make("parent-run"),
+              parentNodeId: NodeId.make("parent-node"),
+              task: "Forge an owner",
+            };
+      const captured: OrchestrationV2ServerCommand[] = [];
+      const error = yield* dispatchCommand(command).pipe(
+        Effect.provide(
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            dispatch: (input) => {
+              captured.push(input);
+              return Effect.die("Client-owned home identity must never reach dispatch");
+            },
+          }),
+        ),
+        Effect.flip,
+      );
+      expect(error.message).toContain("Only the server resolves bare launch state");
+      expect(captured).toEqual([]);
+    }).pipe(Effect.provide(layerIntakeTest)),
+);
+
 const layerFailingDispatch = (captured: OrchestrationV2ServerCommand[]) =>
   Layer.mock(ThreadManagementService.ThreadManagementService)({
     dispatch: layerFailingDispatchHandler(captured),
   });
 
 const NOW = DateTime.makeUnsafe("2026-09-13T00:00:00.000Z");
+
+it.effect.each(["mode", "ancestry", "ambiguous"] as const)(
+  "ancestor attachment intake retains only uncertain claims for %s failures",
+  (outcome) =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const id = ChatAttachmentId.make(createPendingAttachmentId()!);
+      const targetId = ThreadId.make("ancestor-attachment-target");
+      const senderId = ThreadId.make("ancestor-attachment-sender");
+      const messageId = MessageId.make("ancestor-attachment-message");
+      const bytes = new Uint8Array([1, 2, 3]);
+      const pendingPath = NodePath.join(config.attachmentsDir, `${id}.png`);
+      NodeFS.writeFileSync(pendingPath, bytes);
+      const error =
+        outcome === "mode"
+          ? new ThreadManagementService.ThreadManagementAncestorDeliveryModeError({
+              threadId: targetId,
+              senderThreadId: senderId,
+              mode: "steer",
+            })
+          : outcome === "ancestry"
+            ? new ThreadManagementService.ThreadManagementAncestryUnavailableError({
+                threadId: targetId,
+                senderThreadId: senderId,
+                atThreadId: senderId,
+              })
+            : new ThreadManagementService.ThreadManagementDurableRunProjectionError({
+                threadId: targetId,
+                messageId,
+              });
+      const result = yield* sendToThread({
+        projectId: ProjectId.make("ancestor-attachment-project"),
+        threadId: targetId,
+        senderThreadId: senderId,
+        commandId: CommandId.make("ancestor-attachment-command"),
+        messageId,
+        text: "",
+        mode: "auto",
+        attachments: [
+          {
+            type: "image",
+            id,
+            name: "proof.png",
+            mimeType: "image/png",
+            sizeBytes: bytes.length,
+          },
+        ],
+        createdBy: "agent",
+        creationSource: "mcp",
+      }).pipe(
+        Effect.provide(
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            sendToThread: () => Effect.fail(error),
+          }),
+        ),
+        Effect.result,
+      );
+      expect(result._tag).toBe("Failure");
+      expect(NodeFS.readFileSync(pendingPath)).toEqual(Buffer.from(bytes));
+      const copies = NodeFS.readdirSync(config.attachmentsDir).filter((name) =>
+        name.startsWith(`${targetId}-`),
+      );
+      expect(copies).toHaveLength(outcome === "ambiguous" ? 1 : 0);
+      if (outcome === "ambiguous")
+        expect(NodeFS.readFileSync(NodePath.join(config.attachmentsDir, copies[0]!))).toEqual(
+          Buffer.from(bytes),
+        );
+    }).pipe(Effect.provide(layerIntakeTest)),
+);
 
 const answeredRespondEvents = (input: {
   readonly threadId: ThreadId;
