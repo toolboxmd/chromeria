@@ -2814,6 +2814,7 @@ sources and reasons.
     "apps/server/src/persistence/forkExecutionPurposeSchema.ts",
     "apps/web/src/components/chat/ExecutionPurposeControl.tsx",
     "apps/web/src/components/chat/useStartTurnWithPurpose.ts",
+    "apps/web/src/components/chat/useStartTurnWithPurpose.test.ts",
     "packages/contracts/src/executionPurpose.test.ts",
     "packages/contracts/src/executionPurpose.ts",
     "packages/contracts/src/nativeExecution.ts"
@@ -2835,6 +2836,7 @@ sources and reasons.
   ],
   "sharedFiles": [
     "apps/web/src/components/chat/useComposerSend.ts",
+    "apps/web/src/components/chat/useThreadLifecycle.tsx",
     "apps/server/src/mcp/toolkits/pullRequests/handlers.test.ts",
     "apps/server/src/mcp/toolkits/pullRequests/handlers.ts",
     "apps/mobile/src/features/threads/ThreadDetailScreen.tsx",

@@ -1209,7 +1209,7 @@ export default function ChatView(props: ChatViewProps) {
     (providerEnvironmentId === undefined
       ? undefined
       : providersByEnvironment.get(providerEnvironmentId)) ?? EMPTY_PROVIDERS;
-  const startThreadTurn = useStartTurnWithPurpose(activeThread, isServerThread);
+  const startThreadTurn = useStartTurnWithPurpose();
   const selectedProviderByThreadId = composerActiveProvider ?? null;
   const threadProvider =
     activeThread?.modelSelection.instanceId ??
@@ -2855,10 +2855,8 @@ export default function ChatView(props: ChatViewProps) {
     activeProject,
     activeEnvironmentUnavailable,
     defaultRuntimeMode,
-    startThreadTurn,
   });
   const { onSend } = useComposerSend({
-    startThreadTurn,
     environmentId,
     routeThreadKey,
     currentRouteThreadKeyRef,

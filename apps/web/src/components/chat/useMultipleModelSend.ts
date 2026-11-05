@@ -38,10 +38,9 @@ import {
   startFanoutThread,
 } from "./chatViewSend";
 import type { useLocalDispatchState } from "./useLocalDispatchState";
-import type { StartTurnWithPurpose } from "./useStartTurnWithPurpose";
+import { useStartTurnWithPurpose } from "./useStartTurnWithPurpose";
 
 interface MultipleModelSendInput {
-  readonly startThreadTurn: StartTurnWithPurpose;
   readonly environmentId: EnvironmentId;
   readonly routeThreadKey: string;
   readonly currentRouteThreadKeyRef: { readonly current: string | null };
@@ -62,7 +61,6 @@ interface MultipleModelSendInput {
  */
 export function useMultipleModelSend(input: MultipleModelSendInput) {
   const {
-    startThreadTurn,
     environmentId,
     routeThreadKey,
     currentRouteThreadKeyRef,
@@ -76,6 +74,7 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
     setThreadError,
   } = input;
   const navigate = useNavigate();
+  const startThreadTurn = useStartTurnWithPurpose();
   const clearComposerDraftContent = useComposerDraftStore((store) => store.clearComposerContent);
   const fanoutSelectionsAtom = draftFanoutSelectionsAtom(routeThreadKey);
   const { sendInFlight: sendInFlightRef, uncertainSubmissions: uncertainSubmissionsRef } =
