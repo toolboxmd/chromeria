@@ -4626,7 +4626,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             yield* rearmDeferredFinalize(context);
             return;
           }
-          const status = projectedStatus ?? toolStatus(toolCall.status);
+          const status =
+            projectedStatus ?? stoppedToolStatus(context, toolCall) ?? toolStatus(toolCall.status);
           const now = yield* DateTime.now;
           const identity = {
             threadId: context.input.threadId,

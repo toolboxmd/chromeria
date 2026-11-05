@@ -186,8 +186,12 @@ it.effect("refuses an urgent replacement when native Stop times out", () =>
       threadId,
       operation: "restart",
       providerTurnId,
-      cause:
-        "ProviderAdapterInterruptTimeoutError: Claude did not confirm stopping within 10000 ms.",
+      cause: new ProviderAdapter.ProviderAdapterInterruptTimeoutError({
+        driver: ProviderDriverKind.make("claudeAgent"),
+        providerThreadId,
+        providerTurnId,
+        timeoutMs: 10000,
+      }),
     });
     const layer = layerExecutorFor({ events, restartInterrupt: () => failure });
     yield* Effect.gen(function* () {

@@ -259,6 +259,8 @@ it("readThread pages cut-off text without splitting an emoji across pages", asyn
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
+          readRunRecovery: () => Effect.succeed({ state: "none" }),
           getTimelinePage: () =>
             Effect.succeed({
               items: [row] as unknown as OrchestrationV2ThreadProjection["visibleTurnItems"],
@@ -811,7 +813,7 @@ it("requestSecret saves a pasted value to a file without opening a card", async 
       value: "482916",
       clientRequestId: "pin-1",
     });
-    expect(result).toEqual({ status: "saved", file });
+    expect(result).toEqual({ status: "saved", file, files: { value: file } });
     expect(JSON.stringify(result)).not.toContain("482916");
     expect(saved).toEqual([
       {
