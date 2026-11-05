@@ -97,6 +97,15 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
     expect(seen.at(-1)!.items).toBe(initial.items);
   }
 
+  const scratchInput = {
+    ...input,
+    projects: [{ id: threads[0]!.projectId, environmentId, isScratch: true as const }],
+  };
+  await act(async () => root.render(<Probe input={scratchInput} tab="chats" />));
+  expect(seen.at(-1)!.layout.noProjectCount).toBe(75);
+  await act(async () => root.render(<Probe input={input} tab="chats" />));
+  expect(seen.at(-1)!.layout.noProjectCount).toBe(0);
+
   const nextMinute = { ...input, now: "2026-01-02T00:01:00.000Z" };
   await act(async () => root.render(<Probe input={nextMinute} tab="chats" />));
   expect(seen.at(-1)!.layout).toBe(initial.layout);

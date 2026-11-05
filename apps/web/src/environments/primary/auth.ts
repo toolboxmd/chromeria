@@ -409,28 +409,6 @@ export async function submitServerAuthCredential(credential: string): Promise<vo
   stripPairingTokenFromUrl();
 }
 
-// Fork: label a paired client with its person (toolboxmd/chromeria#121).
-export async function setServerClientSessionPerson(
-  sessionId: AuthSessionId,
-  person: string | null,
-): Promise<void> {
-  try {
-    await runPrimaryHttp(
-      PrimaryEnvironmentHttpClient.pipe(
-        Effect.flatMap((client) =>
-          client.auth.setClientPerson({ headers: {}, payload: { sessionId, person } }),
-        ),
-      ),
-    );
-  } catch (error) {
-    throw PrimaryEnvironmentRequestError.fromCause({
-      operation: "set-client-session-person",
-      sessionId,
-      cause: error,
-    });
-  }
-}
-
 export async function resolveInitialServerAuthGateState(): Promise<ServerAuthGateState> {
   // Preserve explicit grant replacement across the auth-gate reload triggered by token removal.
   if (window.location.pathname.replace(/\/+$/, "") !== "/pair") {

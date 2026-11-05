@@ -1902,7 +1902,10 @@ const codexIncompleteStop = (
           assert.equal(failed.runs.find((run) => run.id === before.runs[0]?.id)?.status, "failed");
           assert.isTrue(
             failed.turnItems.some(
-              (item) => item.type === "error" && item.title === "Message not delivered",
+              (item) =>
+                item.type === "error" &&
+                item.title === "Message not delivered" &&
+                item.failure.message.includes("could not stop the running work"),
             ),
           );
           assert.lengthOf(promptRequests(boundary, "turn/start"), 1);
@@ -2181,7 +2184,10 @@ const codexInstanceStop = (
         if (phase === "failed")
           assert.isTrue(
             after.turnItems.some(
-              (item) => item.type === "error" && item.title === "Message not delivered",
+              (item) =>
+                item.type === "error" &&
+                item.title === "Message not delivered" &&
+                item.failure.message.includes("could not stop the running work"),
             ),
           );
         assert.lengthOf(

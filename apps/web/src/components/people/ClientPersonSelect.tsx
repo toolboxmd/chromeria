@@ -3,12 +3,13 @@ import {
   DEFAULT_PERSON,
   PEOPLE,
   type AuthSessionId,
+  type EnvironmentId,
 } from "@t3tools/contracts";
 import { useState } from "react";
 
-import { setServerClientSessionPerson } from "../../environments/primary";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
-import { usePrimaryEnvironmentId } from "../../state/environments";
+import { authEnvironment } from "../../state/auth";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { environmentSession, useEnvironmentScope } from "../../state/session";
 import { ChromeriaFeatureMark } from "../ChromeriaFeatureMark";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -22,24 +23,26 @@ export function ClientPersonSelect({
   sessionId,
   person,
   current,
+  environmentId,
 }: {
+  readonly environmentId: EnvironmentId;
   readonly sessionId: AuthSessionId;
   readonly person: string | undefined;
   /** The row is this device: its own session state carries the label too. */
   readonly current: boolean;
 }) {
-  const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const canEditPerson = useEnvironmentScope(primaryEnvironmentId, AuthAccessWriteScope);
+  const canEditPerson = useEnvironmentScope(environmentId, AuthAccessWriteScope);
+  const setClientPerson = useAtomCommand(authEnvironment.setClientPerson, { reportFailure: false });
   const [saving, setSaving] = useState(false);
   const value = person ?? DEFAULT_PERSON;
 
   const save = async (next: string) => {
     if (!canEditPerson || saving) return;
     setSaving(true);
-    await setServerClientSessionPerson(sessionId, next)
+    await setClientPerson({ environmentId, input: { sessionId, person: next } })
       .then(() => {
-        if (current && primaryEnvironmentId !== null) {
-          appAtomRegistry.refresh(environmentSession.sessionStateAtom(primaryEnvironmentId));
+        if (current) {
+          appAtomRegistry.refresh(environmentSession.sessionStateAtom(environmentId));
         }
       })
       .catch((error: unknown) => {

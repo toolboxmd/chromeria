@@ -462,13 +462,21 @@ export const layer: Layer.Layer<
             } satisfies OrchestrationV2DomainEvent;
           }),
         );
-        yield* eventSink.writeIfRunCurrent({
+        const written = yield* eventSink.writeIfRunCurrent({
           threadId,
           runId,
           activeAttemptId: attempt.id,
           expectedStatus: "starting",
           events,
         });
+        if (written.committed) {
+          yield* turnAnalytics.runSettled({
+            runId,
+            status,
+            completedAt: now,
+            childrenRunning: false,
+          });
+        }
       });
     };
 
@@ -1366,6 +1374,13 @@ export const layer: Layer.Layer<
           const sourceBusy = sourceProjection.runs.some(
             (candidate) => candidate.ordinal > sourceRun.ordinal && isActiveRun(candidate),
           );
+          if (sourceBusy && projection.thread.bare !== undefined) {
+            return yield* new ProviderTurnStartError({
+              runId,
+              cause:
+                "Bare native fork source became busy; will not substitute a summary or a fresh conversation.",
+            });
+          }
           if (!sourceBusy) {
             // Rolled-back turns are no longer in the source conversation, so they cannot bound a fork.
             const rolledBackAttemptIds = new Set(
@@ -1394,8 +1409,8 @@ export const layer: Layer.Layer<
                   : { providerTurnId: sourceProviderTurn.id }),
               }),
             );
-            if (forked !== undefined)
-              yield* contextmdServing.recordNativeFork({
+            if (forked !== undefined && contextmd !== undefined)
+              yield* contextmd.recordNativeFork({
                 driver: session.driver,
                 threadId: projection.thread.id,
                 runId: run.id,

@@ -85,7 +85,7 @@ const layer = (baseDir: string, options?: HarnessOptions) =>
     ),
     Layer.provideMerge(ServerSettings.layerTest()),
     Layer.provideMerge(ServerConfig.layerTest(baseDir, baseDir)),
-    Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+    Layer.provideMerge(NodeCrypto.layer),
     Layer.provideMerge(
       options?.fileSystem === undefined
         ? Layer.empty

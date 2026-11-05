@@ -67,7 +67,7 @@ export function HomeRouteScreen() {
       : (workspace?.state.tabs.threads.query ?? localSearchQuery);
   const listThreads = useAtomValueWhileVisible(
     searchQuery.trim().length > 0
-      ? environmentThreadShells.threadShellsAtom
+      ? environmentThreadShells.visibleThreadShellsAtom
       : environmentThreadShells.navigationThreadShellsAtom,
     visible,
   );

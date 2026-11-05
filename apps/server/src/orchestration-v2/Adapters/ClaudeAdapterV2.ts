@@ -2329,7 +2329,10 @@ const getNativeThreadId = Effect.fnUntraced(function* (
 const isSyntheticClaudeTurnId = (nativeTurnId: string): boolean => nativeTurnId.startsWith("turn:");
 
 const claudeTurnCursor = (turn: OrchestrationV2ProviderTurn): string | null => {
-  const ref = turn.nativeTurnRef;
+  const ref =
+    turn.nativeConversationHeadRef === undefined
+      ? turn.nativeTurnRef
+      : turn.nativeConversationHeadRef;
   return ref !== null &&
     ref.driver === CLAUDE_PROVIDER &&
     ref.nativeId !== null &&
@@ -10536,6 +10539,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               message.subtype === "success" &&
               message.local_command === "compact"
             ) &&
+            context.interruptedResult === undefined &&
             context.assistant.emittedNativeItemIds.size === 0 &&
             context.assistant.fallbackText.length === 0 &&
             resultText !== null &&

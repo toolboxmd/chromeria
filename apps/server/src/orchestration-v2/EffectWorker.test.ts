@@ -1,3 +1,4 @@
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { assert, it } from "@effect/vitest";
 import {
   CheckpointId,
@@ -5,6 +6,7 @@ import {
   CommandId,
   NodeId,
   ProviderSessionId,
+  ProviderDriverKind,
   ProviderThreadId,
   ProviderTurnId,
   RunAttemptId,
@@ -85,6 +87,7 @@ function layerExecutorFor(input: {
   readonly threads?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
   readonly continueAfterRestart?: boolean;
   readonly interrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interrupt"];
+  readonly restartInterrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interruptAndAwaitTerminal"];
   readonly rollback?: CheckpointRollbackService.CheckpointRollbackServiceV2Shape["execute"];
   readonly respond?: RuntimeRequestService.RuntimeRequestServiceV2["Service"]["respond"];
 }) {
@@ -95,12 +98,14 @@ function layerExecutorFor(input: {
       ProviderTurnControlService.ProviderTurnControlServiceV2.of({
         interrupt: input.interrupt ?? (() => Effect.void),
         steer: () => Effect.void,
-        interruptAndAwaitTerminal: (request) =>
-          record(
-            request.replacementProviderSessionId === undefined
-              ? "interrupt"
-              : `interrupt:${request.replacementProviderSessionId}`,
-          ),
+        interruptAndAwaitTerminal:
+          input.restartInterrupt ??
+          ((request) =>
+            record(
+              request.replacementProviderSessionId === undefined
+                ? "interrupt"
+                : `interrupt:${request.replacementProviderSessionId}`,
+            )),
       }),
     ),
     Layer.succeed(
@@ -172,6 +177,30 @@ function layerExecutorFor(input: {
     ),
   );
 }
+
+it.effect("refuses an urgent replacement when native Stop times out", () =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const failure = new ProviderTurnControlService.ProviderTurnControlError({
+      threadId,
+      operation: "restart",
+      providerTurnId,
+      cause:
+        "ProviderAdapterInterruptTimeoutError: Claude did not confirm stopping within 10000 ms.",
+    });
+    const layer = layerExecutorFor({ events, restartInterrupt: () => failure });
+    yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      const restart = restartEffect(now, { type: "detach" });
+      yield* executor.execute(restart, { willRetry: true }).pipe(Effect.flip);
+      assert.deepEqual(yield* Ref.get(events), []);
+      const refused = yield* executor.execute(restart, { willRetry: false }).pipe(Effect.flip);
+      assert.strictEqual(refused.cause, failure);
+      assert.deepEqual(yield* Ref.get(events), ["failed-before-start"]);
+    }).pipe(Effect.provide(layer));
+  }),
+);
 
 it.effect.each([
   {

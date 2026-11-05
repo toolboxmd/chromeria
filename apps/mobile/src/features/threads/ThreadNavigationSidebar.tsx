@@ -157,7 +157,7 @@ function ThreadNavigationSidebarPane(
   const threads = useNavigationThreadShells();
   const listThreads = useAtomValue(
     props.searchQuery.trim().length > 0
-      ? environmentThreadShells.threadShellsAtom
+      ? environmentThreadShells.visibleThreadShellsAtom
       : environmentThreadShells.navigationThreadShellsAtom,
   );
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();

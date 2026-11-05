@@ -6145,7 +6145,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       errorInfo: { responseStreamDisconnected: { httpStatusCode: null } },
       message: "Transport unavailable; this is not subscription_sharing_usage_limit_exceeded.",
       notification: false,
-      expectedClass: "provider_error",
+      expectedClass: "transport_error",
     },
     {
       name: "sharing-code-mention-retry",

@@ -1,3 +1,4 @@
+import * as Option from "effect/Option";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Database from "../persistence/Sqlite.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -78,16 +79,45 @@ import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAda
 
 const decodeTarget = Schema.decodeUnknownEffect(OrchestratorMcpTarget);
 
-const layerOrchestratorService = OrchestratorMcpService.layer.pipe(
-  Layer.provide(Database.layerMemory),
-  Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
-  Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
-  Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
-  Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+const layerOrchestratorService = Layer.unwrap(
+  Effect.gen(function* () {
+    const git = yield* Effect.serviceOption(GitVcsDriver.GitVcsDriver);
+    return OrchestratorMcpService.layer.pipe(
+      Layer.provide(Database.layerMemory),
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+      Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+      Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+      Layer.provide(
+        Option.isSome(git)
+          ? Layer.succeed(GitVcsDriver.GitVcsDriver, git.value)
+          : Layer.mock(GitVcsDriver.GitVcsDriver)({
+              resolvePrimaryRemoteName: () =>
+                Effect.fail(
+                  new GitCommandError({
+                    operation: "fixture",
+                    command: "git",
+                    cwd: "/fixture",
+                    detail: "No remote configured",
+                  }),
+                ),
+              resolveDefaultBranchName: () => Effect.succeed("main"),
+              resolveCommit: () => Effect.succeed({ commitSha: "fixture-commit" }),
+            }),
+      ),
+    );
+  }),
 );
 import { restartCutView } from "@t3tools/shared/restartCut";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+
+const mockThreads = (
+  services: Partial<ThreadManagementService.ThreadManagementService["Service"]>,
+) =>
+  Layer.mock(ThreadManagementService.ThreadManagementService)({
+    readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
+    ...services,
+  });
 
 const decodeDelegateTaskInput = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
 
@@ -127,7 +157,7 @@ describe("OrchestratorMcpService", () => {
         ],
       } as unknown as OrchestrationV2ThreadProjection;
       const childProjection = {
-        thread: { id: childThreadId, title: "Child" },
+        thread: { id: childThreadId, title: "Child", forkedFrom: { type: "node", nodeId: taskId } },
         runs: [
           {
             id: childRunId,
@@ -165,7 +195,7 @@ describe("OrchestratorMcpService", () => {
       const layerDependencies = Layer.mergeAll(
         Layer.merge(NodeServices.layer, NodeCrypto.layer),
         NodeCrypto.layer,
-        Layer.mock(ThreadManagementService.ThreadManagementService)({
+        mockThreads({
           readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) =>
             Effect.sync(() => {
@@ -315,7 +345,7 @@ describe("OrchestratorMcpService", () => {
       const layerDependencies = Layer.mergeAll(
         Layer.merge(NodeServices.layer, NodeCrypto.layer),
         NodeCrypto.layer,
-        Layer.mock(ThreadManagementService.ThreadManagementService)({
+        mockThreads({
           readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
@@ -421,7 +451,7 @@ describe("OrchestratorMcpService", () => {
       const layerDependencies = Layer.mergeAll(
         Layer.merge(NodeServices.layer, NodeCrypto.layer),
         NodeCrypto.layer,
-        Layer.mock(ThreadManagementService.ThreadManagementService)({
+        mockThreads({
           readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection() : childProjection()),
@@ -520,7 +550,7 @@ describe("OrchestratorMcpService", () => {
       const layerDependencies = Layer.mergeAll(
         Layer.merge(NodeServices.layer, NodeCrypto.layer),
         NodeCrypto.layer,
-        Layer.mock(ThreadManagementService.ThreadManagementService)({
+        mockThreads({
           readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
@@ -619,7 +649,7 @@ describe("OrchestratorMcpService", () => {
         const layerDependencies = Layer.mergeAll(
           Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
-          Layer.mock(ThreadManagementService.ThreadManagementService)({
+          mockThreads({
             readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
             getThreadRecords: (threadId) =>
               threadId === parentThreadId
@@ -722,7 +752,7 @@ describe("OrchestratorMcpService", () => {
       const layerDependencies = Layer.mergeAll(
         Layer.merge(NodeServices.layer, NodeCrypto.layer),
         NodeCrypto.layer,
-        Layer.mock(ThreadManagementService.ThreadManagementService)({
+        mockThreads({
           readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
@@ -813,7 +843,7 @@ describe("OrchestratorMcpService", () => {
       const layerDependencies = Layer.mergeAll(
         Layer.merge(NodeServices.layer, NodeCrypto.layer),
         NodeCrypto.layer,
-        Layer.mock(ThreadManagementService.ThreadManagementService)({
+        mockThreads({
           readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
@@ -910,7 +940,7 @@ describe("OrchestratorMcpService", () => {
       const layerDependencies = Layer.mergeAll(
         Layer.merge(NodeServices.layer, NodeCrypto.layer),
         NodeCrypto.layer,
-        Layer.mock(ThreadManagementService.ThreadManagementService)({
+        mockThreads({
           readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
@@ -1069,7 +1099,7 @@ describe("OrchestratorMcpService", () => {
       const layerDependencies = Layer.mergeAll(
         Layer.merge(NodeServices.layer, NodeCrypto.layer),
         NodeCrypto.layer,
-        Layer.mock(ThreadManagementService.ThreadManagementService)({
+        mockThreads({
           readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId, fields, filter) =>
             ((fields as ReadonlyArray<string>).includes("subagents")
@@ -1416,7 +1446,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       const dependencies = Layer.mergeAll(
         Layer.merge(NodeServices.layer, NodeCrypto.layer),
         NodeCrypto.layer,
-        Layer.mock(ThreadManagementService.ThreadManagementService)({
+        mockThreads({
           hasReceipt: () => Effect.succeed(false),
           assertProviderInstanceEnabled: () => Effect.void,
           isProviderInstanceEnabledForProject: () => Effect.succeed(true),
@@ -1579,7 +1609,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(BareLaunch.BareLaunch)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
-          Layer.mock(ThreadManagementService.ThreadManagementService)({
+          mockThreads({
             hasReceipt: () => Effect.succeed(false),
             assertProviderInstanceEnabled: () => Effect.void,
             readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
@@ -1764,7 +1794,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         const layerDependencies = Layer.mergeAll(
           Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
-          Layer.mock(ThreadManagementService.ThreadManagementService)({
+          mockThreads({
             readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
             getThreadRecords: () => Effect.succeed(parentProjection([])),
           }),
@@ -1969,7 +1999,7 @@ describe("OrchestratorMcpService provider resolution", () => {
               Layer.mergeAll(
                 Layer.merge(NodeServices.layer, NodeCrypto.layer),
                 NodeCrypto.layer,
-                Layer.mock(ThreadManagementService.ThreadManagementService)({
+                mockThreads({
                   getThreadRecords: () =>
                     Effect.succeed(
                       parentProjection([], { instanceId: codexInstanceId, model: "gpt-3" }),
@@ -2100,7 +2130,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       const layerDependencies = Layer.mergeAll(
         Layer.merge(NodeServices.layer, NodeCrypto.layer),
         NodeCrypto.layer,
-        Layer.mock(ThreadManagementService.ThreadManagementService)({
+        mockThreads({
           hasReceipt: () => Effect.succeed(false),
           readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: () => Effect.succeed(parentProjection([])),
@@ -2185,7 +2215,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       const layerDependencies = Layer.mergeAll(
         Layer.merge(NodeServices.layer, NodeCrypto.layer),
         NodeCrypto.layer,
-        Layer.mock(ThreadManagementService.ThreadManagementService)({
+        mockThreads({
           hasReceipt: () => Effect.succeed(false),
           getThreadRecords: (threadId) =>
             Effect.succeed(
@@ -2300,7 +2330,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         const layerDependencies = Layer.mergeAll(
           Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
-          Layer.mock(ThreadManagementService.ThreadManagementService)({
+          mockThreads({
             readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
             getThreadRecords: (threadId) =>
               Ref.get(accepted).pipe(
@@ -2427,7 +2457,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         };
         const layerDependencies = Layer.mergeAll(
           Layer.merge(NodeServices.layer, NodeCrypto.layer),
-          Layer.mock(ThreadManagementService.ThreadManagementService)({
+          mockThreads({
             readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
             getThreadRecords: (threadId) =>
               Ref.get(accepted).pipe(
@@ -2784,7 +2814,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           const layerDependencies = Layer.mergeAll(
             Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
-            Layer.mock(ThreadManagementService.ThreadManagementService)({
+            mockThreads({
               hasReceipt: () => Effect.succeed(false),
               assertProviderInstanceEnabled: () => Effect.void,
               isProviderInstanceEnabledForProject: () => Effect.succeed(true),
@@ -2998,7 +3028,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mergeAll(
             Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
-            Layer.mock(ThreadManagementService.ThreadManagementService)({
+            mockThreads({
               readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
               getThreadShell: (threadId) =>
                 Effect.succeed(threadId === boundThreadId ? boundThread : null),
@@ -3069,7 +3099,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                 Layer.mergeAll(
                   Layer.merge(NodeServices.layer, NodeCrypto.layer),
                   NodeCrypto.layer,
-                  Layer.mock(ThreadManagementService.ThreadManagementService)({
+                  mockThreads({
                     readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
                     getThreadShell: () => Effect.succeed(null),
                     getThreadRecords: () => Effect.succeed(idleThreadProjection(shell)),
@@ -3152,7 +3182,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                 Layer.mergeAll(
                   Layer.merge(NodeServices.layer, NodeCrypto.layer),
                   NodeCrypto.layer,
-                  Layer.mock(ThreadManagementService.ThreadManagementService)({
+                  mockThreads({
                     readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
                     getThreadShell: (threadId) =>
                       Ref.getAndUpdate(lookups, (count) => count + 1).pipe(
@@ -3245,7 +3275,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mergeAll(
             Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
-            Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+            mockThreads({}),
             ServerSettings.layerTest(),
             Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
             Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
@@ -3440,7 +3470,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         const dependencies = Layer.mergeAll(
           Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
-          Layer.mock(ThreadManagementService.ThreadManagementService)({
+          mockThreads({
             getThreadRecords: (threadId) =>
               Effect.succeed(
                 threadId === parentThreadId
@@ -3539,7 +3569,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           const dependencies = Layer.mergeAll(
             Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
-            Layer.mock(ThreadManagementService.ThreadManagementService)({
+            mockThreads({
               hasReceipt: () => Effect.succeed(false),
               assertProviderInstanceEnabled: () => Effect.void,
               getThreadRecords: (threadId) =>
@@ -3625,7 +3655,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       const dependencies = Layer.mergeAll(
         Layer.merge(NodeServices.layer, NodeCrypto.layer),
         NodeCrypto.layer,
-        Layer.mock(ThreadManagementService.ThreadManagementService)({
+        mockThreads({
           hasReceipt: () => Effect.succeed(false),
           assertProviderInstanceEnabled: () => Effect.void,
           getThreadRecords: (threadId) =>
@@ -3767,7 +3797,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.merge(NodeServices.layer, NodeCrypto.layer),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
           Layer.mock(GitVcsDriver.GitVcsDriver)({}),
-          Layer.mock(ThreadManagementService.ThreadManagementService)({
+          mockThreads({
             hasReceipt: () => Effect.succeed(false),
             getThreadRecords: (threadId) =>
               Effect.succeed(
@@ -3866,7 +3896,7 @@ describe("OrchestratorMcpService thread lookup", () => {
         Layer.mergeAll(
           Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
-          Layer.mock(ThreadManagementService.ThreadManagementService)({
+          mockThreads({
             getThreadShell: (threadId) =>
               Effect.succeed(shells.find((shell) => shell.id === threadId) ?? null),
             sendToThread: () => Ref.update(sent, (count) => count + 1).pipe(Effect.as({} as never)),
@@ -4010,7 +4040,7 @@ describe("OrchestratorMcpService thread list", () => {
       Layer.mergeAll(
         Layer.merge(NodeServices.layer, NodeCrypto.layer),
         NodeCrypto.layer,
-        Layer.mock(ThreadManagementService.ThreadManagementService)({
+        mockThreads({
           listProjectThreads: (input) =>
             Effect.succeed(
               shells.filter(
@@ -4291,7 +4321,7 @@ describe("schedule task thread binding", () => {
       Layer.provide(
         Layer.mergeAll(
           Layer.merge(NodeServices.layer, NodeCrypto.layer),
-          Layer.mock(ThreadManagementService.ThreadManagementService)({
+          mockThreads({
             readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
             getThreadRecords: () => Effect.succeed(parent),
             getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),

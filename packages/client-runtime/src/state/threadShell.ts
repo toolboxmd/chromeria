@@ -130,6 +130,7 @@ function pendingSubagentRequestsByThread(
     }
   };
   for (const child of threads) {
+    if (child.remotePendingRequest != null) flag(child.id, child.remotePendingRequest, new Set());
     const parentId = child.lineage.parentThreadId;
     if (child.lineage.sideChat === true) {
       const request = sideChatRequest(child);

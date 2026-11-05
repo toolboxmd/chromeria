@@ -286,7 +286,7 @@ it.layer(layerTest)("GrokDriver", (it) => {
         config: { ...GrokDriver.defaultConfig(), binaryPath },
       });
 
-      expect(yield* instance.snapshot.resolveMaintenance()).toEqual({
+      expect(yield* instance.snapshot.resolveMaintenance()).toMatchObject({
         provider: "grok",
         packageName: "@xai-official/grok",
         installPath: binaryPath,
@@ -338,7 +338,7 @@ it.layer(layerTest)("GrokDriver", (it) => {
         const capabilities = yield* instance.snapshot.resolveMaintenance();
 
         expect(spawned).toEqual([]);
-        expect(capabilities.latestVersion).toBeUndefined();
+        expect(capabilities.latestVersion).toBeNull();
         expect(capabilities.update).toMatchObject({
           executable: binaryPath,
           args: ["update"],

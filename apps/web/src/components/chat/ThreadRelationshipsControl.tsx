@@ -492,13 +492,13 @@ export function ThreadRelationshipsPanel(props: {
     ...(archivedShells ?? []),
   ];
   const graph = deriveThreadRelationshipGraph({ threads: shells, projection });
-  const isHiddenRelation = (threadId: ThreadId) =>
-    hiddenKeys.has(threadKey({ environmentId: props.environmentId, threadId }));
+  const isHiddenRelation = (threadId: ThreadId, environmentId?: EnvironmentId | null) =>
+    hiddenKeys.has(threadKey({ environmentId: environmentId ?? props.environmentId, threadId }));
   // While hiding, an unloaded parent, fork or transfer may be hidden; unloaded subagent
   // children (idle, left out of the shell) follow this visible thread, so they stay.
-  const isHiddenUnloadedRelation = (row: { threadId: ThreadId; edge: ThreadRelationshipEdge }) =>
+  const isHiddenUnloadedRelation = (row: ThreadRelationshipWalkRow) =>
     hidingAnywhere &&
-    graph.nodes.get(row.threadId)?.missing === true &&
+    getThreadRelationshipNode(graph, row.threadId, row.environmentId)?.missing === true &&
     (row.edge.kind !== "subagent" || isParentThreadRelationship(row.edge, props.threadId));
   const currentProject = projects.find((project) => project.id === currentThread?.projectId);
   const latestMergeBackRun = projection === null ? null : resolveLatestMergeBackRun(projection);
@@ -510,11 +510,13 @@ export function ThreadRelationshipsPanel(props: {
     mergeTargetThreadId,
   })
     // The graph rebuilds missing parents from lineage, so filter the rows it returns.
-    .filter((row) => !isHiddenRelation(row.threadId) && !isHiddenUnloadedRelation(row))
+    .filter(
+      (row) => !isHiddenRelation(row.threadId, row.environmentId) && !isHiddenUnloadedRelation(row),
+    )
     .map((row) => {
       const agent =
         row.edge.kind === "subagent" && !isParentThreadRelationship(row.edge, props.threadId)
-          ? subagentsByThreadId.get(row.threadId)
+          ? subagentsByThreadId.get(threadRelationshipNodeKey(row.threadId, row.environmentId))
           : undefined;
       const workflowGroup = agent === undefined ? undefined : workflowGroupsById.get(agent.id);
       return workflowGroup === undefined
@@ -524,11 +526,15 @@ export function ThreadRelationshipsPanel(props: {
   const canMerge = mergeTargetThreadId !== null && latestMergeBackRun !== null;
   const unlistedThreadIds = relationshipRows
     .filter(
-      ({ threadId, edge }) =>
+      ({ threadId, edge, environmentId }) =>
+        (environmentId == null || environmentId === props.environmentId) &&
         !relationshipShells.some(
-          (entry) => ("shell" in entry ? entry.shell : entry).id === threadId,
+          (entry) =>
+            ("shell" in entry ? entry.shell : entry).id === threadId &&
+            (!("environmentId" in entry) || entry.environmentId === props.environmentId),
         ) &&
-        (edge.kind !== "subagent" || !subagentsByThreadId.get(threadId)?.title),
+        (edge.kind !== "subagent" ||
+          !subagentsByThreadId.get(threadRelationshipNodeKey(threadId, environmentId))?.title),
     )
     .map(({ threadId }) => threadId);
   const threadTitles = useEnvironmentQuery(
@@ -542,7 +548,8 @@ export function ThreadRelationshipsPanel(props: {
   const resolvedThreadTitles = threadTitles.data ?? {};
   // Omitted and archived threads remain reachable; only a settled lookup proves one is gone.
   const visibleRelationships = relationshipRows.filter(
-    ({ threadId, edge }) =>
+    ({ threadId, edge, environmentId }) =>
+      (environmentId != null && environmentId !== props.environmentId) ||
       edge.kind === "subagent" ||
       !unlistedThreadIds.includes(threadId) ||
       !threadTitles.isSuccess ||
@@ -556,9 +563,12 @@ export function ThreadRelationshipsPanel(props: {
     active = [],
     previous = [],
     sideChats = [],
-  } = groupBy(visibleRelationships, ({ threadId, edge }) => {
+  } = groupBy(visibleRelationships, ({ threadId, edge, environmentId }) => {
     const isParent = isParentThreadRelationship(edge, props.threadId);
-    if (!isParent && graph.nodes.get(threadId)?.thread?.lineage.sideChat === true)
+    if (
+      !isParent &&
+      getThreadRelationshipNode(graph, threadId, environmentId)?.thread?.lineage.sideChat === true
+    )
       return "sideChats";
     if (edge.kind !== "subagent" || isParent) return "related";
     return ["completed", "failed", "error", "cancelled", "interrupted", "idle"].includes(
@@ -603,7 +613,8 @@ export function ThreadRelationshipsPanel(props: {
   }
 
   // Idle children can be omitted from the shell; opening one loads its own detail.
-  const openThread = (threadId: ThreadId, environmentId: EnvironmentId = props.environmentId) => {
+  const openThread = (threadId: ThreadId, requestedEnvironmentId?: EnvironmentId) => {
+    const environmentId = requestedEnvironmentId ?? props.environmentId;
     if (
       environmentId === props.environmentId &&
       openSideChatTab(ref, getThreadRelationshipNode(graph, threadId)?.thread ?? null)
@@ -745,9 +756,7 @@ export function ThreadRelationshipsPanel(props: {
     const rowEnvironmentId = remoteEnvironmentId ?? props.environmentId;
     const remoteUnreachable =
       remoteEnvironmentId !== null && !serverConfigs.has(remoteEnvironmentId);
-    const rowUnavailable =
-      (remoteUnreachable && !hasSourceRemoteTaskView(agent)) ||
-      (node?.missing === true && remoteEnvironmentId === null);
+    const rowUnavailable = remoteUnreachable && !hasSourceRemoteTaskView(agent);
     const canStop =
       agent &&
       agent.remoteChild === undefined &&
@@ -762,7 +771,11 @@ export function ThreadRelationshipsPanel(props: {
       ["pending", "running", "waiting"].includes(agent.status);
     const threadTitle = relationshipThreadTitle({
       title:
-        workflowGroup?.workflow.workflowName ?? node?.thread?.title ?? agent?.title ?? threadId,
+        workflowGroup?.workflow.workflowName ??
+        (remoteEnvironmentId === null ? resolvedThreadTitles[threadId] : undefined) ??
+        node?.thread?.title ??
+        agent?.title ??
+        threadId,
       isSubagent,
     });
     const provider = providers?.find(
@@ -894,11 +907,7 @@ export function ThreadRelationshipsPanel(props: {
           onOpenThread={(memberThreadId) =>
             openThread(memberThreadId as ThreadId, rowEnvironmentId)
           }
-          isThreadAvailable={(memberThreadId) =>
-            !remoteUnreachable &&
-            getThreadRelationshipNode(graph, memberThreadId as ThreadId, rowEnvironment)
-              ?.missing === false
-          }
+          isThreadAvailable={() => !remoteUnreachable}
           onStop={canStopWorkflow ? () => void stopWorkflow(agent.id) : undefined}
           stopping={stoppingId === agent.id}
           stopDisabled={stoppingId !== null}

@@ -1894,7 +1894,8 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/pull/539",
     "https://github.com/toolboxmd/chromeria/pull/546",
     "https://github.com/toolboxmd/chromeria/pull/534",
-    "https://github.com/toolboxmd/chromeria/pull/555"
+    "https://github.com/toolboxmd/chromeria/pull/555",
+    "https://github.com/toolboxmd/chromeria/pull/632"
   ],
   "newFiles": [
     "apps/server/src/scheduledTasks/DestinationAutomationAuthority.ts",
@@ -2103,7 +2104,9 @@ sources and reasons.
     "apps/web/src/components/chat/TimelineWorkEntryRow.tsx",
     "apps/web/src/components/chat/timelineRowContext.ts",
     "apps/web/src/components/chat/useThreadLifecycle.tsx",
-    "apps/mobile/vite.config.ts"
+    "apps/mobile/vite.config.ts",
+    "apps/web/src/components/chat/ThreadLineageWorkflowRow.tsx",
+    "apps/web/src/components/chat/useThreadLifecycle.browser.test.tsx"
   ],
   "sharedFiles": [
     "vite.config.ts",
@@ -2325,7 +2328,10 @@ sources and reasons.
   "id": "bare-launch",
   "purpose": "Strip removable harness context, admit only named additions within caller permissions, and retain durable intent and honest native receipts across launch and recovery paths.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/289"],
-  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...feat/289-bare-launch"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/compare/main...feat/289-bare-launch",
+    "https://github.com/toolboxmd/chromeria/pull/632"
+  ],
   "newFiles": [
     "apps/server/src/mcp/t3ToolNames.ts",
     "apps/server/src/orchestration-v2/BareLaunch.recovery.integration.test.ts",
@@ -2370,7 +2376,8 @@ sources and reasons.
     "packages/provider-opencode/src/server/adapter.test.ts",
     "packages/provider-opencode/src/server/adapter.ts",
     "packages/provider-opencode/src/server/driver.ts",
-    "apps/server/src/scheduledTasks/ScheduledTaskService.interval.test.ts"
+    "apps/server/src/scheduledTasks/ScheduledTaskService.interval.test.ts",
+    "apps/server/src/mcp/TaskCancelUsageLimit.integration.test.ts"
   ],
   "sharedFiles": [
     "GLOSSARY.md",
@@ -2467,7 +2474,10 @@ sources and reasons.
   "id": "no-project-sidebar",
   "purpose": "Keep temporary projectless threads in a collapsed sidebar section across web, desktop and native mobile.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/356"],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/357"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/357",
+    "https://github.com/toolboxmd/chromeria/pull/632"
+  ],
   "newFiles": [],
   "upstreamFiles": [
     "apps/mobile/src/features/home/HomeScreen.tsx",
@@ -2489,7 +2499,8 @@ sources and reasons.
     "apps/web/src/components/Sidebar.logic.test.ts",
     "apps/web/src/components/Sidebar.logic.ts",
     "apps/mobile/src/features/threads/useThreadListV2.ts",
-    "apps/web/src/components/sidebar/SidebarListMarkers.tsx"
+    "apps/web/src/components/sidebar/SidebarListMarkers.tsx",
+    "apps/mobile/src/features/threads/useThreadListV2.test.tsx"
   ],
   "sharedFiles": ["apps/web/src/components/Sidebar.tsx"],
   "keywords": ["noProjectShelfExpanded", "no-project-header", "No project"]
@@ -2930,7 +2941,8 @@ sources and reasons.
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/530",
-    "https://github.com/toolboxmd/chromeria/pull/545"
+    "https://github.com/toolboxmd/chromeria/pull/545",
+    "https://github.com/toolboxmd/chromeria/pull/632"
   ],
   "newFiles": [
     "apps/desktop/src/preview/BrowserImport/ChromiumKeychainWorker.ts",
@@ -3002,7 +3014,8 @@ sources and reasons.
     "packages/contracts/src/browserProfile.ts",
     "packages/shared/src/authScopeOptions.ts",
     "packages/shared/src/desktopBootstrapToken.test.ts",
-    "packages/shared/src/desktopBootstrapToken.ts"
+    "packages/shared/src/desktopBootstrapToken.ts",
+    "apps/desktop/src/app/DesktopApp.test.ts"
   ],
   "sharedFiles": [
     "knip.jsonc",

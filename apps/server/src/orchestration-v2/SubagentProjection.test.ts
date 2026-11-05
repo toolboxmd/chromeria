@@ -31,7 +31,6 @@ import {
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import { resolveAutoSettlementAt } from "./ThreadSettlementService.ts";
-import { emptyProjection } from "./ProjectionStore.ts";
 import { runOutcome } from "./RestartBackgroundNote.ts";
 import { restartCutView } from "@t3tools/shared/restartCut";
 

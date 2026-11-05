@@ -1,10 +1,11 @@
 // Fork: header crumbs for a child thread (toolboxmd/chromeria#201, ported from v1 #18).
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { threadKey } from "@t3tools/client-runtime/state/entities";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ChevronsUpDownIcon } from "lucide-react";
 
-import { useThreadShell, useThreadShells } from "~/state/entities";
+import { useHiddenThreadKeys, useThreadShell, useVisibleThreadShells } from "~/state/entities";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuItemLabel, MenuPopup, MenuTrigger } from "../ui/menu";
 import {
@@ -29,11 +30,13 @@ export function ThreadParentCrumbs({
   const parentId = childParentThreadId(self);
   const parent = useThreadShell(parentId === null ? null : scopeThreadRef(environmentId, parentId));
   // Only child threads subscribe to the full shell list.
-  const shells = useThreadShells(parent !== null);
+  const shells = useVisibleThreadShells(parent !== null);
+  const hiddenKeys = useHiddenThreadKeys();
   const navigate = useNavigate();
   const siblings =
     parentId === null ? [] : siblingThreads(shells, environmentId, parentId, threadId);
-  if (parent === null) return null;
+  if (parent === null || hiddenKeys.has(threadKey({ environmentId, threadId: parent.id })))
+    return null;
   return (
     <>
       <WorkspaceBreadcrumbItem className="shrink">

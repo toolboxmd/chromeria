@@ -638,6 +638,8 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
       if (preferencesOwner) {
         yield* Context.get(settingsContext, Settings.ServerSettingsService).updateSettings({
           linkedEnvironmentsEnabled: true,
+          enableAgentBrowserAccess: true,
+          enableAgentDeviceAccess: true,
         });
         yield* Ref.set(settingsWrites, 0);
       }
@@ -2127,7 +2129,11 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
           Layer.provide(layerLaunchCatalog),
           Layer.provide(
             Layer.mergeAll(
-              Layer.mock(Git.GitVcsDriver)({}),
+              Layer.mock(Git.GitVcsDriver)({
+                resolvePrimaryRemoteName: () => Effect.succeed("origin"),
+                resolveDefaultBranchName: () => Effect.succeed("main"),
+                resolveCommit: () => Effect.succeed({ commitSha: "fixture-commit" }),
+              }),
               Layer.mock(Repositories.SourceControlRepositoryService)({}),
               Layer.mock(ProjectClone.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
               AssetSigner.layer.pipe(
@@ -2169,6 +2175,7 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
           ? { serverConfig: Context.get(nodeConfigContext, Config.ServerConfig) }
           : {}),
         database: db,
+        settings: Context.get(settingsContext, Settings.ServerSettingsService),
         registry,
         secretStore: Context.get(services, Secrets.ServerSecretStore),
         authorityServices: Context.mergeAll(
@@ -2317,6 +2324,7 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
               ? { serverConfig: Context.get(nodeConfigContext, Config.ServerConfig) }
               : {}),
             database: db,
+            settings: Context.get(settingsContext, Settings.ServerSettingsService),
             registry: renewed,
             secretStore: Context.get(services, Secrets.ServerSecretStore),
             authorityServices,

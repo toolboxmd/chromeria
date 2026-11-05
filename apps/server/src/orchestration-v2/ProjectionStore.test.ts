@@ -488,235 +488,239 @@ it.effect("record reads restrict provider histories to delivery identities", () 
   }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect("idle compaction filters keep the latest run, live work and the newest usage", () =>
-  Effect.gen(function* () {
-    const store = yield* ProjectionStore.ProjectionStoreV2;
-    // Its rolled-back run 1 still has a running item, which background work must ignore.
-    const threadId = yield* addRolledBackRecoveryCandidate("idle-compaction");
-    const now = yield* DateTime.now;
-    const minutes = (count: number) => DateTime.add(now, { minutes: count });
-    const selected = ProviderThreadId.make("provider-thread:idle-selected");
-    const nodeId = NodeId.make("node:idle-compaction");
-    for (const [ordinal, status] of [
-      [2, "completed"],
-      [3, "completed"],
-      [4, "failed"],
-      // A removed or steered queued message.
-      [5, "cancelled"],
-    ] as const) {
-      const runId = RunId.make(`run:idle-compaction:${ordinal}`);
-      yield* store.apply({
-        id: EventId.make(`event:idle-compaction:run-${ordinal}`),
-        type: "run.created",
-        threadId,
-        runId,
-        nodeId,
-        driver,
-        providerInstanceId,
-        occurredAt: now,
-        payload: {
-          id: runId,
+it.effect.each([layerTest, ProjectionStore.layerMemory])(
+  "idle compaction filters keep the latest run, live work and the newest usage",
+  (layer) =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      // Its rolled-back run 1 still has a running item, which background work must ignore.
+      const threadId = yield* addRolledBackRecoveryCandidate("idle-compaction");
+      const now = yield* DateTime.now;
+      const minutes = (count: number) => DateTime.add(now, { minutes: count });
+      const selected = ProviderThreadId.make("provider-thread:idle-selected");
+      const nodeId = NodeId.make("node:idle-compaction");
+      for (const [ordinal, status] of [
+        [2, "completed"],
+        [3, "completed"],
+        [4, "failed"],
+        // A removed or steered queued message.
+        [5, "cancelled"],
+      ] as const) {
+        const runId = RunId.make(`run:idle-compaction:${ordinal}`);
+        yield* store.apply({
+          id: EventId.make(`event:idle-compaction:run-${ordinal}`),
+          type: "run.created",
           threadId,
-          ordinal,
+          runId,
+          nodeId,
+          driver,
           providerInstanceId,
-          modelSelection,
-          providerThreadId: selected,
-          userMessageId: MessageId.make(`message:idle-compaction:${ordinal}`),
-          rootNodeId: nodeId,
-          activeAttemptId: null,
-          status,
-          requestedAt: now,
-          startedAt: status === "cancelled" ? null : now,
-          completedAt: now,
-          checkpointId: null,
-          contextHandoffId: null,
-        },
-      });
-    }
-    for (const [id, providerThreadId, ordinal, usageAt] of [
-      ["turn:idle-old", selected, 1, minutes(1)],
-      ["turn:idle-newest", selected, 2, minutes(3)],
-      ["turn:idle-later-ordinal", selected, 3, minutes(2)],
-      ["turn:idle-no-usage", selected, 4, null],
-      [
-        "turn:idle-other-thread",
-        ProviderThreadId.make("provider-thread:idle-other"),
-        1,
-        minutes(9),
-      ],
-    ] as const) {
-      yield* store.apply({
-        id: EventId.make(`event:${id}`),
-        type: "provider-turn.updated",
-        threadId,
-        nodeId,
-        driver,
-        occurredAt: now,
-        payload: {
-          id: ProviderTurnId.make(id),
-          providerThreadId,
+          occurredAt: now,
+          payload: {
+            id: runId,
+            threadId,
+            ordinal,
+            providerInstanceId,
+            modelSelection,
+            providerThreadId: selected,
+            userMessageId: MessageId.make(`message:idle-compaction:${ordinal}`),
+            rootNodeId: nodeId,
+            activeAttemptId: null,
+            status,
+            requestedAt: now,
+            startedAt: status === "cancelled" ? null : now,
+            completedAt: now,
+            checkpointId: null,
+            contextHandoffId: null,
+          },
+        });
+      }
+      for (const [id, providerThreadId, ordinal, usageAt] of [
+        ["turn:idle-old", selected, 1, minutes(1)],
+        ["turn:idle-newest", selected, 2, minutes(3)],
+        ["turn:idle-later-ordinal", selected, 3, minutes(2)],
+        ["turn:idle-no-usage", selected, 4, null],
+        [
+          "turn:idle-other-thread",
+          ProviderThreadId.make("provider-thread:idle-other"),
+          1,
+          minutes(9),
+        ],
+      ] as const) {
+        yield* store.apply({
+          id: EventId.make(`event:${id}`),
+          type: "provider-turn.updated",
+          threadId,
           nodeId,
-          runAttemptId: null,
-          nativeTurnRef: null,
-          ordinal,
-          status: "completed",
-          startedAt: now,
-          completedAt: now,
-          ...(usageAt === null
-            ? {}
-            : { tokenUsage: { usedTokens: 150_000, updatedAt: DateTime.formatIso(usageAt) } }),
-        },
-      });
-    }
-    for (const status of ["pending", "resolved"] as const) {
-      yield* store.apply({
-        id: EventId.make(`event:idle-compaction:request-${status}`),
-        type: "runtime-request.updated",
-        threadId,
-        nodeId,
-        occurredAt: now,
-        payload: {
-          id: RuntimeRequestId.make(`request:idle-compaction:${status}`),
+          driver,
+          occurredAt: now,
+          payload: {
+            id: ProviderTurnId.make(id),
+            providerThreadId,
+            nodeId,
+            runAttemptId: null,
+            nativeTurnRef: null,
+            ordinal,
+            status: "completed",
+            startedAt: now,
+            completedAt: now,
+            ...(usageAt === null
+              ? {}
+              : { tokenUsage: { usedTokens: 150_000, updatedAt: DateTime.formatIso(usageAt) } }),
+          },
+        });
+      }
+      for (const status of ["pending", "resolved"] as const) {
+        yield* store.apply({
+          id: EventId.make(`event:idle-compaction:request-${status}`),
+          type: "runtime-request.updated",
+          threadId,
           nodeId,
-          providerTurnId: null,
-          nativeRequestRef: null,
-          kind: "user_input",
-          status,
-          responseCapability: { type: "message" },
-          createdAt: now,
-          resolvedAt: status === "pending" ? null : now,
-        },
-      });
-    }
-    for (const status of ["pending", "consumed"] as const) {
-      yield* store.apply({
-        id: EventId.make(`event:idle-compaction:transfer-${status}`),
-        type: "context-transfer.created",
-        threadId,
-        occurredAt: now,
-        payload: {
-          id: ContextTransferId.make(`transfer:idle-compaction:${status}`),
-          type: "merge_back",
-          sourceThreadId: ThreadId.make("thread:idle-compaction:side"),
-          targetThreadId: threadId,
-          sourcePoint: { threadId: ThreadId.make("thread:idle-compaction:side") },
-          basePoint: null,
-          sourceProviderInstanceId: providerInstanceId,
-          targetProviderInstanceId: providerInstanceId,
-          targetRunId: null,
-          status,
-          resolution: null,
-          createdBy: "user",
-          error: null,
-          createdAt: now,
-          updatedAt: now,
-          consumedAt: status === "pending" ? null : now,
-        },
-      });
-    }
+          occurredAt: now,
+          payload: {
+            id: RuntimeRequestId.make(`request:idle-compaction:${status}`),
+            nodeId,
+            providerTurnId: null,
+            nativeRequestRef: null,
+            kind: "user_input",
+            status,
+            responseCapability: { type: "message" },
+            createdAt: now,
+            resolvedAt: status === "pending" ? null : now,
+          },
+        });
+      }
+      for (const status of ["pending", "consumed"] as const) {
+        yield* store.apply({
+          id: EventId.make(`event:idle-compaction:transfer-${status}`),
+          type: "context-transfer.created",
+          threadId,
+          occurredAt: now,
+          payload: {
+            id: ContextTransferId.make(`transfer:idle-compaction:${status}`),
+            type: "merge_back",
+            sourceThreadId: ThreadId.make("thread:idle-compaction:side"),
+            targetThreadId: threadId,
+            sourcePoint: { threadId: ThreadId.make("thread:idle-compaction:side") },
+            basePoint: null,
+            sourceProviderInstanceId: providerInstanceId,
+            targetProviderInstanceId: providerInstanceId,
+            targetRunId: null,
+            status,
+            resolution: null,
+            createdBy: "user",
+            error: null,
+            createdAt: now,
+            updatedAt: now,
+            consumedAt: status === "pending" ? null : now,
+          },
+        });
+      }
 
-    const records = yield* store.getThreadRecords(
-      threadId,
-      ["runs", "providerTurns", "runtimeRequests", "contextTransfers"],
-      {
-        runStatuses: ["preparing", "starting", "running", "rolled_back"],
-        includeLatestRun: true,
-        providerTurnThreadIds: [selected],
+      const records = yield* store.getThreadRecords(
+        threadId,
+        ["runs", "providerTurns", "runtimeRequests", "contextTransfers"],
+        {
+          runStatuses: ["preparing", "starting", "running", "rolled_back"],
+          includeLatestRun: true,
+          providerTurnThreadIds: [selected],
+          latestProviderTurnUsageOnly: true,
+          runtimeRequestStatuses: ["pending"],
+          contextTransferStatuses: ["pending"],
+        },
+      );
+      // The failed latest run stays, so a completed earlier run is not mistaken for the latest,
+      // and a cancelled queued run never counts as the latest.
+      assert.deepEqual(
+        records.runs.map((run) => run.id),
+        ["run:idle-compaction:rolled-back", "run:idle-compaction:4"],
+      );
+      assert.deepEqual(
+        records.providerTurns.map((turn) => turn.id),
+        ["turn:idle-newest"],
+      );
+      assert.deepEqual(
+        records.runtimeRequests.map((request) => request.id),
+        ["request:idle-compaction:pending"],
+      );
+      assert.deepEqual(
+        records.contextTransfers.map((transfer) => transfer.id),
+        ["transfer:idle-compaction:pending"],
+      );
+      const empty = yield* store.getThreadRecords(threadId, ["runs", "providerTurns"], {
+        runStatuses: [],
+        providerTurnThreadIds: [],
         latestProviderTurnUsageOnly: true,
-        runtimeRequestStatuses: ["pending"],
-        contextTransferStatuses: ["pending"],
-      },
-    );
-    // The failed latest run stays, so a completed earlier run is not mistaken for the latest,
-    // and a cancelled queued run never counts as the latest.
-    assert.deepEqual(
-      records.runs.map((run) => run.id),
-      ["run:idle-compaction:rolled-back", "run:idle-compaction:4"],
-    );
-    assert.deepEqual(
-      records.providerTurns.map((turn) => turn.id),
-      ["turn:idle-newest"],
-    );
-    assert.deepEqual(
-      records.runtimeRequests.map((request) => request.id),
-      ["request:idle-compaction:pending"],
-    );
-    assert.deepEqual(
-      records.contextTransfers.map((transfer) => transfer.id),
-      ["transfer:idle-compaction:pending"],
-    );
-    const empty = yield* store.getThreadRecords(threadId, ["runs", "providerTurns"], {
-      runStatuses: [],
-      providerTurnThreadIds: [],
-      latestProviderTurnUsageOnly: true,
-    });
-    assert.deepEqual([empty.runs, empty.providerTurns], [[], []]);
-  }).pipe(Effect.provide(layerTest)),
+      });
+      assert.deepEqual([empty.runs, empty.providerTurns], [[], []]);
+    }).pipe(Effect.provide(layer)),
 );
 
-it.effect("record reads filter notification sources without dropping matching message bodies", () =>
-  Effect.gen(function* () {
-    const store = yield* ProjectionStore.ProjectionStoreV2;
-    const threadId = yield* addRolledBackRecoveryCandidate("notification-filter");
-    const now = yield* DateTime.now;
-    for (const [id, role, kind] of [
-      ["ordinary", "user", null],
-      ["monitor", "user", "monitor"],
-      ["system", "user", "system"],
-      ["assistant-monitor", "assistant", "monitor"],
-    ] as const) {
-      yield* store.apply({
-        id: EventId.make(`notification-filter:${id}`),
-        type: "message.updated",
-        threadId,
-        occurredAt: now,
-        payload: {
-          id: MessageId.make(id),
+it.effect.each([layerTest, ProjectionStore.layerMemory])(
+  "record reads filter notification sources without dropping matching message bodies",
+  (layer) =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = yield* addRolledBackRecoveryCandidate("notification-filter");
+      const now = yield* DateTime.now;
+      for (const [id, role, kind] of [
+        ["ordinary", "user", null],
+        ["monitor", "user", "monitor"],
+        ["system", "user", "system"],
+        ["assistant-monitor", "assistant", "monitor"],
+      ] as const) {
+        yield* store.apply({
+          id: EventId.make(`notification-filter:${id}`),
+          type: "message.updated",
           threadId,
-          runId: null,
-          nodeId: null,
-          createdBy: "agent",
-          creationSource: "server",
-          role,
-          text: `Complete body for ${id}`,
-          attachments: [],
-          streaming: false,
-          createdAt: now,
-          updatedAt: now,
-          ...(kind === null
-            ? {}
-            : {
-                notification: {
-                  source: { kind },
-                  outcome: "updated",
-                  summary: "Background notification",
-                },
-              }),
-        },
-      });
-    }
-    const matching = yield* store.getThreadRecords(threadId, ["messages"], {
-      messageRoles: ["user"],
-      monitorNotificationsOnly: true,
-    });
-    assert.deepEqual(
-      matching.messages.map((message) => [message.id, message.text]),
-      [["monitor", "Complete body for monitor"]],
-    );
-    assert.lengthOf((yield* store.getThreadRecords(threadId, ["messages"])).messages, 4);
-    assert.lengthOf(
-      (yield* store.getThreadRecords(threadId, ["messages"], {
+          occurredAt: now,
+          payload: {
+            id: MessageId.make(id),
+            threadId,
+            runId: null,
+            nodeId: null,
+            createdBy: "agent",
+            creationSource: "server",
+            role,
+            text: `Complete body for ${id}`,
+            attachments: [],
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+            ...(kind === null
+              ? {}
+              : {
+                  notification: {
+                    source: { kind },
+                    outcome: "updated",
+                    summary: "Background notification",
+                  },
+                }),
+          },
+        });
+      }
+      const matching = yield* store.getThreadRecords(threadId, ["messages"], {
+        messageRoles: ["user"],
         monitorNotificationsOnly: true,
-      })).messages,
-      2,
-    );
-    assert.lengthOf(
-      (yield* store.getThreadRecords(threadId, ["messages"], {
-        monitorNotificationsOnly: false,
-      })).messages,
-      4,
-    );
-  }).pipe(Effect.provide(layerTest)),
+      });
+      assert.deepEqual(
+        matching.messages.map((message) => [message.id, message.text]),
+        [["monitor", "Complete body for monitor"]],
+      );
+      assert.lengthOf((yield* store.getThreadRecords(threadId, ["messages"])).messages, 4);
+      assert.lengthOf(
+        (yield* store.getThreadRecords(threadId, ["messages"], {
+          monitorNotificationsOnly: true,
+        })).messages,
+        2,
+      );
+      assert.lengthOf(
+        (yield* store.getThreadRecords(threadId, ["messages"], {
+          monitorNotificationsOnly: false,
+        })).messages,
+        4,
+      );
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect("SQL queue readiness skips held runs without bypassing active work", () =>

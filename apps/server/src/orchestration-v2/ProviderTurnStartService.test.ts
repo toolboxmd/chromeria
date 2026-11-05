@@ -1143,6 +1143,13 @@ function makeLocalCommandHarness(input: {
     start: Effect.gen(function* () {
       yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).start({ threadId, runId });
     }).pipe(Effect.provide(layer)),
+    settleUnstarted: Effect.gen(function* () {
+      yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).settleUnstartedRun({
+        threadId,
+        runId,
+        cause: "ProviderAdapterInterruptTimeoutError: stop unconfirmed",
+      });
+    }).pipe(Effect.provide(layer)),
     startWithRetry: Effect.gen(function* () {
       yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).start({
         threadId,
@@ -2036,3 +2043,17 @@ for (const previousMessages of [[], ["/compact", " /COMPACT "]]) {
       }),
   );
 }
+
+effectIt.effect("cancellation-exhausted restart settles request analytics exactly once", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "Continue" });
+    yield* harness.settleUnstarted;
+    yield* harness.settleUnstarted;
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+    expect(harness.settledRuns).toEqual(["failed"]);
+    expect(harness.projection().turnItems.at(-1)).toMatchObject({
+      type: "error",
+      title: "Message not delivered",
+    });
+  }),
+);

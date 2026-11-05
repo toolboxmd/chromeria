@@ -8,7 +8,7 @@ import { HouseIcon, SquarePenIcon } from "lucide-react";
 import { isElectron } from "../../env";
 import { useNowMinute } from "../../hooks/useNowMinute";
 import { useEnvironments } from "../../state/environments";
-import { useProjects, useThreadShells } from "../../state/entities";
+import { useProjects, useVisibleThreadShells } from "../../state/entities";
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../../threadRoutes";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { resolveSidebarThreadStatus, type SidebarThreadStatus } from "../Sidebar.logic";
@@ -135,7 +135,7 @@ function PromachosConversationList({
   homeLabel: string;
   onChangeHome: () => void;
 }) {
-  const threads = useThreadShells();
+  const threads = useVisibleThreadShells();
   const personThreads = usePersonViewThreads(threads);
   const homeRefs = usePromachosHomeRefs(home);
   const conversations = promachosConversations(personThreads, homeRefs);

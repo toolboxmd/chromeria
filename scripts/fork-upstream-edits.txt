@@ -679,3 +679,8 @@ apps/web/src/components/files/BrowserDocumentFrame.browser.test.tsx
 evals/mcp-tool-use/devices.test.ts
 apps/server/src/storageCleanup.ts
 apps/server/src/storageCleanup.test.ts
+apps/desktop/src/app/DesktopApp.test.ts
+apps/mobile/src/features/threads/useThreadListV2.test.tsx
+apps/server/src/mcp/TaskCancelUsageLimit.integration.test.ts
+apps/web/src/components/chat/ThreadLineageWorkflowRow.tsx
+apps/web/src/components/chat/useThreadLifecycle.browser.test.tsx

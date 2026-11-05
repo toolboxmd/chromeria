@@ -76,6 +76,7 @@ export const servePeer = <E, R>(
   tools: Layer.Layer<never, E, R>,
   options?: {
     readonly persisted?: boolean;
+    readonly settings?: ServerSettings.ServerSettingsService["Service"];
     readonly serverConfig?: ServerConfig.ServerConfig["Service"];
     readonly registry?: McpSessionRegistry.McpSessionRegistryShape;
     readonly controlStreamUnavailable?: boolean;
@@ -102,7 +103,11 @@ export const servePeer = <E, R>(
     });
     const authContext = yield* EnvironmentAuth.layer.pipe(
       Layer.provide(ManagedPolicy.layerTest()),
-      Layer.provideMerge(ServerSettings.layerTest({ linkedEnvironmentsEnabled: true })),
+      Layer.provideMerge(
+        options?.settings === undefined
+          ? ServerSettings.layerTest({ linkedEnvironmentsEnabled: true })
+          : Layer.succeed(ServerSettings.ServerSettingsService, options.settings),
+      ),
       Layer.provideMerge(
         options?.database ??
           (options?.persisted === true ? Sqlite.layerConfig : Sqlite.layerMemory),

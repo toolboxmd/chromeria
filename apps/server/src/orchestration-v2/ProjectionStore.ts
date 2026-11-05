@@ -8594,6 +8594,21 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
           const projection = (yield* Ref.get(replayState)).projections.get(threadId);
           if (projection === undefined)
             return yield* new ProjectionStoreThreadNotFoundError({ threadId });
+          const latestRun = projection.runs
+            .filter((run) => run.status !== "cancelled" || run.startedAt !== null)
+            .reduce<OrchestrationV2Run | undefined>(
+              (latest, run) =>
+                latest === undefined || run.ordinal > latest.ordinal ? run : latest,
+              undefined,
+            );
+          const providerTurns = projection.providerTurns.filter(
+            (row) =>
+              (filter?.providerTurnAttemptIds === undefined ||
+                (row.runAttemptId !== null &&
+                  filter.providerTurnAttemptIds.includes(row.runAttemptId))) &&
+              (filter?.providerTurnThreadIds === undefined ||
+                filter.providerTurnThreadIds.includes(row.providerThreadId)),
+          );
           const selected = {
             ...projection,
             messages: projection.messages.filter(
@@ -8601,16 +8616,73 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
                 (filter?.messageRunIds === undefined ||
                   (row.runId !== null && filter.messageRunIds.includes(row.runId))) &&
                 (filter?.messageIds === undefined || filter.messageIds.includes(row.id)) &&
-                (filter?.messageRoles === undefined || filter.messageRoles.includes(row.role)),
+                (filter?.messageRoles === undefined || filter.messageRoles.includes(row.role)) &&
+                (filter?.monitorNotificationsOnly !== true ||
+                  row.notification?.source.kind === "monitor"),
             ),
-            runs:
-              filter?.runIds === undefined
-                ? projection.runs
-                : projection.runs.filter((row) => filter.runIds!.includes(row.id)),
+            runs: projection.runs.filter(
+              (row) =>
+                (filter?.runIds === undefined || filter.runIds.includes(row.id)) &&
+                (filter?.runStatuses === undefined ||
+                  filter.runStatuses.includes(row.status) ||
+                  (filter.includeLatestRun === true && row.id === latestRun?.id)),
+            ),
+            providerThreads: projection.providerThreads.filter(
+              (row) =>
+                filter?.providerThreadIds === undefined ||
+                filter.providerThreadIds.includes(row.id),
+            ),
+            providerTurns:
+              filter?.latestProviderTurnUsageOnly === true
+                ? providerTurns
+                    .filter((row) => row.tokenUsage != null)
+                    .toSorted(
+                      (a, b) =>
+                        Date.parse(b.tokenUsage!.updatedAt) -
+                          Date.parse(a.tokenUsage!.updatedAt) ||
+                        a.providerThreadId.localeCompare(b.providerThreadId) ||
+                        a.ordinal - b.ordinal,
+                    )
+                    .slice(0, 1)
+                : providerTurns,
+            runtimeRequests: projection.runtimeRequests.filter(
+              (row) =>
+                filter?.runtimeRequestStatuses === undefined ||
+                filter.runtimeRequestStatuses.includes(row.status),
+            ),
+            contextTransfers: projection.contextTransfers.filter(
+              (row) =>
+                filter?.contextTransferStatuses === undefined ||
+                filter.contextTransferStatuses.includes(row.status),
+            ),
+            subagents: projection.subagents.filter(
+              (row) =>
+                (filter?.subagentIds === undefined || filter.subagentIds.includes(row.id)) &&
+                (filter?.subagentRunIds === undefined ||
+                  (row.runId !== null && filter.subagentRunIds.includes(row.runId))) &&
+                (filter?.omitSettledSubagents === undefined ||
+                  (filter.omitSettledSubagents !== true &&
+                    filter.omitSettledSubagents.except.includes(row.id)) ||
+                  !(
+                    ["completed", "failed", "cancelled", "interrupted"].includes(row.status) &&
+                    ["acknowledged", "delivered", "disposed"].includes(
+                      row.completionDelivery?.state ?? "",
+                    ) &&
+                    !projection.runs.some(
+                      (run) =>
+                        run.id === row.runId &&
+                        ["preparing", "queued", "starting", "running", "waiting"].includes(
+                          run.status,
+                        ),
+                    )
+                  )),
+            ),
             turnItems: projection.turnItems.filter(
               (row) =>
                 (filter?.turnItemRunIds === undefined ||
                   filter.turnItemRunIds.includes(row.runId)) &&
+                (filter?.turnItemNodeIds === undefined ||
+                  (row.nodeId !== null && filter.turnItemNodeIds.includes(row.nodeId))) &&
                 (filter?.turnItemTypes === undefined || filter.turnItemTypes.includes(row.type)) &&
                 (filter?.turnItemStatuses === undefined ||
                   filter.turnItemStatuses.includes(row.status)) &&
@@ -8618,8 +8690,14 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
             ),
             nodes:
               filter?.omitSettledLeafNodes === true
-                ? projection.nodes.filter((node) => !isSettledLeafNode(node, projection.runs))
-                : projection.nodes,
+                ? projection.nodes.filter(
+                    (node) =>
+                      !isSettledLeafNode(node, projection.runs) &&
+                      (filter.nodeIds === undefined || filter.nodeIds.includes(node.id)),
+                  )
+                : projection.nodes.filter(
+                    (node) => filter?.nodeIds === undefined || filter.nodeIds.includes(node.id),
+                  ),
           };
           return Object.fromEntries([
             ["thread", projection.thread],

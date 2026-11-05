@@ -7634,7 +7634,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ...providerTurn,
           id: ProviderTurnId.make("provider-turn-claude-cursor-earlier"),
           ordinal: providerTurn.ordinal - 1,
-          nativeTurnRef: {
+          nativeConversationHeadRef: {
             driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
             nativeId: earlierCursor,
             strength: "weak",
@@ -7668,7 +7668,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             ...providerTurn,
             id: ProviderTurnId.make("provider-turn-claude-cursor-earlier"),
             ordinal: 1,
-            nativeTurnRef: {
+            nativeConversationHeadRef: {
               driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
               nativeId: earlierCursor,
               strength: "weak",
@@ -14509,195 +14509,198 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       ),
   );
 
-  it.effect(
-    "bounds successful close without EOF at 10 seconds and fences the old query's result",
-    () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const requested = yield* Deferred.make<void>();
-          const acknowledge = yield* Deferred.make<void>();
-          const closeRequested = yield* Deferred.make<void>();
-          const harness = yield* makeWakeHarnessWithOptions({
-            freshQueueOnReopen: true,
-            interrupt: Deferred.succeed(requested, undefined).pipe(
-              Effect.andThen(Deferred.await(acknowledge)),
-            ),
-            // A successful close request does not promise EOF or OS-process exit.
-            close: () => Deferred.succeed(closeRequested, undefined),
-          });
-          const taskId = "task-close-no-eof-earlier";
-          const toolUseId = "toolu-close-no-eof-earlier";
-          yield* harness.runtime.startTurn(
-            makeClaudeTestTurnInput({
-              threadId: harness.threadId,
-              providerThread: harness.providerThread,
-              now: yield* DateTime.now,
-              attemptId: RunAttemptId.make("attempt-claude-earlier-close-no-eof"),
-              text: "Audit in the background.",
-              attachments: [],
-            }),
+  it.effect("retains an unconfirmed stop after 10 seconds and fences its late result", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const requested = yield* Deferred.make<void>();
+        const acknowledge = yield* Deferred.make<void>();
+        const closeRequested = yield* Deferred.make<void>();
+        const harness = yield* makeWakeHarnessWithOptions({
+          freshQueueOnReopen: true,
+          interrupt: Deferred.succeed(requested, undefined).pipe(
+            Effect.andThen(Deferred.await(acknowledge)),
+          ),
+          // A successful close request does not promise EOF or OS-process exit.
+          close: () => Deferred.succeed(closeRequested, undefined),
+        });
+        const taskId = "task-close-no-eof-earlier";
+        const toolUseId = "toolu-close-no-eof-earlier";
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-claude-earlier-close-no-eof"),
+            text: "Audit in the background.",
+            attachments: [],
+          }),
+        );
+        yield* Queue.take(harness.runningReceipts);
+        yield* harness.offerAndWait(
+          makeSubagentTaskStartedFrame({
+            taskId,
+            toolUseId,
+            uuid: "earlier-close-no-eof-started",
+          }),
+        );
+        yield* harness.offerAndWait(
+          makeResultFrame({ uuid: "earlier-close-no-eof-completed", result: "Audit continues." }),
+        );
+        assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+        const taskStatuses = () =>
+          harness.events.flatMap((event) =>
+            event.type === "subagent.updated" && event.subagent.nativeTaskRef?.nativeId === taskId
+              ? [event.subagent.status]
+              : [],
           );
-          yield* Queue.take(harness.runningReceipts);
-          yield* harness.offerAndWait(
-            makeSubagentTaskStartedFrame({
-              taskId,
-              toolUseId,
-              uuid: "earlier-close-no-eof-started",
-            }),
-          );
-          yield* harness.offerAndWait(
-            makeResultFrame({ uuid: "earlier-close-no-eof-completed", result: "Audit continues." }),
-          );
-          assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
-          const taskStatuses = () =>
-            harness.events.flatMap((event) =>
-              event.type === "subagent.updated" && event.subagent.nativeTaskRef?.nativeId === taskId
-                ? [event.subagent.status]
-                : [],
-            );
-          yield* harness.runtime.startTurn(
-            makeClaudeTestTurnInput({
-              threadId: harness.threadId,
-              providerThread: harness.providerThread,
-              now: yield* DateTime.now,
-              attemptId: RunAttemptId.make("attempt-claude-close-no-eof"),
-              providerTurnOrdinal: 2,
-              text: "Hold the command.",
-              attachments: [],
-            }),
-          );
-          const providerTurnId = yield* Queue.take(harness.runningReceipts);
-          const interruptTerminals = () =>
-            harness.terminalEvents().filter((event) => event.providerTurnId === providerTurnId);
-          const interrupt = yield* harness.runtime
-            .interruptTurn({
-              providerThread: harness.providerThread,
-              providerTurnId,
-            })
-            .pipe(Effect.forkChild);
-          yield* Deferred.await(requested);
-          yield* harness.offerAndWait(
-            makeResultFrame({
-              uuid: "close-no-eof-aborted",
-              result: "",
-              terminalReason: "aborted_tools",
-            }),
-          );
-          yield* Deferred.succeed(acknowledge, undefined);
-          yield* Deferred.await(closeRequested);
-          expect
-            .soft(interruptTerminals(), "query remains attached until the EOF bound")
-            .toEqual([]);
-          yield* TestClock.adjust("9999 millis");
-          expect.soft(interruptTerminals(), "the EOF bound has not elapsed").toEqual([]);
-          expect
-            .soft(taskStatuses(), "the earlier agent still belongs to the attached query")
-            .toEqual(["running"]);
-          yield* TestClock.adjust("1 millis");
-          yield* Fiber.join(interrupt);
-          const terminal = yield* Queue.take(harness.terminalReceipts);
-          assert.equal(terminal.status, "interrupted");
-          assert.equal(terminal.backgroundWork, "ended");
-          assert.lengthOf(interruptTerminals(), 1);
-          expect.soft(taskStatuses()).toEqual(["running", "interrupted"]);
-          expect.soft(yield* harness.hasPendingBackgroundWork).toBe(false);
-          const interruptedTurn = harness.events.find(
-            (event) =>
-              event.type === "provider_turn.updated" &&
-              event.providerTurn.id === providerTurnId &&
-              event.providerTurn.status === "interrupted",
-          );
-          assert.equal(
-            interruptedTurn?.type === "provider_turn.updated" &&
-              interruptedTurn.providerTurn.turnTokenUsage?.usageStatus,
-            "partial",
-          );
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-claude-close-no-eof"),
+            providerTurnOrdinal: 2,
+            text: "Hold the command.",
+            attachments: [],
+          }),
+        );
+        const providerTurnId = yield* Queue.take(harness.runningReceipts);
+        const interruptTerminals = () =>
+          harness.terminalEvents().filter((event) => event.providerTurnId === providerTurnId);
+        const interrupt = yield* harness.runtime
+          .interruptTurn({
+            providerThread: harness.providerThread,
+            providerTurnId,
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(requested);
+        yield* harness.offerAndWait(
+          makeResultFrame({
+            uuid: "close-no-eof-aborted",
+            result: "",
+            terminalReason: "aborted_tools",
+          }),
+        );
+        yield* Deferred.succeed(acknowledge, undefined);
+        yield* Deferred.await(closeRequested);
+        expect.soft(interruptTerminals(), "query remains attached until the EOF bound").toEqual([]);
+        yield* TestClock.adjust("9999 millis");
+        expect.soft(interruptTerminals(), "the EOF bound has not elapsed").toEqual([]);
+        expect
+          .soft(taskStatuses(), "the earlier agent still belongs to the attached query")
+          .toEqual(["running"]);
+        yield* TestClock.adjust("1 millis");
+        const timeout = yield* Fiber.join(interrupt).pipe(Effect.flip);
+        assert.equal(timeout._tag, "ProviderAdapterInterruptTimeoutError");
+        assert.lengthOf(interruptTerminals(), 0);
+        expect(taskStatuses()).toEqual(["running"]);
+        assert.isTrue(yield* harness.hasPendingBackgroundWork);
+        yield* harness.offerAndWait(
+          makeResultFrame({ uuid: "late-old-query-result", result: "Old process output." }),
+          undefined,
+          harness.processQueues[0]!,
+        );
+        assert.lengthOf(interruptTerminals(), 0);
+        yield* Queue.shutdown(harness.processQueues[0]!);
+        yield* Deferred.await(harness.processExits[0]!);
+        const terminal = yield* Queue.take(harness.terminalReceipts);
+        assert.equal(terminal.status, "interrupted");
+        assert.equal(terminal.backgroundWork, "ended");
+        assert.lengthOf(interruptTerminals(), 1);
+        expect.soft(taskStatuses()).toEqual(["running", "interrupted"]);
+        expect.soft(yield* harness.hasPendingBackgroundWork).toBe(false);
+        const interruptedTurn = harness.events.find(
+          (event) =>
+            event.type === "provider_turn.updated" &&
+            event.providerTurn.id === providerTurnId &&
+            event.providerTurn.status === "interrupted",
+        );
+        assert.equal(
+          interruptedTurn?.type === "provider_turn.updated" &&
+            interruptedTurn.providerTurn.turnTokenUsage?.usageStatus,
+          "partial",
+        );
 
-          yield* harness.runtime.startTurn(
-            makeClaudeTestTurnInput({
-              threadId: harness.threadId,
-              providerThread: harness.providerThread,
-              now: yield* DateTime.now,
-              attemptId: RunAttemptId.make("attempt-claude-after-close-no-eof"),
-              providerTurnOrdinal: 3,
-              text: "Change direction.",
-              attachments: [],
-            }),
-          );
-          const nextTurnId = yield* Queue.take(harness.runningReceipts);
-          assert.notEqual(nextTurnId, providerTurnId);
-          assert.lengthOf(harness.processQueues, 2);
-          yield* harness.offerAndWait(
-            makeSubagentTaskStartedFrame({ taskId, toolUseId, uuid: "new-query-resumes-agent" }),
-            undefined,
-            harness.processQueues[1]!,
-          );
-          yield* harness.offerAndWait(
-            makeResultFrame({ uuid: "late-old-query-result", result: "Old process output." }),
-            undefined,
-            harness.processQueues[0]!,
-          );
-          assert.lengthOf(harness.terminalEvents(), 2);
-          assert.isFalse(
-            harness.events.some(
-              (event) =>
-                event.type === "message.updated" && event.message.text === "Old process output.",
-            ),
-          );
-          const nextTurn = harness.events.findLast(
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-claude-after-close-no-eof"),
+            providerTurnOrdinal: 3,
+            text: "Change direction.",
+            attachments: [],
+          }),
+        );
+        const nextTurnId = yield* Queue.take(harness.runningReceipts);
+        assert.notEqual(nextTurnId, providerTurnId);
+        assert.lengthOf(harness.processQueues, 2);
+        yield* harness.offerAndWait(
+          makeSubagentTaskStartedFrame({ taskId, toolUseId, uuid: "new-query-resumes-agent" }),
+          undefined,
+          harness.processQueues[1]!,
+        );
+
+        assert.lengthOf(harness.terminalEvents(), 2);
+        assert.isFalse(
+          harness.events.some(
             (event) =>
-              event.type === "provider_turn.updated" && event.providerTurn.id === nextTurnId,
-          );
-          assert.equal(
-            nextTurn?.type === "provider_turn.updated" && nextTurn.providerTurn.status,
-            "running",
-          );
-          yield* Queue.shutdown(harness.sdkMessages);
-          yield* Deferred.await(harness.processExits[0]!);
-          yield* harness.offerAndWait(
-            makeSubagentAssistantFrames({
-              parentToolUseId: toolUseId,
-              uuid: "new-query-agent-text",
-              text: "New native work.",
-            })[0]!,
-            undefined,
-            harness.processQueues[1]!,
-          );
-          assert.equal(
-            taskStatuses().at(-1),
-            "running",
-            "old EOF cannot end a resumed task on the replacement query",
-          );
-          assert.isTrue(yield* harness.hasPendingBackgroundWork);
-          yield* harness.offerAndWait(
-            makeSubagentNotificationFrame({
-              taskId,
-              toolUseId,
-              uuid: "new-query-agent-completed",
-              summary: "Done.",
-            }),
-            undefined,
-            harness.processQueues[1]!,
-          );
-          yield* harness.offerAndWait(
-            makeResultFrame({ uuid: "new-query-result", result: "New process output." }),
-            undefined,
-            harness.processQueues[1]!,
-          );
-          const completed = yield* Queue.take(harness.terminalReceipts);
-          assert.equal(completed.providerTurnId, nextTurnId);
-          assert.equal(completed.status, "completed");
-          assert.lengthOf(harness.terminalEvents(), 3);
-        }).pipe(
-          Effect.provide(
-            Layer.mergeAll(
-              IdAllocator.layer,
-              McpProviderSessions.layer,
-              Layer.merge(NodeServices.layer, NodeCrypto.layer),
-            ),
+              event.type === "message.updated" && event.message.text === "Old process output.",
+          ),
+        );
+        const nextTurn = harness.events.findLast(
+          (event) => event.type === "provider_turn.updated" && event.providerTurn.id === nextTurnId,
+        );
+        assert.equal(
+          nextTurn?.type === "provider_turn.updated" && nextTurn.providerTurn.status,
+          "running",
+        );
+        yield* Queue.shutdown(harness.sdkMessages);
+        yield* Deferred.await(harness.processExits[0]!);
+        yield* harness.offerAndWait(
+          makeSubagentAssistantFrames({
+            parentToolUseId: toolUseId,
+            uuid: "new-query-agent-text",
+            text: "New native work.",
+          })[0]!,
+          undefined,
+          harness.processQueues[1]!,
+        );
+        assert.equal(
+          taskStatuses().at(-1),
+          "running",
+          "old EOF cannot end a resumed task on the replacement query",
+        );
+        assert.isTrue(yield* harness.hasPendingBackgroundWork);
+        yield* harness.offerAndWait(
+          makeSubagentNotificationFrame({
+            taskId,
+            toolUseId,
+            uuid: "new-query-agent-completed",
+            summary: "Done.",
+          }),
+          undefined,
+          harness.processQueues[1]!,
+        );
+        yield* harness.offerAndWait(
+          makeResultFrame({ uuid: "new-query-result", result: "New process output." }),
+          undefined,
+          harness.processQueues[1]!,
+        );
+        const completed = yield* Queue.take(harness.terminalReceipts);
+        assert.equal(completed.providerTurnId, nextTurnId);
+        assert.equal(completed.status, "completed");
+        assert.lengthOf(harness.terminalEvents(), 3);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
           ),
         ),
       ),
+    ),
   );
 
   it.effect.each(["restart", "Stop"] as const)(

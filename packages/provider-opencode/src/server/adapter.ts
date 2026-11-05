@@ -3461,12 +3461,19 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           return {
             ...(agent === undefined ? {} : { agent }),
             ...(variant === undefined ? {} : { variant }),
-            system: [
-              orchestrationSystemPrompt,
-              buildRuntimeInstructions({ harness: "OpenCode", model: turn.modelSelection.model }),
-            ]
-              .filter(Boolean)
-              .join("\n\n"),
+            ...(turn.runtimePolicy.bare === undefined
+              ? {
+                  system: [
+                    orchestrationSystemPrompt,
+                    buildRuntimeInstructions({
+                      harness: "OpenCode",
+                      model: turn.modelSelection.model,
+                    }),
+                  ]
+                    .filter(Boolean)
+                    .join("\n\n"),
+                }
+              : {}),
           };
         };
 

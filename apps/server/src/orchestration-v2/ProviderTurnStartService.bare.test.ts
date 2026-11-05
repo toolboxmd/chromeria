@@ -52,6 +52,7 @@ function harness(
     fork?: "before-carrier" | "after-carrier";
     driver?: "codex" | "grok";
     bare?: boolean;
+    sourceBusy?: boolean;
     steeringSender?: ThreadId;
   } = {},
 ) {
@@ -337,7 +338,19 @@ function harness(
         nativeThreadRef: { ...nativeRef, nativeId: "source-native" },
       },
     ],
-    runs: [previousRun],
+    runs: [
+      previousRun,
+      ...(options.sourceBusy
+        ? [
+            {
+              ...previousRun,
+              id: RunId.make("source-busy"),
+              ordinal: previousRun.ordinal + 1,
+              status: "running" as const,
+            },
+          ]
+        : []),
+    ],
     attempts: [
       { ...attempt, id: previousAttempt, runId: previousId, nativeThreadId: "source-native" },
     ],
@@ -682,5 +695,20 @@ it.effect("normal native forks retain ContextMD accounting", () =>
       }),
     );
     expect(h.delivered.map((turn) => turn.message.text)).toEqual(["Run the task."]);
+  }),
+);
+
+it.effect("bare native fork refuses a source that becomes busy before delivery", () =>
+  Effect.gen(function* () {
+    const h = harness({ fork: "after-carrier", sourceBusy: true });
+    yield* h.start;
+    expect(h.projection().runs.at(-1)?.status).toBe("failed");
+    expect(h.projection().turnItems.at(-1)).toMatchObject({
+      type: "error",
+      failure: { message: expect.stringContaining("will not substitute") },
+    });
+    expect(h.ensure).not.toHaveBeenCalled();
+    expect(h.delivered).toEqual([]);
+    for (const effect of Object.values(h.contextmd)) expect(effect).not.toHaveBeenCalled();
   }),
 );

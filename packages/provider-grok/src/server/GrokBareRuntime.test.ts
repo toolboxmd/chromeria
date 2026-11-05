@@ -1,3 +1,5 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as Layer from "effect/Layer";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
@@ -17,16 +19,20 @@ import { makeGrokAcpRuntime } from "./acpSupport.ts";
 
 const decodeNativeRequestLog = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 
-it.layer(NodeServices.layer)("Grok native session metadata", (it) => {
-  it.effect.each([false, true])("sends foreground tools only for bare sessions, bare=%s", (bare) =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const root = yield* fs.makeTempDirectoryScoped();
-      const logPath = `${root}/requests.json`;
-      const binary = writeFakeCli({
-        directory: root,
-        name: "grok-metadata-test",
-        source: `
+it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))(
+  "Grok native session metadata",
+  (it) => {
+    it.effect.each([false, true])(
+      "sends foreground tools only for bare sessions, bare=%s",
+      (bare) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const root = yield* fs.makeTempDirectoryScoped();
+          const logPath = `${root}/requests.json`;
+          const binary = writeFakeCli({
+            directory: root,
+            name: "grok-metadata-test",
+            source: `
           import { writeFileSync } from "node:fs";
           import { createInterface } from "node:readline";
           const requests = [];
@@ -43,76 +49,77 @@ it.layer(NodeServices.layer)("Grok native session metadata", (it) => {
             process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) + "\\n");
           }
         `,
-      });
-      const runtime = yield* makeGrokAcpRuntime({
-        grokSettings: { binaryPath: binary },
-        cwd: root,
-        clientInfo: { name: "grok-metadata-test", version: "1" },
-        environment: { GROK_TEST_REQUEST_LOG: logPath },
-        runtimeMode: "full-access",
-        ...(bare ? { bare: true, sessionMeta: grokBareSessionMeta(true) } : {}),
-      });
-      yield* runtime.start();
-      const wire = yield* decodeNativeRequestLog(yield* fs.readFileString(logPath));
-      expect(wire).toEqual({
-        args: bare
-          ? ["agent", "--always-approve", "--no-leader", "stdio"]
-          : ["agent", "--always-approve", "stdio"],
-        requests: [
-          expect.objectContaining({
-            method: "initialize",
-            params: expect.objectContaining({ _meta: { clientType: "extension" } }),
-          }),
-          expect.objectContaining({
-            method: "session/new",
-            params: {
-              cwd: root,
-              mcpServers: [],
-              ...(bare
-                ? {
-                    _meta: {
-                      systemPromptOverride: ".",
-                      yoloMode: true,
-                      agentProfile: {
-                        name: "bare",
-                        description: "Bare launch",
-                        tools: [
-                          "run_terminal_command",
-                          "read_file",
-                          "search_replace",
-                          "list_dir",
-                          "grep",
-                          "write",
-                        ],
-                        disallowedTools: [
-                          "search_tool",
-                          "use_tool",
-                          "todo_write",
-                          "monitor",
-                          "update_goal",
-                          "web_search",
-                          "web_fetch",
-                          "image_gen",
-                          "image_edit",
-                          "image_to_video",
-                          "reference_to_video",
-                          "enter_plan_mode",
-                          "exit_plan_mode",
-                          "ask_user_question",
-                        ],
-                      },
-                    },
-                  }
-                : {}),
-            },
-          }),
-        ],
-      });
-    }).pipe(Effect.provideService(HostProcess.Platform, "darwin")),
-  );
-});
+          });
+          const runtime = yield* makeGrokAcpRuntime({
+            grokSettings: { binaryPath: binary },
+            cwd: root,
+            clientInfo: { name: "grok-metadata-test", version: "1" },
+            environment: { GROK_TEST_REQUEST_LOG: logPath },
+            runtimeMode: "full-access",
+            ...(bare ? { bare: true, sessionMeta: grokBareSessionMeta(true) } : {}),
+          });
+          yield* runtime.start();
+          const wire = yield* decodeNativeRequestLog(yield* fs.readFileString(logPath));
+          expect(wire).toEqual({
+            args: bare
+              ? ["agent", "--always-approve", "--no-leader", "stdio"]
+              : ["agent", "--always-approve", "stdio"],
+            requests: [
+              expect.objectContaining({
+                method: "initialize",
+                params: expect.objectContaining({ _meta: { clientType: "extension" } }),
+              }),
+              expect.objectContaining({
+                method: "session/new",
+                params: {
+                  cwd: root,
+                  mcpServers: [],
+                  ...(bare
+                    ? {
+                        _meta: {
+                          systemPromptOverride: ".",
+                          yoloMode: true,
+                          agentProfile: {
+                            name: "bare",
+                            description: "Bare launch",
+                            tools: [
+                              "run_terminal_command",
+                              "read_file",
+                              "search_replace",
+                              "list_dir",
+                              "grep",
+                              "write",
+                            ],
+                            disallowedTools: [
+                              "search_tool",
+                              "use_tool",
+                              "todo_write",
+                              "monitor",
+                              "update_goal",
+                              "web_search",
+                              "web_fetch",
+                              "image_gen",
+                              "image_edit",
+                              "image_to_video",
+                              "reference_to_video",
+                              "enter_plan_mode",
+                              "exit_plan_mode",
+                              "ask_user_question",
+                            ],
+                          },
+                        },
+                      }
+                    : {}),
+                },
+              }),
+            ],
+          });
+        }).pipe(Effect.provideService(HostProcess.Platform, "darwin")),
+    );
+  },
+);
 
-it.layer(NodeServices.layer)("Grok bare native inventory", (it) => {
+it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("Grok bare native inventory", (it) => {
   it.effect.each(["stable", "enabled-hook", "changing", "unknown"] as const)(
     "%s inventory is checked before a session can be made",
     (scenario) =>

@@ -2370,6 +2370,8 @@ describe("OpenCodeAdapterV2", () => {
           },
         },
         {},
+        undefined,
+        undefined,
         { options: [{ id: "variant", value: "high" }], interactionMode: "plan" },
       );
       yield* harness.startTurn();
@@ -2399,7 +2401,9 @@ describe("OpenCodeAdapterV2", () => {
         { agent: start?.agent, variant: start?.variant, system: start?.system },
       );
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -2756,8 +2760,6 @@ describe("OpenCodeAdapterV2", () => {
           },
           mcp: { add: async () => ({ data: true }) },
         },
-        undefined,
-        undefined,
         {
           resolveAttachmentPath: () => "/workspace/report.docx",
           resolveExtractedTextPath: () =>

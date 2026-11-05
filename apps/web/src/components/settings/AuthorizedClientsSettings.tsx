@@ -494,6 +494,7 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
 });
 
 type ConnectedClientListRowProps = {
+  environmentId: EnvironmentId;
   clientSession: ServerClientSessionRecord;
   revokingClientSessionId: string | null;
   onRevokeSession: (sessionId: ServerClientSessionRecord["sessionId"]) => void;
@@ -501,6 +502,7 @@ type ConnectedClientListRowProps = {
 };
 
 const ConnectedClientListRow = memo(function ConnectedClientListRow({
+  environmentId,
   clientSession,
   revokingClientSessionId,
   onRevokeSession,
@@ -558,6 +560,7 @@ const ConnectedClientListRow = memo(function ConnectedClientListRow({
         </div>
         <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
           <ClientPersonSelect
+            environmentId={environmentId}
             sessionId={clientSession.sessionId}
             person={clientSession.person}
             current={clientSession.current}
@@ -802,6 +805,7 @@ export const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHead
 });
 
 type PairingClientsListProps = {
+  environmentId: EnvironmentId;
   servedByEnvironment: boolean;
   endpointUrl: string | null | undefined;
   endpoints: ReadonlyArray<AdvertisedEndpoint>;
@@ -819,6 +823,7 @@ type PairingClientsListProps = {
 };
 
 export const PairingClientsList = memo(function PairingClientsList({
+  environmentId,
   servedByEnvironment,
   endpointUrl,
   endpoints,
@@ -854,6 +859,7 @@ export const PairingClientsList = memo(function PairingClientsList({
 
       {clientSessions.map((clientSession) => (
         <ConnectedClientListRow
+          environmentId={environmentId}
           key={clientSession.sessionId}
           clientSession={clientSession}
           revokingClientSessionId={revokingClientSessionId}

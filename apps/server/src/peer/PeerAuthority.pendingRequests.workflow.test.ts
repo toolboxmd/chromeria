@@ -1982,7 +1982,7 @@ it.live.each(["android", "ios"] as const)(
         const grant = (yield* b.authority.grants)[0]!;
         const armed = yield* Ref.make(true);
         yield* Ref.set(
-          b.deviceReadinessHook,
+          b.deviceViewerCurrentHook,
           Effect.gen(function* () {
             if (!(yield* Ref.getAndSet(armed, false))) return;
             yield* b.authority.setGrant({ ...grant, device: false }).pipe(Effect.orDie);

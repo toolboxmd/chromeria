@@ -6521,6 +6521,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           );
           yield* terminalizeMcpAppCaptures(context, context.nativeTurnId);
           yield* dropCommandTracking(context.nativeTurnId);
+          yield* clearImageWork(context);
           yield* releaseSettledTurnIfIdle(context.nativeTurnId);
         });
 
