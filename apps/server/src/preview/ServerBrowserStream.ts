@@ -498,14 +498,18 @@ const relaySocket = Effect.fn("ServerBrowserStream.relaySocket")(
         ),
       );
     });
+    // A closing peer owns its close code even when a pending send fails first.
     const toPeer = (chunk: string | Uint8Array) =>
       Effect.callback<void, Socket.SocketError>((resume) => {
         raw.send(chunk, (cause) =>
           resume(
             cause
-              ? Effect.fail(
-                  new Socket.SocketError({ reason: new Socket.SocketWriteError({ cause }) }),
-                )
+              ? raw.readyState === NodeWS.WebSocket.CLOSING ||
+                raw.readyState === NodeWS.WebSocket.CLOSED
+                ? Effect.never
+                : Effect.fail(
+                    new Socket.SocketError({ reason: new Socket.SocketWriteError({ cause }) }),
+                  )
               : Effect.void,
           ),
         );
