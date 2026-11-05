@@ -9063,7 +9063,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (
       task === undefined &&
       command.createdBy !== "user" &&
-      child.forkedFrom?.type === "node"
+      parent.subagents.some(
+        (candidate) => candidate.origin === "app_owned" && candidate.childThreadId === child.id,
+      )
     ) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
@@ -15030,7 +15032,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const unconsumed =
       deliveryRun.status === "cancelled" ||
       (deliveryRun.status === "interrupted" && deliveryAttempt?.providerTurnId === null);
-    const retrySameIdentity = unconsumed && deliveryRun.startedAt === null;
     const nextTaskStates = new Map<
       OrchestrationV2Subagent["id"],
       OrchestrationV2Subagent["completionDelivery"]
@@ -15060,6 +15061,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             nextTaskStates.get(task.id)?.state === "pending"),
       )
       .map((task) => task.id);
+    const pendingTasks = new Set(pendingTaskIds);
+    const retrySameIdentity =
+      unconsumed &&
+      deliveryRun.startedAt === null &&
+      delivery.taskIds.length === pendingTaskIds.length &&
+      delivery.taskIds.every((taskId) => pendingTasks.has(taskId)) &&
+      projection.subagents
+        .filter((task) => pendingTasks.has(task.id))
+        .every((task) => deliveryOwnsLatestCompletion(delivery, task));
     const canReserveFollowUp =
       cohort.disposition === "open" &&
       projection.thread.archivedAt === null &&
