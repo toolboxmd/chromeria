@@ -152,7 +152,6 @@ apps/web/src/components/Sidebar.tsx
 apps/web/src/components/chat/ChatHeader.tsx
 apps/web/src/components/settings/ConnectionsSettings.tsx
 apps/web/src/environments/primary/auth.ts
-apps/web/src/environments/primary/index.ts
 apps/web/test/environmentHttpTest.ts
 docs/README.md
 packages/contracts/src/auth.ts
@@ -338,7 +337,6 @@ docs/user/outside-agents.md
 packages/provider-core/package.json
 packages/provider-core/src/server/failure.ts
 packages/provider-cursor/src/server/adapter.ts
-packages/provider-cursor/src/server/sdk.ts
 packages/provider-grok/package.json
 packages/provider-grok/src/server/acpSupport.ts
 packages/provider-opencode/src/server/OpenCodeRuntime.ts
@@ -439,9 +437,6 @@ packages/shared/src/composerContextLegacy.ts
 
 # Launcher test fixture ownership (#157)
 apps/server/src/serviceLauncher.test.ts
-
-# Menu Escape focus and exact BaseUI patch version (#576).
-apps/web/package.json
 
 # Shared account deregistration discovery refresh (#363, network-routes).
 apps/mobile/src/features/cloud/managedRelayState.ts
@@ -684,3 +679,7 @@ apps/mobile/src/features/threads/useThreadListV2.test.tsx
 apps/server/src/mcp/TaskCancelUsageLimit.integration.test.ts
 apps/web/src/components/chat/ThreadLineageWorkflowRow.tsx
 apps/web/src/components/chat/useThreadLifecycle.browser.test.tsx
+
+# Upstream absorption compatibility and shared auth ownership (#631).
+apps/server/src/orchestration-v2/ProjectionMaintenance.test.ts
+packages/client-runtime/src/state/auth.ts

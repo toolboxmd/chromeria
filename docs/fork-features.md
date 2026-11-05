@@ -285,7 +285,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/chromeria/pull/419",
     "https://github.com/toolboxmd/chromeria/pull/391",
     "https://github.com/toolboxmd/chromeria/pull/591",
-    "https://github.com/toolboxmd/chromeria/pull/603"
+    "https://github.com/toolboxmd/chromeria/pull/603",
+    "https://github.com/toolboxmd/chromeria/pull/632"
   ],
   "newFiles": [
     ".github/workflows/fork.yml",
@@ -340,7 +341,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "packages/contracts/src/device.ts",
     "evals/mcp-tool-use/devices.test.ts",
     "apps/server/src/storageCleanup.ts",
-    "apps/server/src/storageCleanup.test.ts"
+    "apps/server/src/storageCleanup.test.ts",
+    "apps/server/src/orchestration-v2/ProjectionMaintenance.test.ts"
   ],
   "sharedFiles": [],
   "keywords": [
@@ -854,7 +856,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/131",
-    "https://github.com/toolboxmd/chromeria/pull/180"
+    "https://github.com/toolboxmd/chromeria/pull/180",
+    "https://github.com/toolboxmd/chromeria/pull/632"
   ],
   "newFiles": [
     "apps/server/src/mcp/toolkits/thread/handlers.test.ts",
@@ -890,14 +893,14 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/web/src/components/chat/ChatHeader.tsx",
     "apps/web/src/components/settings/ConnectionsSettings.tsx",
     "apps/web/src/environments/primary/auth.ts",
-    "apps/web/src/environments/primary/index.ts",
     "apps/web/test/environmentHttpTest.ts",
     "docs/README.md",
     "packages/contracts/src/auth.ts",
     "packages/contracts/src/environmentHttp.ts",
     "apps/web/src/components/settings/AuthorizedClientsSettings.tsx",
     "apps/web/src/components/sidebar/SidebarDraftBlock.tsx",
-    "apps/web/src/components/sidebar/SidebarThreadRow.tsx"
+    "apps/web/src/components/sidebar/SidebarThreadRow.tsx",
+    "packages/client-runtime/src/state/auth.ts"
   ],
   "sharedFiles": [
     "packages/contracts/src/index.ts",
@@ -2369,7 +2372,6 @@ sources and reasons.
     "packages/provider-core/package.json",
     "packages/provider-core/src/server/failure.ts",
     "packages/provider-cursor/src/server/adapter.ts",
-    "packages/provider-cursor/src/server/sdk.ts",
     "packages/provider-grok/package.json",
     "packages/provider-grok/src/server/acpSupport.ts",
     "packages/provider-opencode/src/server/OpenCodeRuntime.ts",
@@ -2771,12 +2773,15 @@ sources and reasons.
   "id": "menu-escape-focus",
   "purpose": "Preserve Escape focus return when the pointer rests over a closing menu. Drop the BaseUI patch and exact version pin after upgrading to a release with equivalent late-hover-close protection, such as mui/base-ui#4893, and proving pointer-over Escape plus hover, submenu and outside-focus controls pass without the patch. Retain regression coverage until upstream provides equivalent tests.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/576"],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/578"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/578",
+    "https://github.com/toolboxmd/chromeria/pull/632"
+  ],
   "newFiles": [
     "apps/web/src/components/ui/menu.focus.browser.test.tsx",
     "patches/@base-ui__react@1.5.0.patch"
   ],
-  "upstreamFiles": ["apps/web/package.json"],
+  "upstreamFiles": [],
   "sharedFiles": ["pnpm-lock.yaml", "pnpm-workspace.yaml"],
   "keywords": ["onFloatingMouseLeave", "@base-ui/react", "menu-escape-focus"]
 }
