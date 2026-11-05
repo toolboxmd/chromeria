@@ -38,6 +38,7 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
+import type { ProjectionRecordFilter } from "./ProjectionStore.ts";
 
 it("stamps authoritative provenance on commands that create threads or messages", () => {
   const command: OrchestrationV2Command = {
@@ -331,7 +332,7 @@ it.effect.each(["restart", "prism"] as const)(
     }),
 );
 
-it.effect.each(["completed", "retry", "declined", "native-declined"] as const)(
+it.effect.each(["completed", "retry", "usage-limit", "declined", "native-declined"] as const)(
   "waitForThread can wait past an ended run for delegated work: %s",
   (kind) =>
     Effect.gen(function* () {
@@ -339,6 +340,8 @@ it.effect.each(["completed", "retry", "declined", "native-declined"] as const)(
       const threadId = ThreadId.make("thread:thread-management:wait-delegated");
       const runId = RunId.make("run:thread-management:wait-delegated");
       const wakeRunId = RunId.make("run:thread-management:wait-delegated:wake");
+      const monitorRunId = RunId.make("run:thread-management:wait-delegated:monitor");
+      const messageReads: Array<ProjectionRecordFilter | undefined> = [];
       const subscribed = yield* Deferred.make<void>();
       const inspected = yield* Deferred.make<void>();
       const recoveryChanges = yield* Queue.unbounded<ThreadId>();
@@ -357,7 +360,17 @@ it.effect.each(["completed", "retry", "declined", "native-declined"] as const)(
           completedAt: status === "running" ? null : at(end),
         }) as unknown as OrchestrationV2Run;
       // The run ended, but a task it delegated still runs and will wake the thread.
-      let runs = [run(runId, 1, "completed", 1)];
+      let runs = [run(runId, 1, "completed", 1), run(monitorRunId, 99, "completed", 99)];
+      const messages = [
+        { runId, role: "user", text: "Original user request" },
+        { runId: wakeRunId, role: "user", text: "Ordinary delegated follow-up" },
+        {
+          runId: monitorRunId,
+          role: "user",
+          notification: { source: { kind: "monitor" } },
+          text: "Monitor notification",
+        },
+      ] as const;
       let subagents = [{ status: "running" }];
       const stored = (sequence: number, event: object) =>
         ({ sequence, event: { threadId, ...event } }) as unknown as OrchestrationV2StoredEvent;
@@ -383,17 +396,24 @@ it.effect.each(["completed", "retry", "declined", "native-declined"] as const)(
                     Stream.concat(Stream.fromQueue(events)),
                   )
                 : Stream.never,
-            getThreadRecords: () =>
-              Effect.sync(
-                () =>
-                  ({
-                    thread: { id: threadId, projectId, deletedAt: null },
-                    runs,
-                    messages: [],
-                    subagents,
-                    providerThreads: [],
-                  }) as unknown as OrchestrationV2ThreadProjection,
-              ),
+            getThreadRecords: (_threadId, fields, filter) =>
+              Effect.sync(() => {
+                if ((fields as ReadonlyArray<string>).includes("messages")) messageReads.push(filter);
+                return {
+                  thread: { id: threadId, projectId, deletedAt: null },
+                  runs,
+                  messages: messages.filter(
+                    (message) =>
+                      (filter?.messageRoles === undefined ||
+                        filter.messageRoles.includes(message.role)) &&
+                      (filter?.monitorNotificationsOnly !== true ||
+                        ("notification" in message &&
+                          message.notification.source.kind === "monitor")),
+                  ),
+                  subagents,
+                  providerThreads: [],
+                } as unknown as OrchestrationV2ThreadProjection;
+              }),
           }),
         ),
         Layer.provide(
@@ -426,7 +446,14 @@ it.effect.each(["completed", "retry", "declined", "native-declined"] as const)(
                           reason: "opted_out" as const,
                         };
               if (sourceRunId === wakeRunId) yield* Deferred.succeed(inspected, undefined);
-              return { decision, admittedContinuations: [], pendingRecovery: null };
+              return {
+                decision: kind === "usage-limit" && !pendingRecovery ? null : decision,
+                admittedContinuations:
+                  kind === "usage-limit" && !pendingRecovery && sourceRunId === wakeRunId
+                    ? [{ threadId, sourceRunId, successorRunId: successorId }]
+                    : [],
+                pendingRecovery: null,
+              };
             }),
           }),
         ),
@@ -443,6 +470,7 @@ it.effect.each(["completed", "retry", "declined", "native-declined"] as const)(
       expect(
         yield* service.waitForThread({ projectId, threadId, runId, timeoutMs: 60 * 60 * 1_000 }),
       ).not.toHaveProperty("resultRun");
+      expect(messageReads).toHaveLength(0);
 
       const fiber = yield* service
         .waitForThread({
@@ -489,10 +517,15 @@ it.effect.each(["completed", "retry", "declined", "native-declined"] as const)(
           ),
         ).toBe(true);
         pendingRecovery = false;
-        if (kind === "retry")
+        if (kind === "retry" || kind === "usage-limit")
           runs = [
             ...runs,
-            { ...run(successorId, 3, "completed", 5), forkPrismContinuationSourceRunId: wakeRunId },
+            {
+              ...run(successorId, 3, "completed", 5),
+              ...(kind === "retry"
+                ? { forkPrismContinuationSourceRunId: wakeRunId }
+                : { usageLimitContinuationOfRunId: wakeRunId }),
+            },
           ];
         yield* Queue.offer(recoveryChanges, threadId);
       }
@@ -502,11 +535,13 @@ it.effect.each(["completed", "retry", "declined", "native-declined"] as const)(
         timedOut: false,
         run: { id: runId, status: "completed" },
         resultRun: {
-          id: kind === "retry" ? successorId : wakeRunId,
+          id: kind === "retry" || kind === "usage-limit" ? successorId : wakeRunId,
           status:
             kind === "declined" ? "failed" : kind === "native-declined" ? "cancelled" : "completed",
         },
       });
+      expect(messageReads.length).toBeGreaterThan(0);
+      expect(messageReads.every((filter) => filter?.monitorNotificationsOnly === true)).toBe(true);
     }),
 );
 

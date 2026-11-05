@@ -1315,6 +1315,19 @@ const make = Effect.gen(function* () {
     } as const;
   });
 
+  const boundCallerThread = Effect.fn("OrchestratorMcpService.boundCallerThread")(function* (
+    scope: McpInvocationScope,
+    thread: OrchestrationV2ThreadProjection["thread"],
+  ) {
+    if (scope.client !== undefined) {
+      const ceiling = clientModeCeiling(scope.client);
+      yield* resolveRuntimeMode(ceiling.runtimeMode, thread.runtimeMode);
+      yield* resolveInteractionMode(ceiling.interactionMode, thread.interactionMode);
+    }
+    const ceiling = scope.authority?.ceiling ?? scope.legacyPeerCeiling;
+    return ceiling === undefined ? thread : { ...thread, ...intersectModes(thread, ceiling) };
+  });
+
   const loadThreadCaller = Effect.fn("OrchestratorMcpService.loadThreadCaller")(function* (
     scope: McpInvocationScope,
     operation: string,
@@ -1322,17 +1335,8 @@ const make = Effect.gen(function* () {
     yield* requireCapability(scope);
     const threadScope = yield* requireThreadScope(scope, operation);
     const parent = yield* loadProjection(threadScope.thread.threadId);
-    if (scope.client !== undefined) {
-      const ceiling = clientModeCeiling(scope.client);
-      yield* resolveRuntimeMode(ceiling.runtimeMode, parent.thread.runtimeMode);
-      yield* resolveInteractionMode(ceiling.interactionMode, parent.thread.interactionMode);
-    }
-    const ceiling = scope.authority?.ceiling ?? scope.legacyPeerCeiling;
-    const bounded =
-      ceiling === undefined
-        ? parent
-        : { ...parent, thread: { ...parent.thread, ...intersectModes(parent.thread, ceiling) } };
-    return { scope: threadScope, parent: bounded } as const;
+    const thread = yield* boundCallerThread(scope, parent.thread);
+    return { scope: threadScope, parent: { ...parent, thread } } as const;
   });
 
   const resolveProjectTarget = (
@@ -3669,7 +3673,9 @@ const make = Effect.gen(function* () {
         return yield* remoteDelegation.cancel(scope, remoteTask, input);
       }
       const key = yield* requestKey(input.clientRequestId);
-      const { parent: parentProjection } = yield* loadThreadCaller(scope, "task_cancel");
+      yield* requireCapability(scope);
+      const parent = yield* loadThreadRecords(scope.thread.threadId, []);
+      const callerThread = yield* boundCallerThread(scope, parent.thread);
       // Cancelling stops the child and every task under it, each a write to a
       // thread its user may have raised above the parent's modes since it was
       // delegated. All of them are checked before anything is stopped.
@@ -3680,11 +3686,8 @@ const make = Effect.gen(function* () {
           .getThreadShell(threadId)
           .pipe(Effect.mapError(threadManagementFailure));
         if (shell !== null && shell.deletedAt === null) {
-          yield* resolveRuntimeMode(parentProjection.thread.runtimeMode, shell.runtimeMode);
-          yield* resolveInteractionMode(
-            parentProjection.thread.interactionMode,
-            shell.interactionMode,
-          );
+          yield* resolveRuntimeMode(callerThread.runtimeMode, shell.runtimeMode);
+          yield* resolveInteractionMode(callerThread.interactionMode, shell.interactionMode);
         }
         const childThreadIds = yield* threadManagement
           .listAppOwnedChildThreadIds(threadId)
@@ -3800,8 +3803,8 @@ const make = Effect.gen(function* () {
       const refused = yield* Ref.make<DispatchModeRefusal | undefined>(undefined);
       const stopWithinLimit = stopChild.pipe(
         Effect.provideService(DispatchModeLimit, {
-          runtimeMode: parentProjection.thread.runtimeMode,
-          interactionMode: parentProjection.thread.interactionMode,
+          runtimeMode: callerThread.runtimeMode,
+          interactionMode: callerThread.interactionMode,
           refused,
         }),
         Effect.catch((error) =>

@@ -1000,7 +1000,7 @@ describe("OrchestratorMcpService", () => {
   const cancelOverRaisedGrandchild = (child: {
     readonly deleted: boolean;
     readonly raisedDuringStop?: boolean;
-    readonly legacyPeerCeiling?: McpInvocationScope["legacyPeerCeiling"];
+    readonly callerScope?: Partial<McpInvocationScope>;
   }) =>
     Effect.gen(function* () {
       const parentThreadId = ThreadId.make("thread:mcp-cancel-grandchild-parent");
@@ -1010,6 +1010,9 @@ describe("OrchestratorMcpService", () => {
       const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
       const stoppedBelow = yield* Ref.make(false);
       const subagentReads = yield* Ref.make<ReadonlyArray<ProjectionRecordFilter | undefined>>([]);
+      const callerReads: Array<ReadonlyArray<string>> = [];
+      const ceiling = child.callerScope?.authority?.ceiling ?? child.callerScope?.legacyPeerCeiling;
+      let descendantReads = 0;
       const appOwnedTask = (
         id: string,
         threadId: ThreadId,
@@ -1035,7 +1038,9 @@ describe("OrchestratorMcpService", () => {
             thread: {
               id: parentThreadId,
               runtimeMode:
-                child.legacyPeerCeiling === undefined ? "approval-required" : "full-access",
+                ceiling === undefined && child.callerScope?.client === undefined
+                  ? "approval-required"
+                  : "full-access",
               interactionMode: "default",
             },
             runs: [],
@@ -1101,13 +1106,16 @@ describe("OrchestratorMcpService", () => {
         NodeCrypto.layer,
         mockThreads({
           readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
-          getThreadRecords: (threadId, fields, filter) =>
-            ((fields as ReadonlyArray<string>).includes("subagents")
+          getThreadRecords: (threadId, fields, filter) => {
+            if (threadId === parentThreadId) callerReads.push(fields);
+            return ((fields as ReadonlyArray<string>).includes("subagents")
               ? Ref.update(subagentReads, (reads) => [...reads, filter])
               : Effect.void
-            ).pipe(Effect.as(projections.get(threadId)!)),
-          listAppOwnedChildThreadIds: (threadId) =>
-            Effect.succeed(
+            ).pipe(Effect.as(projections.get(threadId)!));
+          },
+          listAppOwnedChildThreadIds: (threadId) => {
+            descendantReads++;
+            return Effect.succeed(
               projections
                 .get(threadId)!
                 .subagents.flatMap((task) =>
@@ -1115,7 +1123,8 @@ describe("OrchestratorMcpService", () => {
                     ? [task.childThreadId]
                     : [],
                 ),
-            ),
+            );
+          },
           getThreadShell: (threadId) =>
             Effect.succeed(
               threadId === grandchildThreadId && child.raisedDuringStop !== true
@@ -1124,7 +1133,7 @@ describe("OrchestratorMcpService", () => {
                   ? null
                   : liveThreadShell(threadId, {
                       runtimeMode: "approval-required",
-                      interactionMode: child.legacyPeerCeiling?.interactionMode ?? "default",
+                      interactionMode: ceiling?.interactionMode ?? "default",
                     }),
             ),
           dispatch: (command) =>
@@ -1178,9 +1187,7 @@ describe("OrchestratorMcpService", () => {
         client: undefined,
         capabilities: new Set(["orchestration"]),
         issuedAt: 1,
-        ...(child.legacyPeerCeiling === undefined
-          ? {}
-          : { legacyPeerCeiling: child.legacyPeerCeiling }),
+        ...child.callerScope,
       };
 
       return yield* Effect.gen(function* () {
@@ -1194,6 +1201,16 @@ describe("OrchestratorMcpService", () => {
             filter?.subagentIds !== undefined || filter?.omitSettledSubagents !== undefined,
           );
         }
+        assert.isTrue(
+          callerReads.every((fields) =>
+            fields.every((field) => ["runs", "contextTransfers", "subagents"].includes(field)),
+          ),
+          "Cancellation must not decode unused caller history",
+        );
+        if (scope.thread === undefined || !scope.capabilities.has("orchestration")) {
+          assert.lengthOf(callerReads, 0);
+        }
+        if (scope.client !== undefined) assert.equal(descendantReads, 0);
         return {
           code: error.code,
           dispatched: yield* Ref.get(dispatched),
@@ -1237,18 +1254,37 @@ describe("OrchestratorMcpService", () => {
     }),
   );
 
-  it.effect.each(["runtime", "interaction"] as const)(
-    "retains the legacy %s ceiling through recursive cancellation and its locked guard",
-    (mode) =>
+  it.effect.each([
+    { source: "legacy", mode: "runtime" },
+    { source: "legacy", mode: "interaction" },
+    { source: "peer authority", mode: "runtime" },
+    { source: "peer authority", mode: "interaction" },
+  ] as const)(
+    "retains the $source $mode ceiling through recursive cancellation and its locked guard",
+    ({ source, mode }) =>
       Effect.gen(function* () {
-        const legacyPeerCeiling: NonNullable<McpInvocationScope["legacyPeerCeiling"]> = {
+        const ceiling: NonNullable<McpInvocationScope["legacyPeerCeiling"]> = {
           runtimeMode: mode === "runtime" ? "approval-required" : "full-access",
           interactionMode: mode === "interaction" ? "plan" : "default",
           resourceScope: "created-work",
           onward: false,
           capabilities: ["orchestration"],
         };
-        assert.deepEqual(yield* cancelOverRaisedGrandchild({ deleted: false, legacyPeerCeiling }), {
+        const callerScope: Partial<McpInvocationScope> =
+          source === "legacy"
+            ? { legacyPeerCeiling: ceiling }
+            : {
+                authority: {
+                  kind: "automation-execution",
+                  id: "cancel-authority",
+                  certificateId: "certificate",
+                  actionId: "action",
+                  generation: "generation",
+                  projectId: ProjectId.make("project:cancel"),
+                  ceiling,
+                },
+              };
+        assert.deepEqual(yield* cancelOverRaisedGrandchild({ deleted: false, callerScope }), {
           code: `${mode}_mode_escalation_denied`,
           dispatched: [],
           stoppedBelow: false,
@@ -1256,10 +1292,42 @@ describe("OrchestratorMcpService", () => {
         const locked = yield* cancelOverRaisedGrandchild({
           deleted: false,
           raisedDuringStop: true,
-          legacyPeerCeiling,
+          callerScope,
         });
         assert.equal(locked.code, `${mode}_mode_escalation_denied`);
         assert.isFalse(locked.stoppedBelow);
+      }),
+  );
+
+  it.effect.each([
+    ["capability", { capabilities: new Set() }, "capability_denied"],
+    ["thread", { thread: undefined }, "thread_credential_required"],
+    [
+      "client runtime",
+      { client: { sessionId: "cancel", label: "Client", access: "read-only" } },
+      "runtime_mode_escalation_denied",
+    ],
+    [
+      "client interaction",
+      {
+        client: {
+          sessionId: "cancel",
+          label: "Client",
+          access: "full-access",
+          narrowedTo: { runtimeMode: "full-access", interactionMode: "plan" },
+        },
+      },
+      "interaction_mode_escalation_denied",
+    ],
+  ] as const)(
+    "refuses task cancellation without %s authority before stopping descendants",
+    ([_kind, callerScope, code]) =>
+      Effect.gen(function* () {
+        assert.deepEqual(yield* cancelOverRaisedGrandchild({ deleted: false, callerScope }), {
+          code,
+          dispatched: [],
+          stoppedBelow: false,
+        });
       }),
   );
 });
