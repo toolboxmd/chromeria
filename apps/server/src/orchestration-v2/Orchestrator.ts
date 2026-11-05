@@ -9019,7 +9019,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         command.senderThreadId !== parentThreadId)
     )
       return undefined;
-    let parent = yield* projectionStore
+    const storedParent = yield* projectionStore
       .getThreadRecords(parentThreadId, ["runs", "subagents"], {
         subagentIds: child.forkedFrom?.type === "node" ? [child.forkedFrom.nodeId] : [],
       })
@@ -9036,22 +9036,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }),
         mapDispatchError(command),
       );
-    if (parent === undefined) return undefined;
+    if (storedParent === undefined) return undefined;
+    const parent = {
+      ...storedParent,
+      runs: [...storedParent.runs],
+      subagents: [...storedParent.subagents],
+    };
     const pending = (yield* Ref.get(events)).filter((event) => event.threadId === parentThreadId);
     for (const event of pending) {
       if (event.type === "run.created" || event.type === "run.updated") {
-        parent = {
-          ...parent,
-          runs: [...parent.runs.filter((run) => run.id !== event.payload.id), event.payload],
-        };
+        const index = parent.runs.findIndex((run) => run.id === event.payload.id);
+        if (index < 0) parent.runs.push(event.payload);
+        else parent.runs[index] = event.payload;
       } else if (event.type === "subagent.updated") {
-        parent = {
-          ...parent,
-          subagents: [
-            ...parent.subagents.filter((task) => task.id !== event.payload.id),
-            event.payload,
-          ],
-        };
+        const index = parent.subagents.findIndex((task) => task.id === event.payload.id);
+        if (index < 0) parent.subagents.push(event.payload);
+        else parent.subagents[index] = event.payload;
       }
     }
     const task = parent.subagents.find(
