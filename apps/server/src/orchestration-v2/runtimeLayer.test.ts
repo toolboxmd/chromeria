@@ -7275,6 +7275,7 @@ it.layer(layerScratchPromotionTest)("turning a No project thread into a project"
       });
       const { task } = yield* tasks.upsert({
         id: ScheduledTaskId.make("promotion-moves-bound"),
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         title: "Bound",
         prompt: "Check in",
         enabled: true,

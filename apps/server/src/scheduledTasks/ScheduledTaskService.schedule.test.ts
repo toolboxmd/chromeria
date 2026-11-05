@@ -238,6 +238,7 @@ it.effect(
         yield* service.upsert(
           yield* decodeUpsertInput({
             title: "Far future",
+            purposeIntent: { version: 1, intent: { type: "unscoped" } },
             prompt: "Review the open pull requests.",
             enabled: true,
             schedule: { type: "interval", everyMs: 3e14 },
@@ -251,6 +252,7 @@ it.effect(
         const created = yield* service.upsert(
           yield* decodeUpsertInput({
             title: "Idle poll",
+            purposeIntent: { version: 1, intent: { type: "unscoped" } },
             prompt: "Review the open pull requests.",
             enabled: true,
             schedule: { type: "interval", everyMs: 60_000 },

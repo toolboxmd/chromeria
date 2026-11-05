@@ -1550,7 +1550,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* eventSink.writeWithEffects({ events: withIds, effects, ...options });
       } else {
         yield* eventSink.commitCommand({
-          commandId: start.commandId,
+          // Recovery can re-arm a cancelled start with a new effect identity.
+          commandId: CommandId.make(start.id),
           threadId: start.threadId,
           commandType: "fork.queued-start",
           acceptedAt: yield* DateTime.now,
