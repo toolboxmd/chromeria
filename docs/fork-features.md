@@ -2809,7 +2809,6 @@ sources and reasons.
   ],
   "newFiles": [
     "apps/mobile/src/features/threads/ExecutionPurposePicker.tsx",
-    "apps/mobile/src/features/threads/ThreadExecutionPurposeControl.tsx",
     "apps/server/src/orchestration-v2/ExecutionPurpose.integration.test.ts",
     "apps/server/src/orchestration-v2/ExecutionPurpose.ts",
     "apps/server/src/persistence/forkExecutionPurposeSchema.ts",

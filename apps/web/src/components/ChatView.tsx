@@ -29,11 +29,9 @@ import { type TerminalLaunchContext, useChatTerminalActions } from "./chat/useCh
 import { useComposerSend } from "./chat/useComposerSend";
 import { useComposerResume } from "./chat/useComposerResume";
 import { useImplementPlanInNewThread } from "./chat/useProposedPlanSend";
-import { ExecutionPurposeControl } from "./chat/ExecutionPurposeControl";
 import {
   purposeSelectionOf,
   savedPurposeIntentForScope,
-  type ExecutionPurposeScope,
   type PurposeIntent,
 } from "@t3tools/contracts";
 import { usePromachosInlineCardHost } from "./promachos/PromachosChat";
@@ -1219,18 +1217,7 @@ export default function ChatView(props: ChatViewProps) {
     (providerEnvironmentId === undefined
       ? undefined
       : providersByEnvironment.get(providerEnvironmentId)) ?? EMPTY_PROVIDERS;
-  const supportsExecutionPurpose =
-    serverConfig?.environment.capabilities.executionPurposeVersions?.includes(1) === true;
-  const [draftPurpose, setDraftPurpose] = useState<{
-    readonly routeThreadKey: typeof routeThreadKey;
-    readonly scope: ExecutionPurposeScope;
-  } | null>(null);
   const currentPurposeSelection = purposeSelectionOf(activeThread ?? {});
-  const selectedPurposeScope = isServerThread
-    ? currentPurposeSelection.scope
-    : draftPurpose?.routeThreadKey === routeThreadKey
-      ? draftPurpose.scope
-      : purposeSelectionOf({}).scope;
   const startThreadTurn = useStableCallback((request: Parameters<typeof dispatchThreadTurn>[0]) => {
     const supportsPurpose =
       appAtomRegistry
@@ -1251,23 +1238,9 @@ export default function ChatView(props: ChatViewProps) {
                 version: 1,
                 intent: { type: "selection", expectedRevision: currentPurposeSelection.revision },
               }
-            : savedPurposeIntentForScope(selectedPurposeScope);
+            : savedPurposeIntentForScope(currentPurposeSelection.scope);
     return dispatchThreadTurn({ ...request, input: { ...request.input, purposeIntent } });
   });
-  const changePurposeScope = async (scope: ExecutionPurposeScope): Promise<boolean> => {
-    if (!isServerThread || activeThread === undefined || activeThread === null) {
-      setDraftPurpose({ routeThreadKey, scope });
-      return true;
-    }
-    const result = await updateThreadMetadata({
-      environmentId: activeThread.environmentId,
-      input: {
-        threadId: activeThread.id,
-        purposeSelection: { expectedRevision: currentPurposeSelection.revision, scope },
-      },
-    });
-    return result._tag === "Success";
-  };
   const selectedProviderByThreadId = composerActiveProvider ?? null;
   const threadProvider =
     activeThread?.modelSelection.instanceId ??
@@ -3589,16 +3562,6 @@ export default function ChatView(props: ChatViewProps) {
                               effortLabel={providerSubagentEffortLabel}
                               status={providerSubagentStatus}
                               onOpenParent={parentThreadLink?.open ?? null}
-                            />
-                          ) : null}
-                          {composerMounted &&
-                          supportsExecutionPurpose &&
-                          !showProviderSubagentBar ? (
-                            <ExecutionPurposeControl
-                              scope={selectedPurposeScope}
-                              runs={serverProjection?.runs ?? []}
-                              disabled={!canOperateThread}
-                              onChange={changePurposeScope}
                             />
                           ) : null}
                           {!composerMounted ? null : (
