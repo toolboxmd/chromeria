@@ -1,3 +1,5 @@
+import { ChromeriaFeatureMark } from "../ChromeriaFeatureMark";
+import { WightLimitSetting } from "./WightLimitSetting";
 import { Spinner } from "~/components/ui/spinner";
 
 import {
@@ -1278,6 +1280,15 @@ export function ProviderInstanceCard({
               />
             </div>
           }
+        />
+      </SettingsSection>
+
+      <SettingsSection title="Wight mode" titleAction={<ChromeriaFeatureMark />}>
+        <WightLimitSetting
+          value={instance.wightLimitPercent}
+          provider={liveProvider}
+          disabled={readOnly}
+          onChange={(wightLimitPercent) => onUpdate({ ...instance, wightLimitPercent })}
         />
       </SettingsSection>
 
