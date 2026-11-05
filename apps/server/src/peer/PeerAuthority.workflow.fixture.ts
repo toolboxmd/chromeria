@@ -1914,11 +1914,6 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
             const deviceServiceLayer = Layer.succeed(NativeDevices.DeviceService, service);
             if (!viewerOwner) return deviceServiceLayer;
             return Layer.mergeAll(
-              HttpApiBuilder.layer(DeviceViewerTestApi).pipe(
-                Layer.provide(DeviceHubProxy.layerApi),
-                Layer.provide(AuthHttp.layerAuthenticatedAuth),
-              ),
-              DeviceHubProxy.layer,
               Layer.effectDiscard(
                 Effect.gen(function* () {
                   fixtureViewers = yield* DeviceHubProxy.DeviceViewers;
@@ -1928,7 +1923,7 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
             ).pipe(
               Layer.provideMerge(DeviceHubProxy.layerViewers),
               Layer.provideMerge(deviceServiceLayer),
-              Layer.provide(Layer.succeed(HttpClient.HttpClient, hub)),
+              Layer.provideMerge(Layer.succeed(HttpClient.HttpClient, hub)),
             );
           })
         : Layer.mock(NativeDevices.DeviceService)({});
@@ -2077,6 +2072,21 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
             ),
           ),
         );
+      const assetRoutes = ServerHttp.layerAssetRoute.pipe(
+        HttpRouter.provideRequest(
+          Layer.mergeAll(
+            NodeHttpPlatform.layer,
+            WorkspacePaths.layer,
+            NativeAppIconResolver.layer.pipe(Layer.provide(nodeConfig)),
+            Layer.succeedContext(runtime),
+            // This fixture has no GitHub resource. Never access a real account.
+            Layer.mock(GitHubCredentials.GitHubCredentials)({
+              get: () => Effect.die("No GitHub credential access in the native artifact fixture"),
+            }),
+          ),
+        ),
+        Layer.provide(environment),
+      );
       const toolsFor = (
         scheduleServices: typeof schedules,
         requests: typeof requestContext = requestContext,
@@ -2123,24 +2133,6 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
                   ),
                   McpHttpServer.layerPullRequestsToolkit,
                   McpHttpServer.toolkitRegistration(AttachmentToolkit, AttachmentHandlers.layer),
-                  ServerHttp.layerAssetRoute.pipe(
-                    HttpRouter.provideRequest(
-                      Layer.mergeAll(
-                        NodeHttpPlatform.layer,
-                        WorkspacePaths.layer,
-                        NativeAppIconResolver.layer.pipe(Layer.provide(nodeConfig)),
-                        Layer.succeedContext(runtime),
-                        // This fixture has no GitHub resource. Never access a real account.
-                        Layer.mock(GitHubCredentials.GitHubCredentials)({
-                          get: () =>
-                            Effect.die(
-                              "No GitHub credential access in the native artifact fixture",
-                            ),
-                        }),
-                      ),
-                    ),
-                    Layer.provide(environment),
-                  ),
                   McpHttpServer.layerPreviewToolkit,
                   McpHttpServer.layerThreadToolkit,
                   McpHttpServer.layerHtmlToolkit,
@@ -2170,7 +2162,26 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
         nativeServices = services,
       ) =>
         Layer.mergeAll(
-          attachmentRequests ? uploadRoutes : Layer.empty,
+          attachmentRequests
+            ? Layer.merge(
+                uploadRoutes,
+                provideServices(assetRoutes, scheduleServices, requests, nativeServices),
+              )
+            : Layer.empty,
+          deviceOwner && viewerOwner
+            ? provideServices(
+                Layer.mergeAll(
+                  HttpApiBuilder.layer(DeviceViewerTestApi).pipe(
+                    Layer.provide(DeviceHubProxy.layerApi),
+                    Layer.provide(AuthHttp.layerAuthenticatedAuth),
+                  ),
+                  DeviceHubProxy.layer,
+                ),
+                scheduleServices,
+                requests,
+                nativeServices,
+              )
+            : Layer.empty,
           previewControls === undefined
             ? Layer.empty
             : provideServices(
