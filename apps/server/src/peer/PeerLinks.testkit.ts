@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import type * as SqlClient from "effect/sql/SqlClient";
 import * as PeerAuthority from "./PeerAuthority.ts";
@@ -9,9 +10,6 @@ import * as Providers from "../provider/ProviderRegistry.ts";
 import * as Adapters from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import type * as Adapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
-import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
-import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
-import * as NodePath from "@effect/platform-node/NodePath";
 import {
   EnvironmentHttpApi,
   EnvironmentId,
@@ -34,7 +32,6 @@ import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as AuthHttp from "../auth/http.ts";
 import * as McpOAuth from "../auth/McpOAuth.ts";
 import * as McpOAuthHttp from "../auth/mcpOAuthHttp.ts";
-import type * as SqlClient from "effect/sql/SqlClient";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -187,14 +184,10 @@ export const servePeer = <E, R>(
       ),
       McpHttpServer.layerMcpTransport(tools).pipe(
         Layer.provide(
-          Layer.mock(McpSessionRegistry.McpSessionRegistry)({
-            resolve: () => Effect.undefined,
-            scopeForThread: options?.scopeForThread ?? (() => Effect.undefined),
-          }),
           options?.registry === undefined
             ? Layer.mock(McpSessionRegistry.McpSessionRegistry)({
-                resolve: () => Effect.sync(() => undefined),
-                scopeForThread: options?.scopeForThread ?? (() => Effect.sync(() => undefined)),
+                resolve: () => Effect.undefined,
+                scopeForThread: options?.scopeForThread ?? (() => Effect.undefined),
               })
             : Layer.succeed(McpSessionRegistry.McpSessionRegistry, options.registry),
         ),

@@ -1,3 +1,4 @@
+import * as Digest from "effect/crypto/Digest";
 /**
  * ContextMD serving state: a hook posts each moment here; the service matches entries, joins the
  * running Chromeria run, decides what to serve or deny, and reserves it until the hook settles. State
@@ -10,7 +11,7 @@ import type { OrchestrationV2ProviderThread } from "@t3tools/contracts";
 
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -286,7 +287,8 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* SecureRandom.SecureRandom;
+  const digest = yield* Digest.Digest;
   const dir = path.join(config.stateDir, "contextmd");
   // Serving must never stop Chromeria from starting: a state file that cannot be opened
   // (unwritable, corrupt, from an incompatible build) disables serving instead.
@@ -331,8 +333,8 @@ const make = Effect.gen(function* () {
       pointerRelease: Effect.fn("ContextmdServing.pointerRelease")(() =>
         Effect.succeed({ status: 409 } as const),
       ),
-      currentInstructions: Effect.fn("ContextmdServing.currentInstructions")(() =>
-        Effect.sync(() => undefined),
+      currentInstructions: Effect.fn("ContextmdServing.currentInstructions")(
+        () => Effect.undefined,
       ),
       stageSessionInstructions: Effect.fn("ContextmdServing.stageSessionInstructions")(() =>
         Effect.succeed({ reservation: null, text: undefined }),
@@ -395,12 +397,17 @@ const make = Effect.gen(function* () {
   const canServe = () =>
     fileSystem.exists(path.join(dir, "off")).pipe(Effect.map((off) => mapped && !off));
   const withFiles = <A, E>(
-    work: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path | Crypto.Crypto>,
+    work: Effect.Effect<
+      A,
+      E,
+      FileSystem.FileSystem | Path.Path | SecureRandom.SecureRandom | Digest.Digest
+    >,
   ) =>
     work.pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
-      Effect.provideService(Crypto.Crypto, crypto),
+      Effect.provideService(SecureRandom.SecureRandom, crypto),
+      Effect.provideService(Digest.Digest, digest),
     );
   const instructions = Effect.fn("ContextmdServing.instructions")(function* (
     candidate: NonNullable<Selection["greatLibrary"]>,
@@ -450,7 +457,7 @@ const make = Effect.gen(function* () {
         const current = candidate === null ? null : yield* instructions(candidate);
         const now = yield* nowSeconds;
         state.releaseStale(now);
-        const delivery = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+        const delivery = yield* crypto.uuidV4().pipe(Effect.orDie);
         const reservation = state.stageSessionInstructions({
           ...input,
           delivery,
@@ -512,7 +519,7 @@ const make = Effect.gen(function* () {
           ...input,
           session: input.nativeSessionId,
           current,
-          delivery: yield* crypto.randomUUIDv4().pipe(Effect.orDie),
+          delivery: yield* crypto.uuidV4().pipe(Effect.orDie),
           now: yield* nowSeconds,
         });
       },
@@ -572,7 +579,7 @@ const make = Effect.gen(function* () {
         })),
         reverted,
         now: yield* nowSeconds,
-        delivery: yield* crypto.randomUUIDv4().pipe(Effect.orDie),
+        delivery: yield* crypto.uuidV4().pipe(Effect.orDie),
       });
     },
     withFiles,
@@ -690,13 +697,15 @@ const make = Effect.gen(function* () {
             rivals.set(check.session, sessionRivals);
           }
           const delivery = Shown.served(check);
-          const result = yield* Effect.try(() =>
-            delivery === null
-              ? Shown.unknown(source, "unrecognized_format")
-              : source === "claude_request_replay"
-                ? Shown.claudeEvidence(claude, delivery, sessionRivals)
-                : Shown.codexEvidence(codex, delivery, sessionRivals),
-          ).pipe(Effect.option);
+          const result = yield* Effect.try({
+            try: () =>
+              delivery === null
+                ? Shown.unknown(source, "unrecognized_format")
+                : source === "claude_request_replay"
+                  ? Shown.claudeEvidence(claude, delivery, sessionRivals)
+                  : Shown.codexEvidence(codex, delivery, sessionRivals),
+            catch: () => new Select.BadEvent({ reason: "Unable to inspect startup evidence." }),
+          }).pipe(Effect.option);
           const checkedAt = yield* nowSeconds;
           if (Option.isNone(result)) {
             recordEvidence(
@@ -1167,7 +1176,8 @@ const make = Effect.gen(function* () {
           ),
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
-          Effect.provideService(Crypto.Crypto, crypto),
+          Effect.provideService(SecureRandom.SecureRandom, crypto),
+          Effect.provideService(Digest.Digest, digest),
           Effect.catchTags({
             ContextmdBadConfig: (e) =>
               Effect.succeed({
@@ -1255,7 +1265,8 @@ const make = Effect.gen(function* () {
           ).pipe(
             Effect.provideService(FileSystem.FileSystem, fileSystem),
             Effect.provideService(Path.Path, path),
-            Effect.provideService(Crypto.Crypto, crypto),
+            Effect.provideService(SecureRandom.SecureRandom, crypto),
+            Effect.provideService(Digest.Digest, digest),
           );
           if (asked !== null) {
             cue = asked.moment;

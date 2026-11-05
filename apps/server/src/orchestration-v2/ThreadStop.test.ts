@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it, vi } from "@effect/vitest";
 import {
   CommandId,
@@ -106,7 +107,7 @@ const decodeClientCommand = Schema.decodeUnknownEffect(OrchestrationV2Command);
 const layerTaskStatus = OrchestratorMcpService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
-      NodeServices.layer,
+      Layer.merge(NodeServices.layer, NodeCrypto.layer),
       Layer.mock(BareLaunch.BareLaunch)({}),
       Layer.mock(ProviderRegistry.ProviderRegistry)({}),
       ProviderAdapterRegistry.layerFromAdapters([adapter]),

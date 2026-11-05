@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as Context from "effect/Context";
@@ -31,7 +32,7 @@ const testLayer = Layer.mergeAll(SessionStore.layer, SessionRenewal.layer).pipe(
   ),
 );
 
-it.layer(NodeServices.layer)("paired auth renewal", (it) => {
+it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("paired auth renewal", (it) => {
   it.effect("rejects renewal when expiry passes between validation and the guarded update", () =>
     Effect.gen(function* () {
       const sessions = yield* SessionStore.SessionStore;

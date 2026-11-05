@@ -1,6 +1,6 @@
 import { renewalCommitment } from "@t3tools/shared/sessionRenewal";
 import { AuthSessionId } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -87,7 +87,7 @@ const eligible = (row: AuthSessions.AuthSessionRecord) =>
 /** @public Canonical Effect service construction. */
 export const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* SecureRandom.SecureRandom;
   const sessions = yield* AuthSessions.AuthSessionRepository;
   yield* sql`CREATE TABLE IF NOT EXISTS auth_session_renewal (
     session_id TEXT PRIMARY KEY REFERENCES auth_sessions(session_id),
@@ -138,7 +138,7 @@ export const make = Effect.gen(function* () {
     "SessionRenewal.requestEnrollment",
   )(function* (input) {
     const id = yield* crypto
-      .randomUUIDv4()
+      .uuidV4()
       .pipe(Effect.mapError((cause) => new RenewalStorageError({ cause })));
     return yield* sql
       .withTransaction(

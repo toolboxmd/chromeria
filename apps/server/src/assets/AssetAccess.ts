@@ -1,3 +1,4 @@
+import * as Digest from "effect/crypto/Digest";
 import * as Invocation from "../mcp/McpInvocationContext.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import { loadCaller, assertLiveCaller } from "../mcp/threadAccess.ts";
@@ -47,7 +48,6 @@ import {
 import { isNetworkPath } from "@t3tools/shared/path";
 import { MAX_TOOL_OUTPUT_IMAGE_BASE64_LENGTH, toolOutputImages } from "@t3tools/shared/toolOutput";
 import * as Clock from "effect/Clock";
-import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import * as FileSystem from "effect/FileSystem";
@@ -679,8 +679,8 @@ export const acquireAttachment = Effect.fn("AssetAccess.acquireAttachment")(func
       ),
     );
     if (
-      (yield* (yield* Crypto.Crypto)
-        .digest("SHA-256", bytes)
+      (yield* (yield* Digest.Digest)
+        .digest(Digest.sha256, bytes)
         .pipe(Effect.map(Hex.encode), Effect.mapError(refused))) !== resource.digest
     )
       return yield* refused();

@@ -1,3 +1,4 @@
+import * as Arr from "effect/Array";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
@@ -306,6 +307,7 @@ it.effect(
             };
           }),
       );
+      if (!Arr.isArrayNonEmpty(rows)) return yield* Effect.die("Missing history fixture rows.");
       yield* sql`INSERT INTO orchestration_v2_projection_runs ${sql.insert(rows)}`;
       assert.lengthOf(yield* store.getUnresolvedRestartCuts(), 100);
       assert.lengthOf(yield* store.getUnresolvedRestartCuts(undefined, 5_000), 500);

@@ -205,7 +205,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("PairingGrantStor
       expect(current.method).toBe("desktop-bootstrap");
       expect(current.scopes).not.toContain(AuthCookieMirrorWriteScope);
       const main = yield* bootstrapCredentials.consume(
-        yield* currentDesktopBootstrapToken("desktop-secret", now, "cookie-mirror").pipe(Effect.provide(NodeCrypto.layerMac)),
+        yield* currentDesktopBootstrapToken("desktop-secret", now, "cookie-mirror").pipe(
+          Effect.provide(NodeCrypto.layerMac),
+        ),
       );
       expect(main.scopes).toEqual([AuthCookieMirrorWriteScope]);
       expect(main.subject).toBe("desktop-cookie-mirror");

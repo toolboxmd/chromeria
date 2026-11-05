@@ -114,11 +114,11 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
     fallback?: PeerAuthority.Authority,
   ) {
     const frozen = Option.isSome(authority)
-      ? yield* authority.value.forThread(scope.thread.threadId).pipe(Effect.orDie)
+      ? yield* authority.value.forThread(scope.thread.threadId)
       : (fallback ?? scope.authority);
     const legacy =
       frozen === undefined && Option.isSome(authority)
-        ? yield* authority.value.legacyCeiling(scope.thread.threadId).pipe(Effect.orDie)
+        ? yield* authority.value.legacyCeiling(scope.thread.threadId)
         : undefined;
     const ceiling = frozen?.ceiling ?? legacy;
     const { authority: _oldAuthority, legacyPeerCeiling: _oldLegacy, ...credential } = scope;
@@ -135,7 +135,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
               ),
             ),
     };
-  });
+  }, Effect.orDie);
 
   const issue: McpSessionRegistryShape["issue"] = Effect.fn("McpSessionRegistry.issue")(
     function* (request) {

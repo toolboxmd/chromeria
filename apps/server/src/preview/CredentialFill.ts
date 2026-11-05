@@ -18,9 +18,13 @@ const FILLABLE_INPUT_TYPES = new Set(["", "text", "email", "password", "tel", "n
 // Refusals carry a fixed reason and the tab, never page data such as its origin.
 const refused = (reason: PreviewCredentialReason, tabId?: string) => {
   const error = new PreviewCredentialError({ reason });
-  return new ServerBrowserOperationError("PreviewCredentialError", error.message, {
-    reason,
-    ...(tabId === undefined ? {} : { tabId }),
+  return new ServerBrowserOperationError({
+    tag: "PreviewCredentialError",
+    message: error.message,
+    detail: {
+      reason,
+      ...(tabId === undefined ? {} : { tabId }),
+    },
   });
 };
 
@@ -107,10 +111,10 @@ export const fillCredential = async (input: {
   const timeout = request.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const handle = await input.locate(request.locator).elementHandle({ timeout });
   if (handle === null)
-    throw new ServerBrowserOperationError(
-      "PreviewAutomationInvalidSelectorError",
-      "No element matches this locator. Take a fresh snapshot and use its locator.",
-    );
+    throw new ServerBrowserOperationError({
+      tag: "PreviewAutomationInvalidSelectorError",
+      message: "No element matches this locator. Take a fresh snapshot and use its locator.",
+    });
   try {
     const target = await handle.evaluate((element) => ({
       tag: element.localName,
@@ -120,10 +124,10 @@ export const fillCredential = async (input: {
       target.tag === "textarea" ||
       (target.tag === "input" && FILLABLE_INPUT_TYPES.has(target.type));
     if (!fillable || !(await handle.isEditable())) {
-      throw new ServerBrowserOperationError(
-        "PreviewAutomationTargetNotEditableError",
-        "The target is not an enabled text input, so no credential was read.",
-      );
+      throw new ServerBrowserOperationError({
+        tag: "PreviewAutomationTargetNotEditableError",
+        message: "The target is not an enabled text input, so no credential was read.",
+      });
     }
     const frame = await handle.ownerFrame();
     if (frame === null) throw refused("fillFailed", tabId);

@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as PeerLinkRequests from "../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import { NodeHttpServer } from "@effect/platform-node";
@@ -86,10 +87,10 @@ const read = Effect.scoped(
       Layer.provide(Settings.layerTest()),
       Layer.provide(Metadata.layer),
       Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
-      Layer.provideMerge(McpHttpServer.layerMcpTransport),
+      McpHttpServer.layerMcpTransport,
       Layer.provide(
         Layer.mock(McpSessionRegistry.McpSessionRegistry)({
-          resolve: () => Effect.sync(() => undefined),
+          resolve: () => Effect.undefined,
         }),
       ),
       Layer.provide(
@@ -165,7 +166,7 @@ const processLayer = (path: string) => {
           projections.getTimelinePage(id, options).pipe(Effect.orDie),
         readRunRecovery: (source) =>
           History.readRunRecovery(source).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
-        readRestartCutView: () => Effect.sync(() => undefined),
+        readRestartCutView: () => Effect.undefined,
       });
     }),
   ).pipe(Layer.provide(stores));
@@ -194,7 +195,7 @@ const processLayer = (path: string) => {
     management,
     EventSink.layer.pipe(Layer.provide(stores)),
     service,
-  ).pipe(Layer.provideMerge(NodeServices.layer));
+  ).pipe(Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)));
 };
 const resetAt = "2026-10-08T12:00:00Z";
 const quotaEvents = (autoResume: boolean) =>

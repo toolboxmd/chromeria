@@ -215,7 +215,7 @@ const make = Effect.gen(function* () {
   ) {
     const request = yield* CurrentRequest;
     if (request !== undefined) return CommandId.make(`server:${tag}:${threadId}:${request.id}`);
-    return yield* crypto.randomUUIDv4().pipe(
+    return yield* random.uuidV4().pipe(
       Effect.orDie,
       Effect.map((uuid) => CommandId.make(`server:${tag}:${threadId}:${uuid}`)),
     );

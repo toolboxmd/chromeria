@@ -1,3 +1,4 @@
+import { layerFixtureHostServices } from "./PeerAuthority.workflow.fixture.ts";
 import * as PeerLinkEvents from "./PeerLinkEvents.ts";
 import * as PubSub from "effect/PubSub";
 import * as SpectrumMcp from "../spectrum/mcpToolkit.ts";
@@ -173,7 +174,7 @@ it.live(
           effects,
         );
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live.each(["council", "free"] as const)(
@@ -343,7 +344,7 @@ it.live.each(["council", "free"] as const)(
           ).toHaveLength(0);
         }
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live.each(["council", "free"] as const)(
@@ -498,7 +499,7 @@ it.live.each(["council", "free"] as const)(
           yield* sql`SELECT 1 FROM peer_control_frames WHERE answer_json IS NULL AND json_extract(frame_json,'$.body.type') IN ('validate','capture-automation')`,
         ).toHaveLength(0);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live.each(
@@ -742,7 +743,7 @@ it.live.each(
           before,
         );
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live.each(["council", "free"] as const)(
@@ -929,7 +930,7 @@ it.live.each(["council", "free"] as const)(
           yield* sql`SELECT 1 FROM peer_control_frames WHERE answer_json IS NULL AND json_extract(frame_json,'$.body.type') IN ('validate','capture-automation')`,
         ).toHaveLength(0);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live.each(["council", "free"] as const)(
@@ -1228,5 +1229,5 @@ it.live.each(["council", "free"] as const)(
         expect(denied._tag === "Failure" || denied.value.isError === true, json(denied)).toBe(true);
         expect((yield* c.scheduled.list()).tasks).toEqual(before);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );

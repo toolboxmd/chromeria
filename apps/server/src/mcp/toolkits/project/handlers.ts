@@ -1,5 +1,5 @@
 import * as DateTime from "effect/DateTime";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Hex from "effect/encoding/Hex";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import { BareLaunchError } from "@t3tools/provider-core/server/bareLaunch";
@@ -20,13 +20,9 @@ import {
   ProjectId,
   threadOwner,
 } from "@t3tools/contracts";
-import * as Hex from "effect/encoding/Hex";
-import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
-import { OrchestratorRuntimeModeAboveCeilingError } from "../../../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import type { BareReadGrant } from "../../../orchestration-v2/bareReadGrant.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
@@ -47,7 +43,6 @@ import * as McpToolAccess from "../../McpToolAccess.ts";
 import { newCommandId, readCaller, resolveProjectId, unavailable } from "../../threadAccess.ts";
 import { ProjectToolkit } from "./tools.ts";
 
-const isAboveCeilingError = Schema.is(OrchestratorRuntimeModeAboveCeilingError);
 const isBareLaunchError = Schema.is(BareLaunchError);
 const isToolPolicyError = Schema.is(ToolPolicyError);
 
@@ -57,10 +52,10 @@ const launchCommandId = Effect.fn("mcp.launchCommandId")(function* (
 ) {
   const receipts = yield* Effect.serviceOption(McpRequestReceipts);
   if (Option.isSome(receipts)) return yield* receipts.value.launchCommandId(namespace, key);
-  const crypto = yield* Crypto.Crypto;
-  // @effect-diagnostics-next-line preferSchemaOverJson:off - a JSON pair keeps the caller apart from the key.
+  const crypto = yield* Digest.Digest;
+  // @effect-diagnostics-next-line globalJsonInEffect:off - a JSON pair keeps the caller apart from the key.
   const bytes = new TextEncoder().encode(JSON.stringify([namespace, key]));
-  const digest = yield* crypto.digest("SHA-256", bytes).pipe(Effect.mapError(unavailable));
+  const digest = yield* crypto.digest(Digest.sha256, bytes).pipe(Effect.mapError(unavailable));
   return CommandId.make(`mcp:launch:${Hex.encode(digest)}`);
 });
 
@@ -103,18 +98,6 @@ const assertProjectWorktree = Effect.fn("mcp.assertProjectWorktree")(function* (
       message:
         "worktreePath must be one of the project's git worktrees. t3_worktree_list shows them.",
     });
-});
-
-/** A fixed-length id, so a long key fits in the scratch folder name derived from it. */
-const launchCommandId = Effect.fn("mcp.launchCommandId")(function* (
-  namespace: string,
-  key: string,
-) {
-  const crypto = yield* Digest.Digest;
-  // @effect-diagnostics-next-line globalJsonInEffect:off - a JSON pair keeps the caller apart from the key.
-  const bytes = new TextEncoder().encode(JSON.stringify([namespace, key]));
-  const digest = yield* crypto.digest(Digest.sha256, bytes).pipe(Effect.mapError(unavailable));
-  return CommandId.make(`mcp:launch:${Hex.encode(digest)}`);
 });
 
 const access = Effect.gen(function* () {

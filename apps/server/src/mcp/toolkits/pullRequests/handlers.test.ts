@@ -565,6 +565,7 @@ describe("pull request toolkit handlers", () => {
         repository: "t3tools/t3code",
         number: 9,
       });
+      if ("type" in result) throw new Error("Unkeyed calls keep their legacy result.");
       expect(result.wasLinked).toBe(false);
       expect(yield* Ref.get(harness.commands)).toEqual([]);
     }),

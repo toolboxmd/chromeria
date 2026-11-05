@@ -1,3 +1,4 @@
+import * as Redacted from "effect/Redacted";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -336,7 +337,8 @@ describe("Grok launch permission mode", () => {
         Effect.gen(function* () {
           assert.equal(command._tag, "StandardCommand");
           if (command._tag !== "StandardCommand") return yield* Effect.die("Unexpected pipe");
-          const home = command.options.env?.GROK_HOME;
+          const rawHome = command.options.env?.GROK_HOME;
+          const home = Redacted.isRedacted(rawHome) ? Redacted.value(rawHome) : rawHome;
           assert.isString(home);
           assert.equal(command.options.cwd, cwd);
           if (command.args[0] === "inspect") {
@@ -363,7 +365,12 @@ describe("Grok launch permission mode", () => {
               getOutputFd: () => Stream.empty,
             });
           }
-          launches.push({ home: home!, args: command.args });
+          launches.push({
+            home: home!,
+            args: command.args.map((word) =>
+              Redacted.isRedacted(word) ? Redacted.value(word) : word,
+            ),
+          });
           // Stop at the native process boundary without launching Grok.
           return yield* PlatformError.systemError({
             _tag: "NotFound",

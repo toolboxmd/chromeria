@@ -205,8 +205,8 @@ const make = Effect.gen(function* () {
   );
 
   const launchIdentity = (secretName: string) =>
-    crypto
-      .digest("SHA-256", new TextEncoder().encode(secretName))
+    digest
+      .digest(Digest.sha256, new TextEncoder().encode(secretName))
       .pipe(Effect.map(Hex.encode), Effect.orDie);
 
   // Only the origin `peerOrigin` checked may receive a pairing code or token:
@@ -579,7 +579,7 @@ const make = Effect.gen(function* () {
     );
 
   /** A peer's label follows its machine name, so the link takes the one its own address answers with. */
-  const withLabel = (link: PeerLink, label: string) =>
+  const withLabel = <L extends PeerLink>(link: L, label: string) =>
     label === link.label
       ? Effect.succeed(link)
       : sql`

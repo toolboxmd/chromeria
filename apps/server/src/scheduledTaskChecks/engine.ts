@@ -271,10 +271,9 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
   const deliver = (taskId: ScheduledTaskId, state: CheckState, run: CheckedRun, send: RunSend) =>
     claimRun(taskId, run).pipe(
       Effect.andThen(deps.dispatch({ taskId, run, send })),
-      Effect.catch((error) =>
+      Effect.tapError((error) =>
         Clock.currentTimeMillis.pipe(
           Effect.flatMap((now) => retry(state, run, error.message, now)),
-          Effect.andThen(Effect.fail(error)),
         ),
       ),
     );
@@ -1030,7 +1029,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
     return commitSaveUnlocked(input, state, creationChecked);
   });
   const saveUnlocked = (input: Parameters<typeof commitSaveUnlocked>[0]) =>
-    prepareSave(input).pipe(Effect.flatMap((commit) => commit));
+    prepareSave(input).pipe(Effect.flatten);
 
   const save = (input: Parameters<typeof saveUnlocked>[0]) =>
     locked(input.taskId, saveUnlocked(input));

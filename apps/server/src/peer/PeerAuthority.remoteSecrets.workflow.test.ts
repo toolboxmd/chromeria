@@ -1,3 +1,5 @@
+import * as Redacted from "effect/Redacted";
+import { layerFixtureHostServices } from "./PeerAuthority.workflow.fixture.ts";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as TestClock from "effect/testing/TestClock";
@@ -128,7 +130,7 @@ it.live(
         );
         expect(yield* bSql`SELECT run_id FROM orchestration_v2_projection_runs`).toHaveLength(0);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 const pair = (id: string) =>
@@ -218,7 +220,7 @@ const privateClient = (a: import("./PeerAuthority.workflow.fixture.ts").Node) =>
         try: () =>
           new Promise<WebSocket>((resolve, reject) => {
             const connection = new WebSocket(
-              `ws://127.0.0.1:${address.port}/ws?wsTicket=${encodeURIComponent(ticket.ticket)}`,
+              `ws://127.0.0.1:${address.port}/ws?wsTicket=${encodeURIComponent(Redacted.value(ticket.ticket))}`,
             );
             connection.addEventListener("message", (event) =>
               Queue.offerUnsafe(messages, String(event.data)),
@@ -424,7 +426,7 @@ it.live.each([false, true])(
         expect(delivered._tag).toBe("accepted");
         expect(yield* attempts).toHaveLength(0);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 const endRun = (
@@ -573,7 +575,7 @@ it.live(
             ?.webhook_secret === saved.value,
         ).toBe(true);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -656,7 +658,7 @@ it.live(
         expect(replay.structuredContent).toEqual(accepted.structuredContent);
         expect(yield* sql`SELECT task_id FROM scheduled_tasks`).toHaveLength(1);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -688,7 +690,7 @@ it.live(
           ),
         ).toHaveLength(0);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -763,7 +765,7 @@ it.live(
           yield* source`SELECT request_id FROM remote_secret_obligations WHERE request_id=${current.handle.requestId} AND pending=0 AND ack_json IS NULL`,
         ).toHaveLength(1);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("secret385 same create key has immutable intent and origin across concurrent retries", () =>
@@ -840,7 +842,7 @@ it.live("secret385 same create key has immutable intent and origin across concur
       ).toEqual(before);
       expect(yield* sql`SELECT request_id FROM remote_secret_requests`).toHaveLength(1);
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -905,7 +907,7 @@ it.live(
             ?.webhook_secret === saved.value,
         ).toBe(true);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -941,7 +943,7 @@ it.live(
           yield* sql`SELECT request_id FROM remote_secret_requests WHERE status='consumed'`,
         ).toHaveLength(1);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("secret385 narrowed grants and broader fields fail before any source card", () =>
@@ -976,7 +978,7 @@ it.live("secret385 narrowed grants and broader fields fail before any source car
         ).toHaveLength(0);
       }
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -1022,7 +1024,7 @@ it.live(
           ),
         ).toHaveLength(1);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live.each(["grant", "link-expiry"] as const)(
@@ -1060,7 +1062,7 @@ it.live.each(["grant", "link-expiry"] as const)(
           ),
         ).toHaveLength(0);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live.each(["grant", "source-exit"] as const)(
@@ -1113,7 +1115,7 @@ it.live.each(["grant", "source-exit"] as const)(
           ),
         ).toHaveLength(0);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("secret385 an older peer fails negotiation before a source card", () =>
@@ -1147,7 +1149,7 @@ it.live("secret385 an older peer fails negotiation before a source card", () =>
       ).toHaveLength(0);
       expect(yield* source`SELECT request_id FROM remote_secret_obligations`).toHaveLength(0);
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("secret385 pending SQL failure and protected temporary orphan reconcile before retry", () =>
@@ -1187,7 +1189,7 @@ it.live("secret385 pending SQL failure and protected temporary orphan reconcile 
         )).isError,
       ).not.toBe(true);
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -1226,7 +1228,7 @@ it.live(
           ),
         ).toHaveLength(0);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -1392,7 +1394,7 @@ it.live(
           ),
         ).toHaveLength(0);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("secret385 r1 timeout returns the saved winner from the final pending poll", () =>
@@ -1441,7 +1443,7 @@ it.live("secret385 r1 timeout returns the saved winner from the final pending po
         ).not.toBe(true);
       }).pipe(Effect.provide(TestClock.layer()));
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("secret385 r1 terminal deletion retries automatically on idle B", () =>
@@ -1492,7 +1494,7 @@ it.live("secret385 r1 terminal deletion retries automatically on idle B", () =>
         expect(yield* sql`SELECT task_id FROM scheduled_tasks`).toHaveLength(1);
       }).pipe(Effect.provide(TestClock.layer()));
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -1561,7 +1563,7 @@ it.live(
         });
         expect(current.isError).not.toBe(true);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live.each(["success", "timeout", "cancel", "startup", "budget"] as const)(
@@ -1627,7 +1629,7 @@ it.live.each(["success", "timeout", "cancel", "startup", "budget"] as const)(
           }
         }).pipe(Effect.provide(TestClock.layer()));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live.each(["saved", "reserved"] as const)(
@@ -1716,7 +1718,7 @@ it.live.each(["saved", "reserved"] as const)(
           yield* sql`SELECT request_id FROM remote_secret_requests WHERE status='consumed'`,
         ).toHaveLength(1);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live.each(["timeout", "aborted"] as const)(
@@ -1775,7 +1777,7 @@ it.live.each(["timeout", "aborted"] as const)(
           ).toHaveLength(0);
         }).pipe(Effect.provide(TestClock.layer()));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("secret385 r1 startup does not hide a protected state transition SQL failure", () =>
@@ -1800,5 +1802,5 @@ it.live("secret385 r1 startup does not hide a protected state transition SQL fai
       expect((yield* opened.answer(opened.input)).exit?._tag).toBe("Success");
       expect((yield* Fiber.join(opened.pending)).isError).not.toBe(true);
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );

@@ -1,3 +1,4 @@
+import { ScheduledTaskError } from "@t3tools/contracts";
 import type { ScheduledTask, ScheduledTaskId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -95,11 +96,19 @@ export const consumeSlot = Effect.fn("ScheduledTaskChecks.consumeSlot")(function
   const sql = yield* SqlClient.SqlClient;
   let next: string | null = null;
   if (task.enabled) {
-    next = yield* Effect.try(() => {
-      const at = nextScheduledRunAt(task.schedule, now);
-      return at !== null && Number.isFinite(DateTime.toEpochMillis(at))
-        ? DateTime.formatIso(DateTime.toUtc(at))
-        : null;
+    next = yield* Effect.try({
+      try: () => {
+        const at = nextScheduledRunAt(task.schedule, now);
+        return at !== null && Number.isFinite(DateTime.toEpochMillis(at))
+          ? DateTime.formatIso(DateTime.toUtc(at))
+          : null;
+      },
+      catch: (cause) =>
+        new ScheduledTaskError({
+          taskId: task.id,
+          message: "Could not compute schedule time.",
+          cause,
+        }),
     }).pipe(Effect.orElseSucceed(() => null));
   }
   yield* sql`

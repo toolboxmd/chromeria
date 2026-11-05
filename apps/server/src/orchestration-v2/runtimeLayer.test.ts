@@ -3058,7 +3058,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const eventSink = yield* EventSink.EventSinkV2;
-        const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+        const maintenance = yield* ProjectionReplay.ProjectionReplay;
         const parentId = ThreadId.make("descendant-pr-watch-parent");
         const childId = ThreadId.make("descendant-pr-watch-child");
         yield* orchestrator.dispatch({

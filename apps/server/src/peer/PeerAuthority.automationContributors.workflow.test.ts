@@ -1,3 +1,5 @@
+import * as Redacted from "effect/Redacted";
+import { layerFixtureHostServices } from "./PeerAuthority.workflow.fixture.ts";
 import * as RpcAuthorization from "../auth/RpcAuthorization.ts";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpServer from "effect/http/HttpServer";
@@ -213,7 +215,7 @@ it.live.each([false, true])(
             try: () =>
               new Promise<WebSocket>((resolve, reject) => {
                 const socket = new WebSocket(
-                  `ws://127.0.0.1:${address.port}/ws?wsTicket=${encodeURIComponent(ticket.ticket)}`,
+                  `ws://127.0.0.1:${address.port}/ws?wsTicket=${encodeURIComponent(Redacted.value(ticket.ticket))}`,
                 );
                 socket.addEventListener("message", (event) =>
                   Queue.offerUnsafe(messages, String(event.data)),
@@ -298,7 +300,14 @@ it.live.each([false, true])(
           yield* sql`SELECT 1 FROM fork_scheduled_task_checks WHERE task_id=${task.id}`,
         ).toHaveLength(0);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -377,7 +386,14 @@ it.live(
         expect(yield* sql`SELECT 1 FROM fork_automation_certificates`).toHaveLength(0);
         expect(yield* sql`SELECT 1 FROM orchestration_v2_effect_outbox`).toHaveLength(0);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -483,7 +499,14 @@ it.live(
         expect(yield* sql`SELECT 1 FROM fork_automation_certificates`).toHaveLength(0);
         expect(yield* sql`SELECT 1 FROM orchestration_v2_effect_outbox`).toHaveLength(0);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -649,7 +672,7 @@ it.live(
           yield* sql`SELECT 1 FROM peer_control_frames WHERE answer_json IS NULL AND json_extract(frame_json,'$.body.type') IN ('validate','capture-automation')`,
         ).toHaveLength(0);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -696,7 +719,7 @@ it.live(
         expect(denied._tag).toBe("Failure");
         expect(yield* sql`SELECT * FROM scheduled_tasks WHERE task_id=${task.id}`).toEqual(before);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -800,7 +823,14 @@ it.live(
         });
         expect(offline.isError, json(offline)).toBe(true);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -970,7 +1000,14 @@ it.live(
         });
         expect(offline.isError, json(offline)).toBe(true);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -1158,7 +1195,7 @@ it.live(
           yield* sql`SELECT 1 FROM peer_control_frames WHERE answer_json IS NULL AND json_extract(frame_json,'$.body.type') IN ('validate','capture-automation','capture-legacy-automation')`,
         ).toHaveLength(0);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -1223,7 +1260,7 @@ it.live(
           before,
         );
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("scheduler-replay382: replayed creation preserves later independent schedule edits", () =>
@@ -1260,7 +1297,14 @@ it.live("scheduler-replay382: replayed creation preserves later independent sche
           ?.title,
       ).toBe("Later independent title");
     }),
-  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  ).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
+        FetchHttpClient.layer,
+      ),
+    ),
+  ),
 );
 
 it.live(
@@ -1451,7 +1495,14 @@ it.live(
         }>`SELECT incarnation FROM scheduled_mutation_receipts WHERE request_id=${receipt.operationId}`;
         expect(nativeRows[0]?.incarnation).not.toBe(acceptedRows[0]?.incarnation);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -1581,7 +1632,14 @@ it.live(
         expect(replaced.isError).toBe(true);
         expect(yield* Ref.get(b.secretConsumes)).toBe(2);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -1650,7 +1708,14 @@ it.live(
           expect(json((yield* call(list!, {})).structuredContent)).toContain('"number":382');
         }
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -1751,7 +1816,14 @@ it.live(
           yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE command_type='thread.metadata.update' AND command_id LIKE 'worktree-handoff:%'`,
         ).toHaveLength(2);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -1836,7 +1908,14 @@ it.live(
         expect(current.command?.run?.error).toBeTruthy();
         expect(current.runCount).toBe(1);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 const decodeScheduledTaskId = Schema.decodeUnknownEffect(

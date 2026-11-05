@@ -121,7 +121,7 @@ describe("ProjectSetupScriptRunner", () => {
         shell: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
       });
       expect(yield* Queue.take(writes)).toContain("$global:LASTEXITCODE");
-      }),
+    }),
   );
 
   // Fork: the project's own script never runs for work a linked environment started.

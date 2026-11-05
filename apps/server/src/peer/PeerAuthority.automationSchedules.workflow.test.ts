@@ -1,3 +1,4 @@
+import { layerFixtureHostServices } from "./PeerAuthority.workflow.fixture.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as DateTime from "effect/DateTime";
 import * as Ref from "effect/Ref";
@@ -134,7 +135,11 @@ it.live.each(["client", "mcp", "unkeyed-mcp"] as const)(
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, ServerSettings.layerTest()),
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+          ServerSettings.layerTest(),
+        ),
       ),
     ),
 );
@@ -195,7 +200,11 @@ it.live(
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, ServerSettings.layerTest()),
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+          ServerSettings.layerTest(),
+        ),
       ),
     ),
 );
@@ -577,7 +586,11 @@ it.live(
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, ServerSettings.layerTest()),
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+          ServerSettings.layerTest(),
+        ),
       ),
     ),
 );
@@ -684,7 +697,11 @@ it.live.each(["disable", "edit", "delete"] as const)(
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, ServerSettings.layerTest()),
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+          ServerSettings.layerTest(),
+        ),
       ),
     ),
 );
@@ -815,7 +832,11 @@ it.live.each(["disable", "edit", "delete"] as const)(
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, ServerSettings.layerTest()),
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+          ServerSettings.layerTest(),
+        ),
       ),
     ),
 );
@@ -898,7 +919,11 @@ it.live.each([
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, ServerSettings.layerTest()),
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+          ServerSettings.layerTest(),
+        ),
       ),
     ),
 );
@@ -970,7 +995,11 @@ it.live.each(["schedule_task", "start_spectrum"] as const)(
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, ServerSettings.layerTest()),
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+          ServerSettings.layerTest(),
+        ),
       ),
     ),
 );
@@ -1058,7 +1087,11 @@ it.live(
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, ServerSettings.layerTest()),
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+          ServerSettings.layerTest(),
+        ),
       ),
     ),
 );
@@ -1166,7 +1199,11 @@ it.live(
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, ServerSettings.layerTest()),
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+          ServerSettings.layerTest(),
+        ),
       ),
     ),
 );
@@ -1275,7 +1312,11 @@ it.live(
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, ServerSettings.layerTest()),
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+          ServerSettings.layerTest(),
+        ),
       ),
     ),
 );
@@ -1393,7 +1434,11 @@ it.live.each([503, 202, "lost-ack"] as const)(
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, ServerSettings.layerTest()),
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+          ServerSettings.layerTest(),
+        ),
       ),
     ),
 );
@@ -1523,7 +1568,11 @@ it.live(
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, ServerSettings.layerTest()),
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+          ServerSettings.layerTest(),
+        ),
       ),
     ),
 );
@@ -1627,7 +1676,14 @@ it.effect(
         expect(opened).toHaveLength(0);
         expect(yield* validationAttempts).toHaveLength(0);
       }),
-    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, ServerSettings.layerTest()))),
+    ).pipe(
+      Effect.provide(
+        Layer.merge(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          ServerSettings.layerTest(),
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -1734,7 +1790,14 @@ it.live(
           yield* sql`SELECT 1 FROM peer_control_frames WHERE answer_json IS NULL AND json_extract(frame_json,'$.body.type') IN ('validate','capture-automation')`,
         ).toHaveLength(0);
       }),
-    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, ServerSettings.layerTest()))),
+    ).pipe(
+      Effect.provide(
+        Layer.merge(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          ServerSettings.layerTest(),
+        ),
+      ),
+    ),
 );
 
 it.live.each(["non-turn", "non-turn-offline", "policy", "onward"] as const)(
@@ -1960,7 +2023,14 @@ it.live.each(["non-turn", "non-turn-offline", "policy", "onward"] as const)(
           birth,
         );
       }),
-    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, ServerSettings.layerTest()))),
+    ).pipe(
+      Effect.provide(
+        Layer.merge(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          ServerSettings.layerTest(),
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -2167,7 +2237,11 @@ it.live(
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, ServerSettings.layerTest()),
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+          ServerSettings.layerTest(),
+        ),
       ),
     ),
 );
@@ -2380,7 +2454,11 @@ it.live.each(["browser-off-after", "device-default", "browser-off-nested"] as co
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, ServerSettings.layerTest()),
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+          ServerSettings.layerTest(),
+        ),
       ),
     ),
 );
@@ -2517,7 +2595,14 @@ it.live(
           ).toContainEqual({ version: 1, dependency: item.dependency, disabled: true });
         expect(yield* b.authority.pendingAutomationDisables).toEqual([]);
       }),
-    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, ServerSettings.layerTest()))),
+    ).pipe(
+      Effect.provide(
+        Layer.merge(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          ServerSettings.layerTest(),
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -2808,7 +2893,11 @@ it.live(
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, ServerSettings.layerTest()),
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+          ServerSettings.layerTest(),
+        ),
       ),
     ),
 );
@@ -2925,7 +3014,11 @@ it.live(
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, ServerSettings.layerTest()),
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+          ServerSettings.layerTest(),
+        ),
       ),
     ),
 );
@@ -3108,7 +3201,11 @@ it.live.each(["late", "earlier", "simultaneous"] as const)(
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, ServerSettings.layerTest()),
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+          ServerSettings.layerTest(),
+        ),
       ),
     ),
 );

@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 /**
  * Live suite against the real GitHub API with `gh`'s credential; runs only with
  * `T3CODE_ISSUES_LIVE=1`. Comment and close/reopen run only when `T3CODE_ISSUES_LIVE_FIXTURE` names a
@@ -98,6 +99,7 @@ const layer = IssueService.layer.pipe(
   ),
   Layer.provideMerge(ClosingReferences.layer),
   Layer.provideMerge(github),
+  Layer.provide(NodeCrypto.layer),
 );
 
 describe.skipIf(!live)("IssueService (live GitHub)", () => {

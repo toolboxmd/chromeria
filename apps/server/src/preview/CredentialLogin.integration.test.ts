@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
 import * as ServerSettings from "../serverSettings.ts";
 // @effect-diagnostics nodeBuiltinImport:off - Finds Playwright's installed headless shell for a real Chromium run.
@@ -203,6 +204,7 @@ const dependencies = Layer.mergeAll(
   }),
   Layer.succeed(DesktopChannel.DesktopBrowserChannel, {
     available: true,
+    isShown: () => true,
     awaitAttached: () => Effect.sync(() => desktop.enabled),
     detached: desktopEvents("detach"),
     attached: desktopEvents("attach"),
@@ -213,7 +215,7 @@ const dependencies = Layer.mergeAll(
   }),
 ).pipe(
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-credential-login-" })),
-  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
 );
 const layer = ServerBrowser.layer.pipe(
   Layer.provide(PreviewAgentActivity.layer),
@@ -810,7 +812,7 @@ describe.skipIf(!executable)("credential login in a real browser", () => {
 
   it.live("the MCP result and audit line name the vault host, never the live origin", () => {
     const mcpLayer = McpHttpServer.layerPreviewToolkit.pipe(
-      Layer.provideMerge(McpServer.McpServer.layer),
+      Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
       Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
       Layer.provideMerge(layer),
     );
@@ -868,7 +870,7 @@ describe.skipIf(!executable)("credential login in a real browser", () => {
 
   it.live("an overlapping fill's refusal writes no page origin to the audit", () => {
     const mcpLayer = McpHttpServer.layerPreviewToolkit.pipe(
-      Layer.provideMerge(McpServer.McpServer.layer),
+      Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
       Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
       Layer.provideMerge(layer),
     );

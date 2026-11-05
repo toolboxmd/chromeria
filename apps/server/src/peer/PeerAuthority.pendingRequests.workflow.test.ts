@@ -1,3 +1,5 @@
+import * as Redacted from "effect/Redacted";
+import { layerFixtureHostServices } from "./PeerAuthority.workflow.fixture.ts";
 import { clientHandlers as pendingRequestClientHandlers } from "../childThreads/PendingRequestIngress.ts";
 import * as RpcAuthorization from "../auth/RpcAuthorization.ts";
 import * as HttpRouter from "effect/http/HttpRouter";
@@ -252,7 +254,7 @@ it.live.each(["question", "approval"] as const)(
         expect(messages[0]!.text).toContain(option);
         expect(messages[0]!.notification?.source).not.toHaveProperty("childThreadId");
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -449,7 +451,7 @@ it.live(
         expect(afterPolicy.messages).toEqual(beforePolicy.messages);
         expect(afterPolicy.runtimeRequests).toEqual(beforePolicy.runtimeRequests);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -530,7 +532,7 @@ it.live(
         ).toHaveLength(1);
         expect(yield* c.links.list).toEqual([]);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -673,7 +675,7 @@ it.live(
         const denied = yield* a.pendingRequests.fromTask(sessionId, action).pipe(Effect.result);
         expect(denied._tag).toBe("Failure");
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -1010,7 +1012,7 @@ it.live(
         expect(lateEffects[0]?.count).toBe(0);
         expect(callbacks).toHaveLength(1);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("pending369: asynchronous answer and dismiss race in the native serialized owner", () =>
@@ -1073,7 +1075,7 @@ it.live("pending369: asynchronous answer and dismiss race in the native serializ
         records.messages.filter((message) => message.text === "Which color?\nPurple"),
       ).toHaveLength(raced[0]?.isError === true ? 0 : 1);
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -1176,7 +1178,7 @@ it.live(
           ),
         );
         const ticket = yield* a.auth.issueWebSocketTicket(session);
-        const socket = yield* connect(ticket.ticket);
+        const socket = yield* connect(Redacted.value(ticket.ticket));
         let ordinal = 0;
         const rpc = (tag: string, payload: unknown, client = socket) =>
           Effect.gen(function* () {
@@ -1252,7 +1254,7 @@ it.live(
           ),
         );
         const readTicket = yield* a.auth.issueWebSocketTicket(readSession);
-        const readSocket = yield* connect(readTicket.ticket);
+        const readSocket = yield* connect(Redacted.value(readTicket.ticket));
         const secondRequestId = yield* seedPending369(b, child.childId, "read-only");
         const secondRead = yield* rpc(
           WS_METHODS.remoteTaskRequestRead,
@@ -1278,7 +1280,7 @@ it.live(
         expect((yield* rpc(WS_METHODS.remoteTaskRequest, answer)).exit?._tag).toBe("Failure");
         expect((yield* connect("unproved-agent-token").pipe(Effect.result))._tag).toBe("Failure");
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -1356,7 +1358,7 @@ it.live(
           false,
         );
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -1416,7 +1418,7 @@ it.live(
           ),
         ).toHaveLength(1);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("pending369 R1: read content and revision describe one snapshot", () =>
@@ -1512,7 +1514,7 @@ it.live("pending369 R1: read content and revision describe one snapshot", () =>
           accepted.isError === true,
       ).toBe(true);
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("pending369 R1: advertised empty live option retains local-equivalent response", () =>
@@ -1670,7 +1672,7 @@ it.live("pending369 R1: advertised empty live option retains local-equivalent re
         ])).runtimeRequests.find((entry) => entry.id === fixedId)?.status,
       ).toBe("pending");
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("pending584: a remote answer may leave an optional choice-only question blank", () =>
@@ -1777,7 +1779,7 @@ it.live("pending584: a remote answer may leave an optional choice-only question 
       expect(omittedAnswer.isError, json(omittedAnswer)).not.toBe(true);
       expect(yield* status(omitted.args.requestId)).toBe("resolved");
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("review383-read-capture: readonly capture rechecks after external readiness", () =>
@@ -1823,7 +1825,14 @@ it.live("review383-read-capture: readonly capture rechecks after external readin
       }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
       yield* Fiber.join(running);
     }),
-  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  ).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
+        FetchHttpClient.layer,
+      ),
+    ),
+  ),
 );
 
 it.live("review383-local-auto: keyed local opening preserves existing capability policy", () =>
@@ -1859,7 +1868,14 @@ it.live("review383-local-auto: keyed local opening preserves existing capability
       });
       expect(keyed.isError, json(keyed)).not.toBe(true);
     }),
-  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  ).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
+        FetchHttpClient.layer,
+      ),
+    ),
+  ),
 );
 
 it.live(
@@ -1920,7 +1936,14 @@ it.live(
           ).toBe(-32602);
         expect(yield* footprint()).toEqual(beforeInvalid);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each(["android", "ios"] as const)(
@@ -1999,7 +2022,14 @@ it.live.each(["android", "ios"] as const)(
         });
         expect(click.isError, json(click)).not.toBe(true);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each(["split", "consolidated"] as const)(
@@ -2114,5 +2144,12 @@ it.live.each(["split", "consolidated"] as const)(
         expect((yield* readRequest(promachos, childArgs)).isError).toBe(true);
         expect((yield* readRequest(worker, childArgs)).isError).not.toBe(true);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );

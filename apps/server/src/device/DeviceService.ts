@@ -1161,77 +1161,77 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     }));
   });
 
-  const close: DeviceService["Service"]["close"] = Effect.fn("DeviceService.close")(
-    function* (input) {
-      yield* recheckAction;
-      // Open publishes under the same lock; an old close must not release a reopened claim.
-      const closing = yield* lifecycleLock.withPermit(
-        Effect.gen(function* () {
-          const { state } = yield* SynchronizedRef.get(stateRef);
-          const closing = state.sessions.filter(
-            (session) =>
-              session.threadId === input.threadId &&
-              (input.hostId === undefined || session.hostId === input.hostId) &&
-              (input.deviceId === undefined || session.deviceId === input.deviceId),
-          );
-          const ending = input.shutdown
-            ? state.sessions.filter((session) =>
-                closing.some(
-                  (closed) =>
-                    closed.hostId === session.hostId && closed.deviceId === session.deviceId,
-                ),
-              )
-            : closing;
-          for (const session of ending) {
-            const host = yield* resolveHost(session.hostId);
-            const ready = yield* host.current;
-            // A lost SSH tunnel does not establish that the remote daemon stopped.
-            if (!ready && (yield* host.summary).kind === "ssh")
+  const close: DeviceService["Service"]["close"] = Effect.fn("DeviceService.close")(function* (
+    input,
+  ) {
+    yield* recheckAction;
+    // Open publishes under the same lock; an old close must not release a reopened claim.
+    const closing = yield* lifecycleLock.withPermit(
+      Effect.gen(function* () {
+        const { state } = yield* SynchronizedRef.get(stateRef);
+        const closing = state.sessions.filter(
+          (session) =>
+            session.threadId === input.threadId &&
+            (input.hostId === undefined || session.hostId === input.hostId) &&
+            (input.deviceId === undefined || session.deviceId === input.deviceId),
+        );
+        const ending = input.shutdown
+          ? state.sessions.filter((session) =>
+              closing.some(
+                (closed) =>
+                  closed.hostId === session.hostId && closed.deviceId === session.deviceId,
+              ),
+            )
+          : closing;
+        for (const session of ending) {
+          const host = yield* resolveHost(session.hostId);
+          const ready = yield* host.current;
+          // A lost SSH tunnel does not establish that the remote daemon stopped.
+          if (!ready && (yield* host.summary).kind === "ssh")
+            return yield* new DeviceHostUnavailableError({
+              hostId: session.hostId,
+              hostLabel: host.label,
+              reason: "Device host is reconnecting. Retry close after it reconnects.",
+            });
+          if (ready?.releaseAgentSession) {
+            const name = yield* agentDeviceSession(
+              session.threadId,
+              session.hostId,
+              session.deviceId,
+            ).pipe(Effect.provideService(Digest.Digest, digest));
+            yield* ready.releaseAgentSession(name, session.deviceId);
+          }
+        }
+        yield* Effect.forEach(ending, retireCommandSession, { discard: true });
+        if (input.shutdown) yield* releaseLaunchers(ending);
+        if (input.shutdown) {
+          for (const session of closing) {
+            const ready = yield* currentReadiness(session.hostId);
+            if (!ready)
               return yield* new DeviceHostUnavailableError({
                 hostId: session.hostId,
-                hostLabel: host.label,
-                reason: "Device host is reconnecting. Retry close after it reconnects.",
+                reason: "Device host is not running. Reconnect before retrying close.",
               });
-            if (ready?.releaseAgentSession) {
-              const name = yield* agentDeviceSession(
-                session.threadId,
-                session.hostId,
-                session.deviceId,
-              ).pipe(Effect.provideService(Digest.Digest, digest));
-              yield* ready.releaseAgentSession(name, session.deviceId);
-            }
+            yield* shutdownDevice(ready, session.deviceId, session.platform);
           }
-          yield* Effect.forEach(ending, retireCommandSession, { discard: true });
-          if (input.shutdown) yield* releaseLaunchers(ending);
-          if (input.shutdown) {
-            for (const session of closing) {
-              const ready = yield* currentReadiness(session.hostId);
-              if (!ready)
-                return yield* new DeviceHostUnavailableError({
-                  hostId: session.hostId,
-                  reason: "Device host is not running. Reconnect before retrying close.",
-                });
-              yield* shutdownDevice(ready, session.deviceId, session.platform);
-            }
-          }
-          yield* publish((current) => ({
-            ...current,
-            sessions: current.sessions.filter((session) => !ending.includes(session)),
-          }));
-          return closing;
-        }),
+        }
+        yield* publish((current) => ({
+          ...current,
+          sessions: current.sessions.filter((session) => !ending.includes(session)),
+        }));
+        return closing;
+      }),
+    );
+    if (input.shutdown)
+      yield* Effect.forEach(
+        closing,
+        (session) =>
+          currentReadiness(session.hostId).pipe(
+            Effect.flatMap((ready) => (ready ? refreshAfterShutdown(ready) : Effect.void)),
+          ),
+        { discard: true },
       );
-      if (input.shutdown)
-        yield* Effect.forEach(
-          closing,
-          (session) =>
-            currentReadiness(session.hostId).pipe(
-              Effect.flatMap((ready) => (ready ? refreshAfterShutdown(ready) : Effect.void)),
-            ),
-          { discard: true },
-        );
-    }, commandLock.withPermit
-  );
+  }, commandLock.withPermit);
 
   // Sessions retire before the power-off, while their agent-device sessions can still close the app;
   // agent-device keeps a claim whose app close fails.
@@ -1648,7 +1648,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
             const current = (yield* sessionsForThread(scope.thread.threadId)).includes(session);
             if (!current || hosts.get(session.hostId) !== runtime.host)
               return yield* commandUnavailable(session.hostId);
-            const privateSession = `${yield* agentDeviceSession(scope.thread.threadId, session.hostId, session.deviceId).pipe(Effect.provideService(Crypto.Crypto, crypto))}-${session.toolSessionId}`;
+            const privateSession = `${yield* agentDeviceSession(scope.thread.threadId, session.hostId, session.deviceId).pipe(Effect.provideService(Digest.Digest, digest))}-${session.toolSessionId}`;
             const configured = runtime.path.join(
               runtime.config.stateDir,
               "device",

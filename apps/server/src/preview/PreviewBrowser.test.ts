@@ -1,4 +1,4 @@
-import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeCryptoServices from "@effect/platform-node/NodeCrypto";
 // @effect-diagnostics nodeBuiltinImport:off - Effect has no lstat to compare unpacked trees.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Layer from "effect/Layer";
@@ -139,7 +139,7 @@ const makeHarness = Effect.fn("test.makePreviewBrowser")(function* (
   return { browser, fs, path, baseDir, installRoot, requests };
 });
 
-it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("PreviewBrowser", (it) => {
+it.layer(Layer.mergeAll(NodeServices.layer, NodeCryptoServices.layer))("PreviewBrowser", (it) => {
   it.effect.each(["0.8.0", "1.2.3"])("retains another version when installing %s", (current) =>
     Effect.gen(function* () {
       const { browser, fs, path, installRoot, requests } = yield* makeHarness({ version: current });

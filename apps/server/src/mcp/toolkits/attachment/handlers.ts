@@ -1,3 +1,4 @@
+import * as Digest from "effect/crypto/Digest";
 import {
   ATTACHMENT_UPLOAD_URL_TTL_MS,
   type ChatAttachment,
@@ -60,6 +61,7 @@ export const layer = McpToolAccess.toLayer(
   AttachmentToolkit,
   Effect.gen(function* () {
     const assetSigner = yield* AssetSigner.AssetSigner;
+    const digest = yield* Digest.Digest;
     const uploadOwners = new Map<string, { readonly owner: string; readonly issuedAt: number }>();
     return {
       // A pending upload belongs to its caller until a send claims it, so
@@ -90,7 +92,10 @@ export const layer = McpToolAccess.toLayer(
             binding === undefined
               ? undefined
               : { ...binding, ...(input.digest === undefined ? {} : { digest: input.digest }) },
-          ).pipe(Effect.mapError(unavailable));
+          ).pipe(
+            Effect.provideService(AssetSigner.AssetSigner, assetSigner),
+            Effect.mapError(unavailable),
+          );
           yield* authorize;
           const now = yield* Clock.currentTimeMillis;
           for (const [id, entry] of uploadOwners) {
@@ -106,7 +111,9 @@ export const layer = McpToolAccess.toLayer(
         }),
       ),
       t3_attachment_acquire: McpToolAccess.actsAsCaller((input) =>
-        AssetAccess.acquireAttachment(input.resource, input.clientRequestId),
+        AssetAccess.acquireAttachment(input.resource, input.clientRequestId).pipe(
+          Effect.provideService(Digest.Digest, digest),
+        ),
       ),
       t3_attachment_inspect: McpToolAccess.readsAsCaller((input) =>
         Effect.gen(function* () {

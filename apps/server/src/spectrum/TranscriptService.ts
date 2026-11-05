@@ -75,7 +75,10 @@ const make = Effect.gen(function* () {
     const command = yield* decodeAppend(pending);
     const thread = yield* projections.getThread(threadId);
     const now = yield* DateTime.now;
-    const planned = yield* Effect.try(() => planTranscriptAppend(state, thread, command, now));
+    const planned = yield* Effect.try({
+      try: () => planTranscriptAppend(state, thread, command, now),
+      catch: (cause) => new SpectrumTranscriptError({ threadId, commandId, cause }),
+    });
     const result = yield* sink.commitCommand({
       commandId,
       threadId,

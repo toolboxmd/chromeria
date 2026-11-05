@@ -451,7 +451,7 @@ const make = Effect.gen(function* () {
           credential,
           now.epochMilliseconds,
           "cookie-mirror",
-        ))
+        ).pipe(Effect.provideService(Mac.Mac, mac)))
       ) {
         return {
           method: "desktop-bootstrap",

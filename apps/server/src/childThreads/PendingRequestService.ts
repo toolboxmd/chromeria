@@ -11,7 +11,7 @@ import {
 } from "@t3tools/contracts";
 import * as SqlClient from "effect/sql/SqlClient";
 import { PeerAuthority } from "../peer/PeerAuthority.ts";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -79,7 +79,7 @@ export class PendingRequests extends Context.Service<
 
 const make = Effect.gen(function* () {
   const threads = yield* ThreadManagementService;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* SecureRandom.SecureRandom;
   const forwarding = yield* Effect.serviceOption(PeerForwarding);
   const environment = yield* Effect.serviceOption(ServerEnvironment);
   const receipts = yield* Effect.serviceOption(McpRequestReceipts);
@@ -87,7 +87,7 @@ const make = Effect.gen(function* () {
   const projections = yield* Effect.serviceOption(ProjectionStoreV2);
   const authority = yield* Effect.serviceOption(PeerAuthority);
   let dependencies = Context.make(ThreadManagementService, threads).pipe(
-    Context.add(Crypto.Crypto, crypto),
+    Context.add(SecureRandom.SecureRandom, crypto),
   );
   if (Option.isSome(sql)) dependencies = Context.add(dependencies, SqlClient.SqlClient, sql.value);
   if (Option.isSome(projections))

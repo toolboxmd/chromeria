@@ -45,7 +45,6 @@ import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as DeviceService from "../device/DeviceService.ts";
 import * as PullRequestReviewGuideService from "../pullRequest/PullRequestReviewGuideService.ts";
 import * as RequestReceipts from "./McpRequestReceipts.ts";
-import * as Sqlite from "../persistence/Sqlite.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
@@ -93,8 +92,8 @@ const layerSnapshotTest = (
   fileSystem: Layer.Layer<FileSystem.FileSystem> | Layer.Layer<never> = Layer.empty,
 ) =>
   McpHttpServer.layerPreviewToolkit.pipe(
-    Layer.provide(ServerSettings.layerTest()),
-    Layer.provideMerge(McpServer.McpServer.layer),
+    Layer.provideMerge(ServerSettings.layerTest()),
+    Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
     Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
     Layer.provideMerge(PreviewAutomationBroker.layer),
     Layer.provideMerge(RequestReceipts.layer.pipe(Layer.provideMerge(Sqlite.layerMemory))),
@@ -102,9 +101,8 @@ const layerSnapshotTest = (
       ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-http-server-test-" }),
     ),
     Layer.provideMerge(fileSystem),
-    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
   );
-const layerTest = layerSnapshotTest();
 const decodeSavedSnapshotReceipt = Schema.decodeUnknownEffect(McpSavedSnapshotReceipt);
 const layerTest = layerSnapshotTest();
 const layerPullRequestsTest = McpHttpServer.layerPullRequestsToolkit.pipe(
@@ -116,7 +114,7 @@ const layerPullRequestsTest = McpHttpServer.layerPullRequestsToolkit.pipe(
       Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
       Layer.mock(Orchestrator.OrchestratorV2)({}),
       Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
-      NodeServices.layer,
+      Layer.merge(NodeServices.layer, NodeCrypto.layer),
       NodeCrypto.layer,
     ),
   ),
@@ -215,6 +213,7 @@ it.effect.each([
     }).pipe(
       Effect.provide(
         McpHttpServer.layerDeviceToolkit.pipe(
+          Layer.provide(ServerSettings.layerTest()),
           Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
           Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
           Layer.provide(
@@ -247,7 +246,9 @@ it.effect.each([
           ),
           Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
           Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-device-mcp-test-" })),
-          Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+          Layer.provide(
+            Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+          ),
         ),
       ),
       Effect.scoped,
@@ -285,7 +286,7 @@ const layerRecordingTools = (calls: Array<unknown>) => {
         McpToolAccessTestkit.liveThreadsLayer,
         Layer.mock(OrchestratorMcpService.OrchestratorMcpService)({}),
         Layer.mock(ProjectService.ProjectService)({}),
-        NodeServices.layer,
+        Layer.merge(NodeServices.layer, NodeCrypto.layer),
         NodeCrypto.layer,
       ),
     ),
@@ -685,7 +686,7 @@ it.effect(
           Effect.provide(layerSnapshotTest(Layer.succeed(FileSystem.FileSystem, fileSystem))),
         );
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect.each(["limit", "runLimit", "maxCharsPerItem"])(
@@ -937,7 +938,7 @@ it.effect("terminates HTTP MCP sessions with DELETE", () =>
         issuedAt: 1,
       };
       const layerServer = McpHttpServer.layerMcpTransport(Layer.empty).pipe(
-        Layer.provide(ServerSettings.layerTest()),
+        Layer.provideMerge(ServerSettings.layerTest()),
         Layer.provide(
           Layer.mock(McpSessionRegistry.McpSessionRegistry)({
             resolve: (presented) =>
@@ -1052,7 +1053,7 @@ it.effect("admits provider and OAuth client credentials and points only clients 
           }),
         ),
       ).pipe(
-        Layer.provide(ServerSettings.layerTest()),
+        Layer.provideMerge(ServerSettings.layerTest()),
         Layer.provide(
           Layer.mock(McpSessionRegistry.McpSessionRegistry)({
             resolve: (token) =>
@@ -1155,7 +1156,9 @@ it.effect("accepts case-insensitive MCP bearer schemes and diagnoses rejected cr
     Layer.provide(ManagedPolicy.layerTest()),
     Layer.provideMerge(ServerEnvironment.layerIdentity),
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-auth-header-test-" })),
-    Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+    Layer.provideMerge(
+      Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+    ),
   );
   return Effect.scoped(
     Effect.gen(function* () {
@@ -1175,7 +1178,7 @@ it.effect("accepts case-insensitive MCP bearer schemes and diagnoses rejected cr
       yield* HttpRouter.serve(
         McpHttpServer.layerMcpTransport(Layer.empty).pipe(
           Layer.provide(McpOAuth.layerMcpClientAuthenticator),
-          Layer.provide(ServerSettings.layerTest()),
+          Layer.provideMerge(ServerSettings.layerTest()),
         ),
         { disableListenLog: true, disableLogger: true },
       ).pipe(Layer.build);
@@ -1390,7 +1393,7 @@ it.effect("lists pull request watch tools only to threads that are not delegated
       const serverLayer = McpHttpServer.layerMcpTransport(
         McpHttpServer.layerPullRequestsToolkit,
       ).pipe(
-        Layer.provide(ServerSettings.layerTest()),
+        Layer.provideMerge(ServerSettings.layerTest()),
         Layer.provide(
           Layer.mock(McpSessionRegistry.McpSessionRegistry)({
             resolve: (token) => Effect.succeed(scopes.get(token)),
@@ -1403,7 +1406,7 @@ it.effect("lists pull request watch tools only to threads that are not delegated
             Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
             Layer.mock(Orchestrator.OrchestratorV2)({}),
             Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -1498,7 +1501,7 @@ it.effect(
             }),
           ),
         ).pipe(
-          Layer.provide(ServerSettings.layerTest()),
+          Layer.provideMerge(ServerSettings.layerTest()),
           Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
           Layer.provide(
             Layer.mock(McpSessionRegistry.McpSessionRegistry)({

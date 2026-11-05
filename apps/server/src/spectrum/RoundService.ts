@@ -92,7 +92,10 @@ const make = Effect.gen(function* () {
   });
   const prepare = Effect.fn("SpectrumRound.prepare")(function* (threadId: ThreadId) {
     const state = yield* read(threadId);
-    const round = yield* Effect.try(() => nextRound(state));
+    const round = yield* Effect.try({
+      try: () => nextRound(state),
+      catch: (cause) => new SpectrumRoundError({ threadId, cause }),
+    });
     if (round === null) return state;
     const records = yield* projections.getThreadRecords(threadId, ["messages"]);
     const discussion = records.messages

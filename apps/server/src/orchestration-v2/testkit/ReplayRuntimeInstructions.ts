@@ -11,13 +11,15 @@ export function materializeReplayTranscriptRuntimeInstructions(
       ? "Cursor"
       : runtime.driver === "grok"
         ? "Grok"
-        : runtime.driver === "muse" ? "Muse Code" : runtime.driver === "kiro"
-          ? "Kiro"
-          : runtime.driver === "acpRegistry"
-            ? "acpRegistry"
-            : runtime.driver === "fx"
-              ? "fx"
-              : undefined;
+        : runtime.driver === "muse"
+          ? "Muse Code"
+          : runtime.driver === "kiro"
+            ? "Kiro"
+            : runtime.driver === "acpRegistry"
+              ? "acpRegistry"
+              : runtime.driver === "fx"
+                ? "fx"
+                : undefined;
   if (harness === undefined) return transcript;
   const instructions = buildRuntimeInstructions({ harness, model: runtime.model });
 

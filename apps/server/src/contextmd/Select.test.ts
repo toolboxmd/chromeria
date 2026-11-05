@@ -1,3 +1,5 @@
+import * as Layer from "effect/Layer";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 // @effect-diagnostics nodeBuiltinImport:off - the tests write ContextMD stores and workspaces on disk.
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -597,7 +599,7 @@ describe("store", () => {
       assert.strictEqual(st.entries[0]!.long, true);
       assert.isTrue(st.errors.some((e) => e.includes("id is 121 characters, over 120")));
       assert.strictEqual(st.entries[2]!.target, NodePath.join(d, "x.md"));
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("gives an edited entry a new version and reloads it from the cache", () =>
@@ -611,7 +613,7 @@ describe("store", () => {
       entry(d, "a", "two!", { command: "ls" });
       NodeFS.utimesSync(file, 2_000_000_000, 2_000_000_000);
       assert.notStrictEqual((yield* Store.load([d], cache)).entries[0]!.version, v1);
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("resolves a pointer target relative to its entry", () =>
@@ -625,7 +627,7 @@ describe("store", () => {
       });
       const e = (yield* Store.load([d], new Map())).entries[0]!;
       assert.strictEqual(e.target, NodePath.join(d, "procedures", "vc.md"));
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("records the commit the store directory is at", () =>
@@ -636,7 +638,7 @@ describe("store", () => {
       NodeFS.writeFileSync(NodePath.join(d, ".git", "refs", "heads", "main"), "feedface\n");
       entry(d, "a", "A.", { command: "ls" });
       assert.deepStrictEqual((yield* Store.load([d], new Map())).owners, { [d]: "feedface" });
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 });
 
@@ -660,7 +662,7 @@ describe("reads", () => {
       assert.deepStrictEqual(yield* r("Bash", { command: "cat missing.md" }), []);
       assert.deepStrictEqual(yield* r("Read", { file_path: f }), [{ path: f, kind: "read_tool" }]);
       assert.deepStrictEqual(yield* r("Edit", { file_path: f }), []);
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("call a read full only when it can show the whole file", () =>
@@ -746,7 +748,7 @@ describe("reads", () => {
       assert.deepStrictEqual(yield* kind("Bash", { command: `grep -n x ${f}; cat ${f}` }), [
         "shell_partial",
       ]);
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("call a read partial when its result shows it was cut", () =>
@@ -812,7 +814,7 @@ describe("reads", () => {
         yield* kind("read", { filePath: f }, "x\n(File has more lines. Use 'offset')"),
         ["read_partial"],
       );
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 });
 
@@ -871,7 +873,7 @@ describe("keys from files a shell command names (#234)", () => {
       for (const command of ["echo hello", "curl -s https://example.com/chromeria-v2.sqlite.gz"]) {
         assert.notInclude(yield* matched(command), "path:**/chromeria-v2.sqlite", command);
       }
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("keeps the first bake's bare command key matching as before", () =>
@@ -891,7 +893,7 @@ describe("keys from files a shell command names (#234)", () => {
         yield* matched(`sqlite3 'file:${db}?mode=ro' .tables`),
         "command:chromeria-v2.sqlite",
       );
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 });
 
@@ -970,7 +972,7 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
         edit.candidates.map((c) => c.entry),
         ["skills"],
       );
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("treats a printed non-zero exit as a failure and matches error keys in output", () =>
@@ -1000,7 +1002,7 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
         tool_response: { stdout: "exit=0", stderr: "" },
       });
       assert.strictEqual(clean.moment.kind, "tool_result");
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("reads Codex output as the failure evidence it lacks an exit code for", () =>
@@ -1041,7 +1043,7 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
         fail.candidates.map((c) => c.entry),
         ["err"],
       );
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("marks cut reads in each harness's real result shapes (live samples, 2026-10-13)", () =>
@@ -1129,7 +1131,7 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
         }),
         ["shell_partial"],
       );
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("reads Grok's snake_case events, exit code and compaction", () =>
@@ -1155,7 +1157,7 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
       assert.deepStrictEqual(read.moment.reads, [{ path: target, kind: "read_tool" }]);
       const compact = yield* sel("grok", { ...base, hook_event_name: "post_compact" });
       assert.strictEqual(compact.moment.kind, "compaction");
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("reads OpenCode plugin events", () =>
@@ -1199,7 +1201,7 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
       assert.deepStrictEqual(yield* readOf("# Rules\n", { exit: undefined, truncated: true }), [
         "read_partial",
       ]);
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("gives Grok a deny that fits its 256-character reason, with a short head (#229)", () =>
@@ -1211,7 +1213,7 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
       assert.isAtMost(Buffer.byteLength(grok.profile.heads.deny), 80);
       assert.include(grok.profile.heads.deny, "user's own");
       assert.isUndefined(claude.profile.deny_limit_bytes);
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("says in every served head that the rule is the user's own", () =>
@@ -1220,7 +1222,7 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
       const out = yield* sel("claude", { hook_event_name: "Stop", session_id: "S", cwd: ws });
       assert.include(out.profile.heads.deny, "the user's own rule store");
       assert.include(out.profile.heads.context, "rule from the user");
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("refuses unknown harnesses and events", () =>
@@ -1245,7 +1247,7 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
         yield* refused("claude", { hook_event_name: "pre_tool_use", session_id: "S" }),
         "unsupported event",
       );
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 });
 
@@ -1280,6 +1282,6 @@ describe("native shown identity selection", () => {
         );
         assert.isNull(malformed.moment.transcript_path);
         assert.isNull(malformed.moment.native_turn);
-      }).pipe(Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 });

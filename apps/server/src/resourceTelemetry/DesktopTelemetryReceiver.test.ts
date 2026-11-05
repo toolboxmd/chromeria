@@ -42,10 +42,6 @@ describe("DesktopTelemetryReceiver", () => {
               "--eval",
               `
 import * as NodeAssert from "node:assert/strict";
-import * as NodeCrypto from "node:crypto";
-import * as NodeTls from "node:tls";
-import * as Effect from "effect/Effect";
-import * as NodeServices from "@effect/platform-node/NodeServices";
 import { makeApplyDesktopShellEnvironmentSnapshot } from ${JSON.stringify(new URL("./DesktopTelemetryReceiver.ts", import.meta.url).href)};
 const fingerprints = (certificates) => [...new Set(certificates.map((pem) => new NodeCrypto.X509Certificate(pem).fingerprint256))].sort();
 const expected = fingerprints([...NodeTls.getCACertificates("bundled"), ...NodeTls.getCACertificates("system")]);

@@ -1,3 +1,5 @@
+import * as Digest from "effect/crypto/Digest";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -18,7 +20,6 @@ import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
 import * as CodexClient from "effect-codex-app-server/client";
-import * as Crypto from "effect/Crypto";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -707,7 +708,7 @@ const makeCodexBoundary = Effect.fn("makeCodexUrgentRestartBoundary")(function* 
     settings: codexSettings,
     environment: {},
     clientFactory,
-    crypto: yield* Crypto.Crypto,
+    digest: yield* Digest.Digest,
     fileSystem: yield* FileSystem.FileSystem,
     idAllocator: yield* IdAllocator.IdAllocatorV2,
     serverConfig: yield* ProviderReplayHarness.makeReplayServerConfig("urgent-codex"),
@@ -1553,8 +1554,10 @@ const makeOpenCode2Boundary = Effect.fn("makeOpenCode2UrgentStopBoundary")(funct
     Layer.provide(
       Layer.mergeAll(
         IdAllocator.layer,
-        NodeServices.layer,
-        TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer)),
+        Layer.merge(NodeServices.layer, NodeCrypto.layer),
+        TestProviderHost.layer().pipe(
+          Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+        ),
       ),
     ),
   );
@@ -1591,8 +1594,8 @@ const makeOpenCode2Boundary = Effect.fn("makeOpenCode2UrgentStopBoundary")(funct
 const provideTestServices = Layer.mergeAll(
   IdAllocator.layer,
   McpProviderSessions.layer,
-  TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer)),
-  NodeServices.layer,
+  TestProviderHost.layer().pipe(Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
+  Layer.merge(NodeServices.layer, NodeCrypto.layer),
 );
 const domainIndex = (
   events: OrchestrationV2DomainEvent[],

@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 // @effect-diagnostics nodeBuiltinImport:off -- real git is the external boundary under test.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -17,6 +18,7 @@ import * as PromachosHome from "./PromachosHome.ts";
 
 const base = Layer.mergeAll(
   NodeServices.layer,
+  NodeCrypto.layer,
   WorkspacePaths.layer.pipe(
     Layer.provide(NodeServices.layer),
     Layer.provide(
@@ -25,7 +27,10 @@ const base = Layer.mergeAll(
       ),
     ),
   ),
-  VcsDriverRegistry.layer.pipe(Layer.provide(VcsProcess.layer), Layer.provide(NodeServices.layer)),
+  VcsDriverRegistry.layer.pipe(
+    Layer.provide(VcsProcess.layer),
+    Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+  ),
 );
 const temporary = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;

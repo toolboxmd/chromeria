@@ -1,3 +1,4 @@
+import * as Digest from "effect/crypto/Digest";
 import * as RemoteSecretPersistence from "../secrets/remoteSecretPersistence.ts";
 import {
   RemoteSecretOrigin,
@@ -47,7 +48,7 @@ import {
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -411,7 +412,8 @@ const make = Effect.gen(function* () {
   const policySettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
   const wakeDisables = Option.isSome(linkEvents) ? linkEvents.value.automationChanged : Effect.void;
   const authSessions = yield* AuthSessions.AuthSessionRepository;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* SecureRandom.SecureRandom;
+  const digest = yield* Digest.Digest;
   const threads = yield* ProjectionStore.ProjectionStoreV2;
   const links = yield* Links.PeerLinks;
   const here = yield* Environment.ServerEnvironment.pipe(
@@ -480,8 +482,8 @@ const make = Effect.gen(function* () {
     );
 
   const hash = (value: unknown) =>
-    crypto
-      .digest("SHA-256", new TextEncoder().encode(json(value)))
+    digest
+      .digest(Digest.sha256, new TextEncoder().encode(json(value)))
       .pipe(Effect.map(Hex.encode), Effect.orDie);
   const read: (id: string) => Effect.Effect<ExecutionRecord, OrchestratorMcpFailure> = Effect.fn(
     "PeerAuthority.read",
@@ -1185,7 +1187,7 @@ const make = Effect.gen(function* () {
       if (record.sessionId !== null) {
         const current = yield* grant(record.sessionId);
         const upstream = yield* ask(record.sessionId, {
-          id: `validate:${record.id}:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+          id: `validate:${record.id}:${yield* crypto.uuidV4().pipe(Effect.orDie)}`,
           body: {
             type: "validate",
             envelope: record.envelope,
@@ -1609,7 +1611,7 @@ const make = Effect.gen(function* () {
         tool,
         args,
         pair,
-        action: pair === undefined ? yield* crypto.randomUUIDv4().pipe(Effect.orDie) : undefined,
+        action: pair === undefined ? yield* crypto.uuidV4().pipe(Effect.orDie) : undefined,
       });
       const envelope: PeerAuthorityEnvelope = {
         version: 1,
@@ -1669,7 +1671,7 @@ const make = Effect.gen(function* () {
     )
       return yield* denied("The attachment must address its exact linked environment.");
     yield* nativeViewerSession(sessionId, true);
-    const id = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+    const id = yield* crypto.uuidV4().pipe(Effect.orDie);
     const envelope: PeerAuthorityEnvelope = {
       version: 1,
       environmentId: here,
@@ -1756,7 +1758,7 @@ const make = Effect.gen(function* () {
     if (input.resource.environmentId !== peer || peer === here)
       return yield* denied("The device viewer must address its exact linked environment.");
     yield* nativeViewerSession(sessionId, input.operation === "view", capability);
-    const id = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+    const id = yield* crypto.uuidV4().pipe(Effect.orDie);
     const envelope: PeerAuthorityEnvelope = {
       version: 1,
       environmentId: here,
@@ -1837,7 +1839,7 @@ const make = Effect.gen(function* () {
       if (scope.client?.linked !== true) return yield* denied("An authenticated peer is required.");
       const sessionId = scope.client.sessionId;
       const remote = yield* ask(sessionId, {
-        id: `validate:${envelope.actionId}:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+        id: `validate:${envelope.actionId}:${yield* crypto.uuidV4().pipe(Effect.orDie)}`,
         body: { type: "validate", envelope },
       });
       const ceiling = yield* decodeCeiling(remote).pipe(Effect.mapError(unavailable));
@@ -1986,7 +1988,7 @@ const make = Effect.gen(function* () {
       if (record.sessionId !== null) {
         return yield* decodePendingActor(
           yield* ask(record.sessionId, {
-            id: `request-actor:${record.id}:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+            id: `request-actor:${record.id}:${yield* crypto.uuidV4().pipe(Effect.orDie)}`,
             body: { type: "request-actor", envelope: record.envelope },
           }),
         ).pipe(Effect.mapError(unavailable));
@@ -2038,7 +2040,7 @@ const make = Effect.gen(function* () {
           return false;
         yield* validateReturn(owner);
         const result = yield* ask(owner.sessionId, {
-          id: `request-ancestry:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+          id: `request-ancestry:${yield* crypto.uuidV4().pipe(Effect.orDie)}`,
           body: { type: "request-ancestry", pair, actor, remaining: remaining - 1 },
         });
         return result === true;
@@ -2205,7 +2207,7 @@ const make = Effect.gen(function* () {
       );
     const attestation = yield* decodeLegacyAttestation(
       yield* ask(owner.sessionId, {
-        id: `capture-legacy:${input.certificateId}:${owner.sessionId}:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+        id: `capture-legacy:${input.certificateId}:${owner.sessionId}:${yield* crypto.uuidV4().pipe(Effect.orDie)}`,
         body: {
           type: "capture-legacy-automation",
           certificateId: input.certificateId,
@@ -2345,7 +2347,7 @@ const make = Effect.gen(function* () {
           );
         const upstream = yield* decodeAcceptedGraph(
           yield* ask(record.sessionId, {
-            id: `capture:${input.certificateId}:${record.id}:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+            id: `capture:${input.certificateId}:${record.id}:${yield* crypto.uuidV4().pipe(Effect.orDie)}`,
             body: {
               type: "capture-automation",
               envelope: record.envelope,
@@ -3105,7 +3107,7 @@ const make = Effect.gen(function* () {
       .pipe(Effect.mapError(unavailable));
     if (sender?.activeRunId == null) return yield* denied("The returning child has no active run.");
     const senderRunId = sender.activeRunId;
-    const requestId = input.clientRequestId ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie));
+    const requestId = input.clientRequestId ?? (yield* crypto.uuidV4().pipe(Effect.orDie));
     const noticeIdentity = yield* hash({ pair, requestId });
     const id = `return:${noticeIdentity}`;
     const pending = {
@@ -3661,7 +3663,7 @@ const make = Effect.gen(function* () {
       if (record.sessionId !== null)
         return yield* decodeSecretOrigin(
           yield* ask(record.sessionId, {
-            id: `secret-origin:${record.id}:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+            id: `secret-origin:${record.id}:${yield* crypto.uuidV4().pipe(Effect.orDie)}`,
             body: { type: "secret-origin", envelope: record.envelope },
           }),
         ).pipe(Effect.mapError(unavailable));

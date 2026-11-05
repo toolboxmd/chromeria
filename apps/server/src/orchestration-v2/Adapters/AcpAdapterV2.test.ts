@@ -2073,7 +2073,11 @@ describe("AcpAdapterV2", () => {
         const adapter = yield* makeGrokAdapterV2({
           instanceId,
           settings: { ...DEFAULT_GROK_SETTINGS, binaryPath: binary },
-          environment: { HOME: root, GROK_HOME: `${root}/native`, PATH: process.env.PATH },
+          environment: {
+            HOME: root,
+            GROK_HOME: `${root}/native`,
+            PATH: (yield* HostProcess.Environment).PATH,
+          },
           hostPlatform: yield* HostProcess.Platform,
           selfInvocation: yield* resolveSelfInvocation(),
         });

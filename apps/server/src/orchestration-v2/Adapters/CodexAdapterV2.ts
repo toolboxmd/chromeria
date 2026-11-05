@@ -1464,7 +1464,9 @@ export function codexThreadRuntimeParams(input: {
       ? {}
       : { baseInstructions: "", developerInstructions: null }),
     config: {
-      ...(input.runtimePolicy?.bare === undefined ? CODEX_THREAD_CONFIG : { "tools.update_plan.enabled": false }),
+      ...(input.runtimePolicy?.bare === undefined
+        ? CODEX_THREAD_CONFIG
+        : { "tools.update_plan.enabled": false }),
       // One app-server serves many threads, so the id goes in per-thread shell config, not its env.
       ...(input.threadId === null
         ? {}
@@ -1818,7 +1820,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         const home =
           bare === undefined
             ? homeRoot
-            : `${homeRoot}/thread-${Hex.encode(yield* crypto.digest("SHA-256", new TextEncoder().encode(owner ?? input.threadId)))}`;
+            : `${homeRoot}/thread-${Hex.encode(yield* digest.digest(Digest.sha256, new TextEncoder().encode(owner ?? input.threadId)))}`;
         if (input.runtimePolicy.bare !== undefined) {
           if (owner === undefined)
             return yield* new ProviderAdapter.ProviderAdapterOpenSessionError({

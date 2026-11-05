@@ -1,3 +1,5 @@
+import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as DocumentText from "../provider/DocumentText.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
@@ -76,7 +78,7 @@ const makeSource = (environment = a) =>
         }),
       ),
       Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "authority-source-" })),
-      Layer.provide(NodeServices.layer),
+      Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
       Layer.fresh,
       Layer.build,
     );
@@ -94,7 +96,10 @@ const makeDestination = (modern = true, environment = b, controlStreamUnavailabl
     const captured = yield* Ref.make<PeerAuthority.Authority | undefined>(undefined);
     const callingThread = yield* Ref.make<ThreadId | undefined>(undefined);
     const tools = McpHttpServer.layerProjectRegistration.pipe(
-      Layer.provide(DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+      Layer.provide(Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({})),
+      Layer.provide(
+        DocumentText.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
+      ),
       Layer.provide(threadService),
       Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
       Layer.provide(
@@ -161,7 +166,7 @@ it.live(
         if (target.peerLinks === undefined) return yield* Effect.die("Missing modern peer links");
         expect(yield* target.peerLinks.list).toEqual([]);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.live("rejects an altered action and an old destination before its handler runs", () =>
@@ -199,7 +204,7 @@ it.live("rejects an altered action and an old destination before its handler run
       expect(unsupported.message).toContain("does not support peer authority");
       expect(yield* Ref.get(old.called)).toBe(0);
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.live("supports the opposite dialing direction without granting ordinary reverse access", () =>
@@ -216,7 +221,7 @@ it.live("supports the opposite dialing direction without granting ordinary rever
       );
       expect(yield* Ref.get(target.called)).toBe(1);
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.live(
@@ -308,7 +313,7 @@ it.live(
         expect(revoked.code).toBe("capability_denied");
         expect(yield* Ref.get(third.called)).toBe(1);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.live("uses bounded long polling when the authenticated stream is unavailable", () =>
@@ -325,7 +330,7 @@ it.live("uses bounded long polling when the authenticated stream is unavailable"
       );
       expect(yield* Ref.get(target.called)).toBe(1);
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.live(
@@ -382,7 +387,7 @@ it.live(
         expect(mismatch.code).toBe("capability_denied");
         expect(yield* Ref.get(target.called)).toBe(0);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.live("selects durable destination context without borrowing a live provider credential", () =>
@@ -406,5 +411,5 @@ it.live("selects durable destination context without borrowing a live provider c
       });
       expect(yield* Ref.get(target.callingThread)).toBe(sourceThread);
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
 );

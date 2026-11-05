@@ -1,3 +1,6 @@
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import * as Redacted from "effect/Redacted";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as ServerSettings from "../serverSettings.ts";
 import { AuthStandardClientScopes } from "@t3tools/contracts";
 import * as Sessions from "../auth/SessionStore.ts";
@@ -23,9 +26,13 @@ const dependencies = Layer.mergeAll(
   Environment.layerIdentity,
 ).pipe(
   Layer.provideMerge(Config.layerTest(process.cwd(), { prefix: "t3-peer-permanent-" })),
-  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
 );
-const layer = OAuth.layer.pipe(Layer.provideMerge(Auth.layer), Layer.provide(dependencies));
+const layer = OAuth.layer.pipe(
+  Layer.provideMerge(Auth.layer),
+  Layer.provide(ManagedPolicy.layerTest()),
+  Layer.provide(dependencies),
+);
 const request = HttpServerRequest.fromWeb(new Request("http://localhost/mcp"));
 const urls = { issuer: "http://localhost", resource: "http://localhost/mcp" };
 const redirectUri = "http://localhost/callback";
@@ -65,10 +72,10 @@ it.effect.each([true, false])(
         urls,
         token: {
           grant_type: "authorization_code",
-          code: new URL(redirect).searchParams.get("code")!,
+          code: Redacted.make(new URL(redirect).searchParams.get("code")!),
           redirect_uri: redirectUri,
           client_id: client.clientId,
-          code_verifier: verifier,
+          code_verifier: Redacted.make(verifier),
           resource: urls.resource,
         },
       });
@@ -145,10 +152,10 @@ it.effect("browser-approved peer links keep the 30-day expiry", () =>
       urls,
       token: {
         grant_type: "authorization_code",
-        code: new URL(redirect).searchParams.get("code")!,
+        code: Redacted.make(new URL(redirect).searchParams.get("code")!),
         redirect_uri: redirectUri,
         client_id: client.clientId,
-        code_verifier: verifier,
+        code_verifier: Redacted.make(verifier),
         resource: urls.resource,
       },
     });

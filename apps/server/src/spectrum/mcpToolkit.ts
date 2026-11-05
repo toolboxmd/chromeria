@@ -13,7 +13,7 @@ import {
   TrimmedNonEmptyString,
   OrchestratorMcpFailure,
 } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
@@ -102,7 +102,7 @@ export const SpectrumToolkit = Toolkit.make(
     failure: OrchestratorMcpFailure,
     failureMode: "return",
     dependencies: [
-      Crypto.Crypto,
+      SecureRandom.SecureRandom,
       Invocation.McpInvocationContext,
       Threads.ThreadManagementService,
       Launch.SpectrumLaunchService,

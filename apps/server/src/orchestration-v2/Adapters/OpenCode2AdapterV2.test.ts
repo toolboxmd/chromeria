@@ -1151,9 +1151,11 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     }).pipe(
       Effect.provide(
         Layer.mergeAll(
-          TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer)),
+          TestProviderHost.layer().pipe(
+            Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+          ),
           IdAllocator.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
         ),
       ),
     );
@@ -4100,7 +4102,12 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
           });
         }
       }
-    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(IdAllocator.layer, NodeServices.layer))),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+      ),
+    ),
   );
 
   it.effect.each([
@@ -4269,7 +4276,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
         yield* Deferred.await(completed);
         assert.lengthOf(prompts, 2);
         assert.deepEqual(terminals, [cancel ? "completed" : "interrupted", "completed"]);
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("reads user and assistant text from the session's message list", () =>

@@ -349,6 +349,7 @@ it.effect("thread cleanup notifies subscribers and a finishing run cannot recrea
     const running = yield* Deferred.make<void>();
     const removed = yield* Deferred.make<void>();
     const layer = ScheduledTaskService.layer.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
       Layer.provide(
         Layer.mergeAll(
           ManagedPolicy.layerTest(),
@@ -421,6 +422,7 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
     // Rebind lands first, then the promotion commits between the shell read and the retry.
     const shellProjects = yield* Ref.make([scratch, promoted]);
     const layer = ScheduledTaskService.layer.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
       Layer.provide(
         Layer.mergeAll(
           ManagedPolicy.layerTest(),
@@ -491,6 +493,7 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
 it.effect("refuses saving an enabled task above the policy ceiling", () =>
   Effect.gen(function* () {
     const layer = ScheduledTaskService.layer.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
       Layer.provide(
         Layer.mergeAll(
           ManagedPolicy.layerTest({
@@ -558,6 +561,7 @@ it.effect("a run interrupted right after it reserves the task does not block the
   Effect.gen(function* () {
     const launches = yield* Ref.make(0);
     const layer = ScheduledTaskService.layer.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
       Layer.provide(
         Layer.mergeAll(
           ManagedPolicy.layerTest(),

@@ -168,6 +168,7 @@ export class ServerBrowserTabNotFoundError extends Schema.TaggedError<ServerBrow
   }
 }
 
+const isBrowserControlInterrupted = Schema.is(BrowserControlInterrupted);
 const isTabNotFound = Schema.is(ServerBrowserTabNotFoundError);
 const isHostSetupError = Schema.is(
   Schema.Union([
@@ -691,7 +692,12 @@ const make = Effect.gen(function* () {
   );
   const pendingTabs = new Map<
     string,
-    { readonly agentId: string | null; readonly threadId?: string; promise?: Promise<ServerTab>; settled?: boolean }
+    {
+      readonly agentId: string | null;
+      readonly threadId?: string;
+      promise?: Promise<ServerTab>;
+      settled?: boolean;
+    }
   >();
   // Retain the original invocation across a failed launch or a desktop reconnect.
   // These are current checks, never cached grant results.
@@ -1074,7 +1080,6 @@ const make = Effect.gen(function* () {
       adopted === undefined && (await desktopRenders(snapshot))
         ? await connectDesktop(snapshot)
         : null;
-    if (desktop) opened.push(desktop.close);
     // Otherwise a desktop that attaches late shows its own page, and the agent drives another.
     if (!desktop && desktopChannel.available) {
       await runPromise(
@@ -1138,7 +1143,11 @@ const make = Effect.gen(function* () {
         control,
         agentOperating: false,
         fileChooserIntercepted: false,
-        onFileChooser: (chooser) => { pendingFileChooserOffer = pendingFileChooserOffer.then(() => offerFileChooser(tab, chooser)).catch(constVoid); },
+        onFileChooser: (chooser) => {
+          pendingFileChooserOffer = pendingFileChooserOffer
+            .then(() => offerFileChooser(tab, chooser))
+            .catch(constVoid);
+        },
         watches: new Set(),
         profileKey:
           adopted?.profileKey ??
@@ -1175,21 +1184,21 @@ const make = Effect.gen(function* () {
         await page.setViewportSize(fixedViewportSize(tab.setting) ?? UNATTACHED_FILL_VIEWPORT);
       }
       await applyRendering(tab, snapshot, authorize);
-    if (desktop) {
-      // The desktop resizes and zooms its webview itself; viewers map input with the new size.
-      const remeasure = () => {
-        if (tab.viewers.size > 0) return broadcastViewport(tab).catch(constVoid);
-      };
-      cdp.on("Page.frameResized", remeasure);
-      // A read a navigation broke has a fresh page to measure.
-      cdp.on("Page.loadEventFired", remeasure);
-      // Closing a dialog resizes nothing, and the host can close it without us.
-      cdp.on("Page.javascriptDialogClosed", () => {
-        tab.dialog = null;
-        return remeasure();
-      });
-      await cdp.send("Page.enable");
-    }
+      if (desktop) {
+        // The desktop resizes and zooms its webview itself; viewers map input with the new size.
+        const remeasure = () => {
+          if (tab.viewers.size > 0) return broadcastViewport(tab).catch(constVoid);
+        };
+        cdp.on("Page.frameResized", remeasure);
+        // A read a navigation broke has a fresh page to measure.
+        cdp.on("Page.loadEventFired", remeasure);
+        // Closing a dialog resizes nothing, and the host can close it without us.
+        cdp.on("Page.javascriptDialogClosed", () => {
+          tab.dialog = null;
+          return remeasure();
+        });
+        await cdp.send("Page.enable");
+      }
       const isMainNavigation = (request: { isNavigationRequest(): boolean; frame(): unknown }) =>
         request.isNavigationRequest() && request.frame() === page.mainFrame();
       const navigationGenerations = new WeakMap<object, number>();
@@ -1211,7 +1220,10 @@ const make = Effect.gen(function* () {
       });
       page.on("framenavigated", (frame) => {
         const open = tab.fileChooser;
-        if (open) void isFileChooserCurrent(open.chooser).then((current) => { if (!current && tab.fileChooser?.chooser === open.chooser) closeFileChooser(tab); });
+        if (open)
+          void isFileChooserCurrent(open.chooser).then((current) => {
+            if (!current && tab.fileChooser?.chooser === open.chooser) closeFileChooser(tab);
+          });
         if (frame === page.mainFrame()) stopTabWatches(tab, "navigation");
         // Same-document navigations (SPA routes) fire no load event.
         if (frame === page.mainFrame() && !tab.loading) void reportLoaded(tab);
@@ -1605,10 +1617,10 @@ const make = Effect.gen(function* () {
     authorize: () => Promise<void>,
   ) => {
     if (input.paths === undefined || input.artifacts !== undefined || input.resource !== undefined)
-      throw new ServerBrowserPage.ServerBrowserOperationError(
-        "PreviewAutomationExecutionError",
-        "Browser files must be resolved by their native staging owner before dispatch.",
-      );
+      throw new ServerBrowserPage.ServerBrowserOperationError({
+        tag: "PreviewAutomationExecutionError",
+        message: "Browser files must be resolved by their native staging owner before dispatch.",
+      });
     const resolved = { ...input, paths: input.paths };
     const relative = input.paths.find((path) => !NodePath.isAbsolute(path));
     if (relative !== undefined)
@@ -1616,7 +1628,7 @@ const make = Effect.gen(function* () {
         tag: "PreviewAutomationExecutionError",
         message: `Upload paths must be absolute: ${relative}`,
       });
-    if (await ServerBrowserPage.setInputFiles(tab.page, input)) return undefined;
+    if (await ServerBrowserPage.setInputFiles(tab.page, resolved)) return undefined;
     const open = tab.fileChooser;
     if (!open)
       throw new ServerBrowserPage.ServerBrowserOperationError({
@@ -1629,7 +1641,8 @@ const make = Effect.gen(function* () {
         tag: "PreviewAutomationExecutionError",
         message: "This file picker accepts one file.",
       });
-    if (input.paths.length > 0)
+    if (input.paths.length > 0) {
+      await authorize();
       await open.chooser.setFiles([...input.paths], {
         timeout: input.timeoutMs ?? NAVIGATION_TIMEOUT_MS,
       });
@@ -1925,7 +1938,12 @@ const make = Effect.gen(function* () {
         pendingTabs.delete(key);
         closedPendingTabs.delete(key);
       });
-    pendingTabs.set(key, { agentId: snapshot.automationOwner ?? null, threadId: snapshot.threadId, promise: opening, settled: false });
+    pendingTabs.set(key, {
+      agentId: snapshot.automationOwner ?? null,
+      threadId: snapshot.threadId,
+      promise: opening,
+      settled: false,
+    });
     return opening;
   };
 
@@ -1968,7 +1986,11 @@ const make = Effect.gen(function* () {
   const idleAgentTabs = () => {
     const cutoff = Date.now() - AGENT_TAB_IDLE_MS;
     return [...tabs.values()].filter(
-      (tab) => tab.control.agentId !== null && !isVisible(tab) && tab.watches.size === 0 && tab.usedAt < cutoff,
+      (tab) =>
+        tab.control.agentId !== null &&
+        !isVisible(tab) &&
+        tab.watches.size === 0 &&
+        tab.usedAt < cutoff,
     );
   };
 
@@ -2172,7 +2194,7 @@ const make = Effect.gen(function* () {
     }
     const url = ServerBrowserPage.withoutDataPayload(tab.page.url());
     const viewport = tab.desktop ? await layoutSize(tab) : tab.page.viewportSize();
-    const { serverEpoch } = await Effect.runPromise(manager.list({ threadId: tab.threadId }));
+    const { serverEpoch } = await runPromise(manager.list({ threadId: tab.threadId }));
     const resource = (candidate: ServerTab): PreviewViewerResource => ({
       type: "preview",
       environmentId,
@@ -2667,7 +2689,10 @@ const make = Effect.gen(function* () {
             : undefined;
         const navigationTimeout = Math.min(request.timeoutMs, NAVIGATION_TIMEOUT_MS);
         const profileId = existing ? undefined : resolveOpenProfile(open.profileId);
-        if (!existing) { await authorize(); closeIdleAgentTabs(); }
+        if (!existing) {
+          await authorize();
+          closeIdleAgentTabs();
+        }
         const tab =
           existing ??
           (await runPromise(
@@ -2683,7 +2708,6 @@ const make = Effect.gen(function* () {
               },
               { reclaimIdleSlot: true },
             ),
-            resourceAuthorization,
           ));
         if (existing && inLogin(existing)) throw loginInProgress();
         if (existing?.dialog)
@@ -2808,10 +2832,10 @@ const make = Effect.gen(function* () {
       if (login === undefined) return { closed: [] };
       const members = profileTabs(tab.profileKey);
       if (members.some((member) => member.control.controller !== null))
-        throw new BrowserControlInterrupted(
-          "A human controls a tab in this login.",
-          "humanControl",
-        );
+        throw new BrowserControlInterrupted({
+          message: "A human controls a tab in this login.",
+          reason: "humanControl",
+        });
       // The whole context closes, and the login lifts only once that close has
       // finished: every page and every tab still attaching goes with it. Cookies
       // with an expiry stay in the profile directory for the next context.
@@ -2852,7 +2876,7 @@ const make = Effect.gen(function* () {
             message: "A browser dialog is pending. Read preview_status.",
             reason: "dialogPending",
           });
-        return executeTabOperation(tab, request);
+        return executeTabOperation(tab, request, authorize, resourceAuthorization);
       });
     }
     return tab.control.agent(
@@ -2903,13 +2927,13 @@ const make = Effect.gen(function* () {
     const operation = runTabOperation(tab, request, authorize, resourceAuthorization).catch(
       (cause: unknown) => {
         // Playwright's errors can quote the page; a login tab reports only what failed.
-        if (!inLogin(tab) || cause instanceof BrowserControlInterrupted) throw cause;
+        if (!inLogin(tab) || isBrowserControlInterrupted(cause)) throw cause;
         const error = ServerBrowserPage.toOperationError(cause);
         if (error.tag === "PreviewCredentialError") throw error;
-        throw new ServerBrowserPage.ServerBrowserOperationError(
-          error.tag,
-          `Preview automation ${request.operation} failed in a login tab.`,
-        );
+        throw new ServerBrowserPage.ServerBrowserOperationError({
+          tag: error.tag,
+          message: `Preview automation ${request.operation} failed in a login tab.`,
+        });
       },
     );
     if (request.operation !== "fillCredential") {
@@ -2936,10 +2960,11 @@ const make = Effect.gen(function* () {
     const recordingIn = (members: ReadonlyArray<ServerTab>) =>
       members.some((member) => member.recording || member.recordingStart);
     const recordingRunning = () =>
-      new ServerBrowserPage.ServerBrowserOperationError(
-        "PreviewAutomationExecutionError",
-        "A recording is running in this browser profile. Stop it before filling a credential.",
-      );
+      new ServerBrowserPage.ServerBrowserOperationError({
+        tag: "PreviewAutomationExecutionError",
+        message:
+          "A recording is running in this browser profile. Stop it before filling a credential.",
+      });
     if (recordingIn(profileTabs(tab.profileKey))) throw recordingRunning();
     if (!profileLogins.has(tab.profileKey)) {
       profileLogins.set(tab.profileKey, { ending: false, context: tab.page.context() });
@@ -2984,28 +3009,32 @@ const make = Effect.gen(function* () {
           (tab.profileId ?? DEFAULT_BROWSER_PROFILE_ID) !== read.profileId ||
           read.profileId === INCOGNITO_BROWSER_PROFILE_ID
         )
-          throw new ServerBrowserPage.ServerBrowserOperationError(
-            "PreviewAutomationExecutionError",
-            "Select an existing tab in the requested persistent browser profile.",
-          );
+          throw new ServerBrowserPage.ServerBrowserOperationError({
+            tag: "PreviewAutomationExecutionError",
+            message: "Select an existing tab in the requested persistent browser profile.",
+          });
         const response = await tab.page.goto(normalizePreviewUrl(read.url), {
           waitUntil: "domcontentloaded",
           timeout: request.timeoutMs,
         });
         // A human may reserve control while navigation is in flight.
         if (!tab.control.agentCanActNow(request.agentSessionId!))
-          throw new BrowserControlInterrupted("Browser control changed during the read.");
+          throw new BrowserControlInterrupted({
+            message: "Browser control changed during the read.",
+          });
         const html = await tab.page.content();
         if (
           generation !== tab.control.generation ||
           !tab.control.agentCanActNow(request.agentSessionId!)
         )
-          throw new BrowserControlInterrupted("Browser control changed during the read.");
+          throw new BrowserControlInterrupted({
+            message: "Browser control changed during the read.",
+          });
         if (Buffer.byteLength(html, "utf8") > 4 * 1024 * 1024)
-          throw new ServerBrowserPage.ServerBrowserOperationError(
-            "PreviewAutomationResultTooLargeError",
-            "The session page exceeds the research extraction limit.",
-          );
+          throw new ServerBrowserPage.ServerBrowserOperationError({
+            tag: "PreviewAutomationResultTooLargeError",
+            message: "The session page exceeds the research extraction limit.",
+          });
         return {
           tabId: tab.tabId,
           profileId: read.profileId,
@@ -3249,12 +3278,10 @@ const make = Effect.gen(function* () {
   const handleRequest = Effect.fn("ServerBrowser.handleRequest")(
     function* (connectionId: string, request: PreviewAutomationRequest) {
       if (broker.requestAuthorization === undefined)
-        return yield* Effect.fail(
-          new ServerBrowserPage.ServerBrowserOperationError(
-            "PreviewAutomationUnsupportedClientError",
-            "Current preview invocation checks are unsupported.",
-          ),
-        );
+        return yield* new ServerBrowserPage.ServerBrowserOperationError({
+          tag: "PreviewAutomationUnsupportedClientError",
+          message: "Current preview invocation checks are unsupported.",
+        });
       const authorization = yield* broker
         .requestAuthorization({
           clientId: SERVER_HOST_CLIENT_ID,
@@ -3604,19 +3631,26 @@ const make = Effect.gen(function* () {
           for (const item of dropped.value) if (item._tag === "frame") runFork(item.ack);
         }
       },
-        pause: () => {
-          screencastParams = screencastParams.then(() =>
-            session.send("Page.stopScreencast").then(constVoid, constVoid),
-          );
-          return screencastParams;
-        },
-        resume: () => startScreencast(screencastScale),
-        scrolledAt: 0,
-        requestedSize: null,
-      };
-      yield* Effect.acquireRelease(
-        Effect.sync(() => {
-          tab.viewers.add(viewer);
+      pause: () => {
+        screencastParams = screencastParams.then(() =>
+          session.send("Page.stopScreencast").then(constVoid, constVoid),
+        );
+        return screencastParams;
+      },
+      resume: () => startScreencast(screencastScale),
+      scrolledAt: 0,
+      requestedSize: null,
+    };
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        tab.viewers.add(viewer);
+        reportLiveTabs();
+      }),
+      () =>
+        Effect.promise(async () => {
+          await tab.control.disconnect(viewer.id, () => releaseViewerInput(viewer, session));
+          tab.viewers.delete(viewer);
+          broadcastControl(tab);
           reportLiveTabs();
         }),
     );
@@ -3791,7 +3825,7 @@ const make = Effect.gen(function* () {
     });
     return {
       output,
-      input: (raw: unknown) => prepareInput(raw).pipe(Effect.flatMap((work) => work)),
+      input: (raw: unknown) => prepareInput(raw).pipe(Effect.flatten),
       enqueueInput: (raw: unknown) =>
         prepareInput(raw).pipe(
           Effect.flatMap((work) => work.pipe(Effect.forkScoped, Effect.asVoid)),

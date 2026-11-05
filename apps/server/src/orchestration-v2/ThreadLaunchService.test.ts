@@ -264,7 +264,7 @@ function makeHarness(options: HarnessOptions = {}) {
   const bareLayer = options.bare
     ? Layer.fresh(BareLaunch.layer).pipe(
         Layer.provide(Layer.mergeAll(layerRegistry, layerExternalServices)),
-        Layer.provide(NodeServices.layer),
+        Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
       )
     : Layer.mock(BareLaunch.BareLaunch)({});
   const layerLaunch = ThreadLaunch.layer.pipe(
@@ -274,7 +274,7 @@ function makeHarness(options: HarnessOptions = {}) {
       ThreadMcpConfig.layer.pipe(
         Layer.provide(ServerSecretStore.layer),
         Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-tool-policy-" })),
-        Layer.provide(NodeServices.layer),
+        Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
       ),
     ),
     Layer.provide(
@@ -315,7 +315,7 @@ function makeHarness(options: HarnessOptions = {}) {
         layerThreadManagement,
         layerProjectedProjects,
         layerExternalServices,
-        NodeServices.layer,
+        Layer.merge(NodeServices.layer, NodeCrypto.layer),
       ),
     ),
   );
@@ -330,7 +330,7 @@ function makeHarness(options: HarnessOptions = {}) {
       layerOutbox,
       layerDatabase,
       layerExternalServices,
-      NodeServices.layer,
+      Layer.merge(NodeServices.layer, NodeCrypto.layer),
       Layer.mock(GitVcsDriver.GitVcsDriver)(options.gitVcs ?? {}),
       ProjectStore.layer.pipe(Layer.provide(layerDatabase)),
     ),
@@ -1187,8 +1187,15 @@ it.effect.each(["stable", "upstream/release"])(
           Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "launch-remote-git-" })),
           Layer.provideMerge(
             Layer.merge(
-              Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
-              DocumentText.layer.pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+              Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+              DocumentText.layer.pipe(
+                Layer.provide(
+                  Layer.mergeAll(
+                    Layer.merge(NodeServices.layer, NodeCrypto.layer),
+                    NodeCrypto.layer,
+                  ),
+                ),
+              ),
             ),
           ),
         ),
@@ -2210,8 +2217,10 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
       DocumentText.layer.pipe(
         Layer.provideMerge(
           Layer.merge(
-            NodeServices.layer,
-            DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
+            DocumentText.layer.pipe(
+              Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+            ),
           ),
         ),
       ),
@@ -2742,8 +2751,10 @@ it.effect("replays an accepted send after the project disables the instance", ()
       DocumentText.layer.pipe(
         Layer.provideMerge(
           Layer.merge(
-            NodeServices.layer,
-            DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
+            DocumentText.layer.pipe(
+              Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+            ),
           ),
         ),
       ),
@@ -3043,8 +3054,10 @@ it.effect.each([false, true])(
                 ServerConfig.layerTest(process.cwd(), { prefix: "t3-delegated-intake-" }).pipe(
                   Layer.provideMerge(
                     Layer.merge(
-                      NodeServices.layer,
-                      DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+                      Layer.merge(NodeServices.layer, NodeCrypto.layer),
+                      DocumentText.layer.pipe(
+                        Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+                      ),
                     ),
                   ),
                 ),
@@ -3063,6 +3076,7 @@ it.effect(
   () => {
     const h = makeHarness();
     const schedulerDeps = Layer.mergeAll(
+      ManagedPolicy.layerTest().pipe(Layer.provide(NodeCrypto.layer)),
       h.layer,
       NodeCrypto.layer,
       Scheduler.layer,
@@ -3077,7 +3091,7 @@ it.effect(
       Layer.provideMerge(
         Layer.mergeAll(
           tasksLayer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           Layer.mock(GitVcsDriver.GitVcsDriver)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
         ),
@@ -3261,7 +3275,10 @@ it.effect(
       }).pipe(Effect.provide(h.layer));
     }).pipe(
       Effect.provide(
-        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+        Layer.merge(
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
+          DocumentText.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
+        ),
       ),
     ),
 );
@@ -3453,7 +3470,10 @@ it.effect.each(["full-access", "approval-required"] as const)(
       }).pipe(Effect.provide(Layer.merge(h.layer, mcp)));
     }).pipe(
       Effect.provide(
-        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+        Layer.merge(
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
+          DocumentText.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
+        ),
       ),
     ),
 );
@@ -3621,7 +3641,7 @@ it.effect(
     const registered = McpHttpServer.toolkitRegistration(
       ThreadMcpToolkit,
       ThreadMcpHandlers.layer,
-    ).pipe(Layer.provideMerge(McpServer.McpServer.layer), Layer.provideMerge(services));
+    ).pipe(Layer.provideMerge(McpHttpServer.layerInProcessMcpServer), Layer.provideMerge(services));
     return Effect.scoped(
       Effect.gen(function* () {
         const launches = yield* ThreadLaunch.ThreadLaunchService;

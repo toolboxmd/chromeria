@@ -202,7 +202,7 @@ const StateNode = Schema.NullOr(
 
 export const decodeIssueStatesJson = Schema.decodeUnknownResult(
   Schema.fromJsonString(
-    Schema.Struct({ data: Schema.Record(Schema.String, Schema.optional(StateNode)) }),
+    Schema.Struct({ data: Schema.Record(Schema.String, Schema.UndefinedOr(StateNode)) }),
   ),
 );
 

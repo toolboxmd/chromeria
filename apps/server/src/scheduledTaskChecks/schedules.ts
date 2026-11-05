@@ -89,7 +89,8 @@ const sameSet = <A>(a: ReadonlyArray<A>, b: ReadonlyArray<A>) => {
 
 /** True iff both fire at the same instants; the server's minute picks do not count. */
 export function forkSameSchedule(a: ScheduledTaskSchedule, b: ScheduledTaskSchedule): boolean {
-  if (a.type === "once" && b.type === "once") return Date.parse(a.at) === Date.parse(b.at);
+  if (a.type === "once" && b.type === "once")
+    return Date.parse("at" in a ? a.at : a.runAt) === Date.parse("at" in b ? b.at : b.runAt);
   if (a.type === "weekly" && b.type === "weekly")
     return (
       sameSet(a.weekdays, b.weekdays) &&
@@ -110,7 +111,8 @@ export function forkScheduledSlot(
   trigger: "scheduled" | "manual" | "webhook",
 ): string | null {
   if (trigger !== "scheduled") return null;
-  if (task.schedule.type === "once") return canonicalInstant(task.schedule.at);
+  if (task.schedule.type === "once")
+    return canonicalInstant("at" in task.schedule ? task.schedule.at : task.schedule.runAt);
   if (task.schedule.type === "weekly" && task.nextRunAt !== null)
     return canonicalInstant(task.nextRunAt);
   return null;

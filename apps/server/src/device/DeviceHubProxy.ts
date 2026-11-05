@@ -1,3 +1,4 @@
+import * as NodeWS from "@effect/platform-node/NodeWS";
 import { requestUrl } from "../requestUrl.ts";
 import * as Exit from "effect/Exit";
 import * as Deferred from "effect/Deferred";
@@ -813,7 +814,7 @@ const proxyWebSocket = Effect.fn("DeviceHubProxy.proxyWebSocket")(function* (
   const rawUpstream = yield* Effect.acquireRelease(
     Effect.sync(
       () =>
-        new NodeSocket.NodeWS.WebSocket(upstreamUrl, [...protocols], {
+        new NodeWS.WebSocket(upstreamUrl, [...protocols], {
           perMessageDeflate: false,
           maxPayload: MAX_SOCKET_BUFFER_BYTES,
         }),

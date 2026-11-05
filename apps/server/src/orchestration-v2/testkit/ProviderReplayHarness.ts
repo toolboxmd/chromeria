@@ -330,13 +330,16 @@ export function layerWithRegistry<Error>(
           return [instanceId, { driver: adapter.driver, enabled: true, config: {} }] as const;
         }),
       );
-      return ServerSettings.layerTest({
-        providerInstances: Object.fromEntries(instances),
-        responseStreamingMode: "turn",
-        ...(options.continueThreadsAfterServerUpdate === undefined
-          ? {}
-          : { continueThreadsAfterServerUpdate: options.continueThreadsAfterServerUpdate }),
-      }, policy.summary);
+      return ServerSettings.layerTest(
+        {
+          providerInstances: Object.fromEntries(instances),
+          responseStreamingMode: "turn",
+          ...(options.continueThreadsAfterServerUpdate === undefined
+            ? {}
+            : { continueThreadsAfterServerUpdate: options.continueThreadsAfterServerUpdate }),
+        },
+        policy.summary,
+      );
     }),
   ).pipe(Layer.provide(layerProvidedRegistry), Layer.orDie);
   const layerStores = Layer.mergeAll(

@@ -1,3 +1,4 @@
+import type { ProviderOptionSelection } from "@t3tools/contracts";
 import * as RemoteSecretRequests from "../secrets/RemoteSecretRequests.ts";
 import * as RemoteSecretRelay from "../secrets/RemoteSecretRelay.ts";
 import * as ThreadMcpConfig from "../orchestration-v2/ThreadMcpConfig.ts";
@@ -364,7 +365,10 @@ function scheduleBindsToCallerByDefault(
     case "interval":
       return schedule.everyMs <= SCHEDULE_BIND_WINDOW_MS;
     case "once":
-      return Date.parse(schedule.at) - nowMs <= SCHEDULE_BIND_WINDOW_MS;
+      return (
+        Date.parse("at" in schedule ? schedule.at : schedule.runAt) - nowMs <=
+        SCHEDULE_BIND_WINDOW_MS
+      );
     case "fixed_time":
     case "weekly":
       return false;
@@ -497,41 +501,6 @@ function knownOptions(
 ): ReadonlyArray<ProviderOptionSelection> | undefined {
   if (options === undefined || descriptors === undefined) return options;
   return options.filter((option) => descriptors.some((descriptor) => descriptor.id === option.id));
-}
-
-/** Skip checks without descriptors; reject duplicate IDs because consumers disagree on precedence. */
-function invalidOptionSelections(
-  selections: ReadonlyArray<ProviderOptionSelection>,
-  descriptors: ReadonlyArray<ProviderOptionDescriptor> | undefined,
-): ReadonlyArray<string> {
-  const problems: Array<string> = [];
-  const seen = new Set<string>();
-  for (const selection of selections) {
-    if (seen.has(selection.id)) {
-      problems.push(`Option ${selection.id} was specified more than once.`);
-      continue;
-    }
-    seen.add(selection.id);
-    if (descriptors === undefined) continue;
-    const descriptor = descriptors.find((candidate) => candidate.id === selection.id);
-    if (descriptor === undefined) {
-      const known = descriptors.map((candidate) => candidate.id).join(", ");
-      problems.push(`Unknown option ${selection.id}; supported options: ${known || "none"}.`);
-      continue;
-    }
-    if (descriptor.type === "boolean" && typeof selection.value !== "boolean") {
-      problems.push(`Option ${selection.id} expects a boolean value.`);
-      continue;
-    }
-    if (
-      descriptor.type === "select" &&
-      !descriptor.options.some((choice) => choice.id === selection.value)
-    ) {
-      const choices = descriptor.options.map((choice) => choice.id).join(", ");
-      problems.push(`Option ${selection.id} must be one of: ${choices}.`);
-    }
-  }
-  return problems;
 }
 
 function taskStatusForRun(
@@ -2182,7 +2151,7 @@ const make = Effect.gen(function* () {
   });
   /** A Run group's members on this thread, in Color order; empty when `groupId` names none. */
   const loadRunGroup = (scope: McpThreadInvocationScope, groupId: NodeId) =>
-    loadProjection(scope.thread.threadId).pipe(
+    loadThreadRecords(scope.thread.threadId, ["subagents"]).pipe(
       Effect.map((parent) =>
         runGroupMembers(parent.subagents, groupId).filter(
           (task) => task.threadId === scope.thread.threadId,
@@ -3041,7 +3010,7 @@ const make = Effect.gen(function* () {
           .pipe(Effect.mapError((error) => failure("orchestration_error", error.message)));
         yield* Effect.annotateCurrentSpan({ "secret_request.status": "saved_pasted" });
         yield* Metrics.increment(Metrics.secretRequestsTotal, { status: "saved_pasted" });
-        return { status: "saved" as const, file };
+        return { status: "saved" as const, file, files: { value: file } };
       }
       const runId = run.id;
       const nodeId = run.rootNodeId;
@@ -3725,24 +3694,24 @@ const make = Effect.gen(function* () {
         }
       });
       yield* assertStoppable(childThreadId);
-    // Fork: a Spectrum task has no run of its own; its Stop cancels every Color. Once
-    // its report exists that report is the caller's wake, so nothing is stopped.
-    const spectrum = yield* (yield* SpectrumMcpInterrupt).stop(
-      threadManagement,
-      { threadId: childThreadId, reason: input.reason, keepReported: true },
-      stableCommandId({ scope, requestKey: key, operation: "cancel-task" }),
-    );
-    if (spectrum !== null) {
-      // The report may have settled after `current` was read; its row then reads terminal.
-      const latest = spectrum === "reported" ? yield* readTask(scope, input.taskId) : current;
-      return {
-        taskId: input.taskId,
-        status:
-          spectrum === "reported" && isTerminalTaskStatus(latest.status)
-            ? latest.status
-            : "cancel_requested",
-      } satisfies OrchestratorMcpTaskCancelResult;
-    }
+      // Fork: a Spectrum task has no run of its own; its Stop cancels every Color. Once
+      // its report exists that report is the caller's wake, so nothing is stopped.
+      const spectrum = yield* (yield* SpectrumMcpInterrupt).stop(
+        threadManagement,
+        { threadId: childThreadId, reason: input.reason, keepReported: true },
+        stableCommandId({ scope, requestKey: key, operation: "cancel-task" }),
+      );
+      if (spectrum !== null) {
+        // The report may have settled after `current` was read; its row then reads terminal.
+        const latest = spectrum === "reported" ? yield* readTask(scope, input.taskId) : current;
+        return {
+          taskId: input.taskId,
+          status:
+            spectrum === "reported" && isTerminalTaskStatus(latest.status)
+              ? latest.status
+              : "cancel_requested",
+        } satisfies OrchestratorMcpTaskCancelResult;
+      }
       const parentTask = (yield* loadTasks(scope.thread.threadId, [input.taskId])).find(
         (task) => task.id === input.taskId && task.origin === "app_owned",
       );

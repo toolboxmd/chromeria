@@ -1,3 +1,4 @@
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import { OrchestratorMcpScheduleTaskInput, RemoteSecretReceiptQuery } from "@t3tools/contracts";
 import * as RemoteSecretPersistence from "../secrets/remoteSecretPersistence.ts";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -165,6 +166,7 @@ const make = Effect.gen(function* () {
   const secretSql = yield* Effect.serviceOption(SqlClient.SqlClient);
   const links = yield* PeerLinks.PeerLinks;
   const crypto = yield* Digest.Digest;
+  const random = yield* SecureRandom.SecureRandom;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
   const requestOwner = yield* Effect.serviceOption(RequestReceipts.McpRequestReceipts);
@@ -342,7 +344,7 @@ const make = Effect.gen(function* () {
       const caller = yield* forwardingCaller(scope);
       const limits = caller.limits;
       if (!readOnly && Option.isSome(requestOwner) && typeof args.clientRequestId !== "string")
-        args.clientRequestId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+        args.clientRequestId = yield* random.uuidV4().pipe(Effect.orDie);
       const callerRequestId =
         typeof args.clientRequestId === "string" ? args.clientRequestId : undefined;
       let requestProtocol: PeerRequestProtocol | undefined;
@@ -918,7 +920,7 @@ const make = Effect.gen(function* () {
         const key =
           typeof args.clientRequestId === "string"
             ? args.clientRequestId
-            : yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+            : yield* random.uuidV4().pipe(Effect.orDie);
         args.clientRequestId = key;
         const sourceAttachments = yield* decodeAttachments(args.attachments).pipe(
           Effect.mapError(unavailable),

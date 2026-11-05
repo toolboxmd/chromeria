@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
@@ -45,7 +46,7 @@ const defaults: SpectrumSettings = {
 const caller = liveThreadShell(input.callerThreadId, { activeRunId: RunId.make("caller-run") });
 const dependencies = Layer.mergeAll(
   base,
-  NodeServices.layer,
+  Layer.merge(NodeServices.layer, NodeCrypto.layer),
   Settings.layerTest({ spectrum: defaults }),
   Layer.succeed(Invocation.McpInvocationContext, {
     environmentId: EnvironmentId.make("test"),

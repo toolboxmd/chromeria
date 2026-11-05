@@ -30,7 +30,6 @@ import {
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
-import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Cause from "effect/Cause";
@@ -440,12 +439,10 @@ it.effect("rebuilds event history one bounded page at a time", () =>
       }),
     );
     const rebuild = Effect.gen(function* () {
-      const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+      const maintenance = yield* ProjectionReplay.ProjectionReplay;
       return yield* maintenance.rebuild;
     }).pipe(
-      Effect.provide(
-        Layer.fresh(ProjectionMaintenance.layer.pipe(Layer.provide(layerObservedStores))),
-      ),
+      Effect.provide(Layer.fresh(ProjectionReplay.layer.pipe(Layer.provide(layerObservedStores)))),
     );
     const rebuilt = yield* rebuild;
     assert.isTrue(rebuilt.valid);
@@ -464,7 +461,7 @@ it.effect("rebuilds event history one bounded page at a time", () =>
       (yield* projectionStore.getThreadProjection(threadId)).thread.title,
       "Rebuilt update 1004",
     );
-    const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+    const maintenance = yield* ProjectionReplay.ProjectionReplay;
     assert.isTrue((yield* maintenance.verify).valid);
   }).pipe(Effect.provide(layerTest)),
 );

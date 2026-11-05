@@ -256,7 +256,12 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
     if (!source || source.restartCut?.continuation === "declined") return;
     const decline = (reason: RestartCutReason) =>
       threads.recordRestartCutDecline(input.threadId, input.sourceRunId, reason);
-    if (!(isRestartContinuationSource(source, projection.providerTurns) || continuationFailedBeforePrompt(source, projection.providerTurns))) {
+    if (
+      !(
+        isRestartContinuationSource(source, projection.providerTurns) ||
+        continuationFailedBeforePrompt(source, projection.providerTurns)
+      )
+    ) {
       if (source.status === "cancelled") yield* decline(RESTART_CUT_REASONS.BACKGROUND_ONLY);
       return;
     }
@@ -340,8 +345,10 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
           turnItemTypes: ["run_interrupt_request"],
           turnItemRunIds: [parentRunId],
         })).turnItems.length > 0
-      )
-        { yield* decline(RESTART_CUT_REASONS.STOP_REQUESTED); return; }
+      ) {
+        yield* decline(RESTART_CUT_REASONS.STOP_REQUESTED);
+        return;
+      }
     }
     const sourceMessage = sourceRecords.messages.find(
       (message) => message.id === source.userMessageId,
@@ -392,18 +399,26 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
         // Disabled instances, and threads above a policy ceiling, cannot resume; still run success
         // cleanup so delegated children recover without futile retries.
         Effect.catchTags({
-          ThreadManagementProviderInstanceDisabledError: (error) => decline(RESTART_CUT_REASONS.NOT_RESUMABLE).pipe(Effect.andThen(
-            Effect.logInfo("orchestration-v2.restart-continuation.instance-disabled", {
-              threadId: input.threadId,
-              sourceRunId: input.sourceRunId,
-              projectId: error.projectId,
-              instanceId: error.instanceId,
-            }))),
-          OrchestratorRuntimeModeAboveCeilingError: () => decline(RESTART_CUT_REASONS.NOT_RESUMABLE).pipe(Effect.andThen(
-            Effect.logInfo("orchestration-v2.restart-continuation.above-ceiling", {
-              threadId: input.threadId,
-              sourceRunId: input.sourceRunId,
-            }))),
+          ThreadManagementProviderInstanceDisabledError: (error) =>
+            decline(RESTART_CUT_REASONS.NOT_RESUMABLE).pipe(
+              Effect.andThen(
+                Effect.logInfo("orchestration-v2.restart-continuation.instance-disabled", {
+                  threadId: input.threadId,
+                  sourceRunId: input.sourceRunId,
+                  projectId: error.projectId,
+                  instanceId: error.instanceId,
+                }),
+              ),
+            ),
+          OrchestratorRuntimeModeAboveCeilingError: () =>
+            decline(RESTART_CUT_REASONS.NOT_RESUMABLE).pipe(
+              Effect.andThen(
+                Effect.logInfo("orchestration-v2.restart-continuation.above-ceiling", {
+                  threadId: input.threadId,
+                  sourceRunId: input.sourceRunId,
+                }),
+              ),
+            ),
         }),
       );
   },

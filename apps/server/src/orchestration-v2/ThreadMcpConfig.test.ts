@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
@@ -50,6 +51,10 @@ it.effect(
       });
       const error = yield* restarted.read("00000000-0000-0000-0000-000000000000").pipe(Effect.flip);
       expect(error.message).toBe("Thread MCP configuration is unavailable.");
-    }).pipe(Effect.provide(store.pipe(Layer.provideMerge(NodeServices.layer))));
+    }).pipe(
+      Effect.provide(
+        store.pipe(Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
+      ),
+    );
   },
 );

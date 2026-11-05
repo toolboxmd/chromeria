@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Database from "../persistence/Sqlite.ts";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
@@ -66,7 +67,7 @@ it.effect(
         });
       const dependencies = Layer.mergeAll(
         Database.layerMemory,
-        NodeServices.layer,
+        Layer.merge(NodeServices.layer, NodeCrypto.layer),
         Settings.layerTest(),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
         Layer.mock(Launch.ThreadLaunchService)({}),

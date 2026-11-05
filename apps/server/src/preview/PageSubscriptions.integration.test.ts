@@ -1,3 +1,5 @@
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
 // @effect-diagnostics nodeBuiltinImport:off - Synthetic Chromium integration owns its private browser resources.
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -108,11 +110,14 @@ const fixture = () =>
       Manager.layer,
       AuthSessions.layer,
       Layer.succeed(PreviewBrowser.PreviewBrowser, {
-        executable: Effect.succeed(process.env.CHROMERIA_WATCH_TEST_CHROME!),
-        installed: Effect.succeedSome(process.env.CHROMERIA_WATCH_TEST_CHROME!),
+        executable: Effect.succeed((yield* HostProcess.Environment).CHROMERIA_WATCH_TEST_CHROME!),
+        installed: Effect.succeedSome(
+          (yield* HostProcess.Environment).CHROMERIA_WATCH_TEST_CHROME!,
+        ),
       }),
       Layer.mock(Desktop.DesktopBrowserChannel)({
         available: false,
+        isShown: () => false,
         detached: Stream.never,
         attached: Stream.never,
       }),
@@ -131,7 +136,7 @@ const fixture = () =>
         ServerConfig.layerTest(process.cwd(), { prefix: "page-watch-synthetic-" }),
       ),
       Layer.provideMerge(FetchHttpClient.layer),
-      Layer.provideMerge(NodeServices.layer),
+      Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
     );
     const context = yield* Layer.build(native);
     yield* Effect.yieldNow;

@@ -297,7 +297,7 @@ it.effect("rejects unavailable agent access before booting or opening a device",
     Effect.provide(
       McpHttpServer.layerDeviceToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
-  Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(ServerSettings.layerTest()),
         Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
         Layer.provide(layerUnavailable),
         Layer.provide(layerProjectsMock),
@@ -438,7 +438,7 @@ describe("device targeting across hosts", () => {
       Effect.provide(
         McpHttpServer.layerDeviceToolkit.pipe(
           Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
-  Layer.provide(ServerSettings.layerTest()),
+          Layer.provide(ServerSettings.layerTest()),
           Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
           Layer.provide(layerDevices),
           Layer.provide(layerProjectsMock),

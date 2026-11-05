@@ -4,7 +4,7 @@
  * so a knowledge edit applies to the next moment without a release.
  */
 import * as Config from "effect/Config";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -96,9 +96,11 @@ export const configuredGreatLibrary = Effect.fn("contextmd.configuredGreatLibrar
   config: ServingConfig,
 ) {
   if (config.greatLibrary === undefined) return null;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
   const line = greatLibraryLine(config.greatLibrary);
-  const digest = yield* crypto.digest("SHA-256", new TextEncoder().encode(line)).pipe(Effect.orDie);
+  const digest = yield* crypto
+    .digest(Digest.sha256, new TextEncoder().encode(line))
+    .pipe(Effect.orDie);
   return {
     matcher: "great_library",
     entry: config.greatLibrary,
@@ -400,7 +402,7 @@ export const select = Effect.fn("contextmd.select")(function* (
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const home = yield* HostProcess.HomeDirectory;
-    const crypto = yield* Crypto.Crypto;
+    const crypto = yield* Digest.Digest;
     for (const file of config.sessionStart) {
       const p = expandHomePath(file.path, home);
       owners[path.dirname(p)] = yield* Store.headCommit(path.dirname(p));
@@ -415,7 +417,7 @@ export const select = Effect.fn("contextmd.select")(function* (
         continue;
       }
       const digest = yield* crypto
-        .digest("SHA-256", new TextEncoder().encode(body))
+        .digest(Digest.sha256, new TextEncoder().encode(body))
         .pipe(Effect.orDie);
       candidates.push({
         matcher: "session_start",

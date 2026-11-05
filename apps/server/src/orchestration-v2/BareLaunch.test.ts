@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import type { BareReadGrant } from "./bareReadGrant.ts";
@@ -33,10 +34,10 @@ const fixtures = (
         Layer.mock(Git.GitWorkflowService)({}),
       ),
     ),
-    Layer.provide(NodeServices.layer),
+    Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
   );
 
-it.layer(NodeServices.layer)("bare destination resolution", (it) => {
+it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare destination resolution", (it) => {
   it.effect.each(["./ThreadLaunchService.ts", "../server.ts"])(
     "loads %s through native Node without relying on another entry point's import order",
     (entry) =>

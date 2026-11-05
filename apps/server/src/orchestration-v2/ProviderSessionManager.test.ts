@@ -674,7 +674,7 @@ function layerTest(input: {
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
-          getInstance: () => Effect.sync(() => undefined),
+          getInstance: () => Effect.undefined,
         }),
         layerConfiguredEventSink,
         IdAllocator.layer,
@@ -4731,7 +4731,7 @@ it.effect(
             Layer.provide(
               Layer.mock(PeerAuthority.PeerAuthority)({
                 forThread: () => Ref.get(owner),
-                legacyCeiling: () => Effect.sync(() => undefined),
+                legacyCeiling: () => Effect.undefined,
               }),
             ),
           ),

@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
@@ -27,7 +28,7 @@ const scope: McpInvocationScope = {
 };
 const database = Sqlite.layerMemory.pipe(
   Layer.provideMerge(Config.layerTest(process.cwd(), { prefix: "t3-request-receipts-" })),
-  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
 );
 const reconstruct = Layer.build(Receipts.layer).pipe(
   Effect.map((context) => Context.get(context, Receipts.McpRequestReceipts)),

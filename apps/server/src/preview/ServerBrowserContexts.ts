@@ -48,6 +48,7 @@ const REDUCED_UA_PLATFORMS: Partial<Record<NodeJS.Platform, string>> = {
 /** The full version in a `Browser.getVersion` product or user agent, with or without Headless. */
 const chromeVersion = (text: string) => /(?:Headless)?Chrome\/(\d+\.[\d.]+)/.exec(text)?.[1];
 
+// @effect-diagnostics-next-line extendsNativeError:off -- Internal browser launch cause is wrapped by the public launch error.
 class ChromeVersionMismatchError extends Error {
   readonly expected: string;
   readonly actual: string | undefined;

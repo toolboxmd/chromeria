@@ -2,7 +2,7 @@ import type { BareReadGrant } from "./bareReadGrant.ts";
 import { BareLaunchError, unsupportedBare } from "@t3tools/provider-core/server/bareLaunch";
 import { sha256 } from "@noble/hashes/sha2";
 import { bytesToHex } from "@noble/hashes/utils";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import {
   type BareLaunchRequest,
   type ThreadBare,
@@ -66,7 +66,7 @@ export class BareLaunch extends Context.Service<
 const t3ToolCatalog = Effect.promise(() => import("../mcp/t3ToolNames.ts"));
 
 const make = Effect.gen(function* () {
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* SecureRandom.SecureRandom;
   const git = yield* GitWorkflow.GitWorkflowService;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -343,7 +343,7 @@ const make = Effect.gen(function* () {
             refName: startRef,
             newRefName:
               workspaceStrategy.branch ??
-              `t3/${(yield* crypto.randomUUIDv4().pipe(Effect.orDie)).replaceAll("-", "")}`,
+              `t3/${(yield* crypto.uuidV4().pipe(Effect.orDie)).replaceAll("-", "")}`,
             baseRefName: workspaceStrategy.baseRef,
             path: null,
           })

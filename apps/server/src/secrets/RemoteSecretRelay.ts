@@ -19,7 +19,7 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
@@ -94,7 +94,7 @@ const make = Effect.gen(function* () {
   const links = yield* Links.PeerLinks;
   const peers = yield* Peers.PeerMcpClient;
   const sql = yield* SqlClient.SqlClient;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* SecureRandom.SecureRandom;
   yield* Persistence.schema;
   const control = (
     environmentId: EnvironmentId,

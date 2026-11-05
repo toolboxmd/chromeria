@@ -19,11 +19,11 @@ export const layer = Layer.succeed(
           browserToolsAvailable: true,
         },
       }),
-    resolve: () => Effect.sync(() => undefined),
+    resolve: () => Effect.undefined,
     touch: () => Effect.void,
     revokeProviderSession: () => Effect.void,
     revokeThread: () => Effect.void,
-    scopeForThread: () => Effect.sync(() => undefined),
+    scopeForThread: () => Effect.undefined,
     revokeAll: Effect.void,
   }),
 );

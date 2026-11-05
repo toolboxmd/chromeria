@@ -21,7 +21,6 @@ import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQ
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeHttp from "node:http";
 
-import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as ResourceWebSocketServer from "./http/ResourceWebSocketServer.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";

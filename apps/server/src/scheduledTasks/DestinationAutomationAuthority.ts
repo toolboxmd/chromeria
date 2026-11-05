@@ -158,7 +158,7 @@ const decodeDependency = Schema.decodeUnknownEffect(Schema.fromJsonString(Automa
 const decodeAck = Schema.decodeUnknownEffect(Schema.fromJsonString(AutomationDisableAck));
 
 type CertificateContributor = Pick<
-  Extract<typeof ExecutionRecord.Type, { readonly certificateId: string }>,
+  Extract<ExecutionRecord, { readonly certificateId: string }>,
   "kind" | "certificateId"
 >;
 
@@ -465,8 +465,7 @@ export const checkAutomationCommit = Effect.fn(
   const sql = yield* SqlClient.SqlClient;
   const pending = [...recordIds];
   const seen = new Set<string>();
-  const certificates: Extract<typeof ExecutionRecord.Type, { readonly certificateId: string }>[] =
-    [];
+  const certificates: Extract<ExecutionRecord, { readonly certificateId: string }>[] = [];
   const sessions = new Set<string>();
   while (pending.length !== 0) {
     const id = pending.pop()!;
@@ -518,7 +517,7 @@ export const checkAutomationCommit = Effect.fn(
         );
     }
   }
-  const covered = new Map<string, typeof ExecutionRecord.Type>();
+  const covered = new Map<string, ExecutionRecord>();
   const failures: { record: (typeof certificates)[number]; error: OrchestratorMcpFailure }[] = [];
   for (const record of certificates) {
     const result = yield* Effect.result(

@@ -1,3 +1,4 @@
+import * as HostProcess from "@t3tools/shared/HostProcess";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -317,7 +318,7 @@ it.effect.skipIf(!realSource)(
           hydrated,
         };
         // Optional aggregate-only evidence outside the temporary snapshot and repository.
-        const reportPath = process.env.CHROMERIA_V1_SNAPSHOT_REPORT;
+        const reportPath = (yield* HostProcess.Environment).CHROMERIA_V1_SNAPSHOT_REPORT;
         if (reportPath !== undefined)
           yield* Effect.sync(() =>
             NodeFS.writeFileSync(reportPath, JSON.stringify(summary, null, 2)),

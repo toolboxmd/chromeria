@@ -1,6 +1,9 @@
+import * as Schema from "effect/Schema";
 import { RESTART_CUT_REASONS } from "@t3tools/shared/restartCut";
 import type { ThreadId } from "@t3tools/contracts";
 import type * as SqlClient from "effect/sql/SqlClient";
+
+const encodeThreadIds = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
 
 /** Existing result recovery reads untransferred requested turns, including completed jobs. */
 export const delegatedFollowupRecoveryQuery = (sql: SqlClient.SqlClient) => sql`
@@ -146,7 +149,7 @@ export const pendingDelegatedChildQuery = (
   JOIN orchestration_v2_projection_runs AS requested
     ON requested.thread_id = child.thread_id
     AND json_extract(requested.payload_json, '$.delegatedTaskId') = task.subagent_id
-  WHERE task.thread_id IN ${sql.in(parentThreadIds)}
+  WHERE task.thread_id IN (SELECT value FROM json_each(${encodeThreadIds(parentThreadIds)}))
     AND child.deleted_at IS NULL
     AND json_extract(child.payload_json, '$.archivedAt') IS NULL
     AND json_extract(task.payload_json, '$.origin') = 'app_owned'
@@ -179,7 +182,7 @@ export const pendingDelegatedChildQuery = (
   UNION
   SELECT task.thread_id, task.payload_json, task.subagent_id
   FROM orchestration_v2_projection_subagents AS task
-  WHERE task.thread_id IN ${sql.in(parentThreadIds)}
+  WHERE task.thread_id IN (SELECT value FROM json_each(${encodeThreadIds(parentThreadIds)}))
     AND task.child_thread_id IS NULL
     AND json_extract(task.payload_json, '$.origin') = 'app_owned'
     AND json_extract(task.payload_json, '$.result') IS NOT NULL

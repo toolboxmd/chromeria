@@ -1,5 +1,5 @@
+import * as NodeWS from "@effect/platform-node/NodeWS";
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
-import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import {
   AuthOrchestrationReadScope,
   AuthPreviewOperateScope,
@@ -473,7 +473,7 @@ const relaySocket = Effect.fn("ServerBrowserStream.relaySocket")(
     const raw = yield* Effect.acquireRelease(
       Effect.sync(
         () =>
-          new NodeSocket.NodeWS.WebSocket(endpoint, {
+          new NodeWS.WebSocket(endpoint, {
             perMessageDeflate: false,
             maxPayload: MAX_SOCKET_BUFFER_BYTES,
           }),
@@ -580,6 +580,8 @@ const relayFile = Effect.fn("ServerBrowserStream.relayFile")(function* (
     }),
     Stream.interruptWhen(invalidated),
   );
+  if (request.method !== "GET" && request.method !== "HEAD" && request.method !== "POST")
+    return yield* viewerRefused("Unsupported browser file method.");
   const response = yield* client
     .execute(
       HttpClientRequest.make(request.method)(endpoint).pipe(

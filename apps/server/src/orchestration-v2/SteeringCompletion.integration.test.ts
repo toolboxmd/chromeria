@@ -1,3 +1,4 @@
+import { ProviderTurnAnalytics } from "../telemetry/ProviderUsageAnalytics.ts";
 import { assert, it } from "@effect/vitest";
 import {
   ChatAttachmentId,
@@ -32,7 +33,6 @@ import * as TestClock from "effect/testing/TestClock";
 import * as StreamClock from "../prism/streamClock.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EffectWorker from "./EffectWorker.ts";
-import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import {
@@ -41,7 +41,6 @@ import {
   type ProviderAdapterV2SessionRuntime,
 } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
-import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -521,6 +520,7 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
   const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
   const started: ProviderAdapter.ProviderAdapterV2TurnInput[] = [];
   const steered: string[] = [];
+  const interrupted: Parameters<ProviderAdapterV2SessionRuntime["interruptTurn"]>[0][] = [];
   const capabilities = {
     ...CodexProviderCapabilitiesV2,
     turns: {
@@ -605,7 +605,10 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
             Effect.sync(() => {
               steered.push(turn.message.text);
             }),
-          interruptTurn: interruptTurn ?? (() => Effect.void),
+          interruptTurn: (input) =>
+            Effect.sync(() => {
+              interrupted.push(input);
+            }).pipe(Effect.andThen(() => interruptTurn?.(input) ?? Effect.void)),
           respondToRuntimeRequest: () => Effect.void,
           readThreadSnapshot: () => Effect.die("unused"),
           rollbackThread: () => Effect.die("unused"),
@@ -660,7 +663,7 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
     yield* Fiber.join(running);
     return threadId;
   });
-  return { cwd, events, started, steered, layer, startFirstTurn };
+  return { cwd, events, started, steered, interrupted, layer, startFirstTurn };
 });
 
 it.effect("steers a delegated task question notice into the running parent turn", () =>
@@ -1017,14 +1020,14 @@ it.effect.each([
                           yield* Deferred.succeed(replacementIngestionEnded, undefined);
                       }),
                   }),
-                  Layer.succeed(ProviderEventIngestor.ProviderTurnAnalytics, {
-                    record: (properties) =>
+                  Layer.mock(ProviderTurnAnalytics, {
+                    turnCompleted: (properties) =>
                       Effect.gen(function* () {
                         if (
                           !cutIn ||
                           !publishTerminal ||
                           terminalHandlerWasGated ||
-                          properties.terminalStatus !== "completed"
+                          properties.providerTurn.status !== "completed"
                         )
                           return;
                         terminalHandlerWasGated = true;
@@ -1702,7 +1705,9 @@ it.effect("queues a steer until the turn ends when the provider cannot steer it"
   Effect.scoped(
     Effect.gen(function* () {
       const { events, started, steered, interrupted, layer, startFirstTurn } =
-        yield* nextTurnSelectionHarness("steering-unsupported", false, undefined, { supportsActiveSteering: false });
+        yield* nextTurnSelectionHarness("steering-unsupported", false, undefined, {
+          supportsActiveSteering: false,
+        });
       yield* Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
@@ -2042,9 +2047,10 @@ it.effect("queues a plain send behind the stopped queue and releases its hold", 
       const { started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
         "plain-send-after-stop",
         false,
-        () => Deferred.succeed(interruptReached, undefined).pipe(
-          Effect.andThen(Deferred.await(releaseInterrupt)),
-        ),
+        () =>
+          Deferred.succeed(interruptReached, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseInterrupt)),
+          ),
       );
       yield* Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;

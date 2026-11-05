@@ -8,7 +8,7 @@ import * as Threads from "../../../orchestration-v2/ThreadManagementService.ts";
 import { liveThreadShell } from "../../McpToolAccess.testkit.ts";
 import * as PreviewHandlers from "./handlers.ts";
 import { PreviewStandardToolkit } from "./tools.ts";
-import { PreviewTabId, SERVER_BROWSER_AUTOMATION_CLIENT_ID } from "@t3tools/contracts";
+import { SERVER_BROWSER_AUTOMATION_CLIENT_ID } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -19,12 +19,10 @@ import {
   ThreadId,
   type PreviewAutomationRequest,
 } from "@t3tools/contracts";
-import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
-import * as Stream from "effect/Stream";
 
 import {
   createPendingAttachmentId,
@@ -40,7 +38,6 @@ import * as McpToolAccess from "../../McpToolAccess.ts";
 import { liveThreadsLayer } from "../../McpToolAccess.testkit.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import { claimPreviewRecording, layerStandard } from "./handlers.ts";
-import { PreviewStandardToolkit } from "./tools.ts";
 
 it.effect("preview_open navigates the opened tab to a dev server in one tool call", () =>
   Effect.scoped(
@@ -112,7 +109,9 @@ it.effect("preview_open navigates the opened tab to a dev server in one tool cal
       }),
       Effect.provide(
         Layer.mergeAll(PreviewAutomationBroker.layer, liveThreadsLayer).pipe(
-          Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+          Layer.provide(
+            Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+          ),
         ),
       ),
     ),
@@ -138,7 +137,7 @@ const recordingLayer = Staging.layer.pipe(
       Layer.provideMerge(
         ServerConfig.layerTest(process.cwd(), { prefix: "t3-preview-recording-" }),
       ),
-      Layer.provideMerge(NodeServices.layer),
+      Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
     ),
   ),
 );
@@ -232,7 +231,9 @@ describe("claimPreviewRecording", () => {
       }).pipe(
         Effect.provide(
           ServerConfig.layerTest(process.cwd(), { prefix: "t3-preview-recording-" }).pipe(
-            Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+            Layer.provideMerge(
+              Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+            ),
           ),
         ),
       ),
@@ -263,7 +264,7 @@ it.effect.each([
   let live = true;
   const database = Sqlite.layerMemory.pipe(
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-vault-receipts-" })),
-    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
   );
   const services = Layer.mergeAll(
     Receipts.layer,
@@ -276,7 +277,7 @@ it.effect.each([
   const registered = McpHttpServer.toolkitRegistration(
     PreviewStandardToolkit,
     PreviewHandlers.layerStandard,
-  ).pipe(Layer.provideMerge(McpServer.McpServer.layer), Layer.provideMerge(services));
+  ).pipe(Layer.provideMerge(McpHttpServer.layerInProcessMcpServer), Layer.provideMerge(services));
   return Effect.scoped(
     Effect.gen(function* () {
       const broker = yield* Broker.PreviewAutomationBroker;

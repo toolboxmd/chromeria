@@ -1,5 +1,5 @@
 /** Flat Libraries share one YAML header parser and exact-key/Cue projections. */
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -23,6 +23,7 @@ const NUMBER =
   /^(?:0o[0-7]+|[-+]?[0-9]+|0x[0-9a-fA-F]+|[-+]?\.(?:inf|Inf|INF)|\.nan|\.NaN|\.NAN|[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)[eE][-+]?[0-9]+|[-+]?(?:\.[0-9]+|[0-9]+\.[0-9]*))$/u;
 type Value = string | boolean | number | null | ReadonlyArray<Value>;
 
+// @effect-diagnostics-next-line extendsNativeError:off -- Synchronous parser errors retain their positional constructor and instanceof contract.
 export class EntryError extends Error {
   readonly code: string;
   readonly reason: string;
@@ -410,7 +411,7 @@ export const load = Effect.fn("contextmd.loadStore")(function* (
   const home = yield* HostProcess.HomeDirectory;
   const fs = yield* FileSystem.FileSystem,
     path = yield* Path.Path,
-    crypto = yield* Crypto.Crypto;
+    crypto = yield* Digest.Digest;
   const normalized = yield* Effect.forEach(
     sources,
     (s) => {
@@ -494,7 +495,7 @@ export const load = Effect.fn("contextmd.loadStore")(function* (
             if (Option.isNone(raw)) {
               return { type: "error" as const, file, reason: "unreadable" };
             }
-            const version = Hex.encode(yield* crypto.digest("SHA-256", raw.value)).slice(0, 12);
+            const version = Hex.encode(yield* crypto.digest(Digest.sha256, raw.value)).slice(0, 12);
             result = parseBytes(name, raw.value, version, mode === "tolerant");
             hit[mode] = result;
           }

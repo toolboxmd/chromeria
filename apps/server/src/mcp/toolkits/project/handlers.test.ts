@@ -16,8 +16,6 @@ import {
   type Project as ProjectRecord,
   type ModelSelection,
   type RuntimeMode,
-  type OrchestrationV2ThreadShell,
-  ThreadId,
 } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";

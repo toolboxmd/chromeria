@@ -1,7 +1,7 @@
 import { ThreadMcpServers, ThreadTools, type ThreadToolsRequest } from "@t3tools/contracts";
 import { ToolPolicyError } from "@t3tools/provider-core/server/toolPolicy";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -18,7 +18,7 @@ export class ThreadMcpConfig extends Context.Service<
 
 const make = Effect.gen(function* () {
   const secrets = yield* ServerSecretStore.ServerSecretStore;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* SecureRandom.SecureRandom;
   const codec = Schema.fromJsonString(ThreadMcpServers);
   const key = (id: string) => `thread-mcp-${id}`;
   const failure = () => new ToolPolicyError({ reason: "Thread MCP configuration is unavailable." });
@@ -32,7 +32,7 @@ const make = Effect.gen(function* () {
   return ThreadMcpConfig.of({
     prepare: Effect.fn("ThreadMcpConfig.prepare")(function* (request) {
       if (request.mcpServers === undefined) return { allow: request.allow };
-      const id = yield* crypto.randomUUIDv4().pipe(Effect.mapError(failure));
+      const id = yield* crypto.uuidV4().pipe(Effect.mapError(failure));
       yield* replace(id, request.mcpServers);
       return { allow: request.allow, mcpConfigId: id };
     }),

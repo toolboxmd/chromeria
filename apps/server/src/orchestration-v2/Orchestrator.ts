@@ -214,7 +214,10 @@ import {
   runtimeModeCeilingRefusal,
   threadsStartingWork,
 } from "./DispatchModeLimit.ts";
-import { reconcileDelegatedTaskQuestion as deliverDelegatedTaskQuestion, reconcileRemoteDelegatedTaskQuestions } from "./DelegatedTaskQuestions.ts";
+import {
+  reconcileDelegatedTaskQuestion as deliverDelegatedTaskQuestion,
+  reconcileRemoteDelegatedTaskQuestions,
+} from "./DelegatedTaskQuestions.ts";
 import {
   applyToProjection,
   emptyProjection,
@@ -3085,7 +3088,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         task.completionDelivery?.state === "acknowledged" ||
         task.completionDelivery?.state === "delivered" ||
         (task.completionDelivery?.state === "disposed" &&
-          (task.completionDelivery.disposedBy === undefined || nextDisposition === "stopped"))
+          (task.completionDelivery.disposedBy === undefined || input.disposition === "stopped"))
       ) {
         continue;
       }
@@ -3102,7 +3105,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           completionDelivery: {
             state: "disposed",
             observedByRunId: null,
-            ...(nextDisposition === "stopped" ? { disposedBy: "stop" as const } : {}),
+            ...(input.disposition === "stopped" ? { disposedBy: "stop" as const } : {}),
           },
           updatedAt: input.now,
         },
@@ -5072,6 +5075,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           sameProvider: true,
           hasStrongNativeSource: sourceProviderThread?.nativeThreadRef?.strength === "strong",
           sourceRunStatus: sourceRun?.status ?? "completed",
+          sourceBusy: sourceProjection.runs.some(isActiveRun),
           fromSpecificTurn: true,
         })
         .pipe(mapDispatchError(command));
@@ -6238,7 +6242,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const reason =
         source === undefined
           ? undefined
-          : !(isRestartContinuationSource(source, projection.providerTurns) || continuationFailedBeforePrompt(source, projection.providerTurns))
+          : !(
+                isRestartContinuationSource(source, projection.providerTurns) ||
+                continuationFailedBeforePrompt(source, projection.providerTurns)
+              )
             ? RESTART_CUT_REASONS.BACKGROUND_ONLY
             : source.restartCut?.continuation === "declined"
               ? RESTART_CUT_REASONS.NO_CONTINUATION
@@ -6259,7 +6266,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                       : undefined;
       if (
         source === undefined ||
-        !(isRestartContinuationSource(source, projection.providerTurns) || continuationFailedBeforePrompt(source, projection.providerTurns)) ||
+        !(
+          isRestartContinuationSource(source, projection.providerTurns) ||
+          continuationFailedBeforePrompt(source, projection.providerTurns)
+        ) ||
         reason !== undefined
       ) {
         if (
@@ -6319,7 +6329,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       (run) => run.id === command.restartContinuationOfRunId,
     )?.delegatedTaskId;
 
-    const activePurposeTarget = projection.runs.findLast(isBlockingRun);
+    const activePurposeTarget = projection.runs.findLast(isActiveRun);
     const isLateSteer =
       activePurposeTarget === undefined &&
       (command.deliveryIntent === "steer" ||
@@ -6344,7 +6354,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       : requestedPurposeTargetId !== undefined
         ? projection.runs.find((run) => run.id === requestedPurposeTargetId)
         : activePurposeTarget;
-    if (isTargetOperation && (target === undefined || !isBlockingRun(target))) {
+    if (isTargetOperation && (target === undefined || !isActiveRun(target))) {
       return yield* mapDispatchError(command)(
         Effect.fail(new ExecutionPurpose.PurposeAdmissionError({ reason: "target_missing" })),
       );
@@ -15960,7 +15970,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     const plan = yield* Effect.gen(function* () {
       if (heldProviderWake && command.type === "message.dispatch") {
-        const planned = yield* dispatchOnce(command);
+        const planned = yield* dispatchOnce(command, sideChatIds);
         const wake = planned.events.find(
           (event) =>
             event.type === "run.created" &&
@@ -15988,7 +15998,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         command.restartContinuationOfRunId !== undefined &&
         state?.retired
       )
-        return yield* dispatchOnce(command);
+        return yield* dispatchOnce(command, sideChatIds);
       // Only messages need admission before Spectrum/Wight interception. Other
       // commands retain core planning and commit-time retirement admission.
       if (command.type === "message.dispatch") {

@@ -1,3 +1,5 @@
+import * as AssetSigner from "./AssetSigner.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as DocumentText from "../provider/DocumentText.ts";
 import * as Fiber from "effect/Fiber";
 import { createAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
@@ -38,23 +40,37 @@ const scope: Invocation.McpInvocationScope = {
   capabilities: new Set(["orchestration"]),
 };
 const database = Sqlite.layerMemory.pipe(
-  Layer.provideMerge(DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+  Layer.provideMerge(
+    DocumentText.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
+  ),
   Layer.provideMerge(Secrets.layer),
   Layer.provideMerge(Config.layerTest(process.cwd(), { prefix: "t3-staging-" })),
   Layer.provideMerge(
-    Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+    Layer.merge(
+      Layer.merge(NodeServices.layer, NodeCrypto.layer),
+      DocumentText.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
+    ),
   ),
 );
-const layer = Staging.layer.pipe(Layer.provideMerge(database));
+const layer = Staging.layer.pipe(
+  Layer.provideMerge(AssetSigner.layer),
+  Layer.provideMerge(database),
+);
 const keyedLayer = Requests.layer.pipe(Layer.provideMerge(layer));
 const recordingClaimsLayer = Staging.layer.pipe(
-  Layer.provideMerge(DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+  Layer.provideMerge(AssetSigner.layer),
+  Layer.provideMerge(
+    DocumentText.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
+  ),
   Layer.provideMerge(
     Sqlite.layerConfig.pipe(
       Layer.provideMerge(Secrets.layer),
       Layer.provideMerge(Config.layerTest(process.cwd(), { prefix: "t3-recording-claim-" })),
       Layer.provideMerge(
-        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+        Layer.merge(
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
+          DocumentText.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
+        ),
       ),
     ),
   ),
@@ -533,14 +549,17 @@ it.effect.each(["fresh", "pending", "started", "removed"] as const)(
         Requests.layer.pipe(
           Layer.provideMerge(
             Staging.layer.pipe(
+              Layer.provideMerge(AssetSigner.layer),
               Layer.provideMerge(
                 Sqlite.layerConfig.pipe(
                   Layer.provideMerge(Secrets.layer),
                   Layer.provideMerge(Config.layerTest(process.cwd(), { prefix: "t3-discard-s7-" })),
                   Layer.provideMerge(
                     Layer.merge(
-                      NodeServices.layer,
-                      DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+                      Layer.merge(NodeServices.layer, NodeCrypto.layer),
+                      DocumentText.layer.pipe(
+                        Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+                      ),
                     ),
                   ),
                 ),

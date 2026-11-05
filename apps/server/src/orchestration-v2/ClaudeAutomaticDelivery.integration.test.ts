@@ -1,3 +1,4 @@
+import * as Digest from "effect/crypto/Digest";
 import * as BareLaunch from "./BareLaunch.ts";
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -190,14 +191,14 @@ it.effect.each(["active", "completed-before-effect", "completed-before-effect-se
                     ),
                   ),
                   offer: () => Effect.void,
-                  setModel: () => Effect.void,
-                  applyFlagSettings: () => Effect.void,
-                  backgroundTasks: () => Effect.succeed(false),
-                  setPermissionMode: () => Effect.void,
                   mcpServerStatus: Effect.succeed([]),
                   readMcpResource: () => Effect.die("unexpected MCP resource read"),
                   callMcpTool: () => Effect.die("unexpected MCP tool call"),
                   listPermissionRules: Effect.die("unexpected permission rules read"),
+                  setModel: () => Effect.void,
+                  applyFlagSettings: () => Effect.void,
+                  backgroundTasks: () => Effect.succeed(false),
+                  setPermissionMode: () => Effect.void,
                   stopTask: () => Effect.void,
                   interrupt: Effect.void,
                   close: Queue.shutdown(messages),
@@ -509,7 +510,11 @@ it.effect.each(["active", "completed-before-effect", "completed-before-effect-se
         );
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
+          ),
         ),
       ),
     ),
@@ -539,7 +544,7 @@ it.effect("completes a reused Claude child after its resuming attempt ends in th
         attachmentsDir: cwd,
         fileSystem: yield* FileSystem.FileSystem,
         path: yield* Path.Path,
-        crypto: yield* Crypto.Crypto,
+        random: yield* SecureRandom.SecureRandom,
         idAllocator: yield* IdAllocator.IdAllocatorV2,
         queryRunner: {
           allocateSessionId: Effect.succeed(sessionId),
@@ -565,6 +570,10 @@ it.effect("completes a reused Claude child after its resuming attempt ends in th
                   ),
                 ),
                 offer: () => Effect.void,
+                mcpServerStatus: Effect.succeed([]),
+                readMcpResource: () => Effect.die("unexpected MCP resource read"),
+                callMcpTool: () => Effect.die("unexpected MCP tool call"),
+                listPermissionRules: Effect.die("unexpected permission rules read"),
                 setModel: () => Effect.void,
                 applyFlagSettings: () => Effect.void,
                 backgroundTasks: () => Effect.succeed(false),
@@ -987,7 +996,11 @@ it.effect("completes a reused Claude child after its resuming attempt ends in th
       );
     }).pipe(
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
+        ),
       ),
     ),
   ),
@@ -1021,7 +1034,7 @@ it.effect("keeps a native Claude child running until failed-close retry detaches
         attachmentsDir: cwd,
         fileSystem: yield* FileSystem.FileSystem,
         path: yield* Path.Path,
-        crypto: yield* Crypto.Crypto,
+        random: yield* SecureRandom.SecureRandom,
         idAllocator: yield* IdAllocator.IdAllocatorV2,
         queryRunner: {
           allocateSessionId: Effect.succeed(sessionId),
@@ -1051,6 +1064,10 @@ it.effect("keeps a native Claude child running until failed-close retry detaches
                   Effect.sync(() => {
                     offers.push(message);
                   }),
+                mcpServerStatus: Effect.succeed([]),
+                readMcpResource: () => Effect.die("unexpected MCP resource read"),
+                callMcpTool: () => Effect.die("unexpected MCP tool call"),
+                listPermissionRules: Effect.die("unexpected permission rules read"),
                 setModel: () => Effect.void,
                 applyFlagSettings: () => Effect.void,
                 backgroundTasks: () => Effect.succeed(false),
@@ -1262,7 +1279,11 @@ it.effect("keeps a native Claude child running until failed-close retry detaches
       );
     }).pipe(
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
+        ),
       ),
     ),
   ),
@@ -1295,7 +1316,6 @@ it.effect.each([
         ? yield* Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem;
             const path = yield* Path.Path;
-            const crypto = yield* Crypto.Crypto;
             const directory = yield* fs.makeTempDirectoryScoped({
               prefix: "claude-bare-addition-",
             });
@@ -1308,7 +1328,10 @@ it.effect.each([
                   type: "file" as const,
                   path: yield* fs.realPath(file),
                   sha256: Buffer.from(
-                    yield* crypto.digest("SHA-256", new TextEncoder().encode(body)),
+                    yield* (yield* Digest.Digest).digest(
+                      Digest.sha256,
+                      new TextEncoder().encode(body),
+                    ),
                   ).toString("hex"),
                   byteCount: Buffer.byteLength(body, "utf8"),
                 },
@@ -1336,7 +1359,7 @@ it.effect.each([
         attachmentsDir: cwd,
         fileSystem: yield* FileSystem.FileSystem,
         path: yield* Path.Path,
-        crypto: yield* Crypto.Crypto,
+        random: yield* SecureRandom.SecureRandom,
         idAllocator: yield* IdAllocator.IdAllocatorV2,
         queryRunner: {
           allocateSessionId: Effect.succeed(sessionId),
@@ -1357,6 +1380,10 @@ it.effect.each([
                       batchAbort.abort({ kind: "interrupt" });
                     }
                   }),
+                mcpServerStatus: Effect.succeed([]),
+                readMcpResource: () => Effect.die("unexpected MCP resource read"),
+                callMcpTool: () => Effect.die("unexpected MCP tool call"),
+                listPermissionRules: Effect.die("unexpected permission rules read"),
                 setModel: () => Effect.void,
                 applyFlagSettings: () => Effect.void,
                 setPermissionMode: () => Effect.void,
@@ -1530,74 +1557,70 @@ it.effect.each([
                   completedAt: now,
                   updatedAt: now,
                 },
-              ],
-            });
-            const command = {
-              type: "message.dispatch" as const,
-              commandId: CommandId.make("completion"),
-              threadId,
-              messageId,
-              text: "Child completed",
-              attachments: [],
-              dispatchMode: { type: "queue_after_active" as const },
-              createdBy: "agent" as const,
-              creationSource: "server" as const,
-              delegatedCompletion: { parentRunId: parent.id, generation: 1, taskIds: [taskId] },
-            };
-            yield* orchestrator.dispatch(command);
-            yield* orchestrator.dispatch(command);
-            yield* orchestrator.recoverDelegatedTasks;
-          } else if (delivery === "scheduled message") {
-            yield* Effect.gen(function* () {
-              const service = yield* ScheduledTaskService.ScheduledTaskService;
-              const { task } = yield* service.upsert(
-                yield* decodeScheduledTask({
-                  title: "Status check",
-                  purposeIntent: { version: 1, intent: { type: "unscoped" } },
-                  prompt: "Check the four tasks.",
-                  enabled: true,
-                  schedule: { type: "interval", everyMs: 60_000 },
-                  projectId,
-                  threadId,
-                  workspaceStrategy: { type: "root" },
-                  modelSelection,
-                  runtimeMode: "full-access",
-                  interactionMode: "default",
-                }),
-              );
-              const ran = yield* service.runNow({ id: task.id });
-              assert.equal(ran.task.lastRunStatus, "succeeded");
-            }).pipe(
-              Effect.provide(
-                ScheduledTaskService.layer.pipe(
-                  Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
-                  Layer.provide(ThreadManagementService.layer),
-                  Layer.provide(ServerSettings.layerTest()),
-                  Layer.provide(
-                    Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({
-                      ensureTranscript: () =>
-                        Effect.succeed({ importedThreadCount: 0, importedMessageCount: 0 }),
-                    }),
-                  ),
-                  Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
-                  Layer.provide(ManagedPolicy.layerTest()),
-                  Layer.provide(
-                    Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
-                      namedProjectsRoot: "/projects",
-                      isScratchProject: () => Effect.succeed(false),
-                    }),
-                  ),
-                  Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
-                  Layer.provide(
-                    CommandReceiptStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
-                  ),
-                  Layer.provide(
-                    Layer.mergeAll(
-                      NodeCrypto.layer,
-                      Scheduler.layer,
-                      SqlitePersistence.layerMemory,
-                    ),
-                  ),
+              },
+            ],
+          });
+          const command = {
+            type: "message.dispatch" as const,
+            commandId: CommandId.make("completion"),
+            threadId,
+            messageId,
+            text: "Child completed",
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" as const },
+            createdBy: "agent" as const,
+            creationSource: "server" as const,
+            delegatedCompletion: { parentRunId: parent.id, generation: 1, taskIds: [taskId] },
+          };
+          yield* orchestrator.dispatch(command);
+          yield* orchestrator.dispatch(command);
+          yield* orchestrator.recoverDelegatedTasks;
+        } else if (delivery === "scheduled message") {
+          yield* Effect.gen(function* () {
+            const service = yield* ScheduledTaskService.ScheduledTaskService;
+            const { task } = yield* service.upsert(
+              yield* decodeScheduledTask({
+                title: "Status check",
+                purposeIntent: { version: 1, intent: { type: "unscoped" } },
+                prompt: "Check the four tasks.",
+                enabled: true,
+                schedule: { type: "interval", everyMs: 60_000 },
+                projectId,
+                threadId,
+                workspaceStrategy: { type: "root" },
+                modelSelection,
+                runtimeMode: "full-access",
+                interactionMode: "default",
+              }),
+            );
+            const ran = yield* service.runNow({ id: task.id });
+            assert.equal(ran.task.lastRunStatus, "succeeded");
+          }).pipe(
+            Effect.provide(
+              ScheduledTaskService.layer.pipe(
+                Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+                Layer.provide(ThreadManagementService.layer),
+                Layer.provide(ServerSettings.layerTest()),
+                Layer.provide(
+                  Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({
+                    ensureTranscript: () =>
+                      Effect.succeed({ importedThreadCount: 0, importedMessageCount: 0 }),
+                  }),
+                ),
+                Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+                Layer.provide(ManagedPolicy.layerTest()),
+                Layer.provide(
+                  Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+                    namedProjectsRoot: "/projects",
+                    isScratchProject: () => Effect.succeed(false),
+                  }),
+                ),
+                Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
+                Layer.provide(
+                  CommandReceiptStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+                ),
+                Layer.provide(
+                  Layer.mergeAll(NodeCrypto.layer, Scheduler.layer, SqlitePersistence.layerMemory),
                 ),
               ),
             ),
@@ -1913,17 +1936,20 @@ it.effect.each([
         assert.equal(offers.length, 2);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(
-            IdAllocator.layer,
-            McpProviderSessions.layer,
-            NodeServices.layer,
-            NodeCrypto.layer,
+          ProviderReplayHarness.layerWithRegistry(
+            { name: "claude-automatic-delivery" },
+            ProviderAdapterRegistry.layerSingle(adapter),
+            { runEffectWorker: false },
           ),
         ),
       );
     }).pipe(
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
+        ),
       ),
     ),
   ),

@@ -105,6 +105,7 @@ const make = Effect.gen(function* () {
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
 
   const mac = yield* Mac.Mac;
+  const random = yield* SecureRandom.SecureRandom;
   // Keyed by the salt's hex text, as refs saved by earlier versions were.
   const refKey = yield* Mac.key(
     Mac.hmacSha256,
@@ -135,7 +136,7 @@ const make = Effect.gen(function* () {
     const target = filesDir(ref);
     yield* fileSystem.makeDirectory(filesRoot, { recursive: true, mode: 0o700 });
     yield* fileSystem.chmod(filesRoot, 0o700);
-    const temp = `${target}.tmp-${Hex.encode(yield* (yield* SecureRandom.SecureRandom).randomBytes(8))}`;
+    const temp = `${target}.tmp-${Hex.encode(yield* random.randomBytes(8))}`;
     yield* Effect.gen(function* () {
       yield* fileSystem.makeDirectory(temp, { mode: 0o700 });
       yield* fileSystem.chmod(temp, 0o700);
@@ -384,7 +385,8 @@ const make = Effect.gen(function* () {
     return value;
   });
 
-  const pastedFilesDir = store.directory === undefined ? undefined : path.join(store.directory, "files");
+  const pastedFilesDir =
+    store.directory === undefined ? undefined : path.join(store.directory, "files");
   const writeSecretFile = (dir: string, file: string, value: string) => {
     const partial = `${file}.partial`;
     return fileSystem.makeDirectory(dir, { recursive: true, mode: 0o700 }).pipe(
@@ -405,7 +407,8 @@ const make = Effect.gen(function* () {
   const savePasted: SecretRequests["Service"]["savePasted"] = Effect.fn(
     "SecretRequests.savePasted",
   )(function* (input) {
-    if (store.directory === undefined) return yield* new SecretRequestError({ reason: "store_failed" });
+    if (store.directory === undefined)
+      return yield* new SecretRequestError({ reason: "store_failed" });
     const ref = yield* refFor(
       input.threadId,
       `pasted\u0000${input.requestNamespace}\u0000${input.requestKey}`,
@@ -488,7 +491,25 @@ const make = Effect.gen(function* () {
     ),
     Effect.withSpan("SecretRequests.sweepExpiredFiles"),
   );
-  const sweep = Effect.andThen(sweepExpired, sweepExpiredFiles);
+  const sweepPastedFiles = Effect.gen(function* () {
+    if (pastedFilesDir === undefined || !(yield* fileSystem.exists(pastedFilesDir))) return;
+    const now = yield* Clock.currentTimeMillis;
+    for (const name of yield* fileSystem.readDirectory(pastedFilesDir)) {
+      if (!/^[0-9a-f]{32}(?:\.tmp)?$/.test(name)) continue;
+      const file = path.join(pastedFilesDir, name);
+      yield* fileSystem.stat(file).pipe(
+        Effect.flatMap((info) =>
+          Option.isSome(info.mtime) && now - info.mtime.value.getTime() > SECRET_REF_TTL_MS
+            ? fileSystem.remove(file, { force: true })
+            : Effect.void,
+        ),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Could not sweep a pasted secret file", cause),
+        ),
+      );
+    }
+  });
+  const sweep = Effect.andThen(Effect.andThen(sweepExpired, sweepExpiredFiles), sweepPastedFiles);
   yield* sweep;
   yield* sweep.pipe(
     Effect.delay("1 hour"),
@@ -496,7 +517,21 @@ const make = Effect.gen(function* () {
     Effect.forkScoped,
   );
 
-  return SecretRequests.of({ answer, saved, consume, savePasted, saveToFile: (input) => saved(input).pipe(Effect.flatMap((result) => Option.isSome(result) && result.value.files.secret !== undefined ? Effect.succeed(result.value.files.secret) : Effect.fail(new SecretRequestError({ reason: "store_failed" })))) });
+  return SecretRequests.of({
+    answer,
+    saved,
+    consume,
+    savePasted,
+    saveToFile: Effect.fn("SecretRequests.saveToFile")((input) =>
+      saved(input).pipe(
+        Effect.flatMap((result) =>
+          Option.isSome(result) && result.value.files.secret !== undefined
+            ? Effect.succeed(result.value.files.secret)
+            : Effect.fail(new SecretRequestError({ reason: "store_failed" })),
+        ),
+      ),
+    ),
+  });
 });
 
 export const layer = Layer.effect(SecretRequests, make);

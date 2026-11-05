@@ -1,3 +1,5 @@
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -35,7 +37,7 @@ it.effect(
         openSession: () => Effect.die("native execution disabled"),
       };
       const ports = Layer.mergeAll(
-        NodeServices.layer,
+        Layer.merge(NodeServices.layer, NodeCrypto.layer),
         Scheduler.layer,
         Layer.mock(Threads.ThreadManagementService)({}),
         Layer.mock(Secrets.SecretRequests)({}),
@@ -63,7 +65,10 @@ it.effect(
         }),
       );
       const dependencies = Layer.mergeAll(ports, BareLaunch.layer.pipe(Layer.provide(ports)));
-      const layer = Layer.fresh(ScheduledTasks.layer).pipe(Layer.provide(dependencies));
+      const layer = Layer.fresh(ScheduledTasks.layer).pipe(
+        Layer.provide(ManagedPolicy.layerTest()),
+        Layer.provide(dependencies),
+      );
       const input = yield* decodeScheduledTaskUpsertInput({
         purposeIntent: { version: 1, intent: { type: "unscoped" } },
         id: "scheduled-task:bare",
@@ -112,7 +117,14 @@ it.effect(
           expect(launch.runtimeMode).toBe("approval-required");
           expect(launch.initialMessage?.text).toBe("Do just this.");
         }
-      }).pipe(Effect.provide(Layer.fresh(ScheduledTasks.layer).pipe(Layer.provide(dependencies))));
+      }).pipe(
+        Effect.provide(
+          Layer.fresh(ScheduledTasks.layer).pipe(
+            Layer.provide(ManagedPolicy.layerTest()),
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
     }).pipe(Effect.provide(Sqlite.layerMemory)),
 );
 

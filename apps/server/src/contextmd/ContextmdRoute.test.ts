@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 // @effect-diagnostics nodeBuiltinImport:off - the test writes a ContextMD store on disk, reads the serving log and runs a fake Cue service.
 import * as NodeFS from "node:fs";
 import * as NodeHttp from "node:http";
@@ -646,7 +647,7 @@ describe("contextmd routes", () => {
           revokedAt: DateTime.makeUnsafe("2026-10-15T00:00:00Z"),
         });
         assert.equal(yield* s.postDelivery(action, "same-epoch"), 401);
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("separates mixed Cue/pointer receipts from shown observation and generic closures", () =>
@@ -746,7 +747,7 @@ describe("contextmd routes", () => {
       } finally {
         db.close();
       }
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live.each([
@@ -887,7 +888,7 @@ describe("contextmd routes", () => {
         } finally {
           db.close();
         }
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live(
@@ -1009,7 +1010,7 @@ describe("contextmd routes", () => {
         } finally {
           db.close();
         }
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("the serving owner honors off while accounting for an immutable Grok head", () =>
@@ -1058,7 +1059,7 @@ describe("contextmd routes", () => {
       } finally {
         db.close();
       }
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
   it.live(
     "discovers the joined project and worktree while ignoring another project's hook cwd",
@@ -1106,7 +1107,7 @@ describe("contextmd routes", () => {
           (yield* s.moment({ ...claude("PreToolUse", "A", "x"), cwd: b })).status,
           204,
         );
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("scores a conventional Cue entry when no Cue directory is registered", () =>
@@ -1140,7 +1141,7 @@ describe("contextmd routes", () => {
       assert.deepStrictEqual(cue.requests[0]!["entries"], [
         { id: "project-cue", doc: "Project: When looking at logs. Not: a build." },
       ]);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("joins the running attempt of a run, across a steering restart", () =>
@@ -1173,7 +1174,7 @@ describe("contextmd routes", () => {
           ["unjoined", null],
         ],
       );
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("settles a delivery once and replays a repeated delivery id", () =>
@@ -1192,7 +1193,7 @@ describe("contextmd routes", () => {
       // A shown reply is not a drop.
       assert.strictEqual(yield* s.release("fixed"), 404);
       assert.strictEqual((yield* s.moment(raw, { harness: "codex" })).status, 204);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("releases a reserved reply once, and a later settle finds nothing", () =>
@@ -1209,7 +1210,7 @@ describe("contextmd routes", () => {
       assert.strictEqual(yield* s.release("missing"), 404);
       // The bytes are back: the same rule is served again.
       assert.strictEqual((yield* s.moment(raw)).status, 200);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("rejects a session without orchestration:read and logs an oversize body", () =>
@@ -1226,7 +1227,7 @@ describe("contextmd routes", () => {
         s.log().map((r) => r.status),
         ["unauthorized", "unauthorized", "oversize"],
       );
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("logs unreadable events and a broken serving config, and serves nothing", () =>
@@ -1246,7 +1247,7 @@ describe("contextmd routes", () => {
         s.log().map((r) => r.status),
         ["bad_event", "bad_config"],
       );
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("logs a Grok pre_tool for both PreToolUse and pre_tool_use (#273)", () =>
@@ -1296,7 +1297,7 @@ describe("contextmd routes", () => {
       assert.strictEqual(rows.filter((row) => row.status === "bad_event").length, 0);
       assert.strictEqual(rows.filter((row) => row.kind === "pre_tool").length, 2);
       assert.ok(rows.every((row) => row.status === "ok"));
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("reads an edited entry on the next moment", () =>
@@ -1314,7 +1315,7 @@ describe("contextmd routes", () => {
         (yield* s.moment(claude("PostToolUse", "S", "echo a"))).body,
         "rule a, edited",
       );
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("keeps serving off, without failing startup, when its state file cannot be opened", () =>
@@ -1324,7 +1325,7 @@ describe("contextmd routes", () => {
         { breakStateFile: true },
       );
       assert.strictEqual((yield* s.moment(claude("PreToolUse", "S", "gh pr create"))).status, 204);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("caps a chunked body while reading it", () =>
@@ -1337,7 +1338,7 @@ describe("contextmd routes", () => {
         s.log().map((r) => r.status),
         ["oversize"],
       );
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("gives concurrent requests with one delivery id the same reply", () =>
@@ -1352,7 +1353,7 @@ describe("contextmd routes", () => {
       );
       assert.strictEqual(a.status, 200);
       assert.deepStrictEqual(b, a);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("does not count a rule shown only in the denied call's input as delivered", () =>
@@ -1372,7 +1373,7 @@ describe("contextmd routes", () => {
       assert.include((yield* s.moment(raw)).body, "rule pr");
       yield* s.settle("delivery-1");
       assert.include((yield* s.moment(raw)).body, "rule pr");
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("proves an edit deny from the file item's diff, once the item is finished", () =>
@@ -1409,7 +1410,7 @@ describe("contextmd routes", () => {
       }).pipe(Effect.provide(s.database));
       assert.strictEqual((yield* s.moment({ ...edit, tool_use_id: "toolu-edit-3" })).status, 204);
       assert.notInclude(s.outcomes("skill"), "hidden");
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("counts a Codex read only once the projected command exited 0", () =>
@@ -1472,7 +1473,7 @@ describe("contextmd routes", () => {
         Effect.provide(s.database),
       );
       assert.strictEqual((yield* push()).status, 204);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("disables itself when run attempts no longer carry nativeThreadId", () =>
@@ -1483,7 +1484,7 @@ describe("contextmd routes", () => {
         s.log().map((r) => r.status),
         ["unmapped"],
       );
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("serves a Cue fire at the user message, scored on the thread's transcript", () =>
@@ -1523,7 +1524,7 @@ describe("contextmd routes", () => {
         moments: [{ kind: "user_message", cue_status: "ok", cue_adapter: "fake-adapter" }],
         candidates: [{ entry: "agentsmd-research", outcome: "reserved", score: 2.5 }],
       });
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("serves a slow Cue score that fits the moment's budget (#248)", () =>
@@ -1547,7 +1548,7 @@ describe("contextmd routes", () => {
       assert.deepStrictEqual(s.cueLog().moments, [
         { kind: "user_message", cue_status: "ok", cue_adapter: "fake-adapter" },
       ]);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("replies within the moment's budget when Cue never answers a failed call (#251)", () =>
@@ -1579,7 +1580,7 @@ describe("contextmd routes", () => {
           ["user_message", "timeout"],
         ],
       );
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("logs what a moment cut by its budget knew of itself (#252)", () =>
@@ -1608,7 +1609,7 @@ describe("contextmd routes", () => {
         },
         { kind: null, status: "over_budget", session: null, tool_use_id: null },
       ]);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("logs the parsed call of a moment cut while selection reads its store (#252)", () =>
@@ -1630,7 +1631,7 @@ describe("contextmd routes", () => {
           tool_use_id: "toolu-echo a",
         },
       ]);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("counts a slow authentication against the moment's budget (#251)", () =>
@@ -1648,7 +1649,7 @@ describe("contextmd routes", () => {
         s.log().map((m) => m.status),
         ["over_budget", "over_budget"],
       );
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("cuts a moment whose work outruns the budget and logs it over budget (#251)", () =>
@@ -1664,7 +1665,7 @@ describe("contextmd routes", () => {
         s.log().map((m) => m.status),
         ["over_budget"],
       );
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("starts Cue before a tool call and serves its fire with the tool result", () =>
@@ -1691,7 +1692,7 @@ describe("contextmd routes", () => {
         s.cueLog().moments.map((m) => m.cue_status),
         ["started", "ok"],
       );
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("skips an unreachable Cue for later moments and keeps serving exact keys", () =>
@@ -1717,7 +1718,7 @@ describe("contextmd routes", () => {
         s.cueLog().moments.map((m) => m.cue_status),
         ["connect_failed", "not_called", "not_called"],
       );
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("a restarted server keeps Cue skipped until its health document is back", () =>
@@ -1760,7 +1761,7 @@ describe("contextmd routes", () => {
         second.cueLog().moments.map((m) => m.cue_status),
         ["connect_failed", "not_called", "not_called"],
       );
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("keeps the current user message in Cue's window after hundreds of tool calls", () =>
@@ -1786,7 +1787,7 @@ describe("contextmd routes", () => {
       assert.isAtMost(tools.length, 100);
       assert.strictEqual(tools.at(-1)![1], "command_execution: ls 452");
       assert.strictEqual(items.indexOf(items.find(([k]) => k === "tool")!), 2);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live(
@@ -1816,7 +1817,7 @@ describe("contextmd routes", () => {
         });
         assert.strictEqual(s.cueLog().moments.at(-1)!.cue_status, "rejected");
         assert.strictEqual(cue.requests.length, 2);
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("does not ask Cue when the thread has no user message", () =>
@@ -1829,6 +1830,6 @@ describe("contextmd routes", () => {
       yield* s.moment(claude("PreToolUse", servedSession, "echo a"));
       assert.strictEqual(s.cueLog().moments[0]!.cue_status, "no_window");
       assert.strictEqual(cue.requests.length, 0);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 });

@@ -1,3 +1,4 @@
+import { layerFixtureHostServices } from "./PeerAuthority.workflow.fixture.ts";
 import { PeerDispatchAuthority } from "./peerEffectAuthority.ts";
 import { assertNotLinked } from "../mcp/linkOrigin.ts";
 import * as Clock from "effect/Clock";
@@ -158,7 +159,7 @@ it.live(
         ).toBe(false);
         expect((yield* a.threads.getThreadShell(parentId))?.activeRunId).toBeNull();
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("delegates A to B to C and returns notices using each parent's own task identity", () =>
@@ -226,7 +227,7 @@ it.live("delegates A to B to C and returns notices using each parent's own task 
       const back = yield* delegate(b, a, first.childId, "later-b-a-job");
       expect((yield* a.threads.getThreadShell(back.childId))?.projectId).toBe(a.project.id);
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("persists an offline return and resumes it from stored links without a new tool call", () =>
@@ -287,7 +288,7 @@ it.live("persists an offline return and resumes it from stored links without a n
         ),
       ).toHaveLength(1);
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -347,7 +348,7 @@ it.live(
         expect(Option.isSome(effect) && effect.value.status).toBe("failed");
         expect(Option.isSome(effect) && effect.value.lastError).toContain("no longer authorized");
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -432,7 +433,7 @@ it.live(
           .pipe(Effect.flip);
         expect(replay.code).toBe("capability_denied");
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -556,7 +557,7 @@ it.live(
         const denied = yield* b.authority.checkEffect("legacy-effect", threadId).pipe(Effect.flip);
         expect(denied.code).toBe("capability_denied");
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("review: resource-scope removal must deny an already mapped effect on unrelated work", () =>
@@ -621,7 +622,7 @@ it.live("review: resource-scope removal must deny an already mapped effect on un
         executed: (yield* Ref.get(executed)).includes(effectId),
       }).toEqual({ guard: "Failure", executed: false });
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("review: queued sends must retain authority when promoted after link revocation", () =>
@@ -771,7 +772,7 @@ it.live("review: queued sends must retain authority when promoted after link rev
         executed: (yield* Ref.get(executed)).includes(effectId),
       }).toEqual({ guard: "Failure", executed: false });
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -811,7 +812,7 @@ it.live(
           expect.arrayContaining(["preview", "device", "worktree", "pull-requests"]),
         );
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("explicit descendant environment grants retain operation mode policy", () =>
@@ -852,7 +853,7 @@ it.live("explicit descendant environment grants retain operation mode policy", (
         expect(result._tag === "Success").toBe(allowed);
       }
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("launch capabilities never acquire missing initial preview or device consent", () =>
@@ -913,7 +914,7 @@ it.live("launch capabilities never acquire missing initial preview or device con
           ?.capabilities,
       ).not.toContain("device");
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -981,7 +982,7 @@ it.live(
           expect(result.result.ok).toBe(expected);
         }
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -1286,7 +1287,7 @@ it.live(
           yield* sql`SELECT record_id FROM peer_thread_authority WHERE thread_id=${target}`,
         ).toHaveLength(0);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -1415,7 +1416,7 @@ it.live(
           })),
         );
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("round2: existing jobs and incoming runs retain both ceilings and live owners", () =>
@@ -1613,7 +1614,7 @@ it.live("round2: existing jobs and incoming runs retain both ceilings and live o
         expect((yield* Effect.result(b.authority.checkThread(descendant)))._tag).toBe("Failure");
       }
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -1723,7 +1724,7 @@ it.live(
         ).toBe(false);
         expect((yield* Effect.result(b.authority.checkThread(child)))._tag).toBe("Failure");
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live.each(["auto", "steer", "restart", "restart-only"] as const)(
@@ -1831,7 +1832,7 @@ it.live.each(["auto", "steer", "restart", "restart-only"] as const)(
           committed: messages.some((m) => m.text === "Forbidden after active contributor unlink"),
         }).toEqual({ owner: true, preview: false, device: false, denied: true, committed: false });
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live.each([
@@ -2382,7 +2383,7 @@ it.live.each([
           ),
         ).toBe(true);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("promoting a queued input retains its original contributor on the active run", () =>
@@ -2500,7 +2501,7 @@ it.live("promoting a queued input retains its original contributor on the active
         ),
       ).toBe(false);
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("non-input effect persistence retains its caller without assigning the local run", () =>
@@ -2580,7 +2581,7 @@ it.live("non-input effect persistence retains its caller without assigning the l
       ).toBe("Failure");
       expect(yield* sql`SELECT record_id FROM peer_run_authority`).toHaveLength(0);
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("legacy creation and a modern run both constrain every actual target", () =>
@@ -2802,7 +2803,7 @@ it.live("legacy creation and a modern run both constrain every actual target", (
         "Forbidden revoked legacy owner",
       );
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("legacy direct full access keeps unstamped schedule operations and the thread fence", () =>
@@ -2892,7 +2893,7 @@ it.live("legacy direct full access keeps unstamped schedule operations and the t
         "Forbidden legacy direct takeover",
       );
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live.each([{ retired: "source-run" }, { retired: "link" }] as const)(
@@ -3128,7 +3129,7 @@ it.live.each([{ retired: "source-run" }, { retired: "link" }] as const)(
           expect((yield* node.threads.getThreadShell(threadId))?.title).not.toBe(deniedTitle);
         }
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -3222,7 +3223,7 @@ it.live(
           writeDenied: true,
         });
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -3310,7 +3311,7 @@ it.live(
           writeDenied: true,
         });
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("round8-cancel: native task cancellation must retain live originating mode ceilings", () =>
@@ -3419,7 +3420,7 @@ it.live("round8-cancel: native task cancellation must retain live originating mo
         )?.completionDelivery?.state,
       ).toBe("disposed");
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live(
@@ -3530,5 +3531,5 @@ it.live(
           )?.completionDelivery?.state,
         ).toBe("disposed");
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );

@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as PeerLinkRequests from "../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -319,6 +320,7 @@ const unusedScheduledTasks = Layer.succeed(
     getWebhookDelivery: () => Effect.die("unused"),
     triggerWebhook: () => Effect.die("unused"),
     deleteForThread: () => Effect.die("unused"),
+    moveThreadTasks: () => Effect.die("unused"),
   }),
 );
 
@@ -355,7 +357,10 @@ const withParent = <A, E>(
     readonly invoke: (
       name: string,
       args: Record<string, unknown>,
-    ) => Effect.Effect<McpSchema.CallToolResult, McpSchema.InternalError | McpSchema.InvalidParams>;
+    ) => Effect.Effect<
+      McpSchema.CallToolResult,
+      McpSchema.InternalError | McpSchema.InvalidParams | McpSchema.McpErrorBase
+    >;
     readonly offers: Ref.Ref<
       ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
     >;
@@ -422,7 +427,7 @@ const withParent = <A, E>(
         Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
         Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
         Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
-        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
         Layer.provideMerge(layerOrchestration),
         Layer.provide(layerRegistry),
         Layer.provide(
@@ -447,7 +452,7 @@ const withParent = <A, E>(
               ),
           }),
         ),
-        Layer.provide(NodeServices.layer),
+        Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
         Layer.provide(McpProviderSessions.layer),
       );
       return yield* Effect.gen(function* () {

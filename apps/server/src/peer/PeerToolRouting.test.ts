@@ -1,3 +1,5 @@
+import * as AssetSigner from "../assets/AssetSigner.ts";
+import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as DocumentText from "../provider/DocumentText.ts";
 import * as PeerLinkRequests from "./PeerLinkRequests.ts";
 import * as Database from "../persistence/Sqlite.ts";
@@ -165,6 +167,8 @@ const registrations = Layer.mergeAll(
   McpHttpServer.toolkitRegistration(HtmlPreviewToolkit, HtmlHandlers.layerPreview),
   McpHttpServer.toolkitRegistration(HtmlRenderToolkit, HtmlHandlers.layerRender),
 ).pipe(
+  Layer.provide(Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({})),
+  Layer.provide(AssetSigner.layer),
   Layer.provide(Database.layerMemory),
   Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
   Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
@@ -474,7 +478,7 @@ const makeFixture = (realHtml = false) =>
     );
     const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
     const here = yield* registrations.pipe(
-      Layer.provideMerge(McpServer.McpServer.layer),
+      Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
       Layer.provide(dependencies),
       Layer.provide(
         PeerForwarding.layer.pipe(

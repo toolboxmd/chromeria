@@ -22,7 +22,7 @@ export function nextScheduledRunAt(
 ): DateTime.DateTime | null {
   if (schedule.type === "webhook") return null;
   if (schedule.type === "once") {
-    const runAt = DateTime.make(schedule.runAt);
+    const runAt = DateTime.make("runAt" in schedule ? schedule.runAt : schedule.at);
     return Option.isSome(runAt) &&
       DateTime.toEpochMillis(runAt.value) > DateTime.toEpochMillis(from)
       ? runAt.value

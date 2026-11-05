@@ -68,6 +68,7 @@ it.effect("rejects a stale form save after deletion while preserving explicit-id
       Effect.provide(
         ScheduledTaskService.layer.pipe(
           Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
           Layer.provide(layerDependencies),
         ),
       ),
@@ -137,6 +138,7 @@ it.effect("preserves a due run when a save only pads the scheduled hour", () =>
       Effect.provide(
         ScheduledTaskService.layer.pipe(
           Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
           Layer.provide(layerDependencies),
         ),
       ),
@@ -196,6 +198,7 @@ it.effect("keeps the task list order when a toggle or edit rewrites updated_at",
     }).pipe(
       Effect.provide(
         ScheduledTaskService.layer.pipe(
+          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
           Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
           Layer.provide(layerDependencies),
         ),
@@ -262,6 +265,13 @@ it.effect(
         yield* TestClock.adjust("6 seconds");
         yield* TestClock.adjust("60 seconds");
         expect(yield* Deferred.await(launched)).toBe(created.task.title);
-      }).pipe(Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))));
+      }).pipe(
+        Effect.provide(
+          ScheduledTaskService.layer.pipe(
+            Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+            Layer.provide(layerDependencies),
+          ),
+        ),
+      );
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );

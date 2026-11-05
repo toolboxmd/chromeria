@@ -13,7 +13,7 @@ const encode = Schema.encodeSync(Schema.fromJsonString(Profiles));
 
 export class ServerCookieMirrorProfiles {
   private readonly path: string;
-  private readonly profiles = new Map<string, typeof CookieMirrorProfile.Type>();
+  private readonly profiles = new Map<string, CookieMirrorProfile>();
   constructor(path: string) {
     this.path = path;
   }
@@ -29,7 +29,7 @@ export class ServerCookieMirrorProfiles {
     }
     return [...this.profiles.values()];
   }
-  async put(profile: typeof CookieMirrorProfile.Type) {
+  async put(profile: CookieMirrorProfile) {
     if (this.profiles.get(profile.id)?.name === profile.name) return;
     const next = new Map(this.profiles).set(profile.id, profile);
     const temporary = `${this.path}.tmp`;

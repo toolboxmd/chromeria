@@ -540,7 +540,7 @@ it.live.each([
       let detached = false;
       let dispose: (() => void) | undefined;
       const session = {
-        ...makeSession(),
+        ...makeSession(undefined, { width: 1280, height: 720 }),
         on: vi.fn((name: string, listener: () => void) => events.on(name, listener)),
         off: vi.fn((name: string, listener: () => void) => events.off(name, listener)),
         detach: vi.fn(async () => {
@@ -692,9 +692,9 @@ it.live("an initial download stays available after preview_open reports the navi
       expect(status.downloads).toEqual([
         expect.objectContaining({ fileName: "report.csv", sizeBytes: 3 }),
       ]);
-      expect(yield* (yield* FileSystem.FileSystem).readFileString(status.downloads![0]!.path)).toBe(
-        "a,b",
-      );
+      expect(
+        yield* (yield* FileSystem.FileSystem).readFileString(status.downloads![0]!.path!),
+      ).toBe("a,b");
     }),
   ).pipe(Effect.provide(layer)),
 );
@@ -2115,7 +2115,6 @@ it.effect("a stalled desktop viewer still gets its size, control and reconnect",
     }),
   ).pipe(Effect.provide(layer)),
 );
-
 
 it.live("an agent's tab runs in the server browser without waiting for the desktop", () =>
   Effect.scoped(

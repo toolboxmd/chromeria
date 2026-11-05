@@ -255,7 +255,7 @@ describe("SessionControl", () => {
       async () => effects.push("click"),
       undefined,
       async () => {
-        if (!current) throw new BrowserControlInterrupted("Invocation retired");
+        if (!current) throw new BrowserControlInterrupted({ message: "Invocation retired" });
       },
     );
     const refused = expect(action).rejects.toThrow("Invocation retired");
@@ -280,7 +280,7 @@ describe("SessionControl", () => {
     let checks = 0;
     const takeover = control.take("viewer", async () => {
       if (++checks === 1) return;
-      throw new BrowserControlInterrupted("Invocation retired during drain");
+      throw new BrowserControlInterrupted({ message: "Invocation retired during drain" });
     });
     const refused = expect(takeover).rejects.toThrow("Invocation retired during drain");
     drained.resolve();
@@ -295,7 +295,7 @@ describe("SessionControl", () => {
     const generation = control.generation;
     await expect(
       control.take("viewer", async () => {
-        throw new BrowserControlInterrupted("Invocation retired");
+        throw new BrowserControlInterrupted({ message: "Invocation retired" });
       }),
     ).rejects.toThrow("Invocation retired");
     expect(control.controller).toBe(null);

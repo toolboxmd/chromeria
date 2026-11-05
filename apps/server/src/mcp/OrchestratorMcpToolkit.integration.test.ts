@@ -1,3 +1,4 @@
+import * as AssetSigner from "../assets/AssetSigner.ts";
 import * as NodeURL from "node:url";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as DocumentText from "../provider/DocumentText.ts";
@@ -151,7 +152,17 @@ const readDelegatedTaskStatusTranscript = Effect.fn("readDelegatedTaskStatusTran
       entries: transcript.entries.filter((entry) => entry.type !== "runtime_exit"),
     };
   },
-  Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, DocumentText.layer.pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))))),
+  Effect.provide(
+    Layer.mergeAll(
+      Layer.merge(NodeServices.layer, NodeCrypto.layer),
+      NodeCrypto.layer,
+      DocumentText.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+        ),
+      ),
+    ),
+  ),
 );
 
 function makeProviderSnapshot(input: {
@@ -549,7 +560,7 @@ describe("orchestrator MCP toolkit", () => {
           Layer.provide(PrismServerSettings.layerTest()),
           Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
           Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
-          Layer.provideMerge(McpServer.McpServer.layer),
+          Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
           Layer.provideMerge(replay),
           Layer.provide(registry),
           Layer.provide(
@@ -565,10 +576,11 @@ describe("orchestrator MCP toolkit", () => {
           Layer.provideMerge(
             SecretRequests.layer.pipe(Layer.provide(layerMemorySecretStore), Layer.provide(replay)),
           ),
+          Layer.provide(AssetSigner.layer),
           Layer.provide(layerMemorySecretStore),
           Layer.provideMerge(
             ServerConfig.layerTest(cwd, { prefix: "t3-ancestor-attachments-" }).pipe(
-              Layer.provide(NodeServices.layer),
+              Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
             ),
           ),
           Layer.provide(
@@ -579,7 +591,7 @@ describe("orchestrator MCP toolkit", () => {
               Layer.succeed(ServerActivation, Effect.void),
             ),
           ),
-          Layer.provideMerge(NodeServices.layer),
+          Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
         );
         yield* Effect.gen(function* () {
           const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -892,7 +904,10 @@ describe("orchestrator MCP toolkit", () => {
       }),
     ).pipe(
       Effect.provide(
-        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+        Layer.merge(
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
+          DocumentText.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
+        ),
       ),
     ),
   );
@@ -957,13 +972,15 @@ describe("orchestrator MCP toolkit", () => {
               Layer.provide(layerOrchestration),
               Layer.provide(
                 ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-secret-requests-" }).pipe(
-                  Layer.provide(NodeServices.layer),
+                  Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
                 ),
               ),
             ),
           ),
           Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
-          Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+          Layer.provide(
+            Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+          ),
         );
 
         yield* Effect.gen(function* () {
@@ -1421,7 +1438,7 @@ describe("orchestrator MCP toolkit", () => {
           expect(transferReads).toHaveLength(0);
           const afterParentlessRead = yield* orchestrator.getThreadProjection(parentThreadId);
           expect(
-            afterParentlessRead.subagents.find((task) => task.id === queuedFollowup.taskId)
+            afterParentlessRead.subagents.find((task) => task.id === delegated.taskId)
               ?.completionDelivery?.state,
           ).toBe("claimed");
 

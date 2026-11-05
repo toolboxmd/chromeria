@@ -1,3 +1,4 @@
+import { V2DatabaseImportError } from "./initializeV2Database.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -138,9 +139,11 @@ it.effect(
         );
       }).pipe(Effect.provide(forkV1SnapshotLayer(snapshotPath)));
       assert.deepEqual(NodeFS.readFileSync(sourcePath), original);
-      const overwrite = yield* Effect.tryPromise(() =>
-        vacuumForkV1Snapshot({ sourcePath, destinationPath: snapshotPath }),
-      ).pipe(Effect.exit);
+      const overwrite = yield* Effect.tryPromise({
+        try: () => vacuumForkV1Snapshot({ sourcePath, destinationPath: snapshotPath }),
+        catch: (cause) =>
+          new V2DatabaseImportError({ sourcePath, destinationPath: snapshotPath, cause }),
+      }).pipe(Effect.exit);
       assert.isTrue(Exit.isFailure(overwrite));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

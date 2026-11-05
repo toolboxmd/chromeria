@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -78,7 +79,7 @@ const runtime = Layer.fresh(
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
         Settings.layerTest(),
-        NodeServices.layer,
+        Layer.merge(NodeServices.layer, NodeCrypto.layer),
       ),
     ),
     Layer.provideMerge(spectrum),

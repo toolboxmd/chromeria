@@ -1,3 +1,5 @@
+import * as NodeCryptoServices from "@effect/platform-node/NodeCrypto";
+import * as Layer from "effect/Layer";
 // @effect-diagnostics nodeBuiltinImport:off - isolated fixture files exercise the real Library loader.
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
@@ -141,7 +143,10 @@ describe("Library sources and cache", () => {
         `${later}: id 'shared' already used by ${a}`,
       ]);
       assert.deepEqual(targets, [NodePath.join(first, "first-record")]);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.merge(NodeServices.layer, NodeCryptoServices.layer)),
+    ),
   );
 
   it.effect("expands the joined checkout, Library and record from the injected home", () =>
@@ -166,7 +171,10 @@ describe("Library sources and cache", () => {
       );
       assert.deepStrictEqual(library.errors, []);
       assert.strictEqual(library.entries[0]?.target, NodePath.join(home, "records", "guide.md"));
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.merge(NodeServices.layer, NodeCryptoServices.layer)),
+    ),
   );
 
   it.effect("reports an unreadable directory", () =>
@@ -185,7 +193,10 @@ describe("Library sources and cache", () => {
       const result = yield* Store.load([lib], new Map());
       assert.deepStrictEqual(result.entries, []);
       assert.deepStrictEqual(result.errors, [`${lib}: unreadable directory`]);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.merge(NodeServices.layer, NodeCryptoServices.layer)),
+    ),
   );
   it.effect("refreshes a file alias's bytes when size and mtime stay equal", () =>
     Effect.gen(function* () {
@@ -213,7 +224,10 @@ describe("Library sources and cache", () => {
       assert.deepStrictEqual(after.commands, [["y"]]);
       assert.notStrictEqual(after.version, before.version);
       assert.strictEqual(after.self, b);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.merge(NodeServices.layer, NodeCryptoServices.layer)),
+    ),
   );
   it.effect.each(corpus.stores)("$name", (row) =>
     Effect.gen(function* () {
@@ -235,7 +249,10 @@ describe("Library sources and cache", () => {
         },
         row.expect,
       );
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.merge(NodeServices.layer, NodeCryptoServices.layer)),
+    ),
   );
   it.effect.each(corpus.discovery)("$name", (row) =>
     Effect.gen(function* () {
@@ -244,7 +261,10 @@ describe("Library sources and cache", () => {
       fixture(d, row);
       const found = yield* Store.libraryDir(NodePath.join(d, row.thread));
       assert.strictEqual(found === null ? null : NodePath.relative(d, found), row.expect);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.merge(NodeServices.layer, NodeCryptoServices.layer)),
+    ),
   );
 
   it.effect("keeps parsing modes independent while refreshing symlink targets", () =>
@@ -285,7 +305,7 @@ describe("Library sources and cache", () => {
         NodePath.join(next, "record.md"),
       );
       NodeFS.rmSync(d, { recursive: true });
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCryptoServices.layer))),
   );
 
   it.effect(
@@ -331,7 +351,7 @@ describe("Library sources and cache", () => {
         assert.strictEqual(library.errors.length, 1);
         assert.include(library.errors[0]!, "already used");
         NodeFS.rmSync(d, { recursive: true });
-      }).pipe(Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCryptoServices.layer))),
   );
 
   it.effect("keeps the known Unicode normalizer exception explicit (#69)", () =>
@@ -341,7 +361,7 @@ describe("Library sources and cache", () => {
       const library = yield* Store.load([d], new Map());
       assert.deepStrictEqual(library.entries[0]!.errors, ["erreur ١٢, id #"]);
       NodeFS.rmSync(d, { recursive: true });
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCryptoServices.layer))),
   );
 });
 
@@ -368,7 +388,7 @@ describe("Library rendering", () => {
         2000,
       );
       NodeFS.rmSync(d, { recursive: true });
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCryptoServices.layer))),
   );
 
   it.effect(
@@ -411,6 +431,6 @@ describe("Library rendering", () => {
           256,
         );
         NodeFS.rmSync(d, { recursive: true });
-      }).pipe(Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCryptoServices.layer))),
   );
 });

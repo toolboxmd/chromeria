@@ -3,7 +3,7 @@ import { isSqlError } from "effect/sql/SqlError";
 import { CommandId, OrchestratorMcpFailure } from "@t3tools/contracts";
 import { sha256 } from "@noble/hashes/sha2";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
@@ -132,7 +132,7 @@ export class McpRequestReceipts extends Context.Service<
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* SecureRandom.SecureRandom;
   yield* sql`CREATE TABLE IF NOT EXISTS mcp_request_receipts (
     id TEXT PRIMARY KEY, generation TEXT NOT NULL, input_digest TEXT NOT NULL,
     state TEXT NOT NULL, result_json TEXT, attempt_id TEXT)`.pipe(Effect.orDie);
@@ -225,9 +225,14 @@ const make = Effect.gen(function* () {
         const namespace = parts[spectrum ? 1 : 2]!;
         // A verified modern caller owns its namespace, never this raw key in
         // every other namespace. Missing ownership remains safe unsupported.
-        const decoded = yield* Effect.try(() => decodeURIComponent(namespace)).pipe(
-          Effect.orElseSucceed(() => undefined),
-        );
+        const decoded = yield* Effect.try({
+          try: () => decodeURIComponent(namespace),
+          catch: () =>
+            new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "Malformed legacy request namespace.",
+            }),
+        }).pipe(Effect.orElseSucceed(() => undefined));
         if (decoded === undefined) return true;
         const modernId = requestDigest([decoded, tool, key]);
         if ((yield* sql`SELECT id FROM mcp_request_receipts WHERE id=${modernId}`).length === 0)
@@ -256,7 +261,7 @@ const make = Effect.gen(function* () {
     "McpRequestReceipts.identify",
   )(
     function* (scope, tool, input, key) {
-      const clientRequestId = key ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie));
+      const clientRequestId = key ?? (yield* crypto.uuidV4().pipe(Effect.orDie));
       const id = requestDigest([requestNamespace(scope), tool, clientRequestId]);
       const identity = {
         id,
@@ -324,7 +329,7 @@ const make = Effect.gen(function* () {
     perform: Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E | OrchestratorMcpFailure, R> = Effect.fn("McpRequestReceipts.external")(
     function* <A, E, R>(identity: RequestIdentity, perform: Effect.Effect<A, E, R>) {
-      const attempt = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+      const attempt = yield* crypto.uuidV4().pipe(Effect.orDie);
       const notDispatched = yield* Ref.make(false);
       const changed =
         yield* sql`UPDATE mcp_request_receipts SET state='started',attempt_id=${attempt}
@@ -420,9 +425,14 @@ const make = Effect.gen(function* () {
     namespace: string,
     key: string,
   ) {
-    const legacyId = yield* Effect.try(
-      () => `mcp:launch:${encodeURIComponent(namespace)}:${encodeURIComponent(key)}`,
-    );
+    const legacyId = yield* Effect.try({
+      try: () => `mcp:launch:${encodeURIComponent(namespace)}:${encodeURIComponent(key)}`,
+      catch: () =>
+        new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "Malformed launch request key.",
+        }),
+    });
     if (
       tables.has("orchestration_command_receipts") &&
       (yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE command_id=${legacyId}`)

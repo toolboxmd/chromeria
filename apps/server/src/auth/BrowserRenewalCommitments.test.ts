@@ -24,7 +24,7 @@ import * as Reader from "./BrowserRenewalCommitments.ts";
 it.effect(
   "the fixed reader returns public hashes from fake IndexedDB without exposing credentials",
   () =>
-    Effect.tryPromise(async () => {
+    Effect.promise(async () => {
       let closed = false;
       const records = [
         {

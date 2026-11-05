@@ -1,3 +1,4 @@
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import { readScheduledBare } from "../scheduledTasks/bareState.ts";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
@@ -165,6 +166,7 @@ const runtime = (
     { databaseLayer: database, runEffectWorker: false },
   );
   const dependencies = Layer.mergeAll(
+    ManagedPolicy.layerTest().pipe(Layer.provide(NodeCrypto.layer)),
     database,
     orchestration,
     ProjectStore.layer.pipe(Layer.provide(database)),

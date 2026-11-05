@@ -1,3 +1,5 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { ServerSettings } from "@t3tools/contracts";
@@ -13,9 +15,10 @@ import * as Settings from "../serverSettings.ts";
 const decodeSettingsJson = Schema.decodeUnknownEffect(Schema.fromJsonString(ServerSettings));
 const settingsLayer = Settings.layer.pipe(
   Layer.provide(Secrets.layer),
+  Layer.provide(ManagedPolicy.layerTest()),
   Layer.provideMerge(Persistence.layerMemory),
   Layer.provideMerge(Config.layerTest(process.cwd(), { prefix: "prism-settings-" })),
-  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
 );
 it.effect("Prism settings writes preserve a saved reset-recovery opt-out", () =>
   Effect.gen(function* () {

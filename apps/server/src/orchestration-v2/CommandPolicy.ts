@@ -238,7 +238,10 @@ function resolveDeliveryIntent(
   }
 
   const capabilities = providerTurnCapabilities(projection, activeRun);
-  if (capabilities?.supportsActiveSteering === true && capabilities.activeSteeringInterruptsTools !== true) {
+  if (
+    capabilities?.supportsActiveSteering === true &&
+    capabilities.activeSteeringInterruptsTools !== true
+  ) {
     return { type: "steer_active", targetRunId: activeRun.id };
   }
   // Thread sends already request routine steering on restart-capable harnesses.

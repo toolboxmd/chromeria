@@ -31,6 +31,7 @@ import * as SecretRequests from "./SecretRequests.ts";
 const threadId = ThreadId.make("thread-orchestrator");
 const turnItemId = TurnItemId.make("turn-item:secret-request:1");
 const projectId = ProjectId.make("project-1");
+const SECRET_FILE_TTL_MS = 24 * 60 * 60 * 1000;
 const decodeSecretInput = Schema.decodeUnknownEffect(OrchestratorMcpRequestSecretInput);
 const decodeSecretInputExit = Schema.decodeUnknownExit(OrchestratorMcpRequestSecretInput);
 const twoFields = [
@@ -47,6 +48,7 @@ const withService = <A, E>(
     readonly filesRoot: string;
   }) => Effect.Effect<A, E, FileSystem.FileSystem>,
   options: {
+    readonly directory?: string;
     readonly threadId?: ThreadId;
     readonly runStatus?: string;
     readonly removeFails?: boolean;
@@ -64,13 +66,14 @@ const withService = <A, E>(
     const requestThreadId = options.threadId ?? threadId;
     const layerDependencies = Layer.mergeAll(
       NodeCrypto.layer,
-      NodeServices.layer,
+      Layer.merge(NodeServices.layer, NodeCrypto.layer),
       ServerConfig.layerTest(process.cwd(), { prefix: "t3-secret-request-files-" }).pipe(
-        Layer.provide(NodeServices.layer),
+        Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
       ),
       Layer.succeed(
         ServerSecretStore.ServerSecretStore,
         ServerSecretStore.ServerSecretStore.of({
+          ...(options.directory === undefined ? {} : { directory: options.directory }),
           get: (name) => Effect.yieldNow.pipe(Effect.as(Option.fromNullishOr(stored.get(name)))),
           set: (name, value) => Effect.sync(() => void stored.set(name, value)),
           create: (name, value) =>
@@ -486,7 +489,7 @@ it.effect("a pasted secret goes straight to an owner-only file, with no card", (
     yield* TestClock.setTime(Option.getOrThrow(mtime).getTime() + SECRET_FILE_TTL_MS + 1);
     yield* withService(() => Effect.void, { directory });
     assert.isFalse(yield* fs.exists(file));
-  }).pipe(Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("a pasted secret keeps its exact bytes from the tool input to the file", () =>
@@ -517,7 +520,7 @@ it.effect("a pasted secret keeps its exact bytes from the tool input to the file
       { directory },
     );
     assert.equal(yield* fs.readFileString(file), pasted);
-  }).pipe(Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("a pasted secret is refused without a secrets directory", () =>
@@ -649,7 +652,7 @@ it.effect("drops request files once they expire, and directories the agent empti
         Layer.provideMerge(
           ServerConfig.layerTest(process.cwd(), { prefix: "t3-secret-request-sweep-" }),
         ),
-        Layer.provideMerge(NodeServices.layer),
+        Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
       ),
     ),
   ),
@@ -778,7 +781,7 @@ it.effect("a directory the sweep cannot read does not keep it from the rest", ()
         Layer.provideMerge(
           ServerConfig.layerTest(process.cwd(), { prefix: "t3-secret-request-sweep-" }),
         ),
-        Layer.provideMerge(NodeServices.layer),
+        Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
       ),
     ),
   ),

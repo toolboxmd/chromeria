@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 // @effect-diagnostics nodeBuiltinImport:off - tests use isolated databases, public files and a loopback Cue fixture.
 import * as NodeFS from "node:fs";
 import * as NodeHttp from "node:http";
@@ -274,7 +275,7 @@ const makeHarness = (
     return { service, db, sql, config, configPath, moment, fact, evidence, seed };
   });
 const withNode = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  effect.pipe(Effect.provide(NodeServices.layer));
+  effect.pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)));
 const decodeDeadline = Schema.decodeUnknownSync(
   Schema.fromJsonString(
     Schema.Struct({

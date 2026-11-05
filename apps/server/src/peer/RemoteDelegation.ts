@@ -51,6 +51,7 @@ import type * as Tool from "effect/ai/Tool";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
 import {
+  taskPrompt,
   resolveInteractionMode,
   resolveRuntimeMode,
   runtimeModeRank,
@@ -1004,7 +1005,7 @@ const make = Effect.gen(function* () {
                     task.completionDelivery?.state)),
           ),
           Stream.runHead,
-          Effect.map(() => undefined),
+          Effect.as(false as const),
         );
       const response = yield* watch(remote.environmentId, launch.linkIdentity, {
         pair: pairFor(parentThreadId, task),
@@ -1023,7 +1024,7 @@ const make = Effect.gen(function* () {
               wait: true,
             },
       }).pipe(Effect.raceFirst(sourceChanged));
-      if (response === undefined) return false;
+      if (response === false) return false;
       if (response.type !== "observation" && response.type !== "snapshot")
         return yield* new OrchestratorMcpFailure({
           code: "orchestration_error",
@@ -1038,7 +1039,7 @@ const make = Effect.gen(function* () {
         let text = result.text;
         let textOffset: number | null = text.length;
         while (textOffset !== null) {
-          const page: PeerTaskLifecycleResult | undefined = yield* lifecycle(
+          const page: PeerTaskLifecycleResult | false = yield* lifecycle(
             remote.environmentId,
             launch.linkIdentity,
             {
@@ -1052,7 +1053,7 @@ const make = Effect.gen(function* () {
               },
             },
           ).pipe(Effect.raceFirst(sourceChanged));
-          if (page === undefined) return false;
+          if (page === false) return false;
           if (
             page.type !== "resultText" ||
             (page.nextTextOffset !== null && page.nextTextOffset <= textOffset)

@@ -21,7 +21,7 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -694,7 +694,11 @@ const decoratedLayer = Layer.effect(
             existing === undefined ||
             !isForkScheduledTaskSchedule(input.schedule) ||
             !forkSameSchedule(existing.schedule, input.schedule);
-          if (input.schedule.type === "once" && changed && Date.parse(input.schedule.at) <= now)
+          if (
+            input.schedule.type === "once" &&
+            changed &&
+            Date.parse("at" in input.schedule ? input.schedule.at : input.schedule.runAt) <= now
+          )
             return yield* refused("The one-shot time is in the past.", input.id);
           let schedule = input.schedule;
           if (schedule.type === "weekly") {
@@ -770,7 +774,7 @@ const checksLayer = Layer.effect(
     // The undecorated upstream service: tasks as stored, before outcome reporting.
     const inner = yield* ScheduledTaskService.ScheduledTaskService;
     const { runs, sql } = yield* Engine;
-    const crypto = yield* Crypto.Crypto;
+    const crypto = yield* SecureRandom.SecureRandom;
     const scheduler = yield* Scheduler.Scheduler;
     const withSql = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
       Effect.provideService(effect, SqlClient.SqlClient, sql).pipe(
@@ -814,7 +818,7 @@ const checksLayer = Layer.effect(
             // A retried call with the same request key reaches the same task.
             const key =
               fields.clientRequestId === undefined
-                ? yield* crypto.randomUUIDv4().pipe(Effect.orDie)
+                ? yield* crypto.uuidV4().pipe(Effect.orDie)
                 : `${scope.requestNamespace}:${fields.clientRequestId}`;
             const id = ScheduledTaskId.make(`scheduled-task:${key}`);
             const prepare = withSql(

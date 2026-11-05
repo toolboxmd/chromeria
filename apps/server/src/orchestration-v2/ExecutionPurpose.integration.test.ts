@@ -1,3 +1,4 @@
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import { ProviderThreadId, type NativeExecutionSegment } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as EventSink from "./EventSink.ts";
@@ -524,6 +525,7 @@ it.effect(
     }).pipe(
       Effect.provide(
         ScheduledTasks.layer.pipe(
+          Layer.provide(ManagedPolicy.layerTest()),
           Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
           Layer.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({})),
           Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),

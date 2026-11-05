@@ -1,6 +1,6 @@
 import type { ScheduledTask } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Data from "effect/Data";
+import * as Schema from "effect/Schema";
 import type * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 
@@ -18,13 +18,15 @@ export type ScheduledTaskDispatchDecision =
       readonly manualReceipt?: { readonly runId: string; readonly requestId: string };
     };
 
-export class ScheduledTaskDispatchRefused extends Data.TaggedError("ScheduledTaskDispatchRefused")<{
-  readonly message: string;
-}> {}
+export class ScheduledTaskDispatchRefused extends Schema.TaggedError<ScheduledTaskDispatchRefused>()(
+  "ScheduledTaskDispatchRefused",
+  { message: Schema.String },
+) {}
 
-export class ScheduledTaskDispatchFailed extends Data.TaggedError("ScheduledTaskDispatchFailed")<{
-  readonly message: string;
-}> {}
+export class ScheduledTaskDispatchFailed extends Schema.TaggedError<ScheduledTaskDispatchFailed>()(
+  "ScheduledTaskDispatchFailed",
+  { message: Schema.String },
+) {}
 
 export interface ScheduledTaskDispatchPolicyShape {
   readonly decide: (input: {

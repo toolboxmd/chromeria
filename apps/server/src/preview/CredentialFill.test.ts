@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as ServerSettings from "../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "@effect/vitest";
@@ -39,6 +40,8 @@ import type { CredentialVault } from "./CredentialVault.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 
 // Characters that URL, form, JSON and HTML encoding all change.
+const isInvalidParams = Schema.is(McpSchema.InvalidParams);
+
 const SENTINELS = {
   username: "sentinel-user-K7q@example.test",
   password: `sentinel-Pass+&=#?% 42<"'>`,
@@ -330,10 +333,10 @@ describe("fillCredential in a real browser", () => {
         request: { item: "Example", field: "password", locator: "#pw" },
         locate: (selector) => ServerBrowserPage.targetLocator(page, { locator: selector })!,
         beforeTyping: async () => {
-          throw new ServerBrowserPage.ServerBrowserOperationError(
-            "PreviewAutomationExecutionError",
-            "A recording is running.",
-          );
+          throw new ServerBrowserPage.ServerBrowserOperationError({
+            tag: "PreviewAutomationExecutionError",
+            message: "A recording is running.",
+          });
         },
       }),
     );
@@ -369,11 +372,11 @@ describe("fillCredential in a real browser", () => {
     });
     const layer = McpHttpServer.layerPreviewToolkit.pipe(
       Layer.provide(ServerSettings.layerTest()),
-      Layer.provideMerge(McpServer.McpServer.layer),
+      Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
       Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
       Layer.provideMerge(PreviewAutomationBroker.layer),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-credential-fill-" })),
-      Layer.provideMerge(NodeServices.layer),
+      Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
     );
 
     it.effect("returns only the outcome and writes a value-free audit line per attempt", () =>
@@ -435,7 +438,7 @@ describe("fillCredential in a real browser", () => {
             const invalid = yield* call({ item, field: "password", locator: "#pw" }).pipe(
               Effect.flip,
             );
-            expect(invalid._tag).toBe("InvalidParams");
+            expect(isInvalidParams(invalid)).toBe(true);
           }
           expect(vaultCalls).toEqual([]);
           const filled = yield* call({ item: "Example", field: "password", locator: "#pw" });

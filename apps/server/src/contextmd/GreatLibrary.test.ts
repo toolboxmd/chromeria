@@ -1,3 +1,5 @@
+import * as NodeCryptoServices from "@effect/platform-node/NodeCrypto";
+import * as Layer from "effect/Layer";
 // @effect-diagnostics nodeBuiltinImport:off - isolated filesystem and SQLite owner tests.
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -166,7 +168,7 @@ describe("Great Library grammar", () => {
       } finally {
         NodeFS.rmSync(dir, { recursive: true });
       }
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCryptoServices.layer))),
   );
 
   it.effect.each(["~/a/../index.md", "~//space index.md", "~/a/./知識.md"])(
@@ -182,7 +184,7 @@ describe("Great Library grammar", () => {
         } finally {
           NodeFS.rmSync(dir, { recursive: true });
         }
-      }).pipe(Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCryptoServices.layer))),
   );
 
   it.effect("requires a regular index and versions the accurate plain line", () =>
@@ -215,7 +217,7 @@ describe("Great Library grammar", () => {
       } finally {
         NodeFS.rmSync(dir, { recursive: true });
       }
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCryptoServices.layer))),
   );
 });
 

@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
 import {
   EnvironmentId,
@@ -175,11 +176,11 @@ const respond = (input: {
         ),
     });
     const server = McpHttpServer.toolkitRegistration(ThreadToolkit, handlers).pipe(
-      Layer.provideMerge(McpServer.McpServer.layer),
+      Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
       Layer.provideMerge(threads),
       Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
       Layer.provide(Layer.mock(ScheduledTasks.ScheduledTaskService)({})),
-      Layer.provideMerge(NodeServices.layer),
+      Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
     );
     let listedApproval = false;
     let readRefused: boolean | undefined;

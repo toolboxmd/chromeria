@@ -850,7 +850,7 @@ export const layerWithOptions = (
                       }),
                   ),
                 )
-              : Effect.sync(() => undefined);
+              : Effect.undefined;
           const stopOwner =
             Option.isSome(authority) &&
             ["provider-turn.interrupt", "provider-session.detach", "delegated-tasks.stop"].includes(
@@ -866,7 +866,7 @@ export const layerWithOptions = (
                       }),
                   ),
                 )
-              : Effect.sync(() => undefined);
+              : Effect.undefined;
           const execution = authorized.pipe(
             Effect.flatMap((executionOwner) =>
               stopOwner.pipe(

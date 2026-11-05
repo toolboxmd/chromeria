@@ -428,10 +428,13 @@ describe("server browser net errors", () => {
     ["net::ERR_TLS13_DOWNGRADE_DETECTED", "ERR_TLS13_DOWNGRADE_DETECTED", -2],
   ])("reads the whole error name from %j", (errorText, description, code) => {
     expect(ServerBrowserPage.parseNetError(errorText)).toEqual({ description, code });
+  });
+});
+
 // These cases exercise deterministic driver leaves only. Their selection does not
 // run the Chromium suite above; installed-runtime/browser proof belongs to the parent.
 describe("page dispatch authorization", () => {
-  const retired = () => new BrowserControlInterrupted("Original invocation retired");
+  const retired = () => new BrowserControlInterrupted({ message: "Original invocation retired" });
   it("checks again after geometry and pointer waits, with explicit local compatibility", async () => {
     for (const boundary of ["geometry", "pointer"] as const) {
       const external = makeExternalBrowserContext();

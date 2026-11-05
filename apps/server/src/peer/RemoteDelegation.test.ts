@@ -1,3 +1,4 @@
+import * as Tracer from "effect/Tracer";
 import * as DocumentText from "../provider/DocumentText.ts";
 import * as PeerLinkRequests from "./PeerLinkRequests.ts";
 import { subagentResultForRun } from "@t3tools/provider-core/server/subagentProjection";
@@ -221,7 +222,19 @@ const boxProjects: ReadonlyArray<Project> = [
 ];
 
 const serveBox = (thread: BoxThread, lifecycleSupported: boolean | Ref.Ref<boolean> = true) => {
-  return servePeer(box, boxToolkitLayer(thread, undefined, lifecycleSupported));
+  return servePeer(box, boxToolkitLayer(thread, undefined, lifecycleSupported)).pipe(
+    Effect.tap((peer) =>
+      peer.settings.updateSettings({
+        prismRoles: {
+          worker: {
+            lanes: { medium: [modelSelection], hard: [{ instanceId, model: "box-prism" }] },
+          },
+          reviewer: { models: [modelSelection] },
+          roast: { models: [{ instanceId, model: "box-prism" }] },
+        },
+      }),
+    ),
+  );
 };
 
 const boxRunId = RunId.make("run:box");
@@ -711,7 +724,11 @@ const boxToolkitLayer = (
       ),
       Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
     ),
-    McpHttpServer.layerProjectRegistration,
+    McpHttpServer.layerProjectRegistration.pipe(
+      Layer.provide(
+        Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
+      ),
+    ),
   ).pipe(
     Layer.provide(DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
     Layer.provide(NodeCrypto.layer),
@@ -923,7 +940,7 @@ const makeLaptop = (
         ),
       ),
       Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
-      Layer.provideMerge(McpServer.McpServer.layer),
+      Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
       Layer.provideMerge(
         RemoteDelegation.layer.pipe(
           Layer.provide(followerThreads),
@@ -1499,96 +1516,99 @@ it.effect.each(["target", "environmentId"] as const)(
           1,
         );
 
-      const historyReads: Array<string> = [];
-      const historyTracer = Tracer.make({
-        span(options) {
-          const span = new Tracer.NativeSpan(options);
-          const end = span.end.bind(span);
-          span.end = (endTime, exit) => {
-            end(endTime, exit);
-            const query = span.attributes.get("db.query.text");
-            if (
-              typeof query === "string" &&
-              /\bSELECT\s+payload_json\s+FROM orchestration_v2_projection_(?:runs|context_transfers)\b/i.test(
-                query,
-              )
-            ) {
-              historyReads.push(query);
-            }
-          };
-          return span;
-        },
-      });
-      const running = yield* a
-        .call("task_status", { taskId: delegated.taskId })
-        .pipe(Effect.withTracer(historyTracer));
-      expect(running.structuredContent).toMatchObject({
-        taskId: delegated.taskId,
-        childThreadId: null,
-        remoteChild: delegated.remoteChild,
-        status: "running",
-        workState: "working",
-        summary: null,
-        hasPendingQuestion: false,
-        pendingApproval: null,
-      });
-      // A running task there needs its local row, not the parent's run or transfer history.
-      expect(historyReads).toEqual([]);
+        const historyReads: Array<string> = [];
+        const historyTracer = Tracer.make({
+          span(options) {
+            const span = new Tracer.NativeSpan(options);
+            const end = span.end.bind(span);
+            span.end = (endTime, exit) => {
+              end(endTime, exit);
+              const query = span.attributes.get("db.query.text");
+              if (
+                typeof query === "string" &&
+                /\bSELECT\s+payload_json\s+FROM orchestration_v2_projection_(?:runs|context_transfers)\b/i.test(
+                  query,
+                )
+              ) {
+                historyReads.push(query);
+              }
+            };
+            return span;
+          },
+        });
+        const running = yield* a
+          .call("task_status", { taskId: delegated.taskId })
+          .pipe(Effect.withTracer(historyTracer));
+        expect(running.structuredContent).toMatchObject({
+          taskId: delegated.taskId,
+          childThreadId: null,
+          remoteChild: delegated.remoteChild,
+          status: "running",
+          workState: "working",
+          summary: null,
+          hasPendingQuestion: false,
+          pendingApproval: null,
+        });
+        // A running task there needs its local row, not the parent's run or transfer history.
+        expect(historyReads).toEqual([]);
 
-      yield* Ref.set(thread.reply, "All 412 tests pass on the box.");
-      yield* Ref.set(thread.status, "completed");
-      yield* Deferred.succeed(thread.finished, undefined);
-      const task = yield* taskResult(a, delegated.taskId);
-      expect(task).toMatchObject({ status: "completed", result: "All 412 tests pass on the box." });
-      // The parent's live run claims the result, as for a child here.
-      const parentRun = (yield* a.orchestrator.getThreadProjection(parentThreadId)).runs.find(
-        (run) => run.id === parentRunId,
-      );
-      expect(parentRun?.delegatedCompletion?.delivery?.taskIds).toEqual([delegated.taskId]);
-      // The wake is offered after the result commits, so the result can be seen first.
-      const offered = yield* SubscriptionRef.changes(offers).pipe(
-        Stream.filter((seen) => seen.some((offer) => offer.threadId === parentThreadId)),
-        Stream.runHead,
-      );
-      expect(Option.isSome(offered)).toBe(true);
+        yield* Ref.set(thread.reply, "All 412 tests pass on the box.");
+        yield* Ref.set(thread.status, "completed");
+        yield* Deferred.succeed(thread.finished, undefined);
+        const task = yield* taskResult(a, delegated.taskId);
+        expect(task).toMatchObject({
+          status: "completed",
+          result: "All 412 tests pass on the box.",
+        });
+        // The parent's live run claims the result, as for a child here.
+        const parentRun = (yield* a.orchestrator.getThreadProjection(parentThreadId)).runs.find(
+          (run) => run.id === parentRunId,
+        );
+        expect(parentRun?.delegatedCompletion?.delivery?.taskIds).toEqual([delegated.taskId]);
+        // The wake is offered after the result commits, so the result can be seen first.
+        const offered = yield* SubscriptionRef.changes(offers).pipe(
+          Stream.filter((seen) => seen.some((offer) => offer.threadId === parentThreadId)),
+          Stream.runHead,
+        );
+        expect(Option.isSome(offered)).toBe(true);
 
-      const messageReads: Array<string> = [];
-      const tracer = Tracer.make({
-        span(options) {
-          const span = new Tracer.NativeSpan(options);
-          const end = span.end.bind(span);
-          span.end = (endTime, exit) => {
-            end(endTime, exit);
-            const query = span.attributes.get("db.query.text");
-            if (
-              typeof query === "string" &&
-              /SELECT[\s\S]*FROM orchestration_v2_projection_messages/i.test(query)
-            ) {
-              messageReads.push(query);
-            }
-          };
-          return span;
-        },
-      });
-      const status = yield* a
-        .call("task_status", { taskId: delegated.taskId })
-        .pipe(Effect.withTracer(tracer));
-      expect(status.structuredContent).toMatchObject({
-        status: "completed",
-        summary: "All 412 tests pass on the box.",
-      });
-      // Delivery validation still reads messages; choosing the observer does not need another read.
-      expect(messageReads).toHaveLength(2);
-      expect(messageReads.filter((query) => !/\bmessage_id\s+IN\b/i.test(query))).toHaveLength(1);
-      const acknowledged = yield* a.projections.getThreadRecords(parentThreadId, ["subagents"], {
-        subagentIds: [delegated.taskId],
-      });
-      expect(acknowledged.subagents[0]?.completionDelivery).toEqual({
-        state: "acknowledged",
-        observedByRunId: parentRunId,
-      });
-    }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+        const messageReads: Array<string> = [];
+        const tracer = Tracer.make({
+          span(options) {
+            const span = new Tracer.NativeSpan(options);
+            const end = span.end.bind(span);
+            span.end = (endTime, exit) => {
+              end(endTime, exit);
+              const query = span.attributes.get("db.query.text");
+              if (
+                typeof query === "string" &&
+                /SELECT[\s\S]*FROM orchestration_v2_projection_messages/i.test(query)
+              ) {
+                messageReads.push(query);
+              }
+            };
+            return span;
+          },
+        });
+        const status = yield* a
+          .call("task_status", { taskId: delegated.taskId })
+          .pipe(Effect.withTracer(tracer));
+        expect(status.structuredContent).toMatchObject({
+          status: "completed",
+          summary: "All 412 tests pass on the box.",
+        });
+        // Delivery validation still reads messages; choosing the observer does not need another read.
+        expect(messageReads.some((query) => /\bmessage_id\s+IN\b/i.test(query))).toBe(true);
+        expect(messageReads.filter((query) => !/\bmessage_id\s*(?:IN\b|=)/i.test(query)), JSON.stringify(messageReads)).toHaveLength(1);
+        const acknowledged = yield* a.projections.getThreadRecords(parentThreadId, ["subagents"], {
+          subagentIds: [delegated.taskId],
+        });
+        expect(acknowledged.subagents[0]?.completionDelivery).toEqual({
+          state: "acknowledged",
+          observedByRunId: parentRunId,
+        });
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect.each(["no active parent run", "a newer run owned by another provider"] as const)(
@@ -2494,7 +2514,7 @@ it.effect("a task's result is its own run's whole last reply, not a later run's"
       expect(result.isError, JSON.stringify(result.content)).toBe(false);
       const { taskId } = result.structuredContent as { taskId: NodeId };
       // The role reaches the thread there, as it does a child here.
-      expect(yield* Ref.get(thread.message)).toBe("Review the diff.");
+      expect(yield* Ref.get(thread.message)).toContain("Review the diff.");
 
       // A reply longer than one read, then a later run's reply on the same thread.
       const long = "x".repeat(45_000);

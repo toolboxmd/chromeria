@@ -7342,36 +7342,56 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
 
     const getAgentAwarenessSnapshot = Effect.fn("ProjectionStore.getAgentAwarenessSnapshot")(
       function* (threadId?: ThreadId) {
-        const { threadRows, providerThreadRows, pendingTurnItemRows, sequenceRows } =
-          yield* sql.withTransaction(
-            Effect.gen(function* () {
-              const threadRows = yield* selectShellThreadRows(
-                threadId,
-                threadId === undefined ? { location: "active", listedOnly: true } : {},
-              );
-              const ids = threadRows.map((row) => ThreadId.make(row.thread_id));
-              const providerThreadRows =
-                ids.length === 0 ? [] : yield* selectShellProviderThreadRows(ids);
-              const pendingTurnItemRows =
-                ids.length === 0
-                  ? []
-                  : yield* selectShellPendingTurnItemRows(
-                      ids,
-                      threadRows.flatMap((row) =>
-                        row.active_run_id !== null && row.active_run_status === "running"
-                          ? [row.active_run_id]
-                          : [],
-                      ),
-                    );
-              const sequenceRows = yield* sql<{ readonly snapshot_sequence: number | null }>`
+        const {
+          threadRows,
+          providerThreadRows,
+          pendingTurnItemRows,
+          pendingChildRows,
+          sequenceRows,
+        } = yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const threadRows = yield* selectShellThreadRows(
+              threadId,
+              threadId === undefined ? { location: "active", listedOnly: true } : {},
+            );
+            const ids = threadRows.map((row) => ThreadId.make(row.thread_id));
+            const providerThreadRows =
+              ids.length === 0 ? [] : yield* selectShellProviderThreadRows(ids);
+            const pendingTurnItemRows =
+              ids.length === 0
+                ? []
+                : yield* selectShellPendingTurnItemRows(
+                    ids,
+                    threadRows.flatMap((row) =>
+                      row.active_run_id !== null && row.active_run_status === "running"
+                        ? [row.active_run_id]
+                        : [],
+                    ),
+                  );
+            const pendingChildRows =
+              ids.length === 0 ? [] : yield* pendingDelegatedChildQuery(sql, ids);
+            const sequenceRows = yield* sql<{ readonly snapshot_sequence: number | null }>`
               SELECT MAX(sequence) AS snapshot_sequence FROM orchestration_events
               WHERE application_event_version = 2 AND aggregate_kind = 'thread'
             `;
-              return { threadRows, providerThreadRows, pendingTurnItemRows, sequenceRows };
-            }),
-          );
-        const { providerThreadsByThreadId, pendingTurnItemsByThreadId } =
-          yield* pendingBackgroundDataByThreadId({ providerThreadRows, pendingTurnItemRows });
+            return {
+              threadRows,
+              providerThreadRows,
+              pendingTurnItemRows,
+              pendingChildRows,
+              sequenceRows,
+            };
+          }),
+        );
+        const {
+          providerThreadsByThreadId,
+          pendingTurnItemsByThreadId,
+          pendingChildTasksByThreadId,
+        } = yield* pendingBackgroundDataByThreadId({
+          providerThreadRows,
+          pendingTurnItemRows,
+          pendingChildRows,
+        });
         const threads = yield* Effect.forEach(threadRows, (row) =>
           shellThreadStateFromRow({
             row,
@@ -7381,6 +7401,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             shellItemCountsByThreadId: new Map(),
             providerThreadsByThreadId,
             pendingTurnItemsByThreadId,
+            pendingChildTasksByThreadId,
           }).pipe(
             Effect.map((state): AgentAwarenessThread => ({
               id: state.thread.id,
@@ -8013,6 +8034,131 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
     const sequence = yield* Ref.make(0);
 
     const service: ProjectionStoreV2Shape = {
+      getSubagentCount: (threadId) =>
+        service.getThreadProjection(threadId).pipe(Effect.map((p) => p.subagents.length)),
+      listAppOwnedChildThreadIds: (threadId) =>
+        service
+          .getThreadProjection(threadId)
+          .pipe(
+            Effect.map((p) =>
+              p.subagents
+                .filter((task) => task.origin === "app_owned" && task.childThreadId !== null)
+                .map((task) => task.childThreadId!),
+            ),
+          ),
+      getMessagesById: (threadId, ids) =>
+        service
+          .getThreadProjection(threadId)
+          .pipe(
+            Effect.map(
+              (p) => new Map(p.messages.filter((m) => ids.includes(m.id)).map((m) => [m.id, m])),
+            ),
+          ),
+      getThreadTitles: (ids) =>
+        Ref.get(replayState).pipe(
+          Effect.map((state) =>
+            Object.fromEntries(
+              [...state.projections.values()]
+                .filter((p) => ids.includes(p.thread.id))
+                .map((p) => [p.thread.id, p.thread.title]),
+            ),
+          ),
+        ),
+      countThreads: () =>
+        Ref.get(replayState).pipe(
+          Effect.map(
+            (state) =>
+              [...state.projections.values()].filter((p) => p.thread.deletedAt === null).length,
+          ),
+        ),
+      listActiveShellIndex: () =>
+        service.getShellSnapshot().pipe(
+          Effect.map(({ threads }) =>
+            threads.map((thread) => ({
+              id: thread.id,
+              projectId: thread.projectId,
+              lineage: thread.lineage,
+              settledOverride: thread.settledOverride,
+              settledAt: thread.settledAt,
+              pinnedAt: thread.pinnedAt,
+              snoozedUntil: thread.snoozedUntil,
+              mayBeLive: true,
+            })),
+          ),
+        ),
+      getHeldQueuedRuns: (threadId) =>
+        service
+          .getThreadProjection(threadId)
+          .pipe(
+            Effect.map((p) =>
+              p.runs.filter((run) => run.status === "queued" && run.queueHeld === true),
+            ),
+          ),
+      getPullRequestSnapshot: Effect.fn("ProjectionStore.memory.getPullRequestSnapshot")(
+        function* ({ threadId, unsettledOnly = false }) {
+          const state = yield* Ref.get(replayState);
+          const threads = [...state.projections.values()]
+            .map((p) => p.thread)
+            .filter(
+              (t) =>
+                t.deletedAt === null &&
+                (threadId === undefined ? t.archivedAt === null : t.id === threadId) &&
+                (!unsettledOnly || (t.settledAt === null && t.settledOverride !== "settled")),
+            )
+            .toSorted(
+              (a, b) =>
+                DateTime.toEpochMillis(a.updatedAt) - DateTime.toEpochMillis(b.updatedAt) ||
+                a.id.localeCompare(b.id),
+            );
+          return {
+            snapshotSequence: yield* Ref.get(sequence),
+            threads: threads.map((t) => ({ ...t, pullRequests: threadPullRequestsOf(t) })),
+          };
+        },
+      ),
+      getAgentAwarenessSnapshot: (threadId) =>
+        service.getShellSnapshot().pipe(
+          Effect.map((snapshot) => ({
+            snapshotSequence: snapshot.snapshotSequence,
+            threads: [...snapshot.threads, ...snapshot.archivedThreads]
+              .filter((t) => threadId === undefined || t.id === threadId)
+              .map((t) => ({
+                id: t.id,
+                projectId: t.projectId,
+                archivedAt: t.archivedAt,
+                activeRunId: t.activeRunId,
+                latestRunId: t.latestRunId,
+                hasActionableProposedPlan: t.hasActionableProposedPlan,
+                title: t.title,
+                lineage: t.lineage,
+                modelSelection: t.modelSelection,
+                settledOverride: t.settledOverride,
+                updatedAt: t.updatedAt,
+                status: t.status,
+                activityRunStatus: t.activityRunStatus,
+                latestRunCompletedAt: t.latestRunCompletedAt,
+                latestRunStopRequested: t.latestRunStopRequested,
+                pendingRuntimeRequest: t.pendingRuntimeRequest,
+                pendingBackgroundTasks: t.pendingBackgroundTasks,
+              })),
+          })),
+        ),
+      getLimitRecoveryWakeAt: (now) =>
+        Ref.get(replayState).pipe(
+          Effect.map((state) => {
+            const wakes = [...state.projections.values()]
+              .filter(
+                (p) => p.thread.deletedAt === null && p.thread.limitRecovery?.autoResume === true,
+              )
+              .flatMap((p) => [
+                Date.parse(p.thread.limitRecovery!.resetAt),
+                p.thread.snoozedUntil == null ? NaN : DateTime.toEpochMillis(p.thread.snoozedUntil),
+              ])
+              .filter((ms) => Number.isFinite(ms) && ms > DateTime.toEpochMillis(now));
+            return wakes.length === 0 ? null : Math.min(...wakes);
+          }),
+        ),
+
       apply:
         /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
         Effect.fnUntraced(function* (event) {
@@ -8624,6 +8770,7 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
             return yield* new ProjectionStoreThreadNotFoundError({ threadId });
           const run = projection.runs.find((candidate) => candidate.id === target.runId);
           return {
+            sideChat: projection.thread.lineage.sideChat === true,
             run,
             rootNode: projection.nodes.find((candidate) => candidate.id === run?.rootNodeId),
             scope: projection.checkpointScopes.find((candidate) => candidate.id === target.scopeId),

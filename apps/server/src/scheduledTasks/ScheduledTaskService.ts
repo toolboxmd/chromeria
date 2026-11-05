@@ -1223,7 +1223,11 @@ export const layer = Layer.effect(
         const completedAt = yield* localNow;
         const lastRunStatus = runSucceeded ? ("succeeded" as const) : ("failed" as const);
         const lastRunError = runSucceeded ? null : errorMessage(result.cause);
-        const threadId = runSucceeded ? result.value : null;
+        const threadId = runSucceeded
+          ? typeof result.value === "string"
+            ? result.value
+            : active.threadId
+          : null;
         // One transaction, so an edit cannot land between reading the schedule and
         // writing the next run computed from it. The origin is read first: it reads
         // files, and the transaction holds SQLite's writer lock.
@@ -1478,23 +1482,27 @@ export const layer = Layer.effect(
       "ScheduledTaskService.upsert",
     )(
       function* (input, options) {
-      // A webhook task the policy blocks can still be edited while it is off.
-      if (input.enabled && input.schedule.type === "webhook" && webhookPolicyBlock !== undefined) {
-        return yield* taskError(
-          webhookPolicyBlock,
-          input.id === undefined ? {} : { taskId: input.id },
-        );
-      }
-      // Refused on save rather than at run time; a disabled task can still be saved, so one
-      // stored above the ceiling can be turned off before its mode is lowered. A task bound to a
-      // thread runs in that thread's mode, which the orchestrator checks instead.
-      const modeDenial =
-        input.enabled && input.threadId == null
-          ? managedRuntimeModeDenial(managedPolicy.summary, input.runtimeMode)
-          : undefined;
-      if (modeDenial !== undefined) {
-        return yield* taskError(modeDenial, input.id === undefined ? {} : { taskId: input.id });
-      }
+        // A webhook task the policy blocks can still be edited while it is off.
+        if (
+          input.enabled &&
+          input.schedule.type === "webhook" &&
+          webhookPolicyBlock !== undefined
+        ) {
+          return yield* taskError(
+            webhookPolicyBlock,
+            input.id === undefined ? {} : { taskId: input.id },
+          );
+        }
+        // Refused on save rather than at run time; a disabled task can still be saved, so one
+        // stored above the ceiling can be turned off before its mode is lowered. A task bound to a
+        // thread runs in that thread's mode, which the orchestrator checks instead.
+        const modeDenial =
+          input.enabled && input.threadId == null
+            ? managedRuntimeModeDenial(managedPolicy.summary, input.runtimeMode)
+            : undefined;
+        if (modeDenial !== undefined) {
+          return yield* taskError(modeDenial, input.id === undefined ? {} : { taskId: input.id });
+        }
         if (input.purposeIntent === undefined) {
           return yield* taskError(
             "Choose an Issue, PR or deliberately unscoped purpose before saving this schedule.",
@@ -1511,8 +1519,8 @@ export const layer = Layer.effect(
         const now = yield* localNow;
         const uuid =
           input.commandId === undefined
-            ? yield* crypto
-                .randomUUIDv4()
+            ? yield* random
+                .uuidV4()
                 .pipe(
                   Effect.mapError((cause) =>
                     taskError("Could not generate schedule task id.", { cause }),
@@ -1655,6 +1663,7 @@ export const layer = Layer.effect(
                       ),
                     }
                   : input.schedule;
+              yield* requireFutureOnce({ enabled: input.enabled, schedule }, now, id);
               const webhook =
                 input.schedule.type === "webhook"
                   ? yield* Effect.gen(function* () {
@@ -1757,7 +1766,13 @@ export const layer = Layer.effect(
                 lastRunError: existingTask?.lastRunError ?? null,
                 runCount: existingTask?.runCount ?? 0,
               };
-              yield* saveTask(task, input.requireExisting === true, webhook, bareReadGrant);
+              yield* saveTask(
+                task,
+                input.requireExisting === true,
+                scheduleUnchanged ? existingTask.schedule : null,
+                webhook,
+                bareReadGrant,
+              );
               if (accepted !== undefined) {
                 const incarnation = (yield* sql<{
                   incarnation: string;
@@ -1813,6 +1828,11 @@ export const layer = Layer.effect(
             { taskId: input.id },
           );
         const now = yield* localNow;
+        yield* requireFutureOnce(
+          { enabled: input.enabled, schedule: existing.schedule },
+          now,
+          input.id,
+        );
         const next = nextRunAt({ enabled: input.enabled, schedule: existing.schedule }, now);
         // RETURNING so a task deleted between the load and this UPDATE is a
         // visible not-found error, not a false success.
@@ -2401,7 +2421,13 @@ export const layer = Layer.effect(
       ScheduledTaskRunNowResult & { readonly threadId: ThreadId | null },
       ScheduledTaskError | OrchestratorMcpFailure
     >;
-    function runNow(input: ScheduledTaskRunNowInput, options?: ManualOptions) {
+    function runNow(
+      input: ScheduledTaskRunNowInput,
+      options?: ManualOptions,
+    ): Effect.Effect<
+      ScheduledTaskRunNowResult & { readonly threadId: ThreadId | null },
+      ScheduledTaskError | OrchestratorMcpFailure
+    > {
       if (options === undefined) return runLocalNow(input);
       // A keyed manual run's thread is the bound one, or the stable launch id it dispatched.
       return runManualNow(input, options).pipe(

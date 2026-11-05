@@ -258,7 +258,7 @@ it.live("agents can see and explicitly resume held messages through the mutation
   }).pipe(
     Effect.provide(
       McpHttpServer.layerThreadToolkit.pipe(
-        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
         Layer.provideMerge(layerRuntime),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),

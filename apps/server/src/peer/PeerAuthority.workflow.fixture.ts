@@ -1,3 +1,8 @@
+import * as AssetSigner from "../assets/AssetSigner.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import * as SecretResolver from "../secrets/SecretResolver.ts";
+import * as Digest from "effect/crypto/Digest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as DocumentText from "../provider/DocumentText.ts";
 import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
@@ -12,7 +17,7 @@ import { vi } from "vite-plus/test";
 import * as PeerLinkEvents from "./PeerLinkEvents.ts";
 import { DeviceStandardToolkit as LegacyDeviceToolkit } from "../device/testing/LegacyDeviceTools.fixture.ts";
 import * as LegacyDeviceHandlers from "../device/testing/LegacyDeviceHandlers.fixture.ts";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Hex from "effect/encoding/Hex";
 import {
   RemotePendingRequestResult,
@@ -185,7 +190,7 @@ import * as NodeHttp from "node:http";
 import * as ResourceWebSocketServer from "../http/ResourceWebSocketServer.ts";
 import { guardHttpResponseWriteErrors } from "../httpResponseErrorGuard.ts";
 
-import { NodeWS } from "@effect/platform-node/NodeSocket";
+import * as NodeWS from "@effect/platform-node/NodeWS";
 import * as DeviceHubProxy from "../device/DeviceHubProxy.ts";
 import * as AuthHttp from "../auth/http.ts";
 
@@ -468,7 +473,13 @@ export const automationReply = Effect.fn("PeerAuthority.automationReply")(functi
 
 const graphConnections = new WeakMap<Scope.Scope, Set<Scope.Closeable>>();
 
-const layerFixtureHostServices = Layer.mergeAll(
+export const layerFixtureHostServices = Layer.mergeAll(
+  SecretResolver.layer.pipe(
+    Layer.provide(Settings.layerTest()),
+    Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+  ),
+  NodeCrypto.layer,
+  ManagedPolicy.layerTest().pipe(Layer.provide(NodeCrypto.layer)),
   DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
   PreviewAgentActivity.layer,
   McpProviderSessions.layer,
@@ -526,7 +537,7 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
   ) {
     // Closures rebuilt later reuse this node's instances; provider sessions keep per-thread state.
     // The ambient HttpClient would shadow peerHttp if captured here.
-    const hostServices = Layer.succeedContext(
+    const hostServicesCore = Layer.succeedContext(
       Context.pick(
         McpProviderSessions.McpProviderSessions,
         BuiltInDrivers.SourceControlDrivers,
@@ -581,1644 +592,1684 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
       prefix: `peer-authority-${descriptor.label}-`,
     }).pipe(Layer.fresh, Layer.build);
     const nodeConfig = Layer.succeedContext(nodeConfigContext);
-    const settingsWrites = yield* Ref.make(0);
-    const loseSettingsConfirmation = yield* Ref.make(false);
-    const actualFs = yield* FileSystem.FileSystem;
-    const settingsPath = Context.get(nodeConfigContext, Config.ServerConfig).settingsPath;
-    const settingsFs = {
-      ...actualFs,
-      rename: (from: string, to: string) =>
-        actualFs.rename(from, to).pipe(
-          Effect.tap(() =>
-            Effect.gen(function* () {
-              if (to !== settingsPath) return;
-              yield* Ref.update(settingsWrites, (n) => n + 1);
-              if (yield* Ref.getAndSet(loseSettingsConfirmation, false))
-                return yield* PlatformError.systemError({
-                  _tag: "Unknown",
-                  module: "FileSystem",
-                  method: "rename",
-                  description: "Isolated confirmation loss after settings replacement",
-                });
+    const signerLayer = AssetSigner.layer.pipe(
+      Layer.provide(Secrets.layer.pipe(Layer.provide(nodeConfig))),
+      Layer.provide(NodeCrypto.layer),
+    );
+    const hostServices = Layer.merge(hostServicesCore, signerLayer);
+    return yield* Effect.gen(function* () {
+      const settingsWrites = yield* Ref.make(0);
+      const loseSettingsConfirmation = yield* Ref.make(false);
+      const actualFs = yield* FileSystem.FileSystem;
+      const settingsPath = Context.get(nodeConfigContext, Config.ServerConfig).settingsPath;
+      const settingsFs = {
+        ...actualFs,
+        rename: (from: string, to: string) =>
+          actualFs.rename(from, to).pipe(
+            Effect.tap(() =>
+              Effect.gen(function* () {
+                if (to !== settingsPath) return;
+                yield* Ref.update(settingsWrites, (n) => n + 1);
+                if (yield* Ref.getAndSet(loseSettingsConfirmation, false))
+                  return yield* PlatformError.systemError({
+                    _tag: "Unknown",
+                    module: "FileSystem",
+                    method: "rename",
+                    description: "Isolated confirmation loss after settings replacement",
+                  });
+              }),
+            ),
+          ),
+      };
+      const realSettingsLayer = Settings.layer.pipe(
+        Layer.provide(Secrets.layer.pipe(Layer.provide(nodeConfig))),
+        Layer.provide(db),
+        Layer.provide(nodeConfig),
+        Layer.provide(Layer.succeed(FileSystem.FileSystem, settingsFs)),
+      );
+      const settingsContext = preferencesOwner
+        ? yield* realSettingsLayer.pipe(Layer.fresh, Layer.build)
+        : yield* Settings.layerTest({
+            providerInstances: { [instanceId]: { driver, enabled: true } },
+            linkedEnvironmentsEnabled: true,
+            enableAgentBrowserAccess: true,
+            enableAgentDeviceAccess: true,
+          }).pipe(Layer.fresh, Layer.build);
+      if (preferencesOwner) {
+        yield* Context.get(settingsContext, Settings.ServerSettingsService).updateSettings({
+          linkedEnvironmentsEnabled: true,
+        });
+        yield* Ref.set(settingsWrites, 0);
+      }
+      const settings = Layer.succeedContext(settingsContext);
+      const enrichment = ProjectEnrichment.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            RepositoryIdentity.layer,
+            Layer.succeed(ProjectFavicon.ProjectFaviconResolver, {
+              resolvePath: Effect.fn("ProjectFavicon.ProjectFaviconResolver.resolvePath")(() =>
+                Effect.succeed(null),
+              ),
+              invalidate: Effect.fn("ProjectFavicon.ProjectFaviconResolver.invalidate")(
+                () => Effect.void,
+              ),
             }),
           ),
         ),
-    };
-    const realSettingsLayer = Settings.layer.pipe(
-      Layer.provide(Secrets.layer.pipe(Layer.provide(nodeConfig))),
-      Layer.provide(db),
-      Layer.provide(nodeConfig),
-      Layer.provide(Layer.succeed(FileSystem.FileSystem, settingsFs)),
-    );
-    const settingsContext = preferencesOwner
-      ? yield* realSettingsLayer.pipe(Layer.fresh, Layer.build)
-      : yield* Settings.layerTest({
-          providerInstances: { [instanceId]: { driver, enabled: true } },
-          linkedEnvironmentsEnabled: true,
-          enableAgentBrowserAccess: true,
-          enableAgentDeviceAccess: true,
-        }).pipe(Layer.fresh, Layer.build);
-    if (preferencesOwner) {
-      yield* Context.get(settingsContext, Settings.ServerSettingsService).updateSettings({
-        linkedEnvironmentsEnabled: true,
-      });
-      yield* Ref.set(settingsWrites, 0);
-    }
-    const settings = Layer.succeedContext(settingsContext);
-    const enrichment = ProjectEnrichment.layer.pipe(
-      Layer.provide(
-        Layer.mergeAll(
-          RepositoryIdentity.layer,
-          Layer.succeed(ProjectFavicon.ProjectFaviconResolver, {
-            resolvePath: Effect.fn("ProjectFavicon.ProjectFaviconResolver.resolvePath")(() =>
-              Effect.succeed(null),
+      );
+      const projectLayer = nativeOwners
+        ? ProductionRuntime.layerProjectService.pipe(
+            Layer.provide(enrichment),
+            Layer.provide(WorkspacePaths.layer),
+            Layer.provide(nodeConfig),
+            Layer.provide(
+              Layer.merge(SecretResolver.layer.pipe(Layer.provide(settings)), settings),
             ),
-            invalidate: Effect.fn("ProjectFavicon.ProjectFaviconResolver.invalidate")(
-              () => Effect.void,
+            Layer.provide(db),
+          )
+        : Layer.mock(Projects.ProjectService)({
+            getById: () => Effect.succeedSome(project),
+            listPage: () => Effect.succeed({ projects: [project], nextCursor: null }),
+          });
+      const actualGit = Git.layer.pipe(Layer.provide(VcsProcess.layer));
+      const namedGitWorkflow = GitWorkflow.layer.pipe(
+        Layer.provide(VcsRegistry.layer.pipe(Layer.provide(VcsProcess.layer))),
+        // Named folders only use repository detection; no GitManager method runs.
+        Layer.provide(Layer.mock(GitManager.GitManager)({})),
+        Layer.provide(actualGit),
+      );
+      const automationInfrastructure = (database: Context.Context<SqlClient.SqlClient>) =>
+        PeerAuthority.layer.pipe(
+          Layer.provideMerge(PeerLinks.layer),
+          Layer.provideMerge(PeerLinkEvents.layer),
+          Layer.provideMerge(AssetSigner.layer),
+          Layer.provideMerge(Secrets.layer),
+          Layer.provide(ProjectionStore.layer),
+          Layer.provide(Layer.merge(SecretResolver.layer.pipe(Layer.provide(settings)), settings)),
+          Layer.provide(Layer.succeedContext(database)),
+          Layer.provide(environment),
+          Layer.provide(FetchHttpClient.layer),
+          Layer.provide(nodeConfig),
+          Layer.fresh,
+        );
+      const authorityInfrastructure = yield* automationInfrastructure(database).pipe(Layer.build);
+      const reconstructAutomationWith = Effect.fn("PeerAuthority.reconstructAutomationWith")(
+        function* (httpLayer: Layer.Layer<HttpClient.HttpClient>) {
+          const reopened = yield* reopenDatabase;
+          const infrastructure = yield* automationInfrastructure(reopened).pipe(Layer.build);
+          const client = yield* PeerMcpClient.layer.pipe(
+            Layer.provide(Layer.succeedContext(reopened)),
+            Layer.provide(Layer.succeedContext(infrastructure)),
+            Layer.provide(environment),
+            Layer.provide(httpLayer),
+            Layer.provide(nodeConfig),
+            Layer.fresh,
+            Layer.build,
+          );
+          return {
+            authority: Context.get(infrastructure, PeerAuthority.PeerAuthority),
+            links: Context.get(infrastructure, PeerLinks.PeerLinks),
+            peers: Context.get(client, PeerMcpClient.PeerMcpClient),
+            linkEvents: Context.get(infrastructure, PeerLinkEvents.PeerLinkEvents),
+            sql: Context.get(reopened, SqlClient.SqlClient),
+          };
+        },
+      );
+      const sourceHttp = HttpServer.layerTestClient.pipe(
+        Layer.provide(
+          FetchHttpClient.layer.pipe(
+            Layer.provide(Layer.succeed(FetchHttpClient.RequestInit)({ keepalive: false })),
+          ),
+        ),
+        Layer.provideMerge(
+          ResourceWebSocketServer.layer(
+            () => guardHttpResponseWriteErrors(NodeHttp.createServer()),
+            {
+              host: "127.0.0.1",
+              port: 0,
+              gracefulShutdownTimeout: 0,
+              websocket: { perMessageDeflate: true },
+            },
+          ),
+        ),
+      );
+      const serverContext = yield* sourceHttp.pipe(Layer.fresh, Layer.build);
+      const registry = yield* McpSessionRegistry.__testing
+        .make()
+        .pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              Layer.succeedContext(authorityInfrastructure),
+              environment,
+              Layer.succeedContext(serverContext),
             ),
+          ),
+        );
+      const testInstance = {
+        instanceId,
+        driverKind: driver,
+        displayName: "Deterministic native boundary",
+        enabled: true,
+        continuationIdentity: { driverKind: driver, continuationKey: "production-binding" },
+        snapshot: { getSnapshot: Effect.succeed({}) } as unknown as ProviderInstance["snapshot"],
+        textGeneration: {} as ProviderInstance["textGeneration"],
+        orchestrationAdapter: providerAdapter,
+      } satisfies ProviderInstance;
+      // This branch builds the actual kernel exported by layerProduction, without
+      // supplying an outbox/store to the transport. Only external adapters are replaced.
+      const production = Layer.mergeAll(
+        ProductionRuntime.layer,
+        ProductionRuntime.layerEventSink,
+        ProjectionStore.layer,
+      ).pipe(
+        Layer.provide(
+          Layer.succeed(Instances.ProviderInstanceRegistry, {
+            getInstance: Effect.fn("Instances.ProviderInstanceRegistry.getInstance")((id) =>
+              Effect.succeed(id === instanceId ? testInstance : undefined),
+            ),
+            listInstances: Effect.succeed([testInstance]),
+            listUnavailable: Effect.succeed([]),
+            streamChanges: Stream.empty,
+            subscribeChanges: Effect.never,
           }),
         ),
-      ),
-    );
-    const projectLayer = nativeOwners
-      ? ProductionRuntime.layerProjectService.pipe(
-          Layer.provide(enrichment),
-          Layer.provide(WorkspacePaths.layer),
-          Layer.provide(nodeConfig),
-          Layer.provide(settings),
-          Layer.provide(db),
-        )
-      : Layer.mock(Projects.ProjectService)({
-          getById: () => Effect.succeedSome(project),
-          listPage: () => Effect.succeed({ projects: [project], nextCursor: null }),
-        });
-    const actualGit = Git.layer.pipe(Layer.provide(VcsProcess.layer));
-    const namedGitWorkflow = GitWorkflow.layer.pipe(
-      Layer.provide(VcsRegistry.layer.pipe(Layer.provide(VcsProcess.layer))),
-      // Named folders only use repository detection; no GitManager method runs.
-      Layer.provide(Layer.mock(GitManager.GitManager)({})),
-      Layer.provide(actualGit),
-    );
-    const automationInfrastructure = (database: Context.Context<SqlClient.SqlClient>) =>
-      PeerAuthority.layer.pipe(
-        Layer.provideMerge(PeerLinks.layer),
-        Layer.provideMerge(PeerLinkEvents.layer),
-        Layer.provideMerge(Secrets.layer),
-        Layer.provide(ProjectionStore.layer),
-        Layer.provide(settings),
-        Layer.provide(Layer.succeedContext(database)),
+        Layer.provide(Layer.succeed(McpSessionRegistry.McpSessionRegistry, registry)),
+        Layer.provide(Layer.succeedContext(authorityInfrastructure)),
+        Layer.provide(McpProviderSessions.layer),
+        Layer.provide(
+          ownerWorkspace === undefined
+            ? Layer.mock(Checkpoints.CheckpointStore)({})
+            : Checkpoints.layer.pipe(
+                Layer.provide(VcsRegistry.layer.pipe(Layer.provide(VcsProcess.layer))),
+              ),
+        ),
+        Layer.provide(Layer.mock(ProviderCatalog.ProviderRegistry)({})),
+        Layer.provide(Layer.mock(GitWorkflow.GitWorkflowService)({})),
+        Layer.provide(
+          Layer.mock(SourceProviders.SourceControlProviderRegistry)({
+            resolveLink: () => Effect.die("No external repository host in this fixture"),
+            // Upstream git workflows look up a forge and tolerate none.
+            resolve: ({ cwd }) =>
+              Effect.fail(
+                new SourceControlProviderError({
+                  provider: SourceControlProviderKind.make("unknown"),
+                  operation: "resolve",
+                  cwd,
+                  detail: "No external repository host in this fixture.",
+                }),
+              ),
+          }),
+        ),
+        Layer.provide(projectLayer),
+        Layer.provide(RepositoryIdentity.layer),
+        Layer.provide(nodeConfig),
+        Layer.provide(Layer.merge(SecretResolver.layer.pipe(Layer.provide(settings)), settings)),
+        Layer.provide(db),
+      );
+      // Both kernels retain their full context; consumers require this shared native surface.
+      const runtime: Context.Context<
+        | EffectOutbox.EffectOutboxV2
+        | EventSink.EventSinkV2
+        | EffectWorker.OrchestrationEffectWorkerV2
+        | Orchestrator.OrchestratorV2
+        | ProjectionStore.ProjectionStoreV2
+        | ProviderSessionManager.ProviderSessionManagerV2
+        | Threads.ThreadManagementService
+      > = yield* productionKernel
+        ? production.pipe(Layer.fresh, Layer.build)
+        : Runtime.layerWithRegistry(
+            { name: `peer-authority-${descriptor.label}` },
+            Adapters.layerFromAdapters([providerAdapter]),
+            { databaseLayer: db, runEffectWorker: false },
+          ).pipe(Layer.fresh, Layer.build);
+      const commandOutput = Context.getOption(runtime, CommandOutputHub.CommandOutputHub);
+      if (productionKernel)
+        yield* Effect.flatMap(ProjectStore.ProjectStoreV2, (projects) =>
+          projects.apply({
+            sequence: 0,
+            eventId: EventId.make(`seed:${project.id}`),
+            aggregateKind: "project",
+            aggregateId: project.id,
+            occurredAt: project.createdAt,
+            commandId: null,
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+            type: "project.created",
+            payload: {
+              projectId: project.id,
+              title: project.title,
+              workspaceRoot: project.workspaceRoot,
+              defaultModelSelection: selection,
+              scripts: [],
+              createdAt: project.createdAt,
+              updatedAt: project.updatedAt,
+            },
+          }),
+        ).pipe(Effect.provide(ProjectStore.layer.pipe(Layer.provide(db))));
+      const folders = nativeOwners
+        ? Folders.layer.pipe(
+            Layer.provide(projectLayer),
+            Layer.provide(Receipts.layer),
+            Layer.provide(namedGitWorkflow),
+            Layer.provide(actualGit),
+            Layer.provide(WorkspacePaths.layer),
+            Layer.provide(nodeConfig),
+            Layer.provide(
+              Layer.merge(SecretResolver.layer.pipe(Layer.provide(settings)), settings),
+            ),
+            Layer.provide(db),
+          )
+        : Layer.mock(Folders.ManagedProjectFolders)({
+            namedProjectsRoot: "/unused",
+            folderForThread: () => Effect.succeedNone,
+            isScratchProject: () => Effect.succeed(false),
+          });
+      const noticeFailure = yield* Deferred.make<unknown>();
+      const noticeDelivery = Layer.effect(
+        PeerNoticeDelivery.PeerNoticeDelivery,
+        Effect.gen(function* () {
+          const delivery = yield* PeerNoticeDelivery.PeerNoticeDelivery;
+          return {
+            deliver: Effect.fn("PeerNoticeDelivery.PeerNoticeDelivery.deliver")(
+              (...args: Parameters<typeof delivery.deliver>) =>
+                delivery
+                  .deliver(...args)
+                  .pipe(Effect.tapError((error) => Deferred.succeed(noticeFailure, error))),
+            ),
+          };
+        }),
+      ).pipe(Layer.provide(PeerNoticeDelivery.layer));
+      const baseServices = yield* Layer.mergeAll(
+        noticeDelivery,
+        Layer.succeedContext(authorityInfrastructure),
+        RepositoryIdentity.layer,
+      ).pipe(
+        Layer.provide(Layer.succeedContext(runtime)),
+        Layer.provide(db),
         Layer.provide(environment),
         Layer.provide(FetchHttpClient.layer),
         Layer.provide(nodeConfig),
         Layer.fresh,
+        Layer.build,
       );
-    const authorityInfrastructure = yield* automationInfrastructure(database).pipe(Layer.build);
-    const reconstructAutomationWith = Effect.fn("PeerAuthority.reconstructAutomationWith")(
-      function* (httpLayer: Layer.Layer<HttpClient.HttpClient>) {
-        const reopened = yield* reopenDatabase;
-        const infrastructure = yield* automationInfrastructure(reopened).pipe(Layer.build);
-        const client = yield* PeerMcpClient.layer.pipe(
-          Layer.provide(Layer.succeedContext(reopened)),
-          Layer.provide(Layer.succeedContext(infrastructure)),
-          Layer.provide(environment),
-          Layer.provide(httpLayer),
-          Layer.provide(nodeConfig),
-          Layer.fresh,
-          Layer.build,
-        );
-        return {
-          authority: Context.get(infrastructure, PeerAuthority.PeerAuthority),
-          links: Context.get(infrastructure, PeerLinks.PeerLinks),
-          peers: Context.get(client, PeerMcpClient.PeerMcpClient),
-          linkEvents: Context.get(infrastructure, PeerLinkEvents.PeerLinkEvents),
-          sql: Context.get(reopened, SqlClient.SqlClient),
-        };
-      },
-    );
-    const sourceHttp = HttpServer.layerTestClient.pipe(
-      Layer.provide(
-        FetchHttpClient.layer.pipe(
-          Layer.provide(Layer.succeed(FetchHttpClient.RequestInit)({ keepalive: false })),
-        ),
-      ),
-      Layer.provideMerge(
-        ResourceWebSocketServer.layer(() => guardHttpResponseWriteErrors(NodeHttp.createServer()), {
-          host: "127.0.0.1",
-          port: 0,
-          gracefulShutdownTimeout: 0,
-          websocket: { perMessageDeflate: true },
-        }),
-      ),
-    );
-    const serverContext = yield* sourceHttp.pipe(Layer.fresh, Layer.build);
-    const registry = yield* McpSessionRegistry.__testing
-      .make()
-      .pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            Layer.succeedContext(authorityInfrastructure),
-            environment,
-            Layer.succeedContext(serverContext),
-          ),
-        ),
-      );
-    const testInstance = {
-      instanceId,
-      driverKind: driver,
-      displayName: "Deterministic native boundary",
-      enabled: true,
-      continuationIdentity: { driverKind: driver, continuationKey: "production-binding" },
-      snapshot: { getSnapshot: Effect.succeed({}) } as unknown as ProviderInstance["snapshot"],
-      textGeneration: {} as ProviderInstance["textGeneration"],
-      orchestrationAdapter: providerAdapter,
-    } satisfies ProviderInstance;
-    // This branch builds the actual kernel exported by layerProduction, without
-    // supplying an outbox/store to the transport. Only external adapters are replaced.
-    const production = Layer.mergeAll(
-      ProductionRuntime.layer,
-      ProductionRuntime.layerEventSink,
-      ProjectionStore.layer,
-    ).pipe(
-      Layer.provide(
-        Layer.succeed(Instances.ProviderInstanceRegistry, {
-          getInstance: Effect.fn("Instances.ProviderInstanceRegistry.getInstance")((id) =>
-            Effect.succeed(id === instanceId ? testInstance : undefined),
-          ),
-          listInstances: Effect.succeed([testInstance]),
-          listUnavailable: Effect.succeed([]),
-          streamChanges: Stream.empty,
-          subscribeChanges: Effect.never,
-        }),
-      ),
-      Layer.provide(Layer.succeed(McpSessionRegistry.McpSessionRegistry, registry)),
-      Layer.provide(Layer.succeedContext(authorityInfrastructure)),
-      Layer.provide(McpProviderSessions.layer),
-      Layer.provide(
-        ownerWorkspace === undefined
-          ? Layer.mock(Checkpoints.CheckpointStore)({})
-          : Checkpoints.layer.pipe(
-              Layer.provide(VcsRegistry.layer.pipe(Layer.provide(VcsProcess.layer))),
-            ),
-      ),
-      Layer.provide(Layer.mock(ProviderCatalog.ProviderRegistry)({})),
-      Layer.provide(Layer.mock(GitWorkflow.GitWorkflowService)({})),
-      Layer.provide(
-        Layer.mock(SourceProviders.SourceControlProviderRegistry)({
-          resolveLink: () => Effect.die("No external repository host in this fixture"),
-          // Upstream git workflows look up a forge and tolerate none.
-          resolve: ({ cwd }) =>
-            Effect.fail(
-              new SourceControlProviderError({
-                provider: SourceControlProviderKind.make("unknown"),
-                operation: "resolve",
-                cwd,
-                detail: "No external repository host in this fixture.",
-              }),
-            ),
-        }),
-      ),
-      Layer.provide(projectLayer),
-      Layer.provide(RepositoryIdentity.layer),
-      Layer.provide(nodeConfig),
-      Layer.provide(settings),
-      Layer.provide(db),
-    );
-    // Both kernels retain their full context; consumers require this shared native surface.
-    const runtime: Context.Context<
-      | EffectOutbox.EffectOutboxV2
-      | EventSink.EventSinkV2
-      | EffectWorker.OrchestrationEffectWorkerV2
-      | Orchestrator.OrchestratorV2
-      | ProjectionStore.ProjectionStoreV2
-      | ProviderSessionManager.ProviderSessionManagerV2
-      | Threads.ThreadManagementService
-    > = yield* productionKernel
-      ? production.pipe(Layer.fresh, Layer.build)
-      : Runtime.layerWithRegistry(
-          { name: `peer-authority-${descriptor.label}` },
-          Adapters.layerFromAdapters([providerAdapter]),
-          { databaseLayer: db, runEffectWorker: false },
-        ).pipe(Layer.fresh, Layer.build);
-    const commandOutput = Context.getOption(runtime, CommandOutputHub.CommandOutputHub);
-    if (productionKernel)
-      yield* Effect.flatMap(ProjectStore.ProjectStoreV2, (projects) =>
-        projects.apply({
-          sequence: 0,
-          eventId: EventId.make(`seed:${project.id}`),
-          aggregateKind: "project",
-          aggregateId: project.id,
-          occurredAt: project.createdAt,
-          commandId: null,
-          causationEventId: null,
-          correlationId: null,
-          metadata: {},
-          type: "project.created",
-          payload: {
-            projectId: project.id,
-            title: project.title,
-            workspaceRoot: project.workspaceRoot,
-            defaultModelSelection: selection,
-            scripts: [],
-            createdAt: project.createdAt,
-            updatedAt: project.updatedAt,
-          },
-        }),
-      ).pipe(Effect.provide(ProjectStore.layer.pipe(Layer.provide(db))));
-    const folders = nativeOwners
-      ? Folders.layer.pipe(
-          Layer.provide(projectLayer),
-          Layer.provide(Receipts.layer),
-          Layer.provide(namedGitWorkflow),
-          Layer.provide(actualGit),
-          Layer.provide(WorkspacePaths.layer),
-          Layer.provide(nodeConfig),
-          Layer.provide(settings),
-          Layer.provide(db),
-        )
-      : Layer.mock(Folders.ManagedProjectFolders)({
-          namedProjectsRoot: "/unused",
-          folderForThread: () => Effect.succeedNone,
-          isScratchProject: () => Effect.succeed(false),
-        });
-    const noticeFailure = yield* Deferred.make<unknown>();
-    const noticeDelivery = Layer.effect(
-      PeerNoticeDelivery.PeerNoticeDelivery,
-      Effect.gen(function* () {
-        const delivery = yield* PeerNoticeDelivery.PeerNoticeDelivery;
-        return {
-          deliver: Effect.fn("PeerNoticeDelivery.PeerNoticeDelivery.deliver")(
-            (...args: Parameters<typeof delivery.deliver>) =>
-              delivery
-                .deliver(...args)
-                .pipe(Effect.tapError((error) => Deferred.succeed(noticeFailure, error))),
-          ),
-        };
-      }),
-    ).pipe(Layer.provide(PeerNoticeDelivery.layer));
-    const baseServices = yield* Layer.mergeAll(
-      noticeDelivery,
-      Layer.succeedContext(authorityInfrastructure),
-      RepositoryIdentity.layer,
-    ).pipe(
-      Layer.provide(Layer.succeedContext(runtime)),
-      Layer.provide(db),
-      Layer.provide(environment),
-      Layer.provide(FetchHttpClient.layer),
-      Layer.provide(nodeConfig),
-      Layer.fresh,
-      Layer.build,
-    );
-    const requestContext =
-      attachmentRequests || remoteSecrets
-        ? yield* RequestRuntime.layer.pipe(
-            Layer.provide(db),
-            Layer.provide(nodeConfig),
-            Layer.provide(Layer.succeedContext(baseServices)),
-            Layer.build,
-          )
-        : Context.empty();
-    const holdLaunchReply = yield* Ref.make(false);
-    const dropLaunchResponses = yield* Ref.make(0);
-    const dropCommittedToolReply = yield* Ref.make<string | undefined>(undefined);
-    const launchReplyHeld = yield* Deferred.make<void>();
-    const releaseLaunchReply = yield* Deferred.make<void>();
-    const dropAckResponses = yield* Ref.make(0);
-    const ackResponseLost = yield* Deferred.make<void>();
-    const holdResultPage = yield* Ref.make(false);
-    /** Tasks whose waiting observations hang, as a destination with nothing new does. */
-    const quietWaits = yield* Ref.make<ReadonlySet<string>>(new Set());
-    /** Each task whose waiting observation started to hang. */
-    const quietWaitsHeld = yield* Queue.unbounded<string>();
-    const resultPageStarted = yield* Deferred.make<void>();
-    const releaseResultPage = yield* Deferred.make<void>();
-    const faultablePeers = Layer.effect(
-      PeerMcpClient.PeerMcpClient,
-      Effect.gen(function* () {
-        const peers = yield* PeerMcpClient.PeerMcpClient;
-        const call: typeof peers.call = (input) =>
-          peers.call(input).pipe(
-            Effect.tap(() =>
-              Effect.gen(function* () {
-                if ((yield* Ref.get(dropCommittedToolReply)) === input.tool) {
-                  yield* Ref.set(dropCommittedToolReply, undefined);
-                  return yield* new OrchestratorMcpFailure({
-                    code: "orchestration_error",
-                    message: "Isolated committed tool reply loss",
-                  });
-                }
-                if (
-                  input.tool === "t3_thread_launch" &&
-                  (yield* Ref.get(dropLaunchResponses)) > 0
-                ) {
-                  yield* Ref.update(dropLaunchResponses, (count) => count - 1);
-                  return yield* new OrchestratorMcpFailure({
-                    code: "orchestration_error",
-                    message: "Fixture lost accepted launch reply.",
-                  });
-                }
-                if (input.tool === "t3_thread_launch" && (yield* Ref.get(holdLaunchReply))) {
-                  yield* Deferred.succeed(launchReplyHeld, undefined);
-                  yield* Deferred.await(releaseLaunchReply);
-                }
-              }),
-            ),
-          );
-        return {
-          ...peers,
-          call,
-          taskLifecycle: Effect.fn("PeerAuthorityFixture.taskLifecycle")(function* (
-            ...args: Parameters<NonNullable<typeof peers.taskLifecycle>>
-          ) {
-            const operation = args[2].operation;
-            if (
-              (operation.type === "observe" || operation.type === "snapshot") &&
-              operation.wait === true &&
-              (yield* Ref.get(quietWaits)).has(args[2].pair.taskId)
-            ) {
-              yield* Queue.offer(quietWaitsHeld, args[2].pair.taskId);
-              return yield* Effect.never;
-            }
-            const result = yield* peers.taskLifecycle!(...args);
-            if (args[2].operation.type === "resultText" && (yield* Ref.get(holdResultPage))) {
-              yield* Deferred.succeed(resultPageStarted, undefined);
-              yield* Deferred.await(releaseResultPage);
-            }
-            if (
-              (args[2].operation.type === "acknowledge" || args[2].operation.type === "stop") &&
-              (yield* Ref.get(dropAckResponses)) > 0
-            ) {
-              yield* Ref.update(dropAckResponses, (count) => count - 1);
-              yield* Deferred.succeed(ackResponseLost, undefined);
-              return yield* new OrchestratorMcpFailure({
-                code: "orchestration_error",
-                message: "Fixture dropped the acknowledgement response after destination commit.",
-              });
-            }
-            return result;
-          }),
-        };
-      }),
-    ).pipe(Layer.provide(PeerMcpClient.layer));
-    const secretControlReplyGate = yield* Ref.make<
-      (ids: ReadonlyArray<string>) => Effect.Effect<void>
-    >(() => Effect.void);
-    const peerHttp =
-      remoteSecrets ||
-      legacyAutomationPeer ||
-      captureReplyTransform !== undefined ||
-      captureReplyGate !== undefined
-        ? Layer.effect(
-            HttpClient.HttpClient,
-            Effect.map(HttpClient.HttpClient, (client) =>
-              HttpClient.transform(
-                HttpClient.mapRequest(client, (request) => {
+      const requestContext =
+        attachmentRequests || remoteSecrets
+          ? yield* RequestRuntime.layer.pipe(
+              Layer.provide(db),
+              Layer.provide(nodeConfig),
+              Layer.provide(Layer.succeedContext(baseServices)),
+              Layer.build,
+            )
+          : Context.empty();
+      const holdLaunchReply = yield* Ref.make(false);
+      const dropLaunchResponses = yield* Ref.make(0);
+      const dropCommittedToolReply = yield* Ref.make<string | undefined>(undefined);
+      const launchReplyHeld = yield* Deferred.make<void>();
+      const releaseLaunchReply = yield* Deferred.make<void>();
+      const dropAckResponses = yield* Ref.make(0);
+      const ackResponseLost = yield* Deferred.make<void>();
+      const holdResultPage = yield* Ref.make(false);
+      /** Tasks whose waiting observations hang, as a destination with nothing new does. */
+      const quietWaits = yield* Ref.make<ReadonlySet<string>>(new Set());
+      /** Each task whose waiting observation started to hang. */
+      const quietWaitsHeld = yield* Queue.unbounded<string>();
+      const resultPageStarted = yield* Deferred.make<void>();
+      const releaseResultPage = yield* Deferred.make<void>();
+      const faultablePeers = Layer.effect(
+        PeerMcpClient.PeerMcpClient,
+        Effect.gen(function* () {
+          const peers = yield* PeerMcpClient.PeerMcpClient;
+          const call: typeof peers.call = (input) =>
+            peers.call(input).pipe(
+              Effect.tap(() =>
+                Effect.gen(function* () {
+                  if ((yield* Ref.get(dropCommittedToolReply)) === input.tool) {
+                    yield* Ref.set(dropCommittedToolReply, undefined);
+                    return yield* new OrchestratorMcpFailure({
+                      code: "orchestration_error",
+                      message: "Isolated committed tool reply loss",
+                    });
+                  }
                   if (
-                    captureReplyTransform !== undefined &&
-                    request.url.endsWith("/mcp/peer-control") &&
-                    request.body._tag === "Uint8Array"
+                    input.tool === "t3_thread_launch" &&
+                    (yield* Ref.get(dropLaunchResponses)) > 0
                   ) {
+                    yield* Ref.update(dropLaunchResponses, (count) => count - 1);
+                    return yield* new OrchestratorMcpFailure({
+                      code: "orchestration_error",
+                      message: "Fixture lost accepted launch reply.",
+                    });
+                  }
+                  if (input.tool === "t3_thread_launch" && (yield* Ref.get(holdLaunchReply))) {
+                    yield* Deferred.succeed(launchReplyHeld, undefined);
+                    yield* Deferred.await(releaseLaunchReply);
+                  }
+                }),
+              ),
+            );
+          return {
+            ...peers,
+            call,
+            taskLifecycle: Effect.fn("PeerAuthorityFixture.taskLifecycle")(function* (
+              ...args: Parameters<NonNullable<typeof peers.taskLifecycle>>
+            ) {
+              const operation = args[2].operation;
+              if (
+                (operation.type === "observe" || operation.type === "snapshot") &&
+                operation.wait === true &&
+                (yield* Ref.get(quietWaits)).has(args[2].pair.taskId)
+              ) {
+                yield* Queue.offer(quietWaitsHeld, args[2].pair.taskId);
+                return yield* Effect.never;
+              }
+              const result = yield* peers.taskLifecycle!(...args);
+              if (args[2].operation.type === "resultText" && (yield* Ref.get(holdResultPage))) {
+                yield* Deferred.succeed(resultPageStarted, undefined);
+                yield* Deferred.await(releaseResultPage);
+              }
+              if (
+                (args[2].operation.type === "acknowledge" || args[2].operation.type === "stop") &&
+                (yield* Ref.get(dropAckResponses)) > 0
+              ) {
+                yield* Ref.update(dropAckResponses, (count) => count - 1);
+                yield* Deferred.succeed(ackResponseLost, undefined);
+                return yield* new OrchestratorMcpFailure({
+                  code: "orchestration_error",
+                  message: "Fixture dropped the acknowledgement response after destination commit.",
+                });
+              }
+              return result;
+            }),
+          };
+        }),
+      ).pipe(Layer.provide(PeerMcpClient.layer));
+      const secretControlReplyGate = yield* Ref.make<
+        (ids: ReadonlyArray<string>) => Effect.Effect<void>
+      >(() => Effect.void);
+      const peerHttp =
+        remoteSecrets ||
+        legacyAutomationPeer ||
+        captureReplyTransform !== undefined ||
+        captureReplyGate !== undefined
+          ? Layer.effect(
+              HttpClient.HttpClient,
+              Effect.map(HttpClient.HttpClient, (client) =>
+                HttpClient.transform(
+                  HttpClient.mapRequest(client, (request) => {
+                    if (
+                      captureReplyTransform !== undefined &&
+                      request.url.endsWith("/mcp/peer-control") &&
+                      request.body._tag === "Uint8Array"
+                    ) {
+                      const control = decodeFixtureControl(
+                        new TextDecoder().decode(request.body.body),
+                      );
+                      const answers = control.answers.map((answer) =>
+                        answer.id.startsWith("capture:") && answer.result.ok
+                          ? {
+                              ...answer,
+                              result: {
+                                ok: true,
+                                value: captureReplyTransform(
+                                  decodeFixtureCaptureGraph(answer.result.value),
+                                ),
+                              },
+                            }
+                          : answer,
+                      );
+                      request = HttpClientRequest.setBody(
+                        request,
+                        HttpBody.text(json({ ...control, answers }), "application/json"),
+                      );
+                    }
+                    if (!legacyAutomationPeer) return request;
+                    const header = request.headers[PeerAuthority.LINK_HEADER];
+                    if (header === undefined) return request;
+                    const { automationVersion: _version, ...legacy } =
+                      decodeFixturePeerSession(header);
+                    return HttpClientRequest.setHeader(
+                      request,
+                      PeerAuthority.LINK_HEADER,
+                      json(legacy),
+                    );
+                  }),
+                  (effect, request) => {
+                    if (
+                      !request.url.endsWith("/mcp/peer-control") ||
+                      request.body._tag !== "Uint8Array"
+                    )
+                      return effect;
                     const control = decodeFixtureControl(
                       new TextDecoder().decode(request.body.body),
                     );
-                    const answers = control.answers.map((answer) =>
-                      answer.id.startsWith("capture:") && answer.result.ok
-                        ? {
-                            ...answer,
-                            result: {
-                              ok: true,
-                              value: captureReplyTransform(
-                                decodeFixtureCaptureGraph(answer.result.value),
-                              ),
-                            },
-                          }
-                        : answer,
+                    return Effect.flatMap(Ref.get(secretControlReplyGate), (gate) =>
+                      gate(control.answers.map((answer) => answer.id)),
+                    ).pipe(
+                      Effect.andThen(
+                        captureReplyGate !== undefined &&
+                          control.answers.some(
+                            (answer) => answer.id.startsWith("capture:") && answer.result.ok,
+                          )
+                          ? captureReplyGate
+                          : Effect.void,
+                      ),
+                      Effect.andThen(effect),
                     );
-                    request = HttpClientRequest.setBody(
-                      request,
-                      HttpBody.text(json({ ...control, answers }), "application/json"),
-                    );
-                  }
-                  if (!legacyAutomationPeer) return request;
-                  const header = request.headers[PeerAuthority.LINK_HEADER];
-                  if (header === undefined) return request;
-                  const { automationVersion: _version, ...legacy } =
-                    decodeFixturePeerSession(header);
-                  return HttpClientRequest.setHeader(
-                    request,
-                    PeerAuthority.LINK_HEADER,
-                    json(legacy),
-                  );
-                }),
-                (effect, request) => {
-                  if (
-                    !request.url.endsWith("/mcp/peer-control") ||
-                    request.body._tag !== "Uint8Array"
-                  )
-                    return effect;
-                  const control = decodeFixtureControl(new TextDecoder().decode(request.body.body));
-                  return Effect.flatMap(Ref.get(secretControlReplyGate), (gate) =>
-                    gate(control.answers.map((answer) => answer.id)),
-                  ).pipe(
-                    Effect.andThen(
-                      captureReplyGate !== undefined &&
-                        control.answers.some(
-                          (answer) => answer.id.startsWith("capture:") && answer.result.ok,
-                        )
-                        ? captureReplyGate
-                        : Effect.void,
-                    ),
-                    Effect.andThen(effect),
-                  );
-                },
+                  },
+                ),
               ),
-            ),
-          ).pipe(Layer.provide(FetchHttpClient.layer))
-        : FetchHttpClient.layer;
-    const connect = Effect.fn("PeerAuthority.connect")(function* () {
-      const lifetime = yield* Scope.make();
-      connectionScopes.add(lifetime);
-      yield* Effect.addFinalizer(() =>
-        Scope.close(lifetime, Exit.void).pipe(
-          Effect.ensuring(Effect.sync(() => connectionScopes.delete(lifetime))),
-        ),
-      );
-      const services = yield* RemoteDelegation.layer.pipe(
-        Layer.provideMerge(PeerForwarding.layer),
-        Layer.provideMerge(faultablePeers),
-        Layer.provideMerge(Layer.succeedContext(baseServices)),
-        Layer.provideMerge(Layer.succeedContext(requestContext)),
-        Layer.provide(Layer.succeedContext(runtime)),
-        Layer.provide(db),
-        Layer.provide(nodeConfig),
-        Layer.provide(projectLayer),
-        Layer.provide(RepositoryIdentity.layer),
-        Layer.provide(hostServices),
-        Layer.provide(environment),
-        Layer.provide(peerHttp),
-        Layer.fresh,
-        Layer.buildWithScope(lifetime),
-      );
-      return {
-        services,
-        stop: Scope.close(lifetime, Exit.void),
-        peers: Context.get(services, PeerMcpClient.PeerMcpClient),
-      };
-    });
-    const connection = yield* connect();
-    const services = connection.services;
-    const remoteSecretFault = yield* Ref.make<"after-save" | "hold-save" | "cleanup" | undefined>(
-      undefined,
-    );
-    const secretPublished = yield* Deferred.make<void>();
-    const releaseSecretPublication = yield* Deferred.make<void>();
-    const actualSecretStore = Context.get(services, Secrets.ServerSecretStore);
-    const secretRequestClock = yield* Ref.make<Clock.Clock | undefined>(undefined);
-    const secretRequestAbort = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
-    const secretRequestExits = yield* Queue.unbounded<void>();
-    const secretValidationClock = yield* Ref.make<Clock.Clock | undefined>(undefined);
-    const secretValidationErrors = yield* Queue.unbounded<{ id: string; code: string }>();
-    const secretRemovals = yield* Queue.unbounded<{ name: string; failed: boolean }>();
-    const secretCleanupName = yield* Ref.make<string | undefined>(undefined);
-    const secretCleanupClock = yield* Ref.make<Clock.Clock | undefined>(undefined);
-    const initialSecretClock = yield* Clock.Clock;
-    const cleanupClock = () => Ref.getUnsafe(secretCleanupClock) ?? initialSecretClock;
-    const secretOwnerClock: Clock.Clock = {
-      currentTimeMillis: Effect.suspend(() => cleanupClock().currentTimeMillis),
-      currentTimeMillisUnsafe: () => cleanupClock().currentTimeMillisUnsafe(),
-      currentTimeNanos: Effect.suspend(() => cleanupClock().currentTimeNanos),
-      currentTimeNanosUnsafe: () => cleanupClock().currentTimeNanosUnsafe(),
-      monotonicTimeNanos: Effect.suspend(() => cleanupClock().monotonicTimeNanos),
-      monotonicTimeNanosUnsafe: () => cleanupClock().monotonicTimeNanosUnsafe(),
-      sleep: (duration) => Effect.suspend(() => cleanupClock().sleep(duration)),
-    };
-    const secretAuthority = Layer.effect(
-      PeerAuthority.PeerAuthority,
-      Effect.gen(function* () {
-        const actual = yield* PeerAuthority.PeerAuthority;
-        return {
-          ...actual,
-          checkInteractiveRecord: Effect.fn("PeerAuthority.checkInteractiveRecord")(function* (
-            id: string,
-          ) {
-            const clock = yield* Ref.get(secretValidationClock);
-            return yield* actual.checkInteractiveRecord(id).pipe(
-              (effect) =>
-                clock === undefined ? effect : Effect.provideService(effect, Clock.Clock, clock),
-              Effect.tapError((error) =>
-                Queue.offer(secretValidationErrors, { id, code: error.code }),
-              ),
-            );
-          }),
-        };
-      }),
-    ).pipe(Layer.provide(Layer.succeedContext(baseServices)));
-    const secretOwnerScope = yield* Scope.make();
-    yield* Effect.addFinalizer(() => Scope.close(secretOwnerScope, Exit.void));
-    const faultSecretStore = Layer.succeed(Secrets.ServerSecretStore, {
-      ...actualSecretStore,
-      create: Effect.fn("Secrets.ServerSecretStore.create")((name, bytes) =>
-        actualSecretStore.create(name, bytes).pipe(
-          Effect.andThen(
-            Effect.gen(function* () {
-              if (
-                name.startsWith("secret-remote-") &&
-                (yield* Ref.get(remoteSecretFault)) === "hold-save"
-              ) {
-                yield* Deferred.succeed(secretPublished, undefined);
-                yield* Deferred.await(releaseSecretPublication);
-              }
-              if (
-                name.startsWith("secret-remote-") &&
-                (yield* Ref.get(remoteSecretFault)) === "after-save"
-              ) {
-                yield* Ref.set(remoteSecretFault, undefined);
-                return yield* new Secrets.SecretStorePersistError({
-                  resource: "isolated remote publication",
-                  cause: new Error("Fixture interruption after protected publication"),
-                });
-              }
-            }),
+            ).pipe(Layer.provide(FetchHttpClient.layer))
+          : FetchHttpClient.layer;
+      const connect = Effect.fn("PeerAuthority.connect")(function* () {
+        const lifetime = yield* Scope.make();
+        connectionScopes.add(lifetime);
+        yield* Effect.addFinalizer(() =>
+          Scope.close(lifetime, Exit.void).pipe(
+            Effect.ensuring(Effect.sync(() => connectionScopes.delete(lifetime))),
           ),
-        ),
-      ),
-      remove: Effect.fn("PeerAuthority.remove")(
-        function* (name) {
-          if (
-            name.startsWith("secret-remote-") &&
-            (yield* Ref.get(remoteSecretFault)) === "cleanup" &&
-            ((yield* Ref.get(secretCleanupName)) === undefined ||
-              (yield* Ref.get(secretCleanupName)) === name)
-          ) {
-            return yield* new Secrets.SecretStoreRemoveError({
-              resource: "isolated redundant copy",
-              cause: new Error("Fixture interruption after outer commit"),
-            });
-          }
-          return yield* actualSecretStore.remove(name);
-        },
-        (effect, name) =>
-          effect.pipe(
-            Effect.tapError(() => Queue.offer(secretRemovals, { name, failed: true })),
-            Effect.tap(() => Queue.offer(secretRemovals, { name, failed: false })),
-          ),
-      ),
-    });
-    const secretOwners = remoteSecrets
-      ? yield* Layer.mergeAll(RemoteSecretRequests.layer, RemoteSecretRelay.layer).pipe(
-          Layer.provide(Layer.succeed(Clock.Clock, secretOwnerClock)),
-          Layer.provide(faultSecretStore),
-          Layer.provide(secretAuthority),
-          Layer.provide(Layer.succeedContext(services)),
-          Layer.provide(Layer.succeedContext(baseServices)),
+        );
+        const services = yield* RemoteDelegation.layer.pipe(
+          Layer.provideMerge(PeerForwarding.layer),
+          Layer.provideMerge(faultablePeers),
+          Layer.provideMerge(Layer.succeedContext(baseServices)),
+          Layer.provideMerge(Layer.succeedContext(requestContext)),
           Layer.provide(Layer.succeedContext(runtime)),
           Layer.provide(db),
-          Layer.provide(environment),
           Layer.provide(nodeConfig),
-          Layer.buildWithScope(secretOwnerScope),
-        )
-      : Context.empty();
-    const handoffGitManager = GitManager.layer.pipe(
-      Layer.provide(actualGit),
-      Layer.provide(
-        Layer.mock(SourceProviders.SourceControlProviderRegistry)({
-          resolveLink: () => Effect.die("No external repository host in this fixture"),
-          // Upstream git workflows look up a forge and tolerate none.
-          resolve: ({ cwd }) =>
-            Effect.fail(
-              new SourceControlProviderError({
-                provider: SourceControlProviderKind.make("unknown"),
-                operation: "resolve",
-                cwd,
-                detail: "No external repository host in this fixture.",
-              }),
-            ),
-        }),
-      ),
-      Layer.provide(Layer.mock(TextGeneration.TextGeneration)({})),
-      Layer.provide(layerLaunchCatalog),
-      Layer.provide(Layer.succeedContext(runtime)),
-      Layer.provide(ProjectStore.layer.pipe(Layer.provide(db))),
-      Layer.provide(settings),
-      Layer.provide(Layer.mock(SetupScripts.ProjectSetupScriptRunner)({})),
-    );
-    const handoffGit = GitWorkflow.layer.pipe(
-      Layer.provide(handoffGitManager),
-      Layer.provide(actualGit),
-      Layer.provide(VcsRegistry.layer.pipe(Layer.provide(VcsProcess.layer))),
-    );
-    const launchDependencies = Layer.mergeAll(
-      Layer.succeedContext(runtime),
-      db,
-      projectLayer,
-      folders,
-      settings,
-      layerLaunchCatalog,
-      Receipts.layer.pipe(Layer.provide(db)),
-      IdAllocator.layer,
-      WorktreeSetup.layer,
-      Layer.mock(ProjectClone.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
-      Layer.mock(Terminals.TerminalManager)({ close: () => Effect.void }),
-      ownerWorkspace === undefined
-        ? Layer.mock(GitWorkflow.GitWorkflowService)({})
-        : handoffGit.pipe(Layer.provide(nodeConfig)),
-      Layer.mock(TextGeneration.TextGeneration)({}),
-      Layer.mock(SetupScripts.ProjectSetupScriptRunner)({
-        runForThread: () => Effect.succeed({ status: "no-script" as const }),
-      }),
-      Layer.mock(BareLaunch.BareLaunch)({}),
-    );
-    const launches = yield* ThreadLaunch.layer.pipe(
-      Layer.provide(launchDependencies),
-      Layer.fresh,
-      Layer.build,
-    );
-    const holdManualLaunchReply = yield* Ref.make(false);
-    const manualLaunchReplyHeld = yield* Deferred.make<void>();
-    const actualLaunch = Context.get(launches, ThreadLaunch.ThreadLaunchService);
-    const scheduledLaunch = Layer.succeed(ThreadLaunch.ThreadLaunchService, {
-      ...actualLaunch,
-      launch: Effect.fn("ThreadLaunch.ThreadLaunchService.launch")((input) =>
-        actualLaunch.launch(input).pipe(
-          Effect.tap(() =>
-            Effect.gen(function* () {
-              if (
-                !input.commandId.startsWith("scheduled-task:manual:") ||
-                !(yield* Ref.get(holdManualLaunchReply))
-              )
-                return;
-              yield* Deferred.succeed(manualLaunchReplyHeld, undefined);
-              return yield* Effect.never;
+          Layer.provide(projectLayer),
+          Layer.provide(RepositoryIdentity.layer),
+          Layer.provide(hostServices),
+          Layer.provide(environment),
+          Layer.provide(peerHttp),
+          Layer.fresh,
+          Layer.buildWithScope(lifetime),
+        );
+        return {
+          services,
+          stop: Scope.close(lifetime, Exit.void),
+          peers: Context.get(services, PeerMcpClient.PeerMcpClient),
+        };
+      });
+      const connection = yield* connect();
+      const services = connection.services;
+      const remoteSecretFault = yield* Ref.make<"after-save" | "hold-save" | "cleanup" | undefined>(
+        undefined,
+      );
+      const secretPublished = yield* Deferred.make<void>();
+      const releaseSecretPublication = yield* Deferred.make<void>();
+      const actualSecretStore = Context.get(services, Secrets.ServerSecretStore);
+      const secretRequestClock = yield* Ref.make<Clock.Clock | undefined>(undefined);
+      const secretRequestAbort = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
+      const secretRequestExits = yield* Queue.unbounded<void>();
+      const secretValidationClock = yield* Ref.make<Clock.Clock | undefined>(undefined);
+      const secretValidationErrors = yield* Queue.unbounded<{ id: string; code: string }>();
+      const secretRemovals = yield* Queue.unbounded<{ name: string; failed: boolean }>();
+      const secretCleanupName = yield* Ref.make<string | undefined>(undefined);
+      const secretCleanupClock = yield* Ref.make<Clock.Clock | undefined>(undefined);
+      const initialSecretClock = yield* Clock.Clock;
+      const cleanupClock = () => Ref.getUnsafe(secretCleanupClock) ?? initialSecretClock;
+      const secretOwnerClock: Clock.Clock = {
+        currentTimeMillis: Effect.suspend(() => cleanupClock().currentTimeMillis),
+        currentTimeMillisUnsafe: () => cleanupClock().currentTimeMillisUnsafe(),
+        currentTimeNanos: Effect.suspend(() => cleanupClock().currentTimeNanos),
+        currentTimeNanosUnsafe: () => cleanupClock().currentTimeNanosUnsafe(),
+        monotonicTimeNanos: Effect.suspend(() => cleanupClock().monotonicTimeNanos),
+        monotonicTimeNanosUnsafe: () => cleanupClock().monotonicTimeNanosUnsafe(),
+        sleep: (duration) => Effect.suspend(() => cleanupClock().sleep(duration)),
+      };
+      const secretAuthority = Layer.effect(
+        PeerAuthority.PeerAuthority,
+        Effect.gen(function* () {
+          const actual = yield* PeerAuthority.PeerAuthority;
+          return {
+            ...actual,
+            checkInteractiveRecord: Effect.fn("PeerAuthority.checkInteractiveRecord")(function* (
+              id: string,
+            ) {
+              const clock = yield* Ref.get(secretValidationClock);
+              return yield* actual.checkInteractiveRecord(id).pipe(
+                (effect) =>
+                  clock === undefined ? effect : Effect.provideService(effect, Clock.Clock, clock),
+                Effect.tapError((error) =>
+                  Queue.offer(secretValidationErrors, { id, code: error.code }),
+                ),
+              );
             }),
-          ),
-        ),
-      ),
-    });
-    const holdManualSend = yield* Ref.make(false);
-    const manualSendHeld = yield* Deferred.make<void>();
-    const releaseManualSend = yield* Deferred.make<void>();
-    const actualThreads = Context.get(runtime, Threads.ThreadManagementService);
-    // Holds a keyed manual send to an existing thread before native acceptance.
-    const scheduledThreads = Layer.succeed(Threads.ThreadManagementService, {
-      ...actualThreads,
-      sendToThread: Effect.fn("PeerAuthority.sendToThread")(function* (input) {
-        if (
-          input.commandId.startsWith("scheduled-task:manual:") &&
-          (yield* Ref.get(holdManualSend))
-        ) {
-          yield* Deferred.succeed(manualSendHeld, undefined);
-          yield* Deferred.await(releaseManualSend);
-        }
-        return yield* actualThreads.sendToThread(input);
-      }),
-    });
-    const secretConsumes = yield* Ref.make(0);
-    const loseSecretConfirmation = yield* Ref.make(false);
-    const nativeSecrets = SecretRequests.layer.pipe(
-      Layer.provide(nodeConfig),
-      Layer.provide(
-        Layer.succeed(Secrets.ServerSecretStore, Context.get(services, Secrets.ServerSecretStore)),
-      ),
-      Layer.provide(Layer.succeedContext(runtime)),
-    );
-    const scheduleSecrets = attachmentRequests
-      ? Layer.effect(
-          SecretRequests.SecretRequests,
-          Effect.gen(function* () {
-            const actual = yield* SecretRequests.SecretRequests;
-            return {
-              ...actual,
-              consume: Effect.fn("PeerAuthority.consume")(function* (
-                input: Parameters<typeof actual.consume>[0],
-              ) {
-                const rows = yield* Context.get(
-                  database,
-                  SqlClient.SqlClient,
-                )`SELECT request_id FROM scheduled_mutation_receipts WHERE stage='secret-started'`.pipe(
-                  Effect.orDie,
-                );
-                expect(rows.length).toBeGreaterThan(0);
-                yield* Ref.update(secretConsumes, (n) => n + 1);
-                const secret = yield* actual.consume(input);
-                if (yield* Ref.getAndSet(loseSecretConfirmation, false))
-                  return yield* new SecretRequestError({ reason: "consume_failed" });
-                return secret;
-              }),
-            };
-          }),
-        ).pipe(Layer.provide(nativeSecrets))
-      : Layer.mock(SecretRequests.SecretRequests)({});
-    const scheduleLayer = (
-      attachmentRequests
-        ? ScheduledChecks.withOutcomeChecks(ScheduledTasks.layer)
-        : ScheduledTasks.layer
-    ).pipe(
-      Layer.provide(
-        commandSpawner === undefined
-          ? ProcessRunner.layer
-          : ProcessRunner.layer.pipe(
-              Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, commandSpawner)),
-              Layer.fresh,
-            ),
-      ),
-      Layer.provide(Layer.succeedContext(secretOwners)),
-      Layer.provide(Layer.succeedContext(baseServices)),
-      Layer.provide(
-        Layer.succeed(
-          ScheduledTasks.ScheduledTaskWebhookOrigin,
-          Effect.succeed({ relayHookBaseUrl: "https://hooks.example.invalid/v1/hooks/fixture" }),
-        ),
-      ),
-      Layer.provide(
-        manualScheduler === undefined
-          ? Scheduler.layer
-          : Layer.succeed(Scheduler.Scheduler, manualScheduler),
-      ),
-      Layer.provide(scheduleSecrets),
-      Layer.provide(scheduledLaunch),
-      Layer.provide(scheduledThreads),
-      Layer.provide(Prism.layer.pipe(Layer.provide(settings), Layer.provide(layerLaunchCatalog))),
-      Layer.provide(
-        commandSpawner === undefined
-          ? Layer.empty
-          : Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, commandSpawner),
-      ),
-      Layer.provide(ProjectStore.layer.pipe(Layer.provide(db))),
-      Layer.provide(launchDependencies),
-      Layer.provide(hostServices),
-    );
-    const scheduleScope = yield* Scope.make();
-    yield* Effect.addFinalizer(() => Scope.close(scheduleScope, Exit.void));
-    const schedules = yield* scheduleLayer.pipe(Layer.fresh, Layer.buildWithScope(scheduleScope));
-    if (attachmentRequests) {
-      yield* SpectrumStore.ensureSpectrumSchema.pipe(Effect.provide(db));
-      yield* CheckStore.ensureCheckSchema.pipe(Effect.provide(db));
-    }
-    const spectrumLayer = SpectrumLaunch.layer.pipe(
-      Layer.provide(Layer.succeedContext(baseServices)),
-      Layer.provide(Adapters.layerFromAdapters([providerAdapter])),
-      Layer.provide(Prism.layer.pipe(Layer.provide(settings), Layer.provide(layerLaunchCatalog))),
-      Layer.provide(ProjectStore.layer.pipe(Layer.provide(db))),
-      Layer.provide(launchDependencies),
-    );
-    const loseWorktreeReply = yield* Ref.make(false);
-    const worktreeThreads = {
-      ...Context.get(runtime, Threads.ThreadManagementService),
-      dispatch: (input: Parameters<Threads.ThreadManagementService["Service"]["dispatch"]>[0]) =>
-        Context.get(runtime, Threads.ThreadManagementService)
-          .dispatch(input)
-          .pipe(
-            Effect.flatMap((result) =>
+          };
+        }),
+      ).pipe(Layer.provide(Layer.succeedContext(baseServices)));
+      const secretOwnerScope = yield* Scope.make();
+      yield* Effect.addFinalizer(() => Scope.close(secretOwnerScope, Exit.void));
+      const faultSecretStore = Layer.succeed(Secrets.ServerSecretStore, {
+        ...actualSecretStore,
+        create: Effect.fn("Secrets.ServerSecretStore.create")((name, bytes) =>
+          actualSecretStore.create(name, bytes).pipe(
+            Effect.andThen(
               Effect.gen(function* () {
                 if (
-                  input.type === "thread.metadata.update" &&
-                  input.commandId.startsWith("worktree-handoff:") &&
-                  (yield* Ref.getAndSet(loseWorktreeReply, false))
-                )
-                  return yield* new Orchestrator.OrchestratorDispatchError({
-                    commandId: input.commandId,
-                    commandType: input.type,
-                    cause: "Isolated committed native binding reply loss",
-                  });
-                return result;
-              }),
-            ),
-          ),
-    };
-    const handoff =
-      ownerWorkspace === undefined
-        ? Layer.empty
-        : yield* Effect.gen(function* () {
-            const gitContext = yield* handoffGit.pipe(
-              Layer.provide(nodeConfig),
-              Layer.fresh,
-              Layer.build,
-            );
-            const service = WorktreeMcp.layer.pipe(
-              Layer.provide(Layer.succeed(Threads.ThreadManagementService, worktreeThreads)),
-              Layer.provide(Layer.succeedContext(gitContext)),
-              Layer.provide(
-                Layer.mock(VcsStatus.VcsStatusBroadcaster)({
-                  refreshStatus: (cwd) =>
-                    Context.get(gitContext, GitWorkflow.GitWorkflowService).status({ cwd }),
-                }),
-              ),
-              Layer.provide(launchDependencies),
-            );
-            return McpHttpServer.toolkitRegistration(WorktreeToolkit, WorktreeHandlers.layer).pipe(
-              Layer.provide(service),
-              Layer.provide(Layer.succeedContext(gitContext)),
-            );
-          });
-    const browser = yield* BrowserBroker.make.pipe(
-      Effect.provideService(
-        PeerAuthority.PeerAuthority,
-        Context.get(baseServices, PeerAuthority.PeerAuthority),
-      ),
-    );
-    const previewBrowser = Layer.succeed(PreviewBrowser.PreviewBrowser, {
-      installed: Effect.succeedNone,
-      executable: Effect.die("This isolated fixture cannot launch a browser"),
-    });
-    const nativeBrowser = browserOwner
-      ? yield* NativeBrowser.layer.pipe(
-          Layer.provide(Layer.succeedContext(runtime)),
-          Layer.provide(
-            Layer.mock(CredentialVault.CredentialVault)({
-              uris: () => Effect.die("No real vault access in the peer authority fixture"),
-              read: () => Effect.die("No real vault access in the peer authority fixture"),
-            }),
-          ),
-          Layer.provideMerge(NativePreviewManager.layer),
-          Layer.provide(NativeDesktopChannel.layer),
-          Layer.provide(Layer.succeed(BrowserBroker.PreviewAutomationBroker, browser)),
-          Layer.provide(previewBrowser),
-          Layer.provide(nodeConfig),
-          Layer.provide(environment),
-          Layer.build,
-        )
-      : undefined;
-    const previewControls =
-      nativeBrowser ??
-      (previewControlsOwner ? yield* NativePreviewManager.layer.pipe(Layer.build) : undefined);
-    const htmlLayer = HtmlRender.layer.pipe(
-      Layer.provide(
-        Layer.succeed(FileSystem.FileSystem, {
-          ...actualFs,
-          stream: (path, options) =>
-            htmlImageReadGate === undefined
-              ? actualFs.stream(path, options)
-              : Stream.unwrap(htmlImageReadGate.pipe(Effect.as(actualFs.stream(path, options)))),
-        }),
-      ),
-      Layer.provide(nodeConfig),
-      Layer.provide(previewBrowser),
-    );
-
-    const deviceHostStarts = yield* Ref.make(0);
-    const devicePlatformAvailable = yield* Ref.make(true);
-    const deviceAgentStarts = yield* Ref.make(0);
-    const deviceConfigurations = yield* Ref.make(0);
-    const loseDeviceConfiguration = yield* Ref.make(false);
-    const deviceProcessCalls: ProcessRunner.ProcessRunInput[] = [];
-    const deviceProcessHook = yield* Ref.make<
-      (input: ProcessRunner.ProcessRunInput) => Effect.Effect<void>
-    >(() => Effect.void);
-    const deviceSummaryHook = yield* Ref.make<Effect.Effect<void>>(Effect.void);
-    const deviceReadinessHook = yield* Ref.make<Effect.Effect<void>>(Effect.void);
-    const deviceObservedScope = yield* Ref.make<Option.Option<Invocation.McpThreadInvocationScope>>(
-      Option.none(),
-    );
-    const deviceMediaPaths = new Map<string, string>();
-    const deviceMediaOutside = yield* Ref.make(false);
-    const deviceScreenshotCalls = yield* Ref.make(0);
-    const deviceShutdownCalls = yield* Ref.make(0);
-    const deviceHubPlatform = yield* Ref.make<"android" | "ios">("android");
-    const deviceHubBooted = yield* Ref.make(true);
-    const deviceViewerRequests: string[] = [];
-    const deviceViewerCurrentHook = yield* Ref.make<Effect.Effect<void>>(Effect.void);
-    const deviceViewerFrame = Uint8Array.of(0, 0, 0, 4, 0, 1, 100, 0);
-    const deviceViewerInputs: string[] = [];
-    const deviceViewerHttpInputs: Array<{
-      path: string;
-      method: string;
-      contentType: string;
-      body: string;
-    }> = [];
-    const deviceViewerOutput: { bytes: string | Uint8Array } = {
-      bytes: json({ ok: true }),
-    };
-    let viewerHubOrigin = "http://device382.invalid";
-    if (viewerSocketOwner) {
-      const hub = yield* Effect.acquireRelease(
-        Effect.sync(() => new NodeWS.WebSocketServer({ port: 0 })),
-        (server) =>
-          Effect.promise(
-            () =>
-              new Promise<void>((resolve) => {
-                for (const client of server.clients) client.terminate();
-                server.close(() => resolve());
-              }),
-          ),
-      );
-      if (!hub.address())
-        yield* Effect.promise(() => new Promise<void>((resolve) => hub.once("listening", resolve)));
-      const address = hub.address();
-      if (typeof address !== "object" || address === null)
-        throw new Error("Missing external hub port");
-      viewerHubOrigin = `http://127.0.0.1:${address.port}`;
-      hub.on("connection", (socket) => {
-        socket.on("message", (data) => {
-          deviceViewerInputs.push(data.toString());
-          socket.send(deviceViewerOutput.bytes);
-        });
-      });
-    }
-
-    const deviceOldVersion = yield* Ref.make(false);
-    const deviceCapabilities = yield* Ref.make({
-      device: { id: "fixture-device382", platform: "android", target: "mobile", kind: "emulator" },
-      availableCommands: [
-        "open",
-        "snapshot",
-        "click",
-        "fill",
-        "screenshot",
-        "close",
-        "record",
-        "trace",
-        "install",
-      ],
-    });
-    const continuousDeviceMedia = yield* Ref.make(false);
-    const deviceMediaChunks = yield* Queue.unbounded<Uint8Array>();
-    let fixtureDevice: NativeDevices.DeviceService["Service"] | undefined;
-    let fixtureViewers: DeviceHubProxy.DeviceViewers["Service"] | undefined;
-    let fixtureBrowserViewers: BrowserStream.PreviewViewers["Service"] | undefined;
-    let fixtureBrowserViewerSessions: ViewerSessions.SessionStore["Service"] | undefined;
-    let fixtureViewerSessions: ViewerSessions.SessionStore["Service"] | undefined;
-    const deviceLayer = deviceOwner
-      ? yield* Effect.gen(function* () {
-          const settingsService = Context.get(settingsContext, Settings.ServerSettingsService);
-          yield* settingsService.updateSettings({
-            enableDeviceSupport: true,
-            enableAgentDeviceAccess: true,
-          });
-          const config = Context.get(nodeConfigContext, Config.ServerConfig);
-          const fs = yield* FileSystem.FileSystem;
-          const path = yield* Path.Path;
-          const file = yield* agentDeviceConfigPath(config.stateDir, LOCAL_DEVICE_HOST_ID, path);
-          const agentInstall = `${config.baseDir}/tools/agent-device/${AGENT_DEVICE_VERSION}`;
-          const hubInstall = `${config.baseDir}/tools/expo-device-hub/${DEVICE_HUB_VERSION}`;
-          const entryPath = `${agentInstall}/node_modules/agent-device/bin/agent-device.mjs`;
-          const hubEntry = `${hubInstall}/node_modules/expo-device-hub/dist/server/cli.mjs`;
-          for (const [entry, install, version] of [
-            [entryPath, agentInstall, AGENT_DEVICE_VERSION],
-            [hubEntry, hubInstall, DEVICE_HUB_VERSION],
-          ] as const) {
-            yield* fs.makeDirectory(path.dirname(entry), { recursive: true });
-            yield* fs.writeFileString(
-              entry,
-              "// Isolated external process leaf, never executed.\n",
-            );
-            yield* fs.writeFileString(`${install}/.install-complete`, version);
-          }
-          const assertStarted = Effect.gen(function* () {
-            const sql = Context.get(database, SqlClient.SqlClient);
-            expect(
-              (yield* sql`SELECT id FROM mcp_request_receipts WHERE state='started'`.pipe(
-                Effect.orDie,
-              )).length,
-            ).toBeGreaterThan(0);
-          });
-          const deviceFs: FileSystem.FileSystem = {
-            ...fs,
-            rename: (from, to) => {
-              if (to !== file && !to.startsWith(`${config.stateDir}/device/sessions/`))
-                return fs.rename(from, to);
-              return assertStarted.pipe(
-                Effect.andThen(fs.rename(from, to)),
-                Effect.tap(() =>
-                  Effect.gen(function* () {
-                    yield* Ref.update(deviceConfigurations, (n) => n + 1);
-                    if (yield* Ref.getAndSet(loseDeviceConfiguration, false))
-                      return yield* PlatformError.systemError({
-                        _tag: "Unknown",
-                        module: "FileSystem",
-                        method: "rename",
-                        description: "Isolated reply loss after actual native config persistence",
-                      });
-                  }),
-                ),
-              );
-            },
-          };
-          const runner = ProcessRunner.ProcessRunner.of({
-            run: Effect.fn("PeerAuthority.run")(function* (input) {
-              yield* assertStarted;
-              const observed = yield* Effect.serviceOption(Invocation.McpInvocationContext);
-              if (Option.isSome(observed) && observed.value.thread !== undefined)
-                yield* Ref.set(
-                  deviceObservedScope,
-                  Option.some({ ...observed.value, thread: observed.value.thread }),
-                );
-              deviceProcessCalls.push(input);
-              yield* (yield* Ref.get(deviceProcessHook))(input);
-              const family = input.args[1];
-              let data: unknown =
-                family === "capabilities"
-                  ? yield* Ref.get(deviceCapabilities)
-                  : family === "snapshot"
-                    ? {
-                        nodes: [
-                          {
-                            index: 1,
-                            ref: "e1",
-                            role: "button",
-                            label: "Continue",
-                            privatePath: "/host/private",
-                          },
-                        ],
-                        config: "/host/private",
-                        token: "ISOLATED_DEVICE_TOKEN_382",
-                      }
-                    : {};
-              if (family === "record" || family === "trace") {
-                const flags = input.args.slice(0, input.args.indexOf("--"));
-                const positionals = input.args.slice(input.args.indexOf("--") + 1);
-                const key = `${flags[flags.indexOf("--session") + 1]}:${family}`;
-                if (positionals[0] === "start") deviceMediaPaths.set(key, positionals[1]!);
-                const outPath = deviceMediaPaths.get(key)!;
-                if (positionals[0] === "stop") {
-                  if (family === "record") {
-                    const bytes = new Uint8Array(24);
-                    new DataView(bytes.buffer).setUint32(4, 0x66747970);
-                    yield* fs.writeFile(outPath, bytes).pipe(Effect.orDie);
-                  } else
-                    yield* fs
-                      .writeFileString(
-                        outPath,
-                        "trace ISOLATED_DEVICE_TOKEN_382 http://device-agent382.invalid",
-                      )
-                      .pipe(Effect.orDie);
+                  name.startsWith("secret-remote-") &&
+                  (yield* Ref.get(remoteSecretFault)) === "hold-save"
+                ) {
+                  yield* Deferred.succeed(secretPublished, undefined);
+                  yield* Deferred.await(releaseSecretPublication);
                 }
-                data = {
-                  [family === "record" ? "recording" : "trace"]:
-                    positionals[0] === "start" ? "started" : "stopped",
-                  outPath,
-                  artifacts: [
-                    {
-                      field: "outPath",
-                      localPath: (yield* Ref.get(deviceMediaOutside)) ? entryPath : outPath,
-                    },
-                  ],
-                  durationMs: 200,
-                  capturedDurationMs: 150,
-                  recorder: "unconfirmed",
-                  nativePathDisposition: "pending",
-                };
-              }
-              return {
-                code: ChildProcessSpawner.ExitCode(0),
-                stdout: json({ success: true, data }),
-                stderr: "",
-                timedOut: false,
-                stdoutTruncated: false,
-                stderrTruncated: false,
-                stdoutInvalidUtf8: false,
-                stderrInvalidUtf8: false,
-              };
-            }),
-          });
-          const currentHub = yield* Ref.make<DeviceHost.DeviceHostReady | null>(null);
-          // Opening an Android device probes the host's ffmpeg encoders before streaming.
-          const run: DeviceHost.DeviceHostReady["run"] = (_command, args) =>
-            Effect.succeed({
-              code: 0,
-              stdout: args[0] === "-e" ? " V....D libx264  H.264\n" : "",
-              stderr: "",
-            });
-          const ready: DeviceHost.DeviceHostReady = {
-            nodePath: "/remote-host/node-must-never-execute",
-            hub: { origin: viewerHubOrigin },
-            devices: makeDeviceHubOperations({
-              hostId: LOCAL_DEVICE_HOST_ID,
-              origin: viewerHubOrigin,
-              // Resolved per request: the fixture hub client below serves these calls.
-              http: HttpClient.make((request) => hub.execute(request)),
-              run,
-              androidAvailable: Ref.get(devicePlatformAvailable),
-            }),
-            helpers: { serveSimAxSettings: null, serveSimCli: null },
-            run,
-          };
-          const host: DeviceHost.DeviceHost["Service"] = {
-            id: LOCAL_DEVICE_HOST_ID,
-            label: "Isolated fixture",
-            summary: Ref.get(devicePlatformAvailable).pipe(
-              Effect.tap(() => Ref.get(deviceSummaryHook).pipe(Effect.flatten)),
-              Effect.flatMap((available) =>
-                Ref.get(deviceOldVersion).pipe(
-                  Effect.map((oldVersion) => ({
-                    id: LOCAL_DEVICE_HOST_ID,
-                    kind: "local" as const,
-                    label: "Isolated fixture",
-                    platforms: [{ platform: "android" as const, available }],
-                    hubInstalled: true,
-                    agentDeviceInstalled: true,
-                    tools: {
-                      agent: {
-                        requiredVersion: AGENT_DEVICE_VERSION,
-                        installedVersions: [oldVersion ? "0.21.12" : AGENT_DEVICE_VERSION],
-                        runningVersion: oldVersion ? "0.21.12" : AGENT_DEVICE_VERSION,
-                      },
-                      hub: {
-                        requiredVersion: DEVICE_HUB_VERSION,
-                        installedVersions: [DEVICE_HUB_VERSION],
-                        runningVersion: DEVICE_HUB_VERSION,
-                      },
-                    },
-                  })),
-                ),
-              ),
-            ),
-            platformAvailability: (platform) => Effect.succeed({ platform, available: true }),
-            ensureReady: Effect.fn("PeerAuthority.ensureReady")(
-              function* () {
-                yield* yield* Ref.get(deviceReadinessHook);
-                // A direct native UI setup call has no MCP request identity.
-                // Every registered action must be started before preparation.
-                if ((yield* RequestReceipts.CurrentRequest) !== undefined) yield* assertStarted;
-              },
-              Effect.andThen(Ref.update(deviceHostStarts, (n) => n + 1)),
-              Effect.andThen(
-                fs
-                  .writeFileString(
-                    `${config.stateDir}/fixture-device-host-started`,
-                    "Isolated native preparation footprint",
-                  )
-                  .pipe(Effect.orDie),
-              ),
-              Effect.tap(() => Ref.set(currentHub, ready)),
-              Effect.as(ready),
-            ),
-            ensureAgentReady: () =>
-              assertStarted.pipe(
-                Effect.andThen(Ref.update(deviceAgentStarts, (n) => n + 1)),
-                Effect.as({
-                  ...ready,
-                  agentDevice: {
-                    baseUrl: "http://device-agent382.invalid",
-                    token: "ISOLATED_DEVICE_TOKEN_382",
-                    entryPath,
-                  },
-                }),
-              ),
-            current: Ref.get(currentHub).pipe(
-              Effect.tap(() => Ref.get(deviceViewerCurrentHook).pipe(Effect.flatten)),
-            ),
-            stopAgent: Effect.void,
-            stop: Ref.set(currentHub, null),
-          };
-          const actualHttp = yield* Effect.serviceOption(HttpClient.HttpClient);
-          const hub = HttpClient.make((request) =>
-            Effect.gen(function* () {
-              if (!request.url.startsWith(`${viewerHubOrigin}/`)) {
-                if (Option.isNone(actualHttp))
-                  return yield* Effect.die("Native HTTP transport is unavailable in this fixture.");
-                return yield* actualHttp.value.execute(request);
-              }
-              const nativePath = new URL(request.url).pathname;
-              if (
-                request.method !== "GET" &&
-                request.method !== "HEAD" &&
-                /\/api\/(fold|stream-mode|stream-settings)$/.test(nativePath)
-              ) {
-                if (request.headers["content-type"] !== "application/json")
-                  return HttpClientResponse.fromWeb(request, new Response(null, { status: 415 }));
-                const body =
-                  request.body._tag === "Stream"
-                    ? Buffer.concat(
-                        yield* request.body.stream.pipe(Stream.orDie, Stream.runCollect),
-                      )
-                    : request.body._tag === "Uint8Array"
-                      ? request.body.body
-                      : new Uint8Array();
-                deviceViewerHttpInputs.push({
-                  path: nativePath,
-                  method: request.method,
-                  contentType: request.headers["content-type"],
-                  body: new TextDecoder().decode(body),
-                });
-                return HttpClientResponse.fromWeb(request, Response.json({ ok: true }));
-              }
-              if (request.url.endsWith("/stream.avcc")) {
-                deviceViewerRequests.push(request.url);
-                return HttpClientResponse.fromWeb(
-                  request,
-                  new Response(
-                    (yield* Ref.get(continuousDeviceMedia))
-                      ? yield* Stream.toReadableStreamEffect(Stream.fromQueue(deviceMediaChunks))
-                      : deviceViewerFrame,
-                    { headers: { "content-type": "application/octet-stream" } },
-                  ),
-                );
-              }
-              if (request.url.endsWith("/grid/api/start")) {
-                yield* assertStarted;
-                return HttpClientResponse.fromWeb(request, Response.json({ ok: true }));
-              }
-              if (request.url.endsWith("/shutdown")) {
-                yield* assertStarted;
-                yield* Ref.update(deviceShutdownCalls, (n) => n + 1);
-                return HttpClientResponse.fromWeb(request, Response.json({ ok: true }));
-              }
-              if (request.url.includes("screenshot")) {
-                if ((yield* RequestReceipts.CurrentRequest) !== undefined) yield* assertStarted;
-                yield* Ref.update(deviceScreenshotCalls, (n) => n + 1);
-                return HttpClientResponse.fromWeb(
-                  request,
-                  new Response(
-                    Buffer.from(
-                      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==",
-                      "base64",
-                    ),
-                    { headers: { "content-type": "image/png" } },
-                  ),
-                );
-              }
-              return HttpClientResponse.fromWeb(
-                request,
-                Response.json({
-                  simulators:
-                    (yield* Ref.get(deviceHubPlatform)) === "ios"
-                      ? [
-                          {
-                            id: "fixture-device382",
-                            name: "Isolated iOS",
-                            platform: "ios",
-                            version: "fixture",
-                            booted: yield* Ref.get(deviceHubBooted),
-                            physical: false,
-                          },
-                        ]
-                      : [],
-                  emulators:
-                    (yield* Ref.get(deviceHubPlatform)) === "android"
-                      ? [
-                          {
-                            id: "fixture-device382",
-                            name: "Isolated Android",
-                            platform: "android",
-                            version: "fixture",
-                            booted: yield* Ref.get(deviceHubBooted),
-                            physical: false,
-                          },
-                        ]
-                      : [],
-                }),
-              );
-            }),
-          );
-          const service = yield* NativeDevices.make.pipe(
-            Effect.provideService(DeviceHost.DeviceHost, host),
-            Effect.provideService(FileSystem.FileSystem, deviceFs),
-            Effect.provideService(ProcessRunner.ProcessRunner, runner),
-            Effect.provideService(HttpClient.HttpClient, hub),
-            Effect.provideService(Settings.ServerSettingsService, settingsService),
-            Effect.provide(Layer.merge(nodeConfig, Net.layer)),
-          );
-          fixtureDevice = service;
-          const deviceServiceLayer = Layer.succeed(NativeDevices.DeviceService, service);
-          if (!viewerOwner) return deviceServiceLayer;
-          return Layer.mergeAll(
-            HttpApiBuilder.layer(DeviceViewerTestApi).pipe(
-              Layer.provide(DeviceHubProxy.layerApi),
-              Layer.provide(AuthHttp.layerAuthenticatedAuth),
-            ),
-            DeviceHubProxy.layer,
-            Layer.effectDiscard(
-              Effect.gen(function* () {
-                fixtureViewers = yield* DeviceHubProxy.DeviceViewers;
-                fixtureViewerSessions = yield* ViewerSessions.SessionStore;
+                if (
+                  name.startsWith("secret-remote-") &&
+                  (yield* Ref.get(remoteSecretFault)) === "after-save"
+                ) {
+                  yield* Ref.set(remoteSecretFault, undefined);
+                  return yield* new Secrets.SecretStorePersistError({
+                    resource: "isolated remote publication",
+                    cause: new Error("Fixture interruption after protected publication"),
+                  });
+                }
               }),
             ),
-          ).pipe(
-            Layer.provideMerge(DeviceHubProxy.layerViewers),
-            Layer.provideMerge(deviceServiceLayer),
-            Layer.provide(Layer.succeed(HttpClient.HttpClient, hub)),
-          );
-        })
-      : Layer.mock(NativeDevices.DeviceService)({});
-
-    const artifactResponseHook = yield* Ref.make<Effect.Effect<void, OrchestratorMcpFailure>>(
-      Effect.void,
-    );
-    const artifactRequestHook = yield* Ref.make<
-      (checkOnly: boolean) => Effect.Effect<void, OrchestratorMcpFailure>
-    >(() => Effect.void);
-    const previewUploadContentTypes: string[] = [];
-    const artifactResponseBoundary = HttpRouter.middleware(
-      (effect) =>
-        Effect.gen(function* () {
-          const request = yield* HttpServerRequest.HttpServerRequest;
-          if (request.method === "POST" && request.url.startsWith("/api/preview-stream/upload?"))
-            previewUploadContentTypes.push(request.headers["content-type"] ?? "");
-          if (request.method === "POST" && request.url === "/mcp/peer-control/attachment")
-            yield* (yield* Ref.get(artifactRequestHook))(
-              request.headers["t3-attachment-check-only"] === "1",
-            ).pipe(Effect.interruptible);
-          const response = yield* effect;
-          if (
-            request.method === "POST" &&
-            request.url === "/mcp/peer-control/attachment" &&
-            response.status === 200
-          )
-            yield* yield* Ref.get(artifactResponseHook);
-          return response;
-        }),
-      { global: true },
-    );
-    const browserMediaLayer =
-      previewControls === undefined
-        ? Layer.empty
-        : Layer.mergeAll(
-            BrowserStream.routeLayer.pipe(Layer.provide(NodeHttpPlatform.layer)),
-            Layer.effectDiscard(
-              Effect.gen(function* () {
-                fixtureBrowserViewers = yield* BrowserStream.PreviewViewers;
-                fixtureBrowserViewerSessions = yield* ViewerSessions.SessionStore;
-              }),
+          ),
+        ),
+        remove: Effect.fn("PeerAuthority.remove")(
+          function* (name) {
+            if (
+              name.startsWith("secret-remote-") &&
+              (yield* Ref.get(remoteSecretFault)) === "cleanup" &&
+              ((yield* Ref.get(secretCleanupName)) === undefined ||
+                (yield* Ref.get(secretCleanupName)) === name)
+            ) {
+              return yield* new Secrets.SecretStoreRemoveError({
+                resource: "isolated redundant copy",
+                cause: new Error("Fixture interruption after outer commit"),
+              });
+            }
+            return yield* actualSecretStore.remove(name);
+          },
+          (effect, name) =>
+            effect.pipe(
+              Effect.tapError(() => Queue.offer(secretRemovals, { name, failed: true })),
+              Effect.tap(() => Queue.offer(secretRemovals, { name, failed: false })),
             ),
-          ).pipe(
-            Layer.provideMerge(BrowserStream.layerViewers),
-            Layer.provide(
-              nativeBrowser === undefined ? Layer.empty : Layer.succeedContext(nativeBrowser),
-            ),
-            Layer.provide(AuthSessions.layer.pipe(Layer.provide(db))),
-            Layer.provide(FetchHttpClient.layer),
+        ),
+      });
+      const secretOwners = remoteSecrets
+        ? yield* Layer.mergeAll(RemoteSecretRequests.layer, RemoteSecretRelay.layer).pipe(
+            Layer.provide(Layer.succeed(Clock.Clock, secretOwnerClock)),
+            Layer.provide(faultSecretStore),
+            Layer.provide(secretAuthority),
+            Layer.provide(Layer.succeedContext(services)),
+            Layer.provide(Layer.succeedContext(baseServices)),
+            Layer.provide(Layer.succeedContext(runtime)),
+            Layer.provide(db),
             Layer.provide(environment),
-          );
-    const timedSecretService = Layer.effect(
-      OrchestratorService.OrchestratorMcpService,
-      Effect.gen(function* () {
-        const actual = yield* OrchestratorService.OrchestratorMcpService;
-        return {
-          ...actual,
-          requestSecret: Effect.fn("PeerAuthority.requestSecret")(function* (
-            ...args: Parameters<typeof actual.requestSecret>
-          ) {
-            const clock = yield* Ref.get(secretRequestClock);
-            const abort = yield* Ref.get(secretRequestAbort);
-            const actualCall = actual.requestSecret(...args);
-            const effect =
-              abort === undefined
-                ? actualCall
-                : Effect.raceFirst(
-                    actualCall,
-                    Deferred.await(abort).pipe(Effect.andThen(Effect.interrupt)),
-                  );
-            return yield* (
-              clock === undefined ? effect : Effect.provideService(effect, Clock.Clock, clock)
-            ).pipe(Effect.onExit(() => Queue.offer(secretRequestExits, undefined)));
-          }),
-        };
-      }),
-    ).pipe(Layer.provide(OrchestratorService.layer));
-    const secretToolkit = McpHttpServer.toolkitRegistration(
-      OrchestratorToolkit,
-      OrchestratorHandlers.layer,
-    ).pipe(Layer.provide(timedSecretService), Layer.provide(ThreadMetadataService.layer));
-    const toolsFor = (
-      scheduleServices: typeof schedules,
-      requests: typeof requestContext = requestContext,
-      nativeServices = services,
-    ) =>
-      Layer.mergeAll(
-        artifactResponseBoundary,
-        McpHttpServer.layerProjectRegistration,
-        remoteSecrets ? secretToolkit : McpHttpServer.layerOrchestratorToolkit,
-        ...(previewControls === undefined
-          ? []
-          : [
-              McpHttpServer.toolkitRegistration(
-                PreviewControlsToolkit,
-                PreviewControlHandlers.layer,
-              ).pipe(Layer.provide(Layer.succeedContext(previewControls))),
-            ]),
-        ...(preferencesOwner ? [McpHttpServer.layerEnvironmentToolkit] : []),
-        ...(deviceOwner
-          ? [
-              legacyDeviceDomain
-                ? McpHttpServer.toolkitRegistration(
-                    LegacyDeviceToolkit,
-                    LegacyDeviceHandlers.layerStandard,
-                  )
-                : McpHttpServer.layerDeviceToolkit,
-            ]
-          : []),
-        ...(attachmentRequests
-          ? [
-              McpHttpServer.toolkitRegistration(IssuesToolkit, IssueHandlers.layer).pipe(
-                Layer.provide(
-                  IssueLinks.layer.pipe(
-                    Layer.provide(
-                      Layer.succeed(ClosingReferences.IssueClosingReferences, {
-                        issuesClosedBy: Effect.fn(
-                          "ClosingReferences.IssueClosingReferences.issuesClosedBy",
-                        )(() => Effect.succeed([])),
-                      }),
-                    ),
-                  ),
-                ),
-              ),
-              McpHttpServer.layerPullRequestsToolkit,
-              McpHttpServer.toolkitRegistration(AttachmentToolkit, AttachmentHandlers.layer),
-              ServerHttp.layerAttachmentUploadRoute,
-              ServerHttp.layerAssetRoute.pipe(
-                HttpRouter.provideRequest(
-                  Layer.mergeAll(
-                    NodeHttpPlatform.layer,
-                    WorkspacePaths.layer,
-                    NativeAppIconResolver.layer.pipe(Layer.provide(nodeConfig)),
-                    Layer.succeedContext(runtime),
-                    // This fixture has no GitHub resource. Never access a real account.
-                    Layer.mock(GitHubCredentials.GitHubCredentials)({
-                      get: () =>
-                        Effect.die("No GitHub credential access in the native artifact fixture"),
-                    }),
-                  ),
-                ),
-                Layer.provide(environment),
-              ),
-              McpHttpServer.layerPreviewToolkit,
-              McpHttpServer.layerThreadToolkit,
-              McpHttpServer.layerHtmlToolkit,
-              handoff,
-              McpHttpServer.toolkitRegistration(SpectrumMcp.SpectrumToolkit, SpectrumMcp.layer),
-            ]
-          : []),
-      ).pipe(
-        Layer.provide(
-          Layer.mergeAll(
-            DocumentText.layer,
-            PreviewAgentActivity.layer,
-            Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
-            Layer.succeedContext(services),
-          ),
-        ),
-        Layer.provide(
-          Layer.mergeAll(
-            spectrumLayer,
-            htmlLayer,
-            previewBrowser,
-            nativeBrowser === undefined ? Layer.empty : Layer.succeedContext(nativeBrowser),
-          ),
-        ),
-        Layer.provide(
-          Layer.mergeAll(
-            Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
-            deviceLayer,
-            browserMediaLayer,
-          ),
-        ),
-        Layer.provide(ThreadSearch.layer.pipe(Layer.provide(db))),
-        Layer.provide(Layer.succeed(BrowserBroker.PreviewAutomationBroker, browser)),
-        Layer.provide(Layer.succeedContext(requests)),
-        Layer.provide(nodeConfig),
-        Layer.provide(Layer.succeedContext(baseServices)),
-        Layer.provide(Layer.succeedContext(scheduleServices)),
-        Layer.provide(
-          Layer.mergeAll(
-            remoteSecrets ? nativeSecrets : Layer.mock(SecretRequests.SecretRequests)({}),
-            Layer.succeedContext(secretOwners),
-          ),
-        ),
-        Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
-        Layer.provide(Layer.succeedContext(launches)),
-        Layer.provide(Layer.succeedContext(runtime)),
-        Layer.provide(Layer.succeedContext(nativeServices)),
-        Layer.provide(projectLayer),
-        Layer.provide(folders),
-        Layer.provide(settings),
-        Layer.provide(
-          attachmentRequests ? Adapters.layerFromAdapters([providerAdapter]) : Layer.empty,
-        ),
-        Layer.provide(layerLaunchCatalog),
-        Layer.provide(
-          Layer.mergeAll(
-            Layer.mock(Git.GitVcsDriver)({}),
-            Layer.mock(Repositories.SourceControlRepositoryService)({}),
-          ),
-        ),
-      );
-    const tools = toolsFor(schedules);
-    const lifecycleContext = Context.mergeAll(
-      services,
-      runtime,
-      database,
-      productionKernel ? Context.empty() : Context.make(RecoveryWaitState, lifecycleRecovery),
-    );
-    const lifecycle = yield* PeerTaskLifecycle.layer.pipe(
-      Layer.provide(Layer.succeedContext(lifecycleContext)),
-      Layer.build,
-    );
-    const pendingRequests = yield* PendingRequests.layer.pipe(
-      Layer.provide(
-        Layer.succeedContext(
-          Context.mergeAll(
-            lifecycleContext,
-            baseServices,
-            requestContext,
-            Context.make(Environment.ServerEnvironment, {
-              getEnvironmentId: Effect.succeed(descriptor.environmentId),
-              getDescriptor: Effect.succeed(descriptor),
-            }),
-          ),
-        ),
-      ),
-      Layer.build,
-    );
-    const peer = yield* servePeer(descriptor, tools, {
-      ...(attachmentRequests
-        ? { serverConfig: Context.get(nodeConfigContext, Config.ServerConfig) }
-        : {}),
-      database: db,
-      registry,
-      secretStore: Context.get(services, Secrets.ServerSecretStore),
-      authorityServices: Context.mergeAll(
-        lifecycleContext,
-        lifecycle,
-        pendingRequests,
-        secretOwners,
-        nativeBrowser ?? Context.empty(),
-      ),
-    }).pipe(Effect.provide(Layer.succeedContext(serverContext)));
-    let nativeViewerRpcUrl: string | undefined;
-    const nativeCommandOutputFinalized = yield* Queue.unbounded<ThreadId>();
-    if (previewControls !== undefined) {
-      const http = yield* sourceHttp.pipe(Layer.fresh, Layer.build);
-      const address = Context.get(http, HttpServer.HttpServer).address;
-      if (address._tag === "UnixPathAddress")
-        return yield* Effect.die("Expected native RPC fixture socket");
-      nativeViewerRpcUrl = `ws://127.0.0.1:${address.port}`;
-      const viewerHandlers = HttpRouter.use((router) =>
-        router
-          .add(
-            "GET",
-            "/ws",
-            Effect.gen(function* () {
-              const request = yield* HttpServerRequest.HttpServerRequest;
-              const session = yield* peer.auth.authenticateWebSocketUpgrade(request, "rpc");
-              const { protocol, httpEffect } = yield* RpcServer.makeProtocolWithHttpEffectWebsocket;
-              yield* RpcServer.make(nativeOwnerRpcGroup, {
-                disableTracing: true,
-                disableFatalDefects: true,
-              }).pipe(
-                Effect.provideService(RpcServer.Protocol, protocol),
-                Effect.provide(
-                  Layer.mergeAll(
-                    nativeOwnerRpcGroup.toLayer({
-                      ...BrowserStream.clientHandlers(session, fixtureBrowserViewers!),
-                      [WS_METHODS.peerLinksList]: () =>
-                        Context.get(services, PeerLinks.PeerLinks).list.pipe(
-                          Effect.map((links) => ({ links })),
-                        ),
-                      [ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput]: (input) =>
-                        Stream.unwrap(
-                          Effect.annotateCurrentSpan({
-                            "orchestration_v2.thread_id": input.threadId,
-                          }).pipe(
-                            Effect.as(
-                              Option.getOrThrow(commandOutput)
-                                .subscribe(input)
-                                .pipe(
-                                  Stream.ensuring(
-                                    Queue.offer(nativeCommandOutputFinalized, input.threadId),
-                                  ),
-                                ),
-                            ),
-                          ),
-                        ),
-                    }),
-                    RpcAuthorization.layer(session.scopes),
-                    rpcInstrumentationLayer,
-                  ),
-                ),
-                Effect.forkScoped,
-              );
-              return yield* Effect.acquireUseRelease(
-                fixtureBrowserViewerSessions!.markConnected(session.sessionId),
-                () =>
-                  Effect.raceFirst(
-                    httpEffect,
-                    fixtureBrowserViewerSessions!
-                      .awaitInvalidation(session.sessionId)
-                      .pipe(Effect.as(HttpServerResponse.empty())),
-                  ),
-                () => fixtureBrowserViewerSessions!.markDisconnected(session.sessionId),
-              );
-            }),
+            Layer.provide(nodeConfig),
+            Layer.buildWithScope(secretOwnerScope),
           )
-          .pipe(Effect.asVoid),
+        : Context.empty();
+      const handoffGitManager = GitManager.layer.pipe(
+        Layer.provide(actualGit),
+        Layer.provide(
+          Layer.mock(SourceProviders.SourceControlProviderRegistry)({
+            resolveLink: () => Effect.die("No external repository host in this fixture"),
+            // Upstream git workflows look up a forge and tolerate none.
+            resolve: ({ cwd }) =>
+              Effect.fail(
+                new SourceControlProviderError({
+                  provider: SourceControlProviderKind.make("unknown"),
+                  operation: "resolve",
+                  cwd,
+                  detail: "No external repository host in this fixture.",
+                }),
+              ),
+          }),
+        ),
+        Layer.provide(Layer.mock(TextGeneration.TextGeneration)({})),
+        Layer.provide(layerLaunchCatalog),
+        Layer.provide(Layer.succeedContext(runtime)),
+        Layer.provide(ProjectStore.layer.pipe(Layer.provide(db))),
+        Layer.provide(Layer.merge(SecretResolver.layer.pipe(Layer.provide(settings)), settings)),
+        Layer.provide(Layer.mock(SetupScripts.ProjectSetupScriptRunner)({})),
       );
-      yield* HttpRouter.serve(viewerHandlers, { disableListenLog: true, disableLogger: true }).pipe(
-        Layer.provide(Layer.succeedContext(http)),
-        Layer.provide(RpcSerialization.layerJson),
+      const handoffGit = GitWorkflow.layer.pipe(
+        Layer.provide(handoffGitManager),
+        Layer.provide(actualGit),
+        Layer.provide(VcsRegistry.layer.pipe(Layer.provide(VcsProcess.layer))),
+      );
+      const launchDependencies = Layer.mergeAll(
+        Layer.succeedContext(runtime),
+        db,
+        projectLayer,
+        folders,
+        settings,
+        layerLaunchCatalog,
+        Receipts.layer.pipe(Layer.provide(db)),
+        IdAllocator.layer,
+        WorktreeSetup.layer,
+        Layer.mock(ProjectClone.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
+        Layer.mock(Terminals.TerminalManager)({ close: () => Effect.void }),
+        ownerWorkspace === undefined
+          ? Layer.mock(GitWorkflow.GitWorkflowService)({})
+          : handoffGit.pipe(Layer.provide(nodeConfig)),
+        Layer.mock(TextGeneration.TextGeneration)({}),
+        Layer.mock(SetupScripts.ProjectSetupScriptRunner)({
+          runForThread: () => Effect.succeed({ status: "no-script" as const }),
+        }),
+        Layer.mock(BareLaunch.BareLaunch)({}),
+      );
+      const launches = yield* ThreadLaunch.layer.pipe(
+        Layer.provide(launchDependencies),
         Layer.fresh,
         Layer.build,
       );
-    }
-    yield* Effect.addFinalizer(() =>
-      Effect.forEach([...connectionScopes], (lifetime) => Scope.close(lifetime, Exit.void), {
-        concurrency: "unbounded",
-        discard: true,
-      }),
-    );
-    const rebuildScheduler = Scope.close(scheduleScope, Exit.void).pipe(
-      Effect.andThen(scheduleLayer.pipe(Layer.fresh, Layer.build)),
-    );
-    const restartSchedulerTransportWith = Effect.fn("PeerAuthority.restartSchedulerTransportWith")(
-      function* (durableRequests: boolean) {
+      const holdManualLaunchReply = yield* Ref.make(false);
+      const manualLaunchReplyHeld = yield* Deferred.make<void>();
+      const actualLaunch = Context.get(launches, ThreadLaunch.ThreadLaunchService);
+      const scheduledLaunch = Layer.succeed(ThreadLaunch.ThreadLaunchService, {
+        ...actualLaunch,
+        launch: Effect.fn("ThreadLaunch.ThreadLaunchService.launch")((input) =>
+          actualLaunch.launch(input).pipe(
+            Effect.tap(() =>
+              Effect.gen(function* () {
+                if (
+                  !input.commandId.startsWith("scheduled-task:manual:") ||
+                  !(yield* Ref.get(holdManualLaunchReply))
+                )
+                  return;
+                yield* Deferred.succeed(manualLaunchReplyHeld, undefined);
+                return yield* Effect.never;
+              }),
+            ),
+          ),
+        ),
+      });
+      const holdManualSend = yield* Ref.make(false);
+      const manualSendHeld = yield* Deferred.make<void>();
+      const releaseManualSend = yield* Deferred.make<void>();
+      const actualThreads = Context.get(runtime, Threads.ThreadManagementService);
+      // Holds a keyed manual send to an existing thread before native acceptance.
+      const scheduledThreads = Layer.succeed(Threads.ThreadManagementService, {
+        ...actualThreads,
+        sendToThread: Effect.fn("PeerAuthority.sendToThread")(function* (input) {
+          if (
+            input.commandId.startsWith("scheduled-task:manual:") &&
+            (yield* Ref.get(holdManualSend))
+          ) {
+            yield* Deferred.succeed(manualSendHeld, undefined);
+            yield* Deferred.await(releaseManualSend);
+          }
+          return yield* actualThreads.sendToThread(input);
+        }),
+      });
+      const secretConsumes = yield* Ref.make(0);
+      const loseSecretConfirmation = yield* Ref.make(false);
+      const nativeSecrets = SecretRequests.layer.pipe(
+        Layer.provide(nodeConfig),
+        Layer.provide(
+          Layer.succeed(
+            Secrets.ServerSecretStore,
+            Context.get(services, Secrets.ServerSecretStore),
+          ),
+        ),
+        Layer.provide(Layer.succeedContext(runtime)),
+      );
+      const scheduleSecrets = attachmentRequests
+        ? Layer.effect(
+            SecretRequests.SecretRequests,
+            Effect.gen(function* () {
+              const actual = yield* SecretRequests.SecretRequests;
+              return {
+                ...actual,
+                consume: Effect.fn("PeerAuthority.consume")(function* (
+                  input: Parameters<typeof actual.consume>[0],
+                ) {
+                  const rows = yield* Context.get(
+                    database,
+                    SqlClient.SqlClient,
+                  )`SELECT request_id FROM scheduled_mutation_receipts WHERE stage='secret-started'`.pipe(
+                    Effect.orDie,
+                  );
+                  expect(rows.length).toBeGreaterThan(0);
+                  yield* Ref.update(secretConsumes, (n) => n + 1);
+                  const secret = yield* actual.consume(input);
+                  if (yield* Ref.getAndSet(loseSecretConfirmation, false))
+                    return yield* new SecretRequestError({ reason: "consume_failed" });
+                  return secret;
+                }),
+              };
+            }),
+          ).pipe(Layer.provide(nativeSecrets))
+        : Layer.mock(SecretRequests.SecretRequests)({});
+      const scheduleLayer = (
+        attachmentRequests
+          ? ScheduledChecks.withOutcomeChecks(ScheduledTasks.layer)
+          : ScheduledTasks.layer
+      ).pipe(
+        Layer.provide(
+          commandSpawner === undefined
+            ? ProcessRunner.layer
+            : ProcessRunner.layer.pipe(
+                Layer.provide(
+                  Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, commandSpawner),
+                ),
+                Layer.fresh,
+              ),
+        ),
+        Layer.provide(Layer.succeedContext(secretOwners)),
+        Layer.provide(Layer.succeedContext(baseServices)),
+        Layer.provide(
+          Layer.succeed(
+            ScheduledTasks.ScheduledTaskWebhookOrigin,
+            Effect.succeed({ relayHookBaseUrl: "https://hooks.example.invalid/v1/hooks/fixture" }),
+          ),
+        ),
+        Layer.provide(
+          manualScheduler === undefined
+            ? Scheduler.layer
+            : Layer.succeed(Scheduler.Scheduler, manualScheduler),
+        ),
+        Layer.provide(scheduleSecrets),
+        Layer.provide(scheduledLaunch),
+        Layer.provide(scheduledThreads),
+        Layer.provide(Prism.layer.pipe(Layer.provide(settings), Layer.provide(layerLaunchCatalog))),
+        Layer.provide(
+          commandSpawner === undefined
+            ? Layer.empty
+            : Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, commandSpawner),
+        ),
+        Layer.provide(ProjectStore.layer.pipe(Layer.provide(db))),
+        Layer.provide(launchDependencies),
+        Layer.provide(hostServices),
+      );
+      const scheduleScope = yield* Scope.make();
+      yield* Effect.addFinalizer(() => Scope.close(scheduleScope, Exit.void));
+      const schedules = yield* scheduleLayer.pipe(Layer.fresh, Layer.buildWithScope(scheduleScope));
+      if (attachmentRequests) {
+        yield* SpectrumStore.ensureSpectrumSchema.pipe(Effect.provide(db));
+        yield* CheckStore.ensureCheckSchema.pipe(Effect.provide(db));
+      }
+      const spectrumLayer = SpectrumLaunch.layer.pipe(
+        Layer.provide(Layer.succeedContext(baseServices)),
+        Layer.provide(Adapters.layerFromAdapters([providerAdapter])),
+        Layer.provide(Prism.layer.pipe(Layer.provide(settings), Layer.provide(layerLaunchCatalog))),
+        Layer.provide(ProjectStore.layer.pipe(Layer.provide(db))),
+        Layer.provide(launchDependencies),
+      );
+      const loseWorktreeReply = yield* Ref.make(false);
+      const worktreeThreads = {
+        ...Context.get(runtime, Threads.ThreadManagementService),
+        dispatch: (input: Parameters<Threads.ThreadManagementService["Service"]["dispatch"]>[0]) =>
+          Context.get(runtime, Threads.ThreadManagementService)
+            .dispatch(input)
+            .pipe(
+              Effect.flatMap((result) =>
+                Effect.gen(function* () {
+                  if (
+                    input.type === "thread.metadata.update" &&
+                    input.commandId.startsWith("worktree-handoff:") &&
+                    (yield* Ref.getAndSet(loseWorktreeReply, false))
+                  )
+                    return yield* new Orchestrator.OrchestratorDispatchError({
+                      commandId: input.commandId,
+                      commandType: input.type,
+                      cause: "Isolated committed native binding reply loss",
+                    });
+                  return result;
+                }),
+              ),
+            ),
+      };
+      const handoff =
+        ownerWorkspace === undefined
+          ? Layer.empty
+          : yield* Effect.gen(function* () {
+              const gitContext = yield* handoffGit.pipe(
+                Layer.provide(nodeConfig),
+                Layer.fresh,
+                Layer.build,
+              );
+              const service = WorktreeMcp.layer.pipe(
+                Layer.provide(Layer.succeed(Threads.ThreadManagementService, worktreeThreads)),
+                Layer.provide(Layer.succeedContext(gitContext)),
+                Layer.provide(
+                  Layer.mock(VcsStatus.VcsStatusBroadcaster)({
+                    refreshStatus: (cwd) =>
+                      Context.get(gitContext, GitWorkflow.GitWorkflowService).status({ cwd }),
+                  }),
+                ),
+                Layer.provide(launchDependencies),
+              );
+              return McpHttpServer.toolkitRegistration(
+                WorktreeToolkit,
+                WorktreeHandlers.layer,
+              ).pipe(Layer.provide(service), Layer.provide(Layer.succeedContext(gitContext)));
+            });
+      const browser = yield* BrowserBroker.make.pipe(
+        Effect.provideService(
+          PeerAuthority.PeerAuthority,
+          Context.get(baseServices, PeerAuthority.PeerAuthority),
+        ),
+      );
+      const previewBrowser = Layer.succeed(PreviewBrowser.PreviewBrowser, {
+        installed: Effect.succeedNone,
+        executable: Effect.die("This isolated fixture cannot launch a browser"),
+      });
+      const nativeBrowser = browserOwner
+        ? yield* NativeBrowser.layer.pipe(
+            Layer.provide(Layer.succeedContext(runtime)),
+            Layer.provide(
+              Layer.mock(CredentialVault.CredentialVault)({
+                uris: () => Effect.die("No real vault access in the peer authority fixture"),
+                read: () => Effect.die("No real vault access in the peer authority fixture"),
+              }),
+            ),
+            Layer.provideMerge(NativePreviewManager.layer),
+            Layer.provide(NativeDesktopChannel.layer),
+            Layer.provide(Layer.succeed(BrowserBroker.PreviewAutomationBroker, browser)),
+            Layer.provide(previewBrowser),
+            Layer.provide(nodeConfig),
+            Layer.provide(environment),
+            Layer.build,
+          )
+        : undefined;
+      const previewControls =
+        nativeBrowser ??
+        (previewControlsOwner ? yield* NativePreviewManager.layer.pipe(Layer.build) : undefined);
+      const htmlLayer = HtmlRender.layer.pipe(
+        Layer.provide(
+          Layer.succeed(FileSystem.FileSystem, {
+            ...actualFs,
+            stream: (path, options) =>
+              htmlImageReadGate === undefined
+                ? actualFs.stream(path, options)
+                : Stream.unwrap(htmlImageReadGate.pipe(Effect.as(actualFs.stream(path, options)))),
+          }),
+        ),
+        Layer.provide(nodeConfig),
+        Layer.provide(previewBrowser),
+      );
+
+      const deviceHostStarts = yield* Ref.make(0);
+      const devicePlatformAvailable = yield* Ref.make(true);
+      const deviceAgentStarts = yield* Ref.make(0);
+      const deviceConfigurations = yield* Ref.make(0);
+      const loseDeviceConfiguration = yield* Ref.make(false);
+      const deviceProcessCalls: ProcessRunner.ProcessRunInput[] = [];
+      const deviceProcessHook = yield* Ref.make<
+        (input: ProcessRunner.ProcessRunInput) => Effect.Effect<void>
+      >(() => Effect.void);
+      const deviceSummaryHook = yield* Ref.make<Effect.Effect<void>>(Effect.void);
+      const deviceReadinessHook = yield* Ref.make<Effect.Effect<void>>(Effect.void);
+      const deviceObservedScope = yield* Ref.make<
+        Option.Option<Invocation.McpThreadInvocationScope>
+      >(Option.none());
+      const deviceMediaPaths = new Map<string, string>();
+      const deviceMediaOutside = yield* Ref.make(false);
+      const deviceScreenshotCalls = yield* Ref.make(0);
+      const deviceShutdownCalls = yield* Ref.make(0);
+      const deviceHubPlatform = yield* Ref.make<"android" | "ios">("android");
+      const deviceHubBooted = yield* Ref.make(true);
+      const deviceViewerRequests: string[] = [];
+      const deviceViewerCurrentHook = yield* Ref.make<Effect.Effect<void>>(Effect.void);
+      const deviceViewerFrame = Uint8Array.of(0, 0, 0, 4, 0, 1, 100, 0);
+      const deviceViewerInputs: string[] = [];
+      const deviceViewerHttpInputs: Array<{
+        path: string;
+        method: string;
+        contentType: string;
+        body: string;
+      }> = [];
+      const deviceViewerOutput: { bytes: string | Uint8Array } = {
+        bytes: json({ ok: true }),
+      };
+      let viewerHubOrigin = "http://device382.invalid";
+      if (viewerSocketOwner) {
+        const hub = yield* Effect.acquireRelease(
+          Effect.sync(() => new NodeWS.WebSocketServer({ port: 0 })),
+          (server) =>
+            Effect.promise(
+              () =>
+                new Promise<void>((resolve) => {
+                  for (const client of server.clients) client.terminate();
+                  server.close(() => resolve());
+                }),
+            ),
+        );
+        if (!hub.address())
+          yield* Effect.promise(
+            () => new Promise<void>((resolve) => hub.once("listening", resolve)),
+          );
+        const address = hub.address();
+        if (typeof address !== "object" || address === null)
+          throw new Error("Missing external hub port");
+        viewerHubOrigin = `http://127.0.0.1:${address.port}`;
+        hub.on("connection", (socket) => {
+          socket.on("message", (data) => {
+            deviceViewerInputs.push(data.toString());
+            socket.send(deviceViewerOutput.bytes);
+          });
+        });
+      }
+
+      const deviceOldVersion = yield* Ref.make(false);
+      const deviceCapabilities = yield* Ref.make({
+        device: {
+          id: "fixture-device382",
+          platform: "android",
+          target: "mobile",
+          kind: "emulator",
+        },
+        availableCommands: [
+          "open",
+          "snapshot",
+          "click",
+          "fill",
+          "screenshot",
+          "close",
+          "record",
+          "trace",
+          "install",
+        ],
+      });
+      const continuousDeviceMedia = yield* Ref.make(false);
+      const deviceMediaChunks = yield* Queue.unbounded<Uint8Array>();
+      let fixtureDevice: NativeDevices.DeviceService["Service"] | undefined;
+      let fixtureViewers: DeviceHubProxy.DeviceViewers["Service"] | undefined;
+      let fixtureBrowserViewers: BrowserStream.PreviewViewers["Service"] | undefined;
+      let fixtureBrowserViewerSessions: ViewerSessions.SessionStore["Service"] | undefined;
+      let fixtureViewerSessions: ViewerSessions.SessionStore["Service"] | undefined;
+      const deviceLayer = deviceOwner
+        ? yield* Effect.gen(function* () {
+            const settingsService = Context.get(settingsContext, Settings.ServerSettingsService);
+            yield* settingsService.updateSettings({
+              enableDeviceSupport: true,
+              enableAgentDeviceAccess: true,
+            });
+            const config = Context.get(nodeConfigContext, Config.ServerConfig);
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const file = yield* agentDeviceConfigPath(config.stateDir, LOCAL_DEVICE_HOST_ID, path);
+            const agentInstall = `${config.baseDir}/tools/agent-device/${AGENT_DEVICE_VERSION}`;
+            const hubInstall = `${config.baseDir}/tools/expo-device-hub/${DEVICE_HUB_VERSION}`;
+            const entryPath = `${agentInstall}/node_modules/agent-device/bin/agent-device.mjs`;
+            const hubEntry = `${hubInstall}/node_modules/expo-device-hub/dist/server/cli.mjs`;
+            for (const [entry, install, version] of [
+              [entryPath, agentInstall, AGENT_DEVICE_VERSION],
+              [hubEntry, hubInstall, DEVICE_HUB_VERSION],
+            ] as const) {
+              yield* fs.makeDirectory(path.dirname(entry), { recursive: true });
+              yield* fs.writeFileString(
+                entry,
+                "// Isolated external process leaf, never executed.\n",
+              );
+              yield* fs.writeFileString(`${install}/.install-complete`, version);
+            }
+            const assertStarted = Effect.gen(function* () {
+              const sql = Context.get(database, SqlClient.SqlClient);
+              expect(
+                (yield* sql`SELECT id FROM mcp_request_receipts WHERE state='started'`.pipe(
+                  Effect.orDie,
+                )).length,
+              ).toBeGreaterThan(0);
+            });
+            const deviceFs: FileSystem.FileSystem = {
+              ...fs,
+              rename: (from, to) => {
+                if (to !== file && !to.startsWith(`${config.stateDir}/device/sessions/`))
+                  return fs.rename(from, to);
+                return assertStarted.pipe(
+                  Effect.andThen(fs.rename(from, to)),
+                  Effect.tap(() =>
+                    Effect.gen(function* () {
+                      yield* Ref.update(deviceConfigurations, (n) => n + 1);
+                      if (yield* Ref.getAndSet(loseDeviceConfiguration, false))
+                        return yield* PlatformError.systemError({
+                          _tag: "Unknown",
+                          module: "FileSystem",
+                          method: "rename",
+                          description: "Isolated reply loss after actual native config persistence",
+                        });
+                    }),
+                  ),
+                );
+              },
+            };
+            const runner = ProcessRunner.ProcessRunner.of({
+              run: Effect.fn("PeerAuthority.run")(function* (input) {
+                yield* assertStarted;
+                const observed = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+                if (Option.isSome(observed) && observed.value.thread !== undefined)
+                  yield* Ref.set(
+                    deviceObservedScope,
+                    Option.some({ ...observed.value, thread: observed.value.thread }),
+                  );
+                deviceProcessCalls.push(input);
+                yield* (yield* Ref.get(deviceProcessHook))(input);
+                const family = input.args[1];
+                let data: unknown =
+                  family === "capabilities"
+                    ? yield* Ref.get(deviceCapabilities)
+                    : family === "snapshot"
+                      ? {
+                          nodes: [
+                            {
+                              index: 1,
+                              ref: "e1",
+                              role: "button",
+                              label: "Continue",
+                              privatePath: "/host/private",
+                            },
+                          ],
+                          config: "/host/private",
+                          token: "ISOLATED_DEVICE_TOKEN_382",
+                        }
+                      : {};
+                if (family === "record" || family === "trace") {
+                  const flags = input.args.slice(0, input.args.indexOf("--"));
+                  const positionals = input.args.slice(input.args.indexOf("--") + 1);
+                  const key = `${flags[flags.indexOf("--session") + 1]}:${family}`;
+                  if (positionals[0] === "start") deviceMediaPaths.set(key, positionals[1]!);
+                  const outPath = deviceMediaPaths.get(key)!;
+                  if (positionals[0] === "stop") {
+                    if (family === "record") {
+                      const bytes = new Uint8Array(24);
+                      new DataView(bytes.buffer).setUint32(4, 0x66747970);
+                      yield* fs.writeFile(outPath, bytes).pipe(Effect.orDie);
+                    } else
+                      yield* fs
+                        .writeFileString(
+                          outPath,
+                          "trace ISOLATED_DEVICE_TOKEN_382 http://device-agent382.invalid",
+                        )
+                        .pipe(Effect.orDie);
+                  }
+                  data = {
+                    [family === "record" ? "recording" : "trace"]:
+                      positionals[0] === "start" ? "started" : "stopped",
+                    outPath,
+                    artifacts: [
+                      {
+                        field: "outPath",
+                        localPath: (yield* Ref.get(deviceMediaOutside)) ? entryPath : outPath,
+                      },
+                    ],
+                    durationMs: 200,
+                    capturedDurationMs: 150,
+                    recorder: "unconfirmed",
+                    nativePathDisposition: "pending",
+                  };
+                }
+                return {
+                  code: ChildProcessSpawner.ExitCode(0),
+                  stdout: json({ success: true, data }),
+                  stderr: "",
+                  timedOut: false,
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                  stdoutInvalidUtf8: false,
+                  stderrInvalidUtf8: false,
+                };
+              }),
+            });
+            const currentHub = yield* Ref.make<DeviceHost.DeviceHostReady | null>(null);
+            // Opening an Android device probes the host's ffmpeg encoders before streaming.
+            const run: DeviceHost.DeviceHostReady["run"] = (_command, args) =>
+              Effect.succeed({
+                code: 0,
+                stdout: args[0] === "-e" ? " V....D libx264  H.264\n" : "",
+                stderr: "",
+              });
+            const ready: DeviceHost.DeviceHostReady = {
+              nodePath: "/remote-host/node-must-never-execute",
+              hub: { origin: viewerHubOrigin },
+              devices: makeDeviceHubOperations({
+                hostId: LOCAL_DEVICE_HOST_ID,
+                origin: viewerHubOrigin,
+                // Resolved per request: the fixture hub client below serves these calls.
+                http: HttpClient.make((request) => hub.execute(request)),
+                run,
+                androidAvailable: Ref.get(devicePlatformAvailable),
+              }),
+              helpers: { serveSimAxSettings: null, serveSimCli: null },
+              run,
+            };
+            const host: DeviceHost.DeviceHost["Service"] = {
+              id: LOCAL_DEVICE_HOST_ID,
+              label: "Isolated fixture",
+              summary: Ref.get(devicePlatformAvailable).pipe(
+                Effect.tap(() => Ref.get(deviceSummaryHook).pipe(Effect.flatten)),
+                Effect.flatMap((available) =>
+                  Ref.get(deviceOldVersion).pipe(
+                    Effect.map((oldVersion) => ({
+                      id: LOCAL_DEVICE_HOST_ID,
+                      kind: "local" as const,
+                      label: "Isolated fixture",
+                      platforms: [{ platform: "android" as const, available }],
+                      hubInstalled: true,
+                      agentDeviceInstalled: true,
+                      tools: {
+                        agent: {
+                          requiredVersion: AGENT_DEVICE_VERSION,
+                          installedVersions: [oldVersion ? "0.21.12" : AGENT_DEVICE_VERSION],
+                          runningVersion: oldVersion ? "0.21.12" : AGENT_DEVICE_VERSION,
+                        },
+                        hub: {
+                          requiredVersion: DEVICE_HUB_VERSION,
+                          installedVersions: [DEVICE_HUB_VERSION],
+                          runningVersion: DEVICE_HUB_VERSION,
+                        },
+                      },
+                    })),
+                  ),
+                ),
+              ),
+              platformAvailability: (platform) => Effect.succeed({ platform, available: true }),
+              ensureReady: Effect.fn("PeerAuthority.ensureReady")(
+                function* () {
+                  yield* yield* Ref.get(deviceReadinessHook);
+                  // A direct native UI setup call has no MCP request identity.
+                  // Every registered action must be started before preparation.
+                  if ((yield* RequestReceipts.CurrentRequest) !== undefined) yield* assertStarted;
+                },
+                Effect.andThen(Ref.update(deviceHostStarts, (n) => n + 1)),
+                Effect.andThen(
+                  fs
+                    .writeFileString(
+                      `${config.stateDir}/fixture-device-host-started`,
+                      "Isolated native preparation footprint",
+                    )
+                    .pipe(Effect.orDie),
+                ),
+                Effect.tap(() => Ref.set(currentHub, ready)),
+                Effect.as(ready),
+              ),
+              ensureAgentReady: () =>
+                assertStarted.pipe(
+                  Effect.andThen(Ref.update(deviceAgentStarts, (n) => n + 1)),
+                  Effect.as({
+                    ...ready,
+                    agentDevice: {
+                      baseUrl: "http://device-agent382.invalid",
+                      token: "ISOLATED_DEVICE_TOKEN_382",
+                      entryPath,
+                    },
+                  }),
+                ),
+              current: Ref.get(currentHub).pipe(
+                Effect.tap(() => Ref.get(deviceViewerCurrentHook).pipe(Effect.flatten)),
+              ),
+              stopAgent: Effect.void,
+              stop: Ref.set(currentHub, null),
+            };
+            const actualHttp = yield* Effect.serviceOption(HttpClient.HttpClient);
+            const hub = HttpClient.make((request) =>
+              Effect.gen(function* () {
+                if (!request.url.startsWith(`${viewerHubOrigin}/`)) {
+                  if (Option.isNone(actualHttp))
+                    return yield* Effect.die(
+                      "Native HTTP transport is unavailable in this fixture.",
+                    );
+                  return yield* actualHttp.value.execute(request);
+                }
+                const nativePath = new URL(request.url).pathname;
+                if (
+                  request.method !== "GET" &&
+                  request.method !== "HEAD" &&
+                  /\/api\/(fold|stream-mode|stream-settings)$/.test(nativePath)
+                ) {
+                  if (request.headers["content-type"] !== "application/json")
+                    return HttpClientResponse.fromWeb(request, new Response(null, { status: 415 }));
+                  const body =
+                    request.body._tag === "Stream"
+                      ? Buffer.concat(
+                          yield* request.body.stream.pipe(Stream.orDie, Stream.runCollect),
+                        )
+                      : request.body._tag === "Uint8Array"
+                        ? request.body.body
+                        : new Uint8Array();
+                  deviceViewerHttpInputs.push({
+                    path: nativePath,
+                    method: request.method,
+                    contentType: request.headers["content-type"],
+                    body: new TextDecoder().decode(body),
+                  });
+                  return HttpClientResponse.fromWeb(request, Response.json({ ok: true }));
+                }
+                if (request.url.endsWith("/stream.avcc")) {
+                  deviceViewerRequests.push(request.url);
+                  return HttpClientResponse.fromWeb(
+                    request,
+                    new Response(
+                      (yield* Ref.get(continuousDeviceMedia))
+                        ? yield* Stream.toReadableStreamEffect(Stream.fromQueue(deviceMediaChunks))
+                        : deviceViewerFrame,
+                      { headers: { "content-type": "application/octet-stream" } },
+                    ),
+                  );
+                }
+                if (request.url.endsWith("/grid/api/start")) {
+                  yield* assertStarted;
+                  return HttpClientResponse.fromWeb(request, Response.json({ ok: true }));
+                }
+                if (request.url.endsWith("/shutdown")) {
+                  yield* assertStarted;
+                  yield* Ref.update(deviceShutdownCalls, (n) => n + 1);
+                  return HttpClientResponse.fromWeb(request, Response.json({ ok: true }));
+                }
+                if (request.url.includes("screenshot")) {
+                  if ((yield* RequestReceipts.CurrentRequest) !== undefined) yield* assertStarted;
+                  yield* Ref.update(deviceScreenshotCalls, (n) => n + 1);
+                  return HttpClientResponse.fromWeb(
+                    request,
+                    new Response(
+                      Buffer.from(
+                        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==",
+                        "base64",
+                      ),
+                      { headers: { "content-type": "image/png" } },
+                    ),
+                  );
+                }
+                return HttpClientResponse.fromWeb(
+                  request,
+                  Response.json({
+                    simulators:
+                      (yield* Ref.get(deviceHubPlatform)) === "ios"
+                        ? [
+                            {
+                              id: "fixture-device382",
+                              name: "Isolated iOS",
+                              platform: "ios",
+                              version: "fixture",
+                              booted: yield* Ref.get(deviceHubBooted),
+                              physical: false,
+                            },
+                          ]
+                        : [],
+                    emulators:
+                      (yield* Ref.get(deviceHubPlatform)) === "android"
+                        ? [
+                            {
+                              id: "fixture-device382",
+                              name: "Isolated Android",
+                              platform: "android",
+                              version: "fixture",
+                              booted: yield* Ref.get(deviceHubBooted),
+                              physical: false,
+                            },
+                          ]
+                        : [],
+                  }),
+                );
+              }),
+            );
+            const service = yield* NativeDevices.make.pipe(
+              Effect.provideService(DeviceHost.DeviceHost, host),
+              Effect.provideService(FileSystem.FileSystem, deviceFs),
+              Effect.provideService(ProcessRunner.ProcessRunner, runner),
+              Effect.provideService(HttpClient.HttpClient, hub),
+              Effect.provideService(Settings.ServerSettingsService, settingsService),
+              Effect.provide(Layer.merge(nodeConfig, Net.layer)),
+            );
+            fixtureDevice = service;
+            const deviceServiceLayer = Layer.succeed(NativeDevices.DeviceService, service);
+            if (!viewerOwner) return deviceServiceLayer;
+            return Layer.mergeAll(
+              HttpApiBuilder.layer(DeviceViewerTestApi).pipe(
+                Layer.provide(DeviceHubProxy.layerApi),
+                Layer.provide(AuthHttp.layerAuthenticatedAuth),
+              ),
+              DeviceHubProxy.layer,
+              Layer.effectDiscard(
+                Effect.gen(function* () {
+                  fixtureViewers = yield* DeviceHubProxy.DeviceViewers;
+                  fixtureViewerSessions = yield* ViewerSessions.SessionStore;
+                }),
+              ),
+            ).pipe(
+              Layer.provideMerge(DeviceHubProxy.layerViewers),
+              Layer.provideMerge(deviceServiceLayer),
+              Layer.provide(Layer.succeed(HttpClient.HttpClient, hub)),
+            );
+          })
+        : Layer.mock(NativeDevices.DeviceService)({});
+
+      const artifactResponseHook = yield* Ref.make<Effect.Effect<void, OrchestratorMcpFailure>>(
+        Effect.void,
+      );
+      const artifactRequestHook = yield* Ref.make<
+        (checkOnly: boolean) => Effect.Effect<void, OrchestratorMcpFailure>
+      >(() => Effect.void);
+      const previewUploadContentTypes: string[] = [];
+      const artifactResponseBoundary = HttpRouter.middleware(
+        (effect) =>
+          Effect.gen(function* () {
+            const request = yield* HttpServerRequest.HttpServerRequest;
+            if (request.method === "POST" && request.url.startsWith("/api/preview-stream/upload?"))
+              previewUploadContentTypes.push(request.headers["content-type"] ?? "");
+            if (request.method === "POST" && request.url === "/mcp/peer-control/attachment")
+              yield* (yield* Ref.get(artifactRequestHook))(
+                request.headers["t3-attachment-check-only"] === "1",
+              ).pipe(Effect.interruptible);
+            const response = yield* effect;
+            if (
+              request.method === "POST" &&
+              request.url === "/mcp/peer-control/attachment" &&
+              response.status === 200
+            )
+              yield* yield* Ref.get(artifactResponseHook);
+            return response;
+          }),
+        { global: true },
+      );
+      const browserMediaLayer =
+        previewControls === undefined
+          ? Layer.empty
+          : Layer.mergeAll(
+              BrowserStream.routeLayer.pipe(Layer.provide(NodeHttpPlatform.layer)),
+              Layer.effectDiscard(
+                Effect.gen(function* () {
+                  fixtureBrowserViewers = yield* BrowserStream.PreviewViewers;
+                  fixtureBrowserViewerSessions = yield* ViewerSessions.SessionStore;
+                }),
+              ),
+            ).pipe(
+              Layer.provideMerge(BrowserStream.layerViewers),
+              Layer.provide(
+                nativeBrowser === undefined ? Layer.empty : Layer.succeedContext(nativeBrowser),
+              ),
+              Layer.provide(AuthSessions.layer.pipe(Layer.provide(db))),
+              Layer.provide(FetchHttpClient.layer),
+              Layer.provide(environment),
+            );
+      const timedSecretService = Layer.effect(
+        OrchestratorService.OrchestratorMcpService,
+        Effect.gen(function* () {
+          const actual = yield* OrchestratorService.OrchestratorMcpService;
+          return {
+            ...actual,
+            requestSecret: Effect.fn("PeerAuthority.requestSecret")(function* (
+              ...args: Parameters<typeof actual.requestSecret>
+            ) {
+              const clock = yield* Ref.get(secretRequestClock);
+              const abort = yield* Ref.get(secretRequestAbort);
+              const actualCall = actual.requestSecret(...args);
+              const effect =
+                abort === undefined
+                  ? actualCall
+                  : Effect.raceFirst(
+                      actualCall,
+                      Deferred.await(abort).pipe(Effect.andThen(Effect.interrupt)),
+                    );
+              return yield* (
+                clock === undefined ? effect : Effect.provideService(effect, Clock.Clock, clock)
+              ).pipe(Effect.onExit(() => Queue.offer(secretRequestExits, undefined)));
+            }),
+          };
+        }),
+      ).pipe(Layer.provide(OrchestratorService.layer));
+      const secretToolkit = McpHttpServer.toolkitRegistration(
+        OrchestratorToolkit,
+        OrchestratorHandlers.layer,
+      ).pipe(Layer.provide(timedSecretService), Layer.provide(ThreadMetadataService.layer));
+      const toolsFor = (
+        scheduleServices: typeof schedules,
+        requests: typeof requestContext = requestContext,
+        nativeServices = services,
+      ) =>
+        Layer.mergeAll(
+          artifactResponseBoundary,
+          McpHttpServer.layerProjectRegistration,
+          remoteSecrets ? secretToolkit : McpHttpServer.layerOrchestratorToolkit,
+          ...(previewControls === undefined
+            ? []
+            : [
+                McpHttpServer.toolkitRegistration(
+                  PreviewControlsToolkit,
+                  PreviewControlHandlers.layer,
+                ).pipe(Layer.provide(Layer.succeedContext(previewControls))),
+              ]),
+          ...(preferencesOwner ? [McpHttpServer.layerEnvironmentToolkit] : []),
+          ...(deviceOwner
+            ? [
+                legacyDeviceDomain
+                  ? McpHttpServer.toolkitRegistration(
+                      LegacyDeviceToolkit,
+                      LegacyDeviceHandlers.layerStandard,
+                    )
+                  : McpHttpServer.layerDeviceToolkit,
+              ]
+            : []),
+          ...(attachmentRequests
+            ? [
+                McpHttpServer.toolkitRegistration(IssuesToolkit, IssueHandlers.layer).pipe(
+                  Layer.provide(
+                    IssueLinks.layer.pipe(
+                      Layer.provide(
+                        Layer.succeed(ClosingReferences.IssueClosingReferences, {
+                          issuesClosedBy: Effect.fn(
+                            "ClosingReferences.IssueClosingReferences.issuesClosedBy",
+                          )(() => Effect.succeed([])),
+                        }),
+                      ),
+                    ),
+                  ),
+                ),
+                McpHttpServer.layerPullRequestsToolkit,
+                McpHttpServer.toolkitRegistration(AttachmentToolkit, AttachmentHandlers.layer),
+                ServerHttp.layerAttachmentUploadRoute,
+                ServerHttp.layerAssetRoute.pipe(
+                  HttpRouter.provideRequest(
+                    Layer.mergeAll(
+                      NodeHttpPlatform.layer,
+                      WorkspacePaths.layer,
+                      NativeAppIconResolver.layer.pipe(Layer.provide(nodeConfig)),
+                      Layer.succeedContext(runtime),
+                      // This fixture has no GitHub resource. Never access a real account.
+                      Layer.mock(GitHubCredentials.GitHubCredentials)({
+                        get: () =>
+                          Effect.die("No GitHub credential access in the native artifact fixture"),
+                      }),
+                    ),
+                  ),
+                  Layer.provide(environment),
+                ),
+                McpHttpServer.layerPreviewToolkit,
+                McpHttpServer.layerThreadToolkit,
+                McpHttpServer.layerHtmlToolkit,
+                handoff,
+                McpHttpServer.toolkitRegistration(SpectrumMcp.SpectrumToolkit, SpectrumMcp.layer),
+              ]
+            : []),
+        ).pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              DocumentText.layer,
+              PreviewAgentActivity.layer,
+              Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+              Layer.succeedContext(services),
+            ),
+          ),
+          Layer.provide(
+            Layer.mergeAll(
+              spectrumLayer,
+              htmlLayer,
+              previewBrowser,
+              nativeBrowser === undefined ? Layer.empty : Layer.succeedContext(nativeBrowser),
+            ),
+          ),
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
+              deviceLayer,
+              browserMediaLayer,
+            ),
+          ),
+          Layer.provide(ThreadSearch.layer.pipe(Layer.provide(db))),
+          Layer.provide(Layer.succeed(BrowserBroker.PreviewAutomationBroker, browser)),
+          Layer.provide(Layer.succeedContext(requests)),
+          Layer.provide(nodeConfig),
+          Layer.provide(Layer.succeedContext(baseServices)),
+          Layer.provide(Layer.succeedContext(scheduleServices)),
+          Layer.provide(
+            Layer.mergeAll(
+              remoteSecrets ? nativeSecrets : Layer.mock(SecretRequests.SecretRequests)({}),
+              Layer.succeedContext(secretOwners),
+            ),
+          ),
+          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+          Layer.provide(Layer.succeedContext(launches)),
+          Layer.provide(Layer.succeedContext(runtime)),
+          Layer.provide(Layer.succeedContext(nativeServices)),
+          Layer.provide(projectLayer),
+          Layer.provide(folders),
+          Layer.provide(Layer.merge(SecretResolver.layer.pipe(Layer.provide(settings)), settings)),
+          Layer.provide(
+            attachmentRequests ? Adapters.layerFromAdapters([providerAdapter]) : Layer.empty,
+          ),
+          Layer.provide(layerLaunchCatalog),
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.mock(Git.GitVcsDriver)({}),
+              Layer.mock(Repositories.SourceControlRepositoryService)({}),
+              Layer.mock(ProjectClone.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
+              AssetSigner.layer.pipe(
+                Layer.provide(Secrets.layer.pipe(Layer.provide(nodeConfig))),
+                Layer.provide(NodeCrypto.layer),
+              ),
+            ),
+          ),
+        );
+      const tools = toolsFor(schedules);
+      const lifecycleContext = Context.mergeAll(
+        services,
+        runtime,
+        database,
+        productionKernel ? Context.empty() : Context.make(RecoveryWaitState, lifecycleRecovery),
+      );
+      const lifecycle = yield* PeerTaskLifecycle.layer.pipe(
+        Layer.provide(Layer.succeedContext(lifecycleContext)),
+        Layer.build,
+      );
+      const pendingRequests = yield* PendingRequests.layer.pipe(
+        Layer.provide(
+          Layer.succeedContext(
+            Context.mergeAll(
+              lifecycleContext,
+              baseServices,
+              requestContext,
+              Context.make(Environment.ServerEnvironment, {
+                getEnvironmentId: Effect.succeed(descriptor.environmentId),
+                getDescriptor: Effect.succeed(descriptor),
+              }),
+            ),
+          ),
+        ),
+        Layer.build,
+      );
+      const peer = yield* servePeer(descriptor, tools, {
+        ...(attachmentRequests
+          ? { serverConfig: Context.get(nodeConfigContext, Config.ServerConfig) }
+          : {}),
+        database: db,
+        registry,
+        secretStore: Context.get(services, Secrets.ServerSecretStore),
+        authorityServices: Context.mergeAll(
+          lifecycleContext,
+          lifecycle,
+          pendingRequests,
+          secretOwners,
+          nativeBrowser ?? Context.empty(),
+        ),
+      }).pipe(Effect.provide(Layer.succeedContext(serverContext)));
+      let nativeViewerRpcUrl: string | undefined;
+      const nativeCommandOutputFinalized = yield* Queue.unbounded<ThreadId>();
+      if (previewControls !== undefined) {
+        const http = yield* sourceHttp.pipe(Layer.fresh, Layer.build);
+        const address = Context.get(http, HttpServer.HttpServer).address;
+        if (address._tag === "UnixPathAddress")
+          return yield* Effect.die("Expected native RPC fixture socket");
+        nativeViewerRpcUrl = `ws://127.0.0.1:${address.port}`;
+        const viewerHandlers = HttpRouter.use((router) =>
+          router
+            .add(
+              "GET",
+              "/ws",
+              Effect.gen(function* () {
+                const request = yield* HttpServerRequest.HttpServerRequest;
+                const session = yield* peer.auth.authenticateWebSocketUpgrade(request, "rpc");
+                const { protocol, httpEffect } =
+                  yield* RpcServer.makeProtocolWithHttpEffectWebsocket;
+                yield* RpcServer.make(nativeOwnerRpcGroup, {
+                  disableTracing: true,
+                  disableFatalDefects: true,
+                }).pipe(
+                  Effect.provideService(RpcServer.Protocol, protocol),
+                  Effect.provide(
+                    Layer.mergeAll(
+                      nativeOwnerRpcGroup.toLayer({
+                        ...BrowserStream.clientHandlers(session, fixtureBrowserViewers!),
+                        [WS_METHODS.peerLinksList]: () =>
+                          Context.get(services, PeerLinks.PeerLinks).list.pipe(
+                            Effect.map((links) => ({ links })),
+                          ),
+                        [ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput]: (input) =>
+                          Stream.unwrap(
+                            Effect.annotateCurrentSpan({
+                              "orchestration_v2.thread_id": input.threadId,
+                            }).pipe(
+                              Effect.as(
+                                Option.getOrThrow(commandOutput)
+                                  .subscribe(input)
+                                  .pipe(
+                                    Stream.ensuring(
+                                      Queue.offer(nativeCommandOutputFinalized, input.threadId),
+                                    ),
+                                  ),
+                              ),
+                            ),
+                          ),
+                      }),
+                      RpcAuthorization.layer(session.scopes),
+                      rpcInstrumentationLayer,
+                    ),
+                  ),
+                  Effect.forkScoped,
+                );
+                return yield* Effect.acquireUseRelease(
+                  fixtureBrowserViewerSessions!.markConnected(session.sessionId),
+                  () =>
+                    Effect.raceFirst(
+                      httpEffect,
+                      fixtureBrowserViewerSessions!
+                        .awaitInvalidation(session.sessionId)
+                        .pipe(Effect.as(HttpServerResponse.empty())),
+                    ),
+                  () => fixtureBrowserViewerSessions!.markDisconnected(session.sessionId),
+                );
+              }),
+            )
+            .pipe(Effect.asVoid),
+        );
+        yield* HttpRouter.serve(viewerHandlers, {
+          disableListenLog: true,
+          disableLogger: true,
+        }).pipe(
+          Layer.provide(Layer.succeedContext(http)),
+          Layer.provide(RpcSerialization.layerJson),
+          Layer.fresh,
+          Layer.build,
+        );
+      }
+      yield* Effect.addFinalizer(() =>
+        Effect.forEach([...connectionScopes], (lifetime) => Scope.close(lifetime, Exit.void), {
+          concurrency: "unbounded",
+          discard: true,
+        }),
+      );
+      const rebuildScheduler = Scope.close(scheduleScope, Exit.void).pipe(
+        Effect.andThen(scheduleLayer.pipe(Layer.fresh, Layer.build)),
+      );
+      const restartSchedulerTransportWith = Effect.fn(
+        "PeerAuthority.restartSchedulerTransportWith",
+      )(function* (durableRequests: boolean) {
         const rebuilt = yield* rebuildScheduler;
         const requests = durableRequests
           ? yield* RequestRuntime.layer.pipe(
@@ -2277,159 +2328,158 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
           scheduled: Context.get(rebuilt, ScheduledTasks.ScheduledTaskService),
           requestContext: requests,
         };
-      },
-      Effect.provide(hostServices),
-    );
-    const restartSchedulerTransport = restartSchedulerTransportWith(attachmentRequests);
-    const launchValidation = yield* layerLaunchCatalog.pipe(Layer.build);
-    return {
-      ...peer,
-      pendingRequests: Context.get(pendingRequests, PendingRequests.PendingRequests),
-      noticeFailure,
-      holdLaunchReply,
-      dropLaunchResponses,
-      dropCommittedToolReply,
-      secretConsumes,
-      loseSecretConfirmation,
-      launchReplyHeld,
-      releaseLaunchReply,
-      dropAckResponses,
-      ackResponseLost,
-      holdResultPage,
-      quietWaits,
-      quietWaitsHeld,
-      resultPageStarted,
-      releaseResultPage,
-      reopenDatabase,
-      reconstructAutomation: reconstructAutomationWith(FetchHttpClient.layer),
-      reconstructAutomationWith,
-      environmentId: descriptor.environmentId,
-      project,
-      database,
-      databasePath: Context.get(databaseConfig, Config.ServerConfig).dbPath,
-      lifecycleRecovery,
-      signals,
-      runtime: Context.merge(runtime, launchValidation),
-      requestContext,
-      secretOwners,
-      secretRequestClock,
-      secretRequestAbort,
-      secretRequestExits,
-      secretValidationClock,
-      secretValidationErrors,
-      secretControlReplyGate,
-      secretRemovals,
-      secretCleanupName,
-      secretCleanupClock,
-      stopSecretOwner: Scope.close(secretOwnerScope, Exit.void),
-      remoteSecretFault,
-      secretPublished,
-      releaseSecretPublication,
-      rebuildSecretOwner: RemoteSecretRequests.layer.pipe(
-        Layer.provide(faultSecretStore),
-        Layer.provide(secretAuthority),
-        Layer.provide(Layer.succeedContext(baseServices)),
-        Layer.provide(db),
-        Layer.provide(environment),
-        Layer.provide(nodeConfig),
-        Layer.fresh,
-        Layer.build,
-      ),
-      nativeSecrets: remoteSecrets ? yield* nativeSecrets.pipe(Layer.build) : Context.empty(),
-      config: Context.get(nodeConfigContext, Config.ServerConfig),
-      browser,
-      nativeBrowser:
-        nativeBrowser === undefined
-          ? undefined
-          : Context.get(nativeBrowser, NativeBrowser.ServerBrowser),
-      nativePreviewManager:
-        nativeBrowser === undefined
-          ? undefined
-          : Context.get(nativeBrowser, NativePreviewManager.PreviewManager),
-      fixtureDevice,
-      fixtureViewers,
-      nativeViewerRpcUrl,
-      nativeCommandOutputFinalized,
-      commandOutput: Option.getOrUndefined(commandOutput),
-      fixtureBrowserViewers,
-      fixtureBrowserViewerSessions,
-      fixtureViewerSessions,
-      deviceViewerRequests,
-      deviceViewerCurrentHook,
-      deviceViewerFrame,
-      continuousDeviceMedia,
-      deviceMediaChunks,
-      deviceViewerInputs,
-      deviceViewerHttpInputs,
-      deviceViewerOutput,
-      deviceProcessCalls,
-      deviceProcessHook,
-      deviceSummaryHook,
-      deviceReadinessHook,
-      deviceObservedScope,
-      deviceMediaPaths,
-      deviceMediaOutside,
-      deviceScreenshotCalls,
-      artifactResponseHook,
-      artifactRequestHook,
-      previewUploadContentTypes,
-      deviceShutdownCalls,
-      deviceHubPlatform,
-      deviceHubBooted,
-      deviceOldVersion,
-      deviceCapabilities,
-      deviceHostStarts,
-      devicePlatformAvailable,
-      deviceAgentStarts,
-      deviceConfigurations,
-      loseDeviceConfiguration,
-      issueAssetUrl: (input: Parameters<typeof AssetAccess.issueAssetUrl>[0]) =>
-        AssetAccess.issueAssetUrl(input).pipe(
-          Effect.provide(
-            Layer.mergeAll(
-              WorkspacePaths.layer,
-              ProjectFaviconResolver.layer.pipe(
-                Layer.provide(Layer.mergeAll(WorkspacePaths.layer, T3ProjectFileLoader.layer)),
+      }, Effect.provide(hostServices));
+      const restartSchedulerTransport = restartSchedulerTransportWith(attachmentRequests);
+      const launchValidation = yield* layerLaunchCatalog.pipe(Layer.build);
+      return {
+        ...peer,
+        pendingRequests: Context.get(pendingRequests, PendingRequests.PendingRequests),
+        noticeFailure,
+        holdLaunchReply,
+        dropLaunchResponses,
+        dropCommittedToolReply,
+        secretConsumes,
+        loseSecretConfirmation,
+        launchReplyHeld,
+        releaseLaunchReply,
+        dropAckResponses,
+        ackResponseLost,
+        holdResultPage,
+        quietWaits,
+        quietWaitsHeld,
+        resultPageStarted,
+        releaseResultPage,
+        reopenDatabase,
+        reconstructAutomation: reconstructAutomationWith(FetchHttpClient.layer),
+        reconstructAutomationWith,
+        environmentId: descriptor.environmentId,
+        project,
+        database,
+        databasePath: Context.get(databaseConfig, Config.ServerConfig).dbPath,
+        lifecycleRecovery,
+        signals,
+        runtime: Context.merge(runtime, launchValidation),
+        requestContext,
+        secretOwners,
+        secretRequestClock,
+        secretRequestAbort,
+        secretRequestExits,
+        secretValidationClock,
+        secretValidationErrors,
+        secretControlReplyGate,
+        secretRemovals,
+        secretCleanupName,
+        secretCleanupClock,
+        stopSecretOwner: Scope.close(secretOwnerScope, Exit.void),
+        remoteSecretFault,
+        secretPublished,
+        releaseSecretPublication,
+        rebuildSecretOwner: RemoteSecretRequests.layer.pipe(
+          Layer.provide(faultSecretStore),
+          Layer.provide(secretAuthority),
+          Layer.provide(Layer.succeedContext(baseServices)),
+          Layer.provide(db),
+          Layer.provide(environment),
+          Layer.provide(nodeConfig),
+          Layer.fresh,
+          Layer.build,
+        ),
+        nativeSecrets: remoteSecrets ? yield* nativeSecrets.pipe(Layer.build) : Context.empty(),
+        config: Context.get(nodeConfigContext, Config.ServerConfig),
+        browser,
+        nativeBrowser:
+          nativeBrowser === undefined
+            ? undefined
+            : Context.get(nativeBrowser, NativeBrowser.ServerBrowser),
+        nativePreviewManager:
+          nativeBrowser === undefined
+            ? undefined
+            : Context.get(nativeBrowser, NativePreviewManager.PreviewManager),
+        fixtureDevice,
+        fixtureViewers,
+        nativeViewerRpcUrl,
+        nativeCommandOutputFinalized,
+        commandOutput: Option.getOrUndefined(commandOutput),
+        fixtureBrowserViewers,
+        fixtureBrowserViewerSessions,
+        fixtureViewerSessions,
+        deviceViewerRequests,
+        deviceViewerCurrentHook,
+        deviceViewerFrame,
+        continuousDeviceMedia,
+        deviceMediaChunks,
+        deviceViewerInputs,
+        deviceViewerHttpInputs,
+        deviceViewerOutput,
+        deviceProcessCalls,
+        deviceProcessHook,
+        deviceSummaryHook,
+        deviceReadinessHook,
+        deviceObservedScope,
+        deviceMediaPaths,
+        deviceMediaOutside,
+        deviceScreenshotCalls,
+        artifactResponseHook,
+        artifactRequestHook,
+        previewUploadContentTypes,
+        deviceShutdownCalls,
+        deviceHubPlatform,
+        deviceHubBooted,
+        deviceOldVersion,
+        deviceCapabilities,
+        deviceHostStarts,
+        devicePlatformAvailable,
+        deviceAgentStarts,
+        deviceConfigurations,
+        loseDeviceConfiguration,
+        issueAssetUrl: (input: Parameters<typeof AssetAccess.issueAssetUrl>[0]) =>
+          AssetAccess.issueAssetUrl(input).pipe(
+            Effect.provide(
+              Layer.mergeAll(
+                WorkspacePaths.layer,
+                ProjectFaviconResolver.layer.pipe(
+                  Layer.provide(Layer.mergeAll(WorkspacePaths.layer, T3ProjectFileLoader.layer)),
+                ),
+                AuthSessions.layer.pipe(Layer.provide(db)),
+                Layer.succeedContext(services),
+                Layer.succeedContext(runtime),
+                Layer.succeedContext(requestContext),
+                nativeBrowser === undefined ? Layer.empty : Layer.succeedContext(nativeBrowser),
+                nodeConfig,
+                environment,
               ),
-              AuthSessions.layer.pipe(Layer.provide(db)),
-              Layer.succeedContext(services),
-              Layer.succeedContext(runtime),
-              Layer.succeedContext(requestContext),
-              nativeBrowser === undefined ? Layer.empty : Layer.succeedContext(nativeBrowser),
-              nodeConfig,
-              environment,
             ),
           ),
-        ),
-      fixtureSettings: Context.get(settingsContext, Settings.ServerSettingsService),
-      settingsWrites,
-      loseSettingsConfirmation,
-      rebuildSettings: realSettingsLayer.pipe(Layer.fresh, Layer.build),
-      services,
-      registry,
-      scheduled: Context.get(schedules, ScheduledTasks.ScheduledTaskService),
-      rebuildScheduler,
-      restartSchedulerTransport,
-      restartWithoutRequestsTransport: restartSchedulerTransportWith(false),
-      scheduledChecks: Context.getOption(schedules, ScheduledChecks.ScheduledTaskChecks),
-      holdManualLaunchReply,
-      manualLaunchReplyHeld,
-      holdManualSend,
-      manualSendHeld,
-      releaseManualSend,
-      loseWorktreeReply,
-      stopConnections: connection.stop,
-      reconnect: connect,
-      serverContext,
-      threads: Context.get(runtime, Threads.ThreadManagementService),
-      orchestrator: Context.get(runtime, Orchestrator.OrchestratorV2),
-      sink: Context.get(runtime, EventSink.EventSinkV2),
-      projections: Context.get(runtime, ProjectionStore.ProjectionStoreV2),
-      links: Context.get(services, PeerLinks.PeerLinks),
-      authority: Context.get(services, PeerAuthority.PeerAuthority),
-      forwarding: Context.get(services, PeerForwarding.PeerForwarding),
-      remote: Context.get(services, RemoteDelegation.RemoteDelegation),
-    };
+        fixtureSettings: Context.get(settingsContext, Settings.ServerSettingsService),
+        settingsWrites,
+        loseSettingsConfirmation,
+        rebuildSettings: realSettingsLayer.pipe(Layer.fresh, Layer.build),
+        services,
+        registry,
+        scheduled: Context.get(schedules, ScheduledTasks.ScheduledTaskService),
+        rebuildScheduler,
+        restartSchedulerTransport,
+        restartWithoutRequestsTransport: restartSchedulerTransportWith(false),
+        scheduledChecks: Context.getOption(schedules, ScheduledChecks.ScheduledTaskChecks),
+        holdManualLaunchReply,
+        manualLaunchReplyHeld,
+        holdManualSend,
+        manualSendHeld,
+        releaseManualSend,
+        loseWorktreeReply,
+        stopConnections: connection.stop,
+        reconnect: connect,
+        serverContext,
+        threads: Context.get(runtime, Threads.ThreadManagementService),
+        orchestrator: Context.get(runtime, Orchestrator.OrchestratorV2),
+        sink: Context.get(runtime, EventSink.EventSinkV2),
+        projections: Context.get(runtime, ProjectionStore.ProjectionStoreV2),
+        links: Context.get(services, PeerLinks.PeerLinks),
+        authority: Context.get(services, PeerAuthority.PeerAuthority),
+        forwarding: Context.get(services, PeerForwarding.PeerForwarding),
+        remote: Context.get(services, RemoteDelegation.RemoteDelegation),
+      };
+    }).pipe(Effect.provide(signerLayer));
   },
   Effect.provide(Layer.merge(RepositoryIdentity.layer, layerFixtureHostServices)),
 );
@@ -2571,8 +2621,8 @@ export const decodeTyped383Open = Schema.decodeUnknownEffect(
 export const typed383Digest = Effect.fn("PeerAuthority.typed383Digest")(function* (
   bytes: Uint8Array,
 ) {
-  const crypto = yield* Crypto.Crypto;
-  return Hex.encode(yield* crypto.digest("SHA-256", bytes));
+  const digester = yield* Digest.Digest;
+  return Hex.encode(yield* digester.digest(Digest.sha256, bytes));
 }, Effect.orDie);
 
 export const decodeTyped383Command = Schema.decodeUnknownEffect(DeviceCommandResult);
@@ -3404,9 +3454,7 @@ const nativeOwnerRpcGroup = RpcGroup.make(
 
 export const makeNativePromiseBridge = Effect.gen(function* () {
   const jobs = yield* Queue.unbounded<Effect.Effect<void>>();
-  yield* Effect.forever(Queue.take(jobs).pipe(Effect.flatMap((job) => job))).pipe(
-    Effect.forkScoped,
-  );
+  yield* Effect.forever(Queue.take(jobs).pipe(Effect.flatten)).pipe(Effect.forkScoped);
   return <A, E>(effect: Effect.Effect<A, E>) =>
     new Promise<A>((resolve, reject) => {
       const job = Effect.matchCauseEffect(effect, {
@@ -3500,7 +3548,7 @@ export const backgroundRoster383 = Effect.fn("PeerAuthority.backgroundRoster383"
     events: [
       {
         id: EventId.make(
-          `background383-${pending}-${yield* Crypto.Crypto.pipe(Effect.flatMap((c) => c.randomUUIDv4()))}`,
+          `background383-${pending}-${yield* SecureRandom.SecureRandom.pipe(Effect.flatMap((c) => c.uuidV4()))}`,
         ),
         type: "provider-thread.updated",
         threadId,

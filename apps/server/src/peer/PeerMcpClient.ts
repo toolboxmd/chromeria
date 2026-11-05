@@ -1,3 +1,4 @@
+import * as Digest from "effect/crypto/Digest";
 import { McpScheduledMutationReceipt, type RemoteSecretReceiptQuery } from "@t3tools/contracts";
 import * as RemoteSecretPersistence from "../secrets/remoteSecretPersistence.ts";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -38,7 +39,6 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
 import * as Hex from "effect/encoding/Hex";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -315,7 +315,7 @@ const make = Effect.gen(function* () {
   const secretSql = yield* Effect.serviceOption(SqlClient.SqlClient);
   const links = yield* PeerLinks.PeerLinks;
   const httpClient = yield* HttpClient.HttpClient;
-  const crypto = yield* Crypto.Crypto;
+  const digester = yield* Digest.Digest;
   const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
   const lifetime = yield* Scope.Scope;
   const delivery = yield* Effect.serviceOption(PeerNoticeDelivery.PeerNoticeDelivery);
@@ -885,10 +885,19 @@ const make = Effect.gen(function* () {
       if (body.result.isError === true) {
         // A refusal keeps the peer's own code, so the agent sees why it was refused.
         const refused = decodeFailure(text);
-        return Result.fail(refused._tag === "Some" ? new OrchestratorMcpFailure(refused.value) : new OrchestratorMcpFailure({ code: "orchestration_error", message: text || "The linked environment refused the call." }));
+        return Result.fail(
+          refused._tag === "Some"
+            ? new OrchestratorMcpFailure(refused.value)
+            : new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: text || "The linked environment refused the call.",
+              }),
+        );
       }
       const success = Schema.fromJsonString(input.success);
-      return yield* Schema.decodeEffect(success)(body.result.structuredContent === undefined ? text : json(body.result.structuredContent)).pipe(Effect.map(Result.succeed),
+      const decoded = yield* Schema.decodeEffect(success)(
+        body.result.structuredContent === undefined ? text : json(body.result.structuredContent),
+      ).pipe(
         Effect.mapError(
           () =>
             new OrchestratorMcpFailure({
@@ -901,8 +910,8 @@ const make = Effect.gen(function* () {
       return input.tool === "t3_attachment_prepare_upload" &&
         typeof decoded === "object" &&
         decoded !== null
-        ? { ...decoded, uploadOrigin: new URL(resolved.url).origin }
-        : decoded;
+        ? Result.succeed({ ...decoded, uploadOrigin: new URL(resolved.url).origin })
+        : Result.succeed(decoded);
     },
     (effect, input) =>
       effect.pipe(
@@ -1476,7 +1485,7 @@ const make = Effect.gen(function* () {
             );
             if (
               size !== expected ||
-              (yield* crypto.digest("SHA-256", bytes).pipe(Effect.map(Hex.encode))) !==
+              (yield* digester.digest(Digest.sha256, bytes).pipe(Effect.map(Hex.encode))) !==
                 response.headers["t3-download-block-digest"]
             )
               return yield* refused();
@@ -1579,7 +1588,7 @@ const make = Effect.gen(function* () {
         bytes.set(chunk, offset);
         offset += chunk.byteLength;
       }
-      const digest = yield* crypto.digest("SHA-256", bytes).pipe(Effect.map(Hex.encode));
+      const digest = yield* digester.digest(Digest.sha256, bytes).pipe(Effect.map(Hex.encode));
       if (
         state.size !== input.resource.reference.sizeBytes ||
         digest !== input.resource.reference.digest

@@ -295,6 +295,7 @@ const visibleCommand = (command: string): string => {
 };
 
 /** Tool input whose shape the exact-key matcher cannot read. */
+// @effect-diagnostics-next-line extendsNativeError:off -- Synchronous parser errors retain their positional constructor and instanceof contract.
 export class Unsupported extends Error {}
 
 export interface Keys {

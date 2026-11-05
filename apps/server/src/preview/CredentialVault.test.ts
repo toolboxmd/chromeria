@@ -1,3 +1,4 @@
+import * as Redacted from "effect/Redacted";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import type { PreviewCredentialReason } from "@t3tools/contracts";
@@ -33,8 +34,11 @@ const harness = (input: {
   const spawner = ChildProcessSpawner.make((command) =>
     Effect.suspend(() => {
       if (!ChildProcess.isStandardCommand(command)) return Effect.die("expected a command");
-      calls.push({ command: command.command, args: command.args, shell: command.options.shell });
-      const reply = input.reply(command.args);
+      const args = command.args.map((word) =>
+        Redacted.isRedacted(word) ? Redacted.value(word) : word,
+      );
+      calls.push({ command: command.command, args, shell: command.options.shell });
+      const reply = input.reply(args);
       if (reply.spawnError)
         return Effect.fail(
           PlatformError.systemError({ _tag: "NotFound", module: "ChildProcess", method: "spawn" }),

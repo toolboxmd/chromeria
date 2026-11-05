@@ -1394,7 +1394,16 @@ export const layer: Layer.Layer<
                   : { providerTurnId: sourceProviderTurn.id }),
               }),
             );
-            if (forked !== undefined) yield* contextmdServing.recordNativeFork({ driver: session.driver, threadId: projection.thread.id, runId: run.id, sourceThreadId: nativeForkTransfer.sourceThreadId, source: sourceProviderThread, target: forked, boundaryAt: sourceProviderTurn?.completedAt ?? forkStartedAt });
+            if (forked !== undefined)
+              yield* contextmdServing.recordNativeFork({
+                driver: session.driver,
+                threadId: projection.thread.id,
+                runId: run.id,
+                sourceThreadId: nativeForkTransfer.sourceThreadId,
+                source: sourceProviderThread,
+                target: forked,
+                boundaryAt: sourceProviderTurn?.completedAt ?? forkStartedAt,
+              });
             return forked;
           }
           const sourceItems = yield* ContextHandoffService.readForkHistoryItems(
@@ -1565,7 +1574,6 @@ export const layer: Layer.Layer<
           return yield* loadFromProvider(Effect.fail(resumed.failure));
         }
 
-
         if (
           projection.thread.bare !== undefined &&
           (inheritedBareCarrier ||
@@ -1717,8 +1725,11 @@ export const layer: Layer.Layer<
         ownerNodeId: providerThread.ownerNodeId,
         firstRunOrdinal: providerThread.firstRunOrdinal ?? run.ordinal,
         lastRunOrdinal: run.ordinal,
-        handoffIds: providerThread.handoffIds,
-        forkedFrom: providerThread.forkedFrom,
+        handoffIds:
+          portableForkFallback === undefined
+            ? providerThread.handoffIds
+            : [...providerThread.handoffIds, portableForkFallback.id],
+        forkedFrom: portableForkFallback === undefined ? providerThread.forkedFrom : null,
         status: "active",
         createdAt: providerThread.createdAt,
         updatedAt: now,
@@ -1763,7 +1774,9 @@ export const layer: Layer.Layer<
           occurredAt: now,
           payload: runningProviderThread,
         },
-        ...(nativeForkTransfer === undefined || runningProviderThread.nativeThreadRef === null
+        ...(nativeForkTransfer === undefined ||
+        portableForkFallback !== undefined ||
+        runningProviderThread.nativeThreadRef === null
           ? []
           : [
               {
@@ -1838,6 +1851,26 @@ export const layer: Layer.Layer<
       const routableSubagents = projection.subagents.filter((subagent) =>
         RunExecutionService.canRouteRelatedSubagent(subagent.status, subagent.origin),
       );
+      const persistHandoff = Effect.fn("ProviderTurnStartService.persist")(function* (
+        handoff: OrchestrationV2ContextHandoff,
+      ) {
+        const updatedAt = yield* DateTime.now;
+        yield* eventSink.write({
+          events: [
+            {
+              id: yield* idAllocator.allocate.event({
+                threadId: projection.thread.id,
+              }),
+              type: "context-handoff.updated",
+              threadId: projection.thread.id,
+              runId: run.id,
+              providerInstanceId: run.providerInstanceId,
+              occurredAt: updatedAt,
+              payload: { ...handoff, updatedAt },
+            },
+          ],
+        });
+      });
       const startWithHandoffs = Effect.fn("ProviderTurnStartService.startWithHandoffs")(
         function* (turnInput: Parameters<typeof session.startTurn>[0], compact = false) {
           const delivery = yield* deliverContextHandoffs({

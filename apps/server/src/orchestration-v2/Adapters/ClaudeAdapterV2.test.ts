@@ -1,3 +1,4 @@
+import { CheckpointId } from "@t3tools/contracts";
 // @effect-diagnostics nodeBuiltinImport:off -- workflow fixtures use files and the fake Claude CLI uses Node streams
 import * as NodeEvents from "node:events";
 import * as NodeFS from "node:fs";
@@ -1008,7 +1009,7 @@ describe("ClaudeAdapterV2 Auto-accept edits", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -1117,7 +1118,7 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -1150,7 +1151,7 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -1219,7 +1220,7 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -1413,7 +1414,7 @@ describe("ClaudeAdapterV2 executable path", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -1507,7 +1508,7 @@ describe("ClaudeAdapterV2 resumeThread", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -1790,7 +1791,7 @@ describe("ClaudeAdapterV2 resume compaction", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -2406,7 +2407,7 @@ describe("ClaudeAdapterV2 attachments", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -2416,194 +2417,204 @@ describe("ClaudeAdapterV2 attachments", () => {
 });
 
 describe("ClaudeAdapterV2 native fork", () => {
-  it.effect.each([false, true])("forks at the source assistant cursor and resumes the forked session (legacy: %s)", (legacy) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const idAllocator = yield* IdAllocator.IdAllocatorV2;
-        const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "t3-claude-v2-fork-attachments-",
-        });
-        const openedQueries: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOpenInput> = [];
-        const forkCalls: Array<ClaudeAdapterV2.ClaudeAgentSdkSessionForkInput> = [];
-        const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
-          instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
-          settings: DEFAULT_CLAUDE_SETTINGS,
-          environment: { CLAUDE_CONFIG_DIR: "/custom/claude-home" },
-          attachmentsDir,
-          fileSystem,
-          path: yield* Path.Path,
-          random: yield* SecureRandom.SecureRandom,
-          idAllocator,
-          queryRunner: {
-            allocateSessionId: Effect.succeed("source-native-session"),
-            open: (input) =>
-              Effect.sync(() => {
-                openedQueries.push(input);
-                return {
-                  messages: Stream.empty,
-                  offer: () => Effect.void,
-                  setModel: () => Effect.void,
-                  applyFlagSettings: () => Effect.void,
-                  setPermissionMode: () => Effect.void,
-                  backgroundTasks: () => Effect.succeed(false),
-                  mcpServerStatus: Effect.succeed([]),
-                  readMcpResource: () => Effect.die("unexpected MCP resource read"),
-                  callMcpTool: () => Effect.die("unexpected MCP tool call"),
-                  listPermissionRules: Effect.die("unexpected permission rules read"),
-                  stopTask: () => Effect.void,
-                  interrupt: Effect.void,
-                  close: Effect.void,
-                };
-              }),
-            forkSession: (input) =>
-              Effect.sync(() => {
-                forkCalls.push(input);
-                return { sessionId: "forked-native-session" };
-              }),
-            subagentLaunchToolUseId: () => Effect.succeed(null),
-            assertComplete: Effect.void,
-          },
-        });
-        const providerSessionId = ProviderSessionId.make("provider-session-claude-fork");
-        const sourceThreadId = ThreadId.make("thread-claude-fork-source");
-        const targetThreadId = ThreadId.make("thread-claude-fork-target");
-        const runtime = yield* adapter.openSession({
-          threadId: sourceThreadId,
-          providerSessionId,
-          modelSelection: {
-            instanceId: ProviderInstanceId.make(ClaudeAdapterV2.CLAUDE_PROVIDER),
-            model: "claude-sonnet-4-6",
-          },
-          runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            cwd: "/workspace",
-          }),
-        });
-        const sourceProviderThread = yield* runtime.ensureThread({
-          threadId: sourceThreadId,
-          modelSelection: {
-            instanceId: ProviderInstanceId.make(ClaudeAdapterV2.CLAUDE_PROVIDER),
-            model: "claude-sonnet-4-6",
-          },
-          runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            cwd: "/workspace",
-          }),
-        });
-        const now = yield* DateTime.now;
-        const providerTurnId = ProviderTurnId.make("provider-turn-claude-source");
-        const forkedProviderThread = yield* runtime.forkThread({
-          sourceProviderThread,
-          sourceProviderTurns: [
-            {
-              id: providerTurnId,
-              providerThreadId: sourceProviderThread.id,
-              nodeId: NodeId.make("node-claude-source"),
-              runAttemptId: RunAttemptId.make("run-attempt-claude-source"),
-              nativeTurnRef: {
-                driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
-                nativeId: legacy ? "assistant-message-cursor" : "native-user-uuid",
-                strength: "weak",
-              },
-              ...(legacy ? {} : { nativeConversationHeadRef: { driver: ClaudeAdapterV2.CLAUDE_PROVIDER, nativeId: "assistant-message-cursor", strength: "weak" as const } }),
-              ordinal: 1,
-              status: "completed",
-              startedAt: now,
-              completedAt: now,
-            },
-          ],
-          providerTurnId,
-          targetThreadId,
-        });
-
-        assert.deepEqual(forkCalls, [
-          {
-            sessionId: "source-native-session",
-            options: {
-              dir: "/workspace",
-              upToMessageId: "assistant-message-cursor",
-            },
+  it.effect.each([false, true])(
+    "forks at the source assistant cursor and resumes the forked session (legacy: %s)",
+    (legacy) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const idAllocator = yield* IdAllocator.IdAllocatorV2;
+          const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "t3-claude-v2-fork-attachments-",
+          });
+          const openedQueries: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOpenInput> = [];
+          const forkCalls: Array<ClaudeAdapterV2.ClaudeAgentSdkSessionForkInput> = [];
+          const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
+            instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+            settings: DEFAULT_CLAUDE_SETTINGS,
             environment: { CLAUDE_CONFIG_DIR: "/custom/claude-home" },
-            threadId: targetThreadId,
+            attachmentsDir,
+            fileSystem,
+            path: yield* Path.Path,
+            random: yield* SecureRandom.SecureRandom,
+            idAllocator,
+            queryRunner: {
+              allocateSessionId: Effect.succeed("source-native-session"),
+              open: (input) =>
+                Effect.sync(() => {
+                  openedQueries.push(input);
+                  return {
+                    messages: Stream.empty,
+                    offer: () => Effect.void,
+                    setModel: () => Effect.void,
+                    applyFlagSettings: () => Effect.void,
+                    setPermissionMode: () => Effect.void,
+                    backgroundTasks: () => Effect.succeed(false),
+                    mcpServerStatus: Effect.succeed([]),
+                    readMcpResource: () => Effect.die("unexpected MCP resource read"),
+                    callMcpTool: () => Effect.die("unexpected MCP tool call"),
+                    listPermissionRules: Effect.die("unexpected permission rules read"),
+                    stopTask: () => Effect.void,
+                    interrupt: Effect.void,
+                    close: Effect.void,
+                  };
+                }),
+              forkSession: (input) =>
+                Effect.sync(() => {
+                  forkCalls.push(input);
+                  return { sessionId: "forked-native-session" };
+                }),
+              subagentLaunchToolUseId: () => Effect.succeed(null),
+              assertComplete: Effect.void,
+            },
+          });
+          const providerSessionId = ProviderSessionId.make("provider-session-claude-fork");
+          const sourceThreadId = ThreadId.make("thread-claude-fork-source");
+          const targetThreadId = ThreadId.make("thread-claude-fork-target");
+          const runtime = yield* adapter.openSession({
+            threadId: sourceThreadId,
             providerSessionId,
-          },
-        ]);
-        assert.equal(forkedProviderThread.nativeThreadRef?.nativeId, "forked-native-session");
-        assert.equal(forkedProviderThread.forkedFrom?.providerThreadId, sourceProviderThread.id);
-        assert.equal(forkedProviderThread.forkedFrom?.providerTurnId, providerTurnId);
-
-        yield* runtime.startTurn({
-          appThread: {
-            createdBy: "user",
-            creationSource: "web",
-            id: targetThreadId,
-            projectId: ProjectId.make("project-claude-fork-target"),
-            title: "Claude fork target",
-            providerInstanceId: ProviderInstanceId.make(ClaudeAdapterV2.CLAUDE_PROVIDER),
             modelSelection: {
               instanceId: ProviderInstanceId.make(ClaudeAdapterV2.CLAUDE_PROVIDER),
               model: "claude-sonnet-4-6",
             },
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            branch: null,
-            worktreePath: null,
-            activeProviderThreadId: forkedProviderThread.id,
-            lineage: {
-              parentThreadId: sourceThreadId,
-              relationshipToParent: "fork",
-              rootThreadId: sourceThreadId,
+            runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              cwd: "/workspace",
+            }),
+          });
+          const sourceProviderThread = yield* runtime.ensureThread({
+            threadId: sourceThreadId,
+            modelSelection: {
+              instanceId: ProviderInstanceId.make(ClaudeAdapterV2.CLAUDE_PROVIDER),
+              model: "claude-sonnet-4-6",
             },
-            forkedFrom: null,
-            createdAt: now,
-            updatedAt: now,
-            archivedAt: null,
-            settledOverride: null,
-            settledAt: null,
-            lastVisitedAt: null,
-            deletedAt: null,
-          },
-          threadId: targetThreadId,
-          runId: RunId.make("run-claude-fork-target"),
-          runOrdinal: 1,
-          providerTurnOrdinal: 1,
-          attemptId: RunAttemptId.make("run-attempt-claude-fork-target"),
-          rootNodeId: NodeId.make("node-claude-fork-target-root"),
-          providerThread: forkedProviderThread,
-          message: {
-            createdBy: "user",
-            creationSource: "web",
-            messageId: MessageId.make("message-claude-fork-target"),
-            text: "Respond with fork ok",
-            attachments: [],
-          },
-          modelSelection: {
-            instanceId: ProviderInstanceId.make(ClaudeAdapterV2.CLAUDE_PROVIDER),
-            model: "claude-sonnet-4-6",
-          },
-          runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            cwd: "/workspace",
-          }),
-        });
+            runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              cwd: "/workspace",
+            }),
+          });
+          const now = yield* DateTime.now;
+          const providerTurnId = ProviderTurnId.make("provider-turn-claude-source");
+          const forkedProviderThread = yield* runtime.forkThread({
+            sourceProviderThread,
+            sourceProviderTurns: [
+              {
+                id: providerTurnId,
+                providerThreadId: sourceProviderThread.id,
+                nodeId: NodeId.make("node-claude-source"),
+                runAttemptId: RunAttemptId.make("run-attempt-claude-source"),
+                nativeTurnRef: {
+                  driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+                  nativeId: legacy ? "assistant-message-cursor" : "native-user-uuid",
+                  strength: "weak",
+                },
+                ...(legacy
+                  ? {}
+                  : {
+                      nativeConversationHeadRef: {
+                        driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+                        nativeId: "assistant-message-cursor",
+                        strength: "weak" as const,
+                      },
+                    }),
+                ordinal: 1,
+                status: "completed",
+                startedAt: now,
+                completedAt: now,
+              },
+            ],
+            providerTurnId,
+            targetThreadId,
+          });
 
-        assert.equal(openedQueries[0]?.options.resume, "forked-native-session");
-        assert.equal(openedQueries[0]?.options.sessionId, undefined);
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            IdAllocator.layer,
-            McpProviderSessions.layer,
-            NodeServices.layer,
-            NodeCrypto.layer,
+          assert.deepEqual(forkCalls, [
+            {
+              sessionId: "source-native-session",
+              options: {
+                dir: "/workspace",
+                upToMessageId: "assistant-message-cursor",
+              },
+              environment: { CLAUDE_CONFIG_DIR: "/custom/claude-home" },
+              threadId: targetThreadId,
+              providerSessionId,
+            },
+          ]);
+          assert.equal(forkedProviderThread.nativeThreadRef?.nativeId, "forked-native-session");
+          assert.equal(forkedProviderThread.forkedFrom?.providerThreadId, sourceProviderThread.id);
+          assert.equal(forkedProviderThread.forkedFrom?.providerTurnId, providerTurnId);
+
+          yield* runtime.startTurn({
+            appThread: {
+              createdBy: "user",
+              creationSource: "web",
+              id: targetThreadId,
+              projectId: ProjectId.make("project-claude-fork-target"),
+              title: "Claude fork target",
+              providerInstanceId: ProviderInstanceId.make(ClaudeAdapterV2.CLAUDE_PROVIDER),
+              modelSelection: {
+                instanceId: ProviderInstanceId.make(ClaudeAdapterV2.CLAUDE_PROVIDER),
+                model: "claude-sonnet-4-6",
+              },
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+              activeProviderThreadId: forkedProviderThread.id,
+              lineage: {
+                parentThreadId: sourceThreadId,
+                relationshipToParent: "fork",
+                rootThreadId: sourceThreadId,
+              },
+              forkedFrom: null,
+              createdAt: now,
+              updatedAt: now,
+              archivedAt: null,
+              settledOverride: null,
+              settledAt: null,
+              lastVisitedAt: null,
+              deletedAt: null,
+            },
+            threadId: targetThreadId,
+            runId: RunId.make("run-claude-fork-target"),
+            runOrdinal: 1,
+            providerTurnOrdinal: 1,
+            attemptId: RunAttemptId.make("run-attempt-claude-fork-target"),
+            rootNodeId: NodeId.make("node-claude-fork-target-root"),
+            providerThread: forkedProviderThread,
+            message: {
+              createdBy: "user",
+              creationSource: "web",
+              messageId: MessageId.make("message-claude-fork-target"),
+              text: "Respond with fork ok",
+              attachments: [],
+            },
+            modelSelection: {
+              instanceId: ProviderInstanceId.make(ClaudeAdapterV2.CLAUDE_PROVIDER),
+              model: "claude-sonnet-4-6",
+            },
+            runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              cwd: "/workspace",
+            }),
+          });
+
+          assert.equal(openedQueries[0]?.options.resume, "forked-native-session");
+          assert.equal(openedQueries[0]?.options.sessionId, undefined);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
+              NodeCrypto.layer,
+            ),
           ),
         ),
       ),
-    ),
   );
 });
 
@@ -2690,7 +2701,9 @@ describe("ClaudeAdapterV2 MCP credential channel", () => {
         ...ProviderEventLoggers.NoOpProviderEventLoggers,
         native,
       }),
-      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
     );
 
   it.effect("commits queued delivery before interruptible protocol logging", () =>
@@ -2873,7 +2886,7 @@ describe("ClaudeAdapterV2 native session identity", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -3578,7 +3591,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -3814,7 +3827,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -3912,7 +3925,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -3988,7 +4001,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -4281,7 +4294,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -4335,7 +4348,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -4426,7 +4439,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -4532,7 +4545,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -4639,7 +4652,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -4661,7 +4674,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -4721,7 +4734,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -4755,7 +4768,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -4837,7 +4850,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -5018,7 +5031,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           );
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
+            ),
           ),
         ),
       ),
@@ -5180,7 +5197,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             );
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
+            ),
           ),
         ),
       ),
@@ -5240,7 +5261,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.include(receipt.knownRetained, `builtin plugins: ${builtinPlugins.join(", ")}`);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
+          ),
         ),
       ),
   );
@@ -5286,7 +5311,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* Queue.take(harness.terminalReceipts);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
+          ),
         ),
       ),
   );
@@ -5359,7 +5388,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.equal(closes, 1);
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
+          ),
         ),
       ),
     ),
@@ -5490,7 +5523,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -5674,7 +5707,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -5734,7 +5767,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -5924,7 +5957,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -5974,7 +6007,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -6013,7 +6046,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -6037,7 +6070,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -6065,7 +6098,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -6130,7 +6163,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -6141,7 +6174,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     const testLayer = Layer.mergeAll(
       IdAllocator.layer,
       McpProviderSessions.layer,
-      NodeServices.layer,
+      Layer.merge(NodeServices.layer, NodeCrypto.layer),
       NodeCrypto.layer,
     );
     const approvalOnly: ElicitationRequest = {
@@ -6410,7 +6443,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -6473,7 +6506,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -6602,7 +6635,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -6680,7 +6713,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -6748,7 +6781,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -6870,7 +6903,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -6945,7 +6978,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -7005,7 +7038,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -7101,7 +7134,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -7158,7 +7191,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -7206,7 +7239,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -7320,7 +7353,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -7381,7 +7414,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -7455,7 +7488,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -7523,7 +7556,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -7691,7 +7724,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -7858,7 +7891,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -7927,7 +7960,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -8011,7 +8044,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -8074,7 +8107,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -8132,7 +8165,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -8205,7 +8238,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -8306,7 +8339,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -8367,7 +8400,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -8449,7 +8482,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -8516,7 +8549,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -8591,7 +8624,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       Effect.scoped,
       Effect.provide(
         Layer.mergeAll(
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
           IdAllocator.layer,
           McpProviderSessions.layer,
@@ -8696,7 +8729,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Effect.scoped,
         Effect.provide(
           Layer.mergeAll(
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
             IdAllocator.layer,
             McpProviderSessions.layer,
@@ -8930,7 +8963,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -9009,7 +9042,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -9096,7 +9129,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       Effect.scoped,
       Effect.provide(
         Layer.mergeAll(
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
           IdAllocator.layer,
           McpProviderSessions.layer,
@@ -9168,7 +9201,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -9415,7 +9448,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -9693,7 +9726,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -9729,7 +9762,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -9789,7 +9822,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -9820,7 +9853,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -9867,7 +9900,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -9919,7 +9952,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -9954,7 +9987,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -9975,7 +10008,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           NodeCrypto.layer,
         ),
       ),
@@ -10057,7 +10090,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -10119,7 +10152,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -10188,7 +10221,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -10283,7 +10316,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -10414,7 +10447,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -10555,7 +10588,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -10670,7 +10703,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -10737,7 +10770,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -10800,7 +10833,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -10879,7 +10912,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -11070,7 +11103,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -11336,7 +11369,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -11547,7 +11580,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -11639,7 +11672,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -11790,7 +11823,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -11916,7 +11949,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -12011,7 +12044,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -12091,7 +12124,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -12136,7 +12169,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -12230,7 +12263,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -12312,7 +12345,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -12371,7 +12404,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -12422,7 +12455,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -12486,7 +12519,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -12603,7 +12636,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -12685,7 +12718,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -12781,7 +12814,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -12861,7 +12894,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -12946,7 +12979,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -13011,7 +13044,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -13046,7 +13079,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -13292,7 +13325,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -13490,7 +13523,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -13522,7 +13555,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -13603,7 +13636,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -13767,7 +13800,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -13956,7 +13989,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -14087,7 +14120,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -14279,7 +14312,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -14466,7 +14499,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           expect.soft(interrupts).toBe(1);
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
+            ),
           ),
         ),
       ),
@@ -14653,7 +14690,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.lengthOf(harness.terminalEvents(), 3);
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
+            ),
           ),
         ),
       ),
@@ -14727,7 +14768,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           );
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
+            ),
           ),
         ),
       ),
@@ -14911,7 +14956,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           );
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
+            ),
           ),
         ),
       ),
@@ -14994,7 +15043,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -15160,7 +15209,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -15314,7 +15363,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -15486,7 +15535,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -15581,7 +15630,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -15672,7 +15721,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -15789,7 +15838,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -15908,7 +15957,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -16036,7 +16085,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -16143,7 +16192,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -16267,7 +16316,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -16358,7 +16407,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -16424,7 +16473,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -16526,7 +16575,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -16799,7 +16848,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -16975,7 +17024,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -17163,7 +17212,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -17357,7 +17406,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -17497,7 +17546,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -17635,7 +17684,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -17920,7 +17969,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -18009,7 +18058,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -18122,7 +18171,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -18382,7 +18431,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -18477,7 +18526,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -18710,7 +18759,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -18835,7 +18884,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -18946,7 +18995,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -19042,7 +19091,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -19281,7 +19330,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -19488,7 +19537,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -19540,7 +19589,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -19598,7 +19647,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -19652,7 +19701,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -19743,7 +19792,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -19837,7 +19886,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Layer.mergeAll(
               IdAllocator.layer,
               McpProviderSessions.layer,
-              NodeServices.layer,
+              Layer.merge(NodeServices.layer, NodeCrypto.layer),
               NodeCrypto.layer,
             ),
           ),
@@ -19885,7 +19934,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -19929,7 +19978,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -19983,7 +20032,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),

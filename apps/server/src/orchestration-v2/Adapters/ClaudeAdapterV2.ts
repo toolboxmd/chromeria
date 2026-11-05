@@ -8195,7 +8195,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         // Detachment ends native work from every run this process served. Older
         // completed runs still have their own subscribers; the active run's
         // terminal already carries its single projection cascade.
-        const endSubagentsOfClosedQuery = Effect.fnUntraced(function* (
+        const detachSubagentsOfClosedQuery = Effect.fnUntraced(function* (
           closedQuery: ClaudeLiveQueryContext,
           status: "interrupted" | "failed",
         ) {
@@ -8264,6 +8264,23 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               });
             }
           }
+        });
+
+        const endSubagentCallsOfClosedQuery = Effect.fnUntraced(function* (
+          nativeThreadId: string,
+          status: "interrupted" | "failed",
+        ) {
+          const settled = settledTurnByNativeThread.get(nativeThreadId);
+          if (settled === undefined || subagentToolCalls.size === 0) {
+            return;
+          }
+          yield* endToolCalls({
+            context: settled,
+            toolCalls: [...subagentToolCalls.values()],
+            status,
+            completedAt: yield* DateTime.now,
+          });
+          subagentToolCalls.clear();
         });
 
         const finalizeActiveTurn = Effect.fnUntraced(function* (input: {
@@ -11713,7 +11730,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   current?.query === querySession ? [true, null] : [false, current],
                 );
                 if (ownsLiveQuery) {
-                  yield* endSubagentsOfClosedQuery(
+                  yield* detachSubagentsOfClosedQuery(
                     context,
                     context.stopping ? "interrupted" : "failed",
                   );
@@ -12367,7 +12384,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             current?.query === existing.query ? [true, null] : [false, current],
           );
           if (ownedLiveQuery) {
-            yield* endSubagentsOfClosedQuery(existing, "interrupted");
+            yield* detachSubagentsOfClosedQuery(existing, "interrupted");
             yield* finalizeActiveTurnAfterQueryExit(existing);
             yield* endSubagentCallsOfClosedQuery(nativeThreadId, "interrupted");
           } else {

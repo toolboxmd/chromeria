@@ -1,3 +1,5 @@
+import * as AssetSigner from "../assets/AssetSigner.ts";
+import { layerFixtureHostServices } from "./PeerAuthority.workflow.fixture.ts";
 import * as DocumentText from "../provider/DocumentText.ts";
 import type * as Adapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
@@ -403,7 +405,12 @@ it.live(
       }),
     ).pipe(
       Effect.provide(
-        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+        Layer.merge(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          DocumentText.layer.pipe(
+            Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+          ),
+        ),
       ),
     ),
 );
@@ -476,7 +483,12 @@ it.live("lifecycle381: finished jobs watching there never hold back a live job's
     }),
   ).pipe(
     Effect.provide(
-      Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+      Layer.merge(
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
+        DocumentText.layer.pipe(
+          Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+        ),
+      ),
     ),
   ),
 );
@@ -579,7 +591,12 @@ it.live("lifecycle381: a stopped job with new work there is not held back by fin
     }),
   ).pipe(
     Effect.provide(
-      Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+      Layer.merge(
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
+        DocumentText.layer.pipe(
+          Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+        ),
+      ),
     ),
   ),
 );
@@ -805,7 +822,12 @@ it.live(
       }),
     ).pipe(
       Effect.provide(
-        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+        Layer.merge(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          DocumentText.layer.pipe(
+            Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+          ),
+        ),
       ),
     ),
 );
@@ -939,7 +961,12 @@ it.live("lifecycle381: a valid old-peer result has unknown follow-up purpose", (
     }),
   ).pipe(
     Effect.provide(
-      Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+      Layer.merge(
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
+        DocumentText.layer.pipe(
+          Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+        ),
+      ),
     ),
   ),
 );
@@ -1039,7 +1066,12 @@ it.live(
       }),
     ).pipe(
       Effect.provide(
-        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+        Layer.merge(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          DocumentText.layer.pipe(
+            Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+          ),
+        ),
       ),
     ),
 );
@@ -1305,7 +1337,12 @@ it.live(
       }),
     ).pipe(
       Effect.provide(
-        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+        Layer.merge(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          DocumentText.layer.pipe(
+            Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+          ),
+        ),
       ),
     ),
 );
@@ -1453,7 +1490,12 @@ it.live(
       }),
     ).pipe(
       Effect.provide(
-        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+        Layer.merge(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          DocumentText.layer.pipe(
+            Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+          ),
+        ),
       ),
     ),
 );
@@ -1524,7 +1566,12 @@ it.live(
       }),
     ).pipe(
       Effect.provide(
-        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+        Layer.merge(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          DocumentText.layer.pipe(
+            Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+          ),
+        ),
       ),
     ),
 );
@@ -1694,7 +1741,12 @@ it.live(
       }),
     ).pipe(
       Effect.provide(
-        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+        Layer.merge(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          DocumentText.layer.pipe(
+            Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+          ),
+        ),
       ),
     ),
 );
@@ -2021,7 +2073,12 @@ it.live(
       }),
     ).pipe(
       Effect.provide(
-        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+        Layer.merge(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          DocumentText.layer.pipe(
+            Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+          ),
+        ),
       ),
     ),
 );
@@ -2214,7 +2271,12 @@ it.live(
       }),
     ).pipe(
       Effect.provide(
-        Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+        Layer.merge(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          DocumentText.layer.pipe(
+            Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+          ),
+        ),
       ),
     ),
 );
@@ -2382,7 +2444,12 @@ it.live("lifecycle381: same public cancellation replays after an in-flight launc
     }),
   ).pipe(
     Effect.provide(
-      Layer.merge(NodeServices.layer, DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+      Layer.merge(
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
+        DocumentText.layer.pipe(
+          Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+        ),
+      ),
     ),
   ),
 );
@@ -2508,7 +2575,14 @@ it.live(
           effects,
         });
       }),
-    ).pipe(Effect.provide(Layer.merge(FetchHttpClient.layer, NodeServices.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.merge(
+          FetchHttpClient.layer,
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+        ),
+      ),
+    ),
 );
 
 it.live("reviewer382: separate callers may reuse a local request key", () =>
@@ -2555,9 +2629,11 @@ it.live("reviewer382: separate callers may reuse a local request key", () =>
   ).pipe(
     Effect.provide(
       Layer.mergeAll(
-        NodeServices.layer,
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
         FetchHttpClient.layer,
-        DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+        DocumentText.layer.pipe(
+          Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+        ),
       ),
     ),
   ),
@@ -2607,9 +2683,11 @@ it.live("reviewer382: legacy metadata replay preserves later title", () =>
   ).pipe(
     Effect.provide(
       Layer.mergeAll(
-        NodeServices.layer,
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
         FetchHttpClient.layer,
-        DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+        DocumentText.layer.pipe(
+          Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+        ),
       ),
     ),
   ),
@@ -2678,9 +2756,11 @@ it.live("reviewer382: concurrent keyed field edits retain both intents", () =>
   ).pipe(
     Effect.provide(
       Layer.mergeAll(
-        NodeServices.layer,
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
         FetchHttpClient.layer,
-        DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+        DocumentText.layer.pipe(
+          Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+        ),
       ),
     ),
   ),
@@ -2749,9 +2829,11 @@ it.live("runtime382-F1: remote scheduler validation leaves SQLite free for rever
   ).pipe(
     Effect.provide(
       Layer.mergeAll(
-        NodeServices.layer,
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
         FetchHttpClient.layer,
-        DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+        DocumentText.layer.pipe(
+          Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+        ),
       ),
     ),
   ),
@@ -2811,9 +2893,11 @@ it.live("toggle584: a retried keyed disable replays its receipt after a later en
   ).pipe(
     Effect.provide(
       Layer.mergeAll(
-        NodeServices.layer,
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
         FetchHttpClient.layer,
-        DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+        DocumentText.layer.pipe(
+          Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+        ),
       ),
     ),
   ),
@@ -2888,9 +2972,11 @@ it.live(
     ).pipe(
       Effect.provide(
         Layer.mergeAll(
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
           FetchHttpClient.layer,
-          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+          DocumentText.layer.pipe(
+            Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+          ),
         ),
       ),
     ),
@@ -2992,9 +3078,11 @@ it.live(
     ).pipe(
       Effect.provide(
         Layer.mergeAll(
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
           FetchHttpClient.layer,
-          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+          DocumentText.layer.pipe(
+            Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+          ),
         ),
       ),
     ),
@@ -3060,9 +3148,11 @@ it.live(
     ).pipe(
       Effect.provide(
         Layer.mergeAll(
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
           FetchHttpClient.layer,
-          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+          DocumentText.layer.pipe(
+            Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+          ),
         ),
       ),
     ),
@@ -3167,9 +3257,11 @@ it.live("Grok382-G1: owner-proved preview nondelivery leaves the same key retrya
   ).pipe(
     Effect.provide(
       Layer.mergeAll(
-        NodeServices.layer,
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
         FetchHttpClient.layer,
-        DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+        DocumentText.layer.pipe(
+          Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+        ),
       ),
     ),
   ),
@@ -3368,9 +3460,11 @@ it.live.each(["reserve", "discard"] as const)(
     ).pipe(
       Effect.provide(
         Layer.mergeAll(
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
           FetchHttpClient.layer,
-          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+          DocumentText.layer.pipe(
+            Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+          ),
         ),
       ),
     ),
@@ -3450,9 +3544,11 @@ it.live(
     ).pipe(
       Effect.provide(
         Layer.mergeAll(
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
           FetchHttpClient.layer,
-          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+          DocumentText.layer.pipe(
+            Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+          ),
         ),
       ),
     ),
@@ -3572,9 +3668,11 @@ it.live(
     ).pipe(
       Effect.provide(
         Layer.mergeAll(
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
           FetchHttpClient.layer,
-          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+          DocumentText.layer.pipe(
+            Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+          ),
         ),
       ),
     ),
@@ -3716,9 +3814,11 @@ it.live.each(["single", "bulk", "replacement"] as const)(
     ).pipe(
       Effect.provide(
         Layer.mergeAll(
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
           FetchHttpClient.layer,
-          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+          DocumentText.layer.pipe(
+            Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+          ),
         ),
       ),
     ),
@@ -3841,9 +3941,11 @@ it.live("reviewer382-r2: saved PNG replays through registered transport without 
   ).pipe(
     Effect.provide(
       Layer.mergeAll(
-        NodeServices.layer,
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
         FetchHttpClient.layer,
-        DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+        DocumentText.layer.pipe(
+          Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+        ),
       ),
     ),
   ),
@@ -3949,9 +4051,11 @@ it.live("reviewer382-r2: manual admission rechecks a replacement schedule target
   ).pipe(
     Effect.provide(
       Layer.mergeAll(
-        NodeServices.layer,
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
         FetchHttpClient.layer,
-        DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+        DocumentText.layer.pipe(
+          Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+        ),
       ),
     ),
   ),
@@ -4067,9 +4171,11 @@ it.live(
     ).pipe(
       Effect.provide(
         Layer.mergeAll(
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
           FetchHttpClient.layer,
-          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+          DocumentText.layer.pipe(
+            Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+          ),
         ),
       ),
     ),
@@ -4230,9 +4336,11 @@ it.live(
     ).pipe(
       Effect.provide(
         Layer.mergeAll(
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
           FetchHttpClient.layer,
-          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+          DocumentText.layer.pipe(
+            Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+          ),
         ),
       ),
     ),
@@ -4325,9 +4433,11 @@ it.live(
     ).pipe(
       Effect.provide(
         Layer.mergeAll(
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
           FetchHttpClient.layer,
-          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+          DocumentText.layer.pipe(
+            Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+          ),
         ),
       ),
     ),
@@ -4438,9 +4548,11 @@ it.live(
     ).pipe(
       Effect.provide(
         Layer.mergeAll(
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
           FetchHttpClient.layer,
-          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+          DocumentText.layer.pipe(
+            Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+          ),
         ),
       ),
     ),
@@ -4466,6 +4578,10 @@ it.live(
           sizeBytes: bytes.byteLength,
         }).pipe(
           Effect.provideService(Config.ServerConfig, node.config),
+          Effect.provideService(
+            AssetSigner.AssetSigner,
+            Context.get(node.services, AssetSigner.AssetSigner),
+          ),
           Effect.provideService(
             Secrets.ServerSecretStore,
             Context.get(node.services, Secrets.ServerSecretStore),
@@ -4531,9 +4647,11 @@ it.live(
     ).pipe(
       Effect.provide(
         Layer.mergeAll(
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
           FetchHttpClient.layer,
-          DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+          DocumentText.layer.pipe(
+            Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices)),
+          ),
         ),
       ),
     ),

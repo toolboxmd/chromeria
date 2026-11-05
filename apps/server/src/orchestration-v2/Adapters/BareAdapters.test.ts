@@ -1,3 +1,5 @@
+import * as Digest from "effect/crypto/Digest";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -11,7 +13,6 @@ import {
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
-import * as Crypto from "effect/Crypto";
 import * as Layer from "effect/Layer";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -122,6 +123,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const params = codexThreadRuntimeParams({
+        threadId: null,
         mcpSession: undefined,
         modelSelection: selection,
         runtimePolicy: policy("approval-required"),
@@ -145,7 +147,9 @@ it.effect(
       expect(turn.approvalPolicy).not.toBe("never");
       expect(turn.sandboxPolicy?.type).not.toBe("dangerFullAccess");
       expect(
-        codexThreadRuntimeParams({ mcpSession: undefined }).config["tools.update_plan.enabled"],
+        codexThreadRuntimeParams({ threadId: null, mcpSession: undefined }).config[
+          "tools.update_plan.enabled"
+        ],
       ).toBe(true);
     }),
 );
@@ -210,7 +214,7 @@ it.effect.each(["existing", "managed"] as const)(
           config,
           environment,
         }),
-        crypto: yield* Crypto.Crypto,
+        digest: yield* Digest.Digest,
         fileSystem: fs,
         idAllocator: yield* IdAllocator.IdAllocatorV2,
         serverConfig,
@@ -283,11 +287,11 @@ it.effect.each(["existing", "managed"] as const)(
       Effect.scoped,
       Effect.provide(
         Layer.mergeAll(
-          NodeServices.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
           IdAllocator.layer,
           McpProviderSessions.layer,
           ServerConfig.layerTest(process.cwd(), { prefix: "t3-bare-codex-threads-" }).pipe(
-            Layer.provide(NodeServices.layer),
+            Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
           ),
         ),
       ),
@@ -360,7 +364,7 @@ it("Grok keeps mode-derived argv and gates both tool and command identities", ()
   ).toBe("pre_tool_use");
 });
 
-it.layer(NodeServices.layer)("bare homes", (it) => {
+it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) => {
   it.effect(
     "links the native credential owner and leaves managed authentication without auth.json",
     () =>

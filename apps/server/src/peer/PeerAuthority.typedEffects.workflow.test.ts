@@ -1,3 +1,6 @@
+import * as AssetSigner from "../assets/AssetSigner.ts";
+import * as Redacted from "effect/Redacted";
+import { layerFixtureHostServices } from "./PeerAuthority.workflow.fixture.ts";
 import { nativeRpcCall, sendResult, native383RpcGroups } from "./PeerAuthority.workflow.fixture.ts";
 import { PeerDispatchAuthority } from "./peerEffectAuthority.ts";
 import {
@@ -109,7 +112,7 @@ import * as NodeURL from "node:url";
 import * as PubSub from "effect/PubSub";
 import { compactDynamicToolOutput, resourcesFromToolItem } from "@t3tools/shared/toolOutput";
 import { projectThreadProjectionForWire } from "../orchestration-v2/WireProjection.ts";
-import { NodeWS } from "@effect/platform-node/NodeSocket";
+import * as NodeWS from "@effect/platform-node/NodeWS";
 import * as DeviceHubProxy from "../device/DeviceHubProxy.ts";
 
 import * as Auth from "../auth/EnvironmentAuth.ts";
@@ -325,7 +328,14 @@ it.live(
         const last = b.deviceProcessCalls.at(-1)!;
         expect(last.args[last.args.indexOf("--session") + 1]).not.toBe([...sessions][0]);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -366,7 +376,14 @@ it.live(
         );
         yield* assertTyped383SourceIdle(a);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each(["device_open", "device_execute"] as const)(
@@ -415,7 +432,14 @@ it.live.each(["device_open", "device_execute"] as const)(
           expect(yield* footprint()).toEqual(before);
         }
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -460,7 +484,14 @@ it.live(
         );
         expect(yield* footprint()).toEqual(accepted);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -525,7 +556,14 @@ it.live(
           ).toBe(true);
         expect(yield* footprint()).toEqual(stable);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -596,7 +634,14 @@ it.live(
           expect(b.deviceProcessCalls.filter((call) => call.args[1] === "fill")).toHaveLength(1);
         }).pipe(Effect.withTracer(tracer), Effect.withTracerEnabled(true));
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -797,7 +842,14 @@ it.live(
         expect((yield* drive("package-mutated", command)).isError).toBe(true);
         expect(yield* footprint()).toEqual(afterInstall);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -882,7 +934,14 @@ it.live(
         expect(json(yield* drive("race-package-install", input))).toContain("outcome_unknown");
         expect(yield* footprint()).toEqual(afterChange);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -898,7 +957,14 @@ it.live(
         expect(json(response)).not.toContain("agent-device.mjs");
         expect(yield* footprint()).toEqual(untouched);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -941,7 +1007,14 @@ it.live(
         expect(json(replay)).toContain("outcome_unknown");
         expect(b.deviceProcessCalls).toHaveLength(before);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -1000,7 +1073,14 @@ it.live(
         expect(json(replay)).toContain("outcome_unknown");
         expect(b.deviceProcessCalls).toHaveLength(before);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live("typed383-core: wrong installed runtime or missing pin refuses without preparation", () =>
@@ -1030,7 +1110,14 @@ it.live("typed383-core: wrong installed runtime or missing pin refuses without p
       expect((yield* open("typed383-missing-pin")).isError).toBe(true);
       expect(yield* footprint()).toEqual(stable);
     }),
-  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  ).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
+        FetchHttpClient.layer,
+      ),
+    ),
+  ),
 );
 
 it.live(
@@ -1106,7 +1193,14 @@ it.live(
           before,
         );
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -1172,7 +1266,14 @@ it.live(
         expect(yield* b.fixtureDevice!.sessionsForThread(child)).toEqual(sessions);
         expect(json(result)).not.toContain("agent-device.mjs");
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -1258,7 +1359,14 @@ it.live(
         expect(action.structuredContent).toEqual({ type: "action", target, status: "dispatched" });
         expect(b.deviceProcessCalls.filter((call) => call.args[1] === "click")).toHaveLength(2);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -1349,7 +1457,14 @@ it.live(
         expect(yield* Ref.get(node.deviceAgentStarts)).toBe(2);
         expect(yield* Ref.get(node.deviceConfigurations)).toBe(2);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -1613,7 +1728,14 @@ it.live(
           "Later independent PNG path edit",
         );
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -1655,6 +1777,10 @@ it.live(
           sizeBytes: bytes.byteLength,
         }).pipe(
           Effect.provideService(Config.ServerConfig, b.config),
+          Effect.provideService(
+            AssetSigner.AssetSigner,
+            Context.get(b.services, AssetSigner.AssetSigner),
+          ),
           Effect.provideService(
             Secrets.ServerSecretStore,
             Context.get(b.services, Secrets.ServerSecretStore),
@@ -1863,7 +1989,14 @@ it.live(
           yield* nativeDb`SELECT id,owner,generation,manifest,digest,expected_digest FROM attachment_staging WHERE id=${resource.attachmentId}`,
         ).toEqual(originalNative);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -1933,7 +2066,14 @@ it.live(
         expect(changed.isError).toBe(true);
         expect(yield* sql`SELECT thread_id FROM fork_spectra`).toHaveLength(1);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 const idleHtml382 = (id: string, htmlImageReadGate?: Effect.Effect<void>) =>
@@ -2061,7 +2201,14 @@ it.live(
         expect(json(rows)).not.toContain(input.html);
         expect(json(rows)).toContain(result.htmlRender.attachmentId);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -2108,7 +2255,14 @@ it.live(
         expect(json(yield* call("html382-local-ended"))).toContain("parent_not_active");
         expect(yield* fs.readDirectory(node.config.attachmentsDir)).toEqual(before);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -2213,7 +2367,14 @@ it.live(
         expect(yield* fs.readDirectory(revoked.a.config.attachmentsDir)).toEqual([]);
         expect(yield* fs.readDirectory(revoked.b.config.attachmentsDir)).toEqual(["B-owned.svg"]);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each(["source-ended", "grant-narrowed", "grant-revoked"] as const)(
@@ -2271,7 +2432,14 @@ it.live.each(["source-ended", "grant-narrowed", "grant-revoked"] as const)(
         expect(original.capabilities.has("preview")).toBe(false);
         expect(original.capabilities.has("device")).toBe(false);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live("html382: source ending after a successful remote preparation cannot publish", () =>
@@ -2331,7 +2499,14 @@ it.live("html382: source ending after a successful remote preparation cannot pub
         expect(yield* sql`SELECT id FROM mcp_request_receipts WHERE state='completed'`).toEqual([]);
       }).pipe(Effect.provideService(FetchHttpClient.Fetch, observedFetch));
     }),
-  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  ).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
+        FetchHttpClient.layer,
+      ),
+    ),
+  ),
 );
 
 it.live("named382: registered title-only project creation replays its exact native owner", () =>
@@ -2372,7 +2547,14 @@ it.live("named382: registered title-only project creation replays its exact nati
       expect(changed.isError).toBe(true);
       expect(yield* sql`SELECT project_id FROM managed_project_requests`).toHaveLength(1);
     }),
-  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  ).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
+        FetchHttpClient.layer,
+      ),
+    ),
+  ),
 );
 
 it.live(
@@ -2523,7 +2705,14 @@ it.live(
           yield* sql`SELECT message_id FROM orchestration_v2_projection_messages WHERE role='user'`,
         ).toHaveLength(4);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -2588,7 +2777,14 @@ it.live(
         expect(recovered.lastRunStatus).toBe("succeeded");
         expect(recovered.runCount).toBe(2);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -2679,7 +2875,14 @@ it.live(
           expect((yield* userMessages).length).toBe(messagesBefore + 1);
         }
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -2781,7 +2984,14 @@ it.live(
           (yield* node.scheduled.runNow({ id: task.id }, { request: identity })).manualReceipt,
         ).toEqual(accepted.manualReceipt);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -2869,7 +3079,14 @@ it.live(
         expect(replaced.isError).toBe(true);
         expect(yield* Ref.get(b.settingsWrites)).toBe(writes);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -3007,7 +3224,14 @@ it.live(
           expect(allRows).not.toContain(privateText);
         expect(allRows).not.toContain("customInstructions");
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -3128,7 +3352,14 @@ it.live(
           ),
         ).toBe(false);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -3263,7 +3494,14 @@ it.live(
           expect(Array.from(yield* fs.readFile(path!))).toEqual(Array.from(fixture.bytes));
         }
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -3348,7 +3586,14 @@ it.live(
           yield* sql`SELECT thread_id FROM orchestration_v2_projection_threads WHERE project_id=${b.project.id}`,
         ).toHaveLength(1);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -3455,7 +3700,14 @@ it.live(
         expect(changed.isError).toBe(true);
         expect(actions).toBe(1);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -3581,7 +3833,14 @@ it.live(
           after.messages,
         );
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -3746,7 +4005,14 @@ it.live(
           "no hub dispatch after readiness retired native consent",
         ).toBe(afterLater);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each([
@@ -3866,7 +4132,14 @@ it.live.each([
         expect(acknowledged).toBe(true);
         expect(n.deviceViewerInputs).toEqual([lawful]);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -4053,7 +4326,14 @@ it.live(
         expect(b.deviceViewerRequests.length).toBe(finalCount);
         expect(a.deviceViewerRequests).toEqual([]);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -4101,7 +4381,14 @@ it.live(
         expect(a.deviceViewerRequests).toEqual([]);
         expect(b.deviceViewerRequests).toEqual([]);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -4191,7 +4478,7 @@ it.live(
                 try: () =>
                   new Promise<WebSocket>((resolve, reject) => {
                     const socket = new WebSocket(
-                      `ws://127.0.0.1:${address.port}/ws?wsTicket=${encodeURIComponent(ticket.ticket)}`,
+                      `ws://127.0.0.1:${address.port}/ws?wsTicket=${encodeURIComponent(Redacted.value(ticket.ticket))}`,
                     );
                     socket.addEventListener("message", (event) =>
                       Queue.offerUnsafe(messages, String(event.data)),
@@ -4265,7 +4552,14 @@ it.live(
         ).toBe(true);
         expect(a.deviceViewerRequests).toEqual([]);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each([
@@ -4447,7 +4741,13 @@ it.live.each([
         expect(a.deviceViewerInputs).toEqual([]);
       }),
     ).pipe(
-      Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, TestClock.layer())),
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+          TestClock.layer(),
+        ),
+      ),
     ),
 );
 
@@ -4530,7 +4830,14 @@ it.live(
         expect(json(replay)).toContain("outcome_unknown");
         expect(external.effects.filter((effect) => effect === "click")).toHaveLength(1);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -4742,7 +5049,14 @@ it.live(
           })).isError,
         ).toBe(true);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each(["snapshot preparation", "clear"] as const)(
@@ -4819,7 +5133,14 @@ it.live.each(["snapshot preparation", "clear"] as const)(
           expect(external.effects.filter((effect) => effect === "capture")).toHaveLength(2);
         }
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -4871,7 +5192,14 @@ it.live(
         expect(json(replay)).toContain("outcome_unknown");
         expect(browserExternalContexts.at(-1)!.effects).not.toContain("new-page");
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -4947,7 +5275,14 @@ it.live(
         expect(external.effects.filter((effect) => effect === "capture")).toHaveLength(1);
         expect((yield* authorization.pipe(Effect.result))._tag).toBe("Failure");
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -4994,7 +5329,7 @@ it.live(
                 try: () =>
                   new Promise<WebSocket>((resolve, reject) => {
                     const ws = new WebSocket(
-                      `${a.nativeViewerRpcUrl}/ws?wsTicket=${encodeURIComponent(ticket.ticket)}`,
+                      `${a.nativeViewerRpcUrl}/ws?wsTicket=${encodeURIComponent(Redacted.value(ticket.ticket))}`,
                     );
                     ws.addEventListener("message", (event) =>
                       Queue.offerUnsafe(messages, String(event.data)),
@@ -5411,7 +5746,13 @@ it.live(
         ).toBe(true);
       }),
     ).pipe(
-      Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, TestClock.layer())),
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+          TestClock.layer(),
+        ),
+      ),
     ),
 );
 
@@ -5639,7 +5980,14 @@ it.live.each(["messages", "bytes", "progress"] as const)(
             : []),
         ]);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each([5, 20])(
@@ -5768,7 +6116,14 @@ it.live.each([5, 20])(
         ).toEqual(expected);
         expect(json(projected.output)).not.toContain(b.config.stateDir);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -5863,7 +6218,7 @@ it.live(
             const ticket = yield* a.auth.issueWebSocketTicket(native);
             return yield* client.execute(
               HttpClientRequest.make(method)(
-                `${a.url}${issued.relativeUrl}?wsTicket=${encodeURIComponent(ticket.ticket)}`,
+                `${a.url}${issued.relativeUrl}?wsTicket=${encodeURIComponent(Redacted.value(ticket.ticket))}`,
               ).pipe(HttpClientRequest.setHeaders(headers)),
             );
           });
@@ -5892,7 +6247,7 @@ it.live(
         const rivalTicket = yield* a.auth.issueWebSocketTicket(rivalNative);
         const rivalFetch = yield* client.execute(
           HttpClientRequest.get(
-            `${a.url}${issued.relativeUrl}?wsTicket=${encodeURIComponent(rivalTicket.ticket)}`,
+            `${a.url}${issued.relativeUrl}?wsTicket=${encodeURIComponent(Redacted.value(rivalTicket.ticket))}`,
           ),
         );
         expect(rivalFetch.status).toBe(403);
@@ -5951,7 +6306,14 @@ it.live(
         yield* linkTo(a.links, b, "full-access");
         expect((yield* fetchAsset("GET")).status).toBe(403);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -6076,7 +6438,14 @@ it.live(
           ),
         ).toEqual(before);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -6155,7 +6524,14 @@ it.live(
         expect(reused.isError, json(reused)).toBe(true);
         expect(yield* footprint()).toEqual(after);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -6248,7 +6624,14 @@ it.live(
         );
         expect(Array.from(yield* fs.readFile(value.path))).toEqual(Array.from(edited));
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each(["agent", "human"] as const)(
@@ -6341,7 +6724,14 @@ it.live.each(["agent", "human"] as const)(
         ).toHaveLength(0);
         expect(Array.from(yield* fs.readFile(lawful.saves[0]!))).toEqual(Array.from(bytes));
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -6385,7 +6775,14 @@ it.live(
           "A-only registered output must not expose a B-local download path",
         ).not.toContain(b.config.stateDir);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -6442,7 +6839,7 @@ it.live(
             const ticket = yield* a.auth.issueWebSocketTicket(native);
             return yield* client.execute(
               HttpClientRequest.make(method)(
-                `${a.url}${issued.relativeUrl}?wsTicket=${encodeURIComponent(ticket.ticket)}`,
+                `${a.url}${issued.relativeUrl}?wsTicket=${encodeURIComponent(Redacted.value(ticket.ticket))}`,
               ).pipe(HttpClientRequest.setHeaders(headers)),
             );
           });
@@ -6535,7 +6932,14 @@ it.live(
         expect(yield* typed383Digest(yield* fs.readFile(acquiredValue.path))).toBe(resource.digest);
         expect(resource.resource.threadId).toBe(child);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -6606,7 +7010,7 @@ it.live(
             const ticket = yield* a.auth.issueWebSocketTicket(native);
             return yield* client.execute(
               HttpClientRequest.make(method)(
-                `${a.url}${issued.relativeUrl}?wsTicket=${encodeURIComponent(ticket.ticket)}`,
+                `${a.url}${issued.relativeUrl}?wsTicket=${encodeURIComponent(Redacted.value(ticket.ticket))}`,
               ).pipe(HttpClientRequest.setHeaders(headers)),
             );
           });
@@ -6681,7 +7085,7 @@ it.live(
         const streaming = yield* HttpClient.withScope(client)
           .execute(
             HttpClientRequest.get(
-              `${a.url}${issued.relativeUrl}?wsTicket=${encodeURIComponent(cancellationTicket.ticket)}`,
+              `${a.url}${issued.relativeUrl}?wsTicket=${encodeURIComponent(Redacted.value(cancellationTicket.ticket))}`,
             ),
           )
           .pipe(Scope.provide(downstream));
@@ -6724,7 +7128,14 @@ it.live(
         expect(closed.isError, json(closed)).not.toBe(true);
         expect((yield* fetchAsset("HEAD")).status).toBe(403);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -6999,7 +7410,14 @@ it.live(
         ).not.toBe(true);
         expect(resource.threadId).toBe(child);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live("native383-input: whole mixed browser batch is verified before new source transfer", () =>
@@ -7119,7 +7537,14 @@ it.live("native383-input: whole mixed browser batch is verified before new sourc
         expect(batches).toHaveLength(1);
       }
     }),
-  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  ).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
+        FetchHttpClient.layer,
+      ),
+    ),
+  ),
 );
 
 it.live(
@@ -7211,7 +7636,14 @@ it.live(
         expect(selected).toHaveLength(1);
         expect(yield* db`SELECT * FROM attachment_staging`).toEqual(accepted);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each(["android", "ios"] as const)(
@@ -7314,7 +7746,14 @@ it.live.each(["android", "ios"] as const)(
         expect(b.deviceViewerInputs).toHaveLength(3);
         expect(a.deviceViewerInputs).toEqual([]);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -7422,7 +7861,14 @@ it.live(
         ).toHaveLength(1);
         expect(retired.status).toBe(401);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -7501,7 +7947,7 @@ it.live(
                 try: () =>
                   new Promise<WebSocket>((resolve, reject) => {
                     const ws = new WebSocket(
-                      `${a.nativeViewerRpcUrl}/ws?wsTicket=${encodeURIComponent(ticket.ticket)}`,
+                      `${a.nativeViewerRpcUrl}/ws?wsTicket=${encodeURIComponent(Redacted.value(ticket.ticket))}`,
                     );
                     ws.addEventListener("message", (event) =>
                       Queue.offerUnsafe(messages, String(event.data)),
@@ -7638,7 +8084,7 @@ it.live(
           .authenticateWebSocketUpgrade(
             HttpServerRequest.fromWeb(
               new Request(
-                `${a.nativeViewerRpcUrl!.replace(/^ws/, "http")}/ws?wsTicket=${encodeURIComponent(retiredTicket.ticket)}`,
+                `${a.nativeViewerRpcUrl!.replace(/^ws/, "http")}/ws?wsTicket=${encodeURIComponent(Redacted.value(retiredTicket.ticket))}`,
               ),
             ),
             "rpc",
@@ -7651,7 +8097,7 @@ it.live(
           chunk: "after retirement",
         });
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live.each([false, true])(
@@ -7711,6 +8157,10 @@ it.live.each([false, true])(
           sizeBytes: bytes.byteLength,
         }).pipe(
           Effect.provideService(Config.ServerConfig, b.config),
+          Effect.provideService(
+            AssetSigner.AssetSigner,
+            Context.get(b.services, AssetSigner.AssetSigner),
+          ),
           Effect.provideService(
             Secrets.ServerSecretStore,
             Context.get(b.services, Secrets.ServerSecretStore),
@@ -7819,7 +8269,14 @@ it.live.each([false, true])(
           expect(stops).toBe(1);
         }
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each([false, true])(
@@ -7903,7 +8360,14 @@ it.live.each([false, true])(
           ).toHaveLength(calls);
         }).pipe(Effect.provideService(FileSystem.FileSystem, recordingFs));
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each(["preview_upload", "preview_navigate"] as const)(
@@ -8031,7 +8495,14 @@ it.live.each(["preview_upload", "preview_navigate"] as const)(
         expect(observed).toHaveLength(1);
         expect(replayed.isError, "receipt wait retired the real preview grant").toBe(true);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live("review534-r3: failed source device admission closes the already opened B viewer", () =>
@@ -8095,7 +8566,14 @@ it.live("review534-r3: failed source device admission closes the already opened 
           .pipe(Effect.result))._tag,
       ).toBe("Failure");
     }),
-  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  ).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
+        FetchHttpClient.layer,
+      ),
+    ),
+  ),
 );
 
 it.live.each([
@@ -8341,7 +8819,14 @@ it.live.each([
         expect(viewerAnswers).toBe(count === 8 ? 1 : 0);
         expect(answers).toBe(count === 8 ? 1 : 0);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -8402,7 +8887,7 @@ it.live(
         const params = new URLSearchParams({
           threadId: child,
           tabId: resource.tabId,
-          wsTicket: ticket,
+          wsTicket: Redacted.value(ticket),
         });
         const socket = yield* Effect.acquireRelease(
           Effect.promise(
@@ -8472,7 +8957,14 @@ it.live(
           { method: "Input.insertText", params: { text: "after-paste" } },
         ]);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each([10_000, 10_001, 20_000])(
@@ -8593,7 +9085,14 @@ it.live.each([10_000, 10_001, 20_000])(
           { method: "Input.insertText", params: { text: "after-paste" } },
         ]);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each([
@@ -8854,7 +9353,14 @@ it.live.each([
         );
         expect(resumed.isError, json(resumed)).not.toBe(true);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each([
@@ -8913,7 +9419,7 @@ it.live.each([
         query.viewerTicket = access.ticket;
       } else {
         const ticket = yield* b.auth.issueWebSocketTicket(principal);
-        query.wsTicket = ticket.ticket;
+        query.wsTicket = Redacted.value(ticket.ticket);
       }
       const ready = Promise.withResolvers<void>();
       const controlled = Promise.withResolvers<void>();
@@ -9078,7 +9584,14 @@ it.live.each([
       );
       expect(resumed.isError, json(resumed)).not.toBe(true);
     }),
-  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  ).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
+        FetchHttpClient.layer,
+      ),
+    ),
+  ),
 );
 
 it.live.each(
@@ -9217,7 +9730,14 @@ it.live.each(
       expect(replacementAccepted).toBe(replacement ? 1 : 0);
       expect(originalAccepted).toBe(replacement ? 0 : 1);
     }),
-  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  ).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
+        FetchHttpClient.layer,
+      ),
+    ),
+  ),
 );
 
 it.live.each([
@@ -9423,7 +9943,14 @@ it.live.each([
         }
         yield* check;
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each(
@@ -9578,7 +10105,14 @@ it.live.each(
       ).toEqual(expected);
       yield* check;
     }),
-  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  ).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
+        FetchHttpClient.layer,
+      ),
+    ),
+  ),
 );
 
 it.live.each([
@@ -9707,7 +10241,14 @@ it.live.each([
           ?.controller,
       ).toBe("agent");
     }),
-  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  ).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.merge(NodeServices.layer, layerFixtureHostServices),
+        FetchHttpClient.layer,
+      ),
+    ),
+  ),
 );
 
 it.live.each(["preview", "device"] as const)(
@@ -9784,7 +10325,14 @@ it.live.each(["preview", "device"] as const)(
         yield* assertIdle;
         expect((yield* a.threads.getThreadShell(parent))?.activeRunId).not.toBeNull();
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each(["preview", "device"] as const)(
@@ -9900,7 +10448,14 @@ it.live.each(["preview", "device"] as const)(
         expect(json(ended)).toContain("parent_not_active");
         expect(effects()).toEqual(resumed);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each(["preview", "device"] as const)(
@@ -9950,7 +10505,14 @@ it.live.each(["preview", "device"] as const)(
         else expect(b.deviceProcessCalls.filter((x) => x.args.includes("open"))).toHaveLength(0);
         yield* assertIdle;
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live(
@@ -10039,7 +10601,14 @@ it.live(
         expect(json(yield* open("eight-source-ended"))).toContain("parent_not_active");
         expect(browserExternalContexts).toHaveLength(contextsBefore + 3);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each(["unchanged", "source-ended", "grant-retired"] as const)(
@@ -10127,7 +10696,14 @@ it.live.each(["unchanged", "source-ended", "grant-retired"] as const)(
           yield* assertIdle;
         }).pipe(Effect.withTracer(tracer), Effect.withTracerEnabled(true));
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each(["preview", "device"] as const)(
@@ -10227,7 +10803,14 @@ it.live.each(["preview", "device"] as const)(
         expect(ended.isError).toBe(true);
         expect(json(ended)).toContain("parent_not_active");
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each(["source", "destination", "mixed"] as const)(
@@ -10292,7 +10875,14 @@ it.live.each(["source", "destination", "mixed"] as const)(
         expect(batches).toEqual([expected]);
         yield* assertIdle;
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each(["install", "reinstall"] as const)(
@@ -10339,7 +10929,14 @@ it.live.each(["install", "reinstall"] as const)(
         expect(b.deviceProcessCalls.filter((x) => x.args[1] === type)).toHaveLength(1);
         yield* assertIdle;
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each(["preview", "device"] as const)(
@@ -10441,7 +11038,14 @@ it.live.each(["preview", "device"] as const)(
         });
         expect((yield* open()).isError).not.toBe(true);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each([false, true])(
@@ -10477,7 +11081,14 @@ it.live.each([false, true])(
           browserExternalContexts.at(-1)!.effects.filter((x) => x === "new-page"),
         ).toHaveLength(retire ? 0 : 1);
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each([false, true])(
@@ -10537,7 +11148,14 @@ it.live.each([false, true])(
           );
         }).pipe(Effect.withTracer(tracer), Effect.withTracerEnabled(true));
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each(["preview", "device"] as const)(
@@ -10573,7 +11191,14 @@ it.live.each(["preview", "device"] as const)(
         }).toEqual(before);
         yield* assertIdle;
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each(["preview", "device"] as const)(
@@ -10741,7 +11366,14 @@ it.live.each(["preview", "device"] as const)(
         expect(effects()).toEqual(after);
         yield* assertIdle;
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each(["unchanged", "source-ended", "scope-retired"] as const)(
@@ -10816,7 +11448,14 @@ it.live.each(["unchanged", "source-ended", "scope-retired"] as const)(
         expect(b.deviceProcessCalls).toHaveLength(0);
         yield* assertIdle;
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it.live.each(["source-ended", "grant-retired"] as const)(
@@ -10888,7 +11527,14 @@ it.live.each(["source-ended", "grant-retired"] as const)(
         }
         yield* assertIdle;
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 it("native383-rpc-groups: production partitions preserve the complete public method schemas and middleware", () => {
@@ -10956,7 +11602,14 @@ it.live(
         expect(json(status)).toContain("https://example.test/login");
         yield* assertIdle;
       }),
-    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
 );
 
 const decodeAttachmentResource = Schema.decodeUnknownEffect(

@@ -1508,7 +1508,10 @@ export const toolkitRegistration = <Tools extends Record<string, Tool.Any>, EX, 
 ) =>
   Layer.effectDiscard(
     withToolAnalytics(
-      withAdvertisedSchemas(wireToolkit(toolkit), McpServer.registerToolkit(decodeAsAdvertised(wireToolkit(toolkit)))),
+      withAdvertisedSchemas(
+        wireToolkit(toolkit),
+        McpServer.registerToolkit(decodeAsAdvertised(wireToolkit(toolkit))),
+      ),
     ),
   ).pipe(
     Layer.provide(
@@ -2198,29 +2201,30 @@ const layerPeerControl = Layer.unwrap(
 export const layerInProcessMcpServer = McpServer.middleware<{
   provides: McpInvocationContext.McpInvocationContext;
 }>()(
-  (effect) => Layer.merge(
+  (effect) =>
     Effect.flatMap(
       Effect.serviceOption(McpInvocationContext.McpInvocationContext),
       Option.match({
         onNone: () => Effect.die("Provide McpInvocationContext around the in-process MCP call."),
-        onSome: (scope) => Layer.merge(
+        onSome: (scope) =>
           Effect.provideService(effect, McpInvocationContext.McpInvocationContext, scope),
       }),
     ),
   { global: true },
 ).pipe(Layer.provideMerge(McpServer.McpServer.layer));
 
-export const layerMcpTransport = <RA, RE, RR>(registrations: Layer.Layer<RA, RE, RR>) => Layer.merge(
-  McpServer.layerHttp({
-    name: "T3 Code",
-    version: packageJson.version,
-    path: "/mcp",
-    protocols: [McpProtocol.v2025_06_18],
-    allowSessionTermination: true,
-    registrations,
-  }),
-  layerPeerControl,
-).pipe(Layer.provide(layerMcpAuthMiddleware));
+export const layerMcpTransport = <RA, RE, RR>(registrations: Layer.Layer<RA, RE, RR>) =>
+  Layer.merge(
+    McpServer.layerHttp({
+      name: "T3 Code",
+      version: packageJson.version,
+      path: "/mcp",
+      protocols: [McpProtocol.v2025_06_18],
+      allowSessionTermination: true,
+      registrations,
+    }),
+    layerPeerControl,
+  ).pipe(Layer.provide(layerMcpAuthMiddleware));
 
 /** Every tool the T3 MCP server advertises. AgentContextBudget.test.ts measures this set. */
 export const layerTools = Layer.mergeAll(

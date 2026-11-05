@@ -2649,7 +2649,7 @@ describe("orchestration v2 provider switching", () => {
               ?.id;
             assert.isDefined(queuedRunId);
             yield* Deferred.succeed(releaseFirst, undefined);
-            yield* orchestrator.streamStoredEvents.pipe(
+            yield* orchestrator.streamStoredEventsFrom({ afterSequence: 0 }).pipe(
               Stream.filter(
                 ({ event }) =>
                   event.type === "run.updated" &&

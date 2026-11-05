@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { NodeHttpServer } from "@effect/platform-node";
 import { assert, it } from "@effect/vitest";
@@ -84,7 +85,13 @@ it.effect("links, lists and unlinks headlessly; CLI revocation cuts off a perman
     }),
   ).pipe(
     Effect.provide(
-      Layer.mergeAll(NodeServices.layer, NodeHttpServer.layerTest, Net.layer, TestConsole.layer),
+      Layer.mergeAll(
+        NodeServices.layer,
+        NodeCrypto.layer,
+        NodeHttpServer.layerTest,
+        Net.layer,
+        TestConsole.layer,
+      ),
     ),
   ),
 );
