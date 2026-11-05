@@ -682,4 +682,5 @@ apps/web/src/components/chat/useThreadLifecycle.browser.test.tsx
 
 # Upstream absorption compatibility and shared auth ownership (#631).
 apps/server/src/orchestration-v2/ProjectionMaintenance.test.ts
+packages/client-runtime/src/state/auth.test.ts
 packages/client-runtime/src/state/auth.ts

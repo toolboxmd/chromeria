@@ -900,6 +900,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/web/src/components/settings/AuthorizedClientsSettings.tsx",
     "apps/web/src/components/sidebar/SidebarDraftBlock.tsx",
     "apps/web/src/components/sidebar/SidebarThreadRow.tsx",
+    "packages/client-runtime/src/state/auth.test.ts",
     "packages/client-runtime/src/state/auth.ts"
   ],
   "sharedFiles": [
