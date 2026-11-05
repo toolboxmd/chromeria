@@ -91,6 +91,7 @@ const PreviewStatusTool = Tool.make("preview_status", {
 
 // `url` already covers websites, so open only adds the dev-server target.
 const EnvironmentPortTarget = BrowserNavigationTarget.members[1];
+const isPreviewAutomationOpen = Schema.is(PreviewAutomationOpenInput);
 
 const PreviewOpenTool = browserTool(
   Tool.make("preview_open", {
@@ -101,6 +102,11 @@ const PreviewOpenTool = browserTool(
       PreviewAutomationOpenInput.mapFields(
         (fields) => ({ ...fields, target: Schema.optional(EnvironmentPortTarget) }),
         { unsafePreserveChecks: true },
+      ),
+    ).check(
+      Schema.makeFilter(
+        (input) =>
+          isPreviewAutomationOpen(input) || "tabId cannot be combined with reuseExistingTab=false.",
       ),
     ),
     success: PreviewAutomationStatus,
