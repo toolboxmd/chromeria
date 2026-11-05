@@ -771,7 +771,7 @@ it.effect("a launch steps an inherited mode down to the provider's, and refuses 
     const pi = ProviderInstanceId.make("pi");
     const launchPi = Effect.fn("test.launchPi")(function* (runtimeMode?: RuntimeMode) {
       const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
-      const { projectId, dependencies } = clientLaunchHarness({
+      const { projectId, dependencies: harnessDependencies } = clientLaunchHarness({
         runtimeModeCeiling: "auto",
         launched,
         providers: [
@@ -784,13 +784,19 @@ it.effect("a launch steps an inherited mode down to the provider's, and refuses 
             version: null,
             auth: { status: "authenticated" },
             checkedAt: "2026-01-01T00:00:00Z",
-            models: [],
+            models: [{ slug: "pi-model", name: "test", isCustom: false, capabilities: null }],
             slashCommands: [],
             skills: [],
             supportedRuntimeModes: ["approval-required", "auto-accept-edits", "full-access"],
           },
         ],
       });
+      const dependencies = Layer.merge(
+        harnessDependencies,
+        Layer.mock(AdapterRegistry.ProviderAdapterRegistryV2)({
+          list: () => Effect.succeed([pi]),
+        }),
+      );
       const toolkit = yield* ProjectToolkit.pipe(
         Effect.provide(
           McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
