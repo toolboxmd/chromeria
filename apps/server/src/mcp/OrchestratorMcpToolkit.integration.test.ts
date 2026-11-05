@@ -1391,9 +1391,9 @@ describe("orchestrator MCP toolkit", () => {
             resultRun: { runId: queuedFollowup.runId, status: "completed" },
           });
           expect(messageReads.length).toBeGreaterThan(0);
-          expect(
-            messageReads.every((query) => query.includes("$.notification.source.kind")),
-          ).toBe(true);
+          expect(messageReads.every((query) => query.includes("$.notification.source.kind"))).toBe(
+            true,
+          );
           const parentlessRead = yield* invoke(
             "t3_thread_read",
             {

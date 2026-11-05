@@ -1108,9 +1108,10 @@ describe("OrchestratorMcpService", () => {
           readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId, fields, filter) => {
             if (threadId === parentThreadId) callerReads.push(fields);
-            return ((fields as ReadonlyArray<string>).includes("subagents")
-              ? Ref.update(subagentReads, (reads) => [...reads, filter])
-              : Effect.void
+            return (
+              (fields as ReadonlyArray<string>).includes("subagents")
+                ? Ref.update(subagentReads, (reads) => [...reads, filter])
+                : Effect.void
             ).pipe(Effect.as(projections.get(threadId)!));
           },
           listAppOwnedChildThreadIds: (threadId) => {

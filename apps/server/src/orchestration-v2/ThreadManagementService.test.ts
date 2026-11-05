@@ -398,7 +398,8 @@ it.effect.each(["completed", "retry", "usage-limit", "declined", "native-decline
                 : Stream.never,
             getThreadRecords: (_threadId, fields, filter) =>
               Effect.sync(() => {
-                if ((fields as ReadonlyArray<string>).includes("messages")) messageReads.push(filter);
+                if ((fields as ReadonlyArray<string>).includes("messages"))
+                  messageReads.push(filter);
                 return {
                   thread: { id: threadId, projectId, deletedAt: null },
                   runs,
