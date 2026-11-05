@@ -1887,8 +1887,8 @@ describe("agent session release on close", () => {
 
   it.effect("publishes a reopened session only after the old claim is released and removed", () =>
     Effect.gen(function* () {
-      const entered = yield* Queue.unbounded<void>();
       const releasing = yield* Deferred.make<void>();
+      const reopening = yield* Deferred.make<void>();
       const finish = yield* Deferred.make<void>();
       const { service } = yield* fixture(
         Effect.void,
@@ -1903,18 +1903,19 @@ describe("agent session release on close", () => {
             yield* Deferred.await(finish);
             return "ok" as const;
           }),
-          onPlatformAvailability: Queue.offer(entered, undefined),
         },
       );
       yield* service.configure({ enabled: true, agentAccessEnabled: true });
       const threadId = ThreadId.make("reopen");
       const session = yield* openClaim(service, threadId);
-      yield* Queue.take(entered);
       const publications = yield* service.subscribe;
       const closing = yield* service.close({ threadId }).pipe(Effect.forkChild);
       yield* Deferred.await(releasing);
-      const opening = yield* openClaim(service, threadId, session.deviceId).pipe(Effect.forkChild);
-      yield* Queue.take(entered);
+      const opening = yield* Deferred.succeed(reopening, undefined).pipe(
+        Effect.andThen(openClaim(service, threadId, session.deviceId)),
+        Effect.forkChild,
+      );
+      yield* Deferred.await(reopening);
       yield* Deferred.succeed(finish, undefined);
       yield* Fiber.join(closing);
       const reopened = yield* Fiber.join(opening);
