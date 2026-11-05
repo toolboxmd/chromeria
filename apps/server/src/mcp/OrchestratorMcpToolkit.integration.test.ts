@@ -1337,33 +1337,6 @@ describe("orchestrator MCP toolkit", () => {
             ),
           ).toHaveLength(3);
           expect(finishedTask.completionDelivery?.state).toBe("claimed");
-          const finalStatusCall = yield* invoke("task_status", {
-            taskId: delegated.taskId,
-          });
-          const finalStatus = yield* decodeDelegateTaskResult(
-            finalStatusCall.structuredContent,
-          ).pipe(Effect.orDie);
-          expect(finalStatus).toMatchObject({
-            childRunId: delegated.childRunId,
-            status: "completed",
-            summary: delegatedResult,
-            resultContextTransferId: delegated.resultContextTransferId,
-            hasPendingChildRuns: false,
-            latestTerminalRunId: queuedFollowup.runId,
-            latestTerminalStatus: "completed",
-            latestTerminalSummary: latestSummary,
-          });
-          // Fork (pingdotgg/t3code#13490): the follow-up result reaches the parent as its own transfer.
-          const followupTransfer = finishedParent.contextTransfers.find(
-            (transfer) =>
-              transfer.type === "subagent_result" &&
-              transfer.sourcePoint.runId === queuedFollowup.runId,
-          );
-          expect(followupTransfer).toBeDefined();
-          expect(finalStatus.latestTerminalResultContextTransferId).toBe(followupTransfer?.id);
-          expect(finalStatus.latestTerminalResultContextTransferId).not.toBe(
-            delegated.resultContextTransferId,
-          );
           const transferReads: Array<string> = [];
           const messageReads: Array<string> = [];
           const tracer = Tracer.make({
@@ -1419,12 +1392,8 @@ describe("orchestrator MCP toolkit", () => {
           });
           expect(messageReads.length).toBeGreaterThan(0);
           expect(
-            messageReads.filter((query) => query.includes("$.notification.source.kind")),
-          ).toHaveLength(1);
-          // The orchestrator's restart-continuation guard still reads its own records.
-          expect(
-            messageReads.filter((query) => !query.includes("$.notification.source.kind")),
-          ).toHaveLength(1);
+            messageReads.every((query) => query.includes("$.notification.source.kind")),
+          ).toBe(true);
           const parentlessRead = yield* invoke(
             "t3_thread_read",
             {
@@ -1455,6 +1424,34 @@ describe("orchestrator MCP toolkit", () => {
             afterRead.subagents.find((task) => task.id === delegated.taskId)?.completionDelivery
               ?.state,
           ).toBe("acknowledged");
+
+          const finalStatusCall = yield* invoke("task_status", {
+            taskId: delegated.taskId,
+          });
+          const finalStatus = yield* decodeDelegateTaskResult(
+            finalStatusCall.structuredContent,
+          ).pipe(Effect.orDie);
+          expect(finalStatus).toMatchObject({
+            childRunId: delegated.childRunId,
+            status: "completed",
+            summary: delegatedResult,
+            resultContextTransferId: delegated.resultContextTransferId,
+            hasPendingChildRuns: false,
+            latestTerminalRunId: queuedFollowup.runId,
+            latestTerminalStatus: "completed",
+            latestTerminalSummary: latestSummary,
+          });
+          // Fork (pingdotgg/t3code#13490): the follow-up result reaches the parent as its own transfer.
+          const followupTransfer = finishedParent.contextTransfers.find(
+            (transfer) =>
+              transfer.type === "subagent_result" &&
+              transfer.sourcePoint.runId === queuedFollowup.runId,
+          );
+          expect(followupTransfer).toBeDefined();
+          expect(finalStatus.latestTerminalResultContextTransferId).toBe(followupTransfer?.id);
+          expect(finalStatus.latestTerminalResultContextTransferId).not.toBe(
+            delegated.resultContextTransferId,
+          );
 
           const messageReadsBeforeCapabilities = messageReads.length;
           const capabilities = yield* invoke("orchestrator_capabilities", {}).pipe(
