@@ -3,6 +3,7 @@ apps/desktop/src/shell/DesktopShellEnvironment.test.ts
 apps/desktop/src/shell/DesktopShellEnvironment.ts
 apps/server/src/os-jank.test.ts
 packages/shared/src/shell.ts
+packages/shared/src/shell.test.ts
 .github/workflows/ci.yml
 .github/workflows/pr-size.yml
 .github/workflows/pr-vouch.yml

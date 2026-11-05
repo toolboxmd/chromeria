@@ -2731,7 +2731,8 @@ sources and reasons.
     "apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
     "apps/desktop/src/shell/DesktopShellEnvironment.ts",
     "apps/server/src/os-jank.test.ts",
-    "packages/shared/src/shell.ts"
+    "packages/shared/src/shell.ts",
+    "packages/shared/src/shell.test.ts"
   ],
   "sharedFiles": [],
   "keywords": ["LOGIN_SHELL_CAPTURE_TIMEOUT_MS", "shellEnvironmentPrepared", "login-shell"]
