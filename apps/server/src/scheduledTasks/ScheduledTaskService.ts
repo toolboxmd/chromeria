@@ -1047,6 +1047,37 @@ export const layer = Layer.effect(
               scope: resolvedPurpose.purpose.scope,
               provenance: { type: "schedule", scheduledTaskId: active.id },
             };
+      const send = dispatchVia(decision, threadManagement.sendToThread);
+      const sendBound = Effect.fn("ScheduledTaskService.sendBound")(
+        (threadId: ThreadId, projectId: ProjectId, retries: number): ReturnType<typeof send> =>
+          send({
+            projectId,
+            commandId,
+            purposeSource,
+            threadId,
+            messageId,
+            scheduledTaskId: active.id,
+            text: prompt,
+            attachments: [],
+            mode: "queue",
+            createdBy: active.createdBy,
+            creationSource: active.creationSource,
+          }).pipe(
+            Effect.catchTags({
+              ThreadManagementThreadNotFoundError: (error) =>
+                retries === 0
+                  ? Effect.fail(error)
+                  : threadManagement.getThreadShell(threadId).pipe(
+                      Effect.orElseSucceed(() => null),
+                      Effect.flatMap((shell) =>
+                        shell === null || shell.projectId === projectId
+                          ? Effect.fail(error)
+                          : sendBound(threadId, shell.projectId, retries - 1),
+                      ),
+                    ),
+            }),
+          ),
+      );
       return active.threadId === null
         ? yield* Effect.exit(
             dispatchVia(
@@ -1084,23 +1115,9 @@ export const layer = Layer.effect(
         : yield* Effect.exit(
             // The stored selection only seeds fresh threads. A bound run
             // follows the thread's current provider, so it passes none.
-            dispatchVia(
-              decision,
-              threadManagement.sendToThread,
-            )({
-              projectId: active.projectId,
-              commandId,
-              purposeSource,
-              threadId: ThreadId.make(active.threadId),
-              messageId,
-              scheduledTaskId: active.id,
-              text: prompt,
-              attachments: [],
-              // Scheduled prompts must not interrupt tools in the bound thread.
-              mode: "queue",
-              createdBy: active.createdBy,
-              creationSource: active.creationSource,
-            }).pipe(Effect.as(ThreadId.make(active.threadId))),
+            sendBound(ThreadId.make(active.threadId), active.projectId, 2).pipe(
+              Effect.as(ThreadId.make(active.threadId)),
+            ),
           );
     });
 
@@ -1827,6 +1844,18 @@ export const layer = Layer.effect(
             "Choose an Issue, PR or deliberately unscoped purpose before enabling this legacy schedule.",
             { taskId: input.id },
           );
+        if (
+          input.enabled &&
+          existing.schedule.type === "webhook" &&
+          webhookPolicyBlock !== undefined
+        ) {
+          return yield* taskError(webhookPolicyBlock, { taskId: input.id });
+        }
+        const modeDenial =
+          input.enabled && existing.threadId === null
+            ? managedRuntimeModeDenial(managedPolicy.summary, existing.runtimeMode)
+            : undefined;
+        if (modeDenial !== undefined) return yield* taskError(modeDenial, { taskId: input.id });
         const now = yield* localNow;
         yield* requireFutureOnce(
           { enabled: input.enabled, schedule: existing.schedule },
@@ -2359,7 +2388,9 @@ export const layer = Layer.effect(
       );
       return yield* runTask(task, "manual").pipe(
         Effect.mapError((cause) =>
-          taskError("Could not run schedule task.", { taskId: input.id, cause }),
+          isScheduledTaskError(cause)
+            ? cause
+            : taskError("Could not run schedule task.", { taskId: input.id, cause }),
         ),
       );
     });
