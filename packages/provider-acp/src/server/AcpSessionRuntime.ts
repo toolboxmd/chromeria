@@ -95,6 +95,8 @@ export interface AcpSpawnInput {
 }
 
 export interface AcpSessionRuntimeOptions {
+  /** Application rules on a newly created session only. Never sent on initialize, load or resume. */
+  readonly newSessionRules?: string;
   readonly spawn: AcpSpawnInput;
   readonly cwd: string;
   readonly resumeSessionId?: string;
@@ -127,9 +129,11 @@ export interface AcpSessionRuntimeOptions {
   /** Sent on every session/new, load, resume and fork; omitting them clears an agent's stored roots. */
   readonly additionalDirectories?: ReadonlyArray<string>;
   /** Session `_meta`, chosen from the negotiated agent before each session setup or activation. */
-  readonly sessionMeta?: (
-    initializeResult: EffectAcpSchema.InitializeResponse,
-  ) => EffectAcpSchema.NewSessionRequest["_meta"] | undefined;
+  readonly sessionMeta?:
+    | EffectAcpSchema.NewSessionRequest["_meta"]
+    | ((
+        initializeResult: EffectAcpSchema.InitializeResponse,
+      ) => EffectAcpSchema.NewSessionRequest["_meta"] | undefined);
   readonly transformStdout?: EffectAcpClient.AcpClientOptions["transformStdout"];
   readonly transformSessionUpdate?: (
     notification: EffectAcpSchema.SessionNotification,
@@ -1078,6 +1082,7 @@ function isAcpAuthenticationRequired(error: EffectAcpErrors.AcpError): boolean {
 }
 
 export interface AcpSessionRuntimeStartResult {
+  readonly newSessionRules?: string;
   readonly sessionId: string;
   readonly initializeResult: EffectAcpSchema.InitializeResponse;
   readonly sessionSetupResult:
@@ -2149,7 +2154,10 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
   };
 
   const sessionSetupFields = (initializeResult: EffectAcpSchema.InitializeResponse) => {
-    const meta = options.sessionMeta?.(initializeResult);
+    const meta =
+      typeof options.sessionMeta === "function"
+        ? options.sessionMeta(initializeResult)
+        : options.sessionMeta;
     return {
       ...(options.additionalDirectories?.length
         ? { additionalDirectories: options.additionalDirectories }
@@ -2250,6 +2258,9 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
           cwd: options.cwd,
           mcpServers: sessionMcpServers(initializeResult),
           ...additionalDirectories,
+          ...(options.newSessionRules === undefined
+            ? {}
+            : { _meta: { ...additionalDirectories._meta, rules: options.newSessionRules } }),
         } satisfies EffectAcpSchema.NewSessionRequest;
         const created = yield* runLoggedRequest(
           "session/new",
@@ -2287,6 +2298,9 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
     yield* SubscriptionRef.set(configOptionsRef, sessionConfigOptionsFromSetup(sessionSetupResult));
 
     const nextState = {
+      ...(options.resumeSessionId !== undefined || options.newSessionRules === undefined
+        ? {}
+        : { newSessionRules: options.newSessionRules }),
       sessionId,
       initializeResult,
       sessionSetupResult,
