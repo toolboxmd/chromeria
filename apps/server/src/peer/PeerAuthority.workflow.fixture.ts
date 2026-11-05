@@ -2185,7 +2185,10 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
           previewControls === undefined
             ? Layer.empty
             : provideServices(
-                BrowserStream.routeLayer.pipe(Layer.provide(NodeHttpPlatform.layer)),
+                BrowserStream.routeLayer.pipe(
+                  Layer.provide(NodeHttpPlatform.layer),
+                  Layer.provide(FetchHttpClient.layer),
+                ),
                 scheduleServices,
                 requests,
                 nativeServices,
