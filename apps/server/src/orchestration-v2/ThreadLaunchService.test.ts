@@ -3223,8 +3223,8 @@ it.effect(
       const sql = yield* SqlClient.SqlClient;
       yield* sql`UPDATE scheduled_tasks SET thread_id = ${userThread.threadId} WHERE task_id = ${stored.id}`;
       const refused = yield* tasks.runNow({ id: stored.id }).pipe(Effect.flip);
-      if (!isTaskError(refused.cause)) return yield* Effect.die(refused);
-      assert.include(refused.cause.message, "own link");
+      if (!isTaskError(refused)) return yield* Effect.die(refused);
+      assert.include(refused.message, "own link");
       const untouched = yield* threads.getThreadProjection(userThread.threadId);
       assert.deepStrictEqual(untouched.messages, []);
     }).pipe(Effect.provide(mcp));
