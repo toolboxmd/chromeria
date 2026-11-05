@@ -271,7 +271,7 @@ it("shows a remote subagent's full title in its tooltip even when its environmen
   const longTitle = "Investigate a remote subagent issue across linked environments";
   const remoteEnvId = EnvironmentId.make("remote-env");
   const remoteThreadId = ThreadId.make("remote-thread");
-  state.hiddenKeys = new Set([`${environmentId}:${remoteThreadId}`]);
+  state.hiddenKeys = new Set([`${environmentId}\u0000${remoteThreadId}`]);
   state.relatedShells = [
     {
       id: remoteThreadId,

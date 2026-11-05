@@ -40,6 +40,15 @@ vi.mock("../state/threads", () => ({
     get delegatedUnderParentAtom() {
       return noDelegatedAtom;
     },
+    get hiddenThreadKeysAtom() {
+      return hiddenThreadKeysAtom;
+    },
+    get anyEnvironmentHidingAtom() {
+      return anyEnvironmentHidingAtom;
+    },
+    get threadRefsAtom() {
+      return threadRefsAtom;
+    },
   },
 }));
 vi.mock("../hooks/useSettings", () => ({
@@ -71,6 +80,11 @@ const commandTasksAtom = Atom.family((_id: string) =>
 const shellAtom = Atom.family((_id: string) => Atom.make<unknown>(null));
 const environmentIdsAtom = Atom.make<ReadonlyArray<string>>([]);
 const noRequestsAtom = Atom.make(new Map());
+const hiddenThreadKeysAtom = Atom.make<ReadonlySet<string>>(new Set<string>());
+const anyEnvironmentHidingAtom = Atom.make(false);
+const threadRefsAtom = Atom.make<ReadonlyArray<{ environmentId: EnvironmentId; threadId: string }>>(
+  [],
+);
 const noDelegatedAtom = Atom.make<ReadonlySet<string>>(new Set<string>());
 state.shells = { set: (id, value) => registry.set(shellAtom(id), value) };
 
@@ -227,6 +241,20 @@ it.each(["hasPendingApprovals", "hasPendingUserInput"] as const)(
     app.changeSettings();
     expect(state.badge).toHaveBeenLastCalledWith(0);
     expect(notification.close).toHaveBeenCalled();
+
+    state.mode = "notifications";
+    app.changeSettings();
+    state.shells.set("one", shell({ [flag]: false }));
+    state.shells.set("one", shell({ [flag]: true }));
+    const pending = TestNotification.sent.at(-1)!;
+    expect(pending).not.toBe(notification);
+    registry.set(hiddenThreadKeysAtom, new Set(["one\u0000thread"]));
+    expect(state.badge).toHaveBeenLastCalledWith(0);
+    expect(pending.close).toHaveBeenCalled();
+    const count = TestNotification.sent.length;
+    state.shells.set("one", shell({ [flag]: false }));
+    state.shells.set("one", shell({ [flag]: true }));
+    expect(TestNotification.sent).toHaveLength(count);
   },
 );
 
