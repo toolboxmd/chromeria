@@ -137,6 +137,7 @@ import {
   useEnvironmentThreadRefs,
   useProjects,
   useServerConfigs,
+  useThreadRefs,
   useVisibleThreadShells,
   waitForProject,
 } from "../state/entities";
@@ -416,6 +417,7 @@ function OpenCommandPaletteDialog(props: {
   const linkedThreadSearch = initialSearch.linkedThreadSearch;
   // Rows were captured when the palette opened; drop any hidden since then.
   const hiddenKeys = useHiddenThreadKeys();
+  const threadRefs = useThreadRefs();
   const linkedEnvironmentId = linkedThreadSearch?.linkedThreads?.environmentId ?? null;
   const hidingAnywhere = useAnyEnvironmentHiding();
   const linkedThreadRefs = useEnvironmentThreadRefs(linkedEnvironmentId);
@@ -914,6 +916,13 @@ function OpenCommandPaletteDialog(props: {
     const linkedItems = issueLinkedThreads.flatMap((linked) =>
       buildLinkedThreadActionItems({
         ...linked,
+        threads: visibleLinkedThreads(
+          linked.threads,
+          linked.environmentId,
+          threadRefs.filter((ref) => ref.environmentId === linked.environmentId),
+          hiddenKeys,
+          hidingAnywhere,
+        ),
         query: threadSearchQuery,
         icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
         runThread: async (thread) => {
