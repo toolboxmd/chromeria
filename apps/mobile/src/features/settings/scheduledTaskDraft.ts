@@ -1,4 +1,5 @@
 import { isWebhookDedupeTemplate } from "@t3tools/contracts";
+import { purposeScopeOfSavedIntent, type ExecutionPurposeScope } from "@t3tools/contracts";
 import type {
   ModelSelection,
   ServerConfig,
@@ -7,9 +8,10 @@ import type {
   ScheduledTask,
   ScheduledTaskUpsertSchedule,
   ScheduledTaskWebhookSignature,
+  ScheduledTaskForkSchedule,
 } from "@t3tools/contracts";
 
-import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
+import { DEFAULT_SERVER_SETTINGS, isForkScheduledTaskSchedule } from "@t3tools/contracts";
 import {
   parseMaxDeliveryAge,
   parseWebhookFilterDrafts,
@@ -51,7 +53,7 @@ export function scheduledTaskDefaultModel(
 }
 
 export type ScheduleDraft = {
-  readonly mode: "fixed_time" | "once" | "interval" | "webhook";
+  readonly mode: "fixed_time" | "once" | "interval" | "webhook" | "preserved";
   readonly timeOfDay: string;
   /** ISO time for a one-time run. Empty until the user picks the "Once" mode. */
   readonly runAt: string;
@@ -65,6 +67,8 @@ export type ScheduleDraft = {
   readonly filters: ReadonlyArray<WebhookFilterDraft>;
   /** The filter rows the form opened with. */
   readonly savedFilters: ReadonlyArray<WebhookFilterDraft>;
+  /** A fork trigger saved back exactly as loaded. */
+  readonly preserved: ScheduledTaskForkSchedule | null;
 };
 
 export const DEFAULT_SCHEDULE: ScheduleDraft = {
@@ -80,9 +84,12 @@ export const DEFAULT_SCHEDULE: ScheduleDraft = {
   coalesceWindowSeconds: "",
   filters: [],
   savedFilters: [],
+  preserved: null,
 };
 
 export function scheduleDraftForTask(task: Pick<ScheduledTask, "schedule">): ScheduleDraft {
+  if (isForkScheduledTaskSchedule(task.schedule))
+    return { ...DEFAULT_SCHEDULE, mode: "preserved", preserved: task.schedule };
   switch (task.schedule.type) {
     case "fixed_time":
       return {
@@ -126,6 +133,7 @@ export function parseIntervalMinutes(value: string): number {
 }
 
 export function scheduleFromDraft(draft: ScheduleDraft): ScheduledTaskUpsertSchedule | null {
+  if (draft.mode === "preserved") return draft.preserved;
   if (draft.mode === "webhook") {
     const maxDeliveryAgeMinutes = parseMaxDeliveryAge(draft.maxDeliveryAgeMinutes);
     if (maxDeliveryAgeMinutes === undefined) return null;
@@ -197,6 +205,7 @@ export function scheduleFromDraft(draft: ScheduleDraft): ScheduledTaskUpsertSche
 
 type Workspace = "worktree" | "root" | "existing_worktree";
 export type ScheduledTaskDraft = {
+  readonly purposeScope?: ExecutionPurposeScope;
   readonly task: ScheduledTask | null;
   readonly title: string;
   readonly prompt: string;
@@ -215,6 +224,7 @@ export type ScheduledTaskDraft = {
 function draftSignature(draft: ScheduledTaskDraft): string {
   return JSON.stringify([
     draft.title,
+    draft.purposeScope,
     draft.prompt,
     draft.projectId,
     draft.modelSelection?.instanceId,
@@ -253,6 +263,7 @@ export function createDraft(
   modelSelection: ModelSelection | null,
 ): ScheduledTaskDraft {
   return {
+    purposeScope: { type: "unscoped", reason: "deliberate" },
     task: null,
     title: "",
     prompt: "",
@@ -271,6 +282,7 @@ export function createDraft(
 
 export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
   return {
+    purposeScope: purposeScopeOfSavedIntent(task.purposeIntent),
     task,
     title: task.title,
     prompt: task.prompt,
