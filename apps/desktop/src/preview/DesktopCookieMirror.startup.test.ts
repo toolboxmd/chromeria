@@ -109,6 +109,7 @@ it.effect.each([
     // The mirror's scan reads client settings first, once it holds the scan lock.
     const scanStarted = yield* Deferred.make<void>();
     const windowCreated = vi.fn();
+    const ensureMain = vi.fn<() => import("electron").BrowserWindow>();
     const backendExited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
     const backend = yield* DesktopBackendManager.makeBackendInstance({
       id: DesktopBackendManager.PRIMARY_INSTANCE_ID,
@@ -278,7 +279,9 @@ it.effect.each([
         on: () => Effect.void,
       }),
       Layer.mock(ElectronSafeStorage.ElectronSafeStorage, {}),
-      Layer.mock(ElectronDialog.ElectronDialog, {}),
+      Layer.mock(ElectronDialog.ElectronDialog, {
+        showErrorBox: (_title, content) => Effect.die(new Error(content)),
+      }),
       Layer.mock(DesktopUpdates.DesktopUpdates, {
         configure: Effect.void,
         subscribe: Effect.succeed({
@@ -297,7 +300,7 @@ it.effect.each([
         attachGuest: () => () => {},
       }),
       Layer.mock(DesktopApplicationMenu.DesktopApplicationMenu, { configure: Effect.void }),
-      Layer.mock(DesktopWindow.DesktopWindow, {}),
+      Layer.mock(DesktopWindow.DesktopWindow, { ensureMain: Effect.sync(ensureMain) }),
       Layer.mock(ElectronProtocol.ElectronProtocol, {
         registerDesktopProtocol: () => Effect.void,
       }),
