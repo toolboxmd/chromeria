@@ -2,6 +2,11 @@ import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import type { ToolCallDiffTarget } from "../../diffPanelStore";
 import { AudioPreviewUnmountContext } from "../files/AudioPreview";
+import { PromachosInlineCardHost, promachosScrollFollow } from "../promachos/PromachosChat";
+import {
+  promachosTimelineRows,
+  resolvePromachosTimelineDisclosures,
+} from "../promachos/promachosTimeline";
 import { ThreadFindTimelineContext } from "./ThreadFindProvider";
 import { MarkdownFindContext } from "./markdownFindContext";
 import { useChatCanvas } from "./ChatCanvasContext";
@@ -160,7 +165,9 @@ function TimelineListFooter({
   composerInset,
   onGrow,
   children,
+  onInlineCardHost,
 }: {
+  readonly onInlineCardHost?: ((element: HTMLDivElement | null) => void) | undefined;
   readonly composerInset: number;
   readonly onGrow: (() => void) | undefined;
   readonly children?: ReactNode;
@@ -179,6 +186,7 @@ function TimelineListFooter({
   }, [onGrow]);
   return (
     <div>
+      {onInlineCardHost ? <PromachosInlineCardHost hostRef={onInlineCardHost} /> : null}
       <div ref={contentRef}>{children}</div>
       <div aria-hidden style={{ height: composerInset }} />
       <div aria-hidden className="h-3 sm:h-4" />
@@ -217,6 +225,8 @@ interface MessagesTimelineProps {
   respondingRequestIds?: TimelineRowSharedState["respondingRequestIds"];
   canOperateThread?: boolean;
   onRespondToApproval?: TimelineRowSharedState["onRespondToApproval"];
+  presentation?: "standard" | "promachos";
+  onInlineCardHost?: (element: HTMLDivElement | null) => void;
   citationRequest?: AssistantCitationRequest | null;
   citationHistory?: CitedHistory;
   onCiteAssistantText?: (
@@ -254,7 +264,10 @@ interface MessagesTimelineProps {
   announceTurnStatus?: boolean;
   onOpenToolDiff?: (target: ToolCallDiffTarget) => void;
   onOpenTurnDiff?: (runId: RunId, filePath?: string) => void;
-  onOpenThread: (threadId: OrchestrationV2TurnItem["threadId"]) => void;
+  onOpenThread: (
+    threadId: OrchestrationV2TurnItem["threadId"],
+    environmentId?: EnvironmentId,
+  ) => void;
   renderHtmlRender?: TimelineRowSharedState["renderHtmlRender"];
   turnItemSource?: TimelineRowSharedState["turnItemSource"];
   /**
@@ -333,6 +346,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
   respondingRequestIds = EMPTY_RESPONDING_REQUEST_IDS,
   canOperateThread = false,
   onRespondToApproval,
+  presentation = "standard",
+  onInlineCardHost,
   citationRequest = null,
   citationHistory = CITED_HISTORY_LOADING,
   onCiteAssistantText,
@@ -663,13 +678,23 @@ const ConversationTimeline = memo(function ConversationTimeline({
   const pendingApprovalRequestIds = new Set(
     pendingApprovals.filter(isVisiblePendingApproval).map((approval) => approval.requestId),
   );
-  const rawRows = useIncrementalTimelineRows(`${listIdentityKey}\0${workspaceRoot ?? ""}`, {
+  const promachos = presentation === "promachos";
+  const scrollFollow = promachosScrollFollow(
+    promachos,
+    TIMELINE_MAINTAIN_SCROLL_AT_END,
+    TIMELINE_MAINTAIN_SCROLL_AT_END_SMOOTH,
+  );
+  const promachosDisclosures = resolvePromachosTimelineDisclosures(
+    { timelineEntries, latestRun, isWorking, runlessWorkActive, runningRunId },
+    promachos,
+  );
+  const projectedRows = useIncrementalTimelineRows(`${listIdentityKey}\0${workspaceRoot ?? ""}`, {
     timelineEntries,
     pendingApprovalRequestIds,
     latestRun,
     runningRunId,
-    expandedRunIds: visibleExpandedRunIds,
-    expandedAttemptIds: visibleExpandedAttemptIds,
+    expandedRunIds: promachosDisclosures?.runs ?? visibleExpandedRunIds,
+    expandedAttemptIds: promachosDisclosures?.attempts ?? visibleExpandedAttemptIds,
     expandedWorkGroupIds,
     isWorking,
     runlessWorkActive,
@@ -680,6 +705,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     availableRevertTurnCounts,
     worktreeSetup,
   });
+  const rawRows = promachos ? promachosTimelineRows(projectedRows) : projectedRows;
   const rows = useStableRows(rawRows, listIdentityKey);
   const matchedApprovalRequestIds = new Set<string>();
   for (const row of pendingApprovalRequestIds.size > 0 ? rows : []) {
@@ -696,7 +722,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   );
   // Run status/timestamps change per stream event; keep them out of shared row context.
   const runs = useStableHandoffRuns(runsProp);
-  const minimapItems = deriveTimelineMinimapItems(rows);
+  const minimapItems = promachos ? [] : deriveTimelineMinimapItems(rows);
   const minimapRowIndices = minimapItems.map((item) => item.rowIndex);
   const restoreRowIndex =
     restoringThreadPosition && rememberedPosition?.atEnd === false
@@ -1011,6 +1037,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     respondingRequestIds,
     canOperateThread,
     onRespondToApproval,
+    promachos,
     citationRequest: readyCitationRequest,
     listRef,
     timestampFormat,
@@ -1242,6 +1269,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     <TimelineListFooter
       composerInset={anchoredEndSpace ? 0 : contentInsetEndAdjustment}
       onGrow={onFooterGrow}
+      onInlineCardHost={onInlineCardHost}
     >
       {footer}
       {unmatchedPendingApprovals.length > 0 ? (
@@ -1330,8 +1358,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
                 disclosureToggleSettling
                   ? false
                   : isWorking && !prefersReducedMotion && settlingListIdentity === null
-                    ? TIMELINE_MAINTAIN_SCROLL_AT_END_SMOOTH
-                    : TIMELINE_MAINTAIN_SCROLL_AT_END
+                    ? scrollFollow.smooth
+                    : scrollFollow.normal
               }
               maintainVisibleContentPosition={
                 findActive ||

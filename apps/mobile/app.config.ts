@@ -2,6 +2,7 @@ import type { ExpoConfig } from "expo/config";
 
 import { BRAND_ASSET_PATHS } from "../../scripts/lib/brand-assets.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
+import { resolveChromeriaMobileIdentity } from "./chromeria.ts";
 
 type AppVariant = "development" | "preview" | "production";
 
@@ -117,8 +118,14 @@ function resolveAppVariant(value: string | undefined): AppVariant {
   }
 }
 
-const variant = VARIANT_CONFIG[APP_VARIANT];
-// Copied thread links open the app. app.t3.codes/.well-known lists every variant's identifiers.
+const chromeria = resolveChromeriaMobileIdentity(repoEnv);
+const variant = chromeria
+  ? {
+      ...VARIANT_CONFIG.production,
+      ...chromeria.variant,
+      assets: { ...RELEASE_ASSETS, ...chromeria.assets },
+    }
+  : VARIANT_CONFIG[APP_VARIANT];
 const HOSTED_APP_HOST = "app.t3.codes";
 const iosBundleIdentifier = isIosPersonalTeamBuild
   ? personalTeamBundleIdentifier!
@@ -488,4 +495,4 @@ const config: ExpoConfig = {
   },
 };
 
-export default config;
+export default chromeria ? chromeria.apply(config) : config;
