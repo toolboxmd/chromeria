@@ -2614,25 +2614,21 @@ it.effect("drains a delayed branch rename before cancelled setup clears its work
       const launched = yield* launches.launch(input);
       yield* Deferred.await(setupEntered);
       yield* Deferred.await(renameEntered);
-      assert.isTrue(yield* tracker.cancel(launched.threadId));
-      const interrupted = yield* Ref.get(renameInterrupted);
+      const cancellation = yield* tracker.cancel(launched.threadId).pipe(Effect.forkChild);
+      yield* tracker.stream(launched.threadId).pipe(
+        Stream.filter((snapshot) => snapshot?.phase === "cancelled"),
+        Stream.runHead,
+      );
+      assert.equal(harness.removeWorktree.mock.calls.length, 0);
       yield* Deferred.succeed(renameResume, undefined);
-      // On the broken source, observe the delayed write after cleanup rather than relying on timing.
-      if (!interrupted)
-        yield* threads
-          .streamStoredEventsFrom({ threadId: launched.threadId, afterSequence: 0 })
-          .pipe(
-            Stream.filter(
-              (stored) => stored.commandId === CommandId.make(`${input.commandId}:branch-rename`),
-            ),
-            Stream.runHead,
-          );
+      assert.isTrue(yield* Fiber.join(cancellation));
       const projection = yield* threads.getThreadProjection(launched.threadId);
       assert.isNull(projection.thread.worktreePath);
       assert.isNull(projection.thread.branch);
-      assert.isTrue(interrupted);
+      assert.isFalse(yield* Ref.get(renameInterrupted));
       assert.equal(projection.runs[0]?.status, "failed");
       assert.equal(harness.removeWorktree.mock.calls.length, 1);
+      assert.equal(harness.deleteLocalBranch.mock.calls[0]?.[0].refName, "late-generated-branch");
       assert.isEmpty(yield* outbox.listByCommandId(CommandId.make(`${input.commandId}:release`)));
     }).pipe(Effect.provide(harness.layer));
   }),
@@ -3092,7 +3088,11 @@ it.effect(
         Layer.mergeAll(
           tasksLayer,
           Layer.merge(NodeServices.layer, NodeCrypto.layer),
-          Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+          Layer.mock(GitVcsDriver.GitVcsDriver)({
+            resolvePrimaryRemoteName: () => Effect.succeed("origin"),
+            resolveDefaultBranchName: () => Effect.succeed("main"),
+            resolveCommit: () => Effect.succeed({ commitSha: "abc" }),
+          }),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
         ),
       ),
