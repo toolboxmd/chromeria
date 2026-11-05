@@ -1387,7 +1387,7 @@ const seedRestartCancelledChild = (input: {
 it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
   it.effect.each([
     { name: "an interrupt keeps", holdQueue: false, siblingFinishesFirst: false },
-    { name: "Stop disposes", holdQueue: true, siblingFinishesFirst: false },
+    { name: "Stop parks", holdQueue: true, siblingFinishesFirst: false },
     { name: "an interrupt reserves", holdQueue: false, siblingFinishesFirst: true },
   ])("$name a completion wake's other siblings", ({ holdQueue, siblingFinishesFirst }) =>
     Effect.gen(function* () {
@@ -1551,12 +1551,36 @@ it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
           ? [event.payload.delegatedCompletion]
           : [],
       );
-      assert.equal(interruptDelivery.get(incomingTaskId), "disposed");
-      assert.equal(interruptCohort.at(-1)?.disposition, holdQueue ? "stopped" : "open");
       if (holdQueue) {
-        assert.equal(interruptDelivery.get(sibling.id), "disposed");
+        // Fork Stop parks results for explicit resume instead of upstream's cohort disposal.
+        assert.isFalse(interruptDelivery.has(incomingTaskId));
+        assert.isFalse(interruptDelivery.has(sibling.id));
+        yield* completeSibling;
+        yield* orchestrator.recoverDelegatedTasks;
+        yield* orchestrator.recoverDelegatedTasks;
+        yield* orchestrator.resumeQueuedRuns;
+        const parked = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(
+          parked.runs.find((run) => run.id === originRunId)?.delegatedCompletion?.disposition,
+          "open",
+        );
+        for (const taskId of [incomingTaskId, sibling.id]) {
+          const task = parked.subagents.find((task) => task.id === taskId)!;
+          assert.equal(task.status, "completed");
+          assert.isNotNull(task.result);
+          assert.include(["pending", "claimed"], task.completionDelivery?.state);
+        }
+        assert.deepEqual(
+          parked.messages.map((message) => message.id),
+          [delivery.messageId],
+        );
+        assert.isFalse(
+          parked.runs.some((run) => ["starting", "running", "waiting"].includes(run.status)),
+        );
         return;
       }
+      assert.equal(interruptDelivery.get(incomingTaskId), "disposed");
+      assert.equal(interruptCohort.at(-1)?.disposition, "open");
       assert.isFalse(interruptDelivery.has(sibling.id));
 
       const afterSequence = siblingFinishesFirst ? beforeInterrupt : yield* completeSibling;
@@ -2116,6 +2140,55 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
           wake = yield* requests.take;
         }
         assert.equal(wake.delegatedCompletion?.parentRunId, parentRunId);
+        const nativeChild = yield* seedRestartCancelledChild({
+          parentThreadId,
+          projectId,
+          parentRunId,
+          rootNodeId,
+          name: "background-wake-native-control",
+          completionWake: "always",
+          continuationPending: false,
+          runStatus: "completed",
+          now,
+        });
+        const nativeTask = (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
+          (task) => task.id === nativeChild.taskId,
+        )!;
+        yield* eventSink.write({
+          events: [
+            {
+              id: EventId.make("event:background-wake-native-control"),
+              type: "subagent.updated",
+              threadId: parentThreadId,
+              runId: parentRunId,
+              nodeId: nativeChild.taskId,
+              occurredAt: now,
+              payload: { ...nativeTask, origin: "provider_native" },
+            },
+          ],
+        });
+        const nativeMessageId = MessageId.make("message:background-wake-native-control");
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: "agent",
+          creationSource: "provider",
+          commandId: CommandId.make("command:background-wake-native-control"),
+          threadId: nativeChild.childThreadId,
+          messageId: nativeMessageId,
+          text: "Native background activity updated",
+          notification: {
+            source: { kind: "command" },
+            outcome: "completed",
+            summary: "Native background command finished",
+          },
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+        });
+        const nativeRun = (yield* orchestrator.getThreadProjection(
+          nativeChild.childThreadId,
+        )).runs.find((run) => run.userMessageId === nativeMessageId);
+        assert.isDefined(nativeRun);
+        assert.isUndefined(nativeRun?.delegatedTaskId);
       }),
     );
 
