@@ -636,6 +636,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
   "upstreamFiles": [
     "apps/server/src/auth/RpcAuthorization.ts",
     "apps/server/src/observability/RpcInstrumentation.ts",
+    "apps/web/src/components/CommandPalette.composition.browser.test.tsx",
     "apps/web/src/components/CommandPalette.tsx",
     "apps/web/src/components/pullRequest/PullRequestListFilters.tsx",
     "apps/web/src/routes/_chat.pull-requests.tsx",
@@ -2081,8 +2082,10 @@ sources and reasons.
     "apps/server/src/preview/ServerBrowserStream.ts",
     "apps/server/src/preview/SessionControl.test.ts",
     "apps/server/src/preview/SessionControl.ts",
+    "apps/web/src/browser/ServerBrowserSurface.browser.test.tsx",
     "apps/web/src/browser/ServerBrowserSurface.tsx",
     "apps/web/src/browser/serverPictureInPicture.ts",
+    "apps/web/src/components/device/DeviceStreamView.browser.test.tsx",
     "apps/web/src/components/device/DeviceStreamView.tsx",
     "apps/web/src/components/preview/PreviewPanel.tsx",
     "apps/web/src/components/preview/ThreadPreviewMiniPlayer.tsx",

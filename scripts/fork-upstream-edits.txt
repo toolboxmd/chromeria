@@ -93,6 +93,7 @@ apps/web/src/branding.ts
 apps/web/src/bundledDev.test.ts
 apps/web/src/components/ChatMarkdown.tsx
 apps/web/src/components/ChatView.tsx
+apps/web/src/components/CommandPalette.composition.browser.test.tsx
 apps/web/src/components/CommandPalette.tsx
 apps/web/src/components/RightPanelTabs.tsx
 apps/web/src/components/T3Wordmark.tsx
@@ -574,8 +575,10 @@ apps/server/src/preview/ServerBrowserPage.test.ts
 apps/server/src/preview/ServerBrowserStream.ts
 apps/server/src/preview/SessionControl.test.ts
 apps/server/src/preview/SessionControl.ts
+apps/web/src/browser/ServerBrowserSurface.browser.test.tsx
 apps/web/src/browser/ServerBrowserSurface.tsx
 apps/web/src/browser/serverPictureInPicture.ts
+apps/web/src/components/device/DeviceStreamView.browser.test.tsx
 apps/web/src/components/device/DeviceStreamView.tsx
 apps/web/src/components/preview/PreviewPanel.tsx
 apps/web/src/components/preview/ThreadPreviewMiniPlayer.tsx
