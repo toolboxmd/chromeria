@@ -420,12 +420,12 @@ function recoveryFixture(
   vi.stubGlobal("WebSocket", Socket);
   const decoders: Decoder[] = [];
   class Decoder {
-    static isConfigSupported = vi.fn(async () => ({ supported: true }));
+    static isConfigSupported = vi.fn(async (_config: VideoDecoderConfig) => ({ supported: true }));
     state = "unconfigured";
     decodeQueueSize = 0;
-    configure() {
+    configure = vi.fn((_config: VideoDecoderConfig) => {
       this.state = "configured";
-    }
+    });
     reset = vi.fn(() => {
       this.state = "unconfigured";
       this.decodeQueueSize = 0;
@@ -615,31 +615,27 @@ describe("shared device stream readiness and recovery", () => {
     },
   );
 
-  it("repairs the hub's fallback configuration without disabling hardware decoding", async () => {
-    const { client, videoBodies, Decoder } = recoveryFixture("ios", false);
+  it("passes the hub's configuration through without disabling hardware decoding", async () => {
+    const { client, videoBodies, Decoder, decoders } = recoveryFixture("ios", false);
+    const description = Uint8Array.from([
+      1, 100, 0, 51, 255, 225, 0, 12, 39, 100, 0, 51, 172, 86, 128, 76, 1, 73, 230, 164, 1, 0, 4,
+      40, 238, 60, 176,
+    ]);
     try {
       client.start();
       await vi.advanceTimersByTimeAsync(0);
-      videoBodies[0]!.enqueue(
-        Uint8Array.from(
-          envelope(
-            1,
-            [
-              1, 100, 0, 51, 255, 225, 0, 12, 39, 100, 0, 51, 172, 86, 128, 76, 1, 73, 230, 164, 1,
-              0, 4, 40, 238, 60, 176,
-            ],
-          ),
-        ),
-      );
+      videoBodies[0]!.enqueue(Uint8Array.from(envelope(1, [...description])));
       await vi.advanceTimersByTimeAsync(0);
-      expect(Decoder.isConfigSupported).toHaveBeenCalledExactlyOnceWith({
+      expect(Decoder.isConfigSupported).toHaveBeenCalledOnce();
+      const config = Decoder.isConfigSupported.mock.calls[0]![0];
+      expect(config).toMatchObject({
         codec: "avc1.640033",
-        description: Uint8Array.from([
-          1, 100, 0, 51, 255, 225, 0, 17, 39, 100, 0, 51, 172, 86, 128, 76, 1, 73, 230, 168, 6, 208,
-          68, 35, 80, 1, 0, 4, 40, 238, 60, 176,
-        ]),
+        description,
         optimizeForLatency: true,
       });
+      expect(config.hardwareAcceleration).not.toBe("prefer-software");
+      expect(decoders).toHaveLength(1);
+      expect(decoders[0]!.configure).toHaveBeenCalledExactlyOnceWith(config);
     } finally {
       client.stop();
     }
