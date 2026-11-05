@@ -623,23 +623,25 @@ describe("DesktopShellEnvironment", () => {
     Effect.gen(function* () {
       const env: NodeJS.ProcessEnv = { SHELL: "/bin/zsh", PATH: "/usr/bin" };
       const commands: string[] = [];
+      const started = yield* Deferred.make<void>();
       const fiber = yield* Effect.forkChild(
         runShellEnvironment({
           env,
           platform: "darwin",
           userShell: "/bin/zsh",
-          handler: (command) => {
-            if (command._tag !== "StandardCommand") return "";
+          handler: () => "",
+          processSpawner: ChildProcessSpawner.make((command) => {
+            if (command._tag !== "StandardCommand") return Effect.die("Unexpected pipeline");
             commands.push(command.command);
-            return {
-              output: envOutput({ PATH: "/opt/homebrew/bin:/usr/bin" }),
-              delay: Duration.seconds(6),
-            };
-          },
+            return Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Effect.sleep(Duration.seconds(6))),
+              Effect.as(makeProcess(envOutput({ PATH: "/opt/homebrew/bin:/usr/bin" }))),
+            );
+          }),
         }),
       );
-      yield* Effect.yieldNow;
-      yield* TestClock.adjust(Duration.seconds(20));
+      yield* Deferred.await(started);
+      yield* TestClock.adjust(Duration.seconds(6));
       const prepared = yield* Fiber.join(fiber);
 
       assert.isTrue(prepared);
