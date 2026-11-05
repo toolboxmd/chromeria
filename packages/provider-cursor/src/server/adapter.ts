@@ -1,4 +1,4 @@
-import { getDefaultSdkStateRoot } from "./sdk.ts";
+import { loadCursorSdk } from "./sdk.ts";
 import { bareReceipt, namesT3Mcp } from "@t3tools/provider-core/server/bareLaunch";
 import type {
   AgentMessage,
@@ -2657,7 +2657,9 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                         "native user_info",
                         "sandbox policy files",
                       ],
-                      root: getDefaultSdkStateRoot(input.runtimePolicy.cwd ?? host.paths.cwd),
+                      root: loadCursorSdk().getDefaultSdkStateRoot(
+                        input.runtimePolicy.cwd ?? host.paths.cwd,
+                      ),
                       sessionId: thread.nativeThreadRef?.nativeId ?? null,
                     }),
                   ),

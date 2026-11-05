@@ -1,3 +1,4 @@
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { bareHome } from "@t3tools/provider-core/server/BareProviderRuntime";
 import {
@@ -30,7 +31,7 @@ import {
   type RuntimeMode,
 } from "@t3tools/contracts";
 import { GrokSettings } from "../settings.ts";
-import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as Digest from "effect/crypto/Digest";
 import * as Hex from "effect/encoding/Hex";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -458,7 +459,7 @@ export const makeGrokAdapterV2 = Effect.fn("makeGrokAdapterV2")(function* (
   const context = yield* Effect.context<Effect.Services<ReturnType<typeof makeAcpAdapterV2>>>();
   const host = yield* ProviderHost.ProviderHost;
   const fileSystem = yield* FileSystem.FileSystem;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const flavor = makeGrokAcpAdapterFlavor(options, yield* HostProcess.HomeDirectory);
   const normal = yield* makeAcpAdapterV2({
@@ -487,7 +488,7 @@ export const makeGrokAdapterV2 = Effect.fn("makeGrokAdapterV2")(function* (
                   "Grok bare named MCP needs search_tool/use_tool; the exact attach path is unsupported.",
               });
             const threadHash = Hex.encode(
-              yield* crypto.digest("SHA-256", new TextEncoder().encode(input.threadId)).pipe(
+              yield* crypto.digest(Digest.sha256, new TextEncoder().encode(input.threadId)).pipe(
                 Effect.mapError(
                   (cause) =>
                     new ProviderAdapter.ProviderAdapterOpenSessionError({
@@ -659,6 +660,7 @@ export const makeGrokAdapterV2 = Effect.fn("makeGrokAdapterV2")(function* (
 });
 
 export type GrokAdapterV2DriverEnv =
+  | Digest.Digest
   | ChildProcessSpawner.ChildProcessSpawner
   | SecureRandom.SecureRandom
   | FileSystem.FileSystem

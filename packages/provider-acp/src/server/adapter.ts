@@ -1415,7 +1415,6 @@ interface ActiveAcpTurn {
   readonly providerTurnId: OrchestrationV2ProviderTurn["id"];
   readonly nativeThreadId: string;
   readonly nativeTurnId: string;
-  nativePromptId: string | null;
   readonly startedAt: DateTime.Utc;
   readonly completed: Deferred.Deferred<void, never>;
   readonly itemOrdinals: Map<string, number>;
@@ -5868,7 +5867,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             }
             case "user_message_chunk": {
               if (
-                context.nativePromptId === null &&
+                context.nativePromptId === undefined &&
                 !context.promptSettled &&
                 !acpIsProviderContinuationMessage(context.input.message) &&
                 flavor.isProviderWakeNotification?.(notification) !== true
@@ -7315,7 +7314,14 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           openAgentRequests = new Set();
           runtime = yield* flavor
             .makeRuntime(
-              makeRuntimeInput(runtimeGeneration, openAgentRequests, mcpContext, resumeSessionId, undefined, newSessionRules),
+              makeRuntimeInput(
+                runtimeGeneration,
+                openAgentRequests,
+                mcpContext,
+                resumeSessionId,
+                undefined,
+                newSessionRules,
+              ),
             )
             .pipe(
               Effect.provideService(Scope.Scope, runtimeScope),
@@ -7616,7 +7622,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             });
         yield* Ref.set(activeSessionId, started.sessionId);
         yield* setActiveSessionSetup(started);
-        rememberTerminalEnvironment(started.sessionId, yield* readSessionMcpContext(input.threadId));
+        rememberTerminalEnvironment(
+          started.sessionId,
+          yield* readSessionMcpContext(input.threadId),
+        );
         const capabilities = negotiatedCapabilities(
           flavor.capabilities,
           started,
@@ -8665,7 +8674,6 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               providerTurnId,
               nativeThreadId: requestedSessionId,
               nativeTurnId,
-              nativePromptId: null,
               startedAt,
               completed,
               itemOrdinals: new Map(),

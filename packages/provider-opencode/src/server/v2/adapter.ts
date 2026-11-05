@@ -3118,7 +3118,8 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           lock.withPermit(
             Effect.gen(function* () {
               yield* handleEvent(event);
-              const cutInSessionId = event.type === "form.created" ? event.data.form.sessionID : sessionOfEvent(event);
+              const cutInSessionId =
+                event.type === "form.created" ? event.data.form.sessionID : sessionOfEvent(event);
               if (cutInSessionId !== undefined) yield* releaseSettledCutIns(cutInSessionId);
               if (
                 event.type === "session.execution.started" ||

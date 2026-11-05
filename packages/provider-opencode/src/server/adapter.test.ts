@@ -169,7 +169,9 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
   const modelSelection = {
     instanceId,
     model: "anthropic/claude-sonnet",
-    options: turnSettings.options ?? (initialAgent === undefined ? [] : [{ id: "agent", value: initialAgent }]),
+    options:
+      turnSettings.options ??
+      (initialAgent === undefined ? [] : [{ id: "agent", value: initialAgent }]),
   };
   const policy = runtimePolicy("full-access", {
     cwd: "/workspace",
