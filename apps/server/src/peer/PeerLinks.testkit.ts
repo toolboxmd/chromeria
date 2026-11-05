@@ -75,6 +75,7 @@ export const servePeer = <E, R>(
   initial: ExecutionEnvironmentDescriptor,
   tools: Layer.Layer<never, E, R>,
   options?: {
+    readonly additionalRoutes?: Layer.Layer<never, E, R>;
     readonly persisted?: boolean;
     readonly settings?: ServerSettings.ServerSettingsService["Service"];
     readonly serverConfig?: ServerConfig.ServerConfig["Service"];
@@ -182,6 +183,7 @@ export const servePeer = <E, R>(
       { global: true },
     );
     const layerRoutes = Layer.mergeAll(
+      ...(options?.additionalRoutes === undefined ? [] : [options.additionalRoutes]),
       HttpApiBuilder.layer(PeerTestApi).pipe(
         Layer.provide(McpOAuthHttp.layer.pipe(Layer.provide(McpOAuth.layer))),
         Layer.provide(ServerHttp.layerServerEnvironmentHttpApi),

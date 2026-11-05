@@ -312,7 +312,10 @@ const makeFixture = (realHtml = false) =>
             ),
         }),
         Layer.mock(Settings.ServerSettingsService)({
-          getSettings: record("preferences-read", DEFAULT_SERVER_SETTINGS),
+          getSettings: record("preferences-read", {
+            ...DEFAULT_SERVER_SETTINGS,
+            linkedEnvironmentsEnabled: true,
+          }),
           updateSettings: (input) => record("preferences-update", DEFAULT_SERVER_SETTINGS, input),
         }),
         ThreadCommandExecutor.layer,
@@ -468,6 +471,7 @@ const makeFixture = (realHtml = false) =>
         Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
       ),
       {
+        settings: Context.get(destinationDependencies, Settings.ServerSettingsService),
         scopeForThread: (id) =>
           Ref.get(destinationCapabilities).pipe(
             Effect.map((granted) =>

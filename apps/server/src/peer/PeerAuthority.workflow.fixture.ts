@@ -2056,7 +2056,6 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
                 ),
                 McpHttpServer.layerPullRequestsToolkit,
                 McpHttpServer.toolkitRegistration(AttachmentToolkit, AttachmentHandlers.layer),
-                ServerHttp.layerAttachmentUploadRoute,
                 ServerHttp.layerAssetRoute.pipe(
                   HttpRouter.provideRequest(
                     Layer.mergeAll(
@@ -2144,6 +2143,13 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
           ),
         );
       const tools = toolsFor(schedules);
+      const uploadRoutes = ServerHttp.layerAttachmentUploadRoute.pipe(
+        Layer.provide(DocumentText.layer),
+        Layer.provide(Layer.succeedContext(requestContext)),
+        Layer.provide(nodeConfig),
+        Layer.provide(signerLayer),
+        Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      );
       const lifecycleContext = Context.mergeAll(
         services,
         runtime,
@@ -2171,6 +2177,7 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
         Layer.build,
       );
       const peer = yield* servePeer(descriptor, tools, {
+        ...(attachmentRequests ? { additionalRoutes: uploadRoutes } : {}),
         ...(attachmentRequests
           ? { serverConfig: Context.get(nodeConfigContext, Config.ServerConfig) }
           : {}),
@@ -2324,6 +2331,7 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
               ? { serverConfig: Context.get(nodeConfigContext, Config.ServerConfig) }
               : {}),
             database: db,
+            ...(attachmentRequests ? { additionalRoutes: uploadRoutes } : {}),
             settings: Context.get(settingsContext, Settings.ServerSettingsService),
             registry: renewed,
             secretStore: Context.get(services, Secrets.ServerSecretStore),
