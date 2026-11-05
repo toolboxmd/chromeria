@@ -22,11 +22,15 @@ const state = vi.hoisted(() => ({
   snapshots: undefined as
     | ((id: EnvironmentId) => Atom.Writable<OrchestrationV2ShellSnapshot | null>)
     | undefined,
+  hiddenTags: undefined as
+    | ((id: EnvironmentId) => Atom.Writable<ReadonlyArray<string> | null>)
+    | undefined,
   matches: [] as EnvironmentThreadSearchMatch[],
   listRenders: 0,
   selected: [] as string[],
 }));
 
+vi.mock("../../components/ui/AppBar", () => ({ AppBar: () => null }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => SecureRandom.uuidV4Unsafe() }));
 vi.mock("expo", () => ({ requireOptionalNativeModule: () => null }));
 vi.mock("expo-blur", () => ({ BlurView: () => null }));
@@ -175,11 +179,15 @@ vi.mock("../../state/threads", async () => {
     Atom.make<OrchestrationV2ShellSnapshot | null>(v2ShellSnapshot),
   );
   state.snapshots = snapshots;
+  const hiddenTags = Atom.family((_id: EnvironmentId) =>
+    Atom.make<ReadonlyArray<string> | null>(null),
+  );
+  state.hiddenTags = hiddenTags;
   return {
     startOpeningEnvironmentThread: () => {},
     environmentThreadShells: createEnvironmentThreadShellAtoms({
       snapshotAtom: snapshots,
-      hiddenThreadTagsAtom: Atom.family(() => Atom.make<ReadonlyArray<string> | null>([])),
+      hiddenThreadTagsAtom: hiddenTags,
       catalogValueAtom: Atom.make({
         isReady: true,
         entries: new Map(
@@ -221,7 +229,7 @@ vi.mock("../../state/queries", () => ({
   }),
 }));
 vi.mock("../../state/thread-order", () => ({ usePendingThreadOrder: () => null }));
-vi.mock("../../state/server", async () => {
+vi.mock("../../state/presentation", async () => {
   const { Atom } = await import("effect/reactivity");
   const ids = new Set(["destination", "other"]);
   return {
@@ -279,6 +287,7 @@ vi.mock("../threads/thread-list-v2-items", () => ({
 }));
 
 import { HomeRouteScreen } from "./HomeRouteScreen";
+import { environmentThreadShells } from "../../state/threads";
 import { HomeScreen } from "./HomeScreen";
 import { recordHomeFocus, recordHomeTransitionEnd } from "./home-route-visibility";
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
@@ -477,4 +486,40 @@ it("phone default navigation does not rebuild for hidden-child shell updates", (
   );
   expect(new Set(rows())).toEqual(new Set(["destination:fork"]));
   expect(state.listRenders).toBe(before);
+});
+
+it("phone title and content search keep tagged threads hidden while raw shells retain them", () => {
+  registry.set(state.snapshots!(destination), {
+    ...v2ShellSnapshot,
+    threads: [
+      { ...v2ThreadShell, id: ThreadId.make("visible"), title: "Remote audit visible" },
+      {
+        ...v2ThreadShell,
+        id: ThreadId.make("hidden"),
+        title: "Remote audit hidden",
+        tags: ["private"],
+      },
+    ],
+  });
+  registry.set(state.hiddenTags!(destination), ["private"]);
+  expect(
+    registry.get(environmentThreadShells.threadShellsAtom).some((thread) => thread.id === "hidden"),
+  ).toBe(true);
+  mount();
+  expect(rows()).toEqual(["destination:visible"]);
+  click("Title search");
+  expect(rows()).toEqual(["destination:visible"]);
+  state.matches = ["visible", "hidden"].map(
+    (id) =>
+      ({
+        environmentId: destination,
+        threadId: ThreadId.make(id),
+        source: "assistant",
+        snippet: "contents",
+      }) as EnvironmentThreadSearchMatch,
+  );
+  click("Content search");
+  expect(rows()).toEqual(["destination:visible"]);
+  click("Clear search");
+  expect(rows()).toEqual(["destination:visible"]);
 });

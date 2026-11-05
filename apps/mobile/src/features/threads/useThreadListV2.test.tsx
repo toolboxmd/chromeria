@@ -97,15 +97,6 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
     expect(seen.at(-1)!.items).toBe(initial.items);
   }
 
-  const scratchInput = {
-    ...input,
-    projects: [{ id: threads[0]!.projectId, environmentId, isScratch: true as const }],
-  };
-  await act(async () => root.render(<Probe input={scratchInput} tab="chats" />));
-  expect(seen.at(-1)!.layout.noProjectCount).toBe(75);
-  await act(async () => root.render(<Probe input={input} tab="chats" />));
-  expect(seen.at(-1)!.layout.noProjectCount).toBe(0);
-
   const nextMinute = { ...input, now: "2026-01-02T00:01:00.000Z" };
   await act(async () => root.render(<Probe input={nextMinute} tab="chats" />));
   expect(seen.at(-1)!.layout).toBe(initial.layout);
@@ -137,7 +128,12 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
     thread.id === "thread-0" ? { ...thread, title: "Updated title" } : thread,
   );
   await act(async () =>
-    root.render(<Probe input={{ ...input, threads: updatedThreads }} tab="chats" />),
+    root.render(
+      <Probe
+        input={{ ...input, threads: updatedThreads, navigationThreads: updatedThreads }}
+        tab="chats"
+      />,
+    ),
   );
   expect(
     seen.at(-1)!.layout.items.find((item) => item.thread.id === "thread-0")?.thread.title,
@@ -146,7 +142,12 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
   await act(async () =>
     root.render(
       <Probe
-        input={{ ...input, threads: updatedThreads, searchQuery: "Updated title" }}
+        input={{
+          ...input,
+          threads: updatedThreads,
+          navigationThreads: updatedThreads,
+          searchQuery: "Updated title",
+        }}
         tab="chats"
       />,
     ),
@@ -156,7 +157,12 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
   await act(async () =>
     root.render(
       <Probe
-        input={{ ...nextMinute, threads: updatedThreads, searchQuery: "Updated title" }}
+        input={{
+          ...nextMinute,
+          threads: updatedThreads,
+          navigationThreads: updatedThreads,
+          searchQuery: "Updated title",
+        }}
         tab="chats"
       />,
     ),
@@ -167,7 +173,12 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
   const clockThreads = threads.map((thread) =>
     thread.id === "thread-0" ? { ...thread, snoozedUntil: "2026-01-02T00:00:30.000Z" } : thread,
   );
-  const clockInput = { ...input, threads: clockThreads, snoozedShelfExpanded: true };
+  const clockInput = {
+    ...input,
+    threads: clockThreads,
+    navigationThreads: clockThreads,
+    snoozedShelfExpanded: true,
+  };
   await act(async () => root.render(<Probe input={clockInput} tab="chats" />));
   const beforeClock = seen.at(-1)!;
   expect(beforeClock.layout.snoozedCount).toBe(1);
@@ -253,4 +264,13 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
   expect(loaded.layout.items).toHaveLength(160);
   expect(loaded.olderSettledShelf.isListed(threads[150]!)).toBe(true);
   expect(loaded.items).not.toBe(loading.items);
+
+  const scratchInput = {
+    ...input,
+    projects: [{ id: threads[0]!.projectId, environmentId, isScratch: true as const }],
+  };
+  await act(async () => root.render(<Probe input={scratchInput} tab="chats" />));
+  expect(seen.at(-1)!.layout.noProjectCount).toBe(75);
+  await act(async () => root.render(<Probe input={input} tab="chats" />));
+  expect(seen.at(-1)!.layout.noProjectCount).toBe(0);
 });
