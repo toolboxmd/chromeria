@@ -2809,16 +2809,19 @@ sources and reasons.
   ],
   "newFiles": [
     "apps/mobile/src/features/threads/ExecutionPurposePicker.tsx",
-    "apps/mobile/src/features/threads/ThreadExecutionPurposeControl.tsx",
     "apps/server/src/orchestration-v2/ExecutionPurpose.integration.test.ts",
     "apps/server/src/orchestration-v2/ExecutionPurpose.ts",
     "apps/server/src/persistence/forkExecutionPurposeSchema.ts",
     "apps/web/src/components/chat/ExecutionPurposeControl.tsx",
+    "apps/web/src/components/chat/useStartTurnWithPurpose.ts",
+    "apps/web/src/components/chat/useStartTurnWithPurpose.test.ts",
     "packages/contracts/src/executionPurpose.test.ts",
     "packages/contracts/src/executionPurpose.ts",
     "packages/contracts/src/nativeExecution.ts"
   ],
   "upstreamFiles": [
+    "apps/web/src/components/chat/useMultipleModelSend.ts",
+    "apps/web/src/components/chat/useProposedPlanSend.ts",
     "apps/mobile/src/state/threadOutboxDelivery.ts",
     "apps/mobile/src/features/threads/McpAppWebView.tsx",
     "apps/mobile/src/features/threads/NewTaskDraftScreen.tsx",
@@ -2832,6 +2835,8 @@ sources and reasons.
     "packages/provider-pi/src/server/adapter.ts"
   ],
   "sharedFiles": [
+    "apps/web/src/components/chat/useComposerSend.ts",
+    "apps/web/src/components/chat/useThreadLifecycle.tsx",
     "apps/server/src/mcp/toolkits/pullRequests/handlers.test.ts",
     "apps/server/src/mcp/toolkits/pullRequests/handlers.ts",
     "apps/mobile/src/features/threads/ThreadDetailScreen.tsx",

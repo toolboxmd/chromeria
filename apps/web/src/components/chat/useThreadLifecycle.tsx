@@ -14,6 +14,7 @@ import {
 import { useStableCallback } from "../../hooks/useStableCallback";
 import { useNowAfter } from "../../hooks/useDeadline";
 import type { usePendingThreadRequests } from "./usePendingThreadRequests";
+import { useStartTurnWithPurpose } from "./useStartTurnWithPurpose";
 import {
   AuthOrchestrationOperateScope,
   AuthSourceControlWriteScope,
@@ -168,9 +169,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
-    reportFailure: false,
-  });
+  const startThreadTurn = useStartTurnWithPurpose();
   const interruptThreadTurn = useOrchestrationCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
