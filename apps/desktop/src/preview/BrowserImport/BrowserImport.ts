@@ -203,7 +203,9 @@ export const writeCookies = Effect.fn("BrowserImport.writeCookies")(function* (
       catch: (cause) => new BrowserCookieFlushError({ cause }),
     }).pipe(
       Effect.tapError(() =>
-        Effect.logWarning("Imported cookies could not be flushed to disk", { code: "cookie-flush-failed" }),
+        Effect.logWarning("Imported cookies could not be flushed to disk", {
+          code: "cookie-flush-failed",
+        }),
       ),
       Effect.ignore,
     );

@@ -1,3 +1,5 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import { CookieMirrorError } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import { afterEach, vi } from "vite-plus/test";
 import {
@@ -67,6 +69,7 @@ const fixture = (catalog = document) =>
   makeCookieMirrorDestinationResolver.pipe(
     Effect.provide(
       Layer.mergeAll(
+        NodeCrypto.layer,
         Layer.mock(DesktopConnectionCatalogStore.DesktopConnectionCatalogStore, {
           get: Effect.succeedSome(encodeCatalog(catalog)),
         }),
@@ -118,12 +121,18 @@ describe("main-owned mirror destination", () => {
       const fetch = vi.fn();
       vi.stubGlobal("fetch", fetch);
       const resolve = yield* fixture();
-      expect((yield* Effect.tryPromise(() => resolve("unknown")).pipe(Effect.result))._tag).toBe(
-        "Failure",
-      );
+      expect(
+        (yield* Effect.tryPromise({
+          try: () => resolve("unknown"),
+          catch: () => new CookieMirrorError({ reason: "forbidden" }),
+        }).pipe(Effect.result))._tag,
+      ).toBe("Failure");
       const disabled = yield* fixture({ ...document, disabledEnvironmentIds: [environmentId] });
       expect(
-        (yield* Effect.tryPromise(() => disabled(environmentId)).pipe(Effect.result))._tag,
+        (yield* Effect.tryPromise({
+          try: () => disabled(environmentId),
+          catch: () => new CookieMirrorError({ reason: "forbidden" }),
+        }).pipe(Effect.result))._tag,
       ).toBe("Failure");
       expect(fetch).not.toHaveBeenCalled();
     }),
@@ -137,7 +146,10 @@ describe("main-owned mirror destination", () => {
         vi.fn(async () => Response.json({ ...descriptor, environmentId: "wrong" })),
       );
       expect(
-        (yield* Effect.tryPromise(() => resolve(environmentId)).pipe(Effect.result))._tag,
+        (yield* Effect.tryPromise({
+          try: () => resolve(environmentId),
+          catch: () => new CookieMirrorError({ reason: "forbidden" }),
+        }).pipe(Effect.result))._tag,
       ).toBe("Failure");
       vi.stubGlobal(
         "fetch",
@@ -148,7 +160,10 @@ describe("main-owned mirror destination", () => {
         ),
       );
       expect(
-        (yield* Effect.tryPromise(() => resolve(environmentId)).pipe(Effect.result))._tag,
+        (yield* Effect.tryPromise({
+          try: () => resolve(environmentId),
+          catch: () => new CookieMirrorError({ reason: "forbidden" }),
+        }).pipe(Effect.result))._tag,
       ).toBe("Failure");
     }),
   );

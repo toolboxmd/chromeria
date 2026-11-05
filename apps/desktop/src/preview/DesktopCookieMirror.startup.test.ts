@@ -1,3 +1,5 @@
+import * as DesktopManagedPolicy from "../app/DesktopManagedPolicy.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as DesktopBackendManager from "../backend/DesktopBackendManager.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopBrowserHost from "./DesktopBrowserHost.ts";
@@ -216,6 +218,7 @@ it.effect.each([
       runningUnderArm64Translation: false,
     }).pipe(Layer.provide(DesktopConfig.layerTest({ T3CODE_HOME: home, T3CODE_PORT: "3773" })));
     const dependencies = Layer.mergeAll(
+      DesktopManagedPolicy.layerTest(),
       environment,
       Layer.mock(PreviewManager.PreviewManager, { isBrowserPartition: () => false }),
       Layer.mock(BrowserImport.BrowserImport, {}),
@@ -345,7 +348,7 @@ it.effect.each([
     }).pipe(Effect.provide(DesktopCookieMirror.layer.pipe(Layer.provideMerge(dependencies))));
   }).pipe(
     Effect.provideService(HostProcess.Environment, {}),
-    Effect.provide(NodeServices.layer),
+    Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
     Effect.scoped,
   ),
 );

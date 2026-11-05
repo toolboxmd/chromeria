@@ -10,7 +10,7 @@ import {
   type ChromeCookieKeyCommand,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
@@ -68,7 +68,7 @@ const make = Effect.gen(function* () {
   const appSettings = yield* DesktopAppSettings.DesktopAppSettings;
   const sessions = yield* BrowserSession.BrowserSession;
   const resolveDestination = yield* makeCookieMirrorDestinationResolver;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
   const lock = yield* Semaphore.make(1);
   const sourceServices = yield* Effect.context<
     FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
@@ -185,7 +185,7 @@ const make = Effect.gen(function* () {
         if (root)
           for (const source of sourceProfiles) {
             const sourceId = yield* encodeSource([root, source.directory]);
-            const digest = yield* crypto.digest("SHA-256", new TextEncoder().encode(sourceId));
+            const digest = yield* crypto.digest(Digest.sha256, new TextEncoder().encode(sourceId));
             const mapping = yield* Effect.tryPromise({
               try: () =>
                 mirror.mapChromeProfile({

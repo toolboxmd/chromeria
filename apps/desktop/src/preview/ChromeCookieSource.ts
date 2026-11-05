@@ -69,7 +69,10 @@ export const readChromeDeviceBoundSites = Effect.fnUntraced(function* (source: s
     );
     const sites = new Set<string>();
     for (const row of rows) {
-      const site = yield* Effect.try(() => new URL(row.key));
+      const site = yield* Effect.try({
+        try: () => new URL(row.key),
+        catch: () => new CookieMirrorError({ reason: "unavailable" }),
+      });
       if (
         (site.protocol !== "https:" && site.protocol !== "http:") ||
         site.username ||

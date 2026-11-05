@@ -1,3 +1,4 @@
+import * as Mac from "effect/crypto/Mac";
 // @effect-diagnostics globalFetch:off - Authenticates only destinations from desktop-main state.
 import {
   AuthCookieMirrorWriteScope,
@@ -44,7 +45,7 @@ export const makeCookieMirrorDestinationResolver = Effect.gen(function* () {
   const ssh = yield* DesktopSshEnvironment.DesktopSshEnvironment;
   const windows = yield* ElectronWindow.ElectronWindow;
   const http = yield* HttpClient.HttpClient;
-  const context = yield* Effect.context<never>();
+  const context = yield* Effect.context<Mac.Mac>();
   const run = Effect.runPromiseWith(context);
 
   const resolve = Effect.fn("CookieMirrorDestination.resolve")(
@@ -56,16 +57,22 @@ export const makeCookieMirrorDestinationResolver = Effect.gen(function* () {
       for (const instance of yield* pool.list) {
         const config = yield* instance.currentConfig;
         if (Option.isNone(config)) continue;
-        const descriptor = yield* Effect.tryPromise(() =>
-          readJson(
-            environmentEndpointUrl(config.value.httpBaseUrl.href, "/.well-known/t3/environment"),
-          ),
-        ).pipe(Effect.map(decodeDescriptor), Effect.option);
+        const descriptor = yield* Effect.tryPromise({
+          try: () =>
+            readJson(
+              environmentEndpointUrl(config.value.httpBaseUrl.href, "/.well-known/t3/environment"),
+            ),
+          catch: () => new CookieMirrorError({ reason: "forbidden" }),
+        }).pipe(Effect.map(decodeDescriptor), Effect.option);
         if (Option.isNone(descriptor) || descriptor.value.environmentId !== environmentId) continue;
         httpBaseUrl = config.value.httpBaseUrl.href;
         const bootstrap = config.value.bootstrap;
         const credential = bootstrap.desktopBootstrapSecret
-          ? currentDesktopBootstrapToken(bootstrap.desktopBootstrapSecret, now, "cookie-mirror")
+          ? yield* currentDesktopBootstrapToken(
+              bootstrap.desktopBootstrapSecret,
+              now,
+              "cookie-mirror",
+            )
           : undefined;
         if (!credential) return yield* new CookieMirrorError({ reason: "forbidden" });
         bearer = (yield* bootstrapRemoteBearerSession({
@@ -79,7 +86,10 @@ export const makeCookieMirrorDestinationResolver = Effect.gen(function* () {
       if (!httpBaseUrl) {
         const saved = yield* catalogStore.get;
         if (Option.isNone(saved)) return yield* new CookieMirrorError({ reason: "forbidden" });
-        const catalog = yield* Effect.try(() => decodeCatalog(saved.value));
+        const catalog = yield* Effect.try({
+          try: () => decodeCatalog(saved.value),
+          catch: () => new CookieMirrorError({ reason: "forbidden" }),
+        });
         if (catalog.disabledEnvironmentIds.some((id) => id === environmentId))
           return yield* new CookieMirrorError({ reason: "forbidden" });
         const target = catalog.targets.find((target) => target.environmentId === environmentId);
@@ -127,26 +137,29 @@ export const makeCookieMirrorDestinationResolver = Effect.gen(function* () {
         return { authorization: `DPoP ${dpop.accessToken}`, dpop: proof };
       };
       const descriptor = decodeDescriptor(
-        yield* Effect.tryPromise(() =>
-          readJson(environmentEndpointUrl(base, "/.well-known/t3/environment")),
-        ),
+        yield* Effect.tryPromise({
+          try: () => readJson(environmentEndpointUrl(base, "/.well-known/t3/environment")),
+          catch: () => new CookieMirrorError({ reason: "forbidden" }),
+        }),
       );
       if (descriptor.environmentId !== environmentId)
         return yield* new CookieMirrorError({ reason: "forbidden" });
       const sessionUrl = environmentEndpointUrl(base, "/api/auth/session");
       const session = decodeSession(
-        yield* Effect.tryPromise(async () =>
-          readJson(sessionUrl, await authorize("GET", sessionUrl)),
-        ),
+        yield* Effect.tryPromise({
+          try: async () => readJson(sessionUrl, await authorize("GET", sessionUrl)),
+          catch: () => new CookieMirrorError({ reason: "forbidden" }),
+        }),
       );
       const scopes = session.permissions ?? session.scopes ?? [];
       if (!session.authenticated || !scopes.includes(AuthCookieMirrorWriteScope))
         return yield* new CookieMirrorError({ reason: "forbidden" });
       return {
         httpBaseUrl: base,
-        headers: yield* Effect.tryPromise(() =>
-          authorize("POST", environmentEndpointUrl(base, COOKIE_MIRROR_GRANT_PATH)),
-        ),
+        headers: yield* Effect.tryPromise({
+          try: () => authorize("POST", environmentEndpointUrl(base, COOKIE_MIRROR_GRANT_PATH)),
+          catch: () => new CookieMirrorError({ reason: "forbidden" }),
+        }),
       } satisfies CookieMirrorDestination;
     },
     Effect.catchCause(() => new CookieMirrorError({ reason: "forbidden" })),

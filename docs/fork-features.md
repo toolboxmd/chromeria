@@ -1969,6 +1969,7 @@ sources and reasons.
     "apps/server/src/peer/PeerLinks.testkit.ts",
     "apps/server/src/peer/PeerLinks.ts",
     "apps/server/src/peer/PeerMcpClient.ts",
+    "apps/server/src/peer/PeerMcpClient.test.ts",
     "apps/server/src/peer/RemoteDelegation.test.ts",
     "apps/server/src/peer/RemoteDelegation.ts",
     "apps/web/src/components/CommandPalette.logic.ts",
