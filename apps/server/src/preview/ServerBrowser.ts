@@ -3345,7 +3345,9 @@ const make = Effect.gen(function* () {
         } catch {
           if (event.snapshot.automationOwner !== undefined)
             await runPromise(
-              manager.close({ threadId: event.threadId, tabId: event.tabId }).pipe(Effect.ignore),
+              manager
+                .close({ threadId: ThreadId.make(event.threadId), tabId: event.tabId })
+                .pipe(Effect.ignore),
             );
         }
         return;

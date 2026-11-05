@@ -1301,7 +1301,7 @@ describe("OrchestratorMcpService", () => {
   );
 
   it.effect.each([
-    ["capability", { capabilities: new Set() }, "capability_denied"],
+    ["capability", { capabilities: new Set<"orchestration">() }, "capability_denied"],
     ["thread", { thread: undefined }, "thread_credential_required"],
     [
       "client runtime",
