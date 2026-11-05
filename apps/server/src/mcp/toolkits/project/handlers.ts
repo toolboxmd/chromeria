@@ -24,6 +24,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
+import { OrchestratorRuntimeModeAboveCeilingError } from "../../../orchestration-v2/Orchestrator.ts";
 import type { BareReadGrant } from "../../../orchestration-v2/bareReadGrant.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
@@ -40,11 +41,18 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { resolveRuntimeMode } from "../../delegatedTaskModes.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
-import { newCommandId, readCaller, resolveProjectId, unavailable } from "../../threadAccess.ts";
+import {
+  dispatchFailure,
+  newCommandId,
+  readCaller,
+  resolveProjectId,
+  unavailable,
+} from "../../threadAccess.ts";
 import { ProjectToolkit } from "./tools.ts";
 
 const isBareLaunchError = Schema.is(BareLaunchError);
 const isToolPolicyError = Schema.is(ToolPolicyError);
+const isRuntimeModeAboveCeilingError = Schema.is(OrchestratorRuntimeModeAboveCeilingError);
 
 const launchCommandId = Effect.fn("mcp.launchCommandId")(function* (
   namespace: string,
@@ -60,6 +68,7 @@ const launchCommandId = Effect.fn("mcp.launchCommandId")(function* (
 });
 
 function launchFailure(error: ThreadLaunch.ThreadLaunchError) {
+  if (isRuntimeModeAboveCeilingError(error.cause)) return dispatchFailure(error.cause);
   return new OrchestratorMcpFailure({
     code:
       isBareLaunchError(error.cause) || isToolPolicyError(error.cause)
