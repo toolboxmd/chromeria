@@ -1,4 +1,4 @@
-import { assert, it } from "@effect/vitest";
+import { assert, it, vi } from "@effect/vitest";
 import {
   MessageId,
   NodeId,
@@ -1047,6 +1047,9 @@ it.effect.each([
         turnItems: [{ id: "turn-item:stop", runId: parentRunId, type: "run_interrupt_request" }],
       };
       let dispatched = 0;
+      const recordRestartCutDecline = vi.fn<
+        ThreadManagementService.ThreadManagementServiceShape["recordRestartCutDecline"]
+      >(() => Effect.void);
       yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(
         Effect.provide(
           Layer.merge(
@@ -1054,6 +1057,7 @@ it.effect.each([
               getThreadRecords: (id) =>
                 Effect.succeed((id === parentThreadId ? parent : child) as never),
               recoverDelegatedTask: () => Effect.void,
+              recordRestartCutDecline,
               dispatch: () =>
                 Effect.sync(() => {
                   dispatched += 1;
@@ -1065,6 +1069,10 @@ it.effect.each([
         ),
       );
       assert.equal(dispatched, expected);
+      assert.deepEqual(
+        recordRestartCutDecline.mock.calls,
+        expected === 0 ? [[threadId, runId, "Stop was requested before the restart."]] : [],
+      );
     }),
 );
 
