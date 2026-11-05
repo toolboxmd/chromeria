@@ -40,6 +40,7 @@ import {
   waitForStartedServerThread,
 } from "../ChatView.logic";
 import { draftSendState } from "./chatViewSend";
+import { useStartTurnWithPurpose } from "./useStartTurnWithPurpose";
 import type { useLocalDispatchState } from "./useLocalDispatchState";
 import type { useTimelineFollow } from "./useTimelineFollow";
 
@@ -95,9 +96,7 @@ export function usePlanFollowUpSend(input: PlanFollowUpSendInput) {
     anchorNewTurn,
     persistThreadSettingsForNextTurn,
   } = input;
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
-    reportFailure: false,
-  });
+  const startThreadTurn = useStartTurnWithPurpose();
   const setComposerDraftInteractionMode = useComposerDraftStore(
     (store) => store.setInteractionMode,
   );
@@ -262,9 +261,7 @@ export function useImplementPlanInNewThread(input: ImplementPlanInNewThreadInput
   const navigate = useNavigate();
   const createThread = useOrchestrationCommand(threadEnvironment.create, { reportFailure: false });
   const deleteThread = useOrchestrationCommand(threadEnvironment.delete, { reportFailure: false });
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
-    reportFailure: false,
-  });
+  const startThreadTurn = useStartTurnWithPurpose();
   const { sendInFlight: sendInFlightRef } = draftSendState(routeThreadKey);
 
   return async () => {
