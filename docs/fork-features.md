@@ -2022,6 +2022,7 @@ sources and reasons.
     "apps/mobile/src/features/threads/thread-subagent-group.tsx",
     "apps/mobile/src/features/threads/threadAgentsPresentation.test.ts",
     "apps/mobile/src/features/threads/threadAgentsPresentation.ts",
+    "apps/web/src/components/chat/ThreadRelationshipsControl.browser.test.tsx",
     "apps/web/src/components/chat/ThreadRelationshipsControl.tsx",
     "apps/web/src/components/chat/V2ItemInspector.tsx",
     "apps/web/src/components/chat/V2LifecycleRow.tsx",
