@@ -1964,14 +1964,11 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
       const browserMediaLayer =
         previewControls === undefined
           ? Layer.empty
-          : Layer.mergeAll(
-              BrowserStream.routeLayer.pipe(Layer.provide(NodeHttpPlatform.layer)),
-              Layer.effectDiscard(
-                Effect.gen(function* () {
-                  fixtureBrowserViewers = yield* BrowserStream.PreviewViewers;
-                  fixtureBrowserViewerSessions = yield* ViewerSessions.SessionStore;
-                }),
-              ),
+          : Layer.effectDiscard(
+              Effect.gen(function* () {
+                fixtureBrowserViewers = yield* BrowserStream.PreviewViewers;
+                fixtureBrowserViewerSessions = yield* ViewerSessions.SessionStore;
+              }),
             ).pipe(
               Layer.provideMerge(BrowserStream.layerViewers),
               Layer.provide(
@@ -2011,75 +2008,13 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
         OrchestratorToolkit,
         OrchestratorHandlers.layer,
       ).pipe(Layer.provide(timedSecretService), Layer.provide(ThreadMetadataService.layer));
-      const toolsFor = (
+      const provideServices = <A, E, R>(
+        layer: Layer.Layer<A, E, R>,
         scheduleServices: typeof schedules,
         requests: typeof requestContext = requestContext,
         nativeServices = services,
       ) =>
-        Layer.mergeAll(
-          artifactResponseBoundary,
-          McpHttpServer.layerProjectRegistration,
-          remoteSecrets ? secretToolkit : McpHttpServer.layerOrchestratorToolkit,
-          ...(previewControls === undefined
-            ? []
-            : [
-                McpHttpServer.toolkitRegistration(
-                  PreviewControlsToolkit,
-                  PreviewControlHandlers.layer,
-                ).pipe(Layer.provide(Layer.succeedContext(previewControls))),
-              ]),
-          ...(preferencesOwner ? [McpHttpServer.layerEnvironmentToolkit] : []),
-          ...(deviceOwner
-            ? [
-                legacyDeviceDomain
-                  ? McpHttpServer.toolkitRegistration(
-                      LegacyDeviceToolkit,
-                      LegacyDeviceHandlers.layerStandard,
-                    )
-                  : McpHttpServer.layerDeviceToolkit,
-              ]
-            : []),
-          ...(attachmentRequests
-            ? [
-                McpHttpServer.toolkitRegistration(IssuesToolkit, IssueHandlers.layer).pipe(
-                  Layer.provide(
-                    IssueLinks.layer.pipe(
-                      Layer.provide(
-                        Layer.succeed(ClosingReferences.IssueClosingReferences, {
-                          issuesClosedBy: Effect.fn(
-                            "ClosingReferences.IssueClosingReferences.issuesClosedBy",
-                          )(() => Effect.succeed([])),
-                        }),
-                      ),
-                    ),
-                  ),
-                ),
-                McpHttpServer.layerPullRequestsToolkit,
-                McpHttpServer.toolkitRegistration(AttachmentToolkit, AttachmentHandlers.layer),
-                ServerHttp.layerAssetRoute.pipe(
-                  HttpRouter.provideRequest(
-                    Layer.mergeAll(
-                      NodeHttpPlatform.layer,
-                      WorkspacePaths.layer,
-                      NativeAppIconResolver.layer.pipe(Layer.provide(nodeConfig)),
-                      Layer.succeedContext(runtime),
-                      // This fixture has no GitHub resource. Never access a real account.
-                      Layer.mock(GitHubCredentials.GitHubCredentials)({
-                        get: () =>
-                          Effect.die("No GitHub credential access in the native artifact fixture"),
-                      }),
-                    ),
-                  ),
-                  Layer.provide(environment),
-                ),
-                McpHttpServer.layerPreviewToolkit,
-                McpHttpServer.layerThreadToolkit,
-                McpHttpServer.layerHtmlToolkit,
-                handoff,
-                McpHttpServer.toolkitRegistration(SpectrumMcp.SpectrumToolkit, SpectrumMcp.layer),
-              ]
-            : []),
-        ).pipe(
+        layer.pipe(
           Layer.provide(
             Layer.mergeAll(
               DocumentText.layer,
@@ -2142,19 +2077,109 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
             ),
           ),
         );
+      const toolsFor = (
+        scheduleServices: typeof schedules,
+        requests: typeof requestContext = requestContext,
+        nativeServices = services,
+      ) =>
+        provideServices(
+          Layer.mergeAll(
+            artifactResponseBoundary,
+            McpHttpServer.layerProjectRegistration,
+            remoteSecrets ? secretToolkit : McpHttpServer.layerOrchestratorToolkit,
+            ...(previewControls === undefined
+              ? []
+              : [
+                  McpHttpServer.toolkitRegistration(
+                    PreviewControlsToolkit,
+                    PreviewControlHandlers.layer,
+                  ).pipe(Layer.provide(Layer.succeedContext(previewControls))),
+                ]),
+            ...(preferencesOwner ? [McpHttpServer.layerEnvironmentToolkit] : []),
+            ...(deviceOwner
+              ? [
+                  legacyDeviceDomain
+                    ? McpHttpServer.toolkitRegistration(
+                        LegacyDeviceToolkit,
+                        LegacyDeviceHandlers.layerStandard,
+                      )
+                    : McpHttpServer.layerDeviceToolkit,
+                ]
+              : []),
+            ...(attachmentRequests
+              ? [
+                  McpHttpServer.toolkitRegistration(IssuesToolkit, IssueHandlers.layer).pipe(
+                    Layer.provide(
+                      IssueLinks.layer.pipe(
+                        Layer.provide(
+                          Layer.succeed(ClosingReferences.IssueClosingReferences, {
+                            issuesClosedBy: Effect.fn(
+                              "ClosingReferences.IssueClosingReferences.issuesClosedBy",
+                            )(() => Effect.succeed([])),
+                          }),
+                        ),
+                      ),
+                    ),
+                  ),
+                  McpHttpServer.layerPullRequestsToolkit,
+                  McpHttpServer.toolkitRegistration(AttachmentToolkit, AttachmentHandlers.layer),
+                  ServerHttp.layerAssetRoute.pipe(
+                    HttpRouter.provideRequest(
+                      Layer.mergeAll(
+                        NodeHttpPlatform.layer,
+                        WorkspacePaths.layer,
+                        NativeAppIconResolver.layer.pipe(Layer.provide(nodeConfig)),
+                        Layer.succeedContext(runtime),
+                        // This fixture has no GitHub resource. Never access a real account.
+                        Layer.mock(GitHubCredentials.GitHubCredentials)({
+                          get: () =>
+                            Effect.die(
+                              "No GitHub credential access in the native artifact fixture",
+                            ),
+                        }),
+                      ),
+                    ),
+                    Layer.provide(environment),
+                  ),
+                  McpHttpServer.layerPreviewToolkit,
+                  McpHttpServer.layerThreadToolkit,
+                  McpHttpServer.layerHtmlToolkit,
+                  handoff,
+                  McpHttpServer.toolkitRegistration(SpectrumMcp.SpectrumToolkit, SpectrumMcp.layer),
+                ]
+              : []),
+          ),
+          scheduleServices,
+          requests,
+          nativeServices,
+        );
       const tools = toolsFor(schedules);
       const uploadRoutes = ServerHttp.layerAttachmentUploadRoute.pipe(
         HttpRouter.provideRequest(
           Layer.mergeAll(
-            DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+            DocumentText.layer,
             Layer.succeedContext(requestContext),
             nodeConfig,
             signerLayer,
-            NodeServices.layer,
-            NodeCrypto.layer,
-          ),
+          ).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
         ),
       );
+      const httpRoutesFor = (
+        scheduleServices: typeof schedules,
+        requests: typeof requestContext = requestContext,
+        nativeServices = services,
+      ) =>
+        Layer.mergeAll(
+          attachmentRequests ? uploadRoutes : Layer.empty,
+          previewControls === undefined
+            ? Layer.empty
+            : provideServices(
+                BrowserStream.routeLayer.pipe(Layer.provide(NodeHttpPlatform.layer)),
+                scheduleServices,
+                requests,
+                nativeServices,
+              ),
+        );
       const lifecycleContext = Context.mergeAll(
         services,
         runtime,
@@ -2182,7 +2207,7 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
         Layer.build,
       );
       const peer = yield* servePeer(descriptor, tools, {
-        ...(attachmentRequests ? { additionalRoutes: uploadRoutes } : {}),
+        additionalRoutes: httpRoutesFor(schedules),
         ...(attachmentRequests
           ? { serverConfig: Context.get(nodeConfigContext, Config.ServerConfig) }
           : {}),
@@ -2336,7 +2361,7 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
               ? { serverConfig: Context.get(nodeConfigContext, Config.ServerConfig) }
               : {}),
             database: db,
-            ...(attachmentRequests ? { additionalRoutes: uploadRoutes } : {}),
+            additionalRoutes: httpRoutesFor(rebuilt, requests, nativeServices),
             settings: Context.get(settingsContext, Settings.ServerSettingsService),
             registry: renewed,
             secretStore: Context.get(services, Secrets.ServerSecretStore),
