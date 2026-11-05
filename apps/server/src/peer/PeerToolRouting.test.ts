@@ -312,7 +312,7 @@ const makeFixture = (realHtml = false) =>
             ),
         }),
         Layer.mock(Settings.ServerSettingsService)({
-          getSettings: record("preferences-read", {
+          getSettings: Effect.succeed({
             ...DEFAULT_SERVER_SETTINGS,
             linkedEnvironmentsEnabled: true,
           }),
@@ -365,6 +365,17 @@ const makeFixture = (realHtml = false) =>
             ),
         }),
         Layer.mock(Devices.DeviceService)({
+          state: Effect.succeed({
+            hostStatus: "ready",
+            hostStatuses: {},
+            hosts: [],
+            devices: [],
+            sessions: [],
+            onboardingCompleted: true,
+            agentAccessEnabled: true,
+            hubBasePath: "/fixture/device-hub",
+            revision: 0,
+          }),
           list: record("device-list", {
             hostStatus: "ready",
             hostStatuses: {},
@@ -845,15 +856,11 @@ it.effect.each(cases.filter((test) => !automationCases.includes(test)))(
         expect(yield* Ref.get(f.seen)).toContainEqual(
           expect.objectContaining({ operation: test.operation, environmentId: box.environmentId }),
         );
-        const mutations = () =>
-          Ref.get(f.seen).pipe(
-            Effect.map((seen) => seen.filter((entry) => entry.operation === test.operation)),
-          );
-        const before = yield* mutations();
+        const before = yield* Ref.get(f.seen);
         yield* f.link("auto");
         const refused = yield* f.call(test.name, test.args, test.context);
         expect(refused.isError, JSON.stringify(refused)).toBe(true);
-        expect(yield* mutations()).toEqual(before);
+        expect(yield* Ref.get(f.seen)).toEqual(before);
         expect((yield* Ref.get(f.b.bearers)).length).toBeGreaterThan(0);
       }),
     ).pipe(Effect.provide(Layer.merge(NodeHttpServer.layerTest, McpProviderSessions.layer))),
