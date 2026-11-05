@@ -575,6 +575,7 @@ const hasAllowedQuery = (path: string, params: URLSearchParams): boolean => {
     /^\/vendor\/serve-(sim|emu)\/api(?:\/|$)/.test(path) ||
     path === "/vendor/serve-sim/appstate" ||
     path === "/vendor/serve-sim/helper/ws" ||
+    /^\/vendor\/serve-emu\/webrtc\/(offer|close)$/.test(path) ||
     path === "/vendor/serve-emu/ws"
   )
     allowed.add("device");

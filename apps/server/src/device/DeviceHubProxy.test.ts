@@ -194,6 +194,14 @@ describe("device hub proxy", () => {
     ]);
     expect((await handler(new Request(`${hub}/api`, { method: "POST" }))).status).toBe(405);
     expect((await handler(new Request(`${hub}/webrtc/offer`))).status).toBe(405);
+    expect(
+      (
+        await handler(
+          new Request(`${hub}/webrtc/offer?device=session-1&upstream=other`, { method: "POST" }),
+        )
+      ).status,
+    ).toBe(400);
+    expect(requests).toHaveLength(3);
   });
 
   it("sends requests a host routes itself to its upstream with its credentials", async () => {
