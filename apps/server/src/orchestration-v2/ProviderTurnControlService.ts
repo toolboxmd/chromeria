@@ -1,3 +1,4 @@
+import { executionPurposeOf } from "@t3tools/contracts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   MessageId,
@@ -55,6 +56,7 @@ export interface ProviderTurnControlServiceV2Shape {
     };
     readonly threadId: ThreadId;
     readonly providerSessionId: ProviderSessionId;
+    readonly replacementProviderSessionId?: ProviderSessionId;
     readonly providerThreadId: ProviderThreadId;
     readonly providerTurnId: ProviderTurnId;
   }) => Effect.Effect<
@@ -75,6 +77,7 @@ export interface ProviderTurnControlServiceV2Shape {
     readonly providerThreadId: ProviderThreadId;
     readonly providerTurnId: ProviderTurnId;
     readonly interruptedAttemptId: RunAttemptId;
+    readonly interruption?: "stop";
   }) => Effect.Effect<void, ProviderTurnControlError>;
 }
 
@@ -106,7 +109,7 @@ export const layer: Layer.Layer<
       const { providerThread, providerTurn } = context;
       const targetsRecordedSession = providerThread?.providerSessionId === input.providerSessionId;
       const targetsCommittedReplacement =
-        input.operation === "restart" &&
+        (input.operation === "restart" || input.operation === "interrupt") &&
         input.replacementProviderSessionId !== undefined &&
         providerThread?.providerSessionId === input.replacementProviderSessionId;
       if (
@@ -122,10 +125,9 @@ export const layer: Layer.Layer<
           cause: "The recorded provider execution target is no longer valid.",
         });
       }
-      // A restart-session command commits the replacement binding before its
-      // process-bound effect runs. The old live runtime must still receive
-      // the interrupt, but only when the projection matches the exact
-      // replacement captured by that same durable effect.
+      // A restart-session command commits the replacement binding before its process-bound effect runs.
+      // The old runtime still gets the interrupt, but only when the projection matches the replacement
+      // that effect captured; Stop uses that capture while the old runtime owns the interrupted work.
       const interruptProviderThread = targetsRecordedSession
         ? providerThread
         : { ...providerThread, providerSessionId: input.providerSessionId };
@@ -275,7 +277,53 @@ export const layer: Layer.Layer<
       interruptAndAwaitTerminal: Effect.fn("ProviderTurnControlService.interruptAndAwaitTerminal")(
         function* (input) {
           const loaded = yield* load({ ...input, operation: "restart" });
+          const stopScope =
+            input.interruption === "stop"
+              ? ({ requestRuntimeRestart: true, replacementFollows: true } as const)
+              : {};
           if (Option.isNone(loaded.session)) {
+            if (input.interruption === "stop" && loaded.providerTurn.status !== "running") {
+              // A captured target can end before its effect, while its runtime
+              // still holds native work. Reach that owner before replacement,
+              // preserving newer work from another attempt.
+              const session = yield* sessions.get(input.providerSessionId);
+              if (Option.isNone(session)) return;
+              const current = yield* projections.getRuntimeRecoveryProjection(input.threadId);
+              const attempt = current.attempts.find(
+                (candidate) => candidate.id === input.interruptedAttemptId,
+              );
+              const run = current.runs.find((candidate) => candidate.id === attempt?.runId);
+              if (
+                run?.status !== "starting" ||
+                run.activeAttemptId === null ||
+                run.activeAttemptId === input.interruptedAttemptId ||
+                current.providerTurns.some(
+                  (turn) =>
+                    turn.providerThreadId === input.providerThreadId &&
+                    turn.status === "running" &&
+                    turn.ordinal > loaded.providerTurn.ordinal &&
+                    turn.runAttemptId !== input.interruptedAttemptId,
+                )
+              ) {
+                return;
+              }
+              if (
+                loaded.providerTurn.status !== "completed" &&
+                (session.value.endedTurnHold === undefined ||
+                  (yield* session.value.endedTurnHold({
+                    providerThread: loaded.providerThread,
+                    providerTurnId: loaded.providerTurn.id,
+                  })) === undefined)
+              ) {
+                return;
+              }
+              yield* session.value.interruptTurn({
+                providerThread: loaded.providerThread,
+                providerTurnId: loaded.providerTurn.id,
+                ...stopScope,
+              });
+              return;
+            }
             // Without a live adapter, no terminal event can arrive; proceed to detach/start without polling.
             if (loaded.providerTurn.status === "running") {
               yield* Effect.logWarning(
@@ -293,6 +341,7 @@ export const layer: Layer.Layer<
           yield* loaded.session.value.interruptTurn({
             providerThread: loaded.providerThread,
             providerTurnId: loaded.providerTurn.id,
+            ...stopScope,
           });
 
           for (let remaining = 1_000; remaining > 0; remaining -= 1) {
@@ -368,6 +417,7 @@ export const layer: Layer.Layer<
           }
           yield* loaded.session.value
             .steerTurn({
+              purpose: executionPurposeOf(run),
               threadId: input.threadId,
               runId: run.id,
               providerThread: loaded.providerThread,
