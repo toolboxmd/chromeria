@@ -501,7 +501,9 @@ const make = Effect.gen(function* () {
         const request = yield* negotiatedRequest;
         if (
           request === undefined &&
-          !threadPullRequestsOf(thread).some((link) => threadPullRequestKeysEqual(link, target))
+          !threadPullRequestsOf(thread).some(
+            (link) => link.source !== "stack-dismissed" && threadPullRequestKeysEqual(link, target),
+          )
         )
           return {
             host: target.host,
