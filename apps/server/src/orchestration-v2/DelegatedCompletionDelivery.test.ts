@@ -1694,8 +1694,9 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
         });
         yield* orchestrator.recoverDelegatedTasks.pipe(Effect.withTracer(tracer));
         assert.isFalse(statements.some((query) => query.includes("MIN(ordinal)")));
+        // Shell metadata can reference messages without loading conversation payloads.
         const messageReads = statements.filter((query) =>
-          query.includes("FROM orchestration_v2_projection_messages"),
+          /SELECT\s+payload_json\s+FROM\s+orchestration_v2_projection_messages/.test(query),
         );
         assert.isNotEmpty(messageReads);
         assert.isTrue(messageReads.every((query) => query.includes("message_id IN")));
