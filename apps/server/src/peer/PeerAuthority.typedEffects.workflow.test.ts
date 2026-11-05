@@ -5758,8 +5758,9 @@ it.live(
 
 it.live.each(["messages", "bytes", "progress"] as const)(
   "backlog383: accepted linked viewer refuses bounded pending %s behind a stalled native action",
-  (bound) =>
-    Effect.scoped(
+  (bound) => {
+    const finish = Promise.withResolvers<void>();
+    return Effect.scoped(
       Effect.gen(function* () {
         const { a, b, parent, child, route } = yield* typed383Pair(
           "native383-input-backlog",
@@ -5789,8 +5790,6 @@ it.live.each(["messages", "bytes", "progress"] as const)(
           operation: "control",
         });
         const started = Promise.withResolvers<void>();
-        const finish = Promise.withResolvers<void>();
-        yield* Effect.addFinalizer(() => Effect.sync(() => finish.resolve()));
         const external = browserExternalContexts.at(-1)!;
         external.controls.afterInput = async (method) => {
           if (method === "Input.insertText" && external.inputs.at(-1)?.params?.text === "hold") {
@@ -5979,7 +5978,7 @@ it.live.each(["messages", "bytes", "progress"] as const)(
             ? [{ method: "Input.insertText", params: { text: "recovered" } }]
             : []),
         ]);
-      }),
+      }).pipe(Effect.ensuring(Effect.sync(() => finish.resolve()))),
     ).pipe(
       Effect.provide(
         Layer.mergeAll(
@@ -5987,7 +5986,8 @@ it.live.each(["messages", "bytes", "progress"] as const)(
           FetchHttpClient.layer,
         ),
       ),
-    ),
+    );
+  },
 );
 
 it.live.each([5, 20])(
