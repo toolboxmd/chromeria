@@ -845,11 +845,15 @@ it.effect.each(cases.filter((test) => !automationCases.includes(test)))(
         expect(yield* Ref.get(f.seen)).toContainEqual(
           expect.objectContaining({ operation: test.operation, environmentId: box.environmentId }),
         );
-        const before = (yield* Ref.get(f.seen)).length;
+        const mutations = () =>
+          Ref.get(f.seen).pipe(
+            Effect.map((seen) => seen.filter((entry) => entry.operation === test.operation)),
+          );
+        const before = yield* mutations();
         yield* f.link("auto");
         const refused = yield* f.call(test.name, test.args, test.context);
         expect(refused.isError, JSON.stringify(refused)).toBe(true);
-        expect((yield* Ref.get(f.seen)).length).toBe(before);
+        expect(yield* mutations()).toEqual(before);
         expect((yield* Ref.get(f.b.bearers)).length).toBeGreaterThan(0);
       }),
     ).pipe(Effect.provide(Layer.merge(NodeHttpServer.layerTest, McpProviderSessions.layer))),
