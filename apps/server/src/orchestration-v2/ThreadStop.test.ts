@@ -3049,8 +3049,8 @@ it.effect("ancestor Stop wins before producer offer", () =>
           const read = original(threadId, fields, filter);
           return threadId === parentId &&
             pause &&
-            fields.length === 4 &&
-            fields.includes("providerTurns")
+            fields.includes("providerThreads") &&
+            filter?.providerThreadIds !== undefined
             ? Effect.gen(function* () {
                 pause = false;
                 yield* Deferred.succeed(reached, undefined);
