@@ -32,6 +32,7 @@ import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/
 import { discoverGrokSkills } from "./skills.ts";
 import {
   homebrewOwnershipFromCommandPath,
+  normalizeCommandPath,
   makeCachedProviderMaintenanceResolution,
   makeManualOnlyProviderMaintenanceCapabilities,
   makeProviderMaintenanceCapabilities,
@@ -77,7 +78,7 @@ const UPDATE: ProviderMaintenanceCapabilitiesResolver = {
         })
       );
     }
-    return makeProviderMaintenanceCapabilities({
+    const capabilities = makeProviderMaintenanceCapabilities({
       provider: DRIVER_KIND,
       packageName: GROK_NPM_PACKAGE,
       updateExecutable: context.resolvedCommandPath,
@@ -86,6 +87,29 @@ const UPDATE: ProviderMaintenanceCapabilitiesResolver = {
       platform: context.platform,
       env: { ...context.env, npm_config_allow_scripts: GROK_NPM_PACKAGE },
     });
+    const realPath = normalizeCommandPath(context.realCommandPath);
+    const fileSystem = yield* FileSystem.FileSystem;
+    const grokHome = context.env.GROK_HOME
+      ? yield* fileSystem.realPath(context.env.GROK_HOME).pipe(
+          Effect.map((home) => normalizeCommandPath(home).replace(/\/$/, "")),
+          Effect.orElseSucceed(() => null),
+        )
+      : null;
+    const nativePath = grokHome ? realPath.slice(grokHome.length) : "";
+    const isNative = grokHome
+      ? realPath.startsWith(`${grokHome}/`) && /^\/(bin|downloads)\/grok-[^/]+$/.test(nativePath)
+      : !context.env.GROK_HOME && /\/\.grok\/(bin|downloads)\/grok-[^/]+$/.test(realPath);
+    if (
+      capabilities.update &&
+      isNative &&
+      (context.platform === "linux" || context.platform === "darwin")
+    ) {
+      return {
+        ...capabilities,
+        update: { ...capabilities.update, canRunWhileBusy: true as const },
+      };
+    }
+    return capabilities;
   }),
 };
 

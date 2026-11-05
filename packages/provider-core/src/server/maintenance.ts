@@ -26,6 +26,7 @@ export interface ProviderMaintenanceCommandAction {
   readonly executable: string;
   readonly args: ReadonlyArray<string>;
   readonly lockKey: string;
+  readonly canRunWhileBusy?: true;
   /** The provider's environment, including its PATH and custom home. */
   readonly env?: NodeJS.ProcessEnv;
 }

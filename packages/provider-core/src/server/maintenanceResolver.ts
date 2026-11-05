@@ -538,8 +538,28 @@ export const resolvePackageManagedProviderMaintenance = Effect.fn(
     commandPaths.some(nativeUpdate.isCommandPath) &&
     !npmGlobalPrefixFromCommandPath(context.realCommandPath, packageName) &&
     !commandPaths.some(isMiseCommandPath) &&
+    // Fork: a shim whose real path is the Homebrew mise keg has neither a mise install path
+    // nor a wrapper script (the keg file is the mise binary).
+    !isMiseKeg(homebrewOwnershipFromCommandPath(context.realCommandPath)) &&
     !(yield* isMiseWrapperScript(context))
   ) {
+    // Only these native updater kinds have completed mid-turn update proof
+    // on Linux and macOS. A native-looking link is not enough: its
+    // resolved target must also belong to the native installer.
+    if (
+      native.update &&
+      nativeUpdate.isCommandPath(context.realCommandPath) &&
+      !commandPaths.some((commandPath) =>
+        normalizeCommandPath(commandPath).includes("/node_modules/"),
+      ) &&
+      !homebrewOwnershipFromCommandPath(context.realCommandPath) &&
+      (context.platform === "linux" || context.platform === "darwin") &&
+      (definition.provider === "claudeAgent" ||
+        definition.provider === "codex" ||
+        definition.provider === "opencode")
+    ) {
+      return { ...native, update: { ...native.update, canRunWhileBusy: true as const } };
+    }
     return native;
   }
   // A `node_modules` path not proven below belongs to another package or a
@@ -659,6 +679,10 @@ export const resolvePackageManagedProviderMaintenance = Effect.fn(
  * that reports it as its own. Version checks defer `brew info` until needed.
  * Null when no `brew` is found or it owns another prefix.
  */
+function isMiseKeg(homebrew: HomebrewOwnership | null): boolean {
+  return homebrew?.kind === "formula" && homebrew.name.toLowerCase() === "mise";
+}
+
 export const resolveHomebrewProviderMaintenance = Effect.fn("resolveHomebrewProviderMaintenance")(
   function* (
     input: { readonly provider: ProviderDriverKind; readonly packageName: string | null },

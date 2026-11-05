@@ -66,6 +66,21 @@ const nativePackageToolUpdate = makePackageManagedProviderMaintenanceResolver({
     isCommandPath: isNativeTestCommandPath("/.local/bin/native-package-tool"),
   },
 });
+const claudeNativeUpdate = makePackageManagedProviderMaintenanceResolver({
+  provider: driver("claudeAgent"),
+  npmPackageName: "@anthropic-ai/claude-code",
+  nativeUpdate: {
+    args: ["update"],
+    isCommandPath: (commandPath) => {
+      const normalized = normalizeCommandPath(commandPath);
+      return (
+        normalized.endsWith("/.local/bin/claude") ||
+        normalized.endsWith("/.local/bin/claude.exe") ||
+        normalized.includes("/.local/share/claude/")
+      );
+    },
+  },
+});
 const installedPackageToolProvider: ServerProvider = {
   instanceId: ProviderInstanceId.make("packageTool"),
   driver: driver("packageTool"),
@@ -490,7 +505,76 @@ it.layer(
     ).toBeNull();
   });
 
-  // The Windows Codex bin junction resolves into CODEX_HOME/packages/standalone/current/bin.
+  it.effect.each([
+    {
+      provider: "claudeAgent",
+      path: "/home/test/.local/share/claude/versions/2.1.300",
+      platform: "linux",
+      allowed: true,
+    },
+    {
+      provider: "codex",
+      path: "/home/test/.codex/packages/standalone/releases/0.162.1/bin/codex",
+      platform: "darwin",
+      allowed: true,
+    },
+    {
+      provider: "opencode",
+      path: "/home/test/.opencode/bin/opencode",
+      platform: "linux",
+      allowed: true,
+    },
+    {
+      provider: "codex",
+      path: "C:/test/packages/standalone/current/bin/codex.exe",
+      platform: "win32",
+      allowed: false,
+    },
+    {
+      provider: "cursor",
+      path: "/home/test/.local/bin/cursor-agent",
+      platform: "linux",
+      allowed: false,
+    },
+    { provider: "claudeAgent", path: "/unknown/claude", platform: "linux", allowed: false },
+    {
+      provider: "claudeAgent",
+      path: "/home/test/lib/node_modules/@anthropic-ai/claude-code/cli.js",
+      platform: "linux",
+      allowed: false,
+    },
+  ] as const)(
+    "bounds active-session safety to proven native $provider on $platform ($path)",
+    ({ provider, path, platform, allowed }) =>
+      Effect.gen(function* () {
+        const capabilities = yield* resolvePackageManagedProviderMaintenance(
+          {
+            provider: driver(provider),
+            npmPackageName: "@example/test",
+            nativeUpdate: {
+              args: [provider === "opencode" ? "upgrade" : "update"],
+              isCommandPath: (candidate) =>
+                candidate.includes("/.local/") ||
+                candidate.includes("/standalone/") ||
+                candidate.includes("/.opencode/"),
+            },
+          },
+          {
+            binaryPath: path,
+            resolvedCommandPath: path,
+            realCommandPath: path,
+            env: { PATH: "" },
+            platform,
+          },
+        );
+        expect(capabilities.update?.canRunWhileBusy === true).toBe(allowed);
+      }),
+  );
+
+  // The Codex Windows installer exposes `%LOCALAPPDATA%\\Programs\\OpenAI\\Codex\\bin`
+  // as a junction into `%CODEX_HOME%\\packages\\standalone\\current\\bin`. Node's
+  // realpath follows junctions, so the real path carries the standalone marker
+  // even though the visible path does not.
   it.effect("recognizes a Windows standalone install through its junctioned bin dir", () =>
     Effect.gen(function* () {
       const visiblePath =
@@ -1157,6 +1241,101 @@ it.layer(
           args: expect.arrayContaining(["--prefix", prefix]),
           lockKey: `npm-global:${normalizeCommandPath(prefix)}`,
         });
+      }),
+  );
+
+  it.effect.skipIf(!symlinksSupported || windowsHost)(
+    "keeps a ~/.local/bin/claude symlink into a mise claude install manual-only",
+    () =>
+      Effect.gen(function* () {
+        const tempDir = yield* makeTempDir("t3-claude-mise-link");
+        const target = NodePath.join(tempDir, "mise", "installs", "claude", "2.1.289", "claude");
+        writeExecutable(target);
+        const link = NodePath.join(tempDir, ".local", "bin", "claude");
+        NodeFS.mkdirSync(NodePath.dirname(link), { recursive: true });
+        NodeFS.symlinkSync(target, link);
+
+        const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
+          claudeNativeUpdate,
+          { binaryPath: link, env: { PATH: "" } },
+        ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn));
+
+        expect(capabilities.update).toBeNull();
+      }),
+  );
+
+  for (const { targetPath, allowed } of [
+    { targetPath: ["custom", "claude"], allowed: false },
+    { targetPath: [".local", "share", "pnpm", "claude"], allowed: false },
+    { targetPath: [".volta", "bin", "volta-shim"], allowed: false },
+    { targetPath: [".local", "share", "claude", "versions", "2.1.300"], allowed: true },
+  ]) {
+    it.effect.skipIf(!symlinksSupported || windowsHost)(
+      `requires a native resolved target for busy Claude updates (${targetPath.join("/")})`,
+      () =>
+        Effect.gen(function* () {
+          const tempDir = yield* makeTempDir("t3-claude-busy-link");
+          const target = NodePath.join(tempDir, ...targetPath);
+          writeExecutable(target);
+          const link = NodePath.join(tempDir, ".local", "bin", "claude");
+          NodeFS.mkdirSync(NodePath.dirname(link), { recursive: true });
+          NodeFS.symlinkSync(target, link);
+          const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
+            claudeNativeUpdate,
+            { binaryPath: link, env: { PATH: "" } },
+          ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn));
+          expect(capabilities.update?.canRunWhileBusy === true).toBe(allowed);
+          // Preserve the existing idle updater choice independently of busy safety.
+          expect(capabilities.update).toMatchObject({
+            executable: link,
+            args: ["update"],
+            lockKey: "claudeAgent-native",
+          });
+        }),
+    );
+  }
+
+  it.effect.skipIf(!symlinksSupported || windowsHost)(
+    "keeps a real native Claude install on claude update",
+    () =>
+      Effect.gen(function* () {
+        const tempDir = yield* makeTempDir("t3-claude-native");
+        const target = NodePath.join(tempDir, ".local", "share", "claude", "versions", "2.1.299");
+        writeExecutable(target);
+        const link = NodePath.join(tempDir, ".local", "bin", "claude");
+        NodeFS.mkdirSync(NodePath.dirname(link), { recursive: true });
+        NodeFS.symlinkSync(target, link);
+
+        const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
+          claudeNativeUpdate,
+          { binaryPath: link, env: { PATH: "" } },
+        ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn));
+
+        expect(capabilities.update).toMatchObject({
+          executable: link,
+          args: ["update"],
+          lockKey: "claudeAgent-native",
+        });
+      }),
+  );
+
+  it.effect.skipIf(!symlinksSupported || windowsHost)(
+    "keeps a ~/.local/bin/claude symlink into the Homebrew mise keg manual-only",
+    () =>
+      Effect.gen(function* () {
+        const tempDir = yield* makeTempDir("t3-claude-mise-keg");
+        const target = NodePath.join(tempDir, "Cellar", "mise", "2026.10.4", "bin", "mise");
+        writeExecutable(target);
+        const link = NodePath.join(tempDir, ".local", "bin", "claude");
+        NodeFS.mkdirSync(NodePath.dirname(link), { recursive: true });
+        NodeFS.symlinkSync(target, link);
+
+        const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
+          claudeNativeUpdate,
+          { binaryPath: link, env: { PATH: "" } },
+        ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn));
+
+        expect(capabilities.update).toBeNull();
       }),
   );
 
