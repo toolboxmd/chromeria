@@ -157,24 +157,26 @@ it.effect(
         creationSource: "web",
       });
       const before = yield* orchestrator.getThreadProjection(parentId);
+      const parentRun = before.runs.find(
+        (run) => run.userMessageId === MessageId.make("ancestor:user"),
+      )!;
       const input = sendInput("queued");
       const result = yield* threads.sendToThread(input);
       expect(result.delivery).toBe("queued");
       expect(result.message.notification).toBeDefined();
       expect(result.run.status).toBe("queued");
-      expect(result.projection.runs.find((run) => run.id === before.runs[0]!.id)).toEqual(
-        before.runs[0],
-      );
+      expect(result.projection.runs.find((run) => run.id === parentRun.id)).toEqual(parentRun);
       const now = yield* DateTime.now;
       const sink = yield* EventSink.EventSinkV2;
       yield* sink.write({
+        commandId: CommandId.make("command:runtime-reconcile:ancestor:parent-completed"),
         events: [
           {
             id: EventId.make("ancestor:parent-completed"),
             type: "run.updated",
             threadId: parentId,
             occurredAt: now,
-            payload: { ...before.runs[0]!, status: "completed", completedAt: now },
+            payload: { ...parentRun, status: "completed", completedAt: now },
           },
           {
             id: EventId.make("ancestor:held"),
@@ -184,6 +186,12 @@ it.effect(
             payload: { ...result.run, queueHeld: true },
           },
         ],
+      });
+      const inactive = yield* orchestrator.getThreadRecords(parentId, ["runs"]);
+      expect(inactive.runs.find((run) => run.id === parentRun.id)?.status).toBe("completed");
+      expect(inactive.runs.find((run) => run.id === result.run.id)).toMatchObject({
+        status: "queued",
+        queueHeld: true,
       });
       yield* orchestrator.dispatch({
         type: "thread.settle",
