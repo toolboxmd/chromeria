@@ -802,33 +802,37 @@ export function ThreadRelationshipsPanel(props: {
       ? !hasSourceRemoteTaskView(agent)
         ? `Runs on ${agent?.remoteChild?.label ?? "another machine"}, which this client is not connected to`
         : `Runs on ${agent.remoteChild.label}, available through this conversation`
-      : node?.missing && remoteEnvironmentId === null
-        ? "This related thread is unavailable"
-        : remoteEnvironmentId !== null
-          ? `Open ${relationship.toLowerCase()} on ${agent?.remoteChild?.label ?? "another machine"}`
-          : `Open ${relationship.toLowerCase()} in this chat`;
+      : remoteEnvironmentId !== null
+        ? `Open ${relationship.toLowerCase()} on ${agent?.remoteChild?.label ?? "another machine"}`
+        : `Open ${relationship.toLowerCase()} in this chat`;
     const RelationshipPopup = agent ? ThreadHoverCardPopup : TooltipPopup;
     const relationshipTooltip = agent ? (
-      <SubagentTooltipContent
-        title={threadTitle}
-        model={agent.model}
-        providerInstanceId={agent.providerInstanceId}
-        origin={agent.origin}
-        modelSelection={agent.modelSelection}
-        provider={provider}
-        providers={providers}
-        driver={providerDriver}
-        elapsed={<AgentElapsed agent={agent} />}
-        status={agent.status}
-        result={agent.result}
-        progress={agent.progress}
-        parentThread={currentThread ?? undefined}
-        childThread={node?.thread ?? undefined}
-        parentProject={currentProject}
-        childProject={project}
-      />
+      <>
+        <SubagentTooltipContent
+          title={threadTitle}
+          model={agent.model}
+          providerInstanceId={agent.providerInstanceId}
+          origin={agent.origin}
+          modelSelection={agent.modelSelection}
+          provider={provider}
+          providers={providers}
+          driver={providerDriver}
+          elapsed={<AgentElapsed agent={agent} />}
+          status={agent.status}
+          result={agent.result}
+          progress={agent.progress}
+          parentThread={currentThread ?? undefined}
+          childThread={node?.thread ?? undefined}
+          parentProject={currentProject}
+          childProject={project}
+        />
+        {remoteUnreachable ? <span className="block">{relationshipHint}</span> : null}
+      </>
     ) : (
-      relationshipHint
+      <>
+        <span className="block">{threadTitle}</span>
+        {relationshipHint}
+      </>
     );
     const relationshipContent = (
       <>
@@ -875,8 +879,9 @@ export function ThreadRelationshipsPanel(props: {
               size="sm"
               variant="ghost"
               part={workflowGroup ? "primary" : "row"}
-              disabled={rowUnavailable}
+              aria-disabled={rowUnavailable || undefined}
               onClick={() => {
+                if (rowUnavailable) return;
                 const remoteTask = projection?.subagents.find(
                   (task) =>
                     task.id === agent?.id &&
@@ -931,8 +936,9 @@ export function ThreadRelationshipsPanel(props: {
                     variant="ghost"
                     part="primary"
                     aria-label={`${threadTitle} ${threadRelationshipStatusLabel(rowStatus)}`}
-                    disabled={rowUnavailable}
+                    aria-disabled={rowUnavailable || undefined}
                     onClick={() => {
+                      if (rowUnavailable) return;
                       const remoteTask = projection?.subagents.find(
                         (task) =>
                           task.id === agent?.id &&

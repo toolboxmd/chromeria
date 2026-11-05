@@ -6,6 +6,11 @@ import {
   type EnvironmentId,
 } from "@t3tools/contracts";
 import { useState } from "react";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
+import { AsyncResult } from "effect/reactivity";
 
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { authEnvironment } from "../../state/auth";
@@ -40,7 +45,18 @@ export function ClientPersonSelect({
     if (!canEditPerson || saving) return;
     setSaving(true);
     await setClientPerson({ environmentId, input: { sessionId, person: next } })
-      .then(() => {
+      .then((result) => {
+        if (AsyncResult.isFailure(result)) {
+          if (!isAtomCommandInterrupted(result)) {
+            const error = squashAtomCommandFailure(result);
+            toastManager.add({
+              type: "error",
+              title: "Could not change the person",
+              description: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
+        }
         if (current) {
           appAtomRegistry.refresh(environmentSession.sessionStateAtom(environmentId));
         }
