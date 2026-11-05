@@ -538,20 +538,25 @@ const refreshOnSignalWhileRead =
 
 const refreshEveryUntilFinal =
   <V>(intervalMs: number, isFinal: (value: V) => boolean) =>
-  <A extends V>(self: Atom.Atom<A>): Atom.Atom<A> =>
-    Atom.transform(
+  <A extends V>(self: Atom.Atom<A>): Atom.Atom<A> => {
+    const refreshing = Atom.withRefresh(self, intervalMs);
+    return Atom.transform(
       self,
       (get) => {
         const value = get(self);
-        if (!isFinal(value)) {
-          // @effect-diagnostics-next-line globalTimers:off - Mirrors `Atom.withRefresh`, outside an Effect runtime.
-          const handle = setTimeout(() => get.refresh(self), intervalMs);
-          get.addFinalizer(() => clearTimeout(handle));
-        }
-        return value;
+        return isFinal(value) ? value : get(refreshing);
       },
       { initialValueTarget: self },
     );
+  };
+/**
+ * Fork (toolboxmd/t3code#52): an atom never observes its own cancellation, so an interrupt-only
+ * failure is the server's. A read that joins a shared lookup another request's cancellation is
+ * tearing down comes back interrupted; it is read once more instead of shown as an error.
+ */
+function retryInterruptedRead<A, E, R>(read: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> {
+  return read.pipe(Effect.catchCauseIf(Cause.hasInterruptsOnly, () => read));
+}
 
 /**
  * A query result's data alone. A refetch always publishes a new result (a new
@@ -711,18 +716,20 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
           switch (connectionState.phase) {
             case "connected":
               return Option.isSome(session)
-                ? runInEnvironment(
-                    target.environmentId,
-                    options
-                      .execute(
-                        target.input,
-                        emit,
-                        Option.flatMap(
-                          get.self<AsyncResult.AsyncResult<A, unknown>>(),
-                          AsyncResult.value,
-                        ),
-                      )
-                      .pipe(pendingOnceSessionReplaced(session.value)),
+                ? retryInterruptedRead(
+                    runInEnvironment(
+                      target.environmentId,
+                      options
+                        .execute(
+                          target.input,
+                          emit,
+                          Option.flatMap(
+                            get.self<AsyncResult.AsyncResult<A, unknown>>(),
+                            AsyncResult.value,
+                          ),
+                        )
+                        .pipe(pendingOnceSessionReplaced(session.value)),
+                    ),
                   )
                 : Effect.never;
             case "connecting":
