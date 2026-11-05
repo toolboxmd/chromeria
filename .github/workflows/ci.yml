@@ -214,7 +214,8 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.test != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Setup and uncached package suites can exceed ten minutes before teardown.
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -296,7 +297,8 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.test_web != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Setup, uncached browser tests and production boot can exceed ten minutes.
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v6
