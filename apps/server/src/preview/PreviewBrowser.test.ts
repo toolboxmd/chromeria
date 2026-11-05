@@ -23,6 +23,53 @@ import * as NodeStreamPromises from "node:stream/promises";
 import * as NodeZlib from "node:zlib";
 
 import * as PreviewBrowser from "./PreviewBrowser.ts";
+import { ServerBrowserContexts } from "./ServerBrowserContexts.ts";
+
+it.each([
+  ["linux", "x64", "linux64", "chrome"],
+  ["linux", "arm64", "linux-arm64", "chrome"],
+  [
+    "darwin",
+    "arm64",
+    "mac-arm64",
+    "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+  ],
+  [
+    "darwin",
+    "x64",
+    "mac-x64",
+    "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+  ],
+  ["win32", "ia32", "win32", "chrome.exe"],
+  ["win32", "x64", "win64", "chrome.exe"],
+  ["win32", "arm64", "win64", "chrome.exe"],
+] as const)(
+  "pins full Chrome and its identity on %s-%s",
+  (platform, arch, archivePlatform, executable) => {
+    const release = PreviewBrowser.previewBrowserRelease(platform, arch)!;
+    expect(release).toMatchObject({
+      version: "156.0.8078.80",
+      platform: archivePlatform,
+      url: `https://storage.googleapis.com/chrome-for-testing-public/156.0.8078.80/${archivePlatform}/chrome-${archivePlatform}.zip`,
+      executable,
+    });
+    const contexts = new ServerBrowserContexts({
+      profilesDir: "unused",
+      executable: async () => {
+        throw new Error("Release validation must not launch Chrome.");
+      },
+      version: release.version,
+      host: { platform, arch },
+    });
+    expect(contexts.identity.userAgent).toContain("Chrome/156.0.0.0");
+    expect(contexts.identity.userAgentMetadata.fullVersionList).toEqual(
+      expect.arrayContaining([
+        { brand: "Chromium", version: "156.0.8078.80" },
+        { brand: "Google Chrome", version: "156.0.8078.80" },
+      ]),
+    );
+  },
+);
 
 // NTFS cannot enforce POSIX modes; choose the host platform.
 const hostPlatform: NodeJS.Platform =

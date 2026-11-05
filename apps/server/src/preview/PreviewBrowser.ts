@@ -27,37 +27,37 @@ import { openZipArchive } from "../zipArchive.ts";
 // Update version, sizes and hashes from each platform's full chrome zip in Chrome for Testing's
 // known-good-versions-with-downloads.json; sites fingerprint chrome-headless-shell as a bot. Never
 // pin below 156.0.8078.70: older builds lack the CRLSet that blocks compromised eMudhra intermediates.
-const VERSION = "156.0.8078.70";
+const VERSION = "156.0.8078.80";
 const MAC_EXECUTABLE = "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing";
 const ARCHIVES = {
   linux64: {
-    bytes: 201_035_256,
-    sha256: "baac330433bb105012b7429ad77d4ba3d4ec3768810008ce9257d5d930c1b0cd",
+    bytes: 201_329_937,
+    sha256: "b711c720f774be355197f32edf37e0651418ba036d92446ee2da19ac017540a7",
     executable: "chrome",
   },
   "linux-arm64": {
-    bytes: 200_845_435,
-    sha256: "46dce94a0790d177927044e83ee7e0f571bc22e90e6fafe21fce5c1e248bc865",
+    bytes: 200_722_708,
+    sha256: "1f496a826c9ba4d6a5f5bf2de686145fe718528c2cc3dbeb96b5893b89653724",
     executable: "chrome",
   },
   "mac-arm64": {
-    bytes: 194_910_526,
-    sha256: "1070e2acc6fec1b80aac9215c9b83a381334a8c556df941e5146efb816121adb",
+    bytes: 195_027_080,
+    sha256: "8bc590d1b1acac042a000234c768f31830f25a3983a83ed5e067114c87c4cad1",
     executable: MAC_EXECUTABLE,
   },
   "mac-x64": {
-    bytes: 205_543_880,
-    sha256: "3218f6e802588632f2f8055b90035b306cad48874daf6067330e0f012afdb7ab",
+    bytes: 205_782_188,
+    sha256: "672b79dc79fdf28bb2ec9787b7fa33810c2b3cfd946a0fb4d3b72775f4e6fd9a",
     executable: MAC_EXECUTABLE,
   },
   win32: {
-    bytes: 188_579_460,
-    sha256: "853955e981b07b8c44dfc77e658f6bfc806868a74176a44900aecda65ea4c26e",
+    bytes: 188_578_294,
+    sha256: "191a656d22c7ebd345bf13c20f04100bd37ed35170e9070dc0ddfd425109ac66",
     executable: "chrome.exe",
   },
   win64: {
-    bytes: 209_092_934,
-    sha256: "8ab65752ca6106bb8a5bf3afaa710ab4f62a57c27ed39db4977422c929fce0b3",
+    bytes: 208_152_768,
+    sha256: "16edb57d6107bf1c48a7c149b8d78b155fe614410093796dd72441fd6640540f",
     executable: "chrome.exe",
   },
 } as const;
