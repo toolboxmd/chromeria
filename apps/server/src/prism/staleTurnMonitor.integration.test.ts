@@ -414,18 +414,22 @@ it.effect(
       const { orchestrator, childId } = yield* setup;
       yield* advanceSilence(epoch);
       const before = yield* orchestrator.getThreadProjection(parentId);
+      const parentRun = before.runs.find(
+        (run) => run.userMessageId === MessageId.make("silence:message"),
+      )!;
       const noticeMessage = before.messages.find((message) => message.senderThreadId === childId)!;
       const noticeRun = before.runs.find((run) => run.userMessageId === noticeMessage.id)!;
       const now = yield* DateTime.now;
       const sink = yield* EventSink.EventSinkV2;
       yield* sink.write({
+        commandId: CommandId.make("command:runtime-reconcile:silence:finished-for-settle"),
         events: [
           {
             id: EventId.make("silence:finished-for-settle"),
             type: "run.updated",
             threadId: parentId,
             occurredAt: now,
-            payload: { ...before.runs[0]!, status: "completed", completedAt: now },
+            payload: { ...parentRun, status: "completed", completedAt: now },
           },
           {
             id: EventId.make("silence:held"),
@@ -435,6 +439,12 @@ it.effect(
             payload: { ...noticeRun, queueHeld: true },
           },
         ],
+      });
+      const held = yield* orchestrator.getThreadProjection(parentId);
+      expect(held.runs.find((run) => run.id === parentRun.id)?.status).toBe("completed");
+      expect(held.runs.find((run) => run.id === noticeRun.id)).toMatchObject({
+        status: "queued",
+        queueHeld: true,
       });
       yield* orchestrator.dispatch({
         type: "thread.settle",
