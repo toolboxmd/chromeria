@@ -1,3 +1,5 @@
+import { ensureScheduledTaskBareSchema } from "./forkScheduledTaskBareSchema.ts";
+import { ensureExecutionPurposeSchema } from "./forkExecutionPurposeSchema.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as FileSystem from "effect/FileSystem";
@@ -6,6 +8,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import { runMigrations } from "./Migrations.ts";
+import { ensureScheduledTaskOriginsSchema } from "./forkScheduledTaskOriginsSchema.ts";
+import { ensureThreadPeopleSchema } from "./forkThreadPeopleSchema.ts";
 import { initializeV2Database } from "./initializeV2Database.ts";
 import * as ServerConfig from "../config.ts";
 
@@ -41,6 +45,10 @@ const layerSetup = Layer.effectDiscard(
       yield* sql`DELETE FROM sqlite_stat1;`;
       yield* sql`ANALYZE sqlite_schema;`;
     }
+    yield* ensureThreadPeopleSchema;
+    yield* ensureScheduledTaskOriginsSchema;
+    yield* ensureScheduledTaskBareSchema;
+    yield* ensureExecutionPurposeSchema;
   }).pipe(Effect.withSpan("Sqlite.setup")),
 );
 

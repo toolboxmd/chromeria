@@ -1,4 +1,9 @@
+import { BareLaunchError } from "@t3tools/provider-core/server/bareLaunch";
+import { CommandId } from "@t3tools/contracts";
+import * as AdapterRegistry from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
+import * as ServerSettings from "../../../serverSettings.ts";
+import * as Database from "../../../persistence/Sqlite.ts";
 import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
@@ -6,11 +11,11 @@ import {
   ProviderInstanceId,
   ProviderDriverKind,
   type ServerProvider,
+  ThreadId,
+  type OrchestrationV2ThreadShell,
   type Project as ProjectRecord,
   type ModelSelection,
   type RuntimeMode,
-  type OrchestrationV2ThreadShell,
-  ThreadId,
 } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -28,7 +33,6 @@ import { OrchestratorRuntimeModeAboveCeilingError } from "../../../orchestration
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ServerConfig from "../../../config.ts";
-import * as ServerSettings from "../../../serverSettings.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import * as ProjectCloneTracker from "../../../project/ProjectCloneTracker.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
@@ -39,6 +43,478 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as ProjectHandlers from "./handlers.ts";
 import { ProjectToolkit } from "./tools.ts";
+import { liveThreadShell } from "../../McpToolAccess.testkit.ts";
+
+const prismDependencies = Layer.mergeAll(
+  DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+  Database.layerMemory,
+  Layer.mock(AdapterRegistry.ProviderAdapterRegistryV2)({
+    get: (instanceId) =>
+      Effect.succeed({
+        instanceId,
+        driver: ProviderDriverKind.make("claudeAgent"),
+        bareSupport: Effect.succeed({ supported: true }),
+        getCapabilities: () => Effect.die("unused"),
+        planSelectionTransition: () => Effect.die("unused"),
+        openSession: () => Effect.die("unused"),
+      }),
+    list: () =>
+      Effect.succeed([
+        ProviderInstanceId.make("codex"),
+        ProviderInstanceId.make("claudeAgent"),
+        ProviderInstanceId.make("claude"),
+      ]),
+  }),
+  ServerSettings.layerTest(),
+  Layer.mock(ProviderRegistry.ProviderRegistry)({
+    getProviders: Effect.succeed([
+      {
+        instanceId: ProviderInstanceId.make("codex"),
+        driver: ProviderDriverKind.make("codex"),
+        enabled: true,
+        installed: true,
+        version: "test",
+        status: "ready",
+        auth: { status: "authenticated" },
+        checkedAt: "2026-10-08T00:00:00Z",
+        models: [
+          { slug: "gpt-5", name: "test", isCustom: false, capabilities: null },
+          // The project default a Settings override names.
+          { slug: "gpt-settings", name: "test", isCustom: false, capabilities: null },
+        ],
+        skills: [],
+        slashCommands: [],
+      },
+      {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        driver: ProviderDriverKind.make("claudeAgent"),
+        enabled: true,
+        installed: true,
+        version: "test",
+        status: "ready",
+        auth: { status: "authenticated" },
+        checkedAt: "2026-10-08T00:00:00Z",
+        models: [{ slug: "claude-opus", name: "test", isCustom: false, capabilities: null }],
+        skills: [],
+        slashCommands: [],
+      },
+      {
+        instanceId: ProviderInstanceId.make("claude"),
+        driver: ProviderDriverKind.make("claudeAgent"),
+        enabled: true,
+        installed: true,
+        version: "test",
+        status: "ready",
+        auth: { status: "authenticated" },
+        checkedAt: "2026-10-08T00:00:00Z",
+        models: [{ slug: "claude-opus", name: "test", isCustom: false, capabilities: null }],
+        skills: [],
+        slashCommands: [],
+      },
+    ]),
+  }),
+);
+
+it.effect.each(["full-access", "approval-required"] as const)(
+  "bare launch reads under the %s caller grant even when the child is restricted in another project",
+  (runtimeMode) =>
+    Effect.gen(function* () {
+      const caller = {
+        ...liveThreadShell(ThreadId.make("bare-caller"), { runtimeMode }),
+        worktreePath: "/caller",
+      };
+      const destination = ProjectId.make("other-project");
+      let launched: ThreadLaunch.ThreadLaunchInput | undefined;
+      const dependencies = Layer.mergeAll(
+        prismDependencies,
+        NodeServices.layer,
+        NodeCrypto.layer,
+        Layer.mock(AdapterRegistry.ProviderAdapterRegistryV2)({
+          list: () => Effect.succeed([caller.providerInstanceId]),
+          get: () =>
+            Effect.succeed({
+              instanceId: caller.providerInstanceId,
+              driver: ProviderDriverKind.make("codex"),
+              bareSupport: Effect.succeed({ supported: true }),
+              getCapabilities: () => Effect.die("unused"),
+              planSelectionTransition: () => Effect.die("unused"),
+              openSession: () => Effect.die("unused"),
+            }),
+        }),
+        Layer.succeed(McpInvocationContext.McpInvocationContext, {
+          environmentId: EnvironmentId.make("here"),
+          requestNamespace: "bare-caller",
+          thread: {
+            threadId: caller.id,
+            providerSessionId: "session",
+            providerInstanceId: caller.providerInstanceId,
+          },
+          client: undefined,
+          issuedAt: 0,
+          capabilities: new Set(["orchestration"] as const),
+        }),
+        Layer.mock(ThreadManagement.ThreadManagementService)({
+          getThreadShell: () => Effect.succeed(caller),
+        }),
+        Layer.mock(ThreadLaunch.ThreadLaunchService)({
+          replayOrLaunch: (_input, launch) => launch,
+          launch: (input) => {
+            launched = input;
+            return Effect.succeed({
+              threadId: input.threadId,
+              projection: {
+                thread: {
+                  id: input.threadId,
+                  projectId: destination,
+                  title: input.title ?? "New thread",
+                  modelSelection: caller.modelSelection,
+                },
+                runs: [],
+              },
+              resumed: false,
+            } as unknown as ThreadLaunch.ThreadLaunchResult);
+          },
+        }),
+        Layer.mock(Project.ProjectService)({}),
+        Layer.mock(PeerForwarding.PeerForwarding)({}),
+        Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-bare-grant-" }).pipe(
+          Layer.provide(NodeServices.layer),
+        ),
+      );
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      yield* toolkit
+        .handle("t3_thread_launch", {
+          projectId: destination,
+          title: "Bare",
+          bare: {},
+          runtimeMode: "approval-required",
+          message: "Only task text",
+          modelSelection: caller.modelSelection,
+        })
+        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+      expect(launched?.runtimeMode).toBe("approval-required");
+      expect(launched?.bareReadGrant).toEqual(
+        runtimeMode === "full-access" ? { type: "all" } : { type: "roots", roots: ["/caller"] },
+      );
+      expect(launched?.initialMessage?.text).toBe("Only task text");
+    }),
+);
+
+it.effect("attributes a launched thread's first message to the calling thread", () =>
+  Effect.gen(function* () {
+    const sourceThreadId = ThreadId.make("source-thread");
+    const projectId = ProjectId.make("project");
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const modelSelection = { instanceId: providerInstanceId, model: "gpt-5" };
+    const caller = {
+      id: sourceThreadId,
+      projectId,
+      providerInstanceId,
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      activeRunId: "active-run",
+      archivedAt: null,
+      deletedAt: null,
+      owner: "Pauli",
+    } as OrchestrationV2ThreadShell;
+    let launchedSender: ThreadId | undefined;
+    let launchedOwner: string | undefined;
+    let launchedRole: string | undefined;
+    const layerDependencies = Layer.mergeAll(
+      ServerSettings.layerTest(),
+      NodeCrypto.layer,
+      Layer.succeed(McpInvocationContext.McpInvocationContext, {
+        environmentId: EnvironmentId.make("environment"),
+        requestNamespace: "session",
+        thread: {
+          threadId: sourceThreadId,
+          providerSessionId: "session",
+          providerInstanceId,
+        },
+        client: undefined,
+        issuedAt: 0,
+        capabilities: new Set(["orchestration" as const]),
+      }),
+      Layer.mock(ThreadManagement.ThreadManagementService)({
+        getThreadShell: () => Effect.succeed(caller),
+      }),
+      Layer.mock(ThreadLaunch.ThreadLaunchService)({
+        replayOrLaunch: (_input, launch) => launch,
+        launch: (input) => {
+          launchedSender = input.initialMessage?.senderThreadId;
+          launchedOwner = input.owner;
+          launchedRole = input.prismRole;
+          return Effect.succeed({
+            threadId: input.threadId,
+            projection: {
+              thread: { id: input.threadId, projectId, title: "New thread", modelSelection },
+              runs: [],
+            },
+            resumed: false,
+          } as unknown as ThreadLaunch.ThreadLaunchResult);
+        },
+      }),
+      Layer.mock(Project.ProjectService)({}),
+      Layer.mock(PeerForwarding.PeerForwarding)({}),
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
+      Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+      NodeServices.layer,
+      ServerConfig.layerTest(process.cwd(), { prefix: "t3-source-link-" }).pipe(
+        Layer.provide(NodeServices.layer),
+      ),
+    );
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+          Layer.provide(prismDependencies),
+          Layer.provide(layerDependencies),
+        ),
+      ),
+    );
+    const result = yield* toolkit
+      .handle("t3_thread_launch", {
+        title: "Audit",
+        message: "Review the change",
+        prismRole: "promachos",
+      })
+      .pipe(
+        Stream.unwrap,
+        Stream.runCollect,
+        Effect.provide(Layer.mergeAll(layerDependencies, prismDependencies)),
+      );
+    expect(result.at(-1)?.result).toMatchObject({ projectId, modelSelection });
+    expect(launchedSender).toBe(sourceThreadId);
+    // Fork: a launched thread belongs to the caller's owner (toolboxmd/chromeria#170).
+    expect(launchedOwner).toBe("Pauli");
+    // Fork: an agent cannot make itself the Promachos (toolboxmd/chromeria#532).
+    expect(launchedRole).toBeUndefined();
+  }),
+);
+
+it.effect("launches a scratch thread into the Scratch project", () =>
+  Effect.gen(function* () {
+    const sourceThreadId = ThreadId.make("source-thread");
+    const scratchProjectId = ProjectId.make("project:scratch");
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const modelSelection = { instanceId: providerInstanceId, model: "gpt-5" };
+    const caller = {
+      id: sourceThreadId,
+      projectId: ProjectId.make("project:caller"),
+      providerInstanceId,
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      activeRunId: "active-run",
+      archivedAt: null,
+      deletedAt: null,
+    } as OrchestrationV2ThreadShell;
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const layerDependencies = Layer.mergeAll(
+      ServerSettings.layerTest(),
+      NodeCrypto.layer,
+      Layer.succeed(McpInvocationContext.McpInvocationContext, {
+        environmentId: EnvironmentId.make("environment"),
+        requestNamespace: "session",
+        thread: {
+          threadId: sourceThreadId,
+          providerSessionId: "session",
+          providerInstanceId,
+        },
+        client: undefined,
+        issuedAt: 0,
+        capabilities: new Set(["orchestration" as const]),
+      }),
+      Layer.mock(ThreadManagement.ThreadManagementService)({
+        getThreadShell: () => Effect.succeed(caller),
+      }),
+      Layer.mock(ThreadLaunch.ThreadLaunchService)({
+        replayOrLaunch: (_input, launch) => launch,
+        launch: (input) => {
+          launched.push(input);
+          return Effect.succeed({
+            threadId: input.threadId,
+            projection: {
+              thread: {
+                id: input.threadId,
+                projectId: input.projectId,
+                title: "New thread",
+                modelSelection,
+              },
+              runs: [],
+            },
+            resumed: false,
+          } as unknown as ThreadLaunch.ThreadLaunchResult);
+        },
+      }),
+      Layer.mock(Project.ProjectService)({}),
+      Layer.mock(PeerForwarding.PeerForwarding)({}),
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        namedProjectsRoot: "/projects",
+        ensureScratchProject: Effect.succeed({ projectId: scratchProjectId }),
+      }),
+      Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+      NodeServices.layer,
+      ServerConfig.layerTest(process.cwd(), { prefix: "t3-scratch-launch-" }).pipe(
+        Layer.provide(NodeServices.layer),
+      ),
+    );
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+          Layer.provide(prismDependencies),
+          Layer.provide(layerDependencies),
+        ),
+      ),
+    );
+    const handle = (params: Parameters<typeof toolkit.handle<"t3_thread_launch">>[1]) =>
+      toolkit
+        .handle("t3_thread_launch", params)
+        .pipe(
+          Stream.unwrap,
+          Stream.runCollect,
+          Effect.provide(Layer.mergeAll(layerDependencies, prismDependencies)),
+        );
+
+    const result = yield* handle({ title: "Notes", scratch: true, message: "Draft a list" });
+    expect(result.at(-1)?.result).toMatchObject({ projectId: scratchProjectId });
+    expect(launched.map((input) => [input.projectId, input.workspaceStrategy])).toEqual([
+      [scratchProjectId, { type: "root" }],
+    ]);
+
+    const rejected = yield* handle({
+      title: "Notes",
+      scratch: true,
+      projectId: caller.projectId,
+    });
+    expect(rejected.at(-1)?.result).toMatchObject({ code: "invalid_request" });
+    expect(launched).toHaveLength(1);
+  }),
+);
+
+it.effect("starts a project from just a title when workspaceRoot is omitted", () =>
+  Effect.gen(function* () {
+    const sourceThreadId = ThreadId.make("source-thread");
+    const createdProjectId = ProjectId.make("project:named");
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const caller = {
+      id: sourceThreadId,
+      projectId: ProjectId.make("project:caller"),
+      providerInstanceId,
+      modelSelection: { instanceId: providerInstanceId, model: "gpt-5" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      activeRunId: "active-run",
+      archivedAt: null,
+      deletedAt: null,
+    } as OrchestrationV2ThreadShell;
+    const named: Array<string> = [];
+    const registered: Array<string> = [];
+    const createdProject = {
+      id: createdProjectId,
+      title: "Pinball Stats",
+      workspaceRoot: "/projects/pinball-stats",
+      defaultModelSelection: null,
+      scripts: [],
+      createdAt: "2026-10-01T00:00:00.000Z",
+      updatedAt: "2026-10-01T00:00:00.000Z",
+      deletedAt: null,
+    };
+    const layerDependencies = Layer.mergeAll(
+      ServerSettings.layerTest(),
+      NodeCrypto.layer,
+      Layer.succeed(McpInvocationContext.McpInvocationContext, {
+        environmentId: EnvironmentId.make("environment"),
+        requestNamespace: "session",
+        thread: {
+          threadId: sourceThreadId,
+          providerSessionId: "session",
+          providerInstanceId,
+        },
+        client: undefined,
+        issuedAt: 0,
+        capabilities: new Set(["orchestration" as const]),
+      }),
+      Layer.mock(ThreadManagement.ThreadManagementService)({
+        getThreadShell: () => Effect.succeed(caller),
+      }),
+      Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
+      Layer.mock(Project.ProjectService)({
+        create: (input) =>
+          Effect.sync(() => {
+            registered.push(input.workspaceRoot);
+            return { ...createdProject, id: input.projectId, workspaceRoot: input.workspaceRoot };
+          }),
+        getById: (projectId) =>
+          Effect.succeed(
+            projectId === createdProjectId ? Option.some(createdProject) : Option.none(),
+          ),
+      }),
+      Layer.mock(PeerForwarding.PeerForwarding)({}),
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        namedProjectsRoot: "/projects",
+        createNamedProject: (input) =>
+          Effect.sync(() => {
+            named.push(input.name);
+            return {
+              projectId: createdProjectId,
+              workspaceRoot: createdProject.workspaceRoot,
+              commitError: "Git has no name or email on this machine.",
+            };
+          }),
+      }),
+      Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+      NodeServices.layer,
+      ServerConfig.layerTest(process.cwd(), { prefix: "t3-named-project-" }).pipe(
+        Layer.provide(NodeServices.layer),
+      ),
+    );
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+          Layer.provide(prismDependencies),
+          Layer.provide(layerDependencies),
+        ),
+      ),
+    );
+    const handle = (params: Parameters<typeof toolkit.handle<"t3_project_create">>[1]) =>
+      toolkit
+        .handle("t3_project_create", params)
+        .pipe(
+          Stream.unwrap,
+          Stream.runCollect,
+          Effect.provide(Layer.mergeAll(layerDependencies, prismDependencies)),
+        );
+
+    const result = yield* handle({ title: "Pinball Stats" });
+    expect(result.at(-1)?.result).toMatchObject({
+      id: createdProjectId,
+      workspaceRoot: "/projects/pinball-stats",
+      commitError: "Git has no name or email on this machine.",
+    });
+    expect(named).toEqual(["Pinball Stats"]);
+
+    yield* handle({ title: "Existing", workspaceRoot: "/work/existing" });
+    expect(registered).toEqual(["/work/existing"]);
+
+    for (const extra of [
+      { scripts: [] },
+      { defaultModelSelection: { instanceId: providerInstanceId, model: "gpt-5" } },
+    ]) {
+      const rejected = yield* handle({ title: "Configured", ...extra });
+      expect(rejected.at(-1)?.result).toMatchObject({ code: "invalid_request" });
+    }
+    expect(named).toEqual(["Pinball Stats"]);
+  }),
+);
 
 const clientLaunchHarness = (input: {
   readonly runtimeModeCeiling: RuntimeMode;
@@ -63,10 +539,27 @@ const clientLaunchHarness = (input: {
   const projectDefaults: { model: ModelSelection | null } = {
     model: input.overrideModel === undefined ? modelSelection : null,
   };
+  const launchResult = (launch: ThreadLaunch.ThreadLaunchInput) =>
+    ({
+      threadId: launch.threadId,
+      projection: {
+        thread: {
+          id: launch.threadId,
+          projectId: launch.projectId,
+          title: launch.title ?? "New thread",
+          modelSelection: launch.modelSelection,
+        },
+        runs: [],
+      },
+      resumed: false,
+    }) as unknown as ThreadLaunch.ThreadLaunchResult;
   const layerDependencies = Layer.mergeAll(
-    Layer.mock(ProviderRegistry.ProviderRegistry)({
-      getProviders: Effect.succeed(input.providers ?? []),
-    }),
+    prismDependencies,
+    input.providers === undefined
+      ? Layer.empty
+      : Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Effect.succeed(input.providers),
+        }),
     ServerSettings.layerTest({
       fallbackModelSelection: input.fallbackModel ?? null,
       ...(input.defaultRuntimeMode === undefined
@@ -111,6 +604,13 @@ const clientLaunchHarness = (input: {
       },
     }),
     Layer.mock(ThreadLaunch.ThreadLaunchService)({
+      replayOrLaunch: (request, launch) =>
+        Effect.suspend(() => {
+          const accepted = input.launched.find((entry) => entry.commandId === request.commandId);
+          if (accepted === undefined) return launch;
+          input.launched.push(accepted);
+          return Effect.succeed(launchResult(accepted));
+        }),
       checkWorktreeBase: input.checkWorktreeBase ?? (() => Effect.void),
       launch: (launch) => {
         input.launched.push(launch);
@@ -131,19 +631,7 @@ const clientLaunchHarness = (input: {
             }),
           );
         }
-        return Effect.succeed({
-          threadId: launch.threadId,
-          projection: {
-            thread: {
-              id: launch.threadId,
-              projectId: launch.projectId,
-              title: launch.title,
-              modelSelection: launch.modelSelection,
-            },
-            runs: [],
-          },
-          resumed: false,
-        } as unknown as ThreadLaunch.ThreadLaunchResult);
+        return Effect.succeed(launchResult(launch));
       },
     }),
     Layer.mock(Project.ProjectService)({
@@ -158,6 +646,7 @@ const clientLaunchHarness = (input: {
             : Option.none(),
         ),
     }),
+    Layer.mock(PeerForwarding.PeerForwarding)({}),
     Layer.mock(PeerForwarding.PeerForwarding)({}),
     Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
     DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer)),
@@ -282,7 +771,7 @@ it.effect("a launch steps an inherited mode down to the provider's, and refuses 
     const pi = ProviderInstanceId.make("pi");
     const launchPi = Effect.fn("test.launchPi")(function* (runtimeMode?: RuntimeMode) {
       const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
-      const { projectId, dependencies } = clientLaunchHarness({
+      const { projectId, dependencies: harnessDependencies } = clientLaunchHarness({
         runtimeModeCeiling: "auto",
         launched,
         providers: [
@@ -295,13 +784,19 @@ it.effect("a launch steps an inherited mode down to the provider's, and refuses 
             version: null,
             auth: { status: "authenticated" },
             checkedAt: "2026-01-01T00:00:00Z",
-            models: [],
+            models: [{ slug: "pi-model", name: "test", isCustom: false, capabilities: null }],
             slashCommands: [],
             skills: [],
             supportedRuntimeModes: ["approval-required", "auto-accept-edits", "full-access"],
           },
         ],
       });
+      const dependencies = Layer.merge(
+        harnessDependencies,
+        Layer.mock(AdapterRegistry.ProviderAdapterRegistryV2)({
+          list: () => Effect.succeed([pi]),
+        }),
+      );
       const toolkit = yield* ProjectToolkit.pipe(
         Effect.provide(
           McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
@@ -329,6 +824,42 @@ it.effect("a launch steps an inherited mode down to the provider's, and refuses 
 
     const offered = yield* launchPi("approval-required");
     expect(offered.launched[0]?.runtimeMode).toBe("approval-required");
+  }),
+);
+
+it.effect("an outside full-access client forwards bare and private HTTP MCP configuration", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const { projectId, dependencies } = clientLaunchHarness({
+      runtimeModeCeiling: "full-access",
+      launched,
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+          Layer.provide(prismDependencies),
+          Layer.provide(dependencies),
+        ),
+      ),
+    );
+    const tools = {
+      allow: ["mcp:outreach:read_venue", "mcp:outreach:submit_result"],
+      mcpServers: {
+        outreach: {
+          type: "http" as const,
+          url: "http://localhost/mcp",
+          headers: { Authorization: "test-only-generation-token" },
+        },
+      },
+    };
+    yield* toolkit
+      .handle("t3_thread_launch", { title: "Restricted venue", projectId, bare: {}, tools })
+      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+    expect(launched[0]?.bare).toEqual({});
+    expect(launched[0]?.tools).toEqual(tools);
+    expect(launched[0]?.initialMessage?.text).toBeUndefined();
+
+    expect(launched[0]?.runtimeMode).toBe("full-access");
   }),
 );
 
@@ -443,7 +974,9 @@ it.effect("a launch binds only an existing checkout that is one of the project's
       launched,
       workspaceRoot: repo,
     });
-    const git = yield* GitVcsDriver.GitVcsDriver.pipe(Effect.provide(dependencies));
+    const git = yield* GitVcsDriver.GitVcsDriver.pipe(
+      Effect.provide(Layer.mergeAll(dependencies, prismDependencies)),
+    );
     for (const args of [
       ["init", "-b", "main"],
       ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"],
@@ -453,7 +986,10 @@ it.effect("a launch binds only an existing checkout that is one of the project's
     }
     const toolkit = yield* ProjectToolkit.pipe(
       Effect.provide(
-        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+          Layer.provide(prismDependencies),
+          Layer.provide(dependencies),
+        ),
       ),
     );
     const launchInto = (worktreePath: string) =>
@@ -463,7 +999,11 @@ it.effect("a launch binds only an existing checkout that is one of the project's
           projectId,
           workspaceStrategy: { type: "existing_worktree", worktreePath },
         })
-        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+        .pipe(
+          Stream.unwrap,
+          Stream.runCollect,
+          Effect.provide(Layer.mergeAll(dependencies, prismDependencies)),
+        );
 
     expect((yield* launchInto(worktree)).at(-1)?.result).toMatchObject({ projectId });
     expect((yield* launchInto(repo)).at(-1)?.result).toMatchObject({ projectId });
@@ -585,7 +1125,14 @@ it.effect("a client launches with the fallback for an exhausted default", () =>
       version: null,
       auth: { status: "authenticated" },
       checkedAt: "2026-01-01T00:00:00Z",
-      models: [],
+      models: [
+        {
+          slug: driver === "codex" ? fallbackModel.model : "claude-opus",
+          name: "test",
+          isCustom: false,
+          capabilities: null,
+        },
+      ],
       slashCommands: [],
       skills: [],
       ...(driver === "claudeAgent"
@@ -663,4 +1210,222 @@ it.effect("deleting a project through MCP also discards its clone record", () =>
 
     expect(discarded).toEqual([harness.projectId]);
   }),
+);
+
+it.effect(
+  "launch falls through an advertised provider without an adapter, but explicit selection refuses",
+  () =>
+    Effect.gen(function* () {
+      const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+      const { projectId, dependencies } = clientLaunchHarness({
+        runtimeModeCeiling: "auto-accept-edits",
+        launched,
+      });
+      const codex = ProviderInstanceId.make("codex");
+      const claude = ProviderInstanceId.make("claude");
+      const validated: string[] = [];
+      const routing = Layer.mergeAll(
+        prismDependencies,
+        ServerSettings.layerTest({
+          prismRoles: {
+            planner: {
+              models: [
+                { instanceId: codex, model: "gpt-5" },
+                { instanceId: claude, model: "claude-opus", effort: "high" },
+              ],
+            },
+          },
+        }),
+        Layer.mock(AdapterRegistry.ProviderAdapterRegistryV2)({
+          list: () =>
+            Effect.sync(() => {
+              validated.push("lookup");
+              return [claude];
+            }),
+        }),
+      );
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(routing),
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      const handle = (params: Parameters<typeof toolkit.handle<"t3_thread_launch">>[1]) =>
+        toolkit
+          .handle("t3_thread_launch", params)
+          .pipe(
+            Stream.unwrap,
+            Stream.runCollect,
+            Effect.provide(Layer.mergeAll(dependencies, routing)),
+          );
+      const result = yield* handle({ title: "Fix", projectId, message: "Fix the bug" });
+      expect(result.at(-1)?.result).toMatchObject({
+        projectId,
+        modelSelection: {
+          instanceId: claude,
+          model: "claude-opus",
+          options: [{ id: "effort", value: "high" }],
+        },
+      });
+      expect(launched).toHaveLength(1);
+      expect(launched[0]?.runtimeMode).toBe("auto-accept-edits");
+      expect(validated.length).toBeGreaterThan(0);
+      const refused = yield* handle({
+        title: "Explicit",
+        projectId,
+        modelSelection: { instanceId: codex, model: "gpt-5" },
+      });
+      expect(refused.at(-1)?.result).toMatchObject({ code: "provider_unavailable" });
+      expect(launched).toHaveLength(1);
+    }),
+);
+
+it.effect.each(["unavailable", "missing-model", "recovered"] as const)(
+  "launch rechecks a registered stale provider before selection: %s",
+  (outcome) =>
+    Effect.gen(function* () {
+      const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+      const { projectId, dependencies } = clientLaunchHarness({
+        runtimeModeCeiling: "auto-accept-edits",
+        launched,
+      });
+      const codex = ProviderInstanceId.make("codex");
+      const claude = ProviderInstanceId.make("claude");
+      const providers = yield* ProviderRegistry.ProviderRegistry.pipe(
+        Effect.flatMap((registry) => registry.getProviders),
+        Effect.provide(prismDependencies),
+      );
+      const stale = providers.map((provider) =>
+        provider.instanceId === codex
+          ? { ...provider, availability: "unavailable" as const, models: [] }
+          : provider,
+      );
+      const refreshed = providers.map((provider) =>
+        provider.instanceId === codex
+          ? outcome === "unavailable"
+            ? stale[0]!
+            : outcome === "missing-model"
+              ? { ...provider, models: [{ ...provider.models[0]!, slug: "different-model" }] }
+              : provider
+          : provider,
+      );
+      const probes: string[] = [];
+      const routing = Layer.mergeAll(
+        prismDependencies,
+        ServerSettings.layerTest({
+          prismRoles: {
+            planner: {
+              models: [
+                { instanceId: codex, model: "gpt-5" },
+                { instanceId: claude, model: "claude-opus", effort: "high" },
+              ],
+            },
+          },
+        }),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Effect.succeed(stale),
+          refreshInstance: (instanceId) =>
+            Effect.sync(() => {
+              probes.push(instanceId);
+              return refreshed;
+            }),
+        }),
+      );
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(routing),
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      const handle = (params: Parameters<typeof toolkit.handle<"t3_thread_launch">>[1]) =>
+        toolkit
+          .handle("t3_thread_launch", params)
+          .pipe(
+            Stream.unwrap,
+            Stream.runCollect,
+            Effect.provide(Layer.mergeAll(dependencies, routing)),
+          );
+      const result = yield* handle({ title: "Fix", projectId, message: "Fix the bug" });
+      expect(probes).toEqual([codex]);
+      expect(result.at(-1)?.result).toMatchObject({
+        modelSelection:
+          outcome === "recovered"
+            ? { instanceId: codex, model: "gpt-5" }
+            : {
+                instanceId: claude,
+                model: "claude-opus",
+                options: [{ id: "effort", value: "high" }],
+              },
+      });
+      expect(launched).toHaveLength(1);
+      expect(launched[0]?.runtimeMode).toBe("auto-accept-edits");
+      if (outcome !== "recovered") {
+        const refused = yield* handle({
+          title: "Explicit",
+          projectId,
+          modelSelection: { instanceId: codex, model: "gpt-5" },
+        });
+        expect(refused.at(-1)?.result).toMatchObject({
+          code: outcome === "unavailable" ? "provider_unavailable" : "model_unavailable",
+        });
+        expect(launched).toHaveLength(1);
+        expect(probes).toEqual([codex, codex]);
+      }
+    }),
+);
+
+it.effect(
+  "reports a rejected bare addition with its reason instead of a generic orchestration error",
+  () =>
+    Effect.gen(function* () {
+      const { projectId, dependencies } = clientLaunchHarness({
+        runtimeModeCeiling: "full-access",
+        launched: [],
+      });
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(prismDependencies),
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      const result = yield* toolkit
+        .handle("t3_thread_launch", {
+          title: "Invalid bare",
+          projectId,
+          bare: { additions: [{ type: "mcp", server: "other" }] },
+        })
+        .pipe(
+          Stream.unwrap,
+          Stream.runCollect,
+          Effect.provide(
+            Layer.mergeAll(
+              dependencies,
+              Layer.mock(ThreadLaunch.ThreadLaunchService)({
+                replayOrLaunch: (_input, launch) => launch,
+                launch: () =>
+                  Effect.fail(
+                    new ThreadLaunch.ThreadLaunchError({
+                      operation: "provision-worktree",
+                      commandId: CommandId.make("invalid-bare"),
+                      projectId,
+                      cause: new BareLaunchError({
+                        reason: "Bare addition MCP other is not supported.",
+                      }),
+                    }),
+                  ),
+              }),
+            ),
+          ),
+        );
+      expect(result[0]?.encodedResult).toMatchObject({
+        code: "invalid_request",
+        message: "Bare addition MCP other is not supported.",
+      });
+    }),
 );
