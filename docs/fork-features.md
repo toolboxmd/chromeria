@@ -636,6 +636,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
   "upstreamFiles": [
     "apps/server/src/auth/RpcAuthorization.ts",
     "apps/server/src/observability/RpcInstrumentation.ts",
+    "apps/web/src/components/CommandPalette.browser.test.tsx",
     "apps/web/src/components/CommandPalette.composition.browser.test.tsx",
     "apps/web/src/components/CommandPalette.tsx",
     "apps/web/src/components/pullRequest/PullRequestListFilters.tsx",

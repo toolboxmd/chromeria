@@ -94,6 +94,7 @@ apps/web/src/branding.ts
 apps/web/src/bundledDev.test.ts
 apps/web/src/components/ChatMarkdown.tsx
 apps/web/src/components/ChatView.tsx
+apps/web/src/components/CommandPalette.browser.test.tsx
 apps/web/src/components/CommandPalette.composition.browser.test.tsx
 apps/web/src/components/CommandPalette.tsx
 apps/web/src/components/RightPanelTabs.tsx
