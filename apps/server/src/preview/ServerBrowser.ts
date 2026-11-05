@@ -551,7 +551,8 @@ const normalizeViewerInput = (raw: unknown): Record<string, unknown> | null => {
     message.action = source.action === "down" || source.action === "up" ? source.action : "move";
     try {
       const button = String(source.button);
-      message.button = ["none", "left", "middle", "right"].includes(button) ? button : "none";
+      if (["none", "left", "middle", "right"].includes(button)) message.button = button;
+      else delete message.button;
     } catch {
       return null;
     }
@@ -3772,15 +3773,40 @@ const make = Effect.gen(function* () {
       const work = (async () => {
         try {
           if (lane === "action") {
-            await tab.control.human(
-              viewer.id,
-              () => dispatchViewerInput(tab, session, viewer, message, authorize),
-              async () => {
-                await authorize();
-                assertCurrentInput();
-                await authorize();
-              },
-            );
+            const authorizeInput = async () => {
+              await authorize();
+              assertCurrentInput();
+            };
+            const dispatch = (input: Record<string, unknown>) =>
+              dispatchViewerInput(tab, session, viewer, input, authorizeInput);
+            if (
+              message.type === "mouse" &&
+              message.action === "move" &&
+              message.button === "none" &&
+              message.buttons === 0
+            ) {
+              await tab.control.humanLatest(
+                viewer.id,
+                `hover:${modifiersOf(message)}`,
+                message,
+                dispatch,
+              );
+            } else if (message.type === "wheel") {
+              // Keep reversals separate so scrolling at an edge behaves as if unmerged.
+              await tab.control.humanLatest(
+                viewer.id,
+                `wheel:${num(message.x)}:${num(message.y)}:${modifiersOf(message)}:${Math.sign(num(message.deltaX))}:${Math.sign(num(message.deltaY))}`,
+                message,
+                dispatch,
+                (waiting, next) => ({
+                  ...next,
+                  deltaX: num(waiting.deltaX) + num(next.deltaX),
+                  deltaY: num(waiting.deltaY) + num(next.deltaY),
+                }),
+              );
+            } else {
+              await tab.control.human(viewer.id, () => dispatch(message), authorizeInput);
+            }
             return;
           }
           await authorize();

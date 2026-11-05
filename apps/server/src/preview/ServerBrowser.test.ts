@@ -72,8 +72,9 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
     async connectDesktopPage(endpoint: string) {
       const context = makeContext(undefined, desktopPageUrl);
       context.page.viewportSize.mockReturnValue(null);
-      desktopConnections.push({ endpoint, context });
-      return { browser: { close: async () => {} }, page: context.page as unknown as Page };
+      const browser = { close: vi.fn(async () => {}) };
+      desktopConnections.push({ endpoint, context, browser });
+      return { browser, page: context.page as unknown as Page };
     }
     async closeContext(context: { close: () => Promise<void> }) {
       await context.close();
@@ -339,7 +340,11 @@ const desktopRenders = (tabId: string) => {
 const shownDesktopTabs = new Set<string>();
 const releasedDesktopTabs: Array<string> = [];
 const desktopTurns = new NodeEvents.EventEmitter();
-const desktopConnections: Array<{ endpoint: string; context: ReturnType<typeof makeContext> }> = [];
+const desktopConnections: Array<{
+  endpoint: string;
+  context: ReturnType<typeof makeContext>;
+  browser: { close: ReturnType<typeof vi.fn<() => Promise<void>>> };
+}> = [];
 const testThread = {
   threadId: ThreadId.make("browser-test-thread"),
   providerSessionId: "agent-a",
@@ -1282,27 +1287,27 @@ it.effect.each([
   {
     name: "hover burst before a click",
     inputs: [
-      ...Array.from({ length: 120 }, (_, x) => ({
+      ...Array.from({ length: 40 }, (_, x) => ({
         type: "mouse",
         action: "move",
         x,
         buttons: 0,
         button: "none",
       })),
-      { type: "mouse", action: "down", x: 119, buttons: 1, button: "left" },
-      { type: "mouse", action: "up", x: 119, buttons: 0, button: "left" },
+      { type: "mouse", action: "down", x: 39, buttons: 1, button: "left" },
+      { type: "mouse", action: "up", x: 39, buttons: 0, button: "left" },
     ],
     expected: [
       { type: "mouseMoved", x: -1 },
-      { type: "mouseMoved", x: 119 },
-      { type: "mousePressed", x: 119 },
-      { type: "mouseReleased", x: 119 },
+      { type: "mouseMoved", x: 39 },
+      { type: "mousePressed", x: 39 },
+      { type: "mouseReleased", x: 39 },
     ],
   },
   {
     name: "wheel burst before a click",
     inputs: [
-      ...Array.from({ length: 120 }, () => ({
+      ...Array.from({ length: 40 }, () => ({
         type: "wheel",
         x: 100,
         y: 200,
@@ -1314,7 +1319,7 @@ it.effect.each([
     ],
     expected: [
       { type: "mouseMoved", x: -1 },
-      { type: "mouseWheel", x: 100, y: 200, deltaX: 0, deltaY: 1440 },
+      { type: "mouseWheel", x: 100, y: 200, deltaX: 0, deltaY: 480 },
       { type: "mousePressed", x: 100 },
       { type: "mouseReleased", x: 100 },
     ],
@@ -1438,6 +1443,96 @@ it.effect.each([
       );
       expect(dispatched).toHaveLength(testCase.expected.length);
       expect(dispatched).toMatchObject(testCase.expected);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  { type: "mouse", action: "move", x: 7, button: "none", buttons: 0 },
+  { type: "wheel", x: 7, deltaY: 12 },
+])("fences queued coalesced $type input and releases its reservations", (input) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, tabId } = yield* ready;
+      let authorized = true;
+      const viewer = yield* browser.attachViewer({
+        ...viewerInput(tabId, true),
+        authorize: async () => {
+          if (!authorized) throw new Error("grant revoked");
+        },
+      });
+      yield* viewer.input({ type: "takeControl" });
+      const session = contexts[0]!.sessions.at(-1)!;
+      const send = session.send.getMockImplementation()!;
+      const started = Promise.withResolvers<void>();
+      const finish = Promise.withResolvers<void>();
+      yield* Effect.addFinalizer(() => Effect.sync(() => finish.resolve()));
+      session.send.mockClear();
+      session.send.mockImplementationOnce(async (method, payload) => {
+        started.resolve();
+        await finish.promise;
+        return send(method, payload);
+      });
+      const running = yield* viewer
+        .input({ type: "text", text: "running" })
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      yield* Effect.promise(() => started.promise);
+      const waiting = yield* Effect.forEach(Array.from({ length: 63 }), () =>
+        viewer.input(input).pipe(Effect.forkScoped({ startImmediately: true })),
+      );
+      expect(yield* viewer.input(input).pipe(Effect.flip)).toMatchObject({
+        _tag: "BrowserInputOverloaded",
+      });
+      authorized = false;
+      finish.resolve();
+      yield* Effect.forEach([running, ...waiting], Fiber.join);
+      expect(session.send.mock.calls.filter(([method]) => method.startsWith("Input."))).toEqual([
+        ["Input.insertText", { text: "running" }],
+      ]);
+      authorized = true;
+      yield* viewer.input(input);
+      expect(session.send).toHaveBeenCalledWith(
+        "Input.dispatchMouseEvent",
+        expect.objectContaining({ x: 7 }),
+      );
+
+      session.send.mockClear();
+      const blocked = Promise.withResolvers<void>();
+      const unblock = Promise.withResolvers<void>();
+      yield* Effect.addFinalizer(() => Effect.sync(() => unblock.resolve()));
+      session.send.mockImplementationOnce(async (method, payload) => {
+        blocked.resolve();
+        await unblock.promise;
+        return send(method, payload);
+      });
+      const active = yield* viewer
+        .input({ type: "text", text: "active" })
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      yield* Effect.promise(() => blocked.promise);
+      const stale = yield* viewer.input(input).pipe(Effect.forkScoped({ startImmediately: true }));
+      yield* Queue.clear(viewer.output);
+      const released = yield* viewer
+        .input({ type: "releaseControl" })
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      const releasedControl = yield* Queue.take(viewer.output);
+      expect(releasedControl).toMatchObject({ _tag: "control", controller: "agent" });
+      const retaken = yield* viewer
+        .input({ type: "takeControl" })
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      expect(yield* Queue.take(viewer.output)).toMatchObject({
+        _tag: "control",
+        controller: "you",
+      });
+      unblock.resolve();
+      yield* Effect.forEach([active, stale, released, retaken], Fiber.join);
+      expect(session.send.mock.calls.filter(([method]) => method.startsWith("Input."))).toEqual([
+        ["Input.insertText", { text: "active" }],
+      ]);
+      yield* viewer.input(input);
+      expect(session.send).toHaveBeenCalledWith(
+        "Input.dispatchMouseEvent",
+        expect.objectContaining({ x: 7 }),
+      );
     }),
   ).pipe(Effect.provide(layer)),
 );
@@ -2631,6 +2726,49 @@ it.live.each([
       expect(status.tabs).toHaveLength(limit);
     }),
   ).pipe(Effect.provide(layer)),
+);
+
+it.effect.each(["desktop", "context", "cdp"] as const)(
+  "authorization refusal after acquiring $0 cleans up unpublished tab resources",
+  (stage) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const browser = yield* ServerBrowser.ServerBrowser;
+        const manager = yield* Manager.PreviewManager;
+        const refused = Promise.withResolvers<void>();
+        desktopRendersNext = stage === "desktop";
+        const snapshot = yield* manager.open({
+          threadId: scope.thread.threadId,
+          runtime: "server",
+          ...(stage === "desktop" ? {} : { profileId: "incognito" }),
+          authorize: async () => {
+            const acquired = stage === "desktop"
+              ? desktopConnections.length > 0
+              : stage === "context"
+                ? contexts.length > 0
+                : (contexts.at(-1)?.sessions.length ?? 0) > 0;
+            if (acquired) {
+              refused.resolve();
+              throw new Error("setup grant revoked");
+            }
+          },
+        });
+        yield* Effect.promise(() => refused.promise);
+        expect(yield* browser.attachViewer(viewerInput(snapshot.tabId, false)).pipe(Effect.result)).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "ServerBrowserLaunchError" },
+        });
+        if (stage === "desktop") {
+          expect(desktopConnections[0]!.browser.close).toHaveBeenCalledOnce();
+          expect(releasedDesktopTabs).toContain(snapshot.tabId);
+        } else {
+          const context = contexts.at(-1)!;
+          expect(context.close).toHaveBeenCalledOnce();
+          expect(context.page.isClosed()).toBe(true);
+          if (stage === "cdp") expect(context.sessions[0]!.detach).toHaveBeenCalledOnce();
+        }
+      }),
+    ).pipe(Effect.provide(layer)),
 );
 
 it.live("failed session and browser launches release capacity, as does closing a tab", () =>
