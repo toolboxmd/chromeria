@@ -701,11 +701,10 @@ it.effect("normal native forks retain ContextMD accounting", () =>
 it.effect("bare native fork refuses a source that becomes busy before delivery", () =>
   Effect.gen(function* () {
     const h = harness({ fork: "after-carrier", sourceBusy: true });
-    yield* h.start;
-    expect(h.projection().runs.at(-1)?.status).toBe("failed");
-    expect(h.projection().turnItems.at(-1)).toMatchObject({
-      type: "error",
-      failure: { message: expect.stringContaining("will not substitute") },
+    const error = yield* h.start.pipe(Effect.flip);
+    expect(error).toMatchObject({
+      _tag: "ProviderTurnStartError",
+      cause: expect.stringContaining("will not substitute"),
     });
     expect(h.ensure).not.toHaveBeenCalled();
     expect(h.delivered).toEqual([]);
