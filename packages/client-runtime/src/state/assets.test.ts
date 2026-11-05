@@ -8,7 +8,6 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
@@ -455,7 +454,7 @@ it.effect.each(["cookie", "bearer", "cookie-download", "bearer-download"] as con
             ...AVAILABLE_CONNECTION_STATE,
             phase: "connected" as const,
           }),
-          session: yield* SubscriptionRef.make(Option.some({ client } as RpcSession)),
+          session: yield* SubscriptionRef.make(Option.some({ client } as RpcSession.RpcSession)),
           prepared: yield* SubscriptionRef.make(Option.some(prepared)),
           connect: Effect.void,
           disconnect: Effect.void,

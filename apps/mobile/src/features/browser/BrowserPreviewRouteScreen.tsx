@@ -130,7 +130,6 @@ function QualifiedBrowserPreviewScreen({
     <View className="flex-1 bg-sheet">
       <AppBar
         title="Browser"
-        sidebar={false}
         onBack={onClose}
         options={{ headerBackVisible: false }}
         actions={

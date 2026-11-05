@@ -34,8 +34,6 @@ export interface RelayDiscoveredEnvironment {
 
 export interface RelayEnvironmentDiscoveryState {
   readonly environments: ReadonlyMap<string, RelayDiscoveredEnvironment>;
-  // Only a loaded account list distinguishes a missing registration from an unknown one.
-  readonly listed: boolean;
   /** A complete account listing, tied to the session that obtained it. */
   readonly listedSession: Option.Option<ClientCapabilities.CloudSessionIdentity>;
   readonly refreshing: boolean;
@@ -53,7 +51,6 @@ export class RelayEnvironmentDiscovery extends Context.Service<
 
 export const EMPTY_RELAY_ENVIRONMENT_DISCOVERY_STATE: RelayEnvironmentDiscoveryState = {
   environments: new Map(),
-  listed: false,
   listedSession: Option.none(),
   refreshing: false,
   offline: false,
@@ -67,7 +64,7 @@ export function relayEnvironmentRegistration(
   environmentId: string,
 ): RelayEnvironmentRegistration {
   if (state.environments.has(environmentId)) return "registered";
-  return state.listed ? "unregistered" : "unknown";
+  return Option.isSome(state.listedSession) ? "unregistered" : "unknown";
 }
 
 function validateStatus(
@@ -232,7 +229,6 @@ export const make = Effect.fn("RelayEnvironmentDiscovery.make")(function* () {
       yield* Ref.set(refreshGeneration, generation);
       yield* SubscriptionRef.set(state, {
         environments: new Map(),
-        listed: false,
         listedSession: Option.none(),
         refreshing: true,
         offline: false,
@@ -297,7 +293,6 @@ export const make = Effect.fn("RelayEnvironmentDiscovery.make")(function* () {
       yield* SubscriptionRef.update(state, (current) => ({
         ...current,
         environments: next,
-        listed: true,
         listedSession: listingSession,
       }));
 

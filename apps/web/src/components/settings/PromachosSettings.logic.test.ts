@@ -63,6 +63,8 @@ const group = {
   displayName: "Home",
   memberProjects: [member],
   memberProjectRefs: [{ environmentId, projectId }],
+  pinned: false,
+  archived: false,
   groupedProjectCount: 1,
   environmentPresence: "remote-only" as const,
   allRemoteMembersAreDesktopLocal: false,

@@ -2,7 +2,7 @@ import { ORCHESTRATION_PROTOCOL_VERSION, type AuthRenewalLocalRecord } from "@t3
 import { renewalCommitment } from "@t3tools/shared/sessionRenewal";
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -47,11 +47,8 @@ function fixture(reply: (body: { secret: string; next: string }) => Response) {
     return Promise.resolve(reply(body));
   });
   const crypto = Layer.succeed(
-    Crypto.Crypto,
-    Crypto.make({
-      randomBytes: (size) => new Uint8Array(size).fill(++counter),
-      digest: (_algorithm, data) => Effect.succeed(data),
-    }),
+    SecureRandom.SecureRandom,
+    SecureRandom.make((size) => new Uint8Array(size).fill(++counter)),
   );
   const layer = Renewal.layer.pipe(Layer.provide(Layer.mergeAll(storage, http, crypto)));
   return { layer, requests, read: () => record };

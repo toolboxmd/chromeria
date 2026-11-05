@@ -1,3 +1,4 @@
+import { pullRequestAutolinkPlugins } from "../pullRequest/pullRequestMarkdown.logic";
 import { useAtomValue } from "@effect/atom-react";
 import type {
   EnvironmentId,
@@ -85,12 +86,12 @@ export function IssueDetailPanel({
 }) {
   const result = useIssueDetail(environmentId, reference);
   const detail = AsyncResult.isSuccess(result) ? result.value : null;
-  // Issues are GitHub's, so GitHub's reference autolinks resolve against the Issue's repository.
-  const findAutolinks = sourceControlClients.get("github").referenceAutolinks;
-  const repositoryUrl = `https://${reference.host}/${reference.repository}`;
   const markdownContext = {
-    autolinks:
-      findAutolinks === undefined ? null : (text: string) => findAutolinks(text, repositoryUrl),
+    remarkPlugins: pullRequestAutolinkPlugins({
+      provider: "github",
+      url: `https://${reference.host}/${reference.repository}/issues/${reference.number}`,
+    }),
+    lineBreaks: sourceControlClients.get("github").hardLineBreaks ?? false,
     threadRef: null,
   };
   return (

@@ -306,7 +306,7 @@ describe("RpcSessionFactory", () => {
 
       expect(yield* session.initialConfig).toEqual(config);
     }),
-);
+  );
 
   it.effect.each(["Bearer", "Dpop"] as const)(
     "scopes the desktop lifecycle hook to a ready authenticated %s connection",

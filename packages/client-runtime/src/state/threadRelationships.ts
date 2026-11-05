@@ -160,7 +160,17 @@ export function deriveThreadRelationshipGraph(input: {
   };
 
   const selectedThread = input.projection?.thread;
-  const lineageThreads = selectedThread !== undefined && !threadsByKey.has(threadRelationshipNodeKey(selectedThread.id)) ? [...threads, { shell: { ...selectedThread, activityRunStatus: null, status: null }, environmentId: null }] : threads;
+  const lineageThreads =
+    selectedThread !== undefined &&
+    !threadsByKey.has(threadRelationshipNodeKey(selectedThread.id, null))
+      ? [
+          ...threads,
+          {
+            shell: { ...selectedThread, activityRunStatus: null, status: null },
+            environmentId: null,
+          },
+        ]
+      : threads;
   for (const { shell: thread, environmentId } of lineageThreads) {
     const parentThreadId =
       thread.forkedFrom?.type === "run"

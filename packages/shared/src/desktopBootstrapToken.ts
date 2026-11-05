@@ -13,14 +13,24 @@ function windowIndex(nowMs: number): number {
 
 type DesktopBootstrapPurpose = "client" | "cookie-mirror";
 // Untraced: an inner step of the named callers below, run up to three times per check.
-const deriveToken = Effect.fnUntraced(function* (secret: string, window: number, purpose: DesktopBootstrapPurpose) {
+const deriveToken = Effect.fnUntraced(function* (
+  secret: string,
+  window: number,
+  purpose: DesktopBootstrapPurpose,
+) {
   const mac = yield* Mac.Mac;
   const key = yield* Mac.key(Mac.hmacSha256, utf8(secret));
-  return Hex.encode(yield* mac.sign(key, utf8(`t3-desktop-bootstrap:${purpose === "client" ? "" : `${purpose}:`}${window}`)));
+  return Hex.encode(
+    yield* mac.sign(
+      key,
+      utf8(`t3-desktop-bootstrap:${purpose === "client" ? "" : `${purpose}:`}${window}`),
+    ),
+  );
 }, Effect.orDie);
 
 export const currentDesktopBootstrapToken = Effect.fn("desktopBootstrapToken.current")(
-  (secret: string, nowMs: number, purpose: DesktopBootstrapPurpose = "client") => deriveToken(secret, windowIndex(nowMs), purpose),
+  (secret: string, nowMs: number, purpose: DesktopBootstrapPurpose = "client") =>
+    deriveToken(secret, windowIndex(nowMs), purpose),
 );
 
 export const isValidDesktopBootstrapToken = Effect.fn("desktopBootstrapToken.isValid")(function* (
@@ -32,7 +42,8 @@ export const isValidDesktopBootstrapToken = Effect.fn("desktopBootstrapToken.isV
   const presented = utf8(token);
   const current = windowIndex(nowMs);
   for (const window of [current - 1, current, current + 1]) {
-    if (Mac.timingSafeEqual(utf8(yield* deriveToken(secret, window, purpose)), presented)) return true;
+    if (Mac.timingSafeEqual(utf8(yield* deriveToken(secret, window, purpose)), presented))
+      return true;
   }
   return false;
 });

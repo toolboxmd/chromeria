@@ -8,7 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { UsersIcon } from "lucide-react";
 
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 
 import { runtime } from "../../lib/runtime";
@@ -85,8 +85,8 @@ export function ThreadSharingControl({
             if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
             void runtime
               .runPromise(
-                Crypto.Crypto.pipe(
-                  Effect.flatMap((crypto) => crypto.randomUUIDv4()),
+                SecureRandom.SecureRandom.pipe(
+                  Effect.flatMap((crypto) => crypto.uuidV4()),
                   Effect.orDie,
                 ),
               )

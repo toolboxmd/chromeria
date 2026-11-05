@@ -264,8 +264,6 @@ export function createAssetEnvironmentAtoms<R, E>(
   const execute = Effect.fn("assets.createUrl")(function* (input: AssetCreateUrlInput) {
     const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
     const result = yield* mint(supervisor.target.environmentId, input).pipe(Effect.result);
-    if (Result.isSuccess(result)) return result.success;
-    const error = result.failure;
     const resource = input.resource;
     if (Result.isSuccess(result)) {
       if (resource._tag !== "peer-attachment" && resource._tag !== "native-browser-download")

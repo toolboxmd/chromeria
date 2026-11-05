@@ -1,3 +1,4 @@
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import type { ThreadListV2ListItem } from "../threads/threadListV2";
 import { RegistryContext } from "@effect/atom-react";
 import {
@@ -26,7 +27,7 @@ const state = vi.hoisted(() => ({
   selected: [] as string[],
 }));
 
-vi.mock("expo-crypto", () => ({ randomUUID: () => globalThis.crypto.randomUUID() }));
+vi.mock("expo-crypto", () => ({ randomUUID: () => SecureRandom.uuidV4Unsafe() }));
 vi.mock("expo", () => ({ requireOptionalNativeModule: () => null }));
 vi.mock("expo-blur", () => ({ BlurView: () => null }));
 vi.mock("expo-constants", () => ({ default: { expoConfig: { extra: {} } } }));
@@ -178,6 +179,7 @@ vi.mock("../../state/threads", async () => {
     startOpeningEnvironmentThread: () => {},
     environmentThreadShells: createEnvironmentThreadShellAtoms({
       snapshotAtom: snapshots,
+      hiddenThreadTagsAtom: Atom.family(() => Atom.make<ReadonlyArray<string> | null>([])),
       catalogValueAtom: Atom.make({
         isReady: true,
         entries: new Map(

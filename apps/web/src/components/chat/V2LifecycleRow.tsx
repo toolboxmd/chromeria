@@ -358,9 +358,11 @@ export function SubagentNotificationLink(props: {
     environmentThreadDetails.threadAtom(props.parentRef),
     (thread) =>
       thread?.projection.subagents.find((agent) =>
-        props.subagentId !== undefined ? agent.id === props.subagentId : props.taskIds === undefined
-          ? agent.childThreadId === props.childThreadId
-          : props.taskIds.includes(agent.id),
+        props.subagentId !== undefined
+          ? agent.id === props.subagentId
+          : props.taskIds === undefined
+            ? agent.childThreadId === props.childThreadId
+            : props.taskIds.includes(agent.id),
       ) ?? null,
   );
   const target = agent === null ? null : subagentChildTarget(agent);

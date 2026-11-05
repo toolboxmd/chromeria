@@ -93,7 +93,6 @@ export function useThreadListV2(input: {
       computeThreadMoveAvailability({
         allThreads: navigationThreads,
         section,
-        projects: input.projects,
         pendingOrder: input.pendingOrder,
         reorderableEnvironmentIds:
           section === "pinned" ? input.pinReorderEnvironmentIds : input.activeReorderEnvironmentIds,
@@ -113,8 +112,7 @@ export function useThreadListV2(input: {
     ]);
   }, [
     threads,
-    input.projects,
-    input.noProjectShelfExpanded,
+    navigationThreads,
     input.pendingOrder,
     input.pinReorderEnvironmentIds,
     input.activeReorderEnvironmentIds,
@@ -145,9 +143,11 @@ export function useThreadListV2(input: {
     () =>
       buildThreadListV2Items({
         pendingOrder: input.pendingOrder,
-        projects: input.projects,
         noProjectShelfExpanded: input.noProjectShelfExpanded,
-        threads: input.searchQuery.trim().length === 0 ? navigationThreads : threads.filter((thread) => isThreadVisibleInNavigation(thread, input.searchQuery)),
+        threads:
+          input.searchQuery.trim().length === 0
+            ? navigationThreads
+            : threads.filter((thread) => isThreadVisibleInNavigation(thread, input.searchQuery)),
         environmentId: input.environmentId,
         projectRefs: input.projectRefs,
         searchQuery: input.searchQuery,
@@ -178,9 +178,8 @@ export function useThreadListV2(input: {
         ),
       }),
     [
-      input.projects,
-    input.noProjectShelfExpanded,
-    input.pendingOrder,
+      input.noProjectShelfExpanded,
+      input.pendingOrder,
       threads,
       navigationThreads,
       input.environmentId,
@@ -193,8 +192,6 @@ export function useThreadListV2(input: {
       input.settledLimit,
       layoutTime,
       workingShelfEnabled,
-      input.noProjectShelfExpanded,
-      input.searchQuery,
       input.workingShelfExpanded,
       inbox.returnedAt,
       inbox.isWorking,

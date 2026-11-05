@@ -21,12 +21,12 @@ const make = Effect.gen(function* () {
       Effect.flatMap((raw) =>
         raw === null
           ? Effect.succeed(null)
-          : Schema.decodeUnknownEffect(schema)(raw).pipe(Effect.mapError(failure)),
+          : Schema.decodeEffect(schema)(raw).pipe(Effect.mapError(failure)),
       ),
     );
   return RenewalRecordStore.RenewalRecordStore.of({
     read,
-    compareAndSet: (key, revision, value) =>
+    compareAndSet: Effect.fn("RenewalRecordStore.compareAndSet")((key, revision, value) =>
       lock.withPermit(
         Effect.gen(function* () {
           const old = yield* read(key);
@@ -39,6 +39,7 @@ const make = Effect.gen(function* () {
           return true;
         }),
       ),
+    ),
   });
 });
 export const layer = Layer.effect(RenewalRecordStore.RenewalRecordStore, make);

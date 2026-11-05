@@ -71,13 +71,13 @@ export function startThreadNotifications(
 ): () => void {
   const pending = new Map<
     string,
-    { environmentId: EnvironmentId; threadId: ThreadId; notification: Notification }
+    { environmentId: EnvironmentId; threadId: ThreadId | null; notification: Notification }
   >();
   const watched = new Map<EnvironmentId, WatchedEnvironment>();
 
   const trackNotification = (
     environmentId: EnvironmentId,
-    threadId: ThreadId,
+    threadId: ThreadId | null,
     notification: Notification,
   ) => {
     pending.get(notification.tag)?.notification.close();
@@ -106,7 +106,11 @@ export function startThreadNotifications(
     }
     const count = pending.size;
     for (const [tag, entry] of pending) {
-      if (!shouldClose(threadKey(entry))) continue;
+      if (
+        entry.threadId === null ||
+        !shouldClose(threadKey({ environmentId: entry.environmentId, threadId: entry.threadId }))
+      )
+        continue;
       entry.notification.close();
       pending.delete(tag);
     }
@@ -340,7 +344,7 @@ export function startThreadNotifications(
           ...getClientSettings(),
           open: () =>
             void router.navigate({ to: "/settings/scheduled-tasks", search: { environmentId } }),
-          onNotification: trackNotification,
+          onNotification: (id, notification) => trackNotification(id, null, notification),
         });
       },
       { immediate: true },

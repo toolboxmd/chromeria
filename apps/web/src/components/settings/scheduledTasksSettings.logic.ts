@@ -252,13 +252,21 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     title: task.title,
     prompt: task.prompt,
     enabled: task.enabled,
-    scheduleMode: isForkScheduledTaskSchedule(schedule) ? "preserved" : schedule.type === "fixed_time" ? "fixed" : schedule.type,
+    scheduleMode: isForkScheduledTaskSchedule(schedule)
+      ? "preserved"
+      : schedule.type === "fixed_time"
+        ? "fixed"
+        : schedule.type,
     preservedSchedule: isForkScheduledTaskSchedule(schedule) ? schedule : null,
     intervalMinutes:
       schedule.type === "interval" ? String(Math.max(1, schedule.everyMs / 60_000)) : "15",
     timeOfDay: schedule.type === "fixed_time" ? schedule.timeOfDay : "09:00",
-    runAt: schedule.type === "once" ? toDateTimeLocalValue(new Date(schedule.runAt)) : "",
-    savedRunAt: schedule.type === "once" ? schedule.runAt : "",
+    runAt:
+      schedule.type === "once"
+        ? toDateTimeLocalValue(new Date("runAt" in schedule ? schedule.runAt : schedule.at))
+        : "",
+    savedRunAt:
+      schedule.type === "once" ? ("runAt" in schedule ? schedule.runAt : schedule.at) : "",
     weekdays,
     projectId: task.projectId,
     threadId: task.threadId ?? "",

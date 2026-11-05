@@ -41,6 +41,9 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
   const environmentIds = new Set([environmentId, otherEnvironmentId]);
   const input: Parameters<typeof useThreadListV2>[0] = {
     threads,
+    navigationThreads: threads,
+    projects: [],
+    noProjectShelfExpanded: false,
     pendingTasks: [],
     environmentId: null,
     projectRefs: null,

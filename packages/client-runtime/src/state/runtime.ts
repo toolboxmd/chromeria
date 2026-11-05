@@ -538,20 +538,17 @@ const refreshOnSignalWhileRead =
 
 const refreshEveryUntilFinal =
   <V>(intervalMs: number, isFinal: (value: V) => boolean) =>
-  <A extends V>(self: Atom.Atom<A>): Atom.Atom<A> =>
-    Atom.transform(
+  <A extends V>(self: Atom.Atom<A>): Atom.Atom<A> => {
+    const refreshing = Atom.withRefresh(self, intervalMs);
+    return Atom.transform(
       self,
       (get) => {
         const value = get(self);
-        if (!isFinal(value)) {
-          // @effect-diagnostics-next-line globalTimers:off - Mirrors `Atom.withRefresh`, outside an Effect runtime.
-          const handle = setTimeout(() => get.refresh(self), intervalMs);
-          get.addFinalizer(() => clearTimeout(handle));
-        }
-        return value;
+        return isFinal(value) ? value : get(refreshing);
       },
       { initialValueTarget: self },
     );
+  };
 /**
  * Fork (toolboxmd/t3code#52): an atom never observes its own cancellation, so an interrupt-only
  * failure is the server's. A read that joins a shared lookup another request's cancellation is
@@ -721,17 +718,17 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
               return Option.isSome(session)
                 ? retryInterruptedRead(
                     runInEnvironment(
-                    target.environmentId,
-                    options
-                      .execute(
-                        target.input,
-                        emit,
-                        Option.flatMap(
-                          get.self<AsyncResult.AsyncResult<A, unknown>>(),
-                          AsyncResult.value,
-                        ),
-                      )
-                      .pipe(pendingOnceSessionReplaced(session.value)),
+                      target.environmentId,
+                      options
+                        .execute(
+                          target.input,
+                          emit,
+                          Option.flatMap(
+                            get.self<AsyncResult.AsyncResult<A, unknown>>(),
+                            AsyncResult.value,
+                          ),
+                        )
+                        .pipe(pendingOnceSessionReplaced(session.value)),
                     ),
                   )
                 : Effect.never;

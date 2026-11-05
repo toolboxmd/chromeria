@@ -16,7 +16,11 @@ const subscribe = (listener: () => void) => {
 };
 vi.mock(import("~/state/device"), async (original) => ({
   ...(await original()),
-  useDeviceState: () => useSyncExternalStore(subscribe, () => fixture.snapshot),
+  useDeviceState: () => ({
+    ...useSyncExternalStore(subscribe, () => fixture.snapshot),
+    error: null,
+    refresh: fixture.command,
+  }),
 }));
 vi.mock(import("~/state/use-atom-command"), async (original) => ({
   ...(await original()),

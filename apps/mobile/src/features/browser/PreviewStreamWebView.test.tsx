@@ -1,3 +1,4 @@
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import { act, useEffect, useImperativeHandle, type ReactNode, type Ref } from "react";
 import { createRoot } from "react-dom/client";
 import type { WebViewMessageEvent, WebViewProps } from "react-native-webview";
@@ -70,7 +71,7 @@ vi.mock("expo-clipboard", () => ({ setStringAsync: async () => {} }));
 vi.mock("expo", () => ({ requireOptionalNativeModule: () => null }));
 vi.mock("expo-constants", () => ({ default: { expoConfig: { extra: {} } } }));
 vi.mock("expo-crypto", () => ({
-  randomUUID: () => globalThis.crypto.randomUUID(),
+  randomUUID: () => SecureRandom.uuidV4Unsafe(),
   getRandomBytes: (length: number) => globalThis.crypto.getRandomValues(new Uint8Array(length)),
 }));
 vi.mock("expo-device", () => ({ modelName: null, osName: null, osVersion: null }));

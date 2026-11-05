@@ -20,7 +20,6 @@ import * as Connectivity from "../connection/connectivity.ts";
 import { ConnectionBlockedError, type NetworkStatus } from "../connection/model.ts";
 import * as ConnectionWakeups from "../connection/wakeups.ts";
 import * as RelayEnvironmentDiscovery from "./discovery.ts";
-import { AtomRegistry } from "effect/reactivity";
 import { deregisterManagedRelayEnvironment, setManagedRelaySession } from "./managedRelayState.ts";
 import { NETWORK_BLOCKING_HINT } from "../errors/network.ts";
 import { createRelayEnvironmentDiscoveryAtoms } from "../state/relayDiscovery.ts";

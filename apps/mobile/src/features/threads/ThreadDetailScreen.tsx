@@ -1774,18 +1774,19 @@ function ThreadDetailBody(
                       thread={props.selectedThread}
                       environmentId={props.environmentId}
                     />
-                  {props.selectedThread.transportRecovery && waitsForTransportRetry(props.selectedThread) ? (
-                    <View className="mx-3 mb-2 rounded-xl border border-warning-foreground/25 bg-screen p-3">
-                      <Text accessibilityRole="alert" className="text-sm text-warning-foreground">
-                        {`Waiting to retry the connection. Next retry ${new Date(props.selectedThread.transportRecovery.retryAt).toLocaleString()}. Send a message or press Stop to cancel.`}
-                      </Text>
-                      <RetryStopButton
-                        label="Stop retrying"
-                        disabled={!props.canOperateThread}
-                        onPress={props.onStopThread}
-                      />
-                    </View>
-                  ) : null}
+                    {props.selectedThread.transportRecovery &&
+                    waitsForTransportRetry(props.selectedThread) ? (
+                      <View className="mx-3 mb-2 rounded-xl border border-warning-foreground/25 bg-screen p-3">
+                        <Text accessibilityRole="alert" className="text-sm text-warning-foreground">
+                          {`Waiting to retry the connection. Next retry ${new Date(props.selectedThread.transportRecovery.retryAt).toLocaleString()}. Send a message or press Stop to cancel.`}
+                        </Text>
+                        <RetryStopButton
+                          label="Stop retrying"
+                          disabled={!props.canOperateThread}
+                          onPress={props.onStopThread}
+                        />
+                      </View>
+                    ) : null}
                     <ChildThreadApprovals
                       threadRef={props.selectedThreadDetailRef}
                       maxHeight={pendingUserInputMaxHeight}

@@ -174,6 +174,8 @@ it("shows a child delegated to a linked environment and opens it there", async (
     <ThreadRelationshipsPanel
       environmentId={EnvironmentId.make("test")}
       threadId={ThreadId.make("parent")}
+      showLineage={true}
+      showSideChats={true}
     />,
   );
   const text = container.textContent!.replace(/\s+/g, " ");

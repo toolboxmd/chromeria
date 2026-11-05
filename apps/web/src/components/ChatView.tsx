@@ -3156,7 +3156,10 @@ export default function ChatView(props: ChatViewProps) {
         !serverProjection?.messages.some((committed) => committed.id === message.id),
     );
   const scrollToEndSummary =
-    [childInputNow?.waitingLabel ?? null, queuedRunCount === 0 ? null : `${queuedRunCount} queued`]
+    [
+      childInputNow && "waitingLabel" in childInputNow ? childInputNow.waitingLabel : null,
+      queuedRunCount === 0 ? null : `${queuedRunCount} queued`,
+    ]
       .filter((part) => part !== null)
       .join(" · ") || null;
   // The end of the timeline holds the thread's present and next turns: what it is doing now,
@@ -3458,12 +3461,12 @@ export default function ChatView(props: ChatViewProps) {
                   respondingRequestIds={respondingRequestIds}
                   onRespondToApproval={onRespondToApprovalStable}
                   canOperateThread={canOperateThread}
-                {...(promachosChat
-                  ? {
-                      presentation: "promachos" as const,
-                      onInlineCardHost: promachosCardHost.timelineHostRef,
-                    }
-                  : {})}
+                  {...(promachosChat
+                    ? {
+                        presentation: "promachos" as const,
+                        onInlineCardHost: promachosCardHost.timelineHostRef,
+                      }
+                    : {})}
                   threadDetailRef={routeThreadDetailRef}
                   entriesInput={timelineEntriesInput}
                   draftEntries={isServerThread ? null : draftTimelineEntries}
@@ -3915,7 +3918,6 @@ export default function ChatView(props: ChatViewProps) {
                 <ThreadDetailsPanel
                   anchor={threadPanelPopoverAnchorRef}
                   handle={threadPanelPopoverHandle}
-                  onPresentationChange={setThreadPanelPresentation}
                   forceNewWorktree={multipleModelSelections !== null}
                   environmentId={activeThread.environmentId}
                   threadId={activeThread.id}

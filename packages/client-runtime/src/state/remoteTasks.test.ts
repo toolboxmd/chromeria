@@ -1,3 +1,4 @@
+import { BearerConnectionTarget } from "../connection/model.ts";
 import { expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import {
@@ -133,7 +134,11 @@ it.effect(
           },
         } as unknown as RpcSession;
         const supervisor = {
-          target: { environmentId: source, label: "A" },
+          target: BearerConnectionTarget.make({
+            environmentId: source,
+            label: "A",
+            connectionId: "source-link",
+          }),
           state: yield* SubscriptionRef.make({
             ...AVAILABLE_CONNECTION_STATE,
             desired: true,

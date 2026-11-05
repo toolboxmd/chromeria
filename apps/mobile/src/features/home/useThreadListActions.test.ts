@@ -84,26 +84,27 @@ vi.mock("../../state/atom-registry", () => ({
           ? state.dropBusy
           : atom === "thread-shells"
             ? state.shells
-            : atom === "projects" ? state.projects
-            : atom === "queued-thread-keys"
-              ? new Set<string>()
-              : new Map(
-                  [...state.scopes.keys()].map((environmentId) => [
-                    environmentId,
-                    {
-                      environment: {
-                        capabilities: {
-                          threadSettlement: true,
-                          threadSnooze: true,
-                          threadPinning: true,
-                          threadPinReorder: true,
-                          threadActiveReorder: true,
-                          threadTitleRegeneration: true,
+            : atom === "projects"
+              ? state.projects
+              : atom === "queued-thread-keys"
+                ? new Set<string>()
+                : new Map(
+                    [...state.scopes.keys()].map((environmentId) => [
+                      environmentId,
+                      {
+                        environment: {
+                          capabilities: {
+                            threadSettlement: true,
+                            threadSnooze: true,
+                            threadPinning: true,
+                            threadPinReorder: true,
+                            threadActiveReorder: true,
+                            threadTitleRegeneration: true,
+                          },
                         },
                       },
-                    },
-                  ]),
-                ),
+                    ]),
+                  ),
   },
 }));
 vi.mock("../../state/use-atom-command", () => ({

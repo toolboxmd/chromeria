@@ -306,7 +306,10 @@ it.each([false, true])(
     expect(TestNotification.sent.map(({ title }) => title)).toEqual(["Thread completed"]);
   },
 );
-vi.mock(import("../state/query"), async (original) => ({ ...(await original()), useEnvironmentQuery: (() => ({ data: null })) as never }));
+vi.mock(import("../state/query"), async (original) => ({
+  ...(await original()),
+  useEnvironmentQuery: (() => ({ data: null })) as never,
+}));
 const commandTask = (failureStreak: number) => ({
   id: "backup",
   title: "Nightly backup",

@@ -307,7 +307,8 @@ const ONCE_FORMATTER = new Intl.DateTimeFormat(undefined, {
 
 export function scheduleLabel(schedule: ScheduledTaskSchedule): string {
   if (schedule.type === "webhook") return "On webhook";
-  if (schedule.type === "once") return `Once, ${ONCE_FORMATTER.format(new Date(schedule.runAt))}`;
+  if (schedule.type === "once")
+    return `Once, ${ONCE_FORMATTER.format(new Date("runAt" in schedule ? schedule.runAt : schedule.at))}`;
   if (isForkScheduledTaskSchedule(schedule)) return ScheduledTaskFork.forkScheduleLabel(schedule);
   if (schedule.type === "interval") {
     const minutes = schedule.everyMs / 60_000;
@@ -1701,8 +1702,8 @@ function ScheduledTaskEditorForm({
             ) : null}
             {/* A disabled task still saves, so keep its fields reachable for fixing. */}
             {draft.scheduleMode === "preserved" ? null : draft.scheduleMode === "webhook" &&
-            webhookDenial !== undefined &&
-            draft.enabled ? null : draft.scheduleMode === "webhook" ? (
+              webhookDenial !== undefined &&
+              draft.enabled ? null : draft.scheduleMode === "webhook" ? (
               <div className="space-y-4">
                 <WebhookEndpointField environmentId={environmentId} task={liveTask} />
                 <p className="text-xs text-muted-foreground">

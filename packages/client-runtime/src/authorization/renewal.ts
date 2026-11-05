@@ -9,7 +9,7 @@ import {
 import { renewalCommitment } from "@t3tools/shared/sessionRenewal";
 import * as Base64Url from "effect/encoding/Base64Url";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -27,7 +27,7 @@ export class RenewalRejected extends Schema.TaggedError<RenewalRejected>()("Rene
 export type RenewalOutcome =
   | { readonly _tag: "Renewed"; readonly result: AuthSessionRenewResult }
   | { readonly _tag: "NotEnrolled" | "Pending" | "Unsupported" };
-type Slot = typeof AuthRenewalLocalSlot.Type;
+type Slot = AuthRenewalLocalSlot;
 
 export class SessionRenewal extends Context.Service<
   SessionRenewal,
@@ -72,7 +72,7 @@ const transient = (_cause: unknown) =>
 const make = Effect.fn("renewal.make")(function* (allowLegacyEnrollment: boolean) {
   const httpClient = yield* HttpClient.HttpClient;
   const store = yield* RenewalRecords.RenewalRecordStore;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* SecureRandom.SecureRandom;
   const scope = yield* Scope.Scope;
   const randomSecret = crypto
     .randomBytes(32)
@@ -97,7 +97,7 @@ const make = Effect.fn("renewal.make")(function* (allowLegacyEnrollment: boolean
   const stage: SessionRenewal["Service"]["stage"] = Effect.fn("SessionRenewal.stage")(
     function* (input) {
       const secret = yield* randomSecret;
-      const epoch = yield* crypto.randomUUIDv4().pipe(Effect.mapError(transient));
+      const epoch = yield* crypto.uuidV4().pipe(Effect.mapError(transient));
       const slot: Slot = {
         epoch,
         environmentId: input.environmentId,

@@ -108,7 +108,6 @@ function resolveThreadAwarenessPhaseV2(
   }
   if (thread.remotePendingRequest === "approval") return "waiting_for_approval";
   if (thread.remotePendingRequest === "user_input") return "waiting_for_input";
-  switch (runStatus) {
   switch (thread.activityRunStatus ?? thread.status) {
     case "preparing":
     case "starting":

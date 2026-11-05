@@ -84,8 +84,8 @@ export type ScheduledTaskForkSchedule =
 
 export const isForkScheduledTaskSchedule = <S extends { readonly type: string }>(
   schedule: S,
-): schedule is Extract<S, { readonly type: ScheduledTaskForkSchedule["type"] }> =>
-  schedule.type === "once" || schedule.type === "weekly";
+): schedule is S & ScheduledTaskForkSchedule =>
+  (schedule.type === "once" && "at" in schedule) || schedule.type === "weekly";
 
 export const ScheduledTaskRunStage = Schema.Literals([
   "running",

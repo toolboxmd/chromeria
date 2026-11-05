@@ -14,7 +14,7 @@ import { SessionRenewal } from "@t3tools/client-runtime/authorization";
 import { createBrowserHistory } from "@tanstack/react-router";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Layer from "effect/Layer";
 import { ConnectionTransientError, RenewalRecordStore } from "@t3tools/client-runtime/connection";
 import { layerRemoteHttpClient } from "@t3tools/client-runtime/rpc";
@@ -236,11 +236,8 @@ describe("resolveInitialServerAuthGateState", () => {
         );
       });
       const crypto = Layer.succeed(
-        Crypto.Crypto,
-        Crypto.make({
-          randomBytes: (size) => new Uint8Array(size).fill(1),
-          digest: (_algorithm, data) => Effect.succeed(data),
-        }),
+        SecureRandom.SecureRandom,
+        SecureRandom.make((size) => new Uint8Array(size).fill(1)),
       );
       const testApi = await installAuthApi({
         renewalLayer: SessionRenewal.layer.pipe(

@@ -1206,7 +1206,10 @@ export function createDeviceStreamClient(
     ws.onopen = () => {
       if (stopped || socket !== ws) return;
       if (!inputOnly) connecting();
-      events.onInputConnected(access.canOperate !== false, access.canOperate === false ? "View only" : undefined);
+      events.onInputConnected(
+        access.canOperate !== false,
+        access.canOperate === false ? "View only" : undefined,
+      );
     };
     ws.onmessage = (event) => {
       if (stopped || socket !== ws || inputOnly) return;

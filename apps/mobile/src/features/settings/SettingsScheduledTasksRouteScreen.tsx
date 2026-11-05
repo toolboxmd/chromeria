@@ -116,10 +116,11 @@ const DAYS = [
 function describeSchedule(task: ScheduledTask): string {
   if (task.schedule.type === "webhook") return "On webhook";
   if (task.schedule.type === "once") {
-    const runAt = new Date(task.schedule.runAt);
+    const runAt = new Date("runAt" in task.schedule ? task.schedule.runAt : task.schedule.at);
     return `Once, ${formatRunAtDate(runAt)} at ${formatRunAtTime(runAt)}`;
   }
-  if (isForkScheduledTaskSchedule(task.schedule)) return ScheduledTaskFork.forkScheduleLabel(task.schedule);
+  if (isForkScheduledTaskSchedule(task.schedule))
+    return ScheduledTaskFork.forkScheduleLabel(task.schedule);
   if (task.schedule.type === "interval") return formatScheduledTaskInterval(task.schedule.everyMs);
   const days = task.schedule.weekdays?.length ? repeatLabel(task.schedule.weekdays) : "Every day";
   return `${days} at ${formatTime(task.schedule.timeOfDay)}`;

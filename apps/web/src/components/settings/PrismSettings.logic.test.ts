@@ -150,6 +150,8 @@ describe("Prism role preferences", () => {
       displayName: "Project",
       memberProjects: [member],
       memberProjectRefs: [{ environmentId: env.environmentId, projectId }],
+      pinned: false,
+      archived: false,
       groupedProjectCount: 1,
       environmentPresence: "remote-only" as const,
       allRemoteMembersAreDesktopLocal: false,

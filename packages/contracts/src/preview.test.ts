@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { EnvironmentId, ThreadId } from "./baseSchemas.ts";
 import {
+  PreviewAutomationUploadInput,
   PreviewAutomationHost,
   PreviewAutomationInvalidSelectorError,
   PreviewAutomationStatus,
@@ -155,6 +156,7 @@ describe("native viewer scalar domains", () => {
       expect(() =>
         decode({ type: "wheel", x: 0, y: 0, deltaX, deltaY: 0, modifiers: 0 }),
       ).toThrow();
+  });
 });
 
 describe("PreviewAutomationInvalidSelectorError", () => {

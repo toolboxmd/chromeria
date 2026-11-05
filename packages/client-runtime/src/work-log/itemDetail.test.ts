@@ -7,7 +7,12 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-import { turnItemHasDetail, isJsonToolText, turnItemOutputImages, turnItemOutputText } from "./itemDetail.ts";
+import {
+  turnItemHasDetail,
+  isJsonToolText,
+  turnItemOutputImages,
+  turnItemOutputText,
+} from "./itemDetail.ts";
 
 describe("isJsonToolText", () => {
   it.each([
