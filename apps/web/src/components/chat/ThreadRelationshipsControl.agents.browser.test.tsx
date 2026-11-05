@@ -191,6 +191,7 @@ it("shows a child delegated to a linked environment and opens it there", async (
   const rowButton = buttons().find((button) => button.textContent?.includes("Remote roast thread"));
   expect(rowButton).toBeDefined();
   expect(rowButton!.disabled).toBe(false);
+  expect(rowButton!.getAttribute("aria-disabled")).toBeNull();
   await click(rowButton!);
   expect(state.navigate).toHaveBeenCalledWith({
     to: "/$environmentId/$threadId",
@@ -205,7 +206,8 @@ it("shows a child delegated to a linked environment and opens it there", async (
     button.textContent?.includes("Remote roast thread"),
   );
   expect(disabledRowButton).toBeDefined();
-  expect(disabledRowButton!.disabled).toBe(true);
+  expect(disabledRowButton!.disabled).toBe(false);
+  expect(disabledRowButton!.getAttribute("aria-disabled")).toBe("true");
   await click(disabledRowButton!);
   expect(state.navigate).not.toHaveBeenCalled();
 
@@ -215,6 +217,7 @@ it("shows a child delegated to a linked environment and opens it there", async (
     button.textContent?.includes("Remote roast thread"),
   )!;
   expect(enabledRowButton.disabled).toBe(false);
+  expect(enabledRowButton.getAttribute("aria-disabled")).toBeNull();
   await click(enabledRowButton);
   expect(state.navigate).toHaveBeenCalledExactlyOnceWith({
     to: "/$environmentId/$threadId",
@@ -227,7 +230,8 @@ it("shows a child delegated to a linked environment and opens it there", async (
   const disconnectedRowButton = buttons().find((button) =>
     button.textContent?.includes("Remote roast thread"),
   )!;
-  expect(disconnectedRowButton.disabled).toBe(true);
+  expect(disconnectedRowButton.disabled).toBe(false);
+  expect(disconnectedRowButton.getAttribute("aria-disabled")).toBe("true");
   await click(disconnectedRowButton);
   expect(state.navigate).not.toHaveBeenCalled();
 });
