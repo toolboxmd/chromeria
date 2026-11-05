@@ -2826,6 +2826,10 @@ export const activate = Effect.fn("PeerAuthority.activate")(function* (
         Stream.runHead,
         Effect.flatMap(Effect.fromOption),
       );
+  const preparedRun = (yield* node.threads.getThreadRecords(threadId, ["runs"])).runs.find(
+    (candidate) => candidate.id === run.id,
+  );
+  if (!preparedRun) return yield* Effect.die("Expected the prepared launch run");
   const now = yield* DateTime.now;
   const root = NodeId.make(`fixture-root:${run.id}`);
   yield* node.sink.write({
@@ -2865,7 +2869,7 @@ export const activate = Effect.fn("PeerAuthority.activate")(function* (
         nodeId: root,
         providerInstanceId: instanceId,
         occurredAt: now,
-        payload: { ...run, rootNodeId: root, status: "running", startedAt: now },
+        payload: { ...preparedRun, rootNodeId: root, status: "running", startedAt: now },
       },
     ],
   });
