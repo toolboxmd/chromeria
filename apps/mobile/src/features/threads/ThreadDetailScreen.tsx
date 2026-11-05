@@ -11,7 +11,6 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import * as Dialog from "../../components/ui/Dialog";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button as RetryStopButton } from "../../components/ui/Button";
-import { ThreadExecutionPurposeControl } from "./ThreadExecutionPurposeControl";
 import { resourcesFromToolItem, type ToolResource } from "@t3tools/shared/toolOutput";
 import { useRefreshAssetUrl } from "../../state/assets";
 import { downloadAndShareAttachment } from "../../lib/attachmentDownload";
@@ -1951,16 +1950,6 @@ function ThreadDetailBody(
                     </View>
                   ) : (
                     <>
-                      {!props.draftMode &&
-                      props.serverConfig?.environment.capabilities.executionPurposeVersions?.includes(
-                        1,
-                      ) === true ? (
-                        <ThreadExecutionPurposeControl
-                          thread={props.selectedThread}
-                          threadRef={props.selectedThreadDetailRef}
-                          disabled={!props.canOperateThread}
-                        />
-                      ) : null}
                       <ThreadComposer
                         isDraft={Boolean(props.draftMode)}
                         canOperateThread={props.canOperateThread}

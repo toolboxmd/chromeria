@@ -15,8 +15,7 @@ import { AppBar } from "../../components/ui/AppBar";
 import { ThreadId } from "@t3tools/contracts";
 
 import * as Dialog from "../../components/ui/Dialog";
-import { ExecutionPurposePicker } from "./ExecutionPurposePicker";
-import { savedPurposeIntentForScope, type ExecutionPurposeScope } from "@t3tools/contracts";
+import { savedPurposeIntentForScope } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
@@ -396,15 +395,6 @@ export function NewTaskDraftScreen(props: {
     props.incomingShareId,
     requestedInitialProjectAvailable,
   ]);
-  const [purposeScope, setPurposeScope] = useState<ExecutionPurposeScope>({
-    type: "unscoped",
-    reason: "deliberate",
-  });
-  const [purposeDraftSourceId, setPurposeDraftSourceId] = useState(flow.draftKey);
-  if (purposeDraftSourceId !== flow.draftKey) {
-    setPurposeDraftSourceId(flow.draftKey);
-    setPurposeScope({ type: "unscoped", reason: "deliberate" });
-  }
   const supportsExecutionPurpose =
     selectedEnvironmentServerConfig?.environment.capabilities.executionPurposeVersions?.includes(
       1,
@@ -672,7 +662,9 @@ export function NewTaskDraftScreen(props: {
       enqueueThreadOutboxMessage({
         ...message,
         ...(supportsExecutionPurpose
-          ? { purposeIntent: savedPurposeIntentForScope(purposeScope) }
+          ? {
+              purposeIntent: savedPurposeIntentForScope({ type: "unscoped", reason: "deliberate" }),
+            }
           : {}),
       }),
     );
@@ -926,13 +918,6 @@ export function NewTaskDraftScreen(props: {
           content: heroViewport,
           controls: (
             <View className="pb-1">
-              {supportsExecutionPurpose ? (
-                <ExecutionPurposePicker
-                  scope={purposeScope}
-                  onChange={setPurposeScope}
-                  disabled={isComposerInteractionLocked}
-                />
-              ) : null}
               {projectClone && projectClone.phase !== "done" && selectedProject ? (
                 <View className="px-1 pb-2">
                   <ProjectCloneBanner
