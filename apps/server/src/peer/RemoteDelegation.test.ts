@@ -1597,9 +1597,12 @@ it.effect.each(["target", "environmentId"] as const)(
           status: "completed",
           summary: "All 412 tests pass on the box.",
         });
-        // Delivery validation still reads messages; choosing the observer does not need another read.
+        // Delivery validation and observer selection must read only the named messages.
         expect(messageReads.some((query) => /\bmessage_id\s+IN\b/i.test(query))).toBe(true);
-        expect(messageReads.filter((query) => !/\bmessage_id\s*(?:IN\b|=)/i.test(query)), JSON.stringify(messageReads)).toHaveLength(1);
+        expect(
+          messageReads.filter((query) => !/\bmessage_id\s*(?:IN\b|=)/i.test(query)),
+          JSON.stringify(messageReads),
+        ).toHaveLength(0);
         const acknowledged = yield* a.projections.getThreadRecords(parentThreadId, ["subagents"], {
           subagentIds: [delegated.taskId],
         });
