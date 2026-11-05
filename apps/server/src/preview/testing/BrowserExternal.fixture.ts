@@ -207,7 +207,7 @@ export function makeExternalBrowserFileChooser<
 >(onFiles: (paths: ReadonlyArray<T>) => Promise<void>, multiple = false) {
   const calls: Array<ReadonlyArray<T>> = [];
   const chooser = {
-    element: () => ({ getAttribute: async () => "" }),
+    element: () => ({ getAttribute: async () => "", evaluate: async () => true }),
     isMultiple: () => multiple,
     setFiles: async (paths: ReadonlyArray<T>) => {
       calls.push(paths);
