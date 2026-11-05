@@ -1679,7 +1679,9 @@ export const layer = Layer.effect(
                             : undefined),
                       ),
                     }
-                  : input.schedule;
+                  : input.schedule.type === "once" && "runAt" in input.schedule
+                    ? { type: "once", runAt: iso(DateTime.makeUnsafe(input.schedule.runAt)) }
+                    : input.schedule;
               yield* requireFutureOnce({ enabled: input.enabled, schedule }, now, id);
               const webhook =
                 input.schedule.type === "webhook"
