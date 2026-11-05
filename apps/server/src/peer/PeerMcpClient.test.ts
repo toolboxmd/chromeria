@@ -1,3 +1,7 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import { EnvironmentId } from "@t3tools/contracts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import { NodeHttpServer } from "@effect/platform-node";
 import { expect, it } from "@effect/vitest";
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
@@ -24,11 +28,15 @@ const toolkit = Toolkit.make(
   Tool.make("probe", {
     description: "Returns this request's mode limits.",
     success: Result,
+    failure: OrchestratorMcpFailure,
+    failureMode: "return",
     dependencies: [McpInvocationContext.McpInvocationContext],
   }),
   Tool.make("hold", {
     description: "Holds a tool request open.",
     success: Result,
+    failure: OrchestratorMcpFailure,
+    failureMode: "return",
     dependencies: [McpInvocationContext.McpInvocationContext],
   }),
   Tool.make("refuse", {
@@ -44,28 +52,74 @@ const refusal = new OrchestratorMcpFailure({
   message: "Thread thread-gone was not found.",
 });
 
-it.effect.each([false, true])(
-  "reuses an initialized session before its first call finishes (cancelled: %s)",
-  (cancelFirst) =>
+it.layer(NodeCrypto.layer)("peer MCP client", (it) => {
+  it.effect.each([false, true])(
+    "reuses an initialized session before its first call finishes (cancelled: %s)",
+    (cancelFirst) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const entered = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const modes = McpInvocationContext.McpInvocationContext.pipe(
+            Effect.map((scope) => {
+              const ceiling = McpInvocationContext.clientModeCeiling(scope.client);
+              return { modes: `${ceiling.runtimeMode}/${ceiling.interactionMode}` };
+            }),
+          );
+          const handlers = McpToolAccess.toLayer(toolkit, {
+            probe: McpToolAccess.reads(() => modes),
+            refuse: McpToolAccess.reads(() => Effect.fail(refusal)),
+            hold: McpToolAccess.reads(() =>
+              Deferred.succeed(entered, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+                Effect.andThen(modes),
+              ),
+            ),
+          });
+          const box = descriptorOf("environment-box", "Box");
+          const b = yield* servePeer(box, McpHttpServer.toolkitRegistration(toolkit, handlers));
+          const context = yield* Layer.build(
+            layerLinkingEnvironment(descriptorOf("environment-a", "A")),
+          );
+          const links = Context.get(context, PeerLinks.PeerLinks);
+          const client = Context.get(context, PeerMcpClient.PeerMcpClient);
+          yield* linkTo(links, b);
+          const held = yield* client
+            .call({
+              environmentId: box.environmentId,
+              tool: "hold",
+              arguments: {},
+              limits: { runtimeMode: "full-access", interactionMode: "default" },
+              success: Result,
+            })
+            .pipe(Effect.forkScoped);
+          yield* Deferred.await(entered);
+          if (cancelFirst) yield* Fiber.interrupt(held);
+          const before = (yield* Ref.get(b.bearers)).length;
+          expect(
+            yield* client.call({
+              environmentId: box.environmentId,
+              tool: "probe",
+              arguments: {},
+              limits: { runtimeMode: "approval-required", interactionMode: "plan" },
+              success: Result,
+            }),
+          ).toEqual({ modes: "approval-required/plan" });
+          // One tool POST; no second initialize or initialized notification.
+          expect((yield* Ref.get(b.bearers)).length - before).toBe(1);
+          yield* Deferred.succeed(release, undefined);
+          if (!cancelFirst) expect(yield* Fiber.join(held)).toEqual({ modes: "auto/default" });
+        }),
+      ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("keeps a link healthy when the peer refuses a call", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const entered = yield* Deferred.make<void>();
-        const release = yield* Deferred.make<void>();
-        const modes = McpInvocationContext.McpInvocationContext.pipe(
-          Effect.map((scope) => {
-            const ceiling = McpInvocationContext.clientModeCeiling(scope.client);
-            return { modes: `${ceiling.runtimeMode}/${ceiling.interactionMode}` };
-          }),
-        );
         const handlers = McpToolAccess.toLayer(toolkit, {
-          probe: McpToolAccess.reads(() => modes),
+          probe: McpToolAccess.reads(() => Effect.succeed({ modes: "" })),
+          hold: McpToolAccess.reads(() => Effect.succeed({ modes: "" })),
           refuse: McpToolAccess.reads(() => Effect.fail(refusal)),
-          hold: McpToolAccess.reads(() =>
-            Deferred.succeed(entered, undefined).pipe(
-              Effect.andThen(Deferred.await(release)),
-              Effect.andThen(modes),
-            ),
-          ),
         });
         const box = descriptorOf("environment-box", "Box");
         const b = yield* servePeer(box, McpHttpServer.toolkitRegistration(toolkit, handlers));
@@ -75,18 +129,91 @@ it.effect.each([false, true])(
         const links = Context.get(context, PeerLinks.PeerLinks);
         const client = Context.get(context, PeerMcpClient.PeerMcpClient);
         yield* linkTo(links, b);
-        const held = yield* client
+        yield* links.recordOutcome(box.environmentId, { error: "earlier outage" });
+        const refused = yield* client
           .call({
             environmentId: box.environmentId,
-            tool: "hold",
+            tool: "refuse",
             arguments: {},
             limits: { runtimeMode: "full-access", interactionMode: "default" },
             success: Result,
           })
-          .pipe(Effect.forkScoped);
-        yield* Deferred.await(entered);
-        if (cancelFirst) yield* Fiber.interrupt(held);
-        const before = (yield* Ref.get(b.bearers)).length;
+          .pipe(Effect.flip);
+        // The agent hears the peer's own refusal; the link answered, so it is not failing.
+        expect(refused).toMatchObject({ code: refusal.code, message: refusal.message });
+        const link = yield* links.get(box.environmentId);
+        expect(link._tag === "Some" ? link.value.lastError : "missing").toBeNull();
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("renews a missing peer session once and reuses its replacement", () =>
+    Effect.gen(function* () {
+      const sessionHeaders: Array<string | undefined> = [];
+      const statuses = [200, 202, 404, 200, 202, 200, 200, 200];
+      const outcomes: Array<string | null> = [];
+      const http = HttpClient.make((request) =>
+        Effect.sync(() => {
+          const index = sessionHeaders.length;
+          sessionHeaders.push(request.headers["mcp-session-id"]);
+          const status = statuses[index];
+          if (status === undefined) throw new Error("Unexpected retry");
+          return HttpClientResponse.fromWeb(
+            request,
+            new Response(
+              index === 7
+                ? "{}"
+                : index >= 5
+                  ? JSON.stringify({
+                      result: {
+                        content: [{ type: "text", text: '{"modes":"approval-required/plan"}' }],
+                      },
+                    })
+                  : "",
+              {
+                status,
+                headers:
+                  index === 0
+                    ? { "mcp-session-id": "old" }
+                    : index === 3
+                      ? { "mcp-session-id": "renewed" }
+                      : {},
+              },
+            ),
+          );
+        }),
+      );
+      const box = descriptorOf("environment-box", "Box");
+      const context = yield* Layer.build(
+        PeerMcpClient.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.succeed(HttpClient.HttpClient, http),
+              Layer.mock(PeerLinks.PeerLinks)({
+                resolve: () =>
+                  Effect.succeed({
+                    link: {
+                      environmentId: box.environmentId,
+                      launchIdentity: "fixture-link-generation",
+                      label: box.label,
+                      urls: ["https://peer.example"],
+                      access: "auto",
+                      linkedAt: DateTime.makeUnsafe(0),
+                      expiresAt: DateTime.makeUnsafe(1),
+                      lastReachedAt: null,
+                      lastError: null,
+                    },
+                    url: "https://peer.example",
+                    token: "fixture",
+                  }),
+                recordOutcome: (_, outcome) => Effect.sync(() => outcomes.push(outcome.error)),
+              }),
+            ),
+          ),
+        ),
+      );
+      const client = Context.get(context, PeerMcpClient.PeerMcpClient);
+      for (let call = 0; call < 2; call++) {
         expect(
           yield* client.call({
             environmentId: box.environmentId,
@@ -96,144 +223,156 @@ it.effect.each([false, true])(
             success: Result,
           }),
         ).toEqual({ modes: "approval-required/plan" });
-        // One tool POST; no second initialize or initialized notification.
-        expect((yield* Ref.get(b.bearers)).length - before).toBe(1);
-        yield* Deferred.succeed(release, undefined);
-        if (!cancelFirst) expect(yield* Fiber.join(held)).toEqual({ modes: "auto/default" });
-      }),
-    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
-);
-
-it.effect("keeps a link healthy when the peer refuses a call", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const handlers = McpToolAccess.toLayer(toolkit, {
-        probe: McpToolAccess.reads(() => Effect.succeed({ modes: "" })),
-        hold: McpToolAccess.reads(() => Effect.succeed({ modes: "" })),
-        refuse: McpToolAccess.reads(() => Effect.fail(refusal)),
-      });
-      const box = descriptorOf("environment-box", "Box");
-      const b = yield* servePeer(box, McpHttpServer.toolkitRegistration(toolkit, handlers));
-      const context = yield* Layer.build(
-        layerLinkingEnvironment(descriptorOf("environment-a", "A")),
-      );
-      const links = Context.get(context, PeerLinks.PeerLinks);
-      const client = Context.get(context, PeerMcpClient.PeerMcpClient);
-      yield* linkTo(links, b);
-      yield* links.recordOutcome(box.environmentId, { error: "earlier outage" });
-      const refused = yield* client
+      }
+      // An answer with neither a result nor an error is the link's problem, not the call's.
+      const empty = yield* client
         .call({
-          environmentId: box.environmentId,
-          tool: "refuse",
-          arguments: {},
-          limits: { runtimeMode: "full-access", interactionMode: "default" },
-          success: Result,
-        })
-        .pipe(Effect.flip);
-      // The agent hears the peer's own refusal; the link answered, so it is not failing.
-      expect(refused).toMatchObject({ code: refusal.code, message: refusal.message });
-      const link = yield* links.get(box.environmentId);
-      expect(link._tag === "Some" ? link.value.lastError : "missing").toBeNull();
-    }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
-);
-
-it.effect("renews a missing peer session once and reuses its replacement", () =>
-  Effect.gen(function* () {
-    const sessionHeaders: Array<string | undefined> = [];
-    const statuses = [200, 202, 404, 200, 202, 200, 200, 200];
-    const outcomes: Array<string | null> = [];
-    const http = HttpClient.make((request) =>
-      Effect.sync(() => {
-        const index = sessionHeaders.length;
-        sessionHeaders.push(request.headers["mcp-session-id"]);
-        const status = statuses[index];
-        if (status === undefined) throw new Error("Unexpected retry");
-        return HttpClientResponse.fromWeb(
-          request,
-          new Response(
-            index === 7
-              ? "{}"
-              : index >= 5
-                ? JSON.stringify({
-                    result: {
-                      content: [{ type: "text", text: '{"modes":"approval-required/plan"}' }],
-                    },
-                  })
-                : "",
-            {
-              status,
-              headers:
-                index === 0
-                  ? { "mcp-session-id": "old" }
-                  : index === 3
-                    ? { "mcp-session-id": "renewed" }
-                    : {},
-            },
-          ),
-        );
-      }),
-    );
-    const box = descriptorOf("environment-box", "Box");
-    const context = yield* Layer.build(
-      PeerMcpClient.layer.pipe(
-        Layer.provide(
-          Layer.mergeAll(
-            Layer.succeed(HttpClient.HttpClient, http),
-            Layer.mock(PeerLinks.PeerLinks)({
-              resolve: () =>
-                Effect.succeed({
-                  link: {
-                    environmentId: box.environmentId,
-                    label: box.label,
-                    urls: ["https://peer.example"],
-                    access: "auto",
-                    linkedAt: DateTime.makeUnsafe(0),
-                    expiresAt: DateTime.makeUnsafe(1),
-                    lastReachedAt: null,
-                    lastError: null,
-                  },
-                  url: "https://peer.example",
-                  token: "fixture",
-                }),
-              recordOutcome: (_, outcome) => Effect.sync(() => outcomes.push(outcome.error)),
-            }),
-          ),
-        ),
-      ),
-    );
-    const client = Context.get(context, PeerMcpClient.PeerMcpClient);
-    for (let call = 0; call < 2; call++) {
-      expect(
-        yield* client.call({
           environmentId: box.environmentId,
           tool: "probe",
           arguments: {},
           limits: { runtimeMode: "approval-required", interactionMode: "plan" },
           success: Result,
+        })
+        .pipe(Effect.flip);
+      expect(outcomes).toEqual([null, null, empty.message]);
+      expect(sessionHeaders).toEqual([
+        undefined,
+        "old",
+        "old",
+        undefined,
+        "renewed",
+        "renewed",
+        "renewed",
+        "renewed",
+      ]);
+    }).pipe(Effect.scoped),
+  );
+
+  const here = descriptorOf("environment-here", "Here");
+  const peer = EnvironmentId.make("environment-peer");
+  const linkedAt = DateTime.makeUnsafe("2026-10-20T00:00:00.000Z");
+  const link = {
+    environmentId: peer,
+    label: "Peer",
+    urls: ["https://peer.test"],
+    access: "full-access" as const,
+    linkedAt,
+    expiresAt: DateTime.makeUnsafe("2036-10-20T00:00:00.000Z"),
+    lastReachedAt: null,
+    lastError: null,
+    launchIdentity: "generation",
+  };
+
+  // The services the server runtime owns and the client reads optionally.
+  const runtime = Layer.mergeAll(
+    Layer.succeed(ServerEnvironment.ServerEnvironment, {
+      getEnvironmentId: Effect.succeed(here.environmentId),
+      getDescriptor: Effect.succeed(here),
+    }),
+    Layer.mock(Threads.ThreadManagementService)({}),
+  );
+
+  it.effect("delegation over the server runtime names this environment to the peer", () =>
+    Effect.gen(function* () {
+      const requests: Array<string> = [];
+      const services = yield* PeerMcpClient.layerOver(runtime).pipe(
+        Layer.provide(
+          Layer.mock(PeerLinks.PeerLinks)({
+            resolve: () => Effect.succeed({ link, url: "https://peer.test", token: "token" }),
+            get: () => Effect.succeedSome(link),
+            recordOutcome: () => Effect.void,
+          }),
+        ),
+        Layer.provide(
+          Layer.succeed(
+            HttpClient.HttpClient,
+            HttpClient.make((request) => {
+              requests.push(request.url);
+              return Effect.succeed(
+                HttpClientResponse.fromWeb(request, new Response('{"version":1}', { status: 200 })),
+              );
+            }),
+          ),
+        ),
+        Layer.provide(NodeCrypto.layer),
+        Layer.build,
+      );
+      const peers = Context.get(services, PeerMcpClient.PeerMcpClient);
+
+      // The first call `delegate_task` makes to a linked environment.
+      yield* peers.requireTaskLifecycle!(peer, "generation");
+
+      expect(requests).toEqual(["https://peer.test/mcp/peer-control/tasks"]);
+      requests.length = 0;
+      const refused = yield* peers
+        .call({
+          environmentId: peer,
+          expectedLinkIdentity: "replaced-generation",
+          tool: "t3_thread_launch",
+          arguments: {},
+          limits: { runtimeMode: "full-access", interactionMode: "default" },
+          success: Schema.Struct({}),
+        })
+        .pipe(Effect.flip);
+      expect(refused.code).toBe("capability_denied");
+      expect(requests).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect.each(["structured", "legacy", "invalid"] as const)(
+    "decodes %s tool replies while keeping presentation text separate",
+    (kind) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const response = {
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: kind !== "structured" ? '{"answer":42}' : "Peer image result.",
+                },
+              ],
+              ...(kind === "legacy"
+                ? {}
+                : { structuredContent: { answer: kind === "invalid" ? "wrong" : 42 } }),
+            },
+          };
+          const services = yield* PeerMcpClient.layerOver(runtime).pipe(
+            Layer.provide(
+              Layer.mock(PeerLinks.PeerLinks)({
+                resolve: () => Effect.succeed({ link, url: "https://peer.test", token: "token" }),
+                recordOutcome: () => Effect.void,
+              }),
+            ),
+            Layer.provide(
+              Layer.succeed(
+                HttpClient.HttpClient,
+                HttpClient.make((request) =>
+                  Effect.succeed(
+                    HttpClientResponse.fromWeb(
+                      request,
+                      Response.json(response, { headers: { "mcp-session-id": "fixture-session" } }),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Layer.provide(NodeCrypto.layer),
+            Layer.build,
+          );
+          const result = yield* Context.get(services, PeerMcpClient.PeerMcpClient)
+            .call({
+              environmentId: peer,
+              tool: "read_fixture",
+              arguments: {},
+              limits: { runtimeMode: "full-access", interactionMode: "default" },
+              success: replySchema,
+            })
+            .pipe(Effect.result);
+          if (kind === "invalid") expect(result._tag).toBe("Failure");
+          else expect(result).toMatchObject({ _tag: "Success", success: { answer: 42 } });
         }),
-      ).toEqual({ modes: "approval-required/plan" });
-    }
-    // An answer with neither a result nor an error is the link's problem, not the call's.
-    const empty = yield* client
-      .call({
-        environmentId: box.environmentId,
-        tool: "probe",
-        arguments: {},
-        limits: { runtimeMode: "approval-required", interactionMode: "plan" },
-        success: Result,
-      })
-      .pipe(Effect.flip);
-    expect(outcomes).toEqual([null, null, empty.message]);
-    expect(sessionHeaders).toEqual([
-      undefined,
-      "old",
-      "old",
-      undefined,
-      "renewed",
-      "renewed",
-      "renewed",
-      "renewed",
-    ]);
-  }).pipe(Effect.scoped),
-);
+      ),
+  );
+  const replySchema = Schema.Struct({ answer: Schema.Number });
+});

@@ -13,9 +13,10 @@ import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import { TestClock } from "effect/testing";
 
+import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
-import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProjectService from "./ProjectService.ts";
 import * as ProjectSetupScriptRunner from "./ProjectSetupScriptRunner.ts";
 
@@ -41,6 +42,7 @@ const makeHarness = Effect.fn(function* (options: {
   readonly history?: string;
   readonly opening?: Deferred.Deferred<void>;
   readonly shell?: string | null;
+  readonly getThreadShell?: ProjectionStore.ProjectionStoreV2["Service"]["getThreadShell"];
 }) {
   const listeners = new Set<(event: TerminalEvent) => Effect.Effect<void>>();
   const writes = yield* Queue.unbounded<string>();
@@ -69,7 +71,7 @@ const makeHarness = Effect.fn(function* (options: {
         terminals,
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
-          getThreadShell: () => Effect.succeed(null),
+          getThreadShell: options.getThreadShell ?? (() => Effect.succeed(null)),
         }),
         ServerSettings.layerTest(),
         NodeCrypto.layer,
@@ -119,6 +121,28 @@ describe("ProjectSetupScriptRunner", () => {
         shell: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
       });
       expect(yield* Queue.take(writes)).toContain("$global:LASTEXITCODE");
+    }),
+  );
+
+  // Fork: the project's own script never runs for work a linked environment started.
+  it.effect("skips a linked environment's thread and refuses one whose origin cannot be read", () =>
+    Effect.gen(function* () {
+      const linked = yield* makeHarness({
+        getThreadShell: (id) =>
+          Effect.succeed({
+            ...liveThreadShell(id),
+            linkOrigin: { sessionId: "s", label: "Laptop" },
+          }),
+      });
+      expect(yield* linked.start).toEqual({ status: "skipped-for-link" });
+      expect(yield* Queue.size(linked.writes)).toBe(0);
+      const unread = yield* makeHarness({
+        getThreadShell: (id) =>
+          Effect.fail(new ProjectionStore.ProjectionStoreReadError({ threadId: id })),
+      });
+      const error = yield* unread.start.pipe(Effect.flip);
+      expect(error._tag).toBe("ProjectSetupScriptOperationError");
+      expect(yield* Queue.size(unread.writes)).toBe(0);
     }),
   );
 

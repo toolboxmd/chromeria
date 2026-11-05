@@ -5,6 +5,7 @@ import {
   shouldShowInstanceBadge,
 } from "@t3tools/client-runtime/state/provider-instance-display";
 import { resolveSubagentMetadata } from "@t3tools/client-runtime/state/subagent-display";
+import { subagentChildTarget } from "@t3tools/client-runtime/state/thread-relationships";
 import type { EnvironmentId, OrchestrationV2Subagent } from "@t3tools/contracts";
 import type { ReactNode } from "react";
 import { View } from "react-native";
@@ -22,6 +23,7 @@ type SubagentRowSubagent = Pick<
   OrchestrationV2Subagent,
   | "threadId"
   | "childThreadId"
+  | "remoteChild"
   | "model"
   | "driver"
   | "providerInstanceId"
@@ -125,13 +127,17 @@ function SubagentMetadata(props: {
   );
   const showBadge = provider !== undefined && shouldShowInstanceBadge(provider, providers);
   const parent = useThreadShell(scopeThreadRef(environmentId, subagent.threadId))?.source;
+  const childTarget = subagentChildTarget(subagent);
+  const childEnvironmentId = childTarget?.environmentId ?? environmentId;
   const child = useThreadShell(
-    subagent.childThreadId === null ? null : scopeThreadRef(environmentId, subagent.childThreadId),
+    childTarget === null ? null : scopeThreadRef(childEnvironmentId, childTarget.threadId),
   )?.source;
   const parentProject = useProject(
     parent ? scopeProjectRef(environmentId, parent.projectId) : null,
   );
-  const childProject = useProject(child ? scopeProjectRef(environmentId, child.projectId) : null);
+  const childProject = useProject(
+    child ? scopeProjectRef(childEnvironmentId, child.projectId) : null,
+  );
   const { modelLabel, workspace } = resolveSubagentMetadata({
     model: subagent.model,
     provider,

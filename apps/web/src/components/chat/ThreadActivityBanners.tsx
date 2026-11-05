@@ -2,6 +2,8 @@ import type {
   EnvironmentId,
   OrchestrationV2PendingBackgroundTask,
   OrchestrationV2ProviderGoal,
+  OrchestrationV2Subagent,
+  ScopedThreadRef,
   ThreadId,
 } from "@t3tools/contracts";
 import type { EnvironmentThreadShell, ThreadStructure } from "@t3tools/client-runtime/state/shell";
@@ -24,7 +26,7 @@ import {
   TerminalIcon,
   TriangleAlertIcon,
 } from "lucide-react";
-import { Fragment } from "react";
+import { Fragment, type ReactNode } from "react";
 import { tickTextContent } from "~/lib/tickTextContent";
 import { Button, InlineButton } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -68,6 +70,52 @@ export function childInputNowItem(input: {
       <InlineButton onClick={() => onOpenThread(first.id, first.environmentId)}>
         {first.hasPendingApprovals ? "Open approval" : "Open question"}
       </InlineButton>
+    ),
+  };
+}
+
+/** A task in a linked environment whose live request needs this user, found from the source task view. */
+export function remoteInputTask(
+  subagents: ReadonlyArray<OrchestrationV2Subagent> | undefined,
+): OrchestrationV2Subagent | null {
+  return (
+    subagents?.find(
+      (task) =>
+        task.remoteChild?.availability === "current" &&
+        task.remoteChild.stop === undefined &&
+        task.completionDelivery?.state !== "disposed" &&
+        task.remoteChild.snapshot?.requests.some(
+          (request) =>
+            request.responseType === "live" &&
+            request.kind !== "auth_refresh" &&
+            request.kind !== "dynamic_tool_call",
+        ),
+    ) ?? null
+  );
+}
+
+export function remoteInputBannerItem(input: {
+  readonly task: OrchestrationV2Subagent | null;
+  readonly parentAwaitingUser: boolean;
+  readonly viewer: ReactNode;
+  readonly onOpen: () => void;
+}): ComposerBannerStackItem | null {
+  if (input.task === null || input.parentAwaitingUser) return null;
+  return {
+    id: `remote-input:${input.task.id}`,
+    variant: "info",
+    icon: <MessageCircleIcon />,
+    title: "Remote task needs input",
+    description: (
+      <>
+        {input.task.title ?? "Delegated task"}
+        {input.viewer}
+      </>
+    ),
+    actions: (
+      <Button size="xs" variant="ghost" onClick={input.onOpen}>
+        Open request
+      </Button>
     ),
   };
 }
@@ -161,7 +209,11 @@ export function backgroundWorkNowItem(input: {
   readonly stopDisabled: boolean;
   readonly stopping: boolean;
   readonly onStop: () => Promise<void>;
-  readonly onOpenThread: (threadId: ThreadId) => void;
+  readonly onOpenThread: (threadId: ThreadId, environmentId?: EnvironmentId) => void;
+  /** Environments this client is connected to; a remote child elsewhere cannot open. */
+  readonly reachableEnvironments: { readonly has: (environmentId: EnvironmentId) => boolean };
+  /** With the parent, items open through its owned task first (the source viewer for remote work). */
+  readonly parentRef?: ScopedThreadRef | null;
 }): ThreadNowItem | null {
   const { onOpenThread } = input;
   const presentation = presentPendingBackgroundWork(input.tasks);

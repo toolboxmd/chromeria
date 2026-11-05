@@ -7,12 +7,14 @@ import {
   deviceToolUpdatePolicy,
 } from "@t3tools/client-runtime/state/device";
 import { useIsFocused, useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { DeviceViewerResource, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+import * as Option from "effect/Option";
 import * as Cause from "effect/Cause";
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import * as Haptics from "expo-haptics";
 import { Accelerometer } from "expo-sensors";
-import { Pressable, StatusBar, View } from "react-native";
+import { AppState, Pressable, StatusBar, View } from "react-native";
 import Animated, { FadeIn, FadeOut, ReduceMotion } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -31,7 +33,6 @@ import { useAppForeground } from "../../lib/appState";
 import { useHardwareBack } from "../../lib/backHandler";
 import { deriveBottomControlInsets } from "../../lib/reserved-regions";
 import { useNativeColumnLayoutMetrics } from "../../native/native-layout-metrics";
-import { uuidv4 } from "../../lib/uuid";
 import { deviceEnvironment, useDeviceHubAccess } from "../../state/device";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -47,22 +48,39 @@ import { createShakeDetector } from "./shakeDetector";
 const OVERLAY_ENTERING = FadeIn.duration(160).reduceMotion(ReduceMotion.System);
 const OVERLAY_EXITING = FadeOut.duration(120).reduceMotion(ReduceMotion.System);
 
+const decodeDeviceResource = Schema.decodeUnknownOption(DeviceViewerResource);
+
 type DevicePreviewRouteScreenProps = StaticScreenProps<{
   readonly environmentId: string;
   readonly threadId: string;
   readonly deviceKey?: string;
+  readonly resource?: DeviceViewerResource;
 }>;
 
 export function DevicePreviewRouteScreen({ route }: DevicePreviewRouteScreenProps) {
   const navigation = useNavigation();
   const onClose = () => navigation.goBack();
   const { environmentId, threadId } = route.params;
-  const isBlankLink = environmentId.trim().length === 0 || threadId.trim().length === 0;
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- pops a deep-linked route with a blank environment or thread off the navigator
+  const resource =
+    route.params.resource === undefined
+      ? undefined
+      : Option.getOrNull(decodeDeviceResource(route.params.resource));
+  // A hand-typed deep link can carry a blank ID, which the branded IDs reject.
+  const isBlankLink =
+    environmentId.trim().length === 0 || threadId.trim().length === 0 || resource === null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- dismisses invalid routes from the native navigator
   useEffect(() => {
     if (isBlankLink) onClose();
   }, [isBlankLink, onClose]);
   if (isBlankLink) return null;
+  if (resource !== undefined && resource !== null)
+    return (
+      <QualifiedDevicePreviewScreen
+        environmentId={EnvironmentId.make(environmentId)}
+        resource={resource}
+        onClose={onClose}
+      />
+    );
   return (
     <DevicePreviewScreen
       environmentId={EnvironmentId.make(environmentId)}
@@ -70,6 +88,57 @@ export function DevicePreviewRouteScreen({ route }: DevicePreviewRouteScreenProp
       initialDeviceKey={route.params.deviceKey}
       onClose={onClose}
     />
+  );
+}
+
+function QualifiedDevicePreviewScreen({
+  environmentId,
+  resource,
+  onClose,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly resource: DeviceViewerResource;
+  readonly onClose: () => void;
+}) {
+  const focused = useIsFocused();
+  const [foreground, setForeground] = useState(AppState.currentState !== "background");
+  const [inputConnected, setInputConnected] = useState(false);
+  const streamRef = useRef<DeviceStreamRef>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- mounts the qualified device viewer only while the native app is active
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) =>
+      setForeground(state !== "background"),
+    );
+    return () => subscription.remove();
+  }, []);
+  const input = useCallback(async (connected: boolean) => setInputConnected(connected), []);
+  return (
+    <View className="flex-1 bg-sheet">
+      <View className="flex-row items-center justify-between px-4 py-3">
+        <Pressable accessibilityRole="button" onPress={onClose}>
+          <AppText>Close view</AppText>
+        </Pressable>
+        <AppText>{resource.platform === "ios" ? "iOS device" : "Android device"}</AppText>
+        <Pressable
+          accessibilityRole="button"
+          disabled={!inputConnected}
+          onPress={() => streamRef.current?.home()}
+        >
+          <AppText>Home</AppText>
+        </Pressable>
+      </View>
+      {focused && foreground ? (
+        <OpenDevicePreview
+          environmentId={environmentId}
+          resource={resource}
+          preview={{ session: resource }}
+          streamRef={streamRef}
+          onInputConnected={input}
+        />
+      ) : (
+        <View className="flex-1" />
+      )}
+    </View>
   );
 }
 
@@ -397,17 +466,23 @@ function OpenDevicePreview({
   preview,
   streamRef,
   onInputConnected,
+  resource,
 }: {
   readonly environmentId: EnvironmentId;
-  readonly preview: ThreadDevicePreview;
+  readonly resource?: DeviceViewerResource;
+  readonly preview: {
+    readonly session: Pick<ThreadDevicePreview["session"], "hostId" | "deviceId" | "platform">;
+    readonly serveSimOnly?: boolean;
+  };
   readonly streamRef: RefObject<DeviceStreamRef | null>;
   readonly onInputConnected: (connected: boolean) => Promise<void>;
 }) {
   const { session } = preview;
   const { themeVariables } = useAppearancePreferences();
-  const [viewer] = useState(uuidv4);
-  const { access, error, refresh } = useDeviceHubAccess(environmentId, session.hostId, viewer);
-  const onUnauthorized = async () => refresh();
+  const { access, error, refresh } = useDeviceHubAccess(environmentId, session.hostId, resource);
+  const onUnauthorized = useCallback(async () => refresh(), [refresh]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- clears native device input availability when its viewer unmounts
+  useEffect(() => () => void onInputConnected(false), [onInputConnected]);
   return access ? (
     <DeviceStreamWebView
       ref={streamRef}
