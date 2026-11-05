@@ -4335,7 +4335,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               link,
             ];
           } else if (command.type === "thread.pull-request.unlink") {
-            if (!existing) return thread;
+            if (!existing || existing.source === "stack-dismissed") return thread;
             const belongsToStack =
               existing.source === "stack" ||
               existing.stack !== null ||

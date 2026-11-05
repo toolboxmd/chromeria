@@ -3004,6 +3004,15 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         ...key,
         number: 2,
       });
+      const dismissed = (yield* orchestrator.getThreadShell(threadId))?.pullRequests;
+      yield* orchestrator.dispatch({
+        type: "thread.pull-request.unlink",
+        commandId: CommandId.make("multi-pr-dismiss-again"),
+        threadId,
+        ...key,
+        number: 2,
+      });
+      assert.deepEqual((yield* orchestrator.getThreadShell(threadId))?.pullRequests, dismissed);
       yield* orchestrator.dispatch({
         type: "thread.pull-request.unlink",
         commandId: CommandId.make("multi-pr-unlink"),
