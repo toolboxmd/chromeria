@@ -539,28 +539,33 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
     openSession: (input) =>
       Effect.gen(function* () {
         const now = yield* DateTime.now;
+        const turnUpdated = (
+          turn: ProviderAdapter.ProviderAdapterV2TurnInput,
+          status: "running" | "interrupted",
+        ) =>
+          Queue.offer(events, {
+            type: "provider_turn.updated",
+            driver,
+            providerTurn: {
+              id: ProviderTurnId.make(`provider-turn:${turn.attemptId}`),
+              providerThreadId: turn.providerThread.id,
+              nodeId: turn.rootNodeId,
+              runAttemptId: turn.attemptId,
+              nativeTurnRef: {
+                driver,
+                nativeId: `native:${turn.attemptId}`,
+                strength: "strong",
+              },
+              ordinal: turn.providerTurnOrdinal,
+              status,
+              startedAt: now,
+              completedAt: status === "running" ? null : now,
+            },
+          });
         const startTurn = (turn: ProviderAdapter.ProviderAdapterV2TurnInput) =>
           Effect.gen(function* () {
             started.push(turn);
-            yield* Queue.offer(events, {
-              type: "provider_turn.updated",
-              driver,
-              providerTurn: {
-                id: ProviderTurnId.make(`provider-turn:${turn.attemptId}`),
-                providerThreadId: turn.providerThread.id,
-                nodeId: turn.rootNodeId,
-                runAttemptId: turn.attemptId,
-                nativeTurnRef: {
-                  driver,
-                  nativeId: `native:${turn.attemptId}`,
-                  strength: "strong",
-                },
-                ordinal: turn.providerTurnOrdinal,
-                status: "running",
-                startedAt: now,
-                completedAt: null,
-              },
-            });
+            yield* turnUpdated(turn, "running");
           });
         return {
           instanceId,
@@ -608,7 +613,20 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
           interruptTurn: (input) =>
             Effect.sync(() => {
               interrupted.push(input);
-            }).pipe(Effect.andThen(() => interruptTurn?.(input) ?? Effect.void)),
+            }).pipe(
+              Effect.andThen(() => interruptTurn?.(input) ?? Effect.void),
+              Effect.andThen(
+                Effect.forEach(
+                  started.filter(
+                    (turn) =>
+                      ProviderTurnId.make(`provider-turn:${turn.attemptId}`) ===
+                      input.providerTurnId,
+                  ),
+                  (turn) => turnUpdated(turn, "interrupted"),
+                  { discard: true },
+                ),
+              ),
+            ),
           respondToRuntimeRequest: () => Effect.void,
           readThreadSnapshot: () => Effect.die("unused"),
           rollbackThread: () => Effect.die("unused"),
@@ -1021,6 +1039,8 @@ it.effect.each([
                       }),
                   }),
                   Layer.mock(ProviderTurnAnalytics, {
+                    runStarted: () => Effect.void,
+                    runSettled: () => Effect.void,
                     turnCompleted: (properties) =>
                       Effect.gen(function* () {
                         if (
@@ -2016,7 +2036,6 @@ it.effect("keeps a queued message queued when promoted into a run that Stop reac
           runId: first.runId,
           holdQueue: true,
         });
-
         const promoteError = yield* orchestrator
           .dispatch({
             type: "queued-message.promote-to-steer",
@@ -2079,6 +2098,10 @@ it.effect("queues a plain send behind the stopped queue and releases its hold", 
           runId: started[0]!.runId,
           holdQueue: true,
         });
+        const held = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+          (run) => run.userMessageId === MessageId.make("message:queued"),
+        )!;
+        assert.isTrue(held.queueHeld);
         // The send releases the held queue, but must not steer the interrupted run.
         yield* send("sent", "auto");
         // Once the stop settles, the run-update reactor promotes the queue on
@@ -2095,12 +2118,42 @@ it.effect("queues a plain send behind the stopped queue and releases its hold", 
           queued.map(
             (run) => projection.messages.find((message) => message.id === run.userMessageId)?.text,
           ),
-          ["sent"],
+          ["queued", "sent"],
         );
         // The user sent it, so the queue they stopped runs again once the provider stops.
         assert.isFalse(queued.some((run) => run.queueHeld === true));
+        const watchQueued = (status: "starting" | "running") =>
+          orchestrator.streamDomainEvents.pipe(
+            Stream.filter(
+              (event) =>
+                event.type === "run.updated" &&
+                event.payload.id === held.id &&
+                event.payload.status === status,
+            ),
+            Stream.take(1),
+            Stream.runDrain,
+            Effect.forkScoped({ startImmediately: true }),
+          );
+        const promoted = yield* watchQueued("starting");
+        const running = yield* watchQueued("running");
         yield* Deferred.succeed(releaseInterrupt, undefined);
         yield* Fiber.join(draining);
+        yield* Fiber.join(promoted);
+        yield* worker.drain();
+        yield* Fiber.join(running);
+        assert.deepEqual(
+          started.map((turn) => turn.message.text),
+          ["first", "queued"],
+        );
+        const resumed = yield* orchestrator.getThreadProjection(threadId);
+        assert.deepEqual(
+          resumed.runs
+            .filter((run) => run.status === "queued")
+            .map(
+              (run) => resumed.messages.find((message) => message.id === run.userMessageId)?.text,
+            ),
+          ["sent"],
+        );
         assert.deepEqual(steered, []);
       }).pipe(Effect.provide(layer));
     }),
