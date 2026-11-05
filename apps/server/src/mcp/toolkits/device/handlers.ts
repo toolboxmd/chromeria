@@ -303,7 +303,8 @@ const handlers = {
                   "Device support is off. Ask the user to enable it in the Device panel before installing or starting device tools.",
               });
             }
-            const target = yield* pickDevice(state, input);
+            const hostId = yield* resolveHostId(state.hosts, input.hostId);
+            const target = yield* pickDevice(state, { ...input, hostId });
             if (request !== undefined && target.physical)
               return yield* new DeviceToolUnavailableError({
                 reason:
@@ -453,14 +454,19 @@ const handlers = {
         const scope = yield* requireDeviceAccess;
         const devices = yield* DeviceService.DeviceService;
         if (Option.isSome(yield* externalReplay())) return {};
+        const requestedHostId = yield* resolveHostId((yield* devices.state).hosts, input.hostId);
         const deviceId = input.deviceId;
         const open =
           deviceId === undefined
             ? Option.none()
             : yield* devices
-                .locateSession({ threadId: scope.thread.threadId, deviceId, hostId: input.hostId })
+                .locateSession({
+                  threadId: scope.thread.threadId,
+                  deviceId,
+                  hostId: requestedHostId,
+                })
                 .pipe(mapLocateErrors);
-        const hostId = Option.isSome(open) ? open.value.hostId : input.hostId;
+        const hostId = Option.isSome(open) ? open.value.hostId : requestedHostId;
         yield* externalDispatch(
           devices.close({
             threadId: scope.thread.threadId,

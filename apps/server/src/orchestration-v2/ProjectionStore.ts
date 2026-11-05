@@ -8638,8 +8638,7 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
                     .filter((row) => row.tokenUsage != null)
                     .toSorted(
                       (a, b) =>
-                        Date.parse(b.tokenUsage!.updatedAt) -
-                          Date.parse(a.tokenUsage!.updatedAt) ||
+                        Date.parse(b.tokenUsage!.updatedAt) - Date.parse(a.tokenUsage!.updatedAt) ||
                         a.providerThreadId.localeCompare(b.providerThreadId) ||
                         a.ordinal - b.ordinal,
                     )

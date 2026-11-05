@@ -175,12 +175,19 @@ it.live("agents can see and explicitly resume held messages through the mutation
           Effect.provideService(McpSchema.McpServerClient, client),
         );
     const before = yield* orchestrator.getThreadProjection(targetId);
-    const queued = before.runs.find((run) => run.status === "queued");
+    const queued = before.runs.find((run) => run.userMessageId === "queued-instructions");
     expect(queued?.queueHeld).toBe(true);
     if (queued === undefined) return yield* Effect.die("Expected held queued instructions.");
     const listed = yield* invoke("t3_queue_list");
     expect(listed.structuredContent).toMatchObject({
-      items: [{ queuedRunId: queued.id, held: true }],
+      items: expect.arrayContaining([
+        {
+          queuedRunId: queued.id,
+          held: true,
+          text: "Instructions sent by the parent.",
+          truncated: false,
+        },
+      ]),
     });
     const read = yield* invoke("t3_queue_read", scope, {
       threadId: targetId,
@@ -221,10 +228,13 @@ it.live("agents can see and explicitly resume held messages through the mutation
     expect(resumed.isError, JSON.stringify(resumed.content)).not.toBe(true);
     const after = yield* orchestrator.getThreadProjection(targetId);
     expect(after.runs.find((run) => run.id === queued.id)).toMatchObject({
-      status: "starting",
+      status: "queued",
       queueHeld: false,
       ordinal: queued.ordinal,
     });
+    expect(
+      after.runs.find((run) => run.userMessageId === `start-message:${targetId}`),
+    ).toMatchObject({ status: "starting", queueHeld: false });
     yield* orchestrator.dispatch({
       type: "message.dispatch",
       commandId: CommandId.make("queue:stopped-follow-up"),
