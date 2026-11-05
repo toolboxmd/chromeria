@@ -1928,6 +1928,8 @@ const make = Effect.gen(function* () {
     if (pending?.promise) return pending.promise;
     const existing = tabs.get(key);
     if (existing) return Promise.resolve(existing);
+    if (snapshot.automationOwner !== undefined && pending === undefined)
+      assertTabCapacity(snapshot.automationOwner);
     const opening = createTab(snapshot, tabAuthorizations.get(key) ?? (async () => {}))
       .catch((cause: unknown) => {
         runFork(
@@ -1983,9 +1985,7 @@ const make = Effect.gen(function* () {
       });
   };
 
-  // The desktop draws its tabs in its own webview, so they never get a streamed viewer.
-  const isVisible = (tab: ServerTab) =>
-    tab.viewers.size > 0 || (tab.desktop !== null && desktopChannel.isShown(tab));
+  const isVisible = (tab: ServerTab) => tab.viewers.size > 0 || desktopChannel.isShown(tab);
 
   const idleAgentTabs = () => {
     const cutoff = Date.now() - AGENT_TAB_IDLE_MS;
@@ -2039,7 +2039,7 @@ const make = Effect.gen(function* () {
           .pipe(
             Effect.flatMap((snapshot) =>
               Effect.tryPromise({
-                try: () => ensureTab(snapshot),
+                try: () => ensureTab(snapshot, input.authorize),
                 catch: ServerBrowserPage.toOperationError,
               }).pipe(
                 Effect.onError(() =>
@@ -2693,10 +2693,7 @@ const make = Effect.gen(function* () {
             : undefined;
         const navigationTimeout = Math.min(request.timeoutMs, NAVIGATION_TIMEOUT_MS);
         const profileId = existing ? undefined : resolveOpenProfile(open.profileId);
-        if (!existing) {
-          await authorize();
-          closeIdleAgentTabs();
-        }
+        if (!existing) await authorize();
         const tab =
           existing ??
           (await runPromise(
@@ -3343,9 +3340,14 @@ const make = Effect.gen(function* () {
   const mirrorManagerEvent = ({ event, authorize = async () => {} }: PreviewManager.ServerEvent) =>
     Effect.promise(async () => {
       if (event.type === "opened" && event.snapshot.runtime === "server") {
-        const key = tabKey(event.snapshot.threadId, event.snapshot.tabId);
-        if (event.snapshot.automationOwner === undefined || pendingTabs.has(key) || tabs.has(key))
-          await ensureTab(event.snapshot, authorize).catch(constVoid);
+        try {
+          await ensureTab(event.snapshot, authorize);
+        } catch {
+          if (event.snapshot.automationOwner !== undefined)
+            await runPromise(
+              manager.close({ threadId: event.threadId, tabId: event.tabId }).pipe(Effect.ignore),
+            );
+        }
         return;
       }
       const key = tabKey(event.threadId, event.tabId);
