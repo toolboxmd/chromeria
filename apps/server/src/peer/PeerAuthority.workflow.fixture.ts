@@ -2813,6 +2813,19 @@ export const activate = Effect.fn("PeerAuthority.activate")(function* (
   const records = yield* node.threads.getThreadRecords(threadId, ["runs"]);
   const run = records.runs.at(-1);
   if (!run) return yield* Effect.die("Expected a persisted launch run");
+  if (run.status === "preparing")
+    yield* node.orchestrator
+      .streamStoredEventsFrom({ threadId, afterSequence: 0, eventType: "run.updated" })
+      .pipe(
+        Stream.filter(
+          (stored) =>
+            stored.event.type === "run.updated" &&
+            stored.event.payload.id === run.id &&
+            stored.event.payload.status === "starting",
+        ),
+        Stream.runHead,
+        Effect.flatMap(Effect.fromOption),
+      );
   const now = yield* DateTime.now;
   const root = NodeId.make(`fixture-root:${run.id}`);
   yield* node.sink.write({
