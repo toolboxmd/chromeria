@@ -401,20 +401,23 @@ const handlers = {
     invokeTargeted<PreviewAutomationStatus>("status", input ?? {}),
   ),
   // Models often pass a dev server as both `url` and `target`; the target knows the environment.
-  preview_open: McpToolAccess.actsOnResource("preview", ({ target, url, ...input }) =>
-    Effect.gen(function* () {
-      const opened = yield* invokeTargeted<PreviewAutomationStatus>(
-        "open",
-        normalizePreviewOpenInput(
-          target === undefined && url !== undefined ? { ...input, url } : input,
-        ),
-      );
-      if (target === undefined || opened.tabId === null) return opened;
-      return yield* invokeTargeted<PreviewAutomationStatus>("navigate", {
-        target,
-        tabId: opened.tabId,
-      });
-    }),
+  preview_open: McpToolAccess.actsOnResource(
+    "preview",
+    ({ target, url, ...input }) =>
+      Effect.gen(function* () {
+        const opened = yield* invokeTargeted<PreviewAutomationStatus>(
+          "open",
+          normalizePreviewOpenInput(
+            target === undefined && url !== undefined ? { ...input, url } : input,
+          ),
+        );
+        if (target === undefined || opened.tabId === null) return opened;
+        return yield* invokeTargeted<PreviewAutomationStatus>("navigate", {
+          target,
+          tabId: opened.tabId,
+        });
+      }),
+    "external-unknown",
   ),
   preview_navigate: McpToolAccess.actsOnResource(
     "preview",
