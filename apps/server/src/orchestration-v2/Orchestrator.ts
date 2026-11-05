@@ -9015,20 +9015,45 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       parentThreadId === null ||
       (command.notification === undefined &&
         command.createdBy !== "user" &&
+        command.usageLimitContinuationOfRunId === undefined &&
         command.senderThreadId !== parentThreadId)
     )
       return undefined;
-    const parent = yield* getProjectionWithPendingEvents(parentThreadId, events).pipe(
-      Effect.catchTags({
-        OrchestratorProjectionError: (error) =>
-          command.createdBy === "user" &&
-          (error.cause === undefined || isMissingProjectionThread(error.cause))
-            ? Effect.void
-            : Effect.fail(error),
-      }),
-      mapDispatchError(command),
-    );
+    let parent = yield* projectionStore
+      .getThreadRecords(parentThreadId, ["runs", "subagents"], {
+        subagentIds: child.forkedFrom?.type === "node" ? [child.forkedFrom.nodeId] : [],
+      })
+      .pipe(
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: parentThreadId, cause }),
+        ),
+        Effect.catchTags({
+          OrchestratorProjectionError: (error) =>
+            command.createdBy === "user" &&
+            (error.cause === undefined || isMissingProjectionThread(error.cause))
+              ? Effect.void
+              : Effect.fail(error),
+        }),
+        mapDispatchError(command),
+      );
     if (parent === undefined) return undefined;
+    const pending = (yield* Ref.get(events)).filter((event) => event.threadId === parentThreadId);
+    for (const event of pending) {
+      if (event.type === "run.created" || event.type === "run.updated") {
+        parent = {
+          ...parent,
+          runs: [...parent.runs.filter((run) => run.id !== event.payload.id), event.payload],
+        };
+      } else if (event.type === "subagent.updated") {
+        parent = {
+          ...parent,
+          subagents: [
+            ...parent.subagents.filter((task) => task.id !== event.payload.id),
+            event.payload,
+          ],
+        };
+      }
+    }
     const task = parent.subagents.find(
       (candidate) =>
         candidate.origin === "app_owned" &&
@@ -9038,9 +9063,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (
       task === undefined &&
       command.createdBy !== "user" &&
-      parent.subagents.some(
-        (candidate) => candidate.origin === "app_owned" && candidate.childThreadId === child.id,
-      )
+      child.forkedFrom?.type === "node"
     ) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
