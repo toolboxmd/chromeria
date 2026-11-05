@@ -5,6 +5,12 @@ Each JSON entry assigns actual carried edits one primary owner. Shared paths are
 watched by other carried features; deferred features are excluded. Keyword matches
 are evidence for review, not proof that a feature has been adopted upstream.
 
+Every changed path in `git diff --no-renames <upstream-base> <source>` must match
+exactly one feature's `newFiles` or `upstreamFiles`. A pattern ending in `/*`
+matches every path below that directory recursively. `sharedFiles` is dependency
+and watch metadata only; it never grants ownership. Existing upstream primary
+assignments stay with their registered owner, including shared hooks.
+
 The [fork maintenance guide](fork.md) explains absorption and proof. `prs` lists
 PRs that introduced the current carried file set, or compare URLs. Add a later PR
 only when that file set changes; this is not an exhaustive history of follow-ups.
@@ -97,7 +103,9 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/web/src/components/settings/SpectrumSettings.browser.test.tsx",
     "apps/web/src/routes/settings.spectrum.tsx",
     "packages/contracts/src/spectrumSettings.test.ts",
-    "packages/contracts/src/spectrumSettings.ts"
+    "packages/contracts/src/spectrumSettings.ts",
+    "apps/server/src/spectrum/registrationPlan.integration.test.ts",
+    "apps/web/src/routes/_chat.settings.spectrum.tsx"
   ],
   "upstreamFiles": [
     "apps/mobile/src/features/threads/ThreadRouteScreen.tsx",
@@ -274,7 +282,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/chromeria/issues/370",
     "https://github.com/toolboxmd/chromeria/issues/411",
     "https://github.com/toolboxmd/chromeria/issues/380",
-    "https://github.com/toolboxmd/chromeria/issues/589"
+    "https://github.com/toolboxmd/chromeria/issues/589",
+    "https://github.com/toolboxmd/chromeria/issues/633"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/9",
@@ -304,7 +313,9 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/web/src/components/device/DeviceDiscovery.browser.test.tsx",
     "apps/server/src/forkWsRpc.ts",
     "apps/server/src/orchestration-v2/V1ImportBoundary.test.ts",
-    "apps/server/src/device/DeviceInventory.test.ts"
+    "apps/server/src/device/DeviceInventory.test.ts",
+    "scripts/fork-consolidate.mjs",
+    "docs/user/browser.md"
   ],
   "upstreamFiles": [
     "apps/server/src/provider/AgentContextBudget.test.ts",
@@ -976,7 +987,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/restartContinuation/RestartPersistence.test.ts",
     "apps/server/src/childThreads/PendingRequestIngress.ts",
     "apps/server/src/childThreads/PendingRequestService.ts",
-    "apps/server/src/childThreads/pendingResponseAdmission.ts"
+    "apps/server/src/childThreads/pendingResponseAdmission.ts",
+    "apps/server/src/childThreads/requestWake.noRequests.test.ts"
   ],
   "upstreamFiles": [
     "apps/server/src/orchestration-v2/BackgroundWorkStop.integration.test.ts",
@@ -1209,7 +1221,10 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/prism/recoveryAdmission.ts",
     "apps/server/src/prism/recoveryPolicy.ts",
     "packages/contracts/src/prism.test.ts",
-    "packages/contracts/src/prism.ts"
+    "packages/contracts/src/prism.ts",
+    "apps/server/src/mcp/OrchestratorMcpService.recovery.test.ts",
+    "apps/server/src/orchestration-v2/ProviderRuntimeRecoverySharedSession.test.ts",
+    "apps/server/src/prism/PrismCapacity.integration.test.ts"
   ],
   "upstreamFiles": [
     "apps/server/src/mcp/toolkits/project/tools.ts",
@@ -1285,7 +1300,9 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/web/src/components/settings/PrismSettings.state.test.ts",
     "apps/web/src/components/settings/PrismSettings.state.ts",
     "apps/web/src/components/settings/PrismSettings.tsx",
-    "apps/web/src/routes/settings.prism.tsx"
+    "apps/web/src/routes/settings.prism.tsx",
+    "apps/web/src/routes/_chat.settings.prism.tsx",
+    "apps/web/src/routes/_chat.settings.promachos.tsx"
   ],
   "upstreamFiles": [
     "apps/server/src/serverSettings.ts",
@@ -1703,7 +1720,9 @@ sources and reasons.
     "apps/server/src/contextmd/Store.ts",
     "apps/server/src/contextmd/library-corpus.json",
     "apps/server/src/contextmd/GreatLibrary.test.ts",
-    "apps/server/src/contextmd/great-library-path-corpus.json"
+    "apps/server/src/contextmd/great-library-path-corpus.json",
+    "apps/server/src/contextmd/Cue.test.ts",
+    "apps/server/src/contextmd/Cue.ts"
   ],
   "upstreamFiles": [
     "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
@@ -1806,7 +1825,8 @@ sources and reasons.
     "apps/web/src/components/featureMap/featureMap.mermaid.browser.test.tsx",
     "apps/web/src/state/featureMap.ts",
     "packages/contracts/src/featureMap.test.ts",
-    "packages/contracts/src/featureMap.ts"
+    "packages/contracts/src/featureMap.ts",
+    "docs/map.md"
   ],
   "upstreamFiles": ["apps/web/src/components/chat/MermaidDiagram.tsx"],
   "sharedFiles": [
@@ -1960,7 +1980,14 @@ sources and reasons.
     "packages/client-runtime/src/device/screenshot.test.ts",
     "apps/web/src/components/chat/ThreadRelationshipsControl.agents.browser.test.tsx",
     "apps/web/src/components/LegacySidebar.tsx",
-    "packages/contracts/src/assets.test.ts"
+    "packages/contracts/src/assets.test.ts",
+    "apps/mobile/src/features/settings/PeerGrantSettings.tsx",
+    "apps/mobile/src/features/threads/RequestActionButton.tsx",
+    "apps/mobile/src/state/peer-grants.ts",
+    "apps/web/src/state/peerGrants.ts",
+    "packages/client-runtime/src/state/peerGrants.ts",
+    "apps/web/src/components/device/deviceStreamSession.browser.test.ts",
+    "apps/web/src/state/previewStream.browser.test.tsx"
   ],
   "upstreamFiles": [
     "apps/web/src/components/device/deviceStreamSession.ts",
@@ -2330,6 +2357,60 @@ sources and reasons.
 }
 ```
 
+## thread-tool-policy
+
+```json
+{
+  "id": "thread-tool-policy",
+  "purpose": "Enforce opt-in exact tool allowlists and private per-thread HTTP MCP attachments independently of bare launch, rejecting harnesses and modes without native enforcement. Drop when upstream provides equivalent restrictions and durable private attachment configuration.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/552"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/559"],
+  "newFiles": [
+    "apps/server/src/mcp/toolkits/threadMcp/handlers.ts",
+    "apps/server/src/mcp/toolkits/threadMcp/tools.ts",
+    "apps/server/src/orchestration-v2/Adapters/ClaudeToolAllowlist.test.ts",
+    "apps/server/src/orchestration-v2/ThreadMcpConfig.test.ts",
+    "apps/server/src/orchestration-v2/ThreadMcpConfig.ts",
+    "packages/contracts/src/threadTools.test.ts",
+    "packages/contracts/src/threadTools.ts",
+    "packages/provider-core/src/server/toolPolicy.ts"
+  ],
+  "upstreamFiles": [],
+  "sharedFiles": [
+    "apps/server/src/mcp/McpHttpServer.ts",
+    "apps/server/src/mcp/OrchestratorMcpService.ts",
+    "apps/server/src/mcp/linkOrigin.test.ts",
+    "apps/server/src/mcp/toolkits/project/handlers.test.ts",
+    "apps/server/src/mcp/toolkits/project/handlers.ts",
+    "apps/server/src/mcp/toolkits/project/tools.ts",
+    "apps/server/src/mcp/toolkits/thread/handlers.ts",
+    "apps/server/src/mcp/toolkits/thread/tools.ts",
+    "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
+    "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+    "apps/server/src/orchestration-v2/RuntimePolicy.test.ts",
+    "apps/server/src/orchestration-v2/RuntimePolicy.ts",
+    "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+    "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+    "apps/server/src/orchestration-v2/ThreadMessageIntake.ts",
+    "apps/server/src/orchestration-v2/runtimeLayer.ts",
+    "apps/server/src/peer/PeerForwarding.bare.test.ts",
+    "apps/server/src/peer/PeerForwarding.ts",
+    "apps/server/src/peer/RemoteDelegation.ts",
+    "apps/server/src/server.ts",
+    "apps/server/src/ws.ts",
+    "docs/map.md",
+    "docs/user/outside-agents.md",
+    "packages/contracts/src/index.ts",
+    "packages/contracts/src/orchestrationV2.ts",
+    "packages/contracts/src/orchestratorMcp.ts",
+    "packages/provider-core/package.json",
+    "packages/provider-core/src/server/ProviderAdapter.ts"
+  ],
+  "keywords": ["ThreadMcpConfig", "ThreadTools", "t3_thread_mcp_configure", "tool allowlist"]
+}
+```
+
 ## bare-launch
 
 ```json
@@ -2349,7 +2430,6 @@ sources and reasons.
     "apps/server/src/orchestration-v2/BareLaunch.ts",
     "apps/server/src/orchestration-v2/ProviderTurnStartService.bare.test.ts",
     "apps/server/src/orchestration-v2/bareReadGrant.ts",
-    "apps/server/src/peer/PeerForwarding.bare.test.ts",
     "apps/server/src/persistence/forkScheduledTaskBareSchema.ts",
     "apps/server/src/scheduledTasks/ScheduledTaskService.bare.test.ts",
     "apps/server/src/scheduledTasks/bareState.ts",
@@ -2388,6 +2468,7 @@ sources and reasons.
     "apps/server/src/mcp/TaskCancelUsageLimit.integration.test.ts"
   ],
   "sharedFiles": [
+    "apps/server/src/peer/PeerForwarding.bare.test.ts",
     "GLOSSARY.md",
     "apps/server/src/mcp/OrchestratorMcpService.activity.test.ts",
     "apps/server/src/mcp/OrchestratorMcpService.test.ts",
@@ -3170,7 +3251,6 @@ sources and reasons.
   "issues": ["https://github.com/toolboxmd/chromeria/issues/385"],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/599"],
   "newFiles": [
-    "apps/server/src/peer/PeerAuthority.remoteSecrets.workflow.test.ts",
     "apps/server/src/secrets/RemoteSecretRelay.ts",
     "apps/server/src/secrets/RemoteSecretRequests.ts",
     "apps/server/src/secrets/SecretRequestIngress.ts",
@@ -3179,6 +3259,7 @@ sources and reasons.
   ],
   "upstreamFiles": [],
   "sharedFiles": [
+    "apps/server/src/peer/PeerAuthority.remoteSecrets.workflow.test.ts",
     "apps/mobile/src/features/threads/SecretRequestCard.tsx",
     "apps/server/src/mcp/McpHttpServer.ts",
     "apps/server/src/mcp/McpRequestReceipts.ts",

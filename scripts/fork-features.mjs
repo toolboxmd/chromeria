@@ -2,6 +2,7 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
 
 function git(...args) {
   try {
@@ -16,8 +17,7 @@ function git(...args) {
   }
 }
 
-function loadFeatures(root) {
-  const text = NodeFS.readFileSync(NodePath.join(root, "docs/fork-features.md"), "utf8");
+export function parseFeatures(text, allowlistText) {
   const features = [...text.matchAll(/^```json\r?\n([\s\S]*?)^```\s*$/gm)].map((m) =>
     JSON.parse(m[1]),
   );
@@ -57,10 +57,7 @@ function loadFeatures(root) {
       throw new Error(`${feature.id}: Issue, PR and watch keywords are required`);
     }
   }
-  const allowlist = NodeFS.readFileSync(
-    NodePath.join(root, "scripts/fork-upstream-edits.txt"),
-    "utf8",
-  )
+  const allowlist = allowlistText
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith("#"));
@@ -77,6 +74,13 @@ function loadFeatures(root) {
     }
   }
   return features;
+}
+
+function loadFeatures(root) {
+  return parseFeatures(
+    NodeFS.readFileSync(NodePath.join(root, "docs/fork-features.md"), "utf8"),
+    NodeFS.readFileSync(NodePath.join(root, "scripts/fork-upstream-edits.txt"), "utf8"),
+  );
 }
 
 // Escape commit subjects/keywords before placing them in Markdown table cells.
@@ -163,18 +167,20 @@ function report(features, baseRef, targetRef) {
   }
 }
 
-try {
-  const [command, ...args] = process.argv.slice(2);
-  const root = git("rev-parse", "--show-toplevel").trim();
-  const features = loadFeatures(root);
-  if (command === "check" && args.length === 0) {
-    console.log(`fork-features: OK (${features.length} features).`);
-  } else if (command === "report" && args.length === 2) {
-    report(features, ...args);
-  } else {
-    throw new Error("usage: node scripts/fork-features.mjs check | report <base> <target>");
+if (process.argv[1] && import.meta.url === NodeURL.pathToFileURL(process.argv[1]).href) {
+  try {
+    const [command, ...args] = process.argv.slice(2);
+    const root = git("rev-parse", "--show-toplevel").trim();
+    const features = loadFeatures(root);
+    if (command === "check" && args.length === 0) {
+      console.log(`fork-features: OK (${features.length} features).`);
+    } else if (command === "report" && args.length === 2) {
+      report(features, ...args);
+    } else {
+      throw new Error("usage: node scripts/fork-features.mjs check | report <base> <target>");
+    }
+  } catch (error) {
+    console.error(`fork-features: FAIL: ${error.message}`);
+    process.exitCode = 1;
   }
-} catch (error) {
-  console.error(`fork-features: FAIL: ${error.message}`);
-  process.exitCode = 1;
 }

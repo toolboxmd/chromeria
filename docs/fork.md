@@ -6,10 +6,10 @@ repository. Never push fork commits to `upstream`.
 
 ## Upstream absorption
 
-`main` contains the completed V2 port. For each absorption, record its upstream
-merge base and the approved target SHA in the owning Issue, then replay the fork
-topics onto that target in one exclusive integration worktree. Keep the approved
-target fixed while preparing the candidate. Before delivery, carry every fork
+Prefer daily small absorptions to keep upstream drift bounded. For each absorption,
+record its upstream merge base and the approved target SHA in the owning Issue,
+then replay the fork topics onto that target in one exclusive integration worktree.
+Keep the approved target fixed while preparing the candidate. Before delivery, carry every fork
 topic merged into `main` since preparation began and record the complete range-diff.
 
 Keep a merge-free topic stack. Features live in fork-owned modules; upstream
@@ -20,6 +20,50 @@ Features deferred to separate integration Issues do not belong in this inventory
 When upstream fully absorbs a carried capability, prove equivalent behavior before
 removing its registry entry and carried edits. In that same PR, change its mapped
 part to `live` if it remains an existing capability, removing its tracked refs.
+
+Consolidation builds one non-empty final snapshot commit per owner from the
+complete upstream-to-source change for its exclusive paths. Ownership comes from
+`newFiles` and `upstreamFiles`; `sharedFiles` only records dependencies and watch
+paths. Preserve existing upstream primary assignments. Features whose changes
+live entirely inside another owner's files produce no separate commit.
+
+Finish the absorption and ordinary reviewed registry/guide changes before freezing
+upstream base `B` and source commit `S`. Check coverage, then generate a candidate:
+
+```bash
+node scripts/fork-consolidate.mjs check <B> <S>
+node scripts/fork-consolidate.mjs generate <B> <S>
+```
+
+Both commands read the registry from committed `S` and require exactly one owner
+for every changed path, including additions and deletions. Generation creates
+commit objects and prints JSON with the candidate SHA; it updates no refs,
+checkout or working index. For a preparation dry run against an earlier source,
+pass `--registry <registry-commit>` to use reviewed ownership metadata from that
+commit while preserving the earlier source tree exactly. Freeze the final source
+with its registry included and omit that override for delivery.
+
+Intermediate snapshots may not build because features
+have dependency cycles. Validate the assembled final head: identical source and
+candidate trees, `git diff --quiet S C`, `B` ancestral to candidate `C`, no merges
+in `B..C`, non-empty owner-labelled commits, both `scripts/fork-check.sh --base B`
+and `scripts/fork-check.sh --upstream upstream`, required CI and independent review
+of exact `C`. Deliver only through the guarded replacement path below, preserving
+the old history in the pushed backup tag.
+
+For absorptions, enable resolution reuse in the local clone without automatic
+staging:
+
+```bash
+git config --local rerere.enabled true
+git config --local rerere.autoupdate false
+```
+
+Review reused resolutions before staging and test the result. Use
+`git rerere forget <path>` for a bad reuse. Linked worktrees share the clone's
+cache. Between separate clones or machines, transfer only a trusted snapshot of
+`rr-cache` with no concurrent writers; keep it private and never live-sync it.
+Reused text is not proof of correct behavior.
 
 ## Desktop and data isolation
 
@@ -103,9 +147,11 @@ The report scans every commit in that range, comparing merge commits with their
 first parent. Literal keywords match titles, paths and complete diffs, and paths
 match every carried feature that watches them. Git output has a bounded 1 GiB
 buffer; an overflow fails with the offending command and commit, never a partial
-report. For every match, record a reviewed decision and rationale:
+report. For every match, retain a decision and rationale:
 keep ours, adopt upstream and delete ours, or merge both. Heuristic matches alone
-do not establish duplication. Preserve the original pre-absorption report.
+do not establish duplication. Keyword-only matches may be mechanically triaged
+with an explicit rationale; preserve every path match for review. Preserve the
+original pre-absorption report alongside the triage.
 
 `scripts/fork-check.sh` compares the entire stack from the merge base with
 `upstream/main`, independent of the PR base. A missing `upstream/main` fails;

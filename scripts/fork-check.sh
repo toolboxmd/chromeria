@@ -81,6 +81,7 @@ if [[ "$FAIL" -ne 0 ]]; then
 fi
 
 node "$(dirname "$0")/fork-features.mjs" check
+node "$(dirname "$0")/fork-consolidate.mjs" check "$BASE" HEAD
 node "$(dirname "$0")/browser-doc-check.mjs"
 
 echo "fork-check: OK."
