@@ -364,6 +364,7 @@ const withParent = <A, E>(
     readonly offers: Ref.Ref<
       ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
     >;
+    readonly firstOffer: Effect.Effect<ProviderContinuationRequests.ProviderContinuationRequest>;
     readonly drain: Effect.Effect<number, EffectWorker.OrchestrationEffectWorkerError>;
   }) => Effect.Effect<A, E, Orchestrator.OrchestratorV2>,
   purposeIntent?: PurposeIntent,
@@ -385,9 +386,15 @@ const withParent = <A, E>(
       const offers = yield* Ref.make<
         ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
       >([]);
+      const firstOffer =
+        yield* Deferred.make<ProviderContinuationRequests.ProviderContinuationRequest>();
       // Records each wake the parent would get instead of starting its turn.
       const layerOffers = Layer.succeed(ProviderContinuationRequests.ProviderContinuationRequests, {
-        offer: (request) => Ref.update(offers, (existing) => [...existing, request]),
+        offer: (request) =>
+          Ref.update(offers, (existing) => [...existing, request]).pipe(
+            Effect.andThen(Deferred.succeed(firstOffer, request)),
+            Effect.asVoid,
+          ),
         take: Effect.never,
       });
       const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
@@ -509,7 +516,13 @@ const withParent = <A, E>(
               Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
               Effect.provideService(McpSchema.McpServerClient, client),
             );
-        return yield* body({ orchestrator, invoke, offers, drain: worker.drain() });
+        return yield* body({
+          orchestrator,
+          invoke,
+          offers,
+          firstOffer: Deferred.await(firstOffer),
+          drain: worker.drain(),
+        });
       }).pipe(Effect.provide(layerTest));
     }),
   );
@@ -904,7 +917,7 @@ describe("Run groups", () => {
           instanceId === codex
             ? Deferred.await(codexDone).pipe(Effect.as<TurnOutcome>("fail"))
             : Effect.succeed<TurnOutcome>("hang"),
-        ({ orchestrator, invoke, offers, drain }) =>
+        ({ orchestrator, invoke, offers, firstOffer, drain }) =>
           Effect.gen(function* () {
             const started = yield* group(
               yield* invoke("delegate_task", {
@@ -943,6 +956,7 @@ describe("Run groups", () => {
             expect(new Set(delivery?.taskIds)).toEqual(
               new Set([failing!.taskId, cancelled!.taskId]),
             );
+            expect((yield* firstOffer).delegatedCompletion?.messageId).toBe(delivery?.messageId);
             expect(yield* Ref.get(offers)).toHaveLength(1);
 
             // The wake text lists each member's status and result.
@@ -1238,7 +1252,7 @@ describe("Run groups", () => {
       roastRun([codexColor, claudeColor], 2),
       (_turn, instanceId) =>
         Effect.succeed<TurnOutcome>(instanceId === claude ? "complete" : "hang"),
-      ({ orchestrator, invoke, offers, drain }) =>
+      ({ orchestrator, invoke, offers, firstOffer, drain }) =>
         Effect.gen(function* () {
           const started = yield* group(
             yield* invoke("delegate_task", { task: "Attack this plan.", prismRole: "roast" }),
@@ -1279,6 +1293,9 @@ describe("Run groups", () => {
           );
           yield* drain;
           expect(subagent(woken, refused!.taskId)?.completionDelivery?.state).not.toBe("disposed");
+          expect((yield* firstOffer).delegatedCompletion?.messageId).toBe(
+            woken.runs[0]?.delegatedCompletion?.delivery?.messageId,
+          );
           expect(yield* Ref.get(offers)).toHaveLength(1);
         }),
     ),
