@@ -457,7 +457,7 @@ it.live("serves a tab's download only to an authorized session", () =>
       answerFileChooser: () => Effect.succeed(false),
       attachViewer: () => Effect.die("unused"),
     });
-    const serve = (scopes: ReadonlyArray<AuthEnvironmentScope>, url: string) =>
+    const serve = (scopes: ReadonlyArray<AuthEnvironmentScope>, url: string, method = "GET") =>
       Effect.gen(function* () {
         const handler = yield* Effect.acquireRelease(
           Effect.sync(() =>
@@ -472,7 +472,7 @@ it.live("serves a tab's download only to an authorized session", () =>
           ),
           ({ dispose }) => Effect.promise(dispose),
         );
-        return yield* Effect.promise(() => handler.handler(new Request(url)));
+        return yield* Effect.promise(() => handler.handler(new Request(url, { method })));
       });
     const base = "http://t3.test/api/preview-stream/download?threadId=thread&tabId=tab";
     const denied = yield* serve([], `${base}&id=download-1`);
@@ -484,6 +484,12 @@ it.live("serves a tab's download only to an authorized session", () =>
       'attachment; filename="Q3 report.csv"',
     );
     expect(yield* Effect.promise(() => response.text())).toBe("report contents");
+    const head = yield* serve([AuthOrchestrationReadScope], `${base}&id=download-1`, "HEAD");
+    expect(head.status).toBe(200);
+    expect(head.headers.get("content-length")).toBe("15");
+    expect(yield* Effect.promise(() => head.text())).toBe("");
+    const deniedHead = yield* serve([], `${base}&id=download-1`, "HEAD");
+    expect(deniedHead.status).toBe(403);
     const missing = yield* serve([AuthOrchestrationReadScope], `${base}&id=other`);
     expect(missing.status).toBe(404);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
