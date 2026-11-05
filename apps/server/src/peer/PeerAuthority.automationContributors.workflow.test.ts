@@ -519,28 +519,7 @@ it.live(
           "disk",
           { productionKernel: true, attachmentRequests: true },
         );
-        const fs = yield* FileSystem.FileSystem;
-        const root = yield* fs.makeTempDirectoryScoped({ prefix: "automation384-checked-" });
-        const git = (args: ReadonlyArray<string>) =>
-          ProcessRunner.ProcessRunner.pipe(
-            Effect.flatMap((runner) => runner.run({ command: "git", args: ["-C", root, ...args] })),
-            Effect.provide(ProcessRunner.layer),
-          );
-        expect((yield* git(["init", "--quiet", "--initial-branch=main"])).code).toBe(0);
-        yield* fs.writeFileString(`${root}/README.md`, "Isolated checked fixture");
-        expect((yield* git(["add", "README.md"])).code).toBe(0);
-        expect(
-          (yield* git([
-            "-c",
-            "user.name=Fixture",
-            "-c",
-            "user.email=fixture@example.invalid",
-            "commit",
-            "--quiet",
-            "-m",
-            "Fixture baseline",
-          ])).code,
-        ).toBe(0);
+        const root = yield* automationWorkspace;
         let checkStarts = 0;
         const spawner = ChildProcessSpawner.make(() =>
           Effect.gen(function* () {
