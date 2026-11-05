@@ -1375,11 +1375,14 @@ export const layer: Layer.Layer<
             (candidate) => candidate.ordinal > sourceRun.ordinal && isActiveRun(candidate),
           );
           if (sourceBusy && projection.thread.bare !== undefined) {
-            return yield* new ProviderTurnStartError({
-              runId,
-              cause:
+            yield* settleStartFailure({
+              signal: "bare-native-fork-source-busy",
+              title: "Bare native fork unavailable",
+              error: new Error(
                 "Bare native fork source became busy; will not substitute a summary or a fresh conversation.",
+              ),
             });
+            return undefined;
           }
           if (!sourceBusy) {
             // Rolled-back turns are no longer in the source conversation, so they cannot bound a fork.
