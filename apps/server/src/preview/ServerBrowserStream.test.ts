@@ -1,7 +1,8 @@
 import * as NodeHttpPlatform from "@effect/platform-node/NodeHttpPlatform";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { expect, it } from "@effect/vitest";
+import * as NodeWS from "@effect/platform-node/NodeWS";
+import { expect, it, vi } from "@effect/vitest";
 import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
@@ -552,6 +553,193 @@ it.live("passes uploaded files to the page's open picker and needs operate scope
 );
 
 const decodeHostSetup = Schema.decodeUnknownEffect(Schema.fromJsonString(PreviewStreamHostSetup));
+
+it.live.each(["closing", "open"] as const)(
+  "keeps the peer close owner when a send fails on a %s socket",
+  (state) => {
+    let releaseSend: (() => void) | undefined;
+    let releaseClose: (() => void) | undefined;
+    let gating = true;
+    const releaseGates = () => {
+      gating = false;
+      releaseSend?.();
+      releaseClose?.();
+    };
+    return Effect.gen(function* () {
+      const peer = yield* Effect.acquireRelease(
+        Effect.sync(() => new NodeWS.WebSocketServer({ port: 0 })),
+        (server) =>
+          Effect.promise(
+            () =>
+              new Promise<void>((resolve) => {
+                for (const client of server.clients) client.terminate();
+                server.close(() => resolve());
+              }),
+          ),
+      );
+      if (!peer.address())
+        yield* Effect.promise(
+          () => new Promise<void>((resolve) => peer.once("listening", resolve)),
+        );
+      const address = peer.address();
+      if (typeof address !== "object" || address === null) throw new Error("Missing peer port");
+      const peerOrigin = `http://127.0.0.1:${address.port}`;
+      const peerSocketOrigin = peerOrigin.replace(/^http/, "ws");
+      peer.on("connection", (socket) => {
+        socket.send("ready");
+        if (state === "closing")
+          socket.once("message", () => socket.close(1013, "browser input backlog"));
+      });
+      let sendFailureState: number | undefined;
+      let closedWriteCause: unknown;
+      let peerCloseCode: number | undefined;
+      const originalSend = NodeWS.WebSocket.prototype.send;
+      const originalEmit = NodeWS.WebSocket.prototype.emit;
+      yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          vi.spyOn(NodeWS.WebSocket.prototype, "send").mockImplementation(function (
+            this: NodeWS.WebSocket,
+            data,
+            ...args
+          ) {
+            const callback = args.at(-1);
+            if (
+              gating &&
+              this.url?.startsWith(peerSocketOrigin) &&
+              typeof callback === "function"
+            ) {
+              args[args.length - 1] = (error) => {
+                if (state === "open") {
+                  sendFailureState = this.readyState;
+                  callback(new Error("Open peer write failed"));
+                } else if (data === JSON.stringify({ type: "text", text: "first" })) {
+                  releaseSend = () => {
+                    releaseSend = undefined;
+                    callback(error);
+                  };
+                  if (releaseClose) releaseSend();
+                } else {
+                  sendFailureState = this.readyState;
+                  closedWriteCause = error;
+                  callback(error);
+                  queueMicrotask(() => releaseClose?.());
+                }
+              };
+            }
+            return originalSend.call(this, data, ...args);
+          }),
+        ),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      );
+      yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          vi.spyOn(NodeWS.WebSocket.prototype, "emit").mockImplementation(function (
+            this: NodeWS.WebSocket,
+            event,
+            ...args
+          ) {
+            if (
+              gating &&
+              state === "closing" &&
+              this.url?.startsWith(peerSocketOrigin) &&
+              event === "close"
+            ) {
+              peerCloseCode = args[0];
+              releaseClose = () => {
+                releaseClose = undefined;
+                originalEmit.call(this, event, ...args);
+              };
+              releaseSend?.();
+              return true;
+            }
+            return originalEmit.call(this, event, ...args);
+          }),
+        ),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      );
+      const scopes = [AuthOrchestrationReadScope, AuthPreviewOperateScope];
+      const expiresAt = DateTime.add(yield* DateTime.now, { hours: 1 });
+      const services = yield* Layer.build(
+        HttpRouter.serve(routeLayer.pipe(Layer.provide(platformLayer)), {
+          disableListenLog: true,
+        }).pipe(
+          Layer.provideMerge(NodeHttpServer.layerTest),
+          Layer.provide(makeAuth(scopes).layer),
+          Layer.provide(
+            Layer.mock(PreviewViewers, {
+              resolve: () => Effect.succeed({ type: "peer", origin: peerOrigin, ticket: "peer" }),
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(SessionStore.SessionStore, {
+              cookieName: "stream-test",
+              legacyCookieName: undefined,
+              admitViewerToken: () =>
+                Effect.succeed({
+                  session: {
+                    sessionId: AuthSessionId.make("stream-test"),
+                    token: "test",
+                    method: "bearer-access-token",
+                    client: {
+                      label: "Relay fixture",
+                      deviceType: "unknown",
+                    },
+                    subject: "stream-test",
+                    scopes,
+                  },
+                  viewerId: "viewer",
+                  expiresAt,
+                  resource: {
+                    type: "preview",
+                    environmentId: EnvironmentId.make("peer"),
+                    threadId: ThreadId.make("thread"),
+                    tabId: "tab",
+                    serverEpoch: "epoch",
+                  },
+                  operation: "control",
+                  generation: "generation",
+                  recheck: Effect.void,
+                }),
+              awaitViewerInvalidation: () => Effect.never,
+            }),
+          ),
+        ),
+      );
+      const origin = HttpServer.formatAddress(
+        Context.get(services, HttpServer.HttpServer).address,
+      ).replace(/^http/, "ws");
+      const closed = Promise.withResolvers<number>();
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          const socket = new WebSocket(
+            `${origin}/api/preview-stream/ws?threadId=thread&tabId=tab&viewerTicket=test`,
+          );
+          socket.addEventListener("error", () => closed.reject(new Error("Relay fixture failed")));
+          socket.addEventListener("close", ({ code }) => closed.resolve(code), { once: true });
+          socket.addEventListener(
+            "message",
+            () => {
+              socket.send(JSON.stringify({ type: "text", text: "first" }));
+              if (state === "closing")
+                socket.send(JSON.stringify({ type: "text", text: "second" }));
+            },
+            { once: true },
+          );
+          return socket;
+        }),
+        (socket) => Effect.sync(() => socket.close()),
+      );
+      expect(yield* Effect.promise(() => closed.promise)).toBe(state === "closing" ? 1013 : 1011);
+      expect(sendFailureState).toBe(
+        state === "closing" ? NodeWS.WebSocket.CLOSED : NodeWS.WebSocket.OPEN,
+      );
+      if (state === "closing") {
+        expect(peerCloseCode).toBe(1013);
+        expect(closedWriteCause).toBeInstanceOf(Error);
+      }
+    }).pipe(Effect.ensuring(Effect.sync(releaseGates)), Effect.scoped);
+  },
+);
 
 it.live.each([
   {
