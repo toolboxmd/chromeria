@@ -29,10 +29,17 @@ export const SpectrumWhite = Schema.Struct({
 });
 export type SpectrumWhite = typeof SpectrumWhite.Type;
 
+const SpectrumSlots = Schema.Array(SpectrumSettingsSlot).check(
+  Schema.isMaxLength(8),
+  Schema.makeFilter((slots) => {
+    if (new Set(slots.map((slot) => slot.label)).size !== slots.length)
+      return "Spectrum slot labels must be unique.";
+    return slots.length !== 1 || "Configure at least two Spectrum slots.";
+  }),
+);
+
 const spectrumSettingsFields = {
-  slots: Schema.Array(SpectrumSettingsSlot)
-    .check(Schema.isMaxLength(8))
-    .pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  slots: SpectrumSlots.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   mode: SpectrumMode.pipe(Schema.withDecodingDefault(Effect.succeed("council" as const))),
   relayRounds: SpectrumRelayRounds.pipe(Schema.withDecodingDefault(Effect.succeed(2))),
   turnsPerColor: SpectrumTurnsPerColor.pipe(Schema.withDecodingDefault(Effect.succeed(3))),
@@ -42,10 +49,7 @@ const CurrentSpectrumSettings = Schema.Struct({
   white: Schema.NullOr(SpectrumWhite).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
 }).check(
   Schema.makeFilter((settings) => {
-    if (new Set(settings.slots.map((slot) => slot.label)).size !== settings.slots.length)
-      return "Spectrum slot labels must be unique.";
     if (settings.slots.length === 0) return true;
-    if (settings.slots.length < 2) return "Configure at least two Spectrum slots.";
     return settings.white !== null || "Choose White's Color.";
   }),
 );
@@ -83,4 +87,22 @@ export const SpectrumSettings = Schema.Unknown.pipe(
   ),
 );
 export type SpectrumSettings = typeof SpectrumSettings.Type;
+
+const ProjectSpectrumSettingsValue = Schema.Struct({
+  slots: Schema.optionalKey(SpectrumSlots),
+  white: Schema.optionalKey(Schema.NullOr(SpectrumWhite)),
+  mode: Schema.optionalKey(SpectrumMode),
+  relayRounds: Schema.optionalKey(SpectrumRelayRounds),
+  turnsPerColor: Schema.optionalKey(SpectrumTurnsPerColor),
+});
+
+export const ProjectSpectrumSettings = Schema.Unknown.pipe(
+  Schema.decodeTo(
+    ProjectSpectrumSettingsValue,
+    SchemaTransformation.transform<typeof ProjectSpectrumSettingsValue.Encoded, unknown>({
+      decode: (raw) => whiteFromSlotLabel(raw) as typeof ProjectSpectrumSettingsValue.Encoded,
+      encode: (settings) => settings,
+    }),
+  ),
+);
 export const DEFAULT_SPECTRUM_SETTINGS = Schema.decodeSync(SpectrumSettings)({});

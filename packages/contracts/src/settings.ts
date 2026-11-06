@@ -1,4 +1,8 @@
-import { SpectrumSettings, DEFAULT_SPECTRUM_SETTINGS } from "./spectrumSettings.ts";
+import {
+  ProjectSpectrumSettings,
+  SpectrumSettings,
+  DEFAULT_SPECTRUM_SETTINGS,
+} from "./spectrumSettings.ts";
 import { WebResearchSettings, WebResearchSettingsPatch } from "./webResearch.ts";
 import { forkOpaqueSettingsFields } from "./forkSettings.ts";
 import { CredentialVaultSettings, DEFAULT_CREDENTIAL_VAULT_SETTINGS } from "./previewCredential.ts";
@@ -1071,7 +1075,7 @@ export type ProjectProviderInstanceOverride = typeof ProjectProviderInstanceOver
 
 /**
  * An absent key inherits the environment value; `null` is a real value where the type is nullable.
- * `prismRoles` overlays the environment kits partially; other scoped keys replace their field whole.
+ * `prismRoles` and `spectrum` overlay environment values partially; other scoped keys replace whole.
  * `providerInstances` keeps the settings.json shape but overrides per `ProviderInstanceId`.
  */
 export const ProjectSettingsOverrides = Schema.Struct({
@@ -1103,7 +1107,7 @@ export const ProjectSettingsOverrides = Schema.Struct({
   continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),
   prismRoles: Schema.optionalKey(PrismProjectRoleKits),
-  spectrum: Schema.optionalKey(SpectrumSettings),
+  spectrum: Schema.optionalKey(ProjectSpectrumSettings),
   providerInstances: Schema.optionalKey(
     Schema.Record(ProviderInstanceId, ProjectProviderInstanceOverride),
   ),

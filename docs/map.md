@@ -53,7 +53,7 @@ flowchart TD
     T3M --> VCF --> PBI
 
     PZ["Prism routing"]
-    %% PZ: #92 #625 #616 #579 #573 #568 #564 PR #556 #554 PR #408 PR #430 PR #479 PR #489 PR #512 PR #471 PR #476 PR #539
+    %% PZ: #92 #625 #616 #579 #573 #568 #564 PR #556 #554 PR #408 PR #430 PR #479 PR #489 PR #512 PR #471 PR #476 PR #539 #515
     VT["Visible T3 threads"]
     %% VT: #10
     PM["Promachos bubbles and persona"]
@@ -67,7 +67,7 @@ flowchart TD
     DR["Drafters in any project"]
     %% DR: #114 #429 PR #475
     SC["Spectrum council and free"]
-    %% SC: #118 PR #494 PR #509 PR #508 #401 PR #514 #525 PR #529 #293
+    %% SC: #118 PR #494 PR #509 PR #508 #401 PR #514 #525 PR #529 #293 #515
     JT["Spectrum judged tests"]
     %% JT: #119
     OB["OpenBot: Bots, Channels, Computer"]

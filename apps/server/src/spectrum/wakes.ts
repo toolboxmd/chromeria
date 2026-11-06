@@ -105,6 +105,7 @@ export const layer = Layer.effectDiscard(
 
     const spectra = new Set<ThreadId>();
     const watches = new Map<ThreadId, SpectrumWatch>();
+    const failedRefreshes = new Set<ThreadId>();
     const watchers = new Map<ThreadId, Map<ThreadId, Interest>>();
     const waiters = new Map<ThreadId, Map<string, Fiber.Fiber<void>>>();
     const queued = new Set<ThreadId>();
@@ -180,14 +181,16 @@ export const layer = Layer.effectDiscard(
         const found = yield* readSpectrum(id);
         const watch = Option.isNone(found) ? null : yield* readSpectrumWatch(found.value);
         if (yield* index(id, watch)) yield* wake(id);
+        failedRefreshes.delete(id);
       },
       (effect, id) =>
         effect.pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.provideService(Projections.ProjectionStoreV2, projections),
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Spectrum watch refresh failed", { threadId: id, cause }),
-          ),
+          Effect.catchCause((cause) => {
+            failedRefreshes.add(id);
+            return Effect.logWarning("Spectrum watch refresh failed", { threadId: id, cause });
+          }),
         ),
     );
 
@@ -295,6 +298,7 @@ export const layer = Layer.effectDiscard(
           yield* wake(id);
         }
         for (const id of watches.keys()) yield* wake(id);
+        for (const id of failedRefreshes) yield* wake(id);
       }).pipe(Effect.delay(RECONCILE_INTERVAL), Effect.forever),
     );
   }),

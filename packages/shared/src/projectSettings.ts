@@ -148,14 +148,15 @@ function resolveProjectOverrides(
     ) {
       continue;
     }
-    // Prism kits are partial: the project's roles overlay the environment's.
     effective[key] =
       key === "prismRoles"
         ? overlayPrismRoleKits(
             settings.prismRoles,
             value as NonNullable<typeof overrides.prismRoles>,
           )
-        : value;
+        : key === "spectrum"
+          ? { ...settings.spectrum, ...overrides.spectrum }
+          : value;
     sources[key] = "project";
   }
   const textGeneration = effective.textGenerationModelSelection as ModelSelection;

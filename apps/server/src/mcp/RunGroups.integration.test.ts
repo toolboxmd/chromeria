@@ -1483,7 +1483,10 @@ describe("Run groups", () => {
     ),
   );
 
-  it.live("a Run group to a linked environment is refused", () =>
+  it.live.each([
+    { target: { environmentId: "environment:elsewhere" }, message: "linked environment" },
+    { target: { projectId: "project:elsewhere" }, message: "Omit target.projectId" },
+  ])("a Run group to another destination is refused: $target", ({ target, message }) =>
     withParent(
       roastRun([codexColor, claudeColor], 2),
       () => Effect.succeed<TurnOutcome>("hang"),
@@ -1492,13 +1495,29 @@ describe("Run groups", () => {
           const refused = yield* invoke("delegate_task", {
             task: "Attack this plan.",
             prismRole: "roast",
-            target: { environmentId: "environment:elsewhere" },
+            target,
           });
           expect(declaredFailure(refused)).toMatchObject({ code: "invalid_request" });
-          expect(declaredFailure(refused).message).toContain("linked environment");
+          expect(declaredFailure(refused).message).toContain(message);
           expect((yield* orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(
             0,
           );
+          const accepted = yield* invoke("delegate_task", {
+            task: "Attack this plan here.",
+            prismRole: "roast",
+            target: { projectId },
+            clientRequestId: "same-project",
+          });
+          expect(accepted.isError).toBe(false);
+          expect(accepted.structuredContent).toHaveProperty("groupId");
+          const retried = yield* invoke("delegate_task", {
+            task: "Attack this plan here.",
+            prismRole: "roast",
+            target: { projectId: "project:elsewhere" },
+            clientRequestId: "same-project",
+          });
+          expect(declaredFailure(retried)).toMatchObject({ code: "invalid_request" });
+          expect(declaredFailure(retried).message).toContain("Omit target.projectId");
         }),
     ),
   );
