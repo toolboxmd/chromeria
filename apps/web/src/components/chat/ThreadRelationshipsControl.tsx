@@ -24,6 +24,8 @@ import {
   subagentChildTarget,
   threadRelationshipNodeKey,
   threadRelationshipRowStatus,
+  threadRelationshipLiveStatus,
+  threadRelationshipLiveStatusLabel,
   orderWebThreadLineageRows,
   resolveMergeBackTargetThreadId,
   type ThreadRelationshipEdge,
@@ -519,7 +521,8 @@ export function ThreadRelationshipsPanel(props: {
           ? subagentsByThreadId.get(threadRelationshipNodeKey(row.threadId, row.environmentId))
           : undefined;
       const workflowGroup = agent === undefined ? undefined : workflowGroupsById.get(agent.id);
-      return workflowGroup === undefined
+      return workflowGroup === undefined ||
+        threadRelationshipLiveStatusLabel(row.edge.status) !== null
         ? row
         : { ...row, edge: { ...row.edge, status: workflowGroup.workflow.status } };
     });
@@ -722,6 +725,7 @@ export function ThreadRelationshipsPanel(props: {
     const isMergeTarget = threadId === mergeTargetThreadId && rowEnvironment === null;
     const isParent = isParentThreadRelationship(edge, props.threadId);
     const rowStatus =
+      (edge.kind === "transfer" ? null : threadRelationshipLiveStatus(node?.thread)) ??
       (isParent && threadId === parentRef?.threadId
         ? (node?.thread?.activityRunStatus ?? parentNativeStatus)
         : undefined) ??
@@ -788,9 +792,14 @@ export function ThreadRelationshipsPanel(props: {
       workflowGroup?.workflow.status === "running" &&
       agent?.origin === "provider_native" &&
       providerDriver === "claudeAgent";
-    const trailingVisibilityClass = (workflowGroup ? canStopWorkflow : canStop)
-      ? "group-hover:opacity-0 group-focus-within:opacity-0 pointer-coarse:opacity-0 [@media(hover:none)]:opacity-0"
-      : "";
+    const showLiveStatus = threadRelationshipLiveStatusLabel(rowStatus) !== null;
+    const trailingVisibilityClass = showLiveStatus
+      ? canStop
+        ? "me-6"
+        : ""
+      : (workflowGroup ? canStopWorkflow : canStop)
+        ? "group-hover:opacity-0 group-focus-within:opacity-0 pointer-coarse:opacity-0 [@media(hover:none)]:opacity-0"
+        : "";
     // Project ids are only unique inside one environment, so a
     // remote row resolves its project there, not locally.
     const project = allProjects.find(
@@ -819,6 +828,7 @@ export function ThreadRelationshipsPanel(props: {
           driver={providerDriver}
           elapsed={<AgentElapsed agent={agent} />}
           status={agent.status}
+          presentationStatus={threadRelationshipLiveStatus(node?.thread, agent.remoteChild)}
           result={agent.result}
           progress={agent.progress}
           parentThread={currentThread ?? undefined}
@@ -851,7 +861,10 @@ export function ThreadRelationshipsPanel(props: {
         {agent ? null : (
           <ArrowRightIcon className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
         )}
-        {agent && !failed && (deriveSubagentElapsedMs(agent, 0) !== null || canStopWorkflow) ? (
+        {agent &&
+        !failed &&
+        threadRelationshipLiveStatusLabel(rowStatus) === null &&
+        (deriveSubagentElapsedMs(agent, 0) !== null || canStopWorkflow) ? (
           <span
             className={`shrink-0 text-2xs font-normal tabular-nums text-muted-foreground ${canStopWorkflow ? "min-w-6 text-end" : ""} ${trailingVisibilityClass}`}
           >
@@ -860,7 +873,7 @@ export function ThreadRelationshipsPanel(props: {
         ) : !isMergeTarget ? (
           <span
             className={
-              workflowGroup
+              workflowGroup && threadRelationshipLiveStatusLabel(rowStatus) === null
                 ? "sr-only"
                 : `shrink-0 text-2xs ${failed ? "text-destructive" : "text-muted-foreground"} ${trailingVisibilityClass}`
             }
@@ -913,6 +926,9 @@ export function ThreadRelationshipsPanel(props: {
             openThread(memberThreadId as ThreadId, rowEnvironmentId)
           }
           isThreadAvailable={() => !remoteUnreachable}
+          getThreadShell={(memberThreadId) =>
+            getThreadRelationshipNode(graph, memberThreadId as ThreadId, rowEnvironment)?.thread
+          }
           onStop={canStopWorkflow ? () => void stopWorkflow(agent.id) : undefined}
           stopping={stoppingId === agent.id}
           stopDisabled={stoppingId !== null}

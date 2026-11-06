@@ -10,6 +10,7 @@ import {
   orderWebThreadLineageRows,
   resolveMergeBackTargetThreadId,
   threadRelationshipRowStatus,
+  threadRelationshipLiveStatus,
 } from "./threadRelationships.ts";
 
 describe("thread relationships", () => {
@@ -41,6 +42,89 @@ describe("thread relationships", () => {
     expect(
       threadRelationshipRowStatus(graph, immediateThreadRelationships(graph, parent)[0]!),
     ).toBe(childStatus);
+  });
+
+  it.each([
+    [{ pendingRuntimeRequest: { kind: "command" } }, "awaiting_approval"],
+    [{ pendingRuntimeRequest: { kind: "file-read" } }, "awaiting_approval"],
+    [{ pendingRuntimeRequest: { kind: "file-change" } }, "awaiting_approval"],
+    [{ pendingRuntimeRequest: { kind: "mcp-elicitation" } }, "awaiting_approval"],
+    [{ pendingRuntimeRequest: { kind: "permission" } }, "awaiting_approval"],
+    [{ pendingRuntimeRequest: { kind: "user_input" } }, "awaiting_input"],
+    [{ pendingRuntimeRequest: { kind: "user_input", blocking: false } }, "completed"],
+    [{ remotePendingRequest: "approval" }, "awaiting_approval"],
+    [{ remotePendingRequest: "user_input" }, "awaiting_input"],
+    [{ pendingBackgroundTasks: [{ taskId: "bg", kind: "command" }] }, "background_active"],
+    [{ pendingBackgroundTasks: [{ taskId: "monitor", kind: "monitor" }] }, "background_active"],
+    [{ pendingBackgroundTasks: [] }, "completed"],
+    [
+      { activityRunStatus: "running", pendingBackgroundTasks: [{ taskId: "bg", kind: "command" }] },
+      "running",
+    ],
+    [
+      {
+        pendingRuntimeRequest: { kind: "command" },
+        pendingBackgroundTasks: [{ taskId: "bg", kind: "command" }],
+      },
+      "awaiting_approval",
+    ],
+  ])("presents live child state %j as %s and clears it with the shell", (state, expected) => {
+    const parent = ThreadId.make("parent");
+    const child = ThreadId.make("child");
+    const derive = (live: object, includeTask = true) =>
+      deriveThreadRelationshipGraph({
+        threads: [
+          { id: parent, status: "idle", lineage: { parentThreadId: null } },
+          {
+            id: child,
+            status: "completed",
+            latestRunId: "run",
+            activityRunStatus: null,
+            pendingRuntimeRequest: null,
+            pendingBackgroundTasks: [],
+            lineage: { parentThreadId: parent, relationshipToParent: "subagent" },
+            ...live,
+          },
+        ] as never,
+        projection: includeTask
+          ? ({
+              thread: { id: parent },
+              subagents: [{ childThreadId: child, status: "completed" }],
+              contextTransfers: [],
+            } as never)
+          : null,
+      });
+    expect(derive(state, false).edges[0]?.status).toBe(expected);
+    const graph = derive(state);
+    expect(
+      threadRelationshipRowStatus(graph, immediateThreadRelationships(graph, parent)[0]!),
+    ).toBe(expected);
+    const cleared = derive({});
+    expect(
+      threadRelationshipRowStatus(cleared, immediateThreadRelationships(cleared, parent)[0]!),
+    ).toBe("completed");
+  });
+
+  it.each([
+    [
+      { requests: [{ kind: "command", responseType: "live" }], workState: "working" },
+      "awaiting_approval",
+    ],
+    [
+      { requests: [{ kind: "user_input", responseType: "live" }], workState: "working" },
+      "awaiting_input",
+    ],
+    [{ requests: [{ kind: "user_input", responseType: "message" }], workState: "working" }, null],
+    [{ requests: [], workState: "waiting_for_children" }, "background_active"],
+    [{ requests: [], workState: "result_available" }, null],
+  ])("presents a remote snapshot without a shell: %j", (snapshot, expected) => {
+    expect(threadRelationshipLiveStatus(null, { snapshot } as never)).toBe(expected);
+    expect(
+      threadRelationshipLiveStatus(
+        { status: "completed", pendingRuntimeRequest: null } as never,
+        { snapshot } as never,
+      ),
+    ).toBeNull();
   });
 
   it("does not label a missing parent with its child's running status", () => {
@@ -274,7 +358,7 @@ describe("thread relationships", () => {
     });
     const row = immediateThreadRelationships(graph, parent)[0]!;
     expect(row.environmentId).toBe(environment);
-    expect(threadRelationshipRowStatus(graph, row)).toBe("running");
+    expect(threadRelationshipRowStatus(graph, row)).toBe("background_active");
     expect(getThreadRelationshipNode(graph, child)).toBeUndefined();
     expect(task.result).toBe("immutable original");
   });

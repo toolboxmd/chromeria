@@ -12,13 +12,18 @@ import { REASONING_EFFORT_OPTION_IDS } from "@t3tools/client-runtime/state/threa
 import type {
   EnvironmentId,
   OrchestrationV2Subagent,
+  OrchestrationV2ThreadShell,
   ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
 import { resolveSelectableModel } from "@t3tools/shared/model";
 
 import { subagentCardDetail } from "./subagent-card-presentation";
-import { subagentChildTarget } from "@t3tools/client-runtime/state/thread-relationships";
+import {
+  threadRelationshipLiveStatus,
+  threadRelationshipLiveStatusLabel,
+  subagentChildTarget,
+} from "@t3tools/client-runtime/state/thread-relationships";
 
 const PROMPT_TITLE_LIMIT = 80;
 
@@ -99,13 +104,22 @@ export function resolveSubagentRowPresentation(
     "title" | "prompt" | "status" | "progress" | "result" | "childThreadId" | "remoteChild"
   >,
   _canOpenRemote = false,
+  child?: OrchestrationV2ThreadShell | null,
 ): SubagentRowPresentation {
+  const liveStatus = threadRelationshipLiveStatus(child, subagent.remoteChild);
+  const shellStatus = child?.activityRunStatus ?? child?.status;
   const status =
-    subagent.remoteChild?.snapshot !== undefined &&
-    subagent.remoteChild.snapshot.workState !== "result_available"
-      ? "running"
-      : (subagent.remoteChild?.latestResult?.status ?? subagent.status);
-  const live = isActiveSubagentStatus(status);
+    subagent.remoteChild !== undefined && shellStatus != null
+      ? shellStatus === "queued" || shellStatus === "preparing" || shellStatus === "starting"
+        ? "pending"
+        : shellStatus === "rolled_back"
+          ? "interrupted"
+          : shellStatus
+      : subagent.remoteChild?.snapshot !== undefined &&
+          subagent.remoteChild.snapshot.workState !== "result_available"
+        ? "running"
+        : (subagent.remoteChild?.latestResult?.status ?? subagent.status);
+  const live = liveStatus !== null || isActiveSubagentStatus(status);
   return {
     title: rowTitle(subagent),
     detail: subagentDetailPreview(subagent),
@@ -114,8 +128,8 @@ export function resolveSubagentRowPresentation(
         ? "Last known state"
         : subagent.remoteChild?.stop && !live
           ? `Stop ${subagent.remoteChild.stop.state}`
-          : rowStatusLabel(status),
-    tone: rowTone(status),
+          : (threadRelationshipLiveStatusLabel(liveStatus) ?? rowStatusLabel(status)),
+    tone: liveStatus === null ? rowTone(status) : "working",
     live,
     canOpenThread: subagentChildTarget(subagent) !== null,
     runsOn: subagent.remoteChild?.label ?? null,

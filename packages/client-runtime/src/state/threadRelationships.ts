@@ -1,5 +1,6 @@
 import {
   isOrchestrationV2WorkActive,
+  ProviderRequestKind,
   type EnvironmentId,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
@@ -7,6 +8,9 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Schema from "effect/Schema";
+
+const isApprovalRequestKind = Schema.is(ProviderRequestKind);
 
 export type ThreadRelationshipKind = "parent" | "fork" | "subagent" | "transfer";
 
@@ -184,7 +188,7 @@ export function deriveThreadRelationshipGraph(input: {
       sourceEnvironmentId: environmentId,
       targetThreadId: thread.id,
       kind: thread.lineage.relationshipToParent === "subagent" ? "subagent" : "fork",
-      status: thread.activityRunStatus ?? thread.status,
+      status: threadRelationshipLiveStatus(thread) ?? thread.activityRunStatus ?? thread.status,
       targetEnvironmentId: environmentId,
     });
   }
@@ -205,6 +209,7 @@ export function deriveThreadRelationshipGraph(input: {
         targetThreadId: target.threadId,
         kind: "subagent",
         status:
+          threadRelationshipLiveStatus(child, subagent.remoteChild) ??
           child?.activityRunStatus ??
           (child?.latestRunId != null && !isOrchestrationV2WorkActive(subagent.status)
             ? child.status
@@ -290,17 +295,75 @@ export function isParentThreadRelationship(
   );
 }
 
+export function threadRelationshipLiveStatusLabel(status: string | null): string | null {
+  switch (status) {
+    case "awaiting_approval":
+      return "Awaiting approval";
+    case "awaiting_input":
+      return "Awaiting input";
+    case "background_active":
+      return "Background active";
+    default:
+      return null;
+  }
+}
+
+export function threadRelationshipLiveStatus(
+  thread:
+    | (Pick<
+        OrchestrationV2ThreadShell,
+        "activityRunStatus" | "pendingBackgroundTasks" | "remotePendingRequest"
+      > & {
+        readonly pendingRuntimeRequest?: OrchestrationV2ThreadShell["pendingRuntimeRequest"];
+        readonly status: OrchestrationV2ThreadShell["status"] | null;
+      })
+    | null
+    | undefined,
+  remoteChild?: OrchestrationV2Subagent["remoteChild"],
+): "awaiting_approval" | "awaiting_input" | "background_active" | null {
+  const request = thread?.pendingRuntimeRequest;
+  const kind = request?.blocking === false ? null : request?.kind;
+  const remoteRequests =
+    thread == null
+      ? (remoteChild?.snapshot?.requests ?? []).filter((request) => request.responseType === "live")
+      : [];
+  if (
+    isApprovalRequestKind(kind) ||
+    thread?.remotePendingRequest === "approval" ||
+    remoteRequests.some((request) => isApprovalRequestKind(request.kind))
+  )
+    return "awaiting_approval";
+  if (
+    kind === "user_input" ||
+    thread?.remotePendingRequest === "user_input" ||
+    remoteRequests.some((request) => request.kind === "user_input")
+  )
+    return "awaiting_input";
+  if (
+    !thread?.activityRunStatus &&
+    !["queued", "preparing", "starting", "running"].includes(thread?.status ?? "") &&
+    ((thread?.pendingBackgroundTasks?.length ?? 0) > 0 ||
+      (thread == null && remoteChild?.snapshot?.workState === "waiting_for_children"))
+  )
+    return "background_active";
+  return null;
+}
+
 export function threadRelationshipRowStatus(
   graph: ThreadRelationshipGraph,
   row: Pick<ThreadRelationshipWalkRow, "threadId" | "environmentId" | "edge">,
 ): string | null {
+  const thread = getThreadRelationshipNode(graph, row.threadId, row.environmentId)?.thread;
+  if (row.edge.kind !== "transfer") {
+    const liveStatus = threadRelationshipLiveStatus(thread);
+    if (liveStatus !== null) return liveStatus;
+  }
   if (
     row.edge.kind === "transfer" ||
     (row.threadId === row.edge.targetThreadId && row.environmentId === row.edge.targetEnvironmentId)
   ) {
     return row.edge.status;
   }
-  const thread = getThreadRelationshipNode(graph, row.threadId, row.environmentId)?.thread;
   return thread?.activityRunStatus ?? thread?.status ?? null;
 }
 
