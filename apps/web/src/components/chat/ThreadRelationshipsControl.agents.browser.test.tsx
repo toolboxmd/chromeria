@@ -235,3 +235,72 @@ it("shows a child delegated to a linked environment and opens it there", async (
   await click(disconnectedRowButton);
   expect(state.navigate).not.toHaveBeenCalled();
 });
+
+it.each([false, true])("shows live workflow member state with phased=%s", async (phased) => {
+  const { ThreadLineageWorkflowRow } = await import("./ThreadLineageWorkflowRow");
+  const member = {
+    id: "member",
+    childThreadId: "member-child",
+    title: "Worker",
+    model: "test-model",
+    status: "completed",
+    startedAt: "2026-09-16T12:00:00Z",
+    completedAt: "2026-09-16T12:01:00Z",
+    progress: null,
+    result: null,
+    error: null,
+  };
+  const group = {
+    workflow: { id: "workflow", title: "Review", workflowName: "Review", status: "running" },
+    phases: phased
+      ? [{ index: 0, title: "Work", state: "running", settledCount: 0, members: [member] }]
+      : [],
+    unphasedMembers: phased ? [] : [member],
+  };
+  const view = (shell: object) => (
+    <ThreadLineageWorkflowRow
+      group={group as never}
+      header={<span>Review</span>}
+      providerInstanceId={"test" as never}
+      provider={undefined}
+      providers={[]}
+      providerEntries={[]}
+      driver={undefined}
+      onOpenThread={() => {}}
+      isThreadAvailable={() => true}
+      getThreadShell={() => shell as never}
+      stopping={false}
+      stopDisabled={false}
+    />
+  );
+  await using screen = await render(view({}));
+  const expand = screen.container.querySelector<HTMLButtonElement>('[aria-label="Expand Review"]');
+  expect(expand).not.toBeNull();
+  await act(async () => expand!.click());
+  for (const [shell, label] of [
+    [{ status: "running", pendingRuntimeRequest: { kind: "command" } }, "Awaiting approval"],
+    [{ status: "running", pendingRuntimeRequest: { kind: "user_input" } }, "Awaiting input"],
+    [
+      {
+        status: "completed",
+        activityRunStatus: null,
+        pendingBackgroundTasks: [{ taskId: "bg", kind: "command" }],
+      },
+      "Background active",
+    ],
+  ] as const) {
+    await act(async () => screen.rerender(view(shell)));
+    const row = screen.container.querySelector('[aria-label^="Open Worker chat"]');
+    expect(row?.textContent).toContain(label);
+    const labelElement = [...(row?.querySelectorAll("span") ?? [])].find(
+      (element) => element.textContent === label,
+    );
+    expect(labelElement?.className).not.toContain("sr-only");
+  }
+  await act(async () =>
+    screen.rerender(
+      view({ status: "completed", pendingRuntimeRequest: null, pendingBackgroundTasks: [] }),
+    ),
+  );
+  expect(screen.container.textContent).not.toContain("Background active");
+});

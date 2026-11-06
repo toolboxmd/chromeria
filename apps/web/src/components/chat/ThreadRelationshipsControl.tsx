@@ -925,6 +925,9 @@ export function ThreadRelationshipsPanel(props: {
             openThread(memberThreadId as ThreadId, rowEnvironmentId)
           }
           isThreadAvailable={() => !remoteUnreachable}
+          getThreadShell={(memberThreadId) =>
+            getThreadRelationshipNode(graph, memberThreadId as ThreadId, rowEnvironment)?.thread
+          }
           onStop={canStopWorkflow ? () => void stopWorkflow(agent.id) : undefined}
           stopping={stoppingId === agent.id}
           stopDisabled={stoppingId !== null}

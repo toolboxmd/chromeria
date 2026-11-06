@@ -1,3 +1,4 @@
+import { makeRawThreadShell } from "../../test-fixtures";
 import { describe, expect, it } from "vite-plus/test";
 import {
   deriveWorkflowGroups,
@@ -84,6 +85,37 @@ describe("resolveSubagentRowPresentation", () => {
     expect(row.detail).toBeNull();
     expect(row.statusLabel).toBe("Working");
   });
+
+  it.each(["working", "waiting_for_children"] as const)(
+    "prefers a cleared destination shell to an older %s snapshot",
+    (workState) => {
+      const remote = {
+        ...base,
+        status: "completed" as const,
+        childThreadId: null,
+        remoteChild: {
+          environmentId: "remote" as never,
+          threadId: "child" as never,
+          label: "Remote",
+          availability: "current" as const,
+          snapshot: { workState } as never,
+        },
+      };
+      expect(resolveSubagentRowPresentation(remote).live).toBe(true);
+      const row = resolveSubagentRowPresentation(
+        remote,
+        true,
+        makeRawThreadShell({
+          status: "completed",
+          activityRunStatus: null,
+          pendingBackgroundTasks: [],
+        }),
+      );
+      expect(row.live).toBe(false);
+      expect(row.statusLabel).toBe("Completed");
+      expect(row.tone).toBe("completed");
+    },
+  );
 
   it("bounds long result previews without dropping the agent's status", () => {
     const row = resolveSubagentRowPresentation({

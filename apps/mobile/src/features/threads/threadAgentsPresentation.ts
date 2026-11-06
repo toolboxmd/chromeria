@@ -107,11 +107,18 @@ export function resolveSubagentRowPresentation(
   child?: OrchestrationV2ThreadShell | null,
 ): SubagentRowPresentation {
   const liveStatus = threadRelationshipLiveStatus(child, subagent.remoteChild);
+  const shellStatus = child?.activityRunStatus ?? child?.status;
   const status =
-    subagent.remoteChild?.snapshot !== undefined &&
-    subagent.remoteChild.snapshot.workState !== "result_available"
-      ? "running"
-      : (subagent.remoteChild?.latestResult?.status ?? subagent.status);
+    subagent.remoteChild !== undefined && shellStatus != null
+      ? shellStatus === "queued" || shellStatus === "preparing" || shellStatus === "starting"
+        ? "pending"
+        : shellStatus === "rolled_back"
+          ? "interrupted"
+          : shellStatus
+      : subagent.remoteChild?.snapshot !== undefined &&
+          subagent.remoteChild.snapshot.workState !== "result_available"
+        ? "running"
+        : (subagent.remoteChild?.latestResult?.status ?? subagent.status);
   const live = liveStatus !== null || isActiveSubagentStatus(status);
   return {
     title: rowTitle(subagent),
