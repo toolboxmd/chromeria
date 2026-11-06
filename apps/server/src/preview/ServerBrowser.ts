@@ -280,6 +280,7 @@ export class ServerBrowser extends Context.Service<
       readonly maxHeight: number;
       readonly quality: number;
       readonly canOperate: boolean;
+      readonly disconnectReason?: () => "transport" | "inputOverload";
       readonly authorize?: () => Promise<void>;
       /** The authenticated admission, distinct from this connection's control id. */
       readonly resourceViewerId?: string;
@@ -3654,7 +3655,13 @@ const make = Effect.gen(function* () {
       }),
       () =>
         Effect.promise(async () => {
-          await tab.control.disconnect(viewer.id, () => releaseViewerInput(viewer, session));
+          // Terminal admission refusal retires control; transport loss retains it for reconnection.
+          if (
+            input.disconnectReason?.() === "inputOverload" &&
+            tab.control.controller === viewer.id
+          )
+            await tab.control.release(viewer.id, () => releaseViewerInput(viewer, session));
+          else await tab.control.disconnect(viewer.id, () => releaseViewerInput(viewer, session));
           tab.viewers.delete(viewer);
           broadcastControl(tab);
           reportLiveTabs();

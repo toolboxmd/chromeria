@@ -759,6 +759,7 @@ const makeHandler = Effect.fn("ServerBrowserStream.makeHandler")(
     }
     return yield* Effect.scoped(
       Effect.gen(function* () {
+        let disconnectReason: "transport" | "inputOverload" = "transport";
         const attached = yield* browser
           .attachViewer({
             threadId,
@@ -766,6 +767,7 @@ const makeHandler = Effect.fn("ServerBrowserStream.makeHandler")(
             canOperate,
             authorize: () => runPromise(recheck),
             resourceViewerId: viewing.viewerId,
+            disconnectReason: () => disconnectReason,
             maxWidth: intParam(params, "maxWidth", 1280, 7680),
             maxHeight: intParam(params, "maxHeight", 800, 4320),
             quality: intParam(params, "quality", DEFAULT_QUALITY, 100),
@@ -869,9 +871,14 @@ const makeHandler = Effect.fn("ServerBrowserStream.makeHandler")(
                   ? viewer.enqueueInput(message).pipe(
                       Effect.catchTags({
                         BrowserInputOverloaded: () =>
-                          writer
-                            .write(new Socket.CloseEvent(1013, "browser input backlog"))
-                            .pipe(Effect.andThen(Effect.interrupt)),
+                          Effect.sync(() => {
+                            disconnectReason = "inputOverload";
+                          }).pipe(
+                            Effect.andThen(
+                              writer.write(new Socket.CloseEvent(1013, "browser input backlog")),
+                            ),
+                            Effect.andThen(Effect.interrupt),
+                          ),
                       }),
                     )
                   : Effect.void,
