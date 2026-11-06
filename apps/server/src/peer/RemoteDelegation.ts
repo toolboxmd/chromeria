@@ -1,4 +1,5 @@
 import { threadRequestNamespace } from "../mcp/requestIdentity.ts";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import {
   toolAllowlistsEqual,
   toolPolicyModeRejection,
@@ -533,13 +534,23 @@ const make = Effect.gen(function* () {
       );
   });
 
+  // One server owns these tasks, so an in-process lock orders every launch and its settlement.
+  const launchLocks = yield* KeyedLock.make<NodeId>();
+  const sentLaunches = new Set<NodeId>();
+
   /** Replays the stored launch identity; a different follower namespace would launch another child. */
   const launchPending = Effect.fn("RemoteDelegation.launchPending")(
     function* (parentThreadId: ThreadId, taskId: NodeId) {
       let records = yield* threads.getThreadRecords(parentThreadId, ["subagents"]);
       let task = records.subagents.find((candidate) => candidate.id === taskId);
-      if (task?.remoteChild === undefined || task.remoteChild.threadId !== undefined) return;
-      if (task.result !== null && task.remoteChild.stoppedThere === true) return;
+      if (
+        task?.remoteChild === undefined ||
+        task.remoteChild.threadId !== undefined ||
+        (task.result !== null && task.remoteChild.stoppedThere === true)
+      ) {
+        sentLaunches.delete(taskId);
+        return;
+      }
       const launch = task.remoteChild.launch;
       if (launch === undefined) {
         return yield* new OrchestratorMcpFailure({
@@ -547,6 +558,7 @@ const make = Effect.gen(function* () {
           message: "The pending remote task has no launch inputs.",
         });
       }
+      let firstAttempt = false;
       if (task.remoteChild.launchStarted !== true) {
         // The parent's dispatch lock orders this against Stop/cancel. Once committed,
         // acceptance is uncertain until the same key returns a destination receipt.
@@ -566,7 +578,7 @@ const make = Effect.gen(function* () {
           );
           return;
         }
-        yield* threads
+        const marked = yield* threads
           .dispatch({
             type: "delegated_task.remote.launch",
             commandId: CommandId.make(`command:remote-task-launch:${taskId}`),
@@ -586,6 +598,8 @@ const make = Effect.gen(function* () {
                 ),
             ),
           );
+        firstAttempt =
+          marked !== undefined && marked.replayed !== true && !sentLaunches.has(taskId);
         records = yield* threads.getThreadRecords(parentThreadId, ["subagents"]);
         task = records.subagents.find((candidate) => candidate.id === taskId);
         if (task?.remoteChild?.launchStarted !== true) {
@@ -608,7 +622,7 @@ const make = Effect.gen(function* () {
         }
       }
       const remote = task.remoteChild;
-      if (remote === undefined) return;
+      if (remote === undefined || (task.result !== null && remote.stoppedThere === true)) return;
       const scope: ThreadScope = {
         ...followScope(
           { threadId: parentThreadId, providerInstanceId: records.thread.providerInstanceId },
@@ -617,68 +631,89 @@ const make = Effect.gen(function* () {
         requestNamespace: launch.requestNamespace,
         capabilities: new Set(launch.capabilities ?? ["orchestration"]),
       };
-      let tools: import("@t3tools/contracts").ThreadToolsRequest | undefined;
-      if (launch.tools !== undefined) {
-        let mcpServers: import("@t3tools/contracts").ThreadMcpServers | undefined;
-        if (launch.tools.mcpConfigId !== undefined) {
-          if (Option.isNone(configs))
-            return yield* new OrchestratorMcpFailure({
-              code: "invalid_request",
-              message: "Thread MCP configuration service is unavailable.",
-            });
-          mcpServers = yield* configs.value.read(launch.tools.mcpConfigId).pipe(
-            Effect.mapError(
-              () =>
-                new OrchestratorMcpFailure({
-                  code: "invalid_request",
-                  message: "Thread MCP configuration is unavailable.",
-                }),
-            ),
-          );
-        }
-        tools = { allow: launch.tools.allow, ...(mcpServers === undefined ? {} : { mcpServers }) };
-      }
-      const launched = yield* (
-        launch.lifecycleVersion === 1
-          ? requireLifecycle(remote.environmentId, launch.linkIdentity)
-          : Effect.void
-      ).pipe(
-        Effect.andThen(
-          forwarding.call(
-            scope,
-            ProjectToolkit.tools.t3_thread_launch,
-            remote.environmentId,
-            {
-              projectId: launch.projectId,
-              ...(launch.bare === undefined ? {} : { bare: launch.bare }),
-              ...(tools === undefined ? {} : { tools }),
-              title: launch.title,
-              ...(launch.modelSelection === undefined
-                ? {}
-                : { modelSelection: launch.modelSelection }),
-              ...(launch.prismRole === undefined ? {} : { prismRole: launch.prismRole }),
-              ...(launch.lane === undefined ? {} : { lane: launch.lane }),
-              ...(launch.workspaceStrategy === undefined
-                ? {}
-                : { workspaceStrategy: launch.workspaceStrategy }),
-              ...(launch.runtimeMode === undefined ? {} : { runtimeMode: launch.runtimeMode }),
-              ...(launch.interactionMode === undefined
-                ? {}
-                : { interactionMode: launch.interactionMode }),
-              delegatedFrom: launch.delegatedFrom,
-              ...(launch.delegatedFrom.purposeLaunch === undefined
-                ? {}
-                : {
-                    purposeIntent: { version: 1, intent: { type: "inherit" } },
+      const dispatch: { stage: "not_sent" | PeerMcpClient.PeerDispatchStage } = {
+        stage: "not_sent",
+      };
+      const launched = yield* Effect.gen(function* () {
+        let tools: import("@t3tools/contracts").ThreadToolsRequest | undefined;
+        if (launch.tools !== undefined) {
+          let mcpServers: import("@t3tools/contracts").ThreadMcpServers | undefined;
+          if (launch.tools.mcpConfigId !== undefined) {
+            if (Option.isNone(configs))
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "Thread MCP configuration service is unavailable.",
+              });
+            mcpServers = yield* configs.value.read(launch.tools.mcpConfigId).pipe(
+              Effect.mapError(
+                () =>
+                  new OrchestratorMcpFailure({
+                    code: "invalid_request",
+                    message: "Thread MCP configuration is unavailable.",
                   }),
-              message: task.prompt,
-              clientRequestId: launch.clientRequestId,
+              ),
+            );
+          }
+          tools = {
+            allow: launch.tools.allow,
+            ...(mcpServers === undefined ? {} : { mcpServers }),
+          };
+        }
+
+        if (launch.lifecycleVersion === 1)
+          yield* requireLifecycle(remote.environmentId, launch.linkIdentity);
+        return yield* forwarding.call(
+          scope,
+          ProjectToolkit.tools.t3_thread_launch,
+          remote.environmentId,
+          {
+            projectId: launch.projectId,
+            ...(launch.bare === undefined ? {} : { bare: launch.bare }),
+            ...(tools === undefined ? {} : { tools }),
+            title: launch.title,
+            ...(launch.modelSelection === undefined
+              ? {}
+              : { modelSelection: launch.modelSelection }),
+            ...(launch.prismRole === undefined ? {} : { prismRole: launch.prismRole }),
+            ...(launch.lane === undefined ? {} : { lane: launch.lane }),
+            ...(launch.workspaceStrategy === undefined
+              ? {}
+              : { workspaceStrategy: launch.workspaceStrategy }),
+            ...(launch.runtimeMode === undefined ? {} : { runtimeMode: launch.runtimeMode }),
+            ...(launch.interactionMode === undefined
+              ? {}
+              : { interactionMode: launch.interactionMode }),
+            delegatedFrom: launch.delegatedFrom,
+            ...(launch.delegatedFrom.purposeLaunch === undefined
+              ? {}
+              : {
+                  purposeIntent: { version: 1, intent: { type: "inherit" } },
+                }),
+            message: task.prompt,
+            clientRequestId: launch.clientRequestId,
+          },
+          {
+            expectedLinkIdentity: launch.linkIdentity,
+            pair: { parentThreadId, taskId },
+            onDispatch: (stage) => {
+              if (stage === "sent") sentLaunches.add(taskId);
+              dispatch.stage = stage;
             },
-            { expectedLinkIdentity: launch.linkIdentity, pair: { parentThreadId, taskId } },
-          ),
-        ),
+          },
+        );
+      }).pipe(
         Effect.catchTags({
           OrchestratorMcpFailure: (error) => {
+            if ((firstAttempt && dispatch.stage !== "sent") || error.launchReceipt === "absent") {
+              return complete(
+                parentThreadId,
+                taskId,
+                "failed",
+                error.message,
+                "stopped",
+                error.message,
+              ).pipe(Effect.andThen(Effect.fail(error)));
+            }
             if (isFinal(error) || isModeRefusal(error) || error.code === "invalid_request") {
               const message = `${error.message} The remote launch could not be confirmed. If it was already accepted, work may still be running on ${remote.label}.`;
               return complete(parentThreadId, taskId, "failed", message, undefined, message).pipe(
@@ -699,7 +734,9 @@ const make = Effect.gen(function* () {
         runId: launched.runId,
         modelSelection: launched.modelSelection,
       });
+      sentLaunches.delete(taskId);
     },
+    (effect, _parentThreadId, taskId) => launchLocks.withLock(taskId, effect),
     Effect.mapError((error) =>
       error._tag === "OrchestratorMcpFailure"
         ? error

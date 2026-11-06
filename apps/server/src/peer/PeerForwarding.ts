@@ -102,6 +102,7 @@ export class PeerForwarding extends Context.Service<
       options?: {
         readonly expectedLinkIdentity: string;
         readonly pair?: PeerAuthority.Authority["pair"];
+        readonly onDispatch?: (stage: PeerMcpClient.PeerDispatchStage) => void;
       },
     ) => Effect.Effect<Tool.Success<T>, OrchestratorMcpFailure>;
     /**
@@ -233,6 +234,7 @@ const make = Effect.gen(function* () {
     options?: {
       readonly expectedLinkIdentity: string;
       readonly pair?: PeerAuthority.Authority["pair"];
+      readonly onDispatch?: (stage: PeerMcpClient.PeerDispatchStage) => void;
     },
     readOnly?: boolean,
   ) => Effect.Effect<unknown, OrchestratorMcpFailure> = Effect.fn("PeerForwarding.forward")(
@@ -246,6 +248,7 @@ const make = Effect.gen(function* () {
       options?: {
         readonly expectedLinkIdentity: string;
         readonly pair?: PeerAuthority.Authority["pair"];
+        readonly onDispatch?: (stage: PeerMcpClient.PeerDispatchStage) => void;
       },
       readOnly: boolean = false,
     ) {
@@ -383,7 +386,7 @@ const make = Effect.gen(function* () {
           arguments: {},
           limits,
           success: OrchestratorMcpCapabilitiesResult,
-          ...(options === undefined ? {} : options),
+          ...(options === undefined ? {} : { expectedLinkIdentity: options.expectedLinkIdentity }),
         });
         if (capabilities.toolAllowlist !== true)
           return yield* new OrchestratorMcpFailure({
@@ -398,7 +401,7 @@ const make = Effect.gen(function* () {
           arguments: {},
           limits,
           success: OrchestratorMcpCapabilitiesResult,
-          ...(options === undefined ? {} : options),
+          ...(options === undefined ? {} : { expectedLinkIdentity: options.expectedLinkIdentity }),
         });
         if (capabilities.bareLaunch !== true)
           return yield* new OrchestratorMcpFailure({
@@ -419,7 +422,7 @@ const make = Effect.gen(function* () {
           arguments: {},
           limits,
           success: OrchestratorMcpCapabilitiesResult,
-          ...(options === undefined ? {} : options),
+          ...(options === undefined ? {} : { expectedLinkIdentity: options.expectedLinkIdentity }),
         });
         if (capabilities.executionPurposeVersions?.includes(1) !== true) {
           return yield* new OrchestratorMcpFailure({
@@ -1190,6 +1193,7 @@ const make = Effect.gen(function* () {
     options?: {
       readonly expectedLinkIdentity: string;
       readonly pair?: PeerAuthority.Authority["pair"];
+      readonly onDispatch?: (stage: PeerMcpClient.PeerDispatchStage) => void;
     },
   ) =>
     Effect.andThen(

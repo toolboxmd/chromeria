@@ -138,6 +138,8 @@ export interface PeerCallLimits {
  * agent. Each call carries the calling agent's limits in `T3-Mode-Limit`, so
  * the peer enforces the narrower of those and the link's own access.
  */
+export type PeerDispatchStage = "sent" | "refused";
+
 export class PeerMcpClient extends Context.Service<
   PeerMcpClient,
   {
@@ -245,6 +247,8 @@ export class PeerMcpClient extends Context.Service<
       /** The calling Promachos thread here, when it answers a request there. */
       readonly promachosThreadId?: ThreadId;
       readonly authority?: PeerAuthorityEnvelope;
+      /** Reports this tool's HTTP handoff and decoded final refusal, excluding negotiation. */
+      readonly onDispatch?: (stage: PeerDispatchStage) => void;
     }) => Effect.Effect<S["Type"], OrchestratorMcpFailure>;
   }
 >()("t3/peer/PeerMcpClient") {}
@@ -271,16 +275,27 @@ const decodeExchange = Schema.decodeUnknownEffect(
 );
 const _decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeToolCallResponse = Schema.decodeUnknownEffect(Schema.fromJsonString(ToolCallResponse));
-const decodeFailure = Schema.decodeUnknownOption(
+const encodeRequestJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const PeerFailure = Schema.Struct({
+  code: OrchestratorMcpFailure.fields.code,
+  message: Schema.String,
+  requestId: OrchestratorMcpFailure.fields.requestId,
+  lastConfirmedStage: OrchestratorMcpFailure.fields.lastConfirmedStage,
+});
+const decodeFailure = Schema.decodeUnknownOption(Schema.fromJsonString(PeerFailure));
+const decodeLaunchFailure = Schema.decodeUnknownOption(
   Schema.fromJsonString(
     Schema.Struct({
-      code: OrchestratorMcpFailure.fields.code,
-      message: Schema.String,
-      requestId: OrchestratorMcpFailure.fields.requestId,
-      lastConfirmedStage: OrchestratorMcpFailure.fields.lastConfirmedStage,
+      ...PeerFailure.fields,
+      launchReceipt: OrchestratorMcpFailure.fields.launchReceipt,
     }),
   ),
 );
+
+class PeerRpcFailure extends Schema.TaggedError<PeerRpcFailure>()("OrchestratorMcpFailure", {
+  ...OrchestratorMcpFailure.fields,
+  rpcCode: Schema.Number,
+}) {}
 
 /** A peer link problem, as the agent that asked hears it. */
 const fromLinkError = (error: PeerLinkError) =>
@@ -326,17 +341,39 @@ const make = Effect.gen(function* () {
   // sessions in memory, so a restart there answers 404 and we start a new one.
   const sessions = yield* Ref.make<ReadonlyMap<string, string>>(new Map());
 
-  const post = (url: string, token: string, body: unknown, headers: Record<string, string>) =>
-    httpClient.execute(
-      HttpClientRequest.post(`${url}/mcp`).pipe(
-        HttpClientRequest.setHeaders({
-          accept: "application/json, text/event-stream",
-          authorization: `Bearer ${token}`,
-          ...headers,
-        }),
-        HttpClientRequest.setBody(HttpBody.text(JSON.stringify(body), "application/json")),
+  const post = Effect.fn("PeerMcpClient.post")(function* (
+    url: string,
+    token: string,
+    body: unknown,
+    headers: Record<string, string>,
+    onDispatch?: () => void,
+  ) {
+    const encoded = yield* encodeRequestJson(body).pipe(
+      Effect.mapError(
+        () =>
+          new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "The peer request could not be encoded.",
+          }),
       ),
     );
+    const request = HttpClientRequest.post(`${url}/mcp`).pipe(
+      HttpClientRequest.setHeaders({
+        accept: "application/json, text/event-stream",
+        authorization: `Bearer ${token}`,
+        ...headers,
+      }),
+      HttpClientRequest.setBody(HttpBody.text(encoded, "application/json")),
+    );
+    const options = yield* Effect.serviceOption(FetchHttpClient.RequestInit);
+    onDispatch?.();
+    return yield* httpClient.execute(request).pipe(
+      Effect.provideService(FetchHttpClient.RequestInit, {
+        ...(Option.isSome(options) ? options.value : {}),
+        redirect: "manual",
+      }),
+    );
+  });
 
   const openSession = Effect.fn("PeerMcpClient.openSession")(function* (
     url: string,
@@ -754,6 +791,7 @@ const make = Effect.gen(function* () {
 
   const call: PeerMcpClient["Service"]["call"] = Effect.fn("PeerMcpClient.call")(
     function* (input) {
+      let sends = 0;
       const resolved = yield* links
         .resolve(input.environmentId)
         .pipe(Effect.mapError(fromLinkError));
@@ -807,27 +845,33 @@ const make = Effect.gen(function* () {
       }
       const sessionKey = `${input.environmentId} ${resolved.url} ${resolved.link.launchIdentity} ${input.authority === undefined ? "legacy" : "authority-v1"}`;
       const callOnce = (sessionId: string) =>
-        post(
-          resolved.url,
-          resolved.token,
-          {
-            jsonrpc: "2.0",
-            id: 1,
-            method: "tools/call",
-            params: { name: input.tool, arguments: input.arguments },
-          },
-          {
-            ...limitHeader,
-            ...(input.promachosThreadId === undefined
-              ? {}
-              : { [McpInvocationContext.PROMACHOS_THREAD_HEADER]: input.promachosThreadId }),
-            ...(input.authority === undefined
-              ? {}
-              : { [PeerAuthority.AUTHORITY_HEADER]: json(input.authority) }),
-            "mcp-session-id": sessionId,
-            "mcp-protocol-version": PROTOCOL_VERSION,
-          },
-        );
+        Effect.suspend(() => {
+          return post(
+            resolved.url,
+            resolved.token,
+            {
+              jsonrpc: "2.0",
+              id: 1,
+              method: "tools/call",
+              params: { name: input.tool, arguments: input.arguments },
+            },
+            {
+              ...limitHeader,
+              ...(input.promachosThreadId === undefined
+                ? {}
+                : { [McpInvocationContext.PROMACHOS_THREAD_HEADER]: input.promachosThreadId }),
+              ...(input.authority === undefined
+                ? {}
+                : { [PeerAuthority.AUTHORITY_HEADER]: json(input.authority) }),
+              "mcp-session-id": sessionId,
+              "mcp-protocol-version": PROTOCOL_VERSION,
+            },
+            () => {
+              sends++;
+              input.onDispatch?.("sent");
+            },
+          );
+        });
       const existing = (yield* Ref.get(sessions)).get(sessionKey);
       const sessionId = existing ?? (yield* openSession(resolved.url, resolved.token, limitHeader));
       // The initialized session outlives a tool request, including a long wait or cancellation.
@@ -844,15 +888,26 @@ const make = Effect.gen(function* () {
         response = yield* callOnce(renewed);
       }
       if (response.status === 401) {
-        return yield* new OrchestratorMcpFailure({
-          code: "capability_denied",
-          message:
-            "The linked environment no longer accepts this link. It may have been revoked there; link it again.",
-        });
+        return {
+          result: Result.fail(
+            new OrchestratorMcpFailure({
+              code: "capability_denied",
+              message:
+                "The linked environment no longer accepts this link. It may have been revoked there; link it again.",
+            }),
+          ),
+          sends,
+          status: response.status,
+        };
       }
       if (response.status !== 200) {
         const refusal = decodeFailure(yield* response.text);
-        if (Option.isSome(refusal)) return yield* new OrchestratorMcpFailure(refusal.value);
+        if (Option.isSome(refusal))
+          return {
+            result: Result.fail(new OrchestratorMcpFailure(refusal.value)),
+            sends,
+            status: response.status,
+          };
         if (response.status === 403) return yield* linkedEnvironmentsOffThere;
         return yield* new OrchestratorMcpFailure({
           code: "orchestration_error",
@@ -871,9 +926,19 @@ const make = Effect.gen(function* () {
         ),
       );
       if (body.error !== undefined) {
-        return Result.fail(
-          new OrchestratorMcpFailure({ code: "invalid_request", message: body.error.message }),
-        );
+        return {
+          result: Result.fail(
+            new PeerRpcFailure({
+              code: [-32700, -32600, -32601, -32602].includes(body.error.code)
+                ? "invalid_request"
+                : "orchestration_error",
+              rpcCode: body.error.code,
+              message: `JSON-RPC ${body.error.code}: ${body.error.message}`,
+            }),
+          ),
+          sends,
+          status: response.status,
+        };
       }
       if (body.result === undefined) {
         return yield* new OrchestratorMcpFailure({
@@ -884,15 +949,20 @@ const make = Effect.gen(function* () {
       const text = body.result.content.map((part) => part.text ?? "").join("");
       if (body.result.isError === true) {
         // A refusal keeps the peer's own code, so the agent sees why it was refused.
-        const refused = decodeFailure(text);
-        return Result.fail(
-          refused._tag === "Some"
-            ? new OrchestratorMcpFailure(refused.value)
-            : new OrchestratorMcpFailure({
-                code: "orchestration_error",
-                message: text || "The linked environment refused the call.",
-              }),
-        );
+        const refused =
+          input.tool === "t3_thread_launch" ? decodeLaunchFailure(text) : decodeFailure(text);
+        return {
+          result: Result.fail(
+            refused._tag === "Some"
+              ? new OrchestratorMcpFailure(refused.value)
+              : new OrchestratorMcpFailure({
+                  code: "orchestration_error",
+                  message: text || "The linked environment refused the call.",
+                }),
+          ),
+          sends,
+          status: response.status,
+        };
       }
       const success = Schema.fromJsonString(input.success);
       const decoded = yield* Schema.decodeEffect(success)(
@@ -907,19 +977,28 @@ const make = Effect.gen(function* () {
             }),
         ),
       );
-      return input.tool === "t3_attachment_prepare_upload" &&
-        typeof decoded === "object" &&
-        decoded !== null
-        ? Result.succeed({ ...decoded, uploadOrigin: new URL(resolved.url).origin })
-        : Result.succeed(decoded);
+      return {
+        result:
+          input.tool === "t3_attachment_prepare_upload" &&
+          typeof decoded === "object" &&
+          decoded !== null
+            ? Result.succeed({ ...decoded, uploadOrigin: new URL(resolved.url).origin })
+            : Result.succeed(decoded),
+        sends,
+        status: response.status,
+      };
     },
     (effect, input) =>
       effect.pipe(
         Effect.tapError((error) =>
           links.recordOutcome(input.environmentId, { error: error.message }),
         ),
-        // A refusal is still an answer: the link works, so only this call fails.
-        Effect.tap(() => links.recordOutcome(input.environmentId, { error: null })),
+        // HTTP failures retain their link error on the normalized refusal path.
+        Effect.tap(({ result, status }) =>
+          links.recordOutcome(input.environmentId, {
+            error: status !== 200 && Result.isFailure(result) ? result.failure.message : null,
+          }),
+        ),
         // Recorded above with the transport's own message; the agent hears it plainly.
         Effect.catchTags({
           HttpClientError: () =>
@@ -930,7 +1009,17 @@ const make = Effect.gen(function* () {
               }),
             ),
         }),
-        Effect.flatMap(Effect.fromResult),
+        Effect.flatMap(({ result, sends }) => {
+          // A renewed refusal cannot disprove acceptance of an earlier send.
+          if (
+            sends === 1 &&
+            Result.isFailure(result) &&
+            result.failure.code !== "orchestration_error" &&
+            result.failure.code !== "outcome_unknown"
+          )
+            input.onDispatch?.("refused");
+          return Effect.fromResult(result);
+        }),
       ),
   );
 
