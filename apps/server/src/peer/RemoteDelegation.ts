@@ -618,82 +618,79 @@ const make = Effect.gen(function* () {
         requestNamespace: launch.requestNamespace,
         capabilities: new Set(launch.capabilities ?? ["orchestration"]),
       };
-      let tools: import("@t3tools/contracts").ThreadToolsRequest | undefined;
-      if (launch.tools !== undefined) {
-        let mcpServers: import("@t3tools/contracts").ThreadMcpServers | undefined;
-        if (launch.tools.mcpConfigId !== undefined) {
-          if (Option.isNone(configs))
-            return yield* new OrchestratorMcpFailure({
-              code: "invalid_request",
-              message: "Thread MCP configuration service is unavailable.",
-            });
-          mcpServers = yield* configs.value.read(launch.tools.mcpConfigId).pipe(
-            Effect.mapError(
-              () =>
-                new OrchestratorMcpFailure({
-                  code: "invalid_request",
-                  message: "Thread MCP configuration is unavailable.",
-                }),
-            ),
-          );
-        }
-        tools = { allow: launch.tools.allow, ...(mcpServers === undefined ? {} : { mcpServers }) };
-      }
-      const launched = yield* (
-        launch.lifecycleVersion === 1
-          ? requireLifecycle(remote.environmentId, launch.linkIdentity).pipe(
-              Effect.mapError((error) => new PeerMcpClient.PeerDispatchRefusal(error)),
-            )
-          : Effect.void
-      ).pipe(
-        Effect.andThen(
-          forwarding.call(
-            scope,
-            ProjectToolkit.tools.t3_thread_launch,
-            remote.environmentId,
-            {
-              projectId: launch.projectId,
-              ...(launch.bare === undefined ? {} : { bare: launch.bare }),
-              ...(tools === undefined ? {} : { tools }),
-              title: launch.title,
-              ...(launch.modelSelection === undefined
-                ? {}
-                : { modelSelection: launch.modelSelection }),
-              ...(launch.prismRole === undefined ? {} : { prismRole: launch.prismRole }),
-              ...(launch.lane === undefined ? {} : { lane: launch.lane }),
-              ...(launch.workspaceStrategy === undefined
-                ? {}
-                : { workspaceStrategy: launch.workspaceStrategy }),
-              ...(launch.runtimeMode === undefined ? {} : { runtimeMode: launch.runtimeMode }),
-              ...(launch.interactionMode === undefined
-                ? {}
-                : { interactionMode: launch.interactionMode }),
-              delegatedFrom: launch.delegatedFrom,
-              ...(launch.delegatedFrom.purposeLaunch === undefined
-                ? {}
-                : {
-                    purposeIntent: { version: 1, intent: { type: "inherit" } },
+      const dispatch: { stage: "not_sent" | PeerMcpClient.PeerDispatchStage } = {
+        stage: "not_sent",
+      };
+      const launched = yield* Effect.gen(function* () {
+        let tools: import("@t3tools/contracts").ThreadToolsRequest | undefined;
+        if (launch.tools !== undefined) {
+          let mcpServers: import("@t3tools/contracts").ThreadMcpServers | undefined;
+          if (launch.tools.mcpConfigId !== undefined) {
+            if (Option.isNone(configs))
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "Thread MCP configuration service is unavailable.",
+              });
+            mcpServers = yield* configs.value.read(launch.tools.mcpConfigId).pipe(
+              Effect.mapError(
+                () =>
+                  new OrchestratorMcpFailure({
+                    code: "invalid_request",
+                    message: "Thread MCP configuration is unavailable.",
                   }),
-              message: task.prompt,
-              clientRequestId: launch.clientRequestId,
+              ),
+            );
+          }
+          tools = {
+            allow: launch.tools.allow,
+            ...(mcpServers === undefined ? {} : { mcpServers }),
+          };
+        }
+
+        if (launch.lifecycleVersion === 1)
+          yield* requireLifecycle(remote.environmentId, launch.linkIdentity);
+        return yield* forwarding.call(
+          scope,
+          ProjectToolkit.tools.t3_thread_launch,
+          remote.environmentId,
+          {
+            projectId: launch.projectId,
+            ...(launch.bare === undefined ? {} : { bare: launch.bare }),
+            ...(tools === undefined ? {} : { tools }),
+            title: launch.title,
+            ...(launch.modelSelection === undefined
+              ? {}
+              : { modelSelection: launch.modelSelection }),
+            ...(launch.prismRole === undefined ? {} : { prismRole: launch.prismRole }),
+            ...(launch.lane === undefined ? {} : { lane: launch.lane }),
+            ...(launch.workspaceStrategy === undefined
+              ? {}
+              : { workspaceStrategy: launch.workspaceStrategy }),
+            ...(launch.runtimeMode === undefined ? {} : { runtimeMode: launch.runtimeMode }),
+            ...(launch.interactionMode === undefined
+              ? {}
+              : { interactionMode: launch.interactionMode }),
+            delegatedFrom: launch.delegatedFrom,
+            ...(launch.delegatedFrom.purposeLaunch === undefined
+              ? {}
+              : {
+                  purposeIntent: { version: 1, intent: { type: "inherit" } },
+                }),
+            message: task.prompt,
+            clientRequestId: launch.clientRequestId,
+          },
+          {
+            expectedLinkIdentity: launch.linkIdentity,
+            pair: { parentThreadId, taskId },
+            onDispatch: (stage) => {
+              dispatch.stage = stage;
             },
-            { expectedLinkIdentity: launch.linkIdentity, pair: { parentThreadId, taskId } },
-          ),
-        ),
+          },
+        );
+      }).pipe(
         Effect.catchTags({
           OrchestratorMcpFailure: (error) => {
-            // Replays can be refused before receipt lookup by changed modes/grants.
-            // Admission errors come after receipt lookup and disprove earlier acceptance.
-            if (
-              error.code !== "orchestration_error" &&
-              error.code !== "outcome_unknown" &&
-              ((firstAttempt && PeerMcpClient.isDispatchRefusal(error)) ||
-                (PeerMcpClient.isToolRefusal(error) &&
-                  (firstAttempt ||
-                    error.code === "invalid_request" ||
-                    error.code === "provider_unavailable" ||
-                    error.code === "model_unavailable")))
-            ) {
+            if ((firstAttempt && dispatch.stage !== "sent") || error.launchReceipt === "absent") {
               return complete(
                 parentThreadId,
                 taskId,

@@ -9569,7 +9569,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           };
     const remoteChild = {
       ...followedRemote!,
-      ...(command.stoppedThere === undefined ? {} : { stoppedThere: true }),
+      ...(command.stoppedThere === undefined
+        ? command.launchError === undefined || followedRemote?.stoppedThere === true
+          ? {}
+          : { stoppedThere: false }
+        : { stoppedThere: true }),
       ...(command.launchError === undefined ? {} : { launchError: command.launchError }),
     };
     // The follower may report a result twice; the first one stands, and the

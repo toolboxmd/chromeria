@@ -1,3 +1,4 @@
+import * as CommandReceiptStore from "../../../orchestration-v2/CommandReceiptStore.ts";
 import * as DateTime from "effect/DateTime";
 import * as Digest from "effect/crypto/Digest";
 import * as Hex from "effect/encoding/Hex";
@@ -405,7 +406,32 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                   return unavailable();
                 }),
               );
-            }),
+            }).pipe(
+              Effect.catchTags({
+                OrchestratorMcpFailure: Effect.fn("mcp.confirmLaunchRefusal")(function* (
+                  error: OrchestratorMcpFailure,
+                ) {
+                  if (error.code === "orchestration_error" || error.code === "outcome_unknown")
+                    return yield* error;
+                  const receipts = yield* Effect.serviceOption(
+                    CommandReceiptStore.CommandReceiptStoreV2,
+                  );
+                  if (Option.isNone(receipts)) return yield* error;
+                  const receipt = yield* receipts.value
+                    .getByCommandId(commandId)
+                    .pipe(Effect.mapError(unavailable));
+                  return yield* new OrchestratorMcpFailure({
+                    code: error.code,
+                    message: error.message,
+                    ...(error.requestId === undefined ? {} : { requestId: error.requestId }),
+                    ...(error.lastConfirmedStage === undefined
+                      ? {}
+                      : { lastConfirmedStage: error.lastConfirmedStage }),
+                    ...(Option.isNone(receipt) ? { launchReceipt: "absent" as const } : {}),
+                  });
+                }),
+              }),
+            ),
           )
           .pipe(
             Effect.mapError((error) =>

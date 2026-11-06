@@ -138,6 +138,8 @@ export interface PeerCallLimits {
  * agent. Each call carries the calling agent's limits in `T3-Mode-Limit`, so
  * the peer enforces the narrower of those and the link's own access.
  */
+export type PeerDispatchStage = "sent" | "refused";
+
 export class PeerMcpClient extends Context.Service<
   PeerMcpClient,
   {
@@ -245,6 +247,8 @@ export class PeerMcpClient extends Context.Service<
       /** The calling Promachos thread here, when it answers a request there. */
       readonly promachosThreadId?: ThreadId;
       readonly authority?: PeerAuthorityEnvelope;
+      /** Reports this tool's HTTP handoff and decoded final refusal, excluding negotiation. */
+      readonly onDispatch?: (stage: PeerDispatchStage) => void;
     }) => Effect.Effect<S["Type"], OrchestratorMcpFailure>;
   }
 >()("t3/peer/PeerMcpClient") {}
@@ -271,38 +275,26 @@ const decodeExchange = Schema.decodeUnknownEffect(
 );
 const _decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeToolCallResponse = Schema.decodeUnknownEffect(Schema.fromJsonString(ToolCallResponse));
-const decodeFailure = Schema.decodeUnknownOption(
+const PeerFailure = Schema.Struct({
+  code: OrchestratorMcpFailure.fields.code,
+  message: Schema.String,
+  requestId: OrchestratorMcpFailure.fields.requestId,
+  lastConfirmedStage: OrchestratorMcpFailure.fields.lastConfirmedStage,
+});
+const decodeFailure = Schema.decodeUnknownOption(Schema.fromJsonString(PeerFailure));
+const decodeLaunchFailure = Schema.decodeUnknownOption(
   Schema.fromJsonString(
     Schema.Struct({
-      code: OrchestratorMcpFailure.fields.code,
-      message: Schema.String,
-      requestId: OrchestratorMcpFailure.fields.requestId,
-      lastConfirmedStage: OrchestratorMcpFailure.fields.lastConfirmedStage,
+      ...PeerFailure.fields,
+      launchReceipt: OrchestratorMcpFailure.fields.launchReceipt,
     }),
   ),
 );
 
-const toolRefusal = Symbol("PeerMcpClient.toolRefusal");
-class PeerToolFailure extends OrchestratorMcpFailure {
-  readonly [toolRefusal] = true;
-}
-
-/** Runtime provenance is local; the wire schema also matches unconfirmed link failures. */
-export const isToolRefusal = (error: OrchestratorMcpFailure) =>
-  toolRefusal in error && error[toolRefusal] === true;
-
-const dispatchRefusal = Symbol("PeerMcpClient.dispatchRefusal");
-export class PeerDispatchRefusal extends OrchestratorMcpFailure {
-  readonly [dispatchRefusal] = true;
-}
-export const isDispatchRefusal = (error: OrchestratorMcpFailure) => dispatchRefusal in error;
-
 class PeerRpcFailure extends Schema.TaggedError<PeerRpcFailure>()("OrchestratorMcpFailure", {
   ...OrchestratorMcpFailure.fields,
   rpcCode: Schema.Number,
-}) {
-  readonly [toolRefusal] = this.code === "invalid_request";
-}
+}) {}
 
 /** A peer link problem, as the agent that asked hears it. */
 const fromLinkError = (error: PeerLinkError) =>
@@ -382,15 +374,15 @@ const make = Effect.gen(function* () {
     );
     const sessionId = initialized.headers["mcp-session-id"];
     if (initialized.status === 409 && limitHeader[PeerAuthority.LINK_HEADER] !== undefined)
-      return yield* new PeerDispatchRefusal({
+      return yield* new OrchestratorMcpFailure({
         code: "capability_denied",
         message: "The destination does not support peer authority v1; no action was forwarded.",
       });
     if (initialized.status !== 200 || sessionId === undefined) {
       const refusal = decodeFailure(yield* initialized.text);
-      if (Option.isSome(refusal)) return yield* new PeerDispatchRefusal(refusal.value);
+      if (Option.isSome(refusal)) return yield* new OrchestratorMcpFailure(refusal.value);
       if (initialized.status === 403) return yield* linkedEnvironmentsOffThere;
-      return yield* new PeerDispatchRefusal({
+      return yield* new OrchestratorMcpFailure({
         code: initialized.status === 401 ? "capability_denied" : "orchestration_error",
         message:
           initialized.status === 401
@@ -402,7 +394,7 @@ const make = Effect.gen(function* () {
       limitHeader[PeerAuthority.LINK_HEADER] !== undefined &&
       initialized.headers[PeerAuthority.AUTHORITY_HEADER] !== "1"
     )
-      return yield* new PeerDispatchRefusal({
+      return yield* new OrchestratorMcpFailure({
         code: "capability_denied",
         message: "The destination does not support peer authority v1; no action was forwarded.",
       });
@@ -829,27 +821,30 @@ const make = Effect.gen(function* () {
       }
       const sessionKey = `${input.environmentId} ${resolved.url} ${resolved.link.launchIdentity} ${input.authority === undefined ? "legacy" : "authority-v1"}`;
       const callOnce = (sessionId: string) =>
-        post(
-          resolved.url,
-          resolved.token,
-          {
-            jsonrpc: "2.0",
-            id: 1,
-            method: "tools/call",
-            params: { name: input.tool, arguments: input.arguments },
-          },
-          {
-            ...limitHeader,
-            ...(input.promachosThreadId === undefined
-              ? {}
-              : { [McpInvocationContext.PROMACHOS_THREAD_HEADER]: input.promachosThreadId }),
-            ...(input.authority === undefined
-              ? {}
-              : { [PeerAuthority.AUTHORITY_HEADER]: json(input.authority) }),
-            "mcp-session-id": sessionId,
-            "mcp-protocol-version": PROTOCOL_VERSION,
-          },
-        );
+        Effect.suspend(() => {
+          input.onDispatch?.("sent");
+          return post(
+            resolved.url,
+            resolved.token,
+            {
+              jsonrpc: "2.0",
+              id: 1,
+              method: "tools/call",
+              params: { name: input.tool, arguments: input.arguments },
+            },
+            {
+              ...limitHeader,
+              ...(input.promachosThreadId === undefined
+                ? {}
+                : { [McpInvocationContext.PROMACHOS_THREAD_HEADER]: input.promachosThreadId }),
+              ...(input.authority === undefined
+                ? {}
+                : { [PeerAuthority.AUTHORITY_HEADER]: json(input.authority) }),
+              "mcp-session-id": sessionId,
+              "mcp-protocol-version": PROTOCOL_VERSION,
+            },
+          );
+        });
       const existing = (yield* Ref.get(sessions)).get(sessionKey);
       const sessionId = existing ?? (yield* openSession(resolved.url, resolved.token, limitHeader));
       // The initialized session outlives a tool request, including a long wait or cancellation.
@@ -866,7 +861,7 @@ const make = Effect.gen(function* () {
         response = yield* callOnce(renewed);
       }
       if (response.status === 401) {
-        return yield* new PeerToolFailure({
+        return yield* new OrchestratorMcpFailure({
           code: "capability_denied",
           message:
             "The linked environment no longer accepts this link. It may have been revoked there; link it again.",
@@ -874,7 +869,7 @@ const make = Effect.gen(function* () {
       }
       if (response.status !== 200) {
         const refusal = decodeFailure(yield* response.text);
-        if (Option.isSome(refusal)) return yield* new PeerToolFailure(refusal.value);
+        if (Option.isSome(refusal)) return yield* new OrchestratorMcpFailure(refusal.value);
         if (response.status === 403) return yield* linkedEnvironmentsOffThere;
         return yield* new OrchestratorMcpFailure({
           code: "orchestration_error",
@@ -912,10 +907,11 @@ const make = Effect.gen(function* () {
       const text = body.result.content.map((part) => part.text ?? "").join("");
       if (body.result.isError === true) {
         // A refusal keeps the peer's own code, so the agent sees why it was refused.
-        const refused = decodeFailure(text);
+        const refused =
+          input.tool === "t3_thread_launch" ? decodeLaunchFailure(text) : decodeFailure(text);
         return Result.fail(
           refused._tag === "Some"
-            ? new PeerToolFailure(refused.value)
+            ? new OrchestratorMcpFailure(refused.value)
             : new OrchestratorMcpFailure({
                 code: "orchestration_error",
                 message: text || "The linked environment refused the call.",
@@ -958,7 +954,15 @@ const make = Effect.gen(function* () {
               }),
             ),
         }),
-        Effect.flatMap(Effect.fromResult),
+        Effect.flatMap((result) => {
+          if (
+            Result.isFailure(result) &&
+            result.failure.code !== "orchestration_error" &&
+            result.failure.code !== "outcome_unknown"
+          )
+            input.onDispatch?.("refused");
+          return Effect.fromResult(result);
+        }),
       ),
   );
 
@@ -1139,7 +1143,7 @@ const make = Effect.gen(function* () {
           ),
         );
       if (response.status !== 200)
-        return yield* new PeerDispatchRefusal({
+        return yield* new OrchestratorMcpFailure({
           code: "invalid_request",
           message:
             "The destination does not support durable requests v1; no mutation was forwarded.",

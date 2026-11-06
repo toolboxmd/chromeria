@@ -1095,5 +1095,7 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
     lastConfirmedStage: Schema.optional(
       Schema.Literals(["dispatch_started", "native_binding_accepted"]),
     ),
+    /** The destination checked this launch key after admission failed and found no receipt. */
+    launchReceipt: Schema.optional(Schema.Literal("absent")),
   },
 ) {}

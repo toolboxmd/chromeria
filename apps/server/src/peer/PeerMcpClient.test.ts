@@ -380,6 +380,7 @@ it.layer(NodeCrypto.layer)("peer MCP client", (it) => {
       Effect.scoped(
         Effect.gen(function* () {
           let posts = 0;
+          let dispatchedAt: number | undefined;
           const services = yield* PeerMcpClient.layerOver(runtime).pipe(
             Layer.provide(
               Layer.mock(PeerLinks.PeerLinks)({
@@ -411,6 +412,9 @@ it.layer(NodeCrypto.layer)("peer MCP client", (it) => {
             .call({
               environmentId: peer,
               tool: "t3_thread_launch",
+              onDispatch: (stage) => {
+                if (stage === "sent") dispatchedAt = posts;
+              },
               arguments: { clientRequestId: "original-key" },
               limits: { runtimeMode: "full-access", interactionMode: "default" },
               success: replySchema,
@@ -420,8 +424,9 @@ it.layer(NodeCrypto.layer)("peer MCP client", (it) => {
           expect(error.code).toBe(refused ? "invalid_request" : "orchestration_error");
           expect(error.message).toContain(String(rpcCode));
           expect(error).toMatchObject({ rpcCode });
-          expect(PeerMcpClient.isToolRefusal(error)).toBe(refused);
+          expect(error.launchReceipt).toBeUndefined();
           expect(posts).toBe(3);
+          expect(dispatchedAt).toBe(2);
         }),
       ),
   );

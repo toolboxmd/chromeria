@@ -59,6 +59,7 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
+import * as RequestReceipts from "../mcp/McpRequestReceipts.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, McpServer } from "effect/ai";
 
@@ -244,6 +245,7 @@ const boxLaterRunId = RunId.make("run:box-later");
 const boxToolkitLayer = (
   thread: BoxThread,
   actual?: {
+    readonly receipts: CommandReceiptStore.CommandReceiptStoreV2["Service"];
     readonly launches: ThreadLaunch.ThreadLaunchService["Service"];
     readonly threads: ThreadManagement.ThreadManagementService["Service"];
     readonly catalogLayer: Layer.Layer<
@@ -731,6 +733,11 @@ const boxToolkitLayer = (
       ),
     ),
   ).pipe(
+    Layer.provide(
+      actual === undefined
+        ? Layer.empty
+        : Layer.succeed(CommandReceiptStore.CommandReceiptStoreV2, actual.receipts),
+    ),
     Layer.provide(DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
     Layer.provide(NodeCrypto.layer),
     Layer.provide(
@@ -887,6 +894,7 @@ const makeRealBox = Effect.gen(function* () {
     Layer.build,
   );
   return {
+    receipts: Context.get(services, CommandReceiptStore.CommandReceiptStoreV2),
     launches: Context.get(services, ThreadLaunch.ThreadLaunchService),
     threads: Context.get(services, ThreadManagement.ThreadManagementService),
     sink: Context.get(services, EventSink.EventSinkV2),
@@ -914,6 +922,7 @@ const makeLaptop = (
     never,
     ThreadManagement.ThreadManagementService
   > = Layer.empty as never,
+  requestReceipts = false,
 ) =>
   Effect.gen(function* () {
     const linking = kept ?? (yield* layerLinkingEnvironment(laptop).pipe(Layer.build));
@@ -949,7 +958,13 @@ const makeLaptop = (
       Layer.provideMerge(
         RemoteDelegation.layer.pipe(
           Layer.provide(followerThreads),
-          Layer.provideMerge(PeerForwarding.layer),
+          Layer.provideMerge(
+            PeerForwarding.layer.pipe(
+              Layer.provide(
+                requestReceipts ? Layer.mock(RequestReceipts.McpRequestReceipts)({}) : Layer.empty,
+              ),
+            ),
+          ),
           Layer.provide(
             Layer.mock(ProjectService.ProjectService)({
               // A cold enrichment cache: the project itself reports no identity yet.
@@ -2096,6 +2111,16 @@ it.effect.each(
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+type PeerResponseFault =
+  | "bare"
+  | "init"
+  | "cold-init"
+  | "requests"
+  | "internal"
+  | "internal-before"
+  | number
+  | null;
+
 const decodePeerRpcRequest = Schema.decodeUnknownEffect(
   Schema.Struct({
     id: Schema.optional(Schema.Unknown),
@@ -2104,17 +2129,19 @@ const decodePeerRpcRequest = Schema.decodeUnknownEffect(
   }),
 );
 
-const peerResponseFault = (
-  fault: Ref.Ref<"bare" | "init" | "internal" | "internal-before" | null>,
-) => {
+const peerResponseFault = (fault: Ref.Ref<PeerResponseFault>) => {
   let renewing = false;
   return HttpRouter.middleware(
     (handle) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
+        const current = yield* Ref.get(fault);
+        if (request.url === "/mcp/peer-control/requests")
+          return HttpServerResponse.jsonUnsafe(
+            current === "requests" ? { version: 999 } : { version: 1, attachments: false },
+          );
         if (request.url !== "/mcp" || request.method !== "POST") return yield* handle;
         const input = yield* decodePeerRpcRequest(yield* request.json).pipe(Effect.orDie);
-        const current = yield* Ref.get(fault);
         if (
           current === "init" &&
           (input.params?.name === "orchestrator_capabilities" ||
@@ -2123,12 +2150,21 @@ const peerResponseFault = (
           renewing = true;
           return HttpServerResponse.empty({ status: 404 });
         }
-        if (input.method === "initialize" && current === "init" && renewing)
+        if (
+          input.method === "initialize" &&
+          ((current === "init" && renewing) || current === "cold-init")
+        )
           return HttpServerResponse.jsonUnsafe(
             { code: "invalid_request", message: "Session initialization refused." },
             { status: 400 },
           );
         const launch = input.method === "tools/call" && input.params?.name === "t3_thread_launch";
+        if (launch && typeof current === "number")
+          return HttpServerResponse.jsonUnsafe({
+            jsonrpc: "2.0",
+            id: input.id,
+            error: { code: current, message: "Replay protocol refused." },
+          });
         if (launch && current === "internal-before")
           return HttpServerResponse.jsonUnsafe({
             jsonrpc: "2.0",
@@ -2160,14 +2196,14 @@ const peerResponseFault = (
   );
 };
 
-it.effect.each(["bare", "init"] as const)(
+it.effect.each(["bare", "init", "requests"] as const)(
   "settles a first-attempt %s preflight refusal with its follower alive",
   (refusal) =>
     Effect.scoped(
       Effect.gen(function* () {
         const thread = yield* makeBoxThread;
-        const fault = yield* Ref.make<"bare" | "init" | "internal" | "internal-before" | null>(
-          refusal,
+        const fault = yield* Ref.make<PeerResponseFault>(
+          refusal === "init" ? "cold-init" : refusal,
         );
         const b = yield* servePeer(
           box,
@@ -2177,13 +2213,13 @@ it.effect.each(["bare", "init"] as const)(
           ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
         >([]);
         const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-        const a = yield* makeLaptop(database, offers);
+        const a = yield* makeLaptop(database, offers, undefined, undefined, refusal === "requests");
         yield* linkTo(a.links, b, "full-access");
         yield* seedParent(a);
         const input = {
           task: "Do not start refused work.",
           bare: { additions: [] },
-          target: { environmentId: box.environmentId },
+          target: { environmentId: box.environmentId, projectId: boxProject },
           mode: "async",
           clientRequestId: "no-dispatch-refusal",
         };
@@ -2192,7 +2228,11 @@ it.effect.each(["bare", "init"] as const)(
         expect(response.content).toMatchObject([
           {
             text: expect.stringContaining(
-              refusal === "bare" ? "nothing was forwarded" : "Session initialization refused",
+              refusal === "bare"
+                ? "nothing was forwarded"
+                : refusal === "requests"
+                  ? "request protocol is incompatible"
+                  : "Session initialization refused",
             ),
           },
         ]);
@@ -2213,16 +2253,14 @@ it.effect.each(["bare", "init"] as const)(
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect.each([false, true])(
-  "recovers an accepted destination receipt after a JSON-RPC internal error (replay init refusal=%s)",
+it.effect.each([false, true, -32700, -32600, -32601, -32602])(
+  "recovers an accepted destination receipt after a JSON-RPC internal error (replay refusal=%s)",
   (refuseReplay) =>
     Effect.scoped(
       Effect.gen(function* () {
         const thread = yield* makeBoxThread;
         const actual = yield* makeRealBox;
-        const fault = yield* Ref.make<"bare" | "init" | "internal" | "internal-before" | null>(
-          "internal",
-        );
+        const fault = yield* Ref.make<PeerResponseFault>("internal");
         const b = yield* servePeer(
           box,
           boxToolkitLayer(thread, actual).pipe(Layer.provide(peerResponseFault(fault))),
@@ -2254,13 +2292,32 @@ it.effect.each([false, true])(
           }),
         );
         const acceptedThreadId = (yield* Ref.get(thread.launched))!;
-        yield* Ref.set(fault, refuseReplay ? "init" : null);
+        yield* Ref.set(
+          fault,
+          typeof refuseReplay === "number" ? refuseReplay : refuseReplay ? "init" : null,
+        );
         const after = yield* makeLaptop(database, offers, linking);
         yield* after.remote.start();
         if (refuseReplay) {
-          const refused = yield* taskResult(after, pending.id);
+          yield* after.call("delegate_task", {
+            task: "Recover the original receipt.",
+            target: { environmentId: box.environmentId },
+            mode: "async",
+            clientRequestId: "internal-error-receipt",
+          });
+          const refused = (yield* after.orchestrator.getThreadProjection(
+            parentThreadId,
+          )).subagents.find((entry) => entry.id === pending.id);
           expect(refused?.remoteChild?.stoppedThere).not.toBe(true);
-          expect(refused?.remoteChild?.launchError).toContain("Session initialization refused.");
+          expect(yield* after.projections.getOpenRemoteDelegatedTasks).toContainEqual({
+            parentThreadId,
+            taskId: pending.id,
+          });
+          expect(refused?.remoteChild?.launchError).toContain(
+            typeof refuseReplay === "number"
+              ? `JSON-RPC ${refuseReplay}`
+              : "Session initialization refused.",
+          );
           yield* Ref.set(fault, null);
           yield* after.call("delegate_task", {
             task: "Recover the original receipt.",
@@ -2309,7 +2366,7 @@ it.effect.each(
       const thread = yield* makeBoxThread;
       const actual = yield* makeRealBox;
       yield* Ref.set(actual.unavailable, unavailable);
-      const fault = yield* Ref.make<"bare" | "init" | "internal" | "internal-before" | null>(
+      const fault = yield* Ref.make<PeerResponseFault>(
         path === "dispatched recovery" ? "internal-before" : null,
       );
       const b = yield* servePeer(
@@ -2402,6 +2459,19 @@ it.effect.each(
           );
           expect(task.remoteChild?.threadId).toBeUndefined();
           expect(task.remoteChild?.stoppedThere).toBe(true);
+          yield* before.orchestrator.dispatch({
+            type: "delegated_task.remote.complete",
+            commandId: CommandId.make("command:late-uncertain-launch-response"),
+            parentThreadId,
+            taskId,
+            status: "failed",
+            result: "An older attempt could not be confirmed.",
+            launchError: "An older attempt could not be confirmed.",
+          });
+          const retained = (yield* before.orchestrator.getThreadProjection(
+            parentThreadId,
+          )).subagents.find((entry) => entry.id === taskId)!;
+          expect(retained.remoteChild?.stoppedThere).toBe(true);
           expect(yield* before.projections.getOpenRemoteDelegatedTasks).toEqual([]);
           return task;
         }),
