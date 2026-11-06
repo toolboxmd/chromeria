@@ -2994,6 +2994,157 @@ it.live(
     ),
 );
 
+it.live.each([false, true])(
+  "manual594: same-key dispatch ownership survives overlap (interrupt owner: %s)",
+  (interruptOwner) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const node = yield* makeNode(
+          descriptorOf("manual594", "Manual overlap", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const parent = ThreadId.make("manual594-parent");
+        yield* seedParent(node, parent);
+        const sql = Context.get(node.database, SqlClient.SqlClient);
+        const { task } = yield* node.scheduled.upsert({
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
+          commandId: CommandId.make("manual594-schedule"),
+          title: "Existing thread",
+          prompt: "Overlapping manual work",
+          enabled: true,
+          schedule: { type: "interval", everyMs: 60_000 },
+          projectId: node.project.id,
+          threadId: parent,
+          workspaceStrategy: { type: "root" },
+          modelSelection: selection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        });
+        const requestOwner = yield* RequestReceipts.layer.pipe(
+          Layer.provide(Layer.succeedContext(node.database)),
+          Layer.fresh,
+          Layer.build,
+        );
+        const identity = yield* Context.get(
+          requestOwner,
+          RequestReceipts.McpRequestReceipts,
+        ).identify(
+          caller(node, parent),
+          "run_scheduled_task_now",
+          { taskId: task.id },
+          "manual594",
+        );
+        const userMessages = sql`SELECT message_id FROM orchestration_v2_projection_messages WHERE role='user'`;
+        const messagesBefore = (yield* userMessages).length;
+        // B owns the send, held before the native receipt exists.
+        yield* Ref.set(node.holdManualSend, true);
+        const b = yield* node.scheduled
+          .runNow({ id: task.id }, { request: identity })
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(node.manualSendHeld);
+        yield* Ref.set(node.holdManualSend, false);
+        // A would reach a typed provider refusal while B can still be accepted.
+        yield* node.fixtureSettings.updateSettings({
+          projectSettingsOverrides: {
+            [node.project.id]: {
+              providerInstances: { [selection.instanceId]: { enabled: false } },
+            },
+          },
+        });
+        const competing = yield* node.scheduled
+          .runNow({ id: task.id }, { request: identity })
+          .pipe(Effect.flip);
+        expect(competing).toMatchObject({ code: "outcome_unknown" });
+        const state = sql<{
+          stage: string;
+          active_request_id: string | null;
+        }>`SELECT stage,active_request_id FROM scheduled_manual_requests JOIN scheduled_task_request_incarnations USING (task_id) WHERE request_id=${identity.id}`;
+        // The competing caller cannot terminalize the in-flight owner.
+        expect(yield* state).toEqual([{ stage: "dispatching", active_request_id: identity.id }]);
+        yield* node.fixtureSettings.updateSettings({
+          projectSettingsOverrides: {
+            [node.project.id]: { providerInstances: { [selection.instanceId]: { enabled: true } } },
+          },
+        });
+        if (interruptOwner) yield* Fiber.interrupt(b);
+        yield* Deferred.succeed(node.releaseManualSend, undefined);
+        const accepted = interruptOwner
+          ? yield* node.scheduled.runNow({ id: task.id }, { request: identity })
+          : yield* Fiber.join(b);
+        expect(accepted.manualReceipt).toMatchObject({
+          requestId: identity.clientRequestId,
+          stage: "native-accepted",
+        });
+        expect(yield* state).toEqual([{ stage: "dispatching", active_request_id: null }]);
+        const finished = (yield* node.scheduled.list()).tasks.find((t) => t.id === task.id)!;
+        expect(finished.lastRunStatus).toBe("succeeded");
+        expect(finished.runCount).toBe(1);
+        expect((yield* userMessages).length).toBe(messagesBefore + 1);
+        expect(
+          (yield* node.scheduled.runNow({ id: task.id }, { request: identity })).manualReceipt,
+        ).toEqual(accepted.manualReceipt);
+
+        // With no competing dispatcher, a typed refusal is terminal and frees
+        // the schedule for a new key, even after a same-key replay.
+        const refusedIdentity = yield* Context.get(
+          requestOwner,
+          RequestReceipts.McpRequestReceipts,
+        ).identify(
+          caller(node, parent),
+          "run_scheduled_task_now",
+          { taskId: task.id },
+          "manual594-alone",
+        );
+        yield* node.fixtureSettings.updateSettings({
+          projectSettingsOverrides: {
+            [node.project.id]: {
+              providerInstances: { [selection.instanceId]: { enabled: false } },
+            },
+          },
+        });
+        const refused = yield* node.scheduled
+          .runNow({ id: task.id }, { request: refusedIdentity })
+          .pipe(Effect.flip);
+        expect(refused).toMatchObject({ code: "orchestration_error" });
+        expect(refused.message).toContain("is disabled for project");
+        const failed = (yield* node.scheduled.list()).tasks.find((t) => t.id === task.id)!;
+        expect(failed.lastRunStatus).toBe("failed");
+        expect(failed.runCount).toBe(2);
+        yield* node.fixtureSettings.updateSettings({
+          projectSettingsOverrides: {
+            [node.project.id]: { providerInstances: { [selection.instanceId]: { enabled: true } } },
+          },
+        });
+        expect(
+          yield* node.scheduled
+            .runNow({ id: task.id }, { request: refusedIdentity })
+            .pipe(Effect.flip),
+        ).toEqual(refused);
+        const nextIdentity = yield* Context.get(
+          requestOwner,
+          RequestReceipts.McpRequestReceipts,
+        ).identify(
+          caller(node, parent),
+          "run_scheduled_task_now",
+          { taskId: task.id },
+          "manual594-next",
+        );
+        expect(
+          (yield* node.scheduled.runNow({ id: task.id }, { request: nextIdentity })).manualReceipt
+            ?.stage,
+        ).toBe("native-accepted");
+      }),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+        ),
+      ),
+    ),
+);
+
 it.live(
   "preferences382: negotiated peer result retains its bounded variant and original grant checks",
   () =>

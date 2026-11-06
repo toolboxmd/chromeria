@@ -2077,6 +2077,9 @@ export const layer = Layer.effect(
         });
     });
 
+    // Only one live caller may dispatch a manual key. Durable stages survive
+    // restart; this owner ends with the call, allowing receipt-based recovery.
+    const manualDispatchOwners = yield* Ref.make<ReadonlySet<string>>(new Set());
     const runManualNow = Effect.fn("ScheduledTaskService.runManualNow")(function* (
       input: ScheduledTaskRunNowInput,
       options: ManualOptions,
@@ -2255,48 +2258,70 @@ export const layer = Layer.effect(
         yield* row.stage === "prepared"
           ? recheck.pipe(Effect.catch(refuseBeforeDispatch))
           : recheck;
-        const claimed =
-          yield* sql`UPDATE scheduled_manual_requests SET stage='dispatching' WHERE request_id=${request.id} AND stage='prepared' RETURNING request_id`.pipe(
-            Effect.mapError(manualUnavailable),
-          );
-        if (row.stage === "prepared" && claimed.length === 0) return yield* manualUnknown(request);
-        const dispatched = yield* Effect.exit(
-          dispatchTask(
-            snapshot.task,
-            commandId,
-            messageId,
-            snapshot.task.prompt,
-            { _tag: "upstream" },
-            threadId,
-            snapshot.bareReadGrant,
-            { certificateId: snapshot.automationCertificateId ?? null },
+        yield* Effect.acquireRelease(
+          Ref.modify(manualDispatchOwners, (owners) =>
+            owners.has(request.id)
+              ? ([false, owners] as const)
+              : ([true, new Set([...owners, request.id])] as const),
+          ).pipe(
+            Effect.flatMap((owned) => (owned ? Effect.void : Effect.fail(manualUnknown(request)))),
           ),
+          () =>
+            Ref.update(manualDispatchOwners, (owners) => {
+              const next = new Set(owners);
+              next.delete(request.id);
+              return next;
+            }),
         );
-        const failure: Cause.Cause<unknown> | undefined =
-          dispatched._tag === "Failure"
-            ? dispatched.cause
-            : dispatched.value._tag === "Failure"
-              ? dispatched.value.cause
-              : undefined;
+        // A caller may have read an older stage before the previous owner ended.
+        const fresh = (yield* readManual(request))[0]!;
+        if (fresh.stage === "failed") return yield* manualFailed(fresh.result_json ?? "");
         accepted = yield* readAccepted;
         if (!accepted) {
-          // A typed refusal with no native receipt never admitted anything:
-          // record it as this key's outcome so the schedule is not left running.
-          // Interruptions and defects stay unknown.
-          const refused =
-            failure !== undefined &&
-            !Cause.hasInterrupts(failure) &&
-            !Cause.hasDies(failure) &&
-            (snapshot.task.threadId !== null ||
-              Option.isNone(
-                yield* nativeReceipts.value
-                  .getByCommandId(commandId)
-                  .pipe(Effect.mapError(manualUnavailable)),
-              ));
-          if (!refused) return yield* manualUnknown(request);
-          const message = errorMessage(Cause.squash(failure));
-          yield* failManual(request, input.id, row.incarnation, message, "dispatching");
-          return yield* manualFailed(message);
+          const claimed =
+            yield* sql`UPDATE scheduled_manual_requests SET stage='dispatching' WHERE request_id=${request.id} AND stage='prepared' RETURNING request_id`.pipe(
+              Effect.mapError(manualUnavailable),
+            );
+          if (row.stage === "prepared" && claimed.length === 0)
+            return yield* manualUnknown(request);
+          const dispatched = yield* Effect.exit(
+            dispatchTask(
+              snapshot.task,
+              commandId,
+              messageId,
+              snapshot.task.prompt,
+              { _tag: "upstream" },
+              threadId,
+              snapshot.bareReadGrant,
+              { certificateId: snapshot.automationCertificateId ?? null },
+            ),
+          );
+          const failure: Cause.Cause<unknown> | undefined =
+            dispatched._tag === "Failure"
+              ? dispatched.cause
+              : dispatched.value._tag === "Failure"
+                ? dispatched.value.cause
+                : undefined;
+          accepted = yield* readAccepted;
+          if (!accepted) {
+            // A typed refusal with no native receipt never admitted anything:
+            // record it as this key's outcome so the schedule is not left running.
+            // Interruptions and defects stay unknown.
+            const refused =
+              failure !== undefined &&
+              !Cause.hasInterrupts(failure) &&
+              !Cause.hasDies(failure) &&
+              (snapshot.task.threadId !== null ||
+                Option.isNone(
+                  yield* nativeReceipts.value
+                    .getByCommandId(commandId)
+                    .pipe(Effect.mapError(manualUnavailable)),
+                ));
+            if (!refused) return yield* manualUnknown(request);
+            const message = errorMessage(Cause.squash(failure));
+            yield* failManual(request, input.id, row.incarnation, message, "dispatching");
+            return yield* manualFailed(message);
+          }
         }
       } else if (decision?._tag === "fork") {
         // Exact policy admission is durable. A retry observes it without
@@ -2370,7 +2395,7 @@ export const layer = Layer.effect(
         );
       yield* notifyChanged;
       return result;
-    });
+    }, Effect.scoped);
 
     const runLocalNow = Effect.fn("ScheduledTaskService.runLocalNow")(function* (
       input: ScheduledTaskRunNowInput,
