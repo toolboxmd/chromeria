@@ -2334,6 +2334,15 @@ const make = Effect.gen(function* () {
           return yield* single.delegateTask(callerScope, input);
         const scope = yield* requireThreadScope(callerScope, "delegate_task");
         const caller = yield* loadProjection(scope.thread.threadId);
+        if (
+          target?.projectId !== undefined &&
+          PeerForwarding.remoteTarget(callerScope, target.environmentId) === undefined &&
+          target.projectId !== caller.thread.projectId
+        )
+          return yield* failure(
+            "invalid_request",
+            "A local task runs in this thread's project. Omit target.projectId, or pass target.environmentId to run it in that environment's project.",
+          );
         const key = yield* requestKey(input.clientRequestId);
         const commandId = stableCommandId({
           scope,

@@ -25,13 +25,15 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/chromeria/issues/176",
     "https://github.com/toolboxmd/chromeria/issues/396",
     "https://github.com/toolboxmd/chromeria/issues/401",
-    "https://github.com/toolboxmd/chromeria/issues/404"
+    "https://github.com/toolboxmd/chromeria/issues/404",
+    "https://github.com/toolboxmd/chromeria/issues/515"
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/176-spectrum-v2",
     "https://github.com/toolboxmd/chromeria/pull/494",
     "https://github.com/toolboxmd/chromeria/pull/508",
-    "https://github.com/toolboxmd/chromeria/pull/514"
+    "https://github.com/toolboxmd/chromeria/pull/514",
+    "https://github.com/toolboxmd/chromeria/compare/main...fix/515-spectrum-acceptance"
   ],
   "newFiles": [
     "apps/mobile/src/features/settings/spectrumReportAction.tsx",
@@ -111,6 +113,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/mobile/src/features/threads/ThreadRouteScreen.tsx",
     "apps/mobile/src/state/use-thread-selection.ts",
     "packages/client-runtime/src/state/threadCommands.ts",
+    "packages/shared/src/projectSettings.test.ts",
     "vite.config.ts"
   ],
   "sharedFiles": [
@@ -153,6 +156,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/web/src/components/settings/settingsSearch.ts",
     "apps/web/src/routeTree.gen.ts",
     "docs/map.md",
+    "packages/shared/src/projectSettings.ts",
     "packages/contracts/src/settings.ts"
   ],
   "keywords": [

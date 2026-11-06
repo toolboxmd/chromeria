@@ -605,6 +605,34 @@ it.effect("a failed event stream resubscribes after its backoff and replays the 
   ),
 );
 
+it.effect("a settled Spectrum with a failed first refresh is recovered without a new event", () =>
+  scenario((resumed) =>
+    Effect.gen(function* () {
+      const fault = yield* faults();
+      const threadId = yield* settled;
+      const sql = yield* SqlClient.SqlClient;
+      const [saved] = yield* sql<{
+        readonly payload_json: string;
+      }>`SELECT payload_json FROM fork_spectra
+        WHERE thread_id = ${threadId}`;
+      yield* sql`UPDATE fork_spectra SET payload_json = json_set(payload_json, '$.version', 999)
+        WHERE thread_id = ${threadId}`;
+      yield* Effect.gen(function* () {
+        yield* logged(fault, "Spectrum watch refresh failed");
+        yield* sql`UPDATE fork_spectra SET payload_json = ${saved!.payload_json}
+          WHERE thread_id = ${threadId}`;
+        const before = yield* latest;
+        assert.strictEqual(yield* Queue.size(resumed), 0);
+        yield* TestClock.adjust("60 seconds");
+        const sent = yield* until(resumed, (entry) => reportSent(entry.state));
+        assert.strictEqual(sent.status, "settled");
+        assert.strictEqual(sent.report?.text, "Report text");
+        assert.isAbove(yield* latest, before);
+      }).pipe(Effect.provide(wakes(resumed, fault)));
+    }),
+  ),
+);
+
 it.effect("a failed start-up catch-up is recovered by the next tick", () =>
   scenario((resumed) =>
     Effect.gen(function* () {
