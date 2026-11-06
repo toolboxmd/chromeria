@@ -22,6 +22,8 @@ const settle = (work: Promise<unknown>) =>
     () => undefined,
   );
 
+const DISCONNECTED_HUMAN = Symbol("disconnected human");
+
 /** Reserves control immediately, but drains running work before the new owner can act. */
 export class SessionControl {
   readonly agentId: string | null;
@@ -33,7 +35,7 @@ export class SessionControl {
   } | null = null;
   private pending: Promise<void> = Promise.resolve();
   private readonly handoff = new Set<Promise<void>>();
-  private owner: string | null = null;
+  private owner: string | typeof DISCONNECTED_HUMAN | null = null;
   private epoch = 0;
   private closed = false;
   private readonly inputs = {
@@ -49,6 +51,10 @@ export class SessionControl {
 
   get controller() {
     return this.owner;
+  }
+
+  get humanDisconnected() {
+    return this.owner === DISCONNECTED_HUMAN;
   }
 
   get generation() {
@@ -108,7 +114,7 @@ export class SessionControl {
       });
   }
 
-  private changeOwner(owner: string | null) {
+  private changeOwner(owner: string | typeof DISCONNECTED_HUMAN | null) {
     this.latestHuman = null;
     this.owner = owner;
     this.epoch++;
@@ -226,9 +232,10 @@ export class SessionControl {
     if (authorize) await authorize();
     this.assertOpen();
     if (this.epoch !== admittedGeneration) throw new BrowserControlInterrupted();
-    if (this.owner !== null && this.owner !== viewerId) {
+    if (this.owner !== null && this.owner !== DISCONNECTED_HUMAN && this.owner !== viewerId) {
       throw new BrowserControlInterrupted({ message: "Another viewer controls this browser tab." });
     }
+    const previousOwner = this.owner;
     const changed = this.owner !== viewerId;
     if (changed) this.changeOwner(viewerId);
     const generation = this.epoch;
@@ -237,7 +244,8 @@ export class SessionControl {
       await this.human(viewerId, async () => {}, authorize);
     } catch (cause) {
       // Retire only this failed reservation, never a later takeover or reopening.
-      if (changed && this.owner === viewerId && this.epoch === generation) this.changeOwner(null);
+      if (changed && this.owner === viewerId && this.epoch === generation)
+        this.changeOwner(previousOwner);
       throw cause;
     }
   }
@@ -257,7 +265,14 @@ export class SessionControl {
   }
 
   async disconnect(viewerId: string, afterDrain?: () => Promise<void>) {
-    if (!this.closed && this.owner === viewerId) await this.release(viewerId, afterDrain);
+    if (!this.closed && this.owner === viewerId) {
+      // A lost stream retires its input, but only an explicit human release resumes agents.
+      this.changeOwner(DISCONNECTED_HUMAN);
+      await this.enqueue(async () => {
+        await Promise.all(this.handoff);
+        await afterDrain?.();
+      });
+    }
   }
 
   async close() {

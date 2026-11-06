@@ -302,7 +302,12 @@ it.live.each([
     expect(viewports).toEqual([{ type: "viewport", width: 1280, height: 800 }]);
     expect(inputs).toEqual(canOperate ? [...mutations, null] : []);
     expect(
-      attachments.map(({ authorize: _authorize, resourceViewerId: _viewerId, ...input }) => input),
+      attachments.map(
+        ({ authorize: _authorize, resourceViewerId: _viewerId, disconnectReason, ...input }) => ({
+          ...input,
+          disconnectReason: disconnectReason?.(),
+        }),
+      ),
     ).toEqual([
       {
         threadId: "thread",
@@ -311,6 +316,7 @@ it.live.each([
         maxHeight: 800,
         quality: 70,
         canOperate,
+        disconnectReason: "transport",
       },
     ]);
     expect(auth.requests).toEqual([resource]);

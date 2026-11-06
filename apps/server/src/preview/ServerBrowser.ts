@@ -280,6 +280,7 @@ export class ServerBrowser extends Context.Service<
       readonly maxHeight: number;
       readonly quality: number;
       readonly canOperate: boolean;
+      readonly disconnectReason?: () => "transport" | "inputOverload";
       readonly authorize?: () => Promise<void>;
       /** The authenticated admission, distinct from this connection's control id. */
       readonly resourceViewerId?: string;
@@ -817,11 +818,13 @@ const make = Effect.gen(function* () {
         controller:
           tab.control.controller === viewer.id
             ? "you"
-            : tab.control.controller !== null
-              ? "another-viewer"
-              : tab.control.agentId !== null
-                ? "agent"
-                : "unclaimed",
+            : tab.control.humanDisconnected
+              ? "unclaimed"
+              : tab.control.controller !== null
+                ? "another-viewer"
+                : tab.control.agentId !== null
+                  ? "agent"
+                  : "unclaimed",
         generation: tab.control.generation,
         dialog: dialogStatus(tab),
       });
@@ -2865,11 +2868,7 @@ const make = Effect.gen(function* () {
     }
     const agentSessionId = request.agentSessionId!;
 
-    if (
-      READ_OPERATIONS.has(request.operation) &&
-      tab.control.agentId !== agentSessionId &&
-      !tab.control.agentCanActNow(agentSessionId)
-    ) {
+    if (READ_OPERATIONS.has(request.operation) && !tab.control.agentCanActNow(agentSessionId)) {
       return tab.control.observe(async () => {
         await authorize();
         if (tab.dialog)
@@ -3656,7 +3655,13 @@ const make = Effect.gen(function* () {
       }),
       () =>
         Effect.promise(async () => {
-          await tab.control.disconnect(viewer.id, () => releaseViewerInput(viewer, session));
+          // Terminal admission refusal retires control; transport loss retains it for reconnection.
+          if (
+            input.disconnectReason?.() === "inputOverload" &&
+            tab.control.controller === viewer.id
+          )
+            await tab.control.release(viewer.id, () => releaseViewerInput(viewer, session));
+          else await tab.control.disconnect(viewer.id, () => releaseViewerInput(viewer, session));
           tab.viewers.delete(viewer);
           broadcastControl(tab);
           reportLiveTabs();
