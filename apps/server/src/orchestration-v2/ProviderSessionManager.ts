@@ -7,7 +7,6 @@ import {
   bareT3ToolNames,
   unsupportedBare,
 } from "@t3tools/provider-core/server/bareLaunch";
-import { applyProviderStartAdmission } from "../provider/forkProviderStartAdmission.ts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
@@ -2165,7 +2164,7 @@ export const layerWithOptions = (
         ),
       );
 
-      const manager = ProviderSessionManagerV2.of({
+      return ProviderSessionManagerV2.of({
         shutdown,
         open: (input) =>
           sessionOpen.withLock(
@@ -2661,7 +2660,6 @@ export const layerWithOptions = (
             ),
         ),
       } satisfies ProviderSessionManagerV2Shape);
-      return yield* applyProviderStartAdmission(manager, registry);
     }),
   );
 

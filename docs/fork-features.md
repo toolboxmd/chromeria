@@ -512,36 +512,26 @@ only when that file set changes; this is not an exhaustive history of follow-ups
 ```json
 {
   "id": "provider-auto-update",
-  "purpose": "Let each environment opt in to installing provider CLI updates without a click.",
+  "purpose": "Let each environment opt in to installing provider CLI updates through the same upstream update path as the Update button, regardless of provider activity.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/159",
     "https://github.com/toolboxmd/chromeria/issues/266",
     "https://github.com/toolboxmd/chromeria/issues/263",
-    "https://github.com/toolboxmd/chromeria/issues/276"
+    "https://github.com/toolboxmd/chromeria/issues/276",
+    "https://github.com/toolboxmd/chromeria/issues/638"
   ],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/160"],
   "newFiles": [
-    "apps/server/src/provider/forkProviderMaintenance.ts",
-    "apps/server/src/provider/forkProviderStartAdmission.ts",
-    "apps/server/src/provider/providerAdmissionGate.test.ts",
-    "apps/server/src/provider/providerAdmissionGate.ts",
     "apps/server/src/provider/providerAutoUpdate.test.ts",
     "apps/server/src/provider/providerAutoUpdate.ts",
-    "apps/server/src/provider/providerAutoUpdateState.ts",
     "apps/web/src/components/settings/AutoUpdateProvidersSetting.tsx",
     "apps/web/src/components/settings/ProviderUpdateSettingsRows.tsx",
     "apps/web/src/components/settings/providerUpdateSettingsSearch.test.ts"
   ],
   "upstreamFiles": [
-    "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
-    "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
     "packages/provider-grok/src/server/driver.test.ts",
-    "packages/provider-grok/src/server/driver.ts",
-    "packages/provider-core/src/server/maintenance.ts",
     "packages/provider-core/src/server/maintenanceResolver.test.ts",
     "packages/provider-core/src/server/maintenanceResolver.ts",
-    "apps/server/src/provider/providerMaintenanceRunner.test.ts",
-    "apps/server/src/provider/providerMaintenanceRunner.ts",
     "apps/server/src/server.ts",
     "apps/server/src/ws.ts",
     "apps/web/src/components/settings/ProviderSettingsPanel.tsx",
@@ -2441,6 +2431,8 @@ sources and reasons.
     "packages/provider-grok/src/server/GrokBareRuntime.ts"
   ],
   "upstreamFiles": [
+    "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+    "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
     "apps/server/package.json",
     "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
     "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
@@ -2494,8 +2486,6 @@ sources and reasons.
     "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts",
     "apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts",
     "apps/server/src/orchestration-v2/Orchestrator.ts",
-    "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
-    "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
     "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
     "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
     "apps/server/src/orchestration-v2/RestartContinuation.ts",

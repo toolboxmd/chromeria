@@ -1,14 +1,3 @@
-import * as DateTime from "effect/DateTime";
-import * as ForkProviderMaintenance from "./forkProviderMaintenance.ts";
-import * as ForkProviderStartAdmission from "./forkProviderStartAdmission.ts";
-import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
-import * as AdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
-import type { ProviderAdapterV2SessionRuntime } from "@t3tools/provider-core/server/ProviderAdapter";
-import { CodexProviderCapabilitiesV2 as CodexCapabilities } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
-import { ProviderSessionId, ThreadId } from "@t3tools/contracts";
-import * as Option from "effect/Option";
-import * as SqlClient from "effect/sql/SqlClient";
-import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { describe, it, assert } from "@effect/vitest";
 import {
   ProviderDriverKind,
@@ -20,7 +9,6 @@ import { ServerProviderUpdateError } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as Context from "effect/Context";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -238,7 +226,7 @@ function makeRegistry(
   });
 }
 
-const makeTestContext = (
+const makeTestRunner = (
   registry: ProviderRegistry.ProviderRegistry["Service"],
   manifest: ModelManifest.ModelManifestData = {
     version: 1,
@@ -251,19 +239,20 @@ const makeTestContext = (
   },
   latestVersions: Layer.Layer<ProviderLatestVersions.ProviderLatestVersions> = ProviderLatestVersions.layer,
 ) =>
-  Layer.build(
-    ForkProviderMaintenance.layer.pipe(
-      Layer.provideMerge(
-        Layer.mergeAll(
-          Layer.orDie(SqlitePersistence.layerMemory),
-          Layer.succeed(ProviderRegistry.ProviderRegistry, registry),
-          Layer.succeed(ModelManifest.ModelManifest, {
-            current: Effect.succeed(manifest),
-            refresh: Effect.succeed(manifest),
-            forceRefresh: Effect.succeed(manifest),
-            refreshInBackground: Effect.void,
-          }),
-          latestVersions,
+  Effect.service(ProviderMaintenanceRunner.ProviderMaintenanceRunner).pipe(
+    Effect.provide(
+      ProviderMaintenanceRunner.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.succeed(ProviderRegistry.ProviderRegistry, registry),
+            Layer.succeed(ModelManifest.ModelManifest, {
+              current: Effect.succeed(manifest),
+              refresh: Effect.succeed(manifest),
+              forceRefresh: Effect.succeed(manifest),
+              refreshInBackground: Effect.void,
+            }),
+            latestVersions,
+          ),
         ),
       ),
     ),
@@ -283,10 +272,6 @@ function layerFailingLatestLookupAfterFirst() {
     invalidate: () => Effect.void,
   });
 }
-const makeTestRunner = (...args: Parameters<typeof makeTestContext>) =>
-  Effect.map(makeTestContext(...args), (context) =>
-    Context.get(context, ProviderMaintenanceRunner.ProviderMaintenanceRunner),
-  );
 
 describe("providerMaintenanceRunner", () => {
   it.effect("runs the allowlisted provider update command and records success", () => {
@@ -503,68 +488,6 @@ describe("providerMaintenanceRunner", () => {
           layerLatestVersionHttpClient("2.1.310"),
           layerMockSpawner((command, args) => {
             calls.push({ command, args });
-            return { stdout: "updated" };
-          }),
-        ),
-      ),
-    );
-  });
-
-  it.effect.each([
-    { name: "allows a proven native updater", cachedSafe: true, freshSafe: true, installs: 1 },
-    { name: "defers an unproved updater", cachedSafe: false, freshSafe: false, installs: 0 },
-    {
-      name: "rechecks ownership before bypassing busy deferral",
-      cachedSafe: true,
-      freshSafe: false,
-      installs: 0,
-    },
-  ])("$name while the driver has active sessions", ({ cachedSafe, freshSafe, installs }) => {
-    let installCalls = 0;
-    return Effect.gen(function* () {
-      const { registry } = yield* makeRegistry();
-      const capabilities = makeProviderMaintenanceCapabilities({
-        provider: CODEX_DRIVER,
-        packageName: "@openai/codex",
-        updateExecutable: "codex",
-        updateArgs: ["update"],
-        updateLockKey: "codex-native",
-      });
-      const context = yield* makeTestContext({
-        ...registry,
-        getProviderMaintenanceCapabilitiesForInstance: (_instanceId, _provider, options) =>
-          Effect.succeed({
-            ...capabilities,
-            update: {
-              ...capabilities.update!,
-              ...((options?.fresh ? freshSafe : cachedSafe)
-                ? { canRunWhileBusy: true as const }
-                : {}),
-            },
-          }),
-      });
-      const sql = Context.get(context, SqlClient.SqlClient);
-      yield* sql`INSERT INTO orchestration_v2_projection_provider_sessions
-        (provider_session_id, provider, status, updated_at, payload_json)
-        VALUES ('busy', 'codex', 'running', '2026-10-15', '{}')`;
-      const updater = Context.get(context, ProviderMaintenanceRunner.ProviderMaintenanceRunner);
-      const result = yield* updater.updateProvider(CODEX_DRIVER).pipe(Effect.result);
-      assert.equal(installCalls, installs);
-      if (installs === 1) {
-        assert.isTrue(result._tag === "Success");
-      } else {
-        assert.isTrue(result._tag === "Failure");
-        if (result._tag === "Failure") {
-          assert.equal(result.failure.reason, "Provider work is active; the update is deferred.");
-        }
-      }
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          layerNonWindowsPlatform,
-          layerLatestVersionHttpClient("0.0.0"),
-          layerMockSpawner(() => {
-            installCalls++;
             return { stdout: "updated" };
           }),
         ),
@@ -1323,157 +1246,3 @@ it.effect("refuses incompatible latest versions and unapproved or unpinnable tar
     ),
   );
 });
-
-it.effect.each([false, true])(
-  "server provider composition gates open and reused starts (updateFirst=%s)",
-  (updateFirst) =>
-    Effect.gen(function* () {
-      const installEntered = yield* Deferred.make<void>();
-      const finishInstall = yield* Deferred.make<void>();
-      const openEntered = yield* Deferred.make<void>();
-      const publishStart = yield* Deferred.make<void>();
-      const reusedStarted = yield* Deferred.make<void>();
-      let installFinished = false;
-      let installCalls = 0;
-      const { registry } = yield* makeRegistry(baseNativeCliProvider);
-      const context = yield* makeTestContext(registry).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            layerNonWindowsPlatform,
-            layerLatestVersionHttpClient("0.0.0"),
-            layerMockSpawner(() => {
-              installCalls++;
-              return {
-                exitCode: Deferred.succeed(installEntered, undefined).pipe(
-                  Effect.andThen(Deferred.await(finishInstall)),
-                  Effect.andThen(
-                    Effect.sync(() => {
-                      installFinished = true;
-                    }),
-                  ),
-                  Effect.as(ChildProcessSpawner.ExitCode(0)),
-                ),
-              };
-            }),
-          ),
-        ),
-      );
-      const sql = Context.get(context, SqlClient.SqlClient);
-      const updater = Context.get(context, ProviderMaintenanceRunner.ProviderMaintenanceRunner);
-      const admission = Context.get(context, ForkProviderStartAdmission.ProviderStartAdmission);
-      const now = yield* DateTime.now;
-      const sessionId = ProviderSessionId.make("admission-session");
-      const runtime: ProviderAdapterV2SessionRuntime = {
-        instanceId: NATIVE_CLI_INSTANCE_ID,
-        driver: NATIVE_CLI_DRIVER,
-        providerSessionId: sessionId,
-        providerSession: {
-          id: sessionId,
-          driver: NATIVE_CLI_DRIVER,
-          providerInstanceId: NATIVE_CLI_INSTANCE_ID,
-          status: "ready",
-          cwd: "/synthetic",
-          model: "model",
-          capabilities: CodexCapabilities,
-          createdAt: now,
-          updatedAt: now,
-          lastError: null,
-        },
-        events: Stream.never,
-        ensureThread: () => Effect.die("unused"),
-        resumeThread: () => Effect.die("unused"),
-        startTurn: () =>
-          Effect.gen(function* () {
-            assert.isTrue(installFinished);
-            yield* Deferred.succeed(reusedStarted, undefined);
-          }),
-        steerTurn: () => Effect.void,
-        interruptTurn: () => Effect.void,
-        respondToRuntimeRequest: () => Effect.void,
-        readThreadSnapshot: () => Effect.die("unused"),
-        rollbackThread: () => Effect.die("unused"),
-        forkThread: () => Effect.die("unused"),
-      };
-      const adapters = Context.get(
-        yield* Layer.build(
-          Layer.mock(AdapterRegistry.ProviderAdapterRegistryV2)({
-            get: () =>
-              Effect.succeed({
-                instanceId: NATIVE_CLI_INSTANCE_ID,
-                driver: NATIVE_CLI_DRIVER,
-                getCapabilities: () => Effect.succeed(CodexCapabilities),
-                planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
-                openSession: () => Effect.succeed(runtime),
-              }),
-          }),
-        ),
-        AdapterRegistry.ProviderAdapterRegistryV2,
-      );
-      const manager = Context.get(
-        yield* Layer.build(
-          Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
-            open: () =>
-              Deferred.succeed(openEntered, undefined).pipe(
-                Effect.andThen(updateFirst ? Effect.void : Deferred.await(publishStart)),
-                Effect.andThen(
-                  updateFirst
-                    ? Effect.void
-                    : sql`INSERT INTO orchestration_v2_projection_provider_sessions
-            (provider_session_id, provider, status, updated_at, payload_json)
-            VALUES ('active', 'nativeCli', 'running', '2026-10-01', '{}')`.pipe(
-                        Effect.orDie,
-                        Effect.asVoid,
-                      ),
-                ),
-                Effect.as(runtime),
-              ),
-            get: () => Effect.succeedSome(runtime),
-          }),
-        ),
-        ProviderSessionManager.ProviderSessionManagerV2,
-      );
-      const wrapped = admission.wrap(manager, adapters);
-      const openInput = {
-        threadId: ThreadId.make("admission-thread"),
-        providerSessionId: sessionId,
-        modelSelection: { instanceId: NATIVE_CLI_INSTANCE_ID, model: "model" },
-        runtimePolicy: {
-          runtimeMode: "full-access" as const,
-          interactionMode: "default" as const,
-          cwd: "/synthetic",
-        },
-      };
-      if (!updateFirst) {
-        const opened = yield* wrapped.open(openInput).pipe(Effect.forkScoped);
-        yield* Deferred.await(openEntered);
-        const update = yield* updater
-          .updateProvider(NATIVE_CLI_DRIVER)
-          .pipe(Effect.result, Effect.forkScoped);
-        yield* Deferred.succeed(publishStart, undefined);
-        const fresh = yield* Fiber.join(opened);
-        const reused = yield* wrapped.get(sessionId);
-        assert.strictEqual(Option.getOrThrow(reused), fresh);
-        const result = yield* Fiber.join(update);
-        assert.isTrue(result._tag === "Failure");
-        if (result._tag === "Failure")
-          assert.equal(result.failure.reason, "Provider work is active; the update is deferred.");
-        assert.equal(installCalls, 0);
-      } else {
-        const update = yield* updater.updateProvider(NATIVE_CLI_DRIVER).pipe(Effect.forkScoped);
-        yield* Deferred.await(installEntered);
-        const fresh = yield* wrapped.open(openInput).pipe(Effect.forkScoped);
-        const reused = Option.getOrThrow(yield* wrapped.get(sessionId));
-        // The adapter ignores its input; this branch proves start admission on get's runtime.
-        const turn = yield* reused
-          .startTurn({} as Parameters<typeof reused.startTurn>[0])
-          .pipe(Effect.forkScoped);
-        assert.isFalse(yield* Deferred.isDone(openEntered));
-        assert.isFalse(yield* Deferred.isDone(reusedStarted));
-        yield* Deferred.succeed(finishInstall, undefined);
-        yield* Fiber.join(update);
-        assert.strictEqual(yield* Fiber.join(fresh), reused);
-        yield* Fiber.join(turn);
-        assert.equal(installCalls, 1);
-      }
-    }),
-);

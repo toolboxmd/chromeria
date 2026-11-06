@@ -1,10 +1,5 @@
 // Fork: opt-in automatic provider updates (toolboxmd/chromeria#159).
-import type {
-  ServerProvider,
-  ServerProviderUpdateState,
-  ServerSettings,
-  ServerSettingsError,
-} from "@t3tools/contracts";
+import type { ServerProvider, ServerSettings, ServerSettingsError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
@@ -12,20 +7,12 @@ import * as Stream from "effect/Stream";
 
 import * as ServerSettingsModule from "../serverSettings.ts";
 import { ProviderRegistry } from "./ProviderRegistry.ts";
-import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as ServerActivation from "../serverActivation.ts";
-import { readBusyProviderDrivers, PROVIDER_UPDATE_BUSY_REASON } from "./providerAutoUpdateState.ts";
-import * as SqlClient from "effect/sql/SqlClient";
-import type { SqlError } from "effect/sql/SqlError";
-import { ServerProviderUpdateError } from "@t3tools/contracts";
-import * as Schema from "effect/Schema";
 import * as ProviderMaintenanceRunner from "./providerMaintenanceRunner.ts";
 import type {
   ProviderMaintenanceCapabilities,
   ProviderMaintenanceCommandAction,
 } from "@t3tools/provider-core/server/maintenanceResolver";
-
-const isProviderUpdateError = Schema.is(ServerProviderUpdateError);
 
 export interface ProviderAutoUpdateTarget {
   readonly provider: ServerProvider;
@@ -36,7 +23,7 @@ export interface ProviderAutoUpdateTarget {
 /**
  * Providers to update now, by the notification's one-click rule: a driver's outdated instances must
  * share one update command, which runs once for all. Skip a driver with an active update or a failed
- * last result; defer while work runs unless its updater supports active sessions.
+ * last result.
  */
 function selectProviderAutoUpdateTargets(input: {
   readonly settings: Pick<ServerSettings, "autoUpdateProviders" | "enableProviderUpdateChecks">;
@@ -78,8 +65,7 @@ function selectProviderAutoUpdateTargets(input: {
       outdated.some(
         (provider) =>
           provider.versionAdvisory?.canUpdate !== true ||
-          (provider.updateState?.status === "queued" &&
-            provider.updateState.message !== PROVIDER_UPDATE_BUSY_REASON) ||
+          provider.updateState?.status === "queued" ||
           provider.updateState?.status === "running" ||
           provider.updateState?.status === "failed" ||
           provider.updateState?.status === "unchanged",
@@ -101,15 +87,7 @@ function selectProviderAutoUpdateTargets(input: {
         provider.versionAdvisory?.latestVersion,
       ]);
     });
-    if (
-      identities.some((identity) => identity === null) ||
-      new Set(identities).size !== 1 ||
-      new Set(
-        outdated.map(
-          (provider) => input.updateActions.get(provider.instanceId)?.canRunWhileBusy === true,
-        ),
-      ).size !== 1
-    ) {
+    if (identities.some((identity) => identity === null) || new Set(identities).size !== 1) {
       continue;
     }
     const attemptKey = identities[0]!;
@@ -129,33 +107,17 @@ function selectProviderAutoUpdateTargets(input: {
 export function makeProviderAutoUpdater(deps: {
   readonly getSettings: Effect.Effect<ServerSettings, ServerSettingsError>;
   readonly getProviders: Effect.Effect<ReadonlyArray<ServerProvider>>;
-  readonly getBusyDrivers: Effect.Effect<ReadonlySet<string>, SqlError>;
   readonly getMaintenanceCapabilities: (
     instanceId: ServerProvider["instanceId"],
     driver: ServerProvider["driver"],
   ) => Effect.Effect<ProviderMaintenanceCapabilities>;
-  readonly setUpdateState: (
-    instanceId: ServerProvider["instanceId"],
-    state: ServerProviderUpdateState | null,
-  ) => Effect.Effect<void>;
   readonly updateProvider: ProviderMaintenanceRunner.ProviderMaintenanceRunnerShape["updateProvider"];
 }) {
   const attempted = new Set<string>();
   const evaluate = Effect.gen(function* () {
     const settings = yield* deps.getSettings;
     const providers = yield* deps.getProviders;
-    if (!settings.autoUpdateProviders || !settings.enableProviderUpdateChecks) {
-      for (const provider of providers) {
-        if (
-          provider.updateState?.status === "queued" &&
-          provider.updateState.message === PROVIDER_UPDATE_BUSY_REASON
-        ) {
-          yield* deps.setUpdateState(provider.instanceId, null);
-        }
-      }
-      return;
-    }
-    const busyDrivers = yield* deps.getBusyDrivers;
+    if (!settings.autoUpdateProviders || !settings.enableProviderUpdateChecks) return;
     const updateActions = new Map<string, ProviderMaintenanceCommandAction | null>();
     for (const provider of providers) {
       if (
@@ -177,38 +139,10 @@ export function makeProviderAutoUpdater(deps: {
       updateActions,
       attempted,
     });
-    const targetedInstances = new Set(targets.map(({ provider }) => provider.instanceId));
-    for (const provider of providers) {
-      if (
-        !targetedInstances.has(provider.instanceId) &&
-        provider.updateState?.status === "queued" &&
-        provider.updateState.message === PROVIDER_UPDATE_BUSY_REASON
-      ) {
-        yield* deps.setUpdateState(provider.instanceId, null);
-      }
-    }
     yield* Effect.forEach(
       targets,
       ({ provider, attemptKey }) =>
         Effect.gen(function* () {
-          const deferred =
-            provider.updateState?.status === "queued" &&
-            provider.updateState.message === PROVIDER_UPDATE_BUSY_REASON;
-          if (
-            busyDrivers.has(provider.driver) &&
-            !updateActions.get(provider.instanceId)?.canRunWhileBusy
-          ) {
-            if (!deferred)
-              yield* deps.setUpdateState(provider.instanceId, {
-                status: "queued",
-                startedAt: null,
-                finishedAt: null,
-                message: PROVIDER_UPDATE_BUSY_REASON,
-                output: null,
-              });
-            return;
-          }
-          if (deferred) yield* deps.setUpdateState(provider.instanceId, null);
           attempted.add(attemptKey);
           yield* Effect.logInfo("Updating provider automatically", {
             driver: provider.driver,
@@ -217,13 +151,6 @@ export function makeProviderAutoUpdater(deps: {
             Effect.andThen(
               deps.updateProvider({ provider: provider.driver, instanceId: provider.instanceId }),
             ),
-            Effect.catch((error) => {
-              if (isProviderUpdateError(error) && error.reason === PROVIDER_UPDATE_BUSY_REASON) {
-                attempted.delete(attemptKey);
-                return Effect.void;
-              }
-              return Effect.fail(error);
-            }),
             Effect.catchCause(() =>
               Effect.logWarning("Automatic provider update failed", {
                 driver: provider.driver,
@@ -238,35 +165,16 @@ export function makeProviderAutoUpdater(deps: {
   return { evaluate };
 }
 
-const WAKE_EVENT_TYPES = new Set([
-  "run.updated",
-  "provider-session.attached",
-  "provider-session.updated",
-  "provider-session.detached",
-  "provider-thread.updated",
-]);
-
-/**
- * Re-evaluates at startup, when provider snapshots or settings change, and
- * when a turn ends so a deferred update runs once the provider is idle.
- * Wake-ups coalesce into one pending pass.
- */
+/** Re-evaluate on startup, provider snapshots and settings changes; coalesce pending passes. */
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const providerRegistry = yield* ProviderRegistry;
-    const eventSink = yield* EventSink.EventSinkV2;
-    const sql = yield* SqlClient.SqlClient;
     const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
     const runner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
     const { evaluate } = makeProviderAutoUpdater({
       getSettings: serverSettings.getSettings,
       getProviders: providerRegistry.getProviders,
-      getBusyDrivers: readBusyProviderDrivers.pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       getMaintenanceCapabilities: providerRegistry.getProviderMaintenanceCapabilitiesForInstance,
-      setUpdateState: (instanceId, state) =>
-        providerRegistry
-          .setProviderMaintenanceActionState({ instanceId, action: "update", state })
-          .pipe(Effect.asVoid),
       updateProvider: runner.updateProvider,
     });
 
@@ -275,15 +183,6 @@ export const layer = Layer.effectDiscard(
     const settingsChanges = yield* serverSettings.subscribeChanges;
     yield* Stream.runForEach(settingsChanges, () => signal).pipe(Effect.forkScoped);
     yield* Stream.runForEach(providerRegistry.streamChanges, () => signal).pipe(Effect.forkScoped);
-    yield* Stream.unwrap(
-      eventSink
-        .latestSequence()
-        .pipe(Effect.map((latest) => eventSink.stream({ afterSequence: latest }))),
-    ).pipe(
-      Stream.filter((event) => WAKE_EVENT_TYPES.has(event.event.type)),
-      Stream.runForEach(() => signal),
-      Effect.forkScoped,
-    );
     yield* signal;
     yield* ServerActivation.forkParked(
       Effect.forever(Queue.take(wake).pipe(Effect.andThen(evaluate))),
