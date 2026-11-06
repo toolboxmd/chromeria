@@ -24,6 +24,8 @@ import {
   subagentChildTarget,
   threadRelationshipNodeKey,
   threadRelationshipRowStatus,
+  threadRelationshipLiveStatus,
+  threadRelationshipLiveStatusLabel,
   orderWebThreadLineageRows,
   resolveMergeBackTargetThreadId,
   type ThreadRelationshipEdge,
@@ -722,6 +724,7 @@ export function ThreadRelationshipsPanel(props: {
     const isMergeTarget = threadId === mergeTargetThreadId && rowEnvironment === null;
     const isParent = isParentThreadRelationship(edge, props.threadId);
     const rowStatus =
+      threadRelationshipLiveStatus(node?.thread) ??
       (isParent && threadId === parentRef?.threadId
         ? (node?.thread?.activityRunStatus ?? parentNativeStatus)
         : undefined) ??
@@ -818,7 +821,7 @@ export function ThreadRelationshipsPanel(props: {
           providers={providers}
           driver={providerDriver}
           elapsed={<AgentElapsed agent={agent} />}
-          status={agent.status}
+          status={threadRelationshipLiveStatus(node?.thread, agent.remoteChild) ?? agent.status}
           result={agent.result}
           progress={agent.progress}
           parentThread={currentThread ?? undefined}
@@ -851,7 +854,10 @@ export function ThreadRelationshipsPanel(props: {
         {agent ? null : (
           <ArrowRightIcon className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
         )}
-        {agent && !failed && (deriveSubagentElapsedMs(agent, 0) !== null || canStopWorkflow) ? (
+        {agent &&
+        !failed &&
+        threadRelationshipLiveStatusLabel(rowStatus) === null &&
+        (deriveSubagentElapsedMs(agent, 0) !== null || canStopWorkflow) ? (
           <span
             className={`shrink-0 text-2xs font-normal tabular-nums text-muted-foreground ${canStopWorkflow ? "min-w-6 text-end" : ""} ${trailingVisibilityClass}`}
           >
@@ -860,7 +866,7 @@ export function ThreadRelationshipsPanel(props: {
         ) : !isMergeTarget ? (
           <span
             className={
-              workflowGroup
+              workflowGroup && threadRelationshipLiveStatusLabel(rowStatus) === null
                 ? "sr-only"
                 : `shrink-0 text-2xs ${failed ? "text-destructive" : "text-muted-foreground"} ${trailingVisibilityClass}`
             }

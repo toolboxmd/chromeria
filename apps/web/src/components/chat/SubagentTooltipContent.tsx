@@ -1,3 +1,7 @@
+import {
+  threadRelationshipLiveStatusLabel,
+  threadRelationshipLiveStatus,
+} from "@t3tools/client-runtime/state/thread-relationships";
 import type {
   OrchestrationV2ThreadShell,
   OrchestrationV2TurnItemStatus,
@@ -46,7 +50,9 @@ export function SubagentTooltipContent(props: {
     | undefined;
   parentProject?: Pick<OrchestrationProjectShell, "workspaceRoot"> | undefined;
   childProject?: Pick<OrchestrationProjectShell, "id" | "title" | "workspaceRoot"> | undefined;
-  status: OrchestrationV2TurnItemStatus;
+  status:
+    | OrchestrationV2TurnItemStatus
+    | NonNullable<ReturnType<typeof threadRelationshipLiveStatus>>;
   result?: string | null | undefined;
   progress?: string | null | undefined;
 }) {
@@ -109,7 +115,9 @@ export function SubagentTooltipContent(props: {
   const entries = deriveProviderInstanceEntries(props.providers ?? []);
   const entry = entries.find((candidate) => candidate.instanceId === props.provider?.instanceId);
   const showInstanceBadge = entry !== undefined && shouldShowInstanceBadge(entry, entries);
-  const working = ["running", "in_progress", "pending", "waiting"].includes(props.status);
+  const working =
+    threadRelationshipLiveStatusLabel(props.status) !== null ||
+    ["running", "in_progress", "pending", "waiting"].includes(props.status);
   const failed = ["failed", "error"].includes(props.status);
   const StatusIcon = working
     ? CircleDashedIcon
@@ -164,7 +172,7 @@ export function SubagentTooltipContent(props: {
           )}
         >
           <StatusIcon aria-hidden className="size-3 shrink-0" />
-          {props.status.replaceAll("_", " ")}
+          {threadRelationshipLiveStatusLabel(props.status) ?? props.status.replaceAll("_", " ")}
         </span>
         {props.elapsed}
       </div>

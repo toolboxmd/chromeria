@@ -205,6 +205,7 @@ export function deriveThreadRelationshipGraph(input: {
         targetThreadId: target.threadId,
         kind: "subagent",
         status:
+          threadRelationshipLiveStatus(child, subagent.remoteChild) ??
           child?.activityRunStatus ??
           (child?.latestRunId != null && !isOrchestrationV2WorkActive(subagent.status)
             ? child.status
@@ -290,17 +291,63 @@ export function isParentThreadRelationship(
   );
 }
 
+export function threadRelationshipLiveStatusLabel(status: string | null): string | null {
+  switch (status) {
+    case "awaiting_approval":
+      return "Awaiting approval";
+    case "awaiting_input":
+      return "Awaiting input";
+    case "background_active":
+      return "Background active";
+    default:
+      return null;
+  }
+}
+
+export function threadRelationshipLiveStatus(
+  thread: OrchestrationV2ThreadShell | null | undefined,
+  remoteChild?: OrchestrationV2Subagent["remoteChild"],
+): "awaiting_approval" | "awaiting_input" | "background_active" | null {
+  const request = thread?.pendingRuntimeRequest;
+  const kind = request?.blocking === false ? null : request?.kind;
+  const remoteRequests = thread == null ? (remoteChild?.snapshot?.requests ?? []) : [];
+  if (
+    kind === "approval" ||
+    thread?.remotePendingRequest === "approval" ||
+    remoteRequests.some((request) => request.kind === "approval")
+  )
+    return "awaiting_approval";
+  if (
+    kind === "user_input" ||
+    thread?.remotePendingRequest === "user_input" ||
+    remoteRequests.some((request) => request.kind === "user_input")
+  )
+    return "awaiting_input";
+  if (
+    !thread?.activityRunStatus &&
+    !["queued", "preparing", "starting", "running"].includes(thread?.status ?? "") &&
+    ((thread?.pendingBackgroundTasks?.length ?? 0) > 0 ||
+      remoteChild?.snapshot?.workState === "waiting_for_children")
+  )
+    return "background_active";
+  return null;
+}
+
 export function threadRelationshipRowStatus(
   graph: ThreadRelationshipGraph,
   row: Pick<ThreadRelationshipWalkRow, "threadId" | "environmentId" | "edge">,
 ): string | null {
+  const thread = getThreadRelationshipNode(graph, row.threadId, row.environmentId)?.thread;
+  if (row.edge.kind !== "transfer") {
+    const liveStatus = threadRelationshipLiveStatus(thread);
+    if (liveStatus !== null) return liveStatus;
+  }
   if (
     row.edge.kind === "transfer" ||
     (row.threadId === row.edge.targetThreadId && row.environmentId === row.edge.targetEnvironmentId)
   ) {
     return row.edge.status;
   }
-  const thread = getThreadRelationshipNode(graph, row.threadId, row.environmentId)?.thread;
   return thread?.activityRunStatus ?? thread?.status ?? null;
 }
 
