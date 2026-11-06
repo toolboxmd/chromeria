@@ -338,7 +338,7 @@ export const extract = (
   if (!isObject(toolInput)) throw new Unsupported(`${tool}: input is not an object`);
   const signature = error ? normalizeError(error) : null;
   if (shellTools.includes(tool)) {
-    const command = toolInput["command"];
+    const command = toolInput["command"] ?? toolInput["cmd"];
     if (typeof command !== "string") throw new Unsupported(`${tool}: no command`);
     return {
       words: words(visibleCommand(command)),
