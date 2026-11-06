@@ -5,11 +5,7 @@ import {
   shouldShowInstanceBadge,
 } from "@t3tools/client-runtime/state/provider-instance-display";
 import { resolveSubagentMetadata } from "@t3tools/client-runtime/state/subagent-display";
-import {
-  threadRelationshipLiveStatus,
-  threadRelationshipLiveStatusLabel,
-  subagentChildTarget,
-} from "@t3tools/client-runtime/state/thread-relationships";
+import { subagentChildTarget } from "@t3tools/client-runtime/state/thread-relationships";
 import type { EnvironmentId, OrchestrationV2Subagent } from "@t3tools/contracts";
 import type { ReactNode } from "react";
 import { View } from "react-native";
@@ -52,16 +48,7 @@ export function SubagentRow(props: {
       ? null
       : scopeThreadRef(childTarget.environmentId ?? props.environmentId, childTarget.threadId),
   )?.source;
-  const liveStatus = threadRelationshipLiveStatus(child, props.subagent.remoteChild);
-  const basePresentation = resolveSubagentRowPresentation(props.subagent, props.canOpenRemote);
-  const presentation =
-    liveStatus !== null && props.subagent.remoteChild?.availability !== "stale"
-      ? {
-          ...basePresentation,
-          statusLabel: threadRelationshipLiveStatusLabel(liveStatus),
-          tone: "working" as const,
-        }
-      : basePresentation;
+  const presentation = resolveSubagentRowPresentation(props.subagent, props.canOpenRemote, child);
   const detail = subagentCardDetail(presentation.detail);
   return (
     <View className="flex-row gap-3">

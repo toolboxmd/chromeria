@@ -323,7 +323,10 @@ export function threadRelationshipLiveStatus(
 ): "awaiting_approval" | "awaiting_input" | "background_active" | null {
   const request = thread?.pendingRuntimeRequest;
   const kind = request?.blocking === false ? null : request?.kind;
-  const remoteRequests = thread == null ? (remoteChild?.snapshot?.requests ?? []) : [];
+  const remoteRequests =
+    thread == null
+      ? (remoteChild?.snapshot?.requests ?? []).filter((request) => request.responseType === "live")
+      : [];
   if (
     isApprovalRequestKind(kind) ||
     thread?.remotePendingRequest === "approval" ||
@@ -340,7 +343,7 @@ export function threadRelationshipLiveStatus(
     !thread?.activityRunStatus &&
     !["queued", "preparing", "starting", "running"].includes(thread?.status ?? "") &&
     ((thread?.pendingBackgroundTasks?.length ?? 0) > 0 ||
-      remoteChild?.snapshot?.workState === "waiting_for_children")
+      (thread == null && remoteChild?.snapshot?.workState === "waiting_for_children"))
   )
     return "background_active";
   return null;

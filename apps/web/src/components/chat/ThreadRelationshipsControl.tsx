@@ -791,9 +791,14 @@ export function ThreadRelationshipsPanel(props: {
       workflowGroup?.workflow.status === "running" &&
       agent?.origin === "provider_native" &&
       providerDriver === "claudeAgent";
-    const trailingVisibilityClass = (workflowGroup ? canStopWorkflow : canStop)
-      ? "group-hover:opacity-0 group-focus-within:opacity-0 pointer-coarse:opacity-0 [@media(hover:none)]:opacity-0"
-      : "";
+    const showLiveStatus = threadRelationshipLiveStatusLabel(rowStatus) !== null;
+    const trailingVisibilityClass = showLiveStatus
+      ? canStop
+        ? "me-6"
+        : ""
+      : (workflowGroup ? canStopWorkflow : canStop)
+        ? "group-hover:opacity-0 group-focus-within:opacity-0 pointer-coarse:opacity-0 [@media(hover:none)]:opacity-0"
+        : "";
     // Project ids are only unique inside one environment, so a
     // remote row resolves its project there, not locally.
     const project = allProjects.find(

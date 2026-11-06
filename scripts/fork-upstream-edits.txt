@@ -381,6 +381,7 @@ packages/client-runtime/src/relay/discovery.test.ts
 packages/client-runtime/src/relay/discovery.ts
 packages/client-runtime/src/state/threads-atoms.test.ts
 apps/mobile/src/features/threads/SubagentRow.tsx
+apps/mobile/src/features/threads/ThreadWorkflowGroup.tsx
 apps/mobile/src/features/threads/ThreadAgentsSheet.tsx
 apps/mobile/src/features/threads/thread-subagent-group.tsx
 apps/mobile/src/features/threads/threadAgentsPresentation.test.ts

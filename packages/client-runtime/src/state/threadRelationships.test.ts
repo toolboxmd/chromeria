@@ -106,8 +106,15 @@ describe("thread relationships", () => {
   });
 
   it.each([
-    [{ requests: [{ kind: "command" }], workState: "working" }, "awaiting_approval"],
-    [{ requests: [{ kind: "user_input" }], workState: "working" }, "awaiting_input"],
+    [
+      { requests: [{ kind: "command", responseType: "live" }], workState: "working" },
+      "awaiting_approval",
+    ],
+    [
+      { requests: [{ kind: "user_input", responseType: "live" }], workState: "working" },
+      "awaiting_input",
+    ],
+    [{ requests: [{ kind: "user_input", responseType: "message" }], workState: "working" }, null],
     [{ requests: [], workState: "waiting_for_children" }, "background_active"],
     [{ requests: [], workState: "result_available" }, null],
   ])("presents a remote snapshot without a shell: %j", (snapshot, expected) => {
@@ -117,7 +124,7 @@ describe("thread relationships", () => {
         { status: "completed", pendingRuntimeRequest: null } as never,
         { snapshot } as never,
       ),
-    ).toBe(snapshot.workState === "waiting_for_children" ? "background_active" : null);
+    ).toBeNull();
   });
 
   it("does not label a missing parent with its child's running status", () => {

@@ -2037,6 +2037,7 @@ sources and reasons.
     "docs/internals/remote.md",
     "packages/contracts/src/assets.ts",
     "apps/mobile/src/features/threads/SubagentRow.tsx",
+    "apps/mobile/src/features/threads/ThreadWorkflowGroup.tsx",
     "apps/mobile/src/features/threads/ThreadAgentsSheet.tsx",
     "apps/mobile/src/features/threads/thread-subagent-group.tsx",
     "apps/mobile/src/features/threads/threadAgentsPresentation.test.ts",
