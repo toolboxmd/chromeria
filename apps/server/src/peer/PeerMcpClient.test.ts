@@ -374,5 +374,56 @@ it.layer(NodeCrypto.layer)("peer MCP client", (it) => {
         }),
       ),
   );
+  it.effect.each([-32700, -32600, -32601, -32602, -32603, -32000, 12345])(
+    "preserves JSON-RPC code %s and only marks protocol refusals final",
+    (rpcCode) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          let posts = 0;
+          const services = yield* PeerMcpClient.layerOver(runtime).pipe(
+            Layer.provide(
+              Layer.mock(PeerLinks.PeerLinks)({
+                resolve: () => Effect.succeed({ link, url: "https://peer.test", token: "token" }),
+                recordOutcome: () => Effect.void,
+              }),
+            ),
+            Layer.provide(
+              Layer.succeed(
+                HttpClient.HttpClient,
+                HttpClient.make((request) =>
+                  Effect.sync(() => {
+                    posts++;
+                    return HttpClientResponse.fromWeb(
+                      request,
+                      Response.json(
+                        { error: { code: rpcCode, message: "Protocol failure" } },
+                        { headers: { "mcp-session-id": "fixture-session" } },
+                      ),
+                    );
+                  }),
+                ),
+              ),
+            ),
+            Layer.provide(NodeCrypto.layer),
+            Layer.build,
+          );
+          const error = yield* Context.get(services, PeerMcpClient.PeerMcpClient)
+            .call({
+              environmentId: peer,
+              tool: "t3_thread_launch",
+              arguments: { clientRequestId: "original-key" },
+              limits: { runtimeMode: "full-access", interactionMode: "default" },
+              success: replySchema,
+            })
+            .pipe(Effect.flip);
+          const refused = [-32700, -32600, -32601, -32602].includes(rpcCode);
+          expect(error.code).toBe(refused ? "invalid_request" : "orchestration_error");
+          expect(error.message).toContain(String(rpcCode));
+          expect(error).toMatchObject({ rpcCode });
+          expect(PeerMcpClient.isToolRefusal(error)).toBe(refused);
+          expect(posts).toBe(3);
+        }),
+      ),
+  );
   const replySchema = Schema.Struct({ answer: Schema.Number });
 });

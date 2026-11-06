@@ -377,31 +377,35 @@ const make = Effect.gen(function* () {
             value.threads.some(carriesTools)) ||
           ("colors" in value && Array.isArray(value.colors) && value.colors.some(carriesTools)));
       if (carriesTools(args) || toolName === "t3_thread_mcp_configure") {
-        const capabilities = yield* peers.call({
-          environmentId,
-          tool: "orchestrator_capabilities",
-          arguments: {},
-          limits,
-          success: OrchestratorMcpCapabilitiesResult,
-          ...(options === undefined ? {} : options),
-        });
+        const capabilities = yield* peers
+          .call({
+            environmentId,
+            tool: "orchestrator_capabilities",
+            arguments: {},
+            limits,
+            success: OrchestratorMcpCapabilitiesResult,
+            ...(options === undefined ? {} : options),
+          })
+          .pipe(Effect.mapError((error) => new PeerMcpClient.PeerDispatchRefusal(error)));
         if (capabilities.toolAllowlist !== true)
-          return yield* new OrchestratorMcpFailure({
+          return yield* new PeerMcpClient.PeerDispatchRefusal({
             code: "invalid_request",
             message: "The destination does not advertise tool allowlists; nothing was forwarded.",
           });
       }
       if (carriesBare(args)) {
-        const capabilities = yield* peers.call({
-          environmentId,
-          tool: "orchestrator_capabilities",
-          arguments: {},
-          limits,
-          success: OrchestratorMcpCapabilitiesResult,
-          ...(options === undefined ? {} : options),
-        });
+        const capabilities = yield* peers
+          .call({
+            environmentId,
+            tool: "orchestrator_capabilities",
+            arguments: {},
+            limits,
+            success: OrchestratorMcpCapabilitiesResult,
+            ...(options === undefined ? {} : options),
+          })
+          .pipe(Effect.mapError((error) => new PeerMcpClient.PeerDispatchRefusal(error)));
         if (capabilities.bareLaunch !== true)
-          return yield* new OrchestratorMcpFailure({
+          return yield* new PeerMcpClient.PeerDispatchRefusal({
             code: "invalid_request",
             message: "The destination does not advertise bare launch; nothing was forwarded.",
           });
@@ -413,16 +417,18 @@ const make = Effect.gen(function* () {
           "purposeLaunch" in args.delegatedFrom &&
           args.delegatedFrom.purposeLaunch !== undefined);
       if (carriesPurpose) {
-        const capabilities = yield* peers.call({
-          environmentId,
-          tool: "orchestrator_capabilities",
-          arguments: {},
-          limits,
-          success: OrchestratorMcpCapabilitiesResult,
-          ...(options === undefined ? {} : options),
-        });
+        const capabilities = yield* peers
+          .call({
+            environmentId,
+            tool: "orchestrator_capabilities",
+            arguments: {},
+            limits,
+            success: OrchestratorMcpCapabilitiesResult,
+            ...(options === undefined ? {} : options),
+          })
+          .pipe(Effect.mapError((error) => new PeerMcpClient.PeerDispatchRefusal(error)));
         if (capabilities.executionPurposeVersions?.includes(1) !== true) {
-          return yield* new OrchestratorMcpFailure({
+          return yield* new PeerMcpClient.PeerDispatchRefusal({
             code: "invalid_request",
             message:
               "The destination does not advertise execution purpose version 1; nothing was forwarded.",

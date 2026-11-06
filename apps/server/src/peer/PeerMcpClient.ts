@@ -288,7 +288,21 @@ class PeerToolFailure extends OrchestratorMcpFailure {
 }
 
 /** Runtime provenance is local; the wire schema also matches unconfirmed link failures. */
-export const isToolRefusal = (error: OrchestratorMcpFailure) => toolRefusal in error;
+export const isToolRefusal = (error: OrchestratorMcpFailure) =>
+  toolRefusal in error && error[toolRefusal] === true;
+
+const dispatchRefusal = Symbol("PeerMcpClient.dispatchRefusal");
+export class PeerDispatchRefusal extends OrchestratorMcpFailure {
+  readonly [dispatchRefusal] = true;
+}
+export const isDispatchRefusal = (error: OrchestratorMcpFailure) => dispatchRefusal in error;
+
+class PeerRpcFailure extends Schema.TaggedError<PeerRpcFailure>()("OrchestratorMcpFailure", {
+  ...OrchestratorMcpFailure.fields,
+  rpcCode: Schema.Number,
+}) {
+  readonly [toolRefusal] = this.code === "invalid_request";
+}
 
 /** A peer link problem, as the agent that asked hears it. */
 const fromLinkError = (error: PeerLinkError) =>
@@ -368,15 +382,15 @@ const make = Effect.gen(function* () {
     );
     const sessionId = initialized.headers["mcp-session-id"];
     if (initialized.status === 409 && limitHeader[PeerAuthority.LINK_HEADER] !== undefined)
-      return yield* new OrchestratorMcpFailure({
+      return yield* new PeerDispatchRefusal({
         code: "capability_denied",
         message: "The destination does not support peer authority v1; no action was forwarded.",
       });
     if (initialized.status !== 200 || sessionId === undefined) {
       const refusal = decodeFailure(yield* initialized.text);
-      if (Option.isSome(refusal)) return yield* new OrchestratorMcpFailure(refusal.value);
+      if (Option.isSome(refusal)) return yield* new PeerDispatchRefusal(refusal.value);
       if (initialized.status === 403) return yield* linkedEnvironmentsOffThere;
-      return yield* new OrchestratorMcpFailure({
+      return yield* new PeerDispatchRefusal({
         code: initialized.status === 401 ? "capability_denied" : "orchestration_error",
         message:
           initialized.status === 401
@@ -388,7 +402,7 @@ const make = Effect.gen(function* () {
       limitHeader[PeerAuthority.LINK_HEADER] !== undefined &&
       initialized.headers[PeerAuthority.AUTHORITY_HEADER] !== "1"
     )
-      return yield* new OrchestratorMcpFailure({
+      return yield* new PeerDispatchRefusal({
         code: "capability_denied",
         message: "The destination does not support peer authority v1; no action was forwarded.",
       });
@@ -880,7 +894,13 @@ const make = Effect.gen(function* () {
       );
       if (body.error !== undefined) {
         return Result.fail(
-          new PeerToolFailure({ code: "invalid_request", message: body.error.message }),
+          new PeerRpcFailure({
+            code: [-32700, -32600, -32601, -32602].includes(body.error.code)
+              ? "invalid_request"
+              : "orchestration_error",
+            rpcCode: body.error.code,
+            message: `JSON-RPC ${body.error.code}: ${body.error.message}`,
+          }),
         );
       }
       if (body.result === undefined) {
@@ -1119,7 +1139,7 @@ const make = Effect.gen(function* () {
           ),
         );
       if (response.status !== 200)
-        return yield* new OrchestratorMcpFailure({
+        return yield* new PeerDispatchRefusal({
           code: "invalid_request",
           message:
             "The destination does not support durable requests v1; no mutation was forwarded.",

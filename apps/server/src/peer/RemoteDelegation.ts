@@ -641,23 +641,11 @@ const make = Effect.gen(function* () {
       }
       const launched = yield* (
         launch.lifecycleVersion === 1
-          ? requireLifecycle(remote.environmentId, launch.linkIdentity)
+          ? requireLifecycle(remote.environmentId, launch.linkIdentity).pipe(
+              Effect.mapError((error) => new PeerMcpClient.PeerDispatchRefusal(error)),
+            )
           : Effect.void
       ).pipe(
-        Effect.catchTags({
-          OrchestratorMcpFailure: (error) =>
-            firstAttempt &&
-            (isFinal(error) || isModeRefusal(error) || error.code === "invalid_request")
-              ? complete(
-                  parentThreadId,
-                  taskId,
-                  "failed",
-                  error.message,
-                  "stopped",
-                  error.message,
-                ).pipe(Effect.andThen(Effect.fail(error)))
-              : Effect.fail(error),
-        }),
         Effect.andThen(
           forwarding.call(
             scope,
@@ -697,13 +685,14 @@ const make = Effect.gen(function* () {
             // Replays can be refused before receipt lookup by changed modes/grants.
             // Admission errors come after receipt lookup and disprove earlier acceptance.
             if (
-              PeerMcpClient.isToolRefusal(error) &&
               error.code !== "orchestration_error" &&
               error.code !== "outcome_unknown" &&
-              (firstAttempt ||
-                error.code === "invalid_request" ||
-                error.code === "provider_unavailable" ||
-                error.code === "model_unavailable")
+              ((firstAttempt && PeerMcpClient.isDispatchRefusal(error)) ||
+                (PeerMcpClient.isToolRefusal(error) &&
+                  (firstAttempt ||
+                    error.code === "invalid_request" ||
+                    error.code === "provider_unavailable" ||
+                    error.code === "model_unavailable")))
             ) {
               return complete(
                 parentThreadId,

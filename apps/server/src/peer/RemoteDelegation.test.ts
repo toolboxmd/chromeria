@@ -58,6 +58,7 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, McpServer } from "effect/ai";
 
@@ -2095,9 +2096,212 @@ it.effect.each(
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+const decodePeerRpcRequest = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    id: Schema.optional(Schema.Unknown),
+    method: Schema.String,
+    params: Schema.optional(Schema.Struct({ name: Schema.optional(Schema.String) })),
+  }),
+);
+
+const peerResponseFault = (
+  fault: Ref.Ref<"bare" | "init" | "internal" | "internal-before" | null>,
+) => {
+  let renewing = false;
+  return HttpRouter.middleware(
+    (handle) =>
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        if (request.url !== "/mcp" || request.method !== "POST") return yield* handle;
+        const input = yield* decodePeerRpcRequest(yield* request.json).pipe(Effect.orDie);
+        const current = yield* Ref.get(fault);
+        if (
+          current === "init" &&
+          (input.params?.name === "orchestrator_capabilities" ||
+            input.params?.name === "t3_thread_launch")
+        ) {
+          renewing = true;
+          return HttpServerResponse.empty({ status: 404 });
+        }
+        if (input.method === "initialize" && current === "init" && renewing)
+          return HttpServerResponse.jsonUnsafe(
+            { code: "invalid_request", message: "Session initialization refused." },
+            { status: 400 },
+          );
+        const launch = input.method === "tools/call" && input.params?.name === "t3_thread_launch";
+        if (launch && current === "internal-before")
+          return HttpServerResponse.jsonUnsafe({
+            jsonrpc: "2.0",
+            id: input.id,
+            error: { code: -32603, message: "Launch response failed." },
+          });
+        const response = yield* handle;
+        if (
+          !(launch && current === "internal") &&
+          !(input.params?.name === "orchestrator_capabilities" && current === "bare")
+        )
+          return response;
+        // Consume the real MCP response so its launch transaction has committed.
+        const text = yield* Effect.promise(() => HttpServerResponse.toWeb(response).text());
+        if (launch)
+          return HttpServerResponse.jsonUnsafe({
+            jsonrpc: "2.0",
+            id: input.id,
+            error: { code: -32603, message: "Launch response failed." },
+          });
+        return HttpServerResponse.text(
+          text
+            .replaceAll('"bareLaunch":true', '"bareLaunch":false')
+            .replaceAll('\\"bareLaunch\\":true', '\\"bareLaunch\\":false'),
+          { status: response.status, headers: response.headers },
+        );
+      }),
+    { global: true },
+  );
+};
+
+it.effect.each(["bare", "init"] as const)(
+  "settles a first-attempt %s preflight refusal with its follower alive",
+  (refusal) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const fault = yield* Ref.make<"bare" | "init" | "internal" | "internal-before" | null>(
+          refusal,
+        );
+        const b = yield* servePeer(
+          box,
+          boxToolkitLayer(thread).pipe(Layer.provide(peerResponseFault(fault))),
+        );
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+        const input = {
+          task: "Do not start refused work.",
+          bare: { additions: [] },
+          target: { environmentId: box.environmentId },
+          mode: "async",
+          clientRequestId: "no-dispatch-refusal",
+        };
+        const response = yield* a.call("delegate_task", input);
+        expect(response.isError).toBe(true);
+        expect(response.content).toMatchObject([
+          {
+            text: expect.stringContaining(
+              refusal === "bare" ? "nothing was forwarded" : "Session initialization refused",
+            ),
+          },
+        ]);
+        const task = (yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents[0]!;
+        expect(task.remoteChild?.stoppedThere).toBe(true);
+        yield* Ref.set(fault, null);
+        yield* TestClock.adjust("60 seconds");
+        // Same-key recovery runs while the original ensured follower remains alive.
+        yield* a.call("delegate_task", input);
+        expect(yield* Ref.get(thread.launchIds)).toEqual([]);
+        const after = (yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents[0]!;
+        expect(after).toMatchObject({
+          id: task.id,
+          status: "failed",
+          remoteChild: { stoppedThere: true },
+        });
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect.each([false, true])(
+  "recovers an accepted destination receipt after a JSON-RPC internal error (replay init refusal=%s)",
+  (refuseReplay) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const actual = yield* makeRealBox;
+        const fault = yield* Ref.make<"bare" | "init" | "internal" | "internal-before" | null>(
+          "internal",
+        );
+        const b = yield* servePeer(
+          box,
+          boxToolkitLayer(thread, actual).pipe(Layer.provide(peerResponseFault(fault))),
+        );
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
+        const pending = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const before = yield* makeLaptop(database, offers, linking);
+            yield* linkTo(before.links, b, "full-access");
+            yield* seedParent(before);
+            const result = yield* before.call("delegate_task", {
+              task: "Recover the original receipt.",
+              target: { environmentId: box.environmentId },
+              mode: "async",
+              clientRequestId: "internal-error-receipt",
+            });
+            expect(result.isError).toBe(true);
+            const task = (yield* before.orchestrator.getThreadProjection(parentThreadId))
+              .subagents[0]!;
+            expect(task.remoteChild?.launchStarted).toBe(true);
+            expect(yield* Ref.get(thread.launchIds)).toHaveLength(1);
+            expect(task.result).toBeNull();
+            expect(task.remoteChild?.stoppedThere).not.toBe(true);
+            return task;
+          }),
+        );
+        const acceptedThreadId = (yield* Ref.get(thread.launched))!;
+        yield* Ref.set(fault, refuseReplay ? "init" : null);
+        const after = yield* makeLaptop(database, offers, linking);
+        yield* after.remote.start();
+        if (refuseReplay) {
+          const refused = yield* taskResult(after, pending.id);
+          expect(refused?.remoteChild?.stoppedThere).not.toBe(true);
+          expect(refused?.remoteChild?.launchError).toContain("Session initialization refused.");
+          yield* Ref.set(fault, null);
+          yield* after.call("delegate_task", {
+            task: "Recover the original receipt.",
+            target: { environmentId: box.environmentId },
+            mode: "async",
+            clientRequestId: "internal-error-receipt",
+          });
+        }
+        yield* after.orchestrator
+          .streamStoredEventsFrom({
+            threadId: parentThreadId,
+            afterSequence: 0,
+            eventType: "subagent.updated",
+          })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "subagent.updated" &&
+                stored.event.payload.id === pending.id &&
+                stored.event.payload.remoteChild?.threadId === acceptedThreadId,
+            ),
+            Stream.runHead,
+          );
+        const task = (yield* after.orchestrator.getThreadProjection(parentThreadId)).subagents.find(
+          (entry) => entry.id === pending.id,
+        )!;
+        expect(task.remoteChild?.threadId).toBe(acceptedThreadId);
+        expect(task.remoteChild?.launch?.clientRequestId).toBe(
+          pending.remoteChild?.launch?.clientRequestId,
+        );
+        expect(yield* Ref.get(thread.launchIds)).toEqual([acceptedThreadId]);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect.each(
   (["catalog", "headroom", "base"] as const).flatMap((unavailable) =>
-    (["delegate", "recovery"] as const).map((path) => ({ unavailable, path })),
+    (["delegate", "unsent recovery", "dispatched recovery"] as const).map((path) => ({
+      unavailable,
+      path,
+    })),
   ),
 )("terminalizes a real destination $unavailable refusal during $path", ({ unavailable, path }) =>
   Effect.scoped(
@@ -2105,7 +2309,13 @@ it.effect.each(
       const thread = yield* makeBoxThread;
       const actual = yield* makeRealBox;
       yield* Ref.set(actual.unavailable, unavailable);
-      const b = yield* servePeer(box, boxToolkitLayer(thread, actual));
+      const fault = yield* Ref.make<"bare" | "init" | "internal" | "internal-before" | null>(
+        path === "dispatched recovery" ? "internal-before" : null,
+      );
+      const b = yield* servePeer(
+        box,
+        boxToolkitLayer(thread, actual).pipe(Layer.provide(peerResponseFault(fault))),
+      );
       const offers = yield* SubscriptionRef.make<
         ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
       >([]);
@@ -2144,6 +2354,29 @@ it.effect.each(
             ]);
             taskId = (yield* before.orchestrator.getThreadProjection(parentThreadId)).subagents[0]!
               .id;
+          } else if (path === "dispatched recovery") {
+            yield* before.call("delegate_task", {
+              task: "Reconcile the dispatched attempt.",
+              target: { environmentId: box.environmentId },
+              mode: "async",
+              clientRequestId: "dispatched-refusal",
+              ...(unavailable === "base"
+                ? {
+                    workspaceStrategy: {
+                      type: "worktree",
+                      baseRef: "missing-base",
+                      startFromOrigin: false,
+                    },
+                  }
+                : {}),
+            });
+            const pending = (yield* before.orchestrator.getThreadProjection(parentThreadId))
+              .subagents[0]!;
+            expect(pending.remoteChild?.launchStarted).toBe(true);
+            taskId = pending.id;
+            yield* Ref.set(fault, null);
+            yield* before.remote.start();
+            yield* taskResult(before, taskId);
           } else {
             taskId = yield* recordPending(
               before,
