@@ -1,5 +1,6 @@
 import {
   isOrchestrationV2WorkActive,
+  ProviderRequestKind,
   type EnvironmentId,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
@@ -7,6 +8,9 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Schema from "effect/Schema";
+
+const isApprovalRequestKind = Schema.is(ProviderRequestKind);
 
 export type ThreadRelationshipKind = "parent" | "fork" | "subagent" | "transfer";
 
@@ -184,7 +188,7 @@ export function deriveThreadRelationshipGraph(input: {
       sourceEnvironmentId: environmentId,
       targetThreadId: thread.id,
       kind: thread.lineage.relationshipToParent === "subagent" ? "subagent" : "fork",
-      status: thread.activityRunStatus ?? thread.status,
+      status: threadRelationshipLiveStatus(thread) ?? thread.activityRunStatus ?? thread.status,
       targetEnvironmentId: environmentId,
     });
   }
@@ -312,9 +316,9 @@ export function threadRelationshipLiveStatus(
   const kind = request?.blocking === false ? null : request?.kind;
   const remoteRequests = thread == null ? (remoteChild?.snapshot?.requests ?? []) : [];
   if (
-    kind === "approval" ||
+    isApprovalRequestKind(kind) ||
     thread?.remotePendingRequest === "approval" ||
-    remoteRequests.some((request) => request.kind === "approval")
+    remoteRequests.some((request) => isApprovalRequestKind(request.kind))
   )
     return "awaiting_approval";
   if (

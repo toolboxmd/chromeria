@@ -45,7 +45,11 @@ describe("thread relationships", () => {
   });
 
   it.each([
-    [{ pendingRuntimeRequest: { kind: "approval" } }, "awaiting_approval"],
+    [{ pendingRuntimeRequest: { kind: "command" } }, "awaiting_approval"],
+    [{ pendingRuntimeRequest: { kind: "file-read" } }, "awaiting_approval"],
+    [{ pendingRuntimeRequest: { kind: "file-change" } }, "awaiting_approval"],
+    [{ pendingRuntimeRequest: { kind: "mcp-elicitation" } }, "awaiting_approval"],
+    [{ pendingRuntimeRequest: { kind: "permission" } }, "awaiting_approval"],
     [{ pendingRuntimeRequest: { kind: "user_input" } }, "awaiting_input"],
     [{ pendingRuntimeRequest: { kind: "user_input", blocking: false } }, "completed"],
     [{ remotePendingRequest: "approval" }, "awaiting_approval"],
@@ -59,7 +63,7 @@ describe("thread relationships", () => {
     ],
     [
       {
-        pendingRuntimeRequest: { kind: "approval" },
+        pendingRuntimeRequest: { kind: "command" },
         pendingBackgroundTasks: [{ taskId: "bg", kind: "command" }],
       },
       "awaiting_approval",
@@ -67,7 +71,7 @@ describe("thread relationships", () => {
   ])("presents live child state %j as %s and clears it with the shell", (state, expected) => {
     const parent = ThreadId.make("parent");
     const child = ThreadId.make("child");
-    const derive = (live: object) =>
+    const derive = (live: object, includeTask = true) =>
       deriveThreadRelationshipGraph({
         threads: [
           { id: parent, status: "idle", lineage: { parentThreadId: null } },
@@ -82,12 +86,15 @@ describe("thread relationships", () => {
             ...live,
           },
         ] as never,
-        projection: {
-          thread: { id: parent },
-          subagents: [{ childThreadId: child, status: "completed" }],
-          contextTransfers: [],
-        } as never,
+        projection: includeTask
+          ? ({
+              thread: { id: parent },
+              subagents: [{ childThreadId: child, status: "completed" }],
+              contextTransfers: [],
+            } as never)
+          : null,
       });
+    expect(derive(state, false).edges[0]?.status).toBe(expected);
     const graph = derive(state);
     expect(
       threadRelationshipRowStatus(graph, immediateThreadRelationships(graph, parent)[0]!),
@@ -99,7 +106,7 @@ describe("thread relationships", () => {
   });
 
   it.each([
-    [{ requests: [{ kind: "approval" }], workState: "working" }, "awaiting_approval"],
+    [{ requests: [{ kind: "command" }], workState: "working" }, "awaiting_approval"],
     [{ requests: [{ kind: "user_input" }], workState: "working" }, "awaiting_input"],
     [{ requests: [], workState: "waiting_for_children" }, "background_active"],
     [{ requests: [], workState: "result_available" }, null],

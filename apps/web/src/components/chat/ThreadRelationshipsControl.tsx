@@ -724,7 +724,7 @@ export function ThreadRelationshipsPanel(props: {
     const isMergeTarget = threadId === mergeTargetThreadId && rowEnvironment === null;
     const isParent = isParentThreadRelationship(edge, props.threadId);
     const rowStatus =
-      threadRelationshipLiveStatus(node?.thread) ??
+      (edge.kind === "transfer" ? null : threadRelationshipLiveStatus(node?.thread)) ??
       (isParent && threadId === parentRef?.threadId
         ? (node?.thread?.activityRunStatus ?? parentNativeStatus)
         : undefined) ??
@@ -821,7 +821,8 @@ export function ThreadRelationshipsPanel(props: {
           providers={providers}
           driver={providerDriver}
           elapsed={<AgentElapsed agent={agent} />}
-          status={threadRelationshipLiveStatus(node?.thread, agent.remoteChild) ?? agent.status}
+          status={agent.status}
+          presentationStatus={threadRelationshipLiveStatus(node?.thread, agent.remoteChild)}
           result={agent.result}
           progress={agent.progress}
           parentThread={currentThread ?? undefined}
