@@ -304,3 +304,73 @@ it.each([false, true])("shows live workflow member state with phased=%s", async 
   );
   expect(screen.container.textContent).not.toContain("Background active");
 });
+
+it.each([
+  [{ pendingRuntimeRequest: { kind: "command" } }, "Awaiting approval"],
+  [{ pendingRuntimeRequest: { kind: "user_input" } }, "Awaiting input"],
+  [{ pendingBackgroundTasks: [{ taskId: "bg", kind: "command" }] }, "Background active"],
+])(
+  "keeps completed workflow with live child %j outside Previous agents",
+  async (liveState, label) => {
+    state.projects = [];
+    state.configs.clear();
+    state.disabledEnvironments.clear();
+    state.showTooltips = false;
+    state.projection = {
+      thread: {
+        id: "parent",
+        lineage: { relationshipToParent: null },
+        activeProviderThreadId: null,
+      },
+      runs: [],
+      providerThreads: [],
+      providerSessions: [],
+      contextTransfers: [],
+      subagents: [
+        {
+          id: "workflow",
+          childThreadId: "child",
+          title: "Review",
+          prompt: "Review",
+          model: "test-model",
+          origin: "app_owned",
+          driver: "claudeAgent",
+          providerInstanceId: "claudeAgent",
+          status: "completed",
+          result: null,
+          startedAt: DateTime.makeUnsafe("2026-09-16T12:00:00Z"),
+          completedAt: DateTime.makeUnsafe("2026-09-16T12:01:00Z"),
+          updatedAt: DateTime.makeUnsafe("2026-09-16T12:01:00Z"),
+          workflow: { name: "Review", phases: [], agents: [] },
+        },
+      ],
+    };
+    const shell = {
+      id: "child",
+      title: "Review",
+      status: "completed",
+      latestRunId: "run",
+      activityRunStatus: null,
+      lineage: { parentThreadId: "parent", relationshipToParent: "subagent" },
+      pendingRuntimeRequest: null,
+      pendingBackgroundTasks: [],
+    };
+    state.shells = [{ environmentId: "test", source: { ...shell, ...liveState } }];
+    const view = () => (
+      <ThreadRelationshipsPanel
+        environmentId={EnvironmentId.make("test")}
+        threadId={ThreadId.make("parent")}
+        showLineage={true}
+        showSideChats={true}
+      />
+    );
+    await using screen = await render(view());
+    expect(screen.container.querySelector('[aria-label="Expand Review"]')).not.toBeNull();
+    expect(screen.container.textContent).toContain(label);
+    expect(screen.container.textContent).not.toContain("Previous agents");
+    state.shells = [{ environmentId: "test", source: shell }];
+    await act(async () => screen.rerender(view()));
+    expect(screen.container.textContent).toContain("Previous agents");
+    expect(screen.container.querySelector('[aria-label="Expand Review"]')).toBeNull();
+  },
+);

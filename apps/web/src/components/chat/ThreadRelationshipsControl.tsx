@@ -521,7 +521,8 @@ export function ThreadRelationshipsPanel(props: {
           ? subagentsByThreadId.get(threadRelationshipNodeKey(row.threadId, row.environmentId))
           : undefined;
       const workflowGroup = agent === undefined ? undefined : workflowGroupsById.get(agent.id);
-      return workflowGroup === undefined
+      return workflowGroup === undefined ||
+        threadRelationshipLiveStatusLabel(row.edge.status) !== null
         ? row
         : { ...row, edge: { ...row.edge, status: workflowGroup.workflow.status } };
     });
