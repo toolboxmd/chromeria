@@ -282,6 +282,14 @@ const decodeFailure = Schema.decodeUnknownOption(
   ),
 );
 
+const toolRefusal = Symbol("PeerMcpClient.toolRefusal");
+class PeerToolFailure extends OrchestratorMcpFailure {
+  readonly [toolRefusal] = true;
+}
+
+/** Runtime provenance is local; the wire schema also matches unconfirmed link failures. */
+export const isToolRefusal = (error: OrchestratorMcpFailure) => toolRefusal in error;
+
 /** A peer link problem, as the agent that asked hears it. */
 const fromLinkError = (error: PeerLinkError) =>
   new OrchestratorMcpFailure({
@@ -844,7 +852,7 @@ const make = Effect.gen(function* () {
         response = yield* callOnce(renewed);
       }
       if (response.status === 401) {
-        return yield* new OrchestratorMcpFailure({
+        return yield* new PeerToolFailure({
           code: "capability_denied",
           message:
             "The linked environment no longer accepts this link. It may have been revoked there; link it again.",
@@ -852,7 +860,7 @@ const make = Effect.gen(function* () {
       }
       if (response.status !== 200) {
         const refusal = decodeFailure(yield* response.text);
-        if (Option.isSome(refusal)) return yield* new OrchestratorMcpFailure(refusal.value);
+        if (Option.isSome(refusal)) return yield* new PeerToolFailure(refusal.value);
         if (response.status === 403) return yield* linkedEnvironmentsOffThere;
         return yield* new OrchestratorMcpFailure({
           code: "orchestration_error",
@@ -872,7 +880,7 @@ const make = Effect.gen(function* () {
       );
       if (body.error !== undefined) {
         return Result.fail(
-          new OrchestratorMcpFailure({ code: "invalid_request", message: body.error.message }),
+          new PeerToolFailure({ code: "invalid_request", message: body.error.message }),
         );
       }
       if (body.result === undefined) {
@@ -887,7 +895,7 @@ const make = Effect.gen(function* () {
         const refused = decodeFailure(text);
         return Result.fail(
           refused._tag === "Some"
-            ? new OrchestratorMcpFailure(refused.value)
+            ? new PeerToolFailure(refused.value)
             : new OrchestratorMcpFailure({
                 code: "orchestration_error",
                 message: text || "The linked environment refused the call.",

@@ -547,7 +547,8 @@ const make = Effect.gen(function* () {
           message: "The pending remote task has no launch inputs.",
         });
       }
-      if (task.remoteChild.launchStarted !== true) {
+      const firstAttempt = task.remoteChild.launchStarted !== true;
+      if (firstAttempt) {
         // The parent's dispatch lock orders this against Stop/cancel. Once committed,
         // acceptance is uncertain until the same key returns a destination receipt.
         if (task.result !== null) {
@@ -643,6 +644,20 @@ const make = Effect.gen(function* () {
           ? requireLifecycle(remote.environmentId, launch.linkIdentity)
           : Effect.void
       ).pipe(
+        Effect.catchTags({
+          OrchestratorMcpFailure: (error) =>
+            firstAttempt &&
+            (isFinal(error) || isModeRefusal(error) || error.code === "invalid_request")
+              ? complete(
+                  parentThreadId,
+                  taskId,
+                  "failed",
+                  error.message,
+                  "stopped",
+                  error.message,
+                ).pipe(Effect.andThen(Effect.fail(error)))
+              : Effect.fail(error),
+        }),
         Effect.andThen(
           forwarding.call(
             scope,
@@ -679,9 +694,17 @@ const make = Effect.gen(function* () {
         ),
         Effect.catchTags({
           OrchestratorMcpFailure: (error) => {
-            // Admission refused this key before creating a child. Capacity returning later
-            // must not resurrect it; transport uncertainty still replays the same key.
-            if (error.code === "provider_unavailable" || error.code === "model_unavailable") {
+            // Replays can be refused before receipt lookup by changed modes/grants.
+            // Admission errors come after receipt lookup and disprove earlier acceptance.
+            if (
+              PeerMcpClient.isToolRefusal(error) &&
+              error.code !== "orchestration_error" &&
+              error.code !== "outcome_unknown" &&
+              (firstAttempt ||
+                error.code === "invalid_request" ||
+                error.code === "provider_unavailable" ||
+                error.code === "model_unavailable")
+            ) {
               return complete(
                 parentThreadId,
                 taskId,

@@ -825,7 +825,7 @@ const adapter = {
 const makeRealBox = Effect.gen(function* () {
   const catalog = yield* layerLaunchCatalog.pipe(Layer.build);
   const providers = yield* Context.get(catalog, ProviderRegistry.ProviderRegistry).getProviders;
-  const unavailable = yield* Ref.make<"catalog" | "headroom" | null>(null);
+  const unavailable = yield* Ref.make<"catalog" | "headroom" | "base" | null>(null);
   const catalogLayer = Layer.mock(ProviderRegistry.ProviderRegistry)({
     getProviders: Ref.get(unavailable).pipe(
       Effect.map((reason) =>
@@ -859,7 +859,11 @@ const makeRealBox = Effect.gen(function* () {
     WorktreeSetupTracker.layer,
     Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
     Layer.mock(TerminalManager.TerminalManager)({ close: () => Effect.void }),
-    Layer.mock(GitWorkflow.GitWorkflowService)({}),
+    Layer.mock(GitWorkflow.GitWorkflowService)({
+      hasCommit: ({ refName }) =>
+        Ref.get(unavailable).pipe(Effect.map((reason) => refName === "HEAD" || reason !== "base")),
+      hasRefNamed: () => Effect.succeed(false),
+    }),
     Layer.mock(TextGeneration.TextGeneration)({}),
     Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
       runForThread: () => Effect.succeed({ status: "no-script" as const }),
@@ -2092,7 +2096,7 @@ it.effect.each(
 );
 
 it.effect.each(
-  (["catalog", "headroom"] as const).flatMap((unavailable) =>
+  (["catalog", "headroom", "base"] as const).flatMap((unavailable) =>
     (["delegate", "recovery"] as const).map((path) => ({ unavailable, path })),
   ),
 )("terminalizes a real destination $unavailable refusal during $path", ({ unavailable, path }) =>
@@ -2118,6 +2122,15 @@ it.effect.each(
               task: "The destination must refuse this child.",
               target: { environmentId: box.environmentId },
               mode: "async",
+              ...(unavailable === "base"
+                ? {
+                    workspaceStrategy: {
+                      type: "worktree",
+                      baseRef: "missing-base",
+                      startFromOrigin: false,
+                    },
+                  }
+                : {}),
               clientRequestId: "refused-child",
             });
             expect(response.isError).toBe(true);
@@ -2125,14 +2138,20 @@ it.effect.each(
               {
                 type: "text",
                 text: expect.stringContaining(
-                  `"code":"${unavailable === "catalog" ? "model_unavailable" : "provider_unavailable"}"`,
+                  `"code":"${unavailable === "catalog" ? "model_unavailable" : unavailable === "base" ? "invalid_request" : "provider_unavailable"}"`,
                 ),
               },
             ]);
             taskId = (yield* before.orchestrator.getThreadProjection(parentThreadId)).subagents[0]!
               .id;
           } else {
-            taskId = yield* recordPending(before);
+            taskId = yield* recordPending(
+              before,
+              undefined,
+              unavailable === "base"
+                ? { type: "worktree", baseRef: "missing-base", startFromOrigin: false }
+                : undefined,
+            );
             yield* before.remote.start();
             yield* taskResult(before, taskId);
           }
@@ -2142,7 +2161,11 @@ it.effect.each(
           expect(task.status).toBe("failed");
           expect(task.remoteChild?.launchError).toBeTruthy();
           expect(task.result).toContain(
-            unavailable === "catalog" ? "not advertised" : "No eligible",
+            unavailable === "catalog"
+              ? "not advertised"
+              : unavailable === "base"
+                ? "No thread was created"
+                : "No eligible",
           );
           expect(task.remoteChild?.threadId).toBeUndefined();
           expect(task.remoteChild?.stoppedThere).toBe(true);
@@ -2168,6 +2191,10 @@ it.effect.each(
 const recordPending = (
   a: Effect.Success<ReturnType<typeof makeLaptop>>,
   bare?: ThreadLaunch.ThreadLaunchInput["bare"],
+  workspaceStrategy: ThreadLaunch.ThreadLaunchInput["workspaceStrategy"] = {
+    type: "root",
+    branch: "remote-root",
+  },
 ) =>
   Effect.gen(function* () {
     const link = Option.getOrThrow(yield* a.links.get(box.environmentId));
@@ -2191,7 +2218,7 @@ const recordPending = (
           title: "Remote suite",
           prismRole: "roast",
           lane: "hard",
-          workspaceStrategy: { type: "root", branch: "remote-root" },
+          workspaceStrategy,
           runtimeMode: "full-access",
           interactionMode: "default",
           delegatedFrom: {
@@ -2434,6 +2461,7 @@ it.effect.each(
         expect(task?.remoteChild?.launchError).toContain(
           "If it was already accepted, work may still be running on Box.",
         );
+        expect(task?.remoteChild?.stoppedThere).not.toBe(true);
         // Refusal prevents confirmation/Stop; it does not mean B's accepted work ended.
         expect(yield* Ref.get(thread.status)).toBe(
           restriction === "replaced link" ? "completed" : "running",
