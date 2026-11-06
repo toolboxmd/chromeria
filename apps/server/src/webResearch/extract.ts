@@ -113,7 +113,10 @@ export const extract = (html: string, url: string) => {
     return blocks.has(tag) ? `\n\n${inner.trim()}\n\n` : inner;
   };
   const rendered = visit(document)
-    .replace(/[\t ]+\n/g, "\n")
+    // Match each whitespace run once, even when no newline follows it.
+    .replace(/[\t ]+/g, (spaces: string, offset: number, source: string) =>
+      source[offset + spaces.length] === "\n" ? "" : spaces,
+    )
     .replace(/\n[\t ]+/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();

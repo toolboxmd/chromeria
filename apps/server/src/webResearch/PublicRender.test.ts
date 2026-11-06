@@ -352,3 +352,19 @@ it.live(
       expect(result.status).toBe("unsupported");
     }),
 );
+
+it("extract preserves line boundaries and inline spaces", () => {
+  const page = extract(
+    "<h2> Rooms </h2><p> alpha <i> </i> beta <br> <span> gamma </span></p><p> delta </p>",
+    "https://research.invalid/",
+  );
+  expect(page.text).toBe("## Rooms\n\nalpha   beta\ngamma\n\ndelta");
+  expect(page.visibleText).toBe("## Rooms alpha beta gamma delta");
+});
+
+it("extract preserves a large inline space run without a following newline", () => {
+  const count = 500_000;
+  const page = extract(`<p>a${"<i> </i>".repeat(count)}b</p>`, "https://research.invalid/");
+  expect(page.text).toBe(`a${" ".repeat(count)}b`);
+  expect(page.visibleText).toBe("a b");
+});
