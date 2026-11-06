@@ -309,7 +309,16 @@ export function threadRelationshipLiveStatusLabel(status: string | null): string
 }
 
 export function threadRelationshipLiveStatus(
-  thread: OrchestrationV2ThreadShell | null | undefined,
+  thread:
+    | (Pick<
+        OrchestrationV2ThreadShell,
+        "activityRunStatus" | "pendingBackgroundTasks" | "remotePendingRequest"
+      > & {
+        readonly pendingRuntimeRequest?: OrchestrationV2ThreadShell["pendingRuntimeRequest"];
+        readonly status: OrchestrationV2ThreadShell["status"] | null;
+      })
+    | null
+    | undefined,
   remoteChild?: OrchestrationV2Subagent["remoteChild"],
 ): "awaiting_approval" | "awaiting_input" | "background_active" | null {
   const request = thread?.pendingRuntimeRequest;
