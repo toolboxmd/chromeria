@@ -83,7 +83,7 @@ flowchart TD
     RO["Run observers"]
     %% RO: #456 PR #457
     PU["Provider updates"]
-    %% PU: #263
+    %% PU: #638
     RS["Resume after restart"]
     %% RS: #264 #255 PR #417
     SN["Child notices"]

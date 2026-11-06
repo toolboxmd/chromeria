@@ -4,30 +4,22 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ServerProviderUpdateError,
-  ThreadId,
-  EventId,
-  ProviderSessionId,
-  type OrchestrationV2StoredEvent,
   type ServerProvider,
   type ServerSettings,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 
 import * as ServerSettingsModule from "../serverSettings.ts";
 import * as ProviderAutoUpdate from "./providerAutoUpdate.ts";
 import { makeProviderAutoUpdater } from "./providerAutoUpdate.ts";
-import { PROVIDER_UPDATE_BUSY_REASON } from "./providerAutoUpdateState.ts";
 import * as ProviderMaintenanceRunner from "./providerMaintenanceRunner.ts";
 import type { ProviderMaintenanceCommandAction } from "@t3tools/provider-core/server/maintenanceResolver";
 import { ProviderRegistry } from "./ProviderRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as SqlClient from "effect/sql/SqlClient";
-import * as EventSink from "../orchestration-v2/EventSink.ts";
-import * as DateTime from "effect/DateTime";
 
 const CODEX = ProviderDriverKind.make("codex");
 const CLAUDE = ProviderDriverKind.make("claudeAgent");
@@ -77,30 +69,19 @@ const maintenanceCapabilities = (driver: ServerProvider["driver"], action = shar
 function harness(input: {
   readonly settings?: Partial<ServerSettings>;
   readonly providers: Array<ServerProvider>;
-  readonly busyDrivers?: Array<string>;
   readonly fail?: boolean;
   readonly actions?: Readonly<Record<string, ProviderMaintenanceCommandAction>>;
 }) {
   const state = {
     settings: { ...DEFAULT_SERVER_SETTINGS, autoUpdateProviders: true, ...input.settings },
     providers: input.providers,
-    busyDrivers: input.busyDrivers ?? [],
     calls: [] as Array<string>,
   };
   const updater = makeProviderAutoUpdater({
     getSettings: Effect.sync(() => state.settings),
     getProviders: Effect.sync(() => state.providers),
-    getBusyDrivers: Effect.sync(() => new Set(state.busyDrivers)),
     getMaintenanceCapabilities: (instanceId, driver) =>
       Effect.succeed(maintenanceCapabilities(driver, input.actions?.[instanceId] ?? sharedAction)),
-    setUpdateState: (instanceId, updateState) =>
-      Effect.sync(() => {
-        state.providers = state.providers.map((provider) => {
-          if (provider.instanceId !== instanceId) return provider;
-          const { updateState: _previous, ...rest } = provider;
-          return updateState ? { ...rest, updateState } : rest;
-        });
-      }),
     updateProvider: (target) =>
       Effect.suspend(() => {
         if (typeof target === "string") return Effect.die("expected an instance target");
@@ -174,70 +155,6 @@ describe("providerAutoUpdate", () => {
     }),
   );
 
-  it.effect("defers an instance mid-turn and updates it once idle", () =>
-    Effect.gen(function* () {
-      const { state, updater } = harness({
-        providers: [outdated(CODEX), outdated(CLAUDE)],
-        busyDrivers: [CODEX],
-      });
-      const { evaluate } = updater;
-      yield* evaluate;
-      assert.deepStrictEqual(state.calls, ["claudeAgent"]);
-
-      state.busyDrivers = [];
-      yield* evaluate;
-      assert.deepStrictEqual(state.calls, ["claudeAgent", "codex"]);
-    }),
-  );
-  it.effect("updates a busy driver when its resolved updater supports active sessions", () =>
-    Effect.gen(function* () {
-      const { state, updater } = harness({
-        providers: [outdated(CODEX)],
-        busyDrivers: [CODEX],
-        actions: {
-          codex: {
-            command: "codex update",
-            executable: "/home/test/.local/bin/codex",
-            args: ["update"],
-            lockKey: "codex-native",
-            canRunWhileBusy: true,
-          },
-        },
-      });
-      yield* updater.evaluate;
-      yield* updater.evaluate;
-      assert.deepStrictEqual(state.calls, ["codex"]);
-    }),
-  );
-
-  it.effect("publishes busy deferral and clears it when an unproved updater becomes idle", () =>
-    Effect.gen(function* () {
-      const { state, updater } = harness({
-        providers: [outdated(CLAUDE)],
-        busyDrivers: [CLAUDE],
-      });
-      yield* updater.evaluate;
-      assert.deepStrictEqual(state.calls, []);
-      assert.equal(state.providers[0]?.updateState?.status, "queued");
-      assert.equal(state.providers[0]?.updateState?.message, PROVIDER_UPDATE_BUSY_REASON);
-      state.busyDrivers = [];
-      yield* updater.evaluate;
-      assert.deepStrictEqual(state.calls, ["claudeAgent"]);
-      assert.isUndefined(state.providers[0]?.updateState);
-    }),
-  );
-
-  it.effect("removes busy deferral when automatic updates are disabled", () =>
-    Effect.gen(function* () {
-      const { state, updater } = harness({ providers: [outdated(CLAUDE)], busyDrivers: [CLAUDE] });
-      yield* updater.evaluate;
-      state.settings.autoUpdateProviders = false;
-      yield* updater.evaluate;
-      assert.isUndefined(state.providers[0]?.updateState);
-      assert.deepStrictEqual(state.calls, []);
-    }),
-  );
-
   it.effect("leaves a failed or unchanged update for the user", () =>
     Effect.gen(function* () {
       const failed: ServerProvider = {
@@ -276,7 +193,6 @@ describe("providerAutoUpdate", () => {
     { name: "arguments", change: { args: ["upgrade", "--cask", "codex"] } },
     { name: "environment", change: { env: { CODEX_HOME: "/other/install" } } },
     { name: "install target", change: { lockKey: "other-install" } },
-    { name: "active-session safety", change: { canRunWhileBusy: true as const } },
   ])("skips distinct resolved $name", ({ change }) =>
     Effect.gen(function* () {
       const { state, updater } = harness({
@@ -321,62 +237,41 @@ describe("providerAutoUpdate", () => {
     }),
   );
 
-  it.effect("the layer runs a deferred update when V2 provider work ends", () =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      yield* sql`INSERT INTO orchestration_v2_projection_provider_sessions
-        (provider_session_id, provider, status, updated_at, payload_json)
-        VALUES ('session', 'codex', 'running', '2026-10-07T00:00:00Z', '{}')`;
-      const firstPass = yield* Deferred.make<void>();
-      const updated = yield* Deferred.make<string>();
-      const events = yield* Queue.unbounded<OrchestrationV2StoredEvent>();
-      let subscriptionCursor: number | undefined;
-      const deps = Layer.mergeAll(
-        ServerSettingsModule.layerTest({ autoUpdateProviders: true }),
-        Layer.succeed(SqlClient.SqlClient, sql),
-        Layer.mock(ProviderRegistry)({
-          getProviders: Effect.succeed([outdated(CODEX)]).pipe(
-            Effect.tap(() => Deferred.succeed(firstPass, undefined)),
-          ),
-          getProviderMaintenanceCapabilitiesForInstance: (_instanceId, driver) =>
-            Effect.succeed(maintenanceCapabilities(driver)),
-          setProviderMaintenanceActionState: () => Effect.succeed([]),
-          streamChanges: Stream.never,
-        }),
-        Layer.mock(EventSink.EventSinkV2)({
-          latestSequence: () => Effect.succeed(42),
-          stream: (input) => {
-            subscriptionCursor = input?.afterSequence;
-            return Stream.fromQueue(events);
-          },
-        }),
-        Layer.mock(ProviderMaintenanceRunner.ProviderMaintenanceRunner)({
-          updateProvider: (target) =>
-            Deferred.succeed(
-              updated,
-              typeof target === "string" ? target : (target.instanceId ?? ""),
-            ).pipe(Effect.as({ providers: [] })),
-        }),
-      );
-      yield* Layer.build(ProviderAutoUpdate.layer.pipe(Layer.provide(deps)));
-      yield* Deferred.await(firstPass);
-      assert.strictEqual(subscriptionCursor, 42);
-      assert.isFalse(yield* Deferred.isDone(updated));
-      yield* sql`UPDATE orchestration_v2_projection_provider_sessions SET status = 'ready' WHERE provider_session_id = 'session'`;
-      const now = yield* DateTime.now;
-      yield* Queue.offer(events, {
-        sequence: 43,
-        commandId: null,
-        event: {
-          id: EventId.make("terminal"),
-          type: "provider-session.detached",
-          threadId: ThreadId.make("thread"),
-          providerInstanceId: ProviderInstanceId.make("codex"),
-          occurredAt: now,
-          payload: { providerSessionId: ProviderSessionId.make("session"), detachedAt: now },
-        },
-      });
-      assert.strictEqual(yield* Deferred.await(updated), "codex");
-    }).pipe(Effect.scoped, Effect.provide(Layer.orDie(SqlitePersistence.layerMemory))),
+  it.effect.each(["running", "queued"] as const)(
+    "the opted-in trigger calls updateProvider while provider work is %s",
+    (status) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const sessionStatus = status === "running" ? "running" : "ready";
+        yield* sql`INSERT INTO orchestration_v2_projection_provider_sessions
+          (provider_session_id, provider, status, updated_at, payload_json)
+          VALUES ('session', 'claudeAgent', ${sessionStatus}, '2026-10-07T00:00:00Z', '{}')`;
+        yield* sql`INSERT INTO orchestration_v2_projection_runs
+          (run_id, thread_id, ordinal, provider, status, requested_at, payload_json)
+          VALUES ('run', 'thread', 1, 'claudeAgent', ${status}, '2026-10-07T00:00:00Z', '{}')`;
+        const updated = yield* Deferred.make<unknown>();
+        const deps = Layer.mergeAll(
+          ServerSettingsModule.layerTest({ autoUpdateProviders: true }),
+          Layer.mock(ProviderRegistry)({
+            getProviders: Effect.succeed([outdated(CLAUDE)]),
+            getProviderMaintenanceCapabilitiesForInstance: (_instanceId, driver) =>
+              Effect.succeed(maintenanceCapabilities(driver)),
+            streamChanges: Stream.never,
+          }),
+          Layer.mock(ProviderMaintenanceRunner.ProviderMaintenanceRunner)({
+            updateProvider: (target) =>
+              Deferred.succeed(updated, target).pipe(Effect.as({ providers: [] })),
+          }),
+        );
+        yield* Layer.build(ProviderAutoUpdate.layer.pipe(Layer.provide(deps)));
+        assert.deepStrictEqual(yield* Deferred.await(updated), {
+          provider: CLAUDE,
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+        });
+        const runs = yield* sql<{
+          status: string;
+        }>`SELECT status FROM orchestration_v2_projection_runs`;
+        assert.deepStrictEqual(runs, [{ status }]);
+      }).pipe(Effect.scoped, Effect.provide(Layer.orDie(SqlitePersistence.layerMemory))),
   );
 });

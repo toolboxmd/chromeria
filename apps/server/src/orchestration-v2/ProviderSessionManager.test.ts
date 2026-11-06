@@ -4,8 +4,6 @@ import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import * as PeerAuthority from "../peer/PeerAuthority.ts";
-import * as ForkProviderStartAdmission from "../provider/forkProviderStartAdmission.ts";
-import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as NetAddress from "effect/net/NetAddress";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -716,14 +714,6 @@ function layerTest(input: {
           layerRegistry.pipe(Layer.provideMerge(McpProviderSessions.layer)),
           CommandOutputHub.layer.pipe(
             Layer.provide(Layer.merge(layerConfiguredEventSink, layerTestStores)),
-          ),
-          ForkProviderStartAdmission.layer.pipe(
-            Layer.provide(
-              Layer.mock(ProviderRegistry.ProviderRegistry)({
-                getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
-                  Effect.succeed({ provider, packageName: null, update: null }),
-              }),
-            ),
           ),
           layerConfiguredEventSink,
           IdAllocator.layer,
