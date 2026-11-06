@@ -1,4 +1,5 @@
 import { threadRequestNamespace } from "../mcp/requestIdentity.ts";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import {
   toolAllowlistsEqual,
   toolPolicyModeRejection,
@@ -533,13 +534,23 @@ const make = Effect.gen(function* () {
       );
   });
 
+  // One server owns these tasks, so an in-process lock orders every launch and its settlement.
+  const launchLocks = yield* KeyedLock.make<NodeId>();
+  const sentLaunches = new Set<NodeId>();
+
   /** Replays the stored launch identity; a different follower namespace would launch another child. */
   const launchPending = Effect.fn("RemoteDelegation.launchPending")(
     function* (parentThreadId: ThreadId, taskId: NodeId) {
       let records = yield* threads.getThreadRecords(parentThreadId, ["subagents"]);
       let task = records.subagents.find((candidate) => candidate.id === taskId);
-      if (task?.remoteChild === undefined || task.remoteChild.threadId !== undefined) return;
-      if (task.result !== null && task.remoteChild.stoppedThere === true) return;
+      if (
+        task?.remoteChild === undefined ||
+        task.remoteChild.threadId !== undefined ||
+        (task.result !== null && task.remoteChild.stoppedThere === true)
+      ) {
+        sentLaunches.delete(taskId);
+        return;
+      }
       const launch = task.remoteChild.launch;
       if (launch === undefined) {
         return yield* new OrchestratorMcpFailure({
@@ -587,9 +598,8 @@ const make = Effect.gen(function* () {
                 ),
             ),
           );
-        // Only the invocation that applied the marker can prove a first-attempt no-send.
-        // An overlapping invocation that replays it inherits the earlier send's uncertainty.
-        firstAttempt = marked !== undefined && marked.replayed !== true;
+        firstAttempt =
+          marked !== undefined && marked.replayed !== true && !sentLaunches.has(taskId);
         records = yield* threads.getThreadRecords(parentThreadId, ["subagents"]);
         task = records.subagents.find((candidate) => candidate.id === taskId);
         if (task?.remoteChild?.launchStarted !== true) {
@@ -612,7 +622,7 @@ const make = Effect.gen(function* () {
         }
       }
       const remote = task.remoteChild;
-      if (remote === undefined) return;
+      if (remote === undefined || (task.result !== null && remote.stoppedThere === true)) return;
       const scope: ThreadScope = {
         ...followScope(
           { threadId: parentThreadId, providerInstanceId: records.thread.providerInstanceId },
@@ -686,6 +696,7 @@ const make = Effect.gen(function* () {
             expectedLinkIdentity: launch.linkIdentity,
             pair: { parentThreadId, taskId },
             onDispatch: (stage) => {
+              if (stage === "sent") sentLaunches.add(taskId);
               dispatch.stage = stage;
             },
           },
@@ -723,7 +734,9 @@ const make = Effect.gen(function* () {
         runId: launched.runId,
         modelSelection: launched.modelSelection,
       });
+      sentLaunches.delete(taskId);
     },
+    (effect, _parentThreadId, taskId) => launchLocks.withLock(taskId, effect),
     Effect.mapError((error) =>
       error._tag === "OrchestratorMcpFailure"
         ? error
