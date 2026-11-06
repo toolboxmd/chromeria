@@ -190,8 +190,9 @@ export const reads = Effect.fn("contextmd.reads")(function* (
   >;
   let found: Read[] = [];
   if (shellTools.includes(tool)) {
-    if (typeof input["command"] !== "string") return [] as Read[];
-    found = yield* shellReads(input["command"], base);
+    const command = input["command"] ?? input["cmd"];
+    if (typeof command !== "string") return [] as Read[];
+    found = yield* shellReads(command, base);
   } else if (READ_TOOLS[tool] !== undefined) {
     const target = input[READ_TOOLS[tool]];
     if (typeof target !== "string") return [] as Read[];

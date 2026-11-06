@@ -1413,67 +1413,106 @@ describe("contextmd routes", () => {
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
-  it.live("counts a Codex read only once the projected command exited 0", () =>
-    Effect.gen(function* () {
-      const s = yield* serve(
-        insertAttempt({ attempt: "a", run: "run-1", status: "running", native: "S" }),
-      );
-      const codex = (event: string, command: string, toolUseId: string, response = "") => ({
-        hook_event_name: event,
-        session_id: "S",
-        cwd: "/tmp",
-        tool_name: "Bash",
-        tool_input: { command },
-        tool_use_id: toolUseId,
-        tool_response: response,
-      });
-      let calls = 0;
-      const push = () => {
-        calls += 1;
-        return s.moment(codex("PreToolUse", "git push", `push-${calls}`), { harness: "codex" });
-      };
-      assert.include((yield* push()).body, "rule push");
-      // Another command whose id merely ends with this one's, and that succeeded, proves nothing.
-      yield* projectCommand({
-        toolUseId: "prior-exec-1",
-        status: "completed",
-        exitCode: 0,
-        itemId: "turn-item:provider:codex:native-item:prior-exec-1",
-      }).pipe(Effect.provide(s.database));
-      // A finished item without an exit code proves nothing either.
-      yield* s.moment(
-        codex("PostToolUse", `cat ${s.store.rule}`, "exec-0", "Pushes need the deploy key alias."),
-        {
-          harness: "codex",
-        },
-      );
-      yield* projectCommand({ toolUseId: "exec-0", status: "completed" }).pipe(
-        Effect.provide(s.database),
-      );
-      assert.include((yield* push()).body, "rule push");
-      // A failed read (exit code 1) of the target does not lift the rule.
-      yield* s.moment(
-        codex("PostToolUse", `cat ${s.store.rule}`, "exec-1", "cat: Permission denied"),
-        {
-          harness: "codex",
-        },
-      );
-      yield* projectCommand({ toolUseId: "exec-1", status: "failed", exitCode: 1 }).pipe(
-        Effect.provide(s.database),
-      );
-      assert.include((yield* push()).body, "rule push");
-      // A read that exited 0 does.
-      yield* s.moment(
-        codex("PostToolUse", `cat ${s.store.rule}`, "exec-2", "Pushes need the deploy key alias."),
-        {
-          harness: "codex",
-        },
-      );
-      yield* projectCommand({ toolUseId: "exec-2", status: "completed", exitCode: 0 }).pipe(
-        Effect.provide(s.database),
-      );
-      assert.strictEqual((yield* push()).status, 204);
-    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
+  it.live.each([
+    { tool: "Bash", field: "command", preField: "command" },
+    { tool: "exec_command", field: "cmd", preField: "cmd" },
+    { tool: "exec_command", field: "cmd", preField: "command" },
+  ])(
+    "counts a Codex $tool/$field/$preField read only once the projected command exited 0",
+    ({ tool, field, preField }) =>
+      Effect.gen(function* () {
+        const s = yield* serve(
+          insertAttempt({ attempt: "a", run: "run-1", status: "running", native: "S" }),
+        );
+        const codex = (event: string, command: string, toolUseId: string, response = "") => ({
+          hook_event_name: event,
+          session_id: "S",
+          cwd: "/tmp",
+          tool_name: event === "PreToolUse" && preField === "command" ? "Bash" : tool,
+          tool_input: { [event === "PreToolUse" ? preField : field]: command },
+          tool_use_id: toolUseId,
+          tool_response: response,
+        });
+        let calls = 0;
+        const push = () => {
+          calls += 1;
+          return s.moment(codex("PreToolUse", "git push", `push-${calls}`), { harness: "codex" });
+        };
+        assert.include((yield* push()).body, "rule push");
+        // Another command whose id merely ends with this one's, and that succeeded, proves nothing.
+        yield* projectCommand({
+          toolUseId: "prior-exec-1",
+          status: "completed",
+          exitCode: 0,
+          itemId: "turn-item:provider:codex:native-item:prior-exec-1",
+        }).pipe(Effect.provide(s.database));
+        // A finished item without an exit code proves nothing either.
+        yield* s.moment(
+          codex(
+            "PostToolUse",
+            `cat ${s.store.rule}`,
+            "exec-0",
+            "Pushes need the deploy key alias.",
+          ),
+          {
+            harness: "codex",
+          },
+        );
+        yield* projectCommand({ toolUseId: "exec-0", status: "completed" }).pipe(
+          Effect.provide(s.database),
+        );
+        assert.include((yield* push()).body, "rule push");
+        // A failed read (exit code 1) of the target does not lift the rule.
+        yield* s.moment(
+          codex("PostToolUse", `cat ${s.store.rule}`, "exec-1", "cat: Permission denied"),
+          {
+            harness: "codex",
+          },
+        );
+        yield* projectCommand({ toolUseId: "exec-1", status: "failed", exitCode: 1 }).pipe(
+          Effect.provide(s.database),
+        );
+        assert.include((yield* push()).body, "rule push");
+        // Exit 0 cannot prove the model saw a complete file when the output was cut.
+        yield* s.moment(
+          codex("PostToolUse", `cat ${s.store.rule}`, "exec-cut", "Output truncated"),
+          { harness: "codex" },
+        );
+        yield* projectCommand({ toolUseId: "exec-cut", status: "completed", exitCode: 0 }).pipe(
+          Effect.provide(s.database),
+        );
+        assert.include((yield* push()).body, "rule push");
+        // A read that exited 0 does.
+        yield* s.moment(
+          codex(
+            "PostToolUse",
+            `cat ${s.store.rule}`,
+            "exec-2",
+            "Pushes need the deploy key alias.",
+          ),
+          {
+            harness: "codex",
+          },
+        );
+        yield* projectCommand({ toolUseId: "exec-2", status: "completed", exitCode: 0 }).pipe(
+          Effect.provide(s.database),
+        );
+        assert.strictEqual((yield* push()).status, 204);
+        // A 204 alone could be the three-denial fail-open cap, rather than acknowledgement.
+        const db = new NodeSqlite.DatabaseSync(s.sqlitePath);
+        try {
+          assert.deepStrictEqual(
+            {
+              ...db
+                .prepare("SELECT lifted, lift_outcome FROM deny_state WHERE entry = 'push'")
+                .get(),
+            },
+            { lifted: 1, lift_outcome: "read" },
+          );
+        } finally {
+          db.close();
+        }
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.live("disables itself when run attempts no longer carry nativeThreadId", () =>
