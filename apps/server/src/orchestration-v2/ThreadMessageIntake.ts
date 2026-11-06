@@ -11,6 +11,7 @@ import * as AttachmentClaims from "./AttachmentClaims.ts";
 import * as ThreadLaunch from "./ThreadLaunchService.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import { dispatchDelegatedRequest } from "../childThreads/delegatedIntake.ts";
+import { ForkProviderlessMessages } from "../fork/ForkProviderlessMessages.ts";
 
 // These failures precede commitCommand; generic dispatch errors can follow commits and remain ambiguous.
 function dispatchWasNotAccepted(
@@ -221,8 +222,57 @@ export const sendToThread = Effect.fn("ThreadMessageIntake.sendToThread")(functi
   input: ThreadManagement.ThreadManagementSendInput,
 ) {
   const threads = yield* ThreadManagement.ThreadManagementService;
+  const providerless = yield* (yield* ForkProviderlessMessages).contains(input.threadId).pipe(
+    Effect.mapError(
+      (cause) =>
+        new AttachmentClaims.AttachmentClaimError({
+          message: "Failed to identify the attachment delivery target.",
+          cause,
+        }),
+    ),
+  );
+  if (providerless && (input.mode === "steer" || input.mode === "restart"))
+    return yield* new ThreadManagement.ThreadManagementNoSteerableRunError({
+      threadId: input.threadId,
+      mode: input.mode,
+    });
   const claimed = yield* AttachmentClaims.claimPendingAttachments(input);
-  return yield* threads.sendToThread({ ...input, attachments: claimed.attachments }).pipe(
+  const send = Effect.gen(function* () {
+    if (!providerless)
+      return yield* threads.sendToThread({ ...input, attachments: claimed.attachments });
+    const dispatch = yield* threads.dispatch({
+      type: "message.dispatch",
+      commandId: input.commandId,
+      threadId: input.threadId,
+      messageId: input.messageId,
+      ...(input.purposeIntent === undefined ? {} : { purposeIntent: input.purposeIntent }),
+      ...(input.purposeSource === undefined ? {} : { purposeSource: input.purposeSource }),
+      ...(input.scheduledTaskId === undefined ? {} : { scheduledTaskId: input.scheduledTaskId }),
+      text: input.text,
+      attachments: claimed.attachments,
+      ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
+      createdBy: input.createdBy,
+      creationSource: input.creationSource,
+      dispatchMode: {
+        type: input.mode === "queue" ? "queue_after_active" : "start_immediately",
+      },
+    });
+    const message = dispatch.storedEvents.flatMap(({ event }) =>
+      event.type === "message.updated" &&
+      event.threadId === input.threadId &&
+      event.payload.role === "user" &&
+      event.payload.runId === null
+        ? [event.payload]
+        : [],
+    )[0];
+    if (message === undefined)
+      return yield* new ThreadManagement.ThreadManagementDurableRunProjectionError({
+        threadId: input.threadId,
+        messageId: input.messageId,
+      });
+    return { message, run: null, delivery: "transcript" } as const;
+  });
+  return yield* send.pipe(
     Effect.tap((result) => releaseUnusedClaims(claimed.claimedPaths, result.message.attachments)),
     Effect.tapError((error) =>
       dispatchWasNotAccepted(error)
