@@ -99,12 +99,21 @@ const AttachmentSendTool = Tool.make("t3_thread_send_attachments", {
       ),
     }),
   ),
-  success: Schema.Struct({
-    threadId: ThreadId,
-    messageId: MessageId,
-    runId: RunId,
-    status: OrchestrationV2RunStatus,
-  }),
+  success: Schema.Union([
+    Schema.Struct({
+      threadId: ThreadId,
+      messageId: MessageId,
+      runId: RunId,
+      status: OrchestrationV2RunStatus,
+    }),
+    Schema.Struct({
+      threadId: ThreadId,
+      messageId: MessageId,
+      runId: Schema.Null,
+      status: Schema.Literal("idle"),
+      delivery: Schema.Literal("transcript"),
+    }),
+  ]),
 })
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true);

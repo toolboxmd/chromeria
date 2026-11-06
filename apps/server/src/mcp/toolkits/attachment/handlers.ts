@@ -217,9 +217,10 @@ export const layer = McpToolAccess.toLayer(
             );
             return {
               threadId: projection.thread.id,
-              messageId,
-              runId: result.run.id,
-              status: result.run.status,
+              messageId: result.message.id,
+              ...(result.run === null
+                ? ({ runId: null, status: "idle", delivery: "transcript" } as const)
+                : { runId: result.run.id, status: result.run.status }),
             };
           }),
       ),
