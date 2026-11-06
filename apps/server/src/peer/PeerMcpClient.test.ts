@@ -15,6 +15,9 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 import { HttpClient, HttpClientResponse } from "effect/http";
+import * as HttpRouter from "effect/http/HttpRouter";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
 
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
@@ -51,6 +54,12 @@ const refusal = new OrchestratorMcpFailure({
   code: "thread_not_found",
   message: "Thread thread-gone was not found.",
 });
+
+const decodeProbeRequest = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    params: Schema.optional(Schema.Struct({ name: Schema.optional(Schema.String) })),
+  }),
+);
 
 it.layer(NodeCrypto.layer)("peer MCP client", (it) => {
   it.effect.each([false, true])(
@@ -143,6 +152,58 @@ it.layer(NodeCrypto.layer)("peer MCP client", (it) => {
         expect(refused).toMatchObject({ code: refusal.code, message: refusal.message });
         const link = yield* links.get(box.environmentId);
         expect(link._tag === "Some" ? link.value.lastError : "missing").toBeNull();
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("does not follow mutation POST redirects below the dispatch observer", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const redirected = yield* Ref.make(0);
+        const middleware = HttpRouter.middleware(
+          (handle) =>
+            Effect.gen(function* () {
+              const request = yield* HttpServerRequest.HttpServerRequest;
+              if (request.url === "/redirected-mutation") {
+                yield* Ref.update(redirected, (count) => count + 1);
+                return HttpServerResponse.jsonUnsafe({
+                  result: { content: [{ type: "text", text: '{"modes":"redirected"}' }] },
+                });
+              }
+              if (request.url === "/mcp" && request.method === "POST") {
+                const input = yield* decodeProbeRequest(yield* request.json).pipe(Effect.orDie);
+                if (input.params?.name === "probe")
+                  return HttpServerResponse.redirect("/redirected-mutation", { status: 307 });
+              }
+              return yield* handle;
+            }),
+          { global: true },
+        );
+        const handlers = McpToolAccess.toLayer(toolkit, {
+          probe: McpToolAccess.reads(() => Effect.succeed({ modes: "" })),
+          hold: McpToolAccess.reads(() => Effect.succeed({ modes: "" })),
+          refuse: McpToolAccess.reads(() => Effect.fail(refusal)),
+        });
+        const box = descriptorOf("environment-box", "Box");
+        const b = yield* servePeer(
+          box,
+          McpHttpServer.toolkitRegistration(toolkit, handlers).pipe(Layer.provide(middleware)),
+        );
+        const context = yield* layerLinkingEnvironment(descriptorOf("environment-a", "A")).pipe(
+          Layer.build,
+        );
+        yield* linkTo(Context.get(context, PeerLinks.PeerLinks), b);
+        const result = yield* Context.get(context, PeerMcpClient.PeerMcpClient)
+          .call({
+            environmentId: box.environmentId,
+            tool: "probe",
+            arguments: {},
+            limits: { runtimeMode: "full-access", interactionMode: "default" },
+            success: Result,
+          })
+          .pipe(Effect.result);
+        expect(yield* Ref.get(redirected)).toBe(0);
+        expect(result._tag).toBe("Failure");
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );

@@ -275,6 +275,7 @@ const decodeExchange = Schema.decodeUnknownEffect(
 );
 const _decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeToolCallResponse = Schema.decodeUnknownEffect(Schema.fromJsonString(ToolCallResponse));
+const encodeRequestJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const PeerFailure = Schema.Struct({
   code: OrchestratorMcpFailure.fields.code,
   message: Schema.String,
@@ -340,17 +341,39 @@ const make = Effect.gen(function* () {
   // sessions in memory, so a restart there answers 404 and we start a new one.
   const sessions = yield* Ref.make<ReadonlyMap<string, string>>(new Map());
 
-  const post = (url: string, token: string, body: unknown, headers: Record<string, string>) =>
-    httpClient.execute(
-      HttpClientRequest.post(`${url}/mcp`).pipe(
-        HttpClientRequest.setHeaders({
-          accept: "application/json, text/event-stream",
-          authorization: `Bearer ${token}`,
-          ...headers,
-        }),
-        HttpClientRequest.setBody(HttpBody.text(JSON.stringify(body), "application/json")),
+  const post = Effect.fn("PeerMcpClient.post")(function* (
+    url: string,
+    token: string,
+    body: unknown,
+    headers: Record<string, string>,
+    onDispatch?: () => void,
+  ) {
+    const encoded = yield* encodeRequestJson(body).pipe(
+      Effect.mapError(
+        () =>
+          new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "The peer request could not be encoded.",
+          }),
       ),
     );
+    const request = HttpClientRequest.post(`${url}/mcp`).pipe(
+      HttpClientRequest.setHeaders({
+        accept: "application/json, text/event-stream",
+        authorization: `Bearer ${token}`,
+        ...headers,
+      }),
+      HttpClientRequest.setBody(HttpBody.text(encoded, "application/json")),
+    );
+    const options = yield* Effect.serviceOption(FetchHttpClient.RequestInit);
+    onDispatch?.();
+    return yield* httpClient.execute(request).pipe(
+      Effect.provideService(FetchHttpClient.RequestInit, {
+        ...(Option.isSome(options) ? options.value : {}),
+        redirect: "manual",
+      }),
+    );
+  });
 
   const openSession = Effect.fn("PeerMcpClient.openSession")(function* (
     url: string,
@@ -768,6 +791,7 @@ const make = Effect.gen(function* () {
 
   const call: PeerMcpClient["Service"]["call"] = Effect.fn("PeerMcpClient.call")(
     function* (input) {
+      let sends = 0;
       const resolved = yield* links
         .resolve(input.environmentId)
         .pipe(Effect.mapError(fromLinkError));
@@ -822,7 +846,6 @@ const make = Effect.gen(function* () {
       const sessionKey = `${input.environmentId} ${resolved.url} ${resolved.link.launchIdentity} ${input.authority === undefined ? "legacy" : "authority-v1"}`;
       const callOnce = (sessionId: string) =>
         Effect.suspend(() => {
-          input.onDispatch?.("sent");
           return post(
             resolved.url,
             resolved.token,
@@ -843,6 +866,10 @@ const make = Effect.gen(function* () {
               "mcp-session-id": sessionId,
               "mcp-protocol-version": PROTOCOL_VERSION,
             },
+            () => {
+              sends++;
+              input.onDispatch?.("sent");
+            },
           );
         });
       const existing = (yield* Ref.get(sessions)).get(sessionKey);
@@ -861,15 +888,26 @@ const make = Effect.gen(function* () {
         response = yield* callOnce(renewed);
       }
       if (response.status === 401) {
-        return yield* new OrchestratorMcpFailure({
-          code: "capability_denied",
-          message:
-            "The linked environment no longer accepts this link. It may have been revoked there; link it again.",
-        });
+        return {
+          result: Result.fail(
+            new OrchestratorMcpFailure({
+              code: "capability_denied",
+              message:
+                "The linked environment no longer accepts this link. It may have been revoked there; link it again.",
+            }),
+          ),
+          sends,
+          status: response.status,
+        };
       }
       if (response.status !== 200) {
         const refusal = decodeFailure(yield* response.text);
-        if (Option.isSome(refusal)) return yield* new OrchestratorMcpFailure(refusal.value);
+        if (Option.isSome(refusal))
+          return {
+            result: Result.fail(new OrchestratorMcpFailure(refusal.value)),
+            sends,
+            status: response.status,
+          };
         if (response.status === 403) return yield* linkedEnvironmentsOffThere;
         return yield* new OrchestratorMcpFailure({
           code: "orchestration_error",
@@ -888,15 +926,19 @@ const make = Effect.gen(function* () {
         ),
       );
       if (body.error !== undefined) {
-        return Result.fail(
-          new PeerRpcFailure({
-            code: [-32700, -32600, -32601, -32602].includes(body.error.code)
-              ? "invalid_request"
-              : "orchestration_error",
-            rpcCode: body.error.code,
-            message: `JSON-RPC ${body.error.code}: ${body.error.message}`,
-          }),
-        );
+        return {
+          result: Result.fail(
+            new PeerRpcFailure({
+              code: [-32700, -32600, -32601, -32602].includes(body.error.code)
+                ? "invalid_request"
+                : "orchestration_error",
+              rpcCode: body.error.code,
+              message: `JSON-RPC ${body.error.code}: ${body.error.message}`,
+            }),
+          ),
+          sends,
+          status: response.status,
+        };
       }
       if (body.result === undefined) {
         return yield* new OrchestratorMcpFailure({
@@ -909,14 +951,18 @@ const make = Effect.gen(function* () {
         // A refusal keeps the peer's own code, so the agent sees why it was refused.
         const refused =
           input.tool === "t3_thread_launch" ? decodeLaunchFailure(text) : decodeFailure(text);
-        return Result.fail(
-          refused._tag === "Some"
-            ? new OrchestratorMcpFailure(refused.value)
-            : new OrchestratorMcpFailure({
-                code: "orchestration_error",
-                message: text || "The linked environment refused the call.",
-              }),
-        );
+        return {
+          result: Result.fail(
+            refused._tag === "Some"
+              ? new OrchestratorMcpFailure(refused.value)
+              : new OrchestratorMcpFailure({
+                  code: "orchestration_error",
+                  message: text || "The linked environment refused the call.",
+                }),
+          ),
+          sends,
+          status: response.status,
+        };
       }
       const success = Schema.fromJsonString(input.success);
       const decoded = yield* Schema.decodeEffect(success)(
@@ -931,19 +977,28 @@ const make = Effect.gen(function* () {
             }),
         ),
       );
-      return input.tool === "t3_attachment_prepare_upload" &&
-        typeof decoded === "object" &&
-        decoded !== null
-        ? Result.succeed({ ...decoded, uploadOrigin: new URL(resolved.url).origin })
-        : Result.succeed(decoded);
+      return {
+        result:
+          input.tool === "t3_attachment_prepare_upload" &&
+          typeof decoded === "object" &&
+          decoded !== null
+            ? Result.succeed({ ...decoded, uploadOrigin: new URL(resolved.url).origin })
+            : Result.succeed(decoded),
+        sends,
+        status: response.status,
+      };
     },
     (effect, input) =>
       effect.pipe(
         Effect.tapError((error) =>
           links.recordOutcome(input.environmentId, { error: error.message }),
         ),
-        // A refusal is still an answer: the link works, so only this call fails.
-        Effect.tap(() => links.recordOutcome(input.environmentId, { error: null })),
+        // HTTP failures retain their link error on the normalized refusal path.
+        Effect.tap(({ result, status }) =>
+          links.recordOutcome(input.environmentId, {
+            error: status !== 200 && Result.isFailure(result) ? result.failure.message : null,
+          }),
+        ),
         // Recorded above with the transport's own message; the agent hears it plainly.
         Effect.catchTags({
           HttpClientError: () =>
@@ -954,8 +1009,10 @@ const make = Effect.gen(function* () {
               }),
             ),
         }),
-        Effect.flatMap((result) => {
+        Effect.flatMap(({ result, sends }) => {
+          // A renewed refusal cannot disprove acceptance of an earlier send.
           if (
+            sends === 1 &&
             Result.isFailure(result) &&
             result.failure.code !== "orchestration_error" &&
             result.failure.code !== "outcome_unknown"

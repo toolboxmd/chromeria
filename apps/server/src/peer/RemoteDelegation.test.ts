@@ -2118,6 +2118,11 @@ type PeerResponseFault =
   | "requests"
   | "internal"
   | "internal-before"
+  | "http-401"
+  | "http-403"
+  | "http-400"
+  | "accepted-404-protocol"
+  | "accepted-404-http"
   | number
   | null;
 
@@ -2159,6 +2164,14 @@ const peerResponseFault = (fault: Ref.Ref<PeerResponseFault>) => {
             { status: 400 },
           );
         const launch = input.method === "tools/call" && input.params?.name === "t3_thread_launch";
+        if (launch && (current === "http-401" || current === "http-403" || current === "http-400"))
+          return HttpServerResponse.jsonUnsafe(
+            {
+              code: current === "http-400" ? "invalid_request" : "capability_denied",
+              message: "Launch HTTP refusal.",
+            },
+            { status: current === "http-401" ? 401 : current === "http-403" ? 403 : 400 },
+          );
         if (launch && typeof current === "number")
           return HttpServerResponse.jsonUnsafe({
             jsonrpc: "2.0",
@@ -2173,12 +2186,21 @@ const peerResponseFault = (fault: Ref.Ref<PeerResponseFault>) => {
           });
         const response = yield* handle;
         if (
-          !(launch && current === "internal") &&
+          !(
+            launch &&
+            (current === "internal" ||
+              current === "accepted-404-protocol" ||
+              current === "accepted-404-http")
+          ) &&
           !(input.params?.name === "orchestrator_capabilities" && current === "bare")
         )
           return response;
         // Consume the real MCP response so its launch transaction has committed.
         const text = yield* Effect.promise(() => HttpServerResponse.toWeb(response).text());
+        if (launch && (current === "accepted-404-protocol" || current === "accepted-404-http")) {
+          yield* Ref.set(fault, current === "accepted-404-protocol" ? -32602 : "http-403");
+          return HttpServerResponse.empty({ status: 404 });
+        }
         if (launch)
           return HttpServerResponse.jsonUnsafe({
             jsonrpc: "2.0",
@@ -2196,7 +2218,7 @@ const peerResponseFault = (fault: Ref.Ref<PeerResponseFault>) => {
   );
 };
 
-it.effect.each(["bare", "init", "requests"] as const)(
+it.effect.each(["bare", "init", "requests", "http-401", "http-403", "http-400"] as const)(
   "settles a first-attempt %s preflight refusal with its follower alive",
   (refusal) =>
     Effect.scoped(
@@ -2218,7 +2240,7 @@ it.effect.each(["bare", "init", "requests"] as const)(
         yield* seedParent(a);
         const input = {
           task: "Do not start refused work.",
-          bare: { additions: [] },
+          ...(refusal.startsWith("http-") ? {} : { bare: { additions: [] } }),
           target: { environmentId: box.environmentId, projectId: boxProject },
           mode: "async",
           clientRequestId: "no-dispatch-refusal",
@@ -2232,7 +2254,11 @@ it.effect.each(["bare", "init", "requests"] as const)(
                 ? "nothing was forwarded"
                 : refusal === "requests"
                   ? "request protocol is incompatible"
-                  : "Session initialization refused",
+                  : refusal.startsWith("http-")
+                    ? refusal === "http-401"
+                      ? "no longer accepts this link"
+                      : "Launch HTTP refusal"
+                    : "Session initialization refused",
             ),
           },
         ]);
@@ -2253,14 +2279,29 @@ it.effect.each(["bare", "init", "requests"] as const)(
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect.each([false, true, -32700, -32600, -32601, -32602])(
+it.effect.each([
+  false,
+  true,
+  -32700,
+  -32600,
+  -32601,
+  -32602,
+  "renew-protocol",
+  "renew-http",
+] as const)(
   "recovers an accepted destination receipt after a JSON-RPC internal error (replay refusal=%s)",
   (refuseReplay) =>
     Effect.scoped(
       Effect.gen(function* () {
         const thread = yield* makeBoxThread;
         const actual = yield* makeRealBox;
-        const fault = yield* Ref.make<PeerResponseFault>("internal");
+        const fault = yield* Ref.make<PeerResponseFault>(
+          refuseReplay === "renew-protocol"
+            ? "accepted-404-protocol"
+            : refuseReplay === "renew-http"
+              ? "accepted-404-http"
+              : "internal",
+        );
         const b = yield* servePeer(
           box,
           boxToolkitLayer(thread, actual).pipe(Layer.provide(peerResponseFault(fault))),
@@ -2286,7 +2327,7 @@ it.effect.each([false, true, -32700, -32600, -32601, -32602])(
               .subagents[0]!;
             expect(task.remoteChild?.launchStarted).toBe(true);
             expect(yield* Ref.get(thread.launchIds)).toHaveLength(1);
-            expect(task.result).toBeNull();
+            if (typeof refuseReplay !== "string") expect(task.result).toBeNull();
             expect(task.remoteChild?.stoppedThere).not.toBe(true);
             return task;
           }),
@@ -2294,11 +2335,11 @@ it.effect.each([false, true, -32700, -32600, -32601, -32602])(
         const acceptedThreadId = (yield* Ref.get(thread.launched))!;
         yield* Ref.set(
           fault,
-          typeof refuseReplay === "number" ? refuseReplay : refuseReplay ? "init" : null,
+          typeof refuseReplay === "number" ? refuseReplay : refuseReplay === true ? "init" : null,
         );
         const after = yield* makeLaptop(database, offers, linking);
         yield* after.remote.start();
-        if (refuseReplay) {
+        if (refuseReplay && typeof refuseReplay !== "string") {
           yield* after.call("delegate_task", {
             task: "Recover the original receipt.",
             target: { environmentId: box.environmentId },
