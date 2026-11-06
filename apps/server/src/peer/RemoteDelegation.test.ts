@@ -2091,6 +2091,79 @@ it.effect.each(
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect.each(
+  (["catalog", "headroom"] as const).flatMap((unavailable) =>
+    (["delegate", "recovery"] as const).map((path) => ({ unavailable, path })),
+  ),
+)("terminalizes a real destination $unavailable refusal during $path", ({ unavailable, path }) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const actual = yield* makeRealBox;
+      yield* Ref.set(actual.unavailable, unavailable);
+      const b = yield* servePeer(box, boxToolkitLayer(thread, actual));
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
+      const failed = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const before = yield* makeLaptop(database, offers, linking);
+          yield* linkTo(before.links, b, "full-access");
+          yield* seedParent(before);
+          let taskId: NodeId;
+          if (path === "delegate") {
+            const response = yield* before.call("delegate_task", {
+              task: "The destination must refuse this child.",
+              target: { environmentId: box.environmentId },
+              mode: "async",
+              clientRequestId: "refused-child",
+            });
+            expect(response.isError).toBe(true);
+            expect(response.content).toMatchObject([
+              {
+                type: "text",
+                text: expect.stringContaining(
+                  `"code":"${unavailable === "catalog" ? "model_unavailable" : "provider_unavailable"}"`,
+                ),
+              },
+            ]);
+            taskId = (yield* before.orchestrator.getThreadProjection(parentThreadId)).subagents[0]!
+              .id;
+          } else {
+            taskId = yield* recordPending(before);
+            yield* before.remote.start();
+            yield* taskResult(before, taskId);
+          }
+          const task = (yield* before.orchestrator.getThreadProjection(
+            parentThreadId,
+          )).subagents.find((entry) => entry.id === taskId)!;
+          expect(task.status).toBe("failed");
+          expect(task.remoteChild?.launchError).toBeTruthy();
+          expect(task.result).toContain(
+            unavailable === "catalog" ? "not advertised" : "No eligible",
+          );
+          expect(task.remoteChild?.threadId).toBeUndefined();
+          expect(task.remoteChild?.stoppedThere).toBe(true);
+          expect(yield* before.projections.getOpenRemoteDelegatedTasks).toEqual([]);
+          return task;
+        }),
+      );
+      // Capacity returning and a source restart must never launch refused work.
+      yield* Ref.set(actual.unavailable, null);
+      const after = yield* makeLaptop(database, offers, linking);
+      yield* after.remote.start();
+      expect(yield* taskResult(after, failed.id)).toMatchObject({
+        status: "failed",
+        result: failed.result,
+      });
+      expect(yield* after.projections.getOpenRemoteDelegatedTasks).toEqual([]);
+      expect(yield* Ref.get(thread.launchIds)).toEqual([]);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 /** A committed source intent, before any launch marker or network request. */
 const recordPending = (
   a: Effect.Success<ReturnType<typeof makeLaptop>>,

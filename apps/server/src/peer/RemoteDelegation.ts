@@ -679,6 +679,18 @@ const make = Effect.gen(function* () {
         ),
         Effect.catchTags({
           OrchestratorMcpFailure: (error) => {
+            // Admission refused this key before creating a child. Capacity returning later
+            // must not resurrect it; transport uncertainty still replays the same key.
+            if (error.code === "provider_unavailable" || error.code === "model_unavailable") {
+              return complete(
+                parentThreadId,
+                taskId,
+                "failed",
+                error.message,
+                "stopped",
+                error.message,
+              ).pipe(Effect.andThen(Effect.fail(error)));
+            }
             if (isFinal(error) || isModeRefusal(error) || error.code === "invalid_request") {
               const message = `${error.message} The remote launch could not be confirmed. If it was already accepted, work may still be running on ${remote.label}.`;
               return complete(parentThreadId, taskId, "failed", message, undefined, message).pipe(
