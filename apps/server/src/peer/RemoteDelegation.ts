@@ -547,8 +547,8 @@ const make = Effect.gen(function* () {
           message: "The pending remote task has no launch inputs.",
         });
       }
-      const firstAttempt = task.remoteChild.launchStarted !== true;
-      if (firstAttempt) {
+      let firstAttempt = false;
+      if (task.remoteChild.launchStarted !== true) {
         // The parent's dispatch lock orders this against Stop/cancel. Once committed,
         // acceptance is uncertain until the same key returns a destination receipt.
         if (task.result !== null) {
@@ -567,7 +567,7 @@ const make = Effect.gen(function* () {
           );
           return;
         }
-        yield* threads
+        const marked = yield* threads
           .dispatch({
             type: "delegated_task.remote.launch",
             commandId: CommandId.make(`command:remote-task-launch:${taskId}`),
@@ -587,6 +587,9 @@ const make = Effect.gen(function* () {
                 ),
             ),
           );
+        // Only the invocation that applied the marker can prove a first-attempt no-send.
+        // An overlapping invocation that replays it inherits the earlier send's uncertainty.
+        firstAttempt = marked !== undefined && marked.replayed !== true;
         records = yield* threads.getThreadRecords(parentThreadId, ["subagents"]);
         task = records.subagents.find((candidate) => candidate.id === taskId);
         if (task?.remoteChild?.launchStarted !== true) {

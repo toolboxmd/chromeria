@@ -2279,6 +2279,122 @@ it.effect.each(["bare", "init", "requests", "http-401", "http-403", "http-400"] 
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect("overlapping same-key calls give only the applied marker first-attempt authority", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const actual = yield* makeRealBox;
+      const fault = yield* Ref.make<PeerResponseFault>("internal");
+      const lifecycleSupported = yield* Ref.make(true);
+      const b = yield* servePeer(
+        box,
+        boxToolkitLayer(thread, actual, lifecycleSupported).pipe(
+          Layer.provide(peerResponseFault(fault)),
+        ),
+      );
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
+      const pending = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const firstRead = yield* Deferred.make<void>();
+          const bothRead = yield* Deferred.make<void>();
+          const applied = yield* Deferred.make<void>();
+          const releaseReplay = yield* Deferred.make<void>();
+          const replayed = yield* Deferred.make<void>();
+          let markers = 0;
+          const overlappingThreads = Layer.effect(
+            ThreadManagement.ThreadManagementService,
+            Effect.gen(function* () {
+              const threads = yield* ThreadManagement.ThreadManagementService;
+              return ThreadManagement.ThreadManagementService.of({
+                ...threads,
+                dispatch: (command) =>
+                  Effect.gen(function* () {
+                    if (command.type !== "delegated_task.remote.launch")
+                      return yield* threads.dispatch(command);
+                    const attempt = ++markers;
+                    if (attempt === 1) yield* Deferred.succeed(firstRead, undefined);
+                    // Each invocation has read the unstarted task before reaching dispatch.
+                    if (attempt === 2) yield* Deferred.succeed(bothRead, undefined);
+                    yield* Deferred.await(bothRead);
+                    if (attempt === 2) yield* Deferred.await(applied);
+                    const result = yield* threads.dispatch(command);
+                    expect(result.replayed === true).toBe(attempt === 2);
+                    if (attempt === 1) yield* Deferred.succeed(applied, undefined);
+                    else {
+                      yield* Deferred.succeed(replayed, undefined);
+                      yield* Deferred.await(releaseReplay);
+                    }
+                    return result;
+                  }),
+              });
+            }),
+          );
+          const before = yield* makeLaptop(database, offers, linking, overlappingThreads);
+          yield* linkTo(before.links, b, "full-access");
+          yield* seedParent(before);
+          const input = {
+            task: "Recover the overlapping accepted launch.",
+            target: { environmentId: box.environmentId },
+            mode: "async",
+            clientRequestId: "overlapping-receipt",
+          };
+          const firstCall = yield* before.call("delegate_task", input).pipe(Effect.forkChild);
+          yield* Deferred.await(firstRead);
+          const replayCall = yield* before.call("delegate_task", input).pipe(Effect.forkChild);
+          yield* Deferred.await(replayed);
+          // A commits the real destination receipt, but its successful response is replaced.
+          const firstResponse = yield* Fiber.join(firstCall);
+          expect(firstResponse.isError).toBe(true);
+          expect(firstResponse.content).toMatchObject([
+            { text: expect.stringContaining("Launch response failed.") },
+          ]);
+          expect(yield* Ref.get(thread.launchIds)).toHaveLength(1);
+          yield* Ref.set(lifecycleSupported, false);
+          yield* Deferred.succeed(releaseReplay, undefined);
+          // B replays the marker and then fails lifecycle preparation before its POST.
+          const replayResponse = yield* Fiber.join(replayCall);
+          expect(replayResponse.isError).toBe(true);
+          expect(replayResponse.content).toMatchObject([
+            { text: expect.stringContaining("does not support delegated lifecycle v1") },
+          ]);
+          const task = (yield* before.orchestrator.getThreadProjection(parentThreadId))
+            .subagents[0]!;
+          expect(markers).toBe(2);
+          expect(task.remoteChild?.launchStarted).toBe(true);
+          expect(task.remoteChild?.stoppedThere).not.toBe(true);
+          expect(yield* before.projections.getOpenRemoteDelegatedTasks).toContainEqual({
+            parentThreadId,
+            taskId: task.id,
+          });
+          return task;
+        }),
+      );
+      const acceptedThreadId = (yield* Ref.get(thread.launched))!;
+      yield* Ref.set(fault, null);
+      yield* Ref.set(lifecycleSupported, true);
+      const after = yield* makeLaptop(database, offers, linking);
+      yield* after.remote.start();
+      yield* remoteState(
+        after,
+        pending.id,
+        (task) => task.remoteChild?.threadId === acceptedThreadId,
+      );
+      const recovered = (yield* after.orchestrator.getThreadProjection(parentThreadId))
+        .subagents[0]!;
+      expect(recovered.remoteChild?.threadId).toBe(acceptedThreadId);
+      expect(recovered.remoteChild?.launch?.clientRequestId).toBe(
+        `delegate:${parentThreadId}:overlapping-receipt`,
+      );
+      expect(recovered.remoteChild?.launch).toEqual(pending.remoteChild?.launch);
+      expect(yield* Ref.get(thread.launchIds)).toEqual([acceptedThreadId]);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect.each([
   false,
   true,
