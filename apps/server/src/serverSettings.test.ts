@@ -1,10 +1,13 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  DEFAULT_PRISM_ROLE_KITS,
   DEFAULT_SERVER_SETTINGS,
   globalIdleCompaction,
   type ManagedPolicyDocument,
+  EnvironmentId,
   ModelSelection,
+  PrismRoleKits,
   ProjectId,
   ProjectScript,
   ProviderDriverKind,
@@ -16,6 +19,7 @@ import {
   UsageLimitSourceId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { assert, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -40,6 +44,7 @@ import * as ManagedPolicy from "./policy/ManagedPolicy.ts";
 import { resolveProviderInstanceTerminalEnvironment } from "./terminal/Manager.ts";
 
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
+const encodePrismRoleKits = Schema.encodeEffect(PrismRoleKits);
 const decodeServerSettingsJson = Schema.decodeUnknownEffect(Schema.fromJsonString(ServerSettings));
 const decodeServerSettingsPatch = Schema.decodeUnknownEffect(ServerSettingsPatch);
 
@@ -135,6 +140,31 @@ function strictSecretReferencePaths(
 }
 
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings", (it) => {
+  it.effect(
+    "persists the search endpoint independently of research host selection and clearing",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const host = EnvironmentId.make("bestia");
+        const searxngUrl = "http://configured-search.internal:8888/base";
+        yield* service.updateSettings({ webResearch: { searxngUrl } });
+        yield* service.updateSettings({ webResearch: { host } });
+        assert.deepEqual((yield* service.getSettings).webResearch, { host, searxngUrl });
+        assert.deepEqual(
+          (yield* decodeServerSettingsJson(yield* fs.readFileString(config.settingsPath)))
+            .webResearch,
+          { host, searxngUrl },
+        );
+        yield* service.updateSettings({ webResearch: { host: null } });
+        assert.deepEqual(
+          (yield* decodeServerSettingsJson(yield* fs.readFileString(config.settingsPath)))
+            .webResearch,
+          { host: null, searxngUrl },
+        );
+      }).pipe(Effect.provide(layerServerSettings())),
+  );
   it.effect("serializes concurrent model preference edits without cancelling duplicate adds", () =>
     Effect.gen(function* () {
       const service = yield* ServerSettingsModule.ServerSettingsService;
@@ -217,6 +247,91 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
       }),
     ).pipe(Effect.provide(layerServerSettings())),
   );
+  it.effect(
+    "preserves saved V1 Prism kits and opaque Wight settings through unrelated writes",
+    () =>
+      Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        const savedKits = (scope: string) => {
+          const models = [
+            { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4", effort: "high" },
+            { instanceId: ProviderInstanceId.make("claude"), model: "claude-sonnet-4-6" },
+          ];
+          const kit = (role: string) => ({
+            instructions: `${scope} ${role} instructions.\nPreserve the complete saved kit.`,
+            skills: ["operations", `${scope}-${role}`],
+            models,
+          });
+          return {
+            promachos: kit("promachos"),
+            "computer-use": kit("computer-use"),
+            planner: kit("planner"),
+            researcher: { ...kit("researcher"), run: 2 },
+            designer: { ...kit("designer"), run: 2 },
+            roast: { ...kit("roast"), run: 3 },
+            reviewer: { ...kit("reviewer"), run: 2 },
+            judge: { ...kit("judge"), run: 2 },
+            worker: {
+              instructions: `${scope} worker instructions.`,
+              skills: ["operations", `${scope}-worker`],
+              lanes: {
+                easy: [
+                  {
+                    instanceId: ProviderInstanceId.make("codex"),
+                    model: "gpt-5.4-mini",
+                    effort: "low",
+                  },
+                ],
+                medium: models,
+                hard: [
+                  {
+                    instanceId: ProviderInstanceId.make("claude"),
+                    model: "claude-opus-4-6",
+                    effort: "high",
+                  },
+                  {
+                    instanceId: ProviderInstanceId.make("codex"),
+                    model: "gpt-5.4",
+                    effort: "xhigh",
+                  },
+                ],
+                ui: [{ instanceId: ProviderInstanceId.make("claude"), model: "claude-opus-4-6" }],
+              },
+            },
+          };
+        };
+        const opaque = {
+          prismRoles: savedKits("environment"),
+          wightModes: {
+            unlimited: { enabledAt: "2026-10-08T17:00:00.000Z", expiresAt: null },
+            timed: { enabledAt: "2026-10-08T17:00:00.000Z", expiresAt: 1_900_000_000_000 },
+            expired: { enabledAt: "2026-10-08T17:00:00.000Z", expiresAt: 0 },
+          },
+        };
+        const project = { ...opaque, prismRoles: savedKits("project"), defaultAutoPull: true };
+        yield* fs.writeFileString(
+          config.settingsPath,
+          JSON.stringify({
+            ...opaque,
+            autoUpdateProviders: true,
+            projectSettingsOverrides: { legacy: project },
+          }),
+        );
+        const initial = yield* service.getSettings;
+        assert.deepEqual(initial.prismRoles, opaque.prismRoles);
+        assert.deepEqual(initial.wightModes, opaque.wightModes);
+        assert.deepEqual(initial.projectSettingsOverrides[ProjectId.make("legacy")], project);
+        yield* service.updateSettings({ responseStreamingMode: "turn" });
+        const persisted = JSON.parse(yield* fs.readFileString(config.settingsPath));
+        assert.deepEqual(persisted.prismRoles, opaque.prismRoles);
+        assert.deepEqual(persisted.wightModes, opaque.wightModes);
+        assert.isTrue(persisted.autoUpdateProviders);
+        assert.deepEqual(persisted.projectSettingsOverrides.legacy, project);
+      }).pipe(Effect.provide(layerServerSettings())),
+  );
+
   it.effect("migrates saved token delivery to paragraph buffering without resetting settings", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
@@ -2212,6 +2327,183 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
     }).pipe(Effect.provide(layerServerSettings())),
   );
 
+  it.effect("rewrites whole-kit Prism project overrides once so unset roles inherit", () =>
+    Effect.gen(function* () {
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const codex = ProviderInstanceId.make("codex");
+      const sol = { instanceId: codex, model: "gpt-6.1-sol", effort: "medium" };
+      const grok = { instanceId: ProviderInstanceId.make("grok"), model: "grok-4.7" };
+      const luna = { instanceId: codex, model: "gpt-6-luna" };
+      // What earlier builds stored: every role filled in, one lane actually set.
+      // Those builds had no Run.
+      const legacyKits = Object.fromEntries(
+        Object.entries(
+          (yield* encodePrismRoleKits(DEFAULT_PRISM_ROLE_KITS)) as Record<
+            string,
+            Record<string, unknown>
+          >,
+        )
+          .filter(([role]) => role !== "computer-use")
+          // Builds before the ui lane stored only the three difficulty lanes.
+          .map(([role, { run: _run, ...kit }]) =>
+            role === "worker"
+              ? [role, { ...kit, lanes: { easy: [], medium: [], hard: [] } }]
+              : [role, kit],
+          ),
+      );
+      const tuned = ProjectId.make("project-tuned");
+      const untouched = ProjectId.make("project-untouched");
+      const lanes = ProjectId.make("project-lanes");
+      // Kits of roles removed since, as those builds stored them.
+      const removedKits = {
+        dispatcher: { instructions: "", skills: [], models: [grok] },
+        retry: { instructions: "", skills: [], models: [luna], enabled: true },
+        escalation: { instructions: "", skills: [], models: [], enabled: false },
+      };
+      yield* fileSystem.writeFileString(
+        serverConfig.settingsPath,
+        JSON.stringify({
+          projectSettingsFolded: true,
+          prismRoles: {
+            ...removedKits,
+            reviewer: { models: [sol] },
+            worker: { lanes: { hard: [sol] } },
+          },
+          projectSettingsOverrides: {
+            [tuned]: {
+              defaultAutoPull: true,
+              prismRoles: {
+                ...legacyKits,
+                ...removedKits,
+                promachos: { ...legacyKits.promachos, models: [grok] },
+                worker: { ...legacyKits.worker, lanes: { easy: [], medium: [luna], hard: [] } },
+              },
+            },
+            [untouched]: { prismRoles: { ...legacyKits, ...removedKits } },
+            // Saved before single lists: the medium lane is the reviewer's list.
+            [lanes]: { prismRoles: { reviewer: { lanes: { easy: [], medium: [luna] } } } },
+          },
+        }),
+      );
+
+      const settings = yield* serverSettings.getSettings;
+      assert.isTrue(settings.prismRoleOverridesPartial);
+      assert.deepEqual(settings.projectSettingsOverrides, {
+        [tuned]: {
+          defaultAutoPull: true,
+          prismRoles: { promachos: { models: [grok] }, worker: { lanes: { medium: [luna] } } },
+        },
+        [lanes]: { prismRoles: { reviewer: { models: [luna] } } },
+      });
+      const raw = yield* fileSystem.readFileString(serverConfig.settingsPath);
+      const persisted = yield* decodeServerSettingsJson(raw);
+      assert.deepEqual(persisted.projectSettingsOverrides, settings.projectSettingsOverrides);
+      for (const role of Object.keys(removedKits)) assert.notInclude(raw, `"${role}"`);
+      assert.deepEqual(persisted.prismRoles.reviewer.models, [sol]);
+      assert.deepEqual(persisted.prismRoles.worker.lanes.hard, [sol]);
+
+      // A later environment change reaches every role the project did not set.
+      const changed = yield* serverSettings.updateSettings({
+        prismRoles: {
+          reviewer: {
+            models: [grok],
+          },
+        },
+      });
+      const kits = resolveProjectSettings(changed, tuned).settings.prismRoles;
+      assert.deepEqual(kits.reviewer.models, [grok]);
+      assert.deepEqual(kits.worker.lanes, {
+        ...DEFAULT_PRISM_ROLE_KITS.worker.lanes,
+        medium: [luna],
+        hard: [sol],
+      });
+      assert.deepEqual(
+        resolveProjectSettings(changed, untouched).settings.prismRoles,
+        changed.prismRoles,
+      );
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
+  it.effect("persists sparse Spectrum settings and reloads project inheritance", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const project = ProjectId.make("project-spectrum-save");
+      const patch = yield* decodeServerSettingsPatch({
+        spectrum: { relayRounds: 4, turnsPerColor: 5 },
+        projectSettingsOverrides: { [project]: { spectrum: { mode: "free" } } },
+      });
+      const saved = yield* service.updateSettings(patch);
+      assert.deepEqual(saved.spectrum, {
+        slots: [],
+        white: null,
+        mode: "council",
+        relayRounds: 4,
+        turnsPerColor: 5,
+      });
+      const raw = JSON.parse(yield* fs.readFileString(config.settingsPath));
+      assert.deepEqual(raw.spectrum, { relayRounds: 4, turnsPerColor: 5 });
+      assert.deepEqual(raw.projectSettingsOverrides[project].spectrum, { mode: "free" });
+      const reloaded = yield* Effect.gen(function* () {
+        const fresh = yield* ServerSettingsModule.ServerSettingsService;
+        return yield* fresh.getSettings;
+      }).pipe(
+        Effect.provide(
+          Layer.fresh(ServerSettingsModule.layer).pipe(
+            Layer.provide(Layer.merge(ServerSecretStore.layer, ManagedPolicy.layerTest())),
+          ),
+        ),
+      );
+      assert.deepEqual(reloaded.spectrum, saved.spectrum);
+      assert.deepEqual(resolveProjectSettings(reloaded, project).settings.spectrum, {
+        ...saved.spectrum,
+        mode: "free",
+      });
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
+  it.effect("rewrites a saved White slot label once into White's own Colors", () =>
+    Effect.gen(function* () {
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const sol = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };
+      const opus = {
+        instanceId: ProviderInstanceId.make("claude"),
+        model: "opus-5.5",
+        effort: "high",
+      };
+      const slots = [
+        { label: "White", primary: sol, fallbacks: [] },
+        { label: "Red", primary: opus, fallbacks: [sol] },
+      ];
+      const project = ProjectId.make("project-spectrum");
+      yield* fileSystem.writeFileString(
+        serverConfig.settingsPath,
+        JSON.stringify({
+          projectSettingsFolded: true,
+          spectrum: { slots, white: "Red", mode: "free" },
+          projectSettingsOverrides: { [project]: { spectrum: { slots, white: "White" } } },
+        }),
+      );
+
+      const settings = yield* serverSettings.getSettings;
+      assert.deepEqual(settings.spectrum.white, { primary: opus, fallbacks: [sol] });
+      assert.deepEqual(settings.spectrum.slots, slots);
+      assert.equal(settings.spectrum.mode, "free");
+      const raw = JSON.parse(yield* fileSystem.readFileString(serverConfig.settingsPath));
+      assert.deepEqual(raw.spectrum.white, { primary: opus, fallbacks: [sol] });
+      assert.deepEqual(raw.spectrum.slots, slots);
+      assert.deepEqual(raw.projectSettingsOverrides[project].spectrum.white, {
+        primary: sol,
+        fallbacks: [],
+      });
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
   it.effect("leaves an unreadable settings.json untouched instead of folding over it", () =>
     Effect.gen(function* () {
       const serverConfig = yield* ServerConfig.ServerConfig;
@@ -2301,6 +2593,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))(
           JSON.stringify({
             storageCleanup: { logsAfterDays: 30, browserArtifactsAfterDays: 7 },
             textGenerationModelSelection: selection,
+            automaticGitFetchInterval: 20_000,
           }),
         );
 
@@ -2317,6 +2610,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))(
         // Model selections are saved whole, never as the fields that differ from the policy's.
         assert.deepEqual(stored.textGenerationModelSelection, selection);
         assert.deepEqual(stored.defaultModelSelection, chosenModel);
+        assert.equal(stored.automaticGitFetchInterval, 20_000);
         // The switch the server derives from the policy's idle compaction stays out of the file.
         assert.notProperty(stored, "compactIdleThreads");
       }).pipe(
@@ -2330,6 +2624,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))(
                 locked: false,
               },
               "textGenerationModelSelection.model": { value: "managed", locked: false },
+              automaticGitFetchInterval: { value: 20_000, locked: false },
               defaultModelSelection: {
                 value: { instanceId: "codex", model: "gpt-managed" },
                 locked: false,
