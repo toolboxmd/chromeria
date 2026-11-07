@@ -1,4 +1,20 @@
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import { bareHome } from "@t3tools/provider-core/server/BareProviderRuntime";
+import {
+  prepareGrokBare,
+  GROK_BARE_TOOLS,
+  GROK_BARE_COMMANDS,
+  grokBareSessionMeta,
+  grokBareHistoryEvidence,
+} from "./GrokBareRuntime.ts";
+import {
+  bareReceipt,
+  bareInventoryEvidence,
+  namesT3Mcp,
+} from "@t3tools/provider-core/server/bareLaunch";
+import * as Deferred from "effect/Deferred";
+import * as Option from "effect/Option";
 import {
   XAiPromptFailureText,
   isXAiTaskCompletedWakeNotification,
@@ -6,6 +22,7 @@ import {
 } from "./xaiAcpExtension.ts";
 import { discoverGrokSkills, leadingGrokSkillMention } from "./skills.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { resolveSelfInvocation, type SelfInvocation } from "@t3tools/shared/nodeRuntime";
 import {
   defaultInstanceIdForDriver,
@@ -14,7 +31,8 @@ import {
   type RuntimeMode,
 } from "@t3tools/contracts";
 import { GrokSettings } from "../settings.ts";
-import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as Digest from "effect/crypto/Digest";
+import * as Hex from "effect/encoding/Hex";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -29,6 +47,7 @@ import { makeAcpNativeLoggerFactory } from "@t3tools/provider-acp/server/nativeL
 import {
   applyGrokAcpModelSelection,
   currentGrokModelIdFromSessionSetup,
+  currentGrokReasoningEffortFromSessionSetup,
   grokApprovalOptions,
   makeGrokAcpRuntime,
   resolveGrokAcpBaseModelId,
@@ -44,7 +63,8 @@ import {
   extractXAiKilledBackgroundTasks,
   extractXAiMonitorTaskId,
   xAiBackgroundShellTaskId,
-  isXAiPersistentMonitor,
+  isXAiNonBlockingBackgroundTool,
+  isXAiMonitorTool,
   extractXAiExitPlanMarkdown,
   registerXAiSubagentFinished,
   makeXAiAskUserQuestionCancelledResponse,
@@ -87,7 +107,7 @@ export const GROK_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(GROK_DRIVER_K
 const DEFAULT_GROK_SETTINGS = Schema.decodeSync(GrokSettings)({});
 const isAcpRequestError = Schema.is(EffectAcpErrors.AcpRequestError);
 
-const GrokProviderCapabilitiesV2 = {
+export const GrokProviderCapabilitiesV2 = {
   ...AcpProviderCapabilitiesV2,
   sessions: {
     ...AcpProviderCapabilitiesV2.sessions,
@@ -230,7 +250,8 @@ export function makeGrokAcpAdapterFlavor(
     runtimeHarness: "Grok",
     capabilities: GrokProviderCapabilitiesV2,
     interruptPromptOnCancel: false,
-    // User Stop restarts the process group; steering cancels softly to preserve background work.
+    // Stop and explicit cut-ins (requestRuntimeRestart) restart the process group so background
+    // tasks end too; routine steering cancels softly to preserve background work.
     restartRuntimeAfterInterrupt: true,
     terminateRuntimeProcessGroupOnInterrupt: true,
     // Settled Grok sessions accept concurrent prompts; skip cancel to preserve background subagents.
@@ -274,18 +295,88 @@ export function makeGrokAcpAdapterFlavor(
       runtime,
       startResult,
       modelSelection,
+      previousSelection,
     }) {
       const legacy = startResult.initializeResult.protocolVersion === 1;
       const options = legacy ? [] : yield* runtime.getConfigOptions;
       const configuredModel = findModelConfigOption(options)?.currentValue;
+      // The composer stores effort as `reasoningEffort`, but Grok exposes it as the `thought_level`
+      // option, so the id-matched loop never applies it. Protocol 1 takes it as `session/set_model`
+      // metadata; later protocols write the session's thought-level option.
+      const effortOption = options.find(
+        (option) => option.category === "thought_level" && option.type === "select",
+      );
+      const configuredEffort = effortOption?.currentValue;
+      const currentModelId = legacy
+        ? currentGrokModelIdFromSessionSetup(startResult.sessionSetupResult)
+        : typeof configuredModel === "string"
+          ? configuredModel
+          : undefined;
       return yield* applyGrokAcpModelSelection({
         runtime: legacy
           ? runtime
-          : { setSessionModel: (model) => runtime.setModel(model).pipe(Effect.as({})) },
-        currentModelId: legacy
-          ? currentGrokModelIdFromSessionSetup(startResult.sessionSetupResult)
-          : configuredModel,
+          : {
+              setSessionModel: Effect.fn("GrokAdapter.setSessionModel")(function* (model, meta) {
+                if (model !== currentModelId) {
+                  yield* runtime.setModel(model);
+                }
+                const effort = meta?.reasoningEffort;
+                if (effortOption === undefined || typeof effort !== "string") {
+                  return {};
+                }
+                // A model switch can change which efforts the session offers, so
+                // check the live option and, like the generic option loop, skip a
+                // value it no longer advertises or rejects instead of failing the
+                // session open; the agent's default applies.
+                const liveOption = (yield* runtime.getConfigOptions).find(
+                  (option) => option.id === effortOption.id,
+                );
+                if (
+                  liveOption === undefined ||
+                  (liveOption.type === "select" &&
+                    !liveOption.options
+                      .flatMap((entry) =>
+                        "value" in entry
+                          ? [entry.value]
+                          : entry.options.map((choice) => choice.value),
+                      )
+                      .includes(effort))
+                ) {
+                  yield* Effect.logWarning(
+                    "Grok session does not offer the requested reasoning effort",
+                    { optionId: effortOption.id, value: effort },
+                  );
+                  return {};
+                }
+                yield* runtime.setConfigOption(effortOption.id, effort).pipe(
+                  Effect.catchTags({
+                    AcpRequestError: (error) =>
+                      Effect.logWarning("Grok session rejected the requested reasoning effort", {
+                        optionId: effortOption.id,
+                        value: effort,
+                        detail: error.message,
+                      }),
+                  }),
+                );
+                return {};
+              }),
+            },
+        currentModelId,
+        // Protocol 1 has no live effort state. After a selection ran, baseline on its effort; an
+        // effort-free selection leaves the live value unknown, so a requested effort is sent rather than
+        // compared with stale setup metadata.
+        currentReasoningEffort: legacy
+          ? previousSelection === null
+            ? currentGrokReasoningEffortFromSessionSetup(startResult.sessionSetupResult)
+            : getModelSelectionStringOptionValue(previousSelection, "reasoningEffort")
+          : typeof configuredEffort === "string"
+            ? configuredEffort
+            : undefined,
         requestedModelId: resolveGrokAcpBaseModelId(modelSelection.model),
+        requestedReasoningEffort: getModelSelectionStringOptionValue(
+          modelSelection,
+          "reasoningEffort",
+        ),
         mapError: (cause) => cause,
       });
     }),
@@ -333,7 +424,24 @@ export function makeGrokAcpAdapterFlavor(
       ...extractXAiBackgroundTaskCompletion(toolCall),
       ...extractXAiKilledBackgroundTasks(toolCall),
     ],
-    isPersistentBackgroundTool: isXAiPersistentMonitor,
+    isPersistentBackgroundTool: isXAiNonBlockingBackgroundTool,
+    backgroundToolWakePolicy: (toolCall) =>
+      isXAiMonitorTool(toolCall) ? "progress" : "completion",
+    extractNativePromptId: (notification) => {
+      const update = notification.update;
+      if (update.sessionUpdate !== "user_message_chunk") return undefined;
+      const meta = update._meta;
+      const index = meta?.promptIndex;
+      if (
+        meta?.syntheticPrompt === true ||
+        meta?.hideFromScrollback === true ||
+        typeof index !== "number" ||
+        !Number.isSafeInteger(index) ||
+        index < 0
+      )
+        return undefined;
+      return `prompt:${index}`;
+    },
     isProviderWakeNotification: isXAiTaskCompletedWakeNotification,
     deferFinalizeForBackgroundWork: true,
     enablePostSettleContinuation: true,
@@ -341,12 +449,22 @@ export function makeGrokAcpAdapterFlavor(
   };
 }
 
+const decodeBareTools = Schema.decodeUnknownOption(
+  Schema.Struct({ _meta: Schema.Struct({ tools: Schema.Array(Schema.String) }) }),
+);
+
 export const makeGrokAdapterV2 = Effect.fn("makeGrokAdapterV2")(function* (
   options: GrokAdapterV2Options,
 ) {
-  return yield* makeAcpAdapterV2({
+  const context = yield* Effect.context<Effect.Services<ReturnType<typeof makeAcpAdapterV2>>>();
+  const host = yield* ProviderHost.ProviderHost;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const crypto = yield* Digest.Digest;
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const flavor = makeGrokAcpAdapterFlavor(options, yield* HostProcess.HomeDirectory);
+  const normal = yield* makeAcpAdapterV2({
     instanceId: options.instanceId,
-    flavor: makeGrokAcpAdapterFlavor(options, yield* HostProcess.HomeDirectory),
+    flavor,
     selfInvocation: options.selfInvocation,
     ...(options.nativeLogging === undefined ? {} : { nativeLogging: options.nativeLogging }),
     ...(options.continuationRequests === undefined
@@ -354,9 +472,195 @@ export const makeGrokAdapterV2 = Effect.fn("makeGrokAdapterV2")(function* (
       : { continuationRequests: options.continuationRequests }),
     ...(options.testHooks === undefined ? {} : { testHooks: options.testHooks }),
   });
+  return ProviderAdapter.ProviderAdapterV2.of({
+    ...normal,
+    bareSupport: Effect.succeed({ supported: true }),
+    openSession: Effect.fn("ProviderAdapter.ProviderAdapterV2.openSession")((input) =>
+      input.runtimePolicy.bare === undefined
+        ? normal.openSession(input)
+        : Effect.gen(function* () {
+            const bare = input.runtimePolicy.bare!;
+            if (namesT3Mcp(bare))
+              return yield* new ProviderAdapter.ProviderAdapterOpenSessionError({
+                driver: GROK_PROVIDER,
+                providerSessionId: input.providerSessionId,
+                cause:
+                  "Grok bare named MCP needs search_tool/use_tool; the exact attach path is unsupported.",
+              });
+            const threadHash = Hex.encode(
+              yield* crypto.digest(Digest.sha256, new TextEncoder().encode(input.threadId)).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapter.ProviderAdapterOpenSessionError({
+                      driver: GROK_PROVIDER,
+                      providerSessionId: input.providerSessionId,
+                      cause,
+                    }),
+                ),
+              ),
+            );
+            const home = `${bareHome(host.paths.stateDir, options.instanceId, "grok")}/thread-${threadHash}`;
+            const cwd = input.runtimePolicy.cwd ?? host.paths.cwd;
+            let gate = yield* Deferred.make<void, EffectAcpErrors.AcpError>();
+            let metadataError: string | undefined;
+            let evidence: ReadonlyArray<import("@t3tools/contracts").BareEvidence> = [];
+            let plannedSkills: ReadonlyArray<string> = [];
+            let plannedPlugins: ReadonlyArray<string> = [];
+            const fail = (reason: string) =>
+              new EffectAcpErrors.AcpRequestError({ code: -32602, errorMessage: reason });
+            const bareFlavor: AcpAdapterV2Flavor = {
+              ...flavor,
+              beforePrompt: Effect.suspend(() =>
+                Deferred.await(gate).pipe(
+                  Effect.timeoutOption("30 seconds"),
+                  Effect.flatMap((ready) =>
+                    Option.isNone(ready)
+                      ? Effect.fail(
+                          fail("Grok bare is missing before-prompt tool and command metadata."),
+                        )
+                      : metadataError === undefined
+                        ? Effect.void
+                        : Effect.fail(fail(metadataError)),
+                  ),
+                ),
+              ),
+              onAvailableCommandsUpdate: Effect.fn("GrokAdapter.onAvailableCommandsUpdate")(
+                function* (commands, notification) {
+                  const decoded = decodeBareTools(notification?.update);
+                  const tools = Option.isSome(decoded) ? decoded.value._meta.tools : [];
+                  const names = commands.map((command) => command.name);
+                  const source = `Grok available_commands_update ${notification?.sessionId ?? "unknown"}; before session/prompt`;
+                  evidence = [
+                    bareInventoryEvidence("tools", tools, GROK_BARE_TOOLS, source),
+                    bareInventoryEvidence(
+                      "slash_commands",
+                      names,
+                      GROK_BARE_COMMANDS,
+                      source,
+                      true,
+                    ),
+                    ...evidence.filter(
+                      (entry) => entry.category !== "tools" && entry.category !== "slash_commands",
+                    ),
+                  ];
+                  const extras = [
+                    ...tools.filter(
+                      (name) => !GROK_BARE_TOOLS.includes(name as (typeof GROK_BARE_TOOLS)[number]),
+                    ),
+                    ...names.filter(
+                      (name) =>
+                        !GROK_BARE_COMMANDS.includes(name as (typeof GROK_BARE_COMMANDS)[number]),
+                    ),
+                  ];
+                  const missing = [
+                    ...GROK_BARE_TOOLS.filter((name) => !tools.includes(name)),
+                    ...GROK_BARE_COMMANDS.filter((name) => !names.includes(name)),
+                  ];
+                  metadataError =
+                    Option.isNone(decoded) || extras.length > 0 || missing.length > 0
+                      ? `Grok bare inventory mismatch: unexpected ${extras.join(", ") || "none"}; missing ${missing.join(", ") || "none"}.`
+                      : undefined;
+                  yield* Deferred.succeed(gate, undefined);
+                },
+              ),
+              makeRuntime: Effect.fn("GrokAdapter.makeRuntime")(function* (runtimeInput) {
+                gate = yield* Deferred.make<void, EffectAcpErrors.AcpError>();
+                metadataError = undefined;
+                const prepared = yield* prepareGrokBare({
+                  home,
+                  cwd,
+                  environment: options.environment,
+                  binary: options.settings.binaryPath || "grok",
+                }).pipe(
+                  Effect.provideService(FileSystem.FileSystem, fileSystem),
+                  Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+                  Effect.mapError((cause) =>
+                    fail(cause instanceof Error ? cause.message : "Grok bare discovery failed."),
+                  ),
+                );
+                plannedSkills = prepared.skills;
+                plannedPlugins = prepared.plugins;
+                evidence = [
+                  {
+                    category: "skills",
+                    status: "observed_clean",
+                    identities: prepared.observedDisabledSkills,
+                    source:
+                      "native grok inspect; observed disabled identities, not hook execution proof",
+                  },
+                ];
+                if (options.makeRuntime !== undefined)
+                  return yield* options.makeRuntime(runtimeInput);
+                const { runtimePolicy, ...nativeInput } = runtimeInput;
+                return yield* makeGrokAcpRuntime({
+                  ...nativeInput,
+                  grokSettings: options.settings,
+                  environment: prepared.environment,
+                  runtimeMode: grokLaunchRuntimeMode(runtimePolicy),
+                  bare: true,
+                  sessionMeta: grokBareSessionMeta(
+                    grokLaunchRuntimeMode(runtimePolicy) === "full-access",
+                  ),
+                });
+              }),
+            };
+            const adapter = yield* makeAcpAdapterV2({
+              instanceId: options.instanceId,
+              flavor: bareFlavor,
+              selfInvocation: options.selfInvocation,
+              ...(options.nativeLogging === undefined
+                ? {}
+                : { nativeLogging: options.nativeLogging }),
+              ...(options.testHooks === undefined ? {} : { testHooks: options.testHooks }),
+            }).pipe(Effect.provide(context));
+            const runtime = yield* adapter.openSession(input);
+            return {
+              ...runtime,
+              getBareReceipt: Effect.fn("GrokAdapter.getBareReceipt")(function* (
+                thread: import("@t3tools/contracts").OrchestrationV2ProviderThread,
+              ) {
+                const sessionId = thread.nativeThreadRef?.nativeId ?? null;
+                const history =
+                  sessionId === null
+                    ? []
+                    : yield* grokBareHistoryEvidence(home, cwd, sessionId).pipe(
+                        Effect.provideService(FileSystem.FileSystem, fileSystem),
+                        Effect.orElseSucceed(() => []),
+                      );
+                return bareReceipt({
+                  driver: GROK_PROVIDER,
+                  bare,
+                  mode: input.runtimePolicy.runtimeMode,
+                  effective: `Grok ${grokLaunchRuntimeMode(input.runtimePolicy)}`,
+                  controls: [
+                    "own GROK_HOME and --no-leader",
+                    "systemPromptOverride='.'",
+                    "agentProfile.disallowedTools (14)",
+                    "compat/memory/workflows/subagents off",
+                    ...plannedSkills.map((name) => `skills.disabled:${name}`),
+                    ...plannedPlugins.map((name) => `plugins.disabled:${name}`),
+                  ],
+                  retained: [
+                    "system text '.'",
+                    "native user-info/environment/rules block",
+                    "native task wrapper",
+                    "native title/helper requests",
+                    `native commands: ${GROK_BARE_COMMANDS.join(", ")}`,
+                    "six native tool schemas",
+                  ],
+                  root: `${home}/sessions`,
+                  sessionId,
+                  evidence: [...evidence, ...history],
+                });
+              }),
+            };
+          }),
+    ),
+  });
 });
 
 export type GrokAdapterV2DriverEnv =
+  | Digest.Digest
   | ChildProcessSpawner.ChildProcessSpawner
   | SecureRandom.SecureRandom
   | FileSystem.FileSystem
