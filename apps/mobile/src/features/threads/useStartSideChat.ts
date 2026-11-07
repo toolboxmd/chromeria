@@ -5,11 +5,12 @@ import {
   squashAtomCommandFailure,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
-import { MessageId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
+import { MessageId, ThreadId, purposeSelectionOf, type ScopedThreadRef } from "@t3tools/contracts";
 
 import * as Dialog from "../../components/ui/Dialog";
 import { uuidv4 } from "../../lib/uuid";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { serverEnvironment } from "../../state/server";
 import { environmentThreadShells, threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { waitForThreadShell } from "./threadForkNavigation";
@@ -74,6 +75,19 @@ export function useStartSideChat() {
       environmentId: source.environmentId,
       input: {
         threadId: targetThreadId,
+        ...(appAtomRegistry
+          .get(serverEnvironment.configValueAtom(source.environmentId))
+          ?.environment.capabilities.executionPurposeVersions?.includes(1)
+          ? {
+              purposeIntent: {
+                version: 1 as const,
+                intent: {
+                  type: "selection" as const,
+                  expectedRevision: purposeSelectionOf(sideChat).revision,
+                },
+              },
+            }
+          : {}),
         message: {
           messageId: MessageId.make(uuidv4()),
           role: "user",
