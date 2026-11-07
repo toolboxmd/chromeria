@@ -1,12 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import type {
-  EnvironmentId,
-  OrchestrationV2ThreadShell,
-  Project,
-  ThreadId,
-} from "@t3tools/contracts";
-import { ProviderInstanceId, RuntimeRequestId } from "@t3tools/contracts";
+import type { OrchestrationV2ThreadShell, Project, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProviderInstanceId, RuntimeRequestId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
 import { projectThreadAwarenessV2 } from "./agentAwareness.ts";
@@ -47,6 +42,22 @@ describe("projectThreadAwarenessV2", () => {
     updatedAt,
     ...overrides,
   });
+
+  it.each([
+    ["approval", "waiting_for_approval"],
+    ["user_input", "waiting_for_input"],
+  ] as const)(
+    "publishes remote %s attention on the source parent",
+    (remotePendingRequest, phase) => {
+      expect(
+        projectThreadAwarenessV2({
+          environmentId: EnvironmentId.make("source-only-A"),
+          project,
+          thread: { ...v2Thread({ status: "completed" }), remotePendingRequest },
+        }),
+      ).toMatchObject({ phase, threadId: "thread-2", deepLink: "/threads/source-only-A/thread-2" });
+    },
+  );
 
   it("does not announce completion after a manual stop", () => {
     const input = {

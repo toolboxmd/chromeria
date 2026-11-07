@@ -16,6 +16,7 @@ import {
 } from "@t3tools/client-runtime/preview/server-browser-stream";
 import type {
   EnvironmentId,
+  PreviewViewerResource,
   PreviewStreamHostSetup,
   PreviewViewportSetting,
 } from "@t3tools/contracts";
@@ -39,7 +40,7 @@ import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { toastManager } from "~/components/ui/toast";
 import { cn } from "~/lib/utils";
-import { refreshPreviewStreamAccess, usePreviewStreamAccess } from "~/state/previewStream";
+import { usePreviewStreamAccessState } from "~/state/previewStream";
 import { observeResize } from "~/lib/observeResize";
 
 export interface ServerBrowserHandle {
@@ -130,10 +131,20 @@ function offerDownload(download: PreviewStreamDownload) {
       children: "Save",
       onClick: () => {
         toastManager.close(id);
-        const anchor = document.createElement("a");
-        anchor.href = download.url;
-        anchor.download = download.fileName;
-        anchor.click();
+        void (async () => {
+          const url =
+            download.resolveUrl === undefined ? download.url : await download.resolveUrl();
+          const anchor = document.createElement("a");
+          anchor.href = url;
+          anchor.download = download.fileName;
+          anchor.click();
+        })().catch((cause: unknown) =>
+          toastManager.add({
+            type: "error",
+            title: "Could not save the download",
+            description: cause instanceof Error ? cause.message : undefined,
+          }),
+        );
       },
     },
   });
@@ -141,6 +152,7 @@ function offerDownload(download: PreviewStreamDownload) {
 
 export function ServerBrowserSurface(props: {
   readonly environmentId: EnvironmentId;
+  readonly resource?: PreviewViewerResource;
   readonly threadId: string;
   readonly tabId: string;
   readonly visible: boolean;
@@ -149,7 +161,8 @@ export function ServerBrowserSurface(props: {
   readonly onFirstFrame?: () => void;
   readonly onViewport?: (viewport: PreviewStreamViewport) => void;
   readonly onControl?: (control: PreviewStreamControl | null) => void;
-  readonly onPopup?: (tabId: string) => void;
+  /** The page opened a new tab from this viewer's click; the viewer should switch to it. */
+  readonly onPopup?: (tabId: string, resource?: PreviewViewerResource) => void;
   readonly className?: string;
   readonly pdfUrl?: string | null;
   readonly ref?: Ref<ServerBrowserHandle>;
@@ -169,6 +182,13 @@ export function ServerBrowserSurface(props: {
     pdfUrl = null,
     ref,
   } = props;
+  const unauthorizedRef = useRef(0);
+  const [accessDenied, setAccessDenied] = useState(false);
+  const {
+    access,
+    error: accessError,
+    refresh: refreshAccess,
+  } = usePreviewStreamAccessState(environmentId, props.resource, visible, visible && !accessDenied);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const keySentRef = useRef(false);
@@ -194,9 +214,6 @@ export function ServerBrowserSurface(props: {
       }),
     );
   };
-  const unauthorizedRef = useRef(0);
-  const [accessDenied, setAccessDenied] = useState(false);
-  const access = usePreviewStreamAccess(environmentId, { retry: visible && !accessDenied });
   const [hostSetup, setHostSetup] = useState<PreviewStreamHostSetup | null>(null);
   const pendingMoveRef = useRef<MouseInput | null>(null);
   const pendingWheelRef = useRef<WheelInput | null>(null);
@@ -218,7 +235,11 @@ export function ServerBrowserSurface(props: {
     onViewport?.(viewport),
   );
   const controlChanged = useEffectEvent((next: PreviewStreamControl | null) => onControl?.(next));
-  const popupOpened = useEffectEvent((popupTabId: string) => onPopup?.(popupTabId));
+  const popupOpened = useEffectEvent((popupTabId: string, resource?: PreviewViewerResource) =>
+    onPopup?.(popupTabId, resource),
+  );
+  // Frame cap in device px, fixed per socket. It grows with the surface and
+  // never shrinks, so only outgrowing it reconnects.
   const [cap, setCap] = useState<{ width: number; height: number } | null>(null);
 
   // Keep clearInput stable: a new identity reconnects the stream.
@@ -374,7 +395,14 @@ export function ServerBrowserSurface(props: {
       firstFrame();
     });
     const client = createPreviewStreamClient(
-      { access, threadId, tabId, maxWidth: cap.width, maxHeight: cap.height },
+      {
+        access,
+        threadId,
+        tabId,
+        ...(props.resource === undefined ? {} : { resource: props.resource }),
+        maxWidth: cap.width,
+        maxHeight: cap.height,
+      },
       {
         onFrame: (jpeg) => {
           unauthorizedRef.current = 0;
@@ -398,6 +426,8 @@ export function ServerBrowserSurface(props: {
         },
         onClipboard: (text) => void copyPageText(text),
         onDownload: offerDownload,
+        onInputRejected: (description) =>
+          toastManager.add({ type: "error", title: "Browser input refused", description }),
         onPopup: popupOpened,
         onFileChooser: setFileChooser,
         onViewport: (viewport) => {
@@ -438,7 +468,7 @@ export function ServerBrowserSurface(props: {
             return;
           }
           refreshTimer = setTimeout(
-            () => refreshPreviewStreamAccess(environmentId),
+            () => refreshAccess(),
             refusals === 1 ? 0 : 1_000 * 2 ** (refusals - 1),
           );
         },
@@ -460,7 +490,8 @@ export function ServerBrowserSurface(props: {
     accessDenied,
     cap,
     clearInput,
-    environmentId,
+    props.resource,
+    refreshAccess,
     followSize,
     hostSetup,
     tabId,
@@ -908,11 +939,11 @@ export function ServerBrowserSurface(props: {
           </Button>
         </div>
       ) : null}
-      {visible && accessDenied ? (
+      {visible && (accessDenied || accessError !== null) ? (
         // The page can be invisible beneath an empty or unreachable state; reconnect must remain reachable.
         <div className="visible absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-background p-3 text-center">
           <p role="alert" className="text-xs text-muted-foreground">
-            Browser connection was refused.
+            {accessError ?? "Browser connection was refused."}
           </p>
           <Button
             variant="outline"
@@ -920,7 +951,7 @@ export function ServerBrowserSurface(props: {
             onClick={() => {
               unauthorizedRef.current = 0;
               setAccessDenied(false);
-              refreshPreviewStreamAccess(environmentId);
+              refreshAccess();
             }}
           >
             Reconnect
