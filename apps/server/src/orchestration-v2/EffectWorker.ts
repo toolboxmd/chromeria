@@ -1,3 +1,6 @@
+import { executionPurposeOf } from "@t3tools/contracts";
+import { PeerDispatchAuthority } from "../peer/peerEffectAuthority.ts";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
 import { CommandId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -28,6 +31,7 @@ import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationServic
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
+import { RESTART_CUT_REASONS } from "@t3tools/shared/restartCut";
 
 export class OrchestrationEffectExecutionError extends Schema.TaggedError<OrchestrationEffectExecutionError>()(
   "OrchestrationEffectExecutionError",
@@ -106,7 +110,15 @@ export const layerExecutor: Layer.Layer<
               Effect.tapError(() =>
                 willRetry
                   ? Effect.void
-                  : threads.recoverDelegatedTask(effect.threadId, sourceRunId),
+                  : threads
+                      .recordRestartCutDecline(
+                        effect.threadId,
+                        sourceRunId,
+                        RESTART_CUT_REASONS.EFFECT_FAILED,
+                      )
+                      .pipe(
+                        Effect.andThen(threads.recoverDelegatedTask(effect.threadId, sourceRunId)),
+                      ),
               ),
               Effect.mapError(
                 (cause) =>
@@ -157,6 +169,9 @@ export const layerExecutor: Layer.Layer<
               .interrupt({
                 threadId: effect.threadId,
                 providerSessionId: request.providerSessionId,
+                ...(request.replacementProviderSessionId === undefined
+                  ? {}
+                  : { replacementProviderSessionId: request.replacementProviderSessionId }),
                 providerThreadId: request.providerThreadId,
                 providerTurnId: request.providerTurnId,
                 ...(request.subagent === undefined
@@ -187,6 +202,7 @@ export const layerExecutor: Layer.Layer<
                 Effect.catchIf(
                   (cause) =>
                     request.subagent === undefined &&
+                    request.replacementProviderSessionId === undefined &&
                     isNonRetryableProviderTurnControlFailure(
                       request.type,
                       Cause.pretty(Cause.fail(cause)),
@@ -285,6 +301,15 @@ export const layerExecutor: Layer.Layer<
                     // Reuse message ids and receipts so retries cannot duplicate messages or follow-ups.
                     yield* threads
                       .dispatch({
+                        purposeSource: {
+                          version: 1,
+                          scope: executionPurposeOf(run).scope,
+                          provenance: {
+                            type: "source_run",
+                            threadId: effect.threadId,
+                            runId: run.id,
+                          },
+                        },
                         type: "message.dispatch",
                         commandId: CommandId.make(`command:steer-follow-up:${effect.id}`),
                         threadId: effect.threadId,
@@ -339,41 +364,54 @@ export const layerExecutor: Layer.Layer<
                     }),
                 ),
               );
-          case "provider-turn.restart":
+          case "provider-turn.restart": {
+            const restartRequest = effect.request;
             return providerTurnControl
               .interruptAndAwaitTerminal({
                 threadId: effect.threadId,
-                providerSessionId: effect.request.providerSessionId,
-                providerThreadId: effect.request.providerThreadId,
-                providerTurnId: effect.request.providerTurnId,
-                interruptedAttemptId: effect.request.interruptedAttemptId,
-                ...(effect.request.sessionTransition?.type === "replace"
+                providerSessionId: restartRequest.providerSessionId,
+                providerThreadId: restartRequest.providerThreadId,
+                providerTurnId: restartRequest.providerTurnId,
+                interruptedAttemptId: restartRequest.interruptedAttemptId,
+                ...(restartRequest.interruption === undefined
+                  ? {}
+                  : { interruption: restartRequest.interruption }),
+                ...(restartRequest.sessionTransition?.type === "replace"
                   ? {
                       replacementProviderSessionId:
-                        effect.request.sessionTransition.replacementProviderSessionId,
+                        restartRequest.sessionTransition.replacementProviderSessionId,
                     }
                   : {}),
               })
               .pipe(
                 Effect.andThen(
-                  effect.request.sessionTransition?.type === "replace"
+                  restartRequest.sessionTransition?.type === "replace"
                     ? providerSessions.detach({
-                        providerSessionId: effect.request.providerSessionId,
+                        providerSessionId: restartRequest.providerSessionId,
                         threadId: effect.threadId,
                         detail: "Selection change requires a provider session restart.",
                       })
-                    : effect.request.sessionTransition?.type === "detach"
+                    : restartRequest.sessionTransition?.type === "detach"
                       ? providerSessions.detach({
-                          providerSessionId: effect.request.providerSessionId,
+                          providerSessionId: restartRequest.providerSessionId,
                           threadId: effect.threadId,
                           detail: "Provider thread handoff replaced this session binding.",
                         })
                       : Effect.void,
                 ),
+                Effect.tapError((cause) =>
+                  willRetry
+                    ? Effect.void
+                    : providerTurnStart.settleUnstartedRun({
+                        threadId: effect.threadId,
+                        runId: restartRequest.runId,
+                        cause,
+                      }),
+                ),
                 Effect.andThen(
                   providerTurnStart.start({
                     threadId: effect.threadId,
-                    runId: effect.request.runId,
+                    runId: restartRequest.runId,
                     willRetry,
                   }),
                 ),
@@ -381,11 +419,12 @@ export const layerExecutor: Layer.Layer<
                   (cause) =>
                     new OrchestrationEffectExecutionError({
                       effectId: effect.id,
-                      effectType: effect.request.type,
+                      effectType: restartRequest.type,
                       cause,
                     }),
                 ),
               );
+          }
           case "runtime-request.respond": {
             const requestId = effect.request.requestId;
             return runtimeRequests
@@ -561,6 +600,7 @@ export const layerExecutor: Layer.Layer<
                 threadId: effect.threadId,
                 commandId: effect.commandId,
                 reason: effect.request.reason,
+                forkRetirementStop: effect.request.forkRetirementStop,
               })
               .pipe(
                 Effect.mapError(
@@ -645,6 +685,7 @@ export const layerWithOptions = (
     Effect.gen(function* () {
       const outbox = yield* EffectOutbox.EffectOutboxV2;
       const executor = yield* OrchestrationEffectExecutorV2;
+      const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
       const workerId = options.workerId ?? `orchestration-v2:${process.pid}`;
       const maxAttempts = Math.max(1, options.maxAttempts ?? 5);
       const wasCancelled = (effectId: string) =>
@@ -779,12 +820,66 @@ export const layerWithOptions = (
               return true;
             }
             return false;
-          }).pipe(Effect.onError((cause) => requeueClaim(effect, cause)));
+          }).pipe(
+            Effect.onError((cause) =>
+              requeueClaim(effect, cause).pipe(
+                Effect.ensuring(outbox.clearCancellation(effect.id)),
+              ),
+            ),
+          );
           if (cancelledBeforeExecution) return true;
 
-          const execution = executor
-            .execute(effect, { willRetry: effect.attemptCount < maxAttempts })
-            .pipe(boundExecution(effect), Effect.as("executed" as const));
+          const authorized =
+            Option.isSome(authority) &&
+            [
+              "provider-turn.start",
+              "provider-runtime.continue",
+              "provider-turn.steer",
+              "provider-turn.restart",
+              "runtime-request.respond",
+              "provider-thread.rollback",
+            ].includes(effect.request.type)
+              ? authority.value.checkEffect(effect.id, effect.threadId).pipe(
+                  Effect.map((record) => record?.id),
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationEffectExecutionError({
+                        effectId: effect.id,
+                        effectType: effect.request.type,
+                        cause,
+                      }),
+                  ),
+                )
+              : Effect.undefined;
+          const stopOwner =
+            Option.isSome(authority) &&
+            ["provider-turn.interrupt", "provider-session.detach", "delegated-tasks.stop"].includes(
+              effect.request.type,
+            )
+              ? authority.value.authorizeStopEffect(effect.id, effect.threadId).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationEffectExecutionError({
+                        effectId: effect.id,
+                        effectType: effect.request.type,
+                        cause,
+                      }),
+                  ),
+                )
+              : Effect.undefined;
+          const execution = authorized.pipe(
+            Effect.flatMap((executionOwner) =>
+              stopOwner.pipe(
+                Effect.flatMap((owner) =>
+                  executor
+                    .execute(effect, { willRetry: effect.attemptCount < maxAttempts })
+                    .pipe(Effect.provideService(PeerDispatchAuthority, owner ?? executionOwner)),
+                ),
+              ),
+            ),
+            boundExecution(effect),
+            Effect.as("executed" as const),
+          );
           const exit = yield* Effect.exit(Effect.raceFirst(execution, cancellation)).pipe(
             Effect.ensuring(outbox.clearCancellation(effect.id)),
           );
