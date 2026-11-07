@@ -142,6 +142,16 @@ export function pendingThreadCreationShell(
   }
   const timestamp = DateTime.makeUnsafe(message.createdAt);
   return presentThreadShell(message.environmentId, {
+    purposeSelection: {
+      revision: 0,
+      scope:
+        message.purposeIntent?.intent.type === "reference"
+          ? { type: "single", reference: message.purposeIntent.intent.reference }
+          : {
+              type: "unscoped",
+              reason: message.purposeIntent === undefined ? "legacy_no_intent" : "deliberate",
+            },
+    },
     id: message.threadId,
     projectId: creation.projectId,
     title: deriveThreadTitleFromPrompt(message.text),
