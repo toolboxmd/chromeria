@@ -224,11 +224,23 @@ const make = Effect.gen(function* () {
       const provider = (yield* providers.getProviders).find(
         (provider) => provider.instanceId === instanceId,
       );
+      const model = spec.model ?? base.model;
+      // Another model keeps only the base options it advertises, like delegate_task inheritance.
+      const descriptors = provider?.models.find(
+        (candidate) => candidate.slug === model || candidate.aliases?.includes(model),
+      )?.capabilities?.optionDescriptors;
+      const options =
+        base.options === undefined ||
+        descriptors === undefined ||
+        (instanceId === base.instanceId && model === base.model)
+          ? base.options
+          : base.options.filter((option) => descriptors.some(({ id }) => id === option.id));
       return colorModelSelection(
         {
           ...base,
+          ...(options === undefined ? {} : { options }),
           instanceId,
-          model: spec.model ?? base.model,
+          model,
           ...(spec.effort === undefined ? {} : { effort: spec.effort }),
         },
         provider?.driver,
@@ -287,7 +299,12 @@ const make = Effect.gen(function* () {
               next === undefined ||
               (error.code !== "provider_unavailable" && error.code !== "model_unavailable")
             )
-              return Effect.fail(error);
+              return Effect.fail(
+                new OrchestratorMcpFailure({
+                  code: error.code,
+                  message: `${color.label} (${candidate === undefined ? `Prism ${color.role ?? "worker"}` : `${candidate.instanceId}/${candidate.model}`}) was refused: ${error.message}`,
+                }),
+              );
             if (candidate !== undefined) attempted.push(candidate);
             return resolveFrom(next, rest);
           }),

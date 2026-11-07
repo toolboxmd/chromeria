@@ -285,6 +285,24 @@ it.effect("start_spectrum rejects invalid values before persisting a Spectrum", 
         },
         /labels must be unique/,
       ],
+      [
+        {
+          colors: [
+            { label: "Blue", ...primary },
+            {
+              label: "Red",
+              selection: {
+                ...primary,
+                options: [
+                  { id: "serviceTier", value: "fast" },
+                  { id: "serviceTier", value: "flex" },
+                ],
+              },
+            },
+          ],
+        },
+        /^Red \(codex\/test-model\) was refused: .*serviceTier was specified more than once/,
+      ],
     ] as const) {
       const result = yield* toolkit
         .handle("start_spectrum", { question: "Invalid", clientRequestId: "invalid", ...patch })

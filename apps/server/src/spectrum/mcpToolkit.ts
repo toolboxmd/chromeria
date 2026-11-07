@@ -109,6 +109,7 @@ export const SpectrumToolkit = Toolkit.make(
     ],
   }).annotate(Tool.Title, "Start Spectrum"),
 );
+const isMcpFailure = Schema.is(OrchestratorMcpFailure);
 export const layer = McpToolAccess.toLayer(SpectrumToolkit, {
   start_spectrum: McpToolAccess.startsThreads(
     () => ({}),
@@ -150,7 +151,9 @@ export const layer = McpToolAccess.toLayer(SpectrumToolkit, {
             Effect.mapError((error) =>
               error._tag === "SpectrumStartValidationError"
                 ? new OrchestratorMcpFailure({ code: "invalid_request", message: error.message })
-                : unavailable(),
+                : isMcpFailure(error.cause)
+                  ? error.cause
+                  : unavailable(),
             ),
           );
         return {
