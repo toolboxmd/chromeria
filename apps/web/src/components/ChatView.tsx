@@ -4,6 +4,7 @@ import { sourceControlClients } from "@t3tools/client-runtime/source-control-cli
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import { queuedRunEditBlockedReason } from "@t3tools/client-runtime/queued-run-edit";
 import { ScrollToEndButton, WorkspaceFileDropOverlay } from "./chat/TimelineOverlays";
+import { WifiOffIcon } from "lucide-react";
 import { usePasteToFocusComposer } from "./chat/usePasteToFocusComposer";
 import { configuredHostedAppUrl } from "../hostedPairing";
 import { announcedRun, isDetailBehindShell } from "./chat/threadActivityAnnouncement";
@@ -28,6 +29,10 @@ import { useRightPanelActions } from "./chat/useRightPanelActions";
 import { type TerminalLaunchContext, useChatTerminalActions } from "./chat/useChatTerminalActions";
 import { useComposerSend } from "./chat/useComposerSend";
 import { useComposerResume } from "./chat/useComposerResume";
+import { useStartTurnWithPurpose } from "./chat/useStartTurnWithPurpose";
+import { usePromachosInlineCardHost } from "./promachos/PromachosChat";
+import { usePromachosPresentation } from "./promachos/promachosMode";
+import { promachosPicksModel } from "./promachos/promachosStart";
 import { ThreadFind, ThreadFindCanvas } from "./chat/ThreadFindProvider";
 import { closeThreadFind, openThreadFind, useThreadFindOpen } from "./chat/threadFindStore";
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";
@@ -136,10 +141,10 @@ import { composerRequiresModifier } from "../composer-logic";
 import {
   derivePhase,
   deriveActiveWorkStartedAt,
-  deriveCanInterruptRunningThread,
   findRevertCheckpoint,
   isLatestRunSettled,
 } from "../session-logic";
+import { deriveCanStopThread, isForkSpectrumRunning } from "../spectrumStop";
 import { type LegendListRef } from "@legendapp/list/react";
 import { useWorkspaceMutationRefresh } from "../hooks/useWorkspaceMutationRefresh";
 import { DEFAULT_INTERACTION_MODE, type ChatMessage } from "../types";
@@ -150,6 +155,7 @@ import { subscribeSnapShotComposerFocus } from "../lib/desktopSnapShot";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { FileMetadataThreadProvider } from "../hooks/FileMetadataThreadProvider";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
+import { Button } from "./ui/button";
 import { PopoverCreateHandle } from "./ui/popover";
 import {
   selectActiveRightPanel,
@@ -443,9 +449,6 @@ export default function ChatView(props: ChatViewProps) {
     reportFailure: false,
   });
   const setThreadInteractionMode = useOrchestrationCommand(threadEnvironment.setInteractionMode, {
-    reportFailure: false,
-  });
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
     reportFailure: false,
   });
   const createAttachmentAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, {
@@ -1105,6 +1108,15 @@ export default function ChatView(props: ChatViewProps) {
     activeProject ?? undefined,
   );
   const activeProjectScripts = activeProject ? resolveProjectScripts(settings, activeProject) : [];
+  const {
+    enabled: promachosChat,
+    models: promachosModels,
+    multipleModels: viewMultipleModelSelections,
+  } = usePromachosPresentation(
+    activeProjectRef,
+    activeProjectSettings.settings.prismRoles.promachos.models,
+    multipleModelSelections,
+  );
   const { projectCloneBannerItem, projectCloneSendBlockReason } =
     useProjectCloneBanner(activeProjectRef);
   const activeProjectDefaultModelSelection =
@@ -1222,6 +1234,7 @@ export default function ChatView(props: ChatViewProps) {
     (providerEnvironmentId === undefined
       ? undefined
       : providersByEnvironment.get(providerEnvironmentId)) ?? EMPTY_PROVIDERS;
+  const startThreadTurn = useStartTurnWithPurpose();
   const selectedProviderByThreadId = composerActiveProvider ?? null;
   const threadProvider =
     activeThread?.modelSelection.instanceId ??
@@ -1536,6 +1549,11 @@ export default function ChatView(props: ChatViewProps) {
   const timelineEmpty = timelineEntries.length === 0 && !hasStreamedTimelineRows;
   const displayedTimelineKey = activeThreadKey ?? routeThreadKey;
   const displayedThreadRef = parseScopedThreadKey(displayedTimelineKey);
+  const promachosCardHost = usePromachosInlineCardHost({
+    enabled: promachosChat,
+    activeThreadKey,
+    displayedThreadKey: displayedTimelineKey,
+  });
   const {
     worktreeSetup,
     isPreparingWorktree,
@@ -1788,8 +1806,11 @@ export default function ChatView(props: ChatViewProps) {
     composerRef.current?.focusAtEnd();
   };
   const focusComposerStable = useStableCallback(focusComposer);
+  const forkSpectrumRunning = isForkSpectrumRunning(activeThreadShell);
   const canInterruptRunningThread =
-    canOperateThread && deriveCanInterruptRunningThread(activeThread !== undefined, activeRuntime);
+    canOperateThread &&
+    (activeThreadShell?.transportRecovery != null ||
+      deriveCanStopThread(activeThread !== undefined, activeRuntime, forkSpectrumRunning));
   const onInterrupt = async () => {
     if (
       !activeThread ||
@@ -1798,7 +1819,7 @@ export default function ChatView(props: ChatViewProps) {
       return;
     const result = await interruptThreadTurn({
       environmentId,
-      input: { threadId: activeThread.id },
+      input: { threadId: activeThread.id, forkSpectrumRunning },
     });
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
       const error = squashAtomCommandFailure(result);
@@ -1942,6 +1963,19 @@ export default function ChatView(props: ChatViewProps) {
   const visiblePullRequestCount = visiblePullRequests.length;
   const pullRequestsSurfaceAvailable =
     isServerThread && supportsThreadPullRequests && visiblePullRequestCount > 0;
+  // Fork: the links tab also holds the thread's Issues and is where they are linked by hand
+  // (toolboxmd/t3code#28), so it opens without pull requests on servers that serve Issue links.
+  const linksSurfaceAvailable =
+    pullRequestsSurfaceAvailable ||
+    (isServerThread && serverConfig?.environment.capabilities.issueLinks === true);
+  // Fork: the project's feature map (toolboxmd/chromeria#235).
+  const featureMapSupported = serverConfig?.environment.capabilities.featureMap === true;
+  const mapSurfaceAvailable = isServerThread && activeProject != null && featureMapSupported;
+  const addMapSurface = () => {
+    if (!activeThreadRef || !mapSurfaceAvailable) return;
+    useRightPanelStore.getState().open(activeThreadRef, "map");
+  };
+  const addMapSurfaceStable = useStableCallback(addMapSurface);
   const { state: deviceState, loaded: deviceStateLoaded } = useDeviceState(
     activeThreadRef?.environmentId ?? null,
   );
@@ -2360,7 +2394,7 @@ export default function ChatView(props: ChatViewProps) {
     canMaximizeRightPanel,
     rightPanelMaximized,
     supportsPullRequests,
-    pullRequestsSurfaceAvailable,
+    pullRequestsSurfaceAvailable: linksSurfaceAvailable,
     gitCwd,
     activeProjectCwd,
     explicitDiffOpenRef,
@@ -2386,6 +2420,7 @@ export default function ChatView(props: ChatViewProps) {
     shortcuts: threadLifecycleShortcuts,
   } = useThreadLifecycle({
     environmentId,
+    serverSubagents: serverProjection?.subagents,
     routeThreadKey,
     currentRouteThreadKeyRef,
     canOperateThread,
@@ -2463,7 +2498,7 @@ export default function ChatView(props: ChatViewProps) {
     !nativeResumeCompactionDismissed &&
     !compactDisabled &&
     !hasHeldQueuedRuns &&
-    multipleModelSelections === null &&
+    viewMultipleModelSelections === null &&
     shouldOfferResumeCompaction({
       provider: selectedProvider,
       usedTokens: activeContextWindow.usedTokens,
@@ -2587,6 +2622,33 @@ export default function ChatView(props: ChatViewProps) {
       deriveProviderExtensionStatuses(serverProjection),
     );
     const extensionStatusItems = extensionStatusBanner === null ? [] : [extensionStatusBanner];
+    const transportWait = activeThreadShell?.transportRecovery;
+    if (
+      transportWait &&
+      transportWait.runId === activeThreadShell.latestRun?.runId &&
+      serverRuntime?.status === "failed" &&
+      !activeThreadShell.archivedAt &&
+      !activeThreadShell.deletedAt &&
+      activeThreadShell.settledOverride !== "settled"
+    ) {
+      limitRecoveryItems.push({
+        id: `transport-recovery:${transportWait.runId}`,
+        variant: "warning",
+        icon: <WifiOffIcon />,
+        title: "Waiting to retry the connection",
+        description: `Next retry ${new Date(transportWait.retryAt).toLocaleString()}. Send a message or press Stop to cancel.`,
+        actions: (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!canOperateThread}
+            onClick={() => void onInterruptStable()}
+          >
+            Stop retrying
+          </Button>
+        ),
+      });
+    }
     const usageLimitsItems = usageLimitsBanner === null ? [] : [usageLimitsBanner];
     const projectCloneItems = projectCloneBannerItem === null ? [] : [projectCloneBannerItem];
     // An approval's feedback goes to that approval; the armed session waits for the next message.
@@ -2834,7 +2896,7 @@ export default function ChatView(props: ChatViewProps) {
     providerStatuses,
     lockedProvider,
     supportsProviderSwitchingViaHandoff,
-    multipleModelSelections,
+    multipleModelSelections: viewMultipleModelSelections,
     runtimeMode,
     isLocalDraftThread,
     canOverrideServerThreadEnvMode,
@@ -2934,6 +2996,7 @@ export default function ChatView(props: ChatViewProps) {
     sideChatDisabledReason,
     handleNewThreadInActiveProject,
     persistThreadSettingsForNextTurn,
+    promachosModels,
   });
 
   const onWorktreeSetupWorkLocally = () => {
@@ -3069,7 +3132,10 @@ export default function ChatView(props: ChatViewProps) {
         !serverProjection?.messages.some((committed) => committed.id === message.id),
     );
   const scrollToEndSummary =
-    [childInputNow?.waitingLabel ?? null, queuedRunCount === 0 ? null : `${queuedRunCount} queued`]
+    [
+      childInputNow && "waitingLabel" in childInputNow ? childInputNow.waitingLabel : null,
+      queuedRunCount === 0 ? null : `${queuedRunCount} queued`,
+    ]
       .filter((part) => part !== null)
       .join(" · ") || null;
   // The end of the timeline holds the thread's present and next turns: what it is doing now,
@@ -3192,6 +3258,7 @@ export default function ChatView(props: ChatViewProps) {
         closeShortcutLabel: closeTerminalShortcutLabel ?? undefined,
       }}
       pullRequest={{
+        issueLinks: serverConfig?.environment.capabilities.issueLinks === true,
         capabilityKnown: pullRequestsCapabilityKnown,
         supported: supportsPullRequests,
         projectId: activeThread.projectId,
@@ -3203,6 +3270,7 @@ export default function ChatView(props: ChatViewProps) {
             ? addPullRequestsSurfaceStable
             : undefined,
       }}
+      map={{ supported: featureMapSupported, theme: resolvedTheme }}
       files={{
         projectId: activeProject?.id,
         projectName: activeProject?.title ?? null,
@@ -3214,6 +3282,7 @@ export default function ChatView(props: ChatViewProps) {
       }}
     />
   ) : null;
+
   const panelToggleControlProps = {
     terminalAvailable: activeProject !== null,
     terminalOpen: terminalUiState.terminalOpen,
@@ -3369,6 +3438,12 @@ export default function ChatView(props: ChatViewProps) {
                   respondingRequestIds={respondingRequestIds}
                   onRespondToApproval={onRespondToApprovalStable}
                   canOperateThread={canOperateThread}
+                  {...(promachosChat
+                    ? {
+                        presentation: "promachos" as const,
+                        onInlineCardHost: promachosCardHost.timelineHostRef,
+                      }
+                    : {})}
                   threadDetailRef={routeThreadDetailRef}
                   entriesInput={timelineEntriesInput}
                   draftEntries={isServerThread ? null : draftTimelineEntries}
@@ -3552,12 +3627,14 @@ export default function ChatView(props: ChatViewProps) {
                             ) : null}
                             {!composerMounted ? null : (
                               <ChatComposer
+                                inlineCardHost={promachosCardHost.composerHost}
                                 canOperateThread={canOperateThread}
                                 reportedModelSelection={reportedModelSelection}
-                                multipleModelSelections={multipleModelSelections}
+                                multipleModelSelections={viewMultipleModelSelections}
                                 supportsMultipleModels={
                                   serverConfig?.environment.capabilities
-                                    .requiredWorktreeBootstrap === true
+                                    .requiredWorktreeBootstrap === true &&
+                                  !promachosPicksModel(promachosModels)
                                 }
                                 onMultipleModelSelectionsChange={setMultipleModelSelectionsStable}
                                 composerRef={composerRef}
@@ -3718,7 +3795,7 @@ export default function ChatView(props: ChatViewProps) {
                             {showComposerContextStrip && (
                               <div className="pointer-events-auto">
                                 <BranchToolbar
-                                  forceNewWorktree={multipleModelSelections !== null}
+                                  forceNewWorktree={viewMultipleModelSelections !== null}
                                   ref={branchToolbarRef}
                                   environmentId={activeThread.environmentId}
                                   threadId={activeThread.id}
@@ -3817,7 +3894,7 @@ export default function ChatView(props: ChatViewProps) {
                 <ThreadDetailsPanel
                   anchor={threadPanelPopoverAnchorRef}
                   handle={threadPanelPopoverHandle}
-                  forceNewWorktree={multipleModelSelections !== null}
+                  forceNewWorktree={viewMultipleModelSelections !== null}
                   environmentId={activeThread.environmentId}
                   threadId={activeThread.id}
                   projectId={activeThread.projectId}
@@ -3962,15 +4039,17 @@ export default function ChatView(props: ChatViewProps) {
           onAddPullRequests={addPullRequestsSurfaceStable}
           onAddDevice={addDeviceSurfaceStable}
           onAddSideChat={sideChatsOffered ? openSideChatStable : undefined}
+          onAddMap={addMapSurfaceStable}
           browserAvailable={canOperatePreview && browserAvailable}
           terminalAvailable={activeProject !== null && canOperateTerminal}
           diffAvailable={isServerThread && isGitRepo}
           filesAvailable={activeProject !== null}
           pullRequestAvailable={pullRequestSurfaceAvailable}
-          pullRequestsAvailable={pullRequestsSurfaceAvailable}
+          pullRequestsAvailable={linksSurfaceAvailable}
           deviceAvailable={activeThreadRef !== null}
           sideChatAvailable={sideChat.available}
           sideChatDisabledReason={sideChatDisabledReason}
+          mapAvailable={mapSurfaceAvailable}
         >
           {rightPanelContent}
         </ChatRightPanel>
