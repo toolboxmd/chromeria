@@ -1,3 +1,4 @@
+import { WightModeControl } from "./WightModeControl";
 import {
   AuthOrchestrationOperateScope,
   type EnvironmentId,
@@ -31,6 +32,8 @@ import { useAtomValue } from "@effect/atom-react";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { ProjectFavicon } from "../ProjectFavicon";
+import { ThreadSharingControl } from "../people/ThreadSharingControl";
+import { ThreadParentCrumbs } from "./ThreadParentCrumbs";
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
@@ -288,6 +291,9 @@ export const ChatHeader = memo(function ChatHeader({
       )}
       onContextMenu={handleHeaderContextMenu}
     >
+      {isServerThread ? (
+        <WightModeControl environmentId={activeThreadEnvironmentId} threadId={activeThreadId} />
+      ) : null}
       <WorkspaceBreadcrumb
         ariaLabel="Thread breadcrumb"
         className="flex-1 overflow-clip [overflow-clip-margin:2px]"
@@ -319,7 +325,9 @@ export const ChatHeader = memo(function ChatHeader({
             </WorkspaceBreadcrumbSeparator>
           </>
         ) : null}
-        {parentThreadLink ? (
+        {isServerThread ? (
+          <ThreadParentCrumbs environmentId={activeThreadEnvironmentId} threadId={activeThreadId} />
+        ) : parentThreadLink ? (
           <>
             <WorkspaceBreadcrumbItem>
               <Tooltip>
@@ -431,6 +439,9 @@ export const ChatHeader = memo(function ChatHeader({
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
+      {isServerThread ? (
+        <ThreadSharingControl environmentId={activeThreadEnvironmentId} threadId={activeThreadId} />
+      ) : null}
     </div>
   );
 });
