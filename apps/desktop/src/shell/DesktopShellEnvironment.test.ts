@@ -6,7 +6,9 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Deferred from "effect/Deferred";
 import * as FileSystem from "effect/FileSystem";
+import * as Duration from "effect/Duration";
 import * as Layer from "effect/Layer";
+import * as TestClock from "effect/testing/TestClock";
 import * as Logger from "effect/Logger";
 import * as PlatformError from "effect/PlatformError";
 import * as Sink from "effect/Sink";
@@ -15,7 +17,6 @@ import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
-import * as TestClock from "effect/testing/TestClock";
 import * as NodeOS from "node:os";
 import { vi } from "vite-plus/test";
 
@@ -106,7 +107,7 @@ function runShellEnvironment(input: {
   ) => Effect.Effect<boolean, never, import("effect/Scope").Scope>;
   readonly handler: (
     command: ChildProcess.Command,
-  ) => string | { output: string; exitCode: number };
+  ) => string | { output: string; exitCode?: number; delay?: Duration.Duration };
   readonly failure?: PlatformError.PlatformError;
   readonly processSpawner?: ChildProcessSpawner.ChildProcessSpawner["Service"];
 }) {
@@ -128,11 +129,10 @@ function runShellEnvironment(input: {
       if (input.processSpawner) return input.processSpawner.spawn(command);
       if (input.failure !== undefined) return Effect.fail(input.failure);
       const result = input.handler(command);
-      return Effect.succeed(
-        typeof result === "string"
-          ? makeProcess(result)
-          : makeProcess(result.output, result.exitCode),
-      );
+      const output = typeof result === "string" ? result : result.output;
+      const exitCode = typeof result === "string" ? 0 : (result.exitCode ?? 0);
+      const delay = typeof result === "string" ? Duration.zero : (result.delay ?? Duration.zero);
+      return Effect.sleep(delay).pipe(Effect.as(makeProcess(output, exitCode)));
     }),
   );
 
@@ -601,6 +601,8 @@ describe("DesktopShellEnvironment", () => {
 
       assert.deepEqual(commands, ["/opt/homebrew/bin/nu", "/bin/zsh", "/bin/launchctl"]);
       assert.equal(env.PATH, "/opt/homebrew/bin:/usr/bin");
+      // launchctl can keep the process usable, but the login shell did not
+      // answer, so the server still gets a chance to capture it.
       assert.isFalse(prepared);
     }),
   );
@@ -614,6 +616,53 @@ describe("DesktopShellEnvironment", () => {
       });
 
       assert.isFalse(prepared);
+    }),
+  );
+
+  it.effect("keeps a login-shell PATH that arrives after the old five second cap", () =>
+    Effect.gen(function* () {
+      const env: NodeJS.ProcessEnv = { SHELL: "/bin/zsh", PATH: "/usr/bin" };
+      const commands: string[] = [];
+      const started = yield* Deferred.make<void>();
+      const fiber = yield* Effect.forkChild(
+        runShellEnvironment({
+          env,
+          platform: "darwin",
+          userShell: "/bin/zsh",
+          handler: () => "",
+          processSpawner: ChildProcessSpawner.make((command) => {
+            if (command._tag !== "StandardCommand") return Effect.die("Unexpected pipeline");
+            commands.push(command.command);
+            return Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Effect.sleep(Duration.seconds(6))),
+              Effect.as(makeProcess(envOutput({ PATH: "/opt/homebrew/bin:/usr/bin" }))),
+            );
+          }),
+        }),
+      );
+      yield* Deferred.await(started);
+      yield* TestClock.adjust(Duration.seconds(6));
+      const prepared = yield* Fiber.join(fiber);
+
+      assert.isTrue(prepared);
+      assert.deepEqual(commands, ["/bin/zsh"]);
+      assert.equal(env.PATH, "/opt/homebrew/bin:/usr/bin");
+    }),
+  );
+
+  it.effect("does not claim a prepared environment when the login shell returns no PATH", () =>
+    Effect.gen(function* () {
+      const env: NodeJS.ProcessEnv = { SHELL: "/bin/zsh", PATH: "/usr/bin" };
+
+      const prepared = yield* runShellEnvironment({
+        env,
+        platform: "linux",
+        userShell: "/bin/zsh",
+        handler: () => "",
+      }).pipe(Effect.provide(Logger.layer([])));
+
+      assert.isFalse(prepared);
+      assert.equal(env.PATH, "/usr/bin");
     }),
   );
 
