@@ -4,6 +4,7 @@ import { PREVIEW_STREAM_BASE_PATH } from "@t3tools/client-runtime/preview/server
 import { createPreviewEnvironmentAtoms } from "@t3tools/client-runtime/state/preview";
 import { resolveDeviceHubAccess } from "@t3tools/client-runtime/state/deviceHubAccess";
 import type {
+  PreviewViewerResource,
   EnvironmentId,
   PreviewEvent,
   PreviewListResult,
@@ -13,9 +14,9 @@ import type {
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
+import { useId } from "react";
 
 import { connectionAtomRuntime } from "../connection/runtime";
-import { appAtomRegistry } from "./atom-registry";
 import { useEnvironmentQuery } from "./query";
 import { environmentSession, usePreparedConnection } from "./session";
 
@@ -139,40 +140,54 @@ export function useThreadServerBrowserTabs(input: {
   return { tabs: sessions, loaded: tabs.listed };
 }
 
-// The earliest time the next access request may go out.
-const previewStreamNotBeforeAtom = Atom.family((environmentId: EnvironmentId) =>
-  Atom.make(0).pipe(Atom.withLabel(`mobile-preview-stream-retry:${environmentId}`)),
-);
-
 const previewStreamAccessAtom = Atom.family((environmentId: EnvironmentId) =>
   connectionAtomRuntime
     .atom((get) => {
       const prepared = Option.getOrNull(
         get(environmentSession.preparedConnectionValueAtom(environmentId)),
       );
-      const notBefore = get(previewStreamNotBeforeAtom(environmentId));
       if (prepared === null) return Effect.never;
-      const resolve = resolveDeviceHubAccess({ prepared, hubBasePath: PREVIEW_STREAM_BASE_PATH });
-      // A recompute interrupts the wait, so only the newest retry resolves.
-      const wait = notBefore - Date.now();
-      return wait > 0 ? Effect.andThen(Effect.sleep(wait), resolve) : resolve;
+      return resolveDeviceHubAccess({ prepared, hubBasePath: PREVIEW_STREAM_BASE_PATH });
     })
     .pipe(Atom.setIdleTTL(60_000), Atom.withLabel(`mobile-preview-stream-access:${environmentId}`)),
 );
 
-/** Resolves fresh stream access once `delayMs` has passed. */
-function retryPreviewStreamAccess(environmentId: EnvironmentId, delayMs: number) {
-  appAtomRegistry.set(previewStreamNotBeforeAtom(environmentId), Date.now() + delayMs);
-}
-
-export function usePreviewStreamAccess(environmentId: EnvironmentId) {
+const EMPTY_ACCESS = Atom.make(
+  AsyncResult.initial<
+    import("@t3tools/client-runtime/state/deviceHubAccess").DeviceHubAccess,
+    never
+  >(),
+);
+export function usePreviewStreamAccess(
+  environmentId: EnvironmentId,
+  resource?: PreviewViewerResource,
+  visible = true,
+) {
+  const viewerKey = useId();
   const prepared = usePreparedConnection(environmentId);
-  const query = useEnvironmentQuery(previewStreamAccessAtom(environmentId));
-  const access = query.data && query.error === null && Option.isSome(prepared) ? query.data : null;
-  return {
-    access,
-    error: query.error,
-    refresh: query.refresh,
-    retryAfter: (delayMs: number) => retryPreviewStreamAccess(environmentId, delayMs),
-  };
+  const canControl = useAtomValue(
+    previewEnvironment.viewerOpen.permissionAtom(
+      environmentId,
+      resource === undefined ? undefined : { resource, operation: "control" },
+    ),
+  );
+  type AccessResult =
+    | Atom.Type<ReturnType<typeof previewStreamAccessAtom>>
+    | Atom.Type<ReturnType<typeof previewEnvironment.viewerAccess>>;
+  const query = useEnvironmentQuery<
+    import("@t3tools/client-runtime/state/deviceHubAccess").DeviceHubAccess,
+    AsyncResult.AsyncResult.Failure<AccessResult>
+  >(
+    !visible
+      ? EMPTY_ACCESS
+      : resource === undefined
+        ? previewStreamAccessAtom(environmentId)
+        : previewEnvironment.viewerAccess({
+            environmentId,
+            viewerKey,
+            input: { resource, operation: canControl ? "control" : "view" },
+          }),
+  );
+  const access = query.isSuccess && query.data && Option.isSome(prepared) ? query.data : null;
+  return { access, error: query.error, refresh: query.refresh };
 }

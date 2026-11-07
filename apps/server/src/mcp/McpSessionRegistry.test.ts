@@ -34,6 +34,32 @@ const makeRegistry = (now: () => number, httpServer = fakeHttpServer) =>
       Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     );
 
+it.effect(
+  "keeps the same request namespace across credential renewal and registry reconstruction",
+  () =>
+    Effect.gen(function* () {
+      const request = {
+        threadId: ThreadId.make("durable-request-thread"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+      };
+      const first = yield* makeRegistry(() => 1_000);
+      const namespace = (registry: typeof first) =>
+        Effect.gen(function* () {
+          const issued = yield* registry.issue(request);
+          const scope = yield* registry.resolve(issued.config.authorizationHeader.slice(7));
+          return { namespace: scope?.requestNamespace, session: scope?.thread.providerSessionId };
+        });
+      const original = yield* namespace(first);
+      const renewed = yield* namespace(first);
+      const rebuilt = yield* namespace(yield* makeRegistry(() => 2_000));
+      expect(renewed.session).not.toBe(original.session);
+      expect(rebuilt.session).not.toBe(original.session);
+      expect(renewed.namespace).toBe(original.namespace);
+      expect(rebuilt.namespace).toBe(original.namespace);
+      expect(original.namespace).toBe("thread:environment-1:durable-request-thread");
+    }),
+);
+
 it.effect("stores only a token hash, resolves the bearer token, and revokes by thread", () =>
   Effect.gen(function* () {
     let timestamp = 1_000;
@@ -221,4 +247,60 @@ it.effect.each(["provider-session", "thread", "all"] as const)(
       yield* registry.touch(threadId);
       expect(yield* registry.resolve(token)).toBeUndefined();
     }),
+);
+
+it.effect("destination contexts use the latest unexpired credential and honor revocation", () =>
+  Effect.gen(function* () {
+    let timestamp = 1_000;
+    const registry = yield* makeRegistry(() => timestamp);
+    const threadId = ThreadId.make("thread-context");
+    yield* registry.issue({
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      capabilities: new Set(["device"]),
+    });
+    const first = yield* registry.scopeForThread(threadId);
+    expect(first?.capabilities.has("device")).toBe(true);
+    timestamp += 1;
+    const second = yield* registry.issue({
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("claude"),
+      capabilities: new Set(),
+    });
+    expect((yield* registry.scopeForThread(threadId))?.thread.providerSessionId).toBe(
+      second.config.providerSessionId,
+    );
+    expect((yield* registry.scopeForThread(threadId))?.capabilities.has("device")).toBe(false);
+    yield* registry.revokeThread(threadId);
+    expect(yield* registry.scopeForThread(threadId)).toBeUndefined();
+    yield* registry.issue({ threadId, providerInstanceId: ProviderInstanceId.make("codex") });
+    timestamp += 101;
+    expect(yield* registry.scopeForThread(threadId)).toBeUndefined();
+  }),
+);
+
+it.effect("binds bare tool descriptions to the credential without narrowing other threads", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry(() => 1_000);
+    const request = {
+      threadId: ThreadId.make("bare-tools"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      bareToolNames: ["preview_open", "preview_snapshot"],
+    };
+    const credential = yield* registry.issue(request);
+    expect(
+      (yield* registry.resolve(credential.config.authorizationHeader.slice(7)))?.bareToolNames,
+    ).toEqual(request.bareToolNames);
+    const normal = yield* registry.issue({
+      ...request,
+      threadId: ThreadId.make("normal-tools"),
+      bareToolNames: undefined,
+    });
+    expect(
+      (yield* registry.resolve(normal.config.authorizationHeader.slice(7)))?.bareToolNames,
+    ).toBeUndefined();
+    expect((yield* registry.scopeForThread(request.threadId))?.bareToolNames).toEqual(
+      request.bareToolNames,
+    );
+  }),
 );
