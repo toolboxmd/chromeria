@@ -3,7 +3,9 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ServerSettings,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 import { createModelSelection } from "./model.ts";
 import {
@@ -18,6 +20,8 @@ import { applyServerSettingsPatch } from "./serverSettings.ts";
 
 const projectId = ProjectId.make("project-a");
 const otherProjectId = ProjectId.make("project-b");
+const decodeSyncServerSettings = Schema.decodeSync(ServerSettings);
+const encodeSyncServerSettings = Schema.encodeSync(ServerSettings);
 
 describe("resolveSendEnvMode", () => {
   // regression: #21404 non-git projects send from the current checkout, git repos keep their mode
@@ -34,6 +38,52 @@ describe("resolveSendEnvMode", () => {
 });
 
 describe("resolveProjectSettings", () => {
+  it("inherits omitted Spectrum fields after decoding a project slot override", () => {
+    const primary = { instanceId: "codex", model: "sol" };
+    const slots = ["Blue", "Red"].map((label) => ({ label, primary, fallbacks: [] }));
+    const white = { primary, fallbacks: [] };
+    const settings = decodeSyncServerSettings({
+      spectrum: { mode: "free", relayRounds: 5, turnsPerColor: 7 },
+      projectSettingsOverrides: { [projectId]: { spectrum: { slots, white } } },
+    });
+    const resolved = resolveProjectSettings(settings, projectId);
+    expect(resolved.settings.spectrum).toEqual({ ...settings.spectrum, slots, white });
+    expect(resolved.sources.spectrum).toBe("project");
+    const changed = applyServerSettingsPatch(settings, {
+      spectrum: { ...settings.spectrum, mode: "council", relayRounds: 8, turnsPerColor: 9 },
+    });
+    expect(resolveProjectSettings(changed, projectId).settings.spectrum).toEqual({
+      ...changed.spectrum,
+      slots,
+      white,
+    });
+    expect(resolveProjectSettings(changed, otherProjectId).settings.spectrum).toEqual(
+      changed.spectrum,
+    );
+    const saved = encodeSyncServerSettings(changed);
+    const slotsOnly = decodeSyncServerSettings({
+      ...saved,
+      projectSettingsOverrides: { [projectId]: { spectrum: { slots } } },
+    });
+    expect(slotsOnly.projectSettingsOverrides[projectId]?.spectrum).toEqual({ slots });
+    expect(resolveProjectSettings(slotsOnly, projectId).settings.spectrum).toEqual({
+      ...changed.spectrum,
+      slots,
+    });
+    const explicit = decodeSyncServerSettings({
+      ...saved,
+      projectSettingsOverrides: {
+        [projectId]: { spectrum: { mode: "free", slots: [], white: null } },
+      },
+    });
+    expect(resolveProjectSettings(explicit, projectId).settings.spectrum).toEqual({
+      ...changed.spectrum,
+      mode: "free",
+      slots: [],
+      white: null,
+    });
+  });
+
   it("ignores an override left undefined by a forward-compatible decode", () => {
     const resolved = resolveProjectSettings(
       {
