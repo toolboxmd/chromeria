@@ -1,3 +1,4 @@
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
@@ -36,6 +37,7 @@ it.effect("rejects a stale form save after deletion while preserving explicit-id
     yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const input = yield* decodeUpsertInput({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         id: "scheduled-task:edit-after-delete",
         title: "Review",
         prompt: "Review the open pull requests.",
@@ -48,7 +50,12 @@ it.effect("rejects a stale form save after deletion while preserving explicit-id
         interactionMode: "default",
       });
       const created = yield* service.upsert(input);
-      const edit = yield* decodeUpsertInput({ ...input, requireExisting: true, title: "Edited" });
+      const edit = yield* decodeUpsertInput({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
+        ...input,
+        requireExisting: true,
+        title: "Edited",
+      });
       expect((yield* service.upsert(edit)).task.title).toBe("Edited");
       yield* service.delete({ id: created.task.id });
 
@@ -57,7 +64,15 @@ it.effect("rejects a stale form save after deletion while preserving explicit-id
       expect((yield* service.list()).tasks).toEqual([]);
 
       expect((yield* service.upsert(input)).task.id).toBe(created.task.id);
-    }).pipe(Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))));
+    }).pipe(
+      Effect.provide(
+        ScheduledTaskService.layer.pipe(
+          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+          Layer.provide(layerDependencies),
+        ),
+      ),
+    );
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
@@ -84,6 +99,7 @@ it.effect("preserves a due run when a save only pads the scheduled hour", () =>
     yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const input = yield* decodeUpsertInput({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         commandId: "schedule-time-format",
         title: "Morning review",
         prompt: "Review the open pull requests.",
@@ -102,6 +118,7 @@ it.effect("preserves a due run when a save only pads the scheduled hour", () =>
 
       yield* TestClock.setTime(DateTime.toEpochMillis(dueAt) + 1_000);
       const update = yield* decodeUpsertInput({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         ...input,
         id: created.task.id,
         schedule: { type: "fixed_time", timeOfDay: "09:00" },
@@ -117,7 +134,15 @@ it.effect("preserves a due run when a save only pads the scheduled hour", () =>
       expect(rescheduled.task.nextRunAt).toBe(
         DateTime.formatIso(DateTime.toUtc(DateTime.add(dueAt, { minutes: 30 }))),
       );
-    }).pipe(Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))));
+    }).pipe(
+      Effect.provide(
+        ScheduledTaskService.layer.pipe(
+          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+          Layer.provide(layerDependencies),
+        ),
+      ),
+    );
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
@@ -139,6 +164,7 @@ it.effect("keeps the task list order when a toggle or edit rewrites updated_at",
     yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const input = (id: string) => ({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         id,
         title: id,
         prompt: "Review the open pull requests.",
@@ -169,7 +195,15 @@ it.effect("keeps the task list order when a toggle or edit rewrites updated_at",
       const edit = { ...input(older.task.id), requireExisting: true, title: "Edited" };
       yield* service.upsert(yield* decodeUpsertInput({ ...edit, enabled: false }));
       expect(yield* listedIds).toEqual(order);
-    }).pipe(Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))));
+    }).pipe(
+      Effect.provide(
+        ScheduledTaskService.layer.pipe(
+          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+          Layer.provide(layerDependencies),
+        ),
+      ),
+    );
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
@@ -204,6 +238,7 @@ it.effect(
         yield* service.upsert(
           yield* decodeUpsertInput({
             title: "Far future",
+            purposeIntent: { version: 1, intent: { type: "unscoped" } },
             prompt: "Review the open pull requests.",
             enabled: true,
             schedule: { type: "interval", everyMs: 3e14 },
@@ -217,6 +252,7 @@ it.effect(
         const created = yield* service.upsert(
           yield* decodeUpsertInput({
             title: "Idle poll",
+            purposeIntent: { version: 1, intent: { type: "unscoped" } },
             prompt: "Review the open pull requests.",
             enabled: true,
             schedule: { type: "interval", everyMs: 60_000 },
@@ -231,6 +267,13 @@ it.effect(
         yield* TestClock.adjust("6 seconds");
         yield* TestClock.adjust("60 seconds");
         expect(yield* Deferred.await(launched)).toBe(created.task.title);
-      }).pipe(Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))));
+      }).pipe(
+        Effect.provide(
+          ScheduledTaskService.layer.pipe(
+            Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+            Layer.provide(layerDependencies),
+          ),
+        ),
+      );
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
