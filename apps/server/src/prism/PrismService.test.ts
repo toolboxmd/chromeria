@@ -306,6 +306,59 @@ describe("PrismService", () => {
       assert.strictEqual(result.kitText, "Project kit");
     }),
   );
+  it.effect("names each skipped Color and why when none can start", () =>
+    Effect.gen(function* () {
+      const p = yield* provider;
+      const limitedId = ProviderInstanceId.make("codex-work");
+      const offId = ProviderInstanceId.make("codex-off");
+      const error = yield* Effect.gen(function* () {
+        const service = yield* Prism.PrismService;
+        return yield* Effect.flip(service.resolve({ projectId, role: "reviewer" }));
+      }).pipe(
+        Effect.provide(
+          Prism.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                registry([
+                  p,
+                  {
+                    ...p,
+                    instanceId: limitedId,
+                    usageLimits: {
+                      checkedAt: "2026-10-08T00:00:00Z",
+                      windows: [
+                        { id: "weekly", kind: "weekly", label: "Weekly", usedPercent: 100 },
+                      ],
+                    },
+                  },
+                  { ...p, instanceId: offId, availability: "unavailable" },
+                ]),
+                Settings.layerTest({
+                  prismRoles: {
+                    reviewer: {
+                      models: [
+                        { instanceId, model: "missing-model" },
+                        { instanceId: limitedId, model: "configured" },
+                        { instanceId: offId, model: "configured" },
+                      ],
+                    },
+                  },
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+      assert.strictEqual(error.code, "provider_unavailable");
+      assert.strictEqual(
+        error.message,
+        "No eligible model with usage headroom for this Prism role and lane. Skipped: " +
+          "codex/missing-model: model is not advertised by the provider; " +
+          "codex-work/configured: provider usage limit reached; " +
+          "codex-off/configured: provider is unavailable.",
+      );
+    }),
+  );
   it.effect(
     "a project override of one role still routes other roles through the environment kit",
     () =>
