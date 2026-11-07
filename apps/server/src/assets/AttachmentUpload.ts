@@ -32,6 +32,9 @@ import * as AssetSigner from "./AssetSigner.ts";
 import * as ServerConfig from "../config.ts";
 import { inferImageExtension } from "../imageMime.ts";
 import * as DocumentText from "../provider/DocumentText.ts";
+import * as Staging from "./AttachmentStaging.ts";
+import { sha256 } from "@noble/hashes/sha2";
+import * as Hex from "effect/encoding/Hex";
 
 export const ATTACHMENT_UPLOAD_ROUTE_PREFIX = "/api/attachments/upload";
 
@@ -49,6 +52,8 @@ const AttachmentUploadClaims = Schema.Struct({
   mimeType: Schema.String,
   sizeBytes: Schema.Number,
   expiresAt: Schema.Number,
+  owner: Schema.optional(Schema.String),
+  digest: Schema.optional(Schema.String),
 });
 export type AttachmentUploadClaims = typeof AttachmentUploadClaims.Type;
 
@@ -66,6 +71,7 @@ function decodeClaims(encodedPayload: string): AttachmentUploadClaims | null {
 
 export const issueAttachmentUploadUrl = Effect.fn("AttachmentUpload.issueUrl")(function* (
   input: AttachmentCreateUploadUrlInput,
+  binding?: { readonly attachmentId: string; readonly owner: string; readonly digest?: string },
 ) {
   const config = yield* ServerConfig.ServerConfig;
   const nowMs = yield* Clock.currentTimeMillis;
@@ -89,9 +95,11 @@ export const issueAttachmentUploadUrl = Effect.fn("AttachmentUpload.issueUrl")(f
     attachmentType === "file" && isSvgAttachment(input) && !/\.svg$/i.test(input.name)
       ? `${input.name}.svg`
       : input.name;
-  const attachmentId = createPendingAttachmentId(
-    attachmentType === "file" ? attachmentFileExtension(name) : undefined,
-  );
+  const attachmentId =
+    binding?.attachmentId ??
+    createPendingAttachmentId(
+      attachmentType === "file" ? attachmentFileExtension(name) : undefined,
+    );
   const expiresAt = nowMs + ATTACHMENT_UPLOAD_URL_TTL_MS;
   const encodedPayload = base64UrlEncode(
     encodeAttachmentUploadClaims({
@@ -103,6 +111,12 @@ export const issueAttachmentUploadUrl = Effect.fn("AttachmentUpload.issueUrl")(f
       mimeType: input.mimeType,
       sizeBytes: input.sizeBytes,
       expiresAt,
+      ...(binding === undefined
+        ? {}
+        : {
+            owner: binding.owner,
+            ...(binding.digest === undefined ? {} : { digest: binding.digest }),
+          }),
     }),
   );
 
@@ -151,6 +165,24 @@ export const storeAttachmentUpload = Effect.fn("AttachmentUpload.store")(functio
   claims: AttachmentUploadClaims,
   body: Uint8Array | HttpServerRequest.HttpServerRequest["stream"],
 ) {
+  if (claims.owner !== undefined) {
+    const staging = yield* Effect.serviceOption(Staging.AttachmentStaging);
+    if (Option.isNone(staging))
+      return {
+        ok: false,
+        status: 409,
+        detail: "Durable attachment staging is unavailable.",
+      } satisfies StoreAttachmentUploadResult;
+    const permitted = yield* staging.value
+      .authorizeUpload(claims.attachmentId, claims.owner)
+      .pipe(Effect.result);
+    if (permitted._tag === "Failure")
+      return {
+        ok: false,
+        status: 403,
+        detail: "The attachment owner is no longer authorized.",
+      } satisfies StoreAttachmentUploadResult;
+  }
   if (body instanceof Uint8Array && body.byteLength !== claims.sizeBytes) {
     return {
       ok: false,
@@ -201,52 +233,83 @@ export const storeAttachmentUpload = Effect.fn("AttachmentUpload.store")(functio
         detail: `Body was ${receivedBytes} bytes, expected ${claims.sizeBytes}.`,
       } satisfies StoreAttachmentUploadResult;
     }
-    // Publishing without replacement keeps an upload and its cached text immutable.
-    const published = yield* fileSystem.link(partPath, finalPath).pipe(
-      Effect.as(true),
-      Effect.catch((error) => {
-        if (error.reason._tag === "AlreadyExists") return Effect.succeed(false);
-        return Effect.tryPromise({
-          try: () => NodeFSP.copyFile(partPath, finalPath, NodeFSP.constants.COPYFILE_EXCL),
-          catch: (cause) =>
-            PlatformError.systemError({
-              _tag:
-                cause instanceof Error && "code" in cause && cause.code === "EEXIST"
-                  ? "AlreadyExists"
-                  : "Unknown",
-              module: "FileSystem",
-              method: "copyFile",
-              pathOrDescriptor: finalPath,
-              cause,
+    if (claims.owner !== undefined) {
+      const staging = yield* Effect.serviceOption(Staging.AttachmentStaging);
+      if (Option.isNone(staging))
+        return {
+          ok: false,
+          status: 409,
+          detail: "Durable attachment staging is unavailable.",
+        } satisfies StoreAttachmentUploadResult;
+      yield* staging.value.authorizeUpload(claims.attachmentId, claims.owner);
+      const bytes = yield* fileSystem.readFile(partPath);
+      const digest = Hex.encode(sha256(bytes));
+      if (claims.digest !== undefined && claims.digest !== digest)
+        return {
+          ok: false,
+          status: 400,
+          detail: "Attachment digest does not match.",
+        } satisfies StoreAttachmentUploadResult;
+      yield* fileSystem.link(partPath, finalPath).pipe(
+        Effect.catchIf(
+          (error) => error.reason._tag === "AlreadyExists",
+          () =>
+            Effect.gen(function* () {
+              const published = yield* fileSystem.readFile(finalPath);
+              if (Hex.encode(sha256(published)) !== digest)
+                return yield* Effect.fail("attachment_conflict");
             }),
-        }).pipe(
-          Effect.as(true),
-          Effect.catchIf(
-            (error) => error.reason._tag === "AlreadyExists",
-            () => Effect.succeed(false),
-          ),
-        );
-      }),
-    );
-    if (!published) {
-      if (Number((yield* fileSystem.stat(finalPath)).size) !== receivedBytes) {
-        return { ok: false, status: 409, detail: "Attachment already uploaded." };
-      }
-      const hashes = yield* Effect.forEach([partPath, finalPath], (file) =>
-        fileSystem.stream(file).pipe(
-          Stream.runFold(
-            () => NodeCrypto.createHash("sha256"),
-            (hash, chunk) => hash.update(chunk),
-          ),
-          Effect.map((hash) => hash.digest("hex")),
         ),
       );
-      if (hashes[0] !== hashes[1]) {
-        return { ok: false, status: 409, detail: "Attachment already uploaded." };
+      yield* staging.value.complete(claims.attachmentId, claims.owner, digest);
+    } else {
+      // Publishing without replacement keeps an upload and its cached text immutable.
+      const published = yield* fileSystem.link(partPath, finalPath).pipe(
+        Effect.as(true),
+        Effect.catch((error) => {
+          if (error.reason._tag === "AlreadyExists") return Effect.succeed(false);
+          return Effect.tryPromise({
+            try: () => NodeFSP.copyFile(partPath, finalPath, NodeFSP.constants.COPYFILE_EXCL),
+            catch: (cause) =>
+              PlatformError.systemError({
+                _tag:
+                  cause instanceof Error && "code" in cause && cause.code === "EEXIST"
+                    ? "AlreadyExists"
+                    : "Unknown",
+                module: "FileSystem",
+                method: "copyFile",
+                pathOrDescriptor: finalPath,
+                cause,
+              }),
+          }).pipe(
+            Effect.as(true),
+            Effect.catchIf(
+              (error) => error.reason._tag === "AlreadyExists",
+              () => Effect.succeed(false),
+            ),
+          );
+        }),
+      );
+      if (!published) {
+        if (Number((yield* fileSystem.stat(finalPath)).size) !== receivedBytes) {
+          return { ok: false, status: 409, detail: "Attachment already uploaded." };
+        }
+        const hashes = yield* Effect.forEach([partPath, finalPath], (file) =>
+          fileSystem.stream(file).pipe(
+            Stream.runFold(
+              () => NodeCrypto.createHash("sha256"),
+              (hash, chunk) => hash.update(chunk),
+            ),
+            Effect.map((hash) => hash.digest("hex")),
+          ),
+        );
+        if (hashes[0] !== hashes[1]) {
+          return { ok: false, status: 409, detail: "Attachment already uploaded." };
+        }
       }
+      const documents = yield* DocumentText.DocumentText;
+      yield* documents.ensure(finalPath);
     }
-    const documents = yield* DocumentText.DocumentText;
-    yield* documents.ensure(finalPath);
     return { ok: true } satisfies StoreAttachmentUploadResult;
   }).pipe(
     Effect.catch((cause) =>

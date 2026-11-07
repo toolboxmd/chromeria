@@ -22,6 +22,8 @@ const settle = (work: Promise<unknown>) =>
     () => undefined,
   );
 
+const DISCONNECTED_HUMAN = Symbol("disconnected human");
+
 /** Reserves control immediately, but drains running work before the new owner can act. */
 export class SessionControl {
   readonly agentId: string | null;
@@ -33,9 +35,14 @@ export class SessionControl {
   } | null = null;
   private pending: Promise<void> = Promise.resolve();
   private readonly handoff = new Set<Promise<void>>();
-  private owner: string | null = null;
+  private owner: string | typeof DISCONNECTED_HUMAN | null = null;
   private epoch = 0;
   private closed = false;
+  private readonly inputs = {
+    action: { count: 0, bytes: 0, maxCount: 64, maxBytes: 256 * 1024 },
+    control: { count: 0, bytes: 0, maxCount: 8, maxBytes: 64 * 1024 },
+    dialog: { count: 0, bytes: 0, maxCount: 8, maxBytes: 64 * 1024 },
+  };
 
   constructor(agentId: string | null, onGenerationChange: () => void = () => {}) {
     this.agentId = agentId;
@@ -46,8 +53,34 @@ export class SessionControl {
     return this.owner;
   }
 
+  get humanDisconnected() {
+    return this.owner === DISCONNECTED_HUMAN;
+  }
+
   get generation() {
     return this.epoch;
+  }
+
+  // Tab-wide, including old connections still draining native promises. Keep
+  // separate room for dialog replies: ownership changes also wait on the tail.
+  reserveInput(bytes: number, lane: "action" | "control" | "dialog"): (() => void) | null {
+    const budget = this.inputs[lane];
+    if (
+      !Number.isSafeInteger(bytes) ||
+      bytes < 0 ||
+      budget.count >= budget.maxCount ||
+      budget.bytes + bytes > budget.maxBytes
+    )
+      return null;
+    budget.count++;
+    budget.bytes += bytes;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      budget.count--;
+      budget.bytes -= bytes;
+    };
   }
 
   private enqueue<A>(run: () => Promise<A>): Promise<A> {
@@ -81,19 +114,25 @@ export class SessionControl {
       });
   }
 
-  private changeOwner(owner: string | null) {
+  private changeOwner(owner: string | typeof DISCONNECTED_HUMAN | null) {
     this.latestHuman = null;
     this.owner = owner;
     this.epoch++;
     this.onGenerationChange();
   }
 
-  private async action<A>(allowed: () => boolean, run: () => Promise<A>, deadlineMs?: number) {
+  private async action<A>(
+    allowed: () => boolean,
+    run: () => Promise<A>,
+    deadlineMs?: number,
+    authorize?: () => Promise<void>,
+  ) {
     this.assertOpen();
     if (!allowed())
       throw new BrowserControlInterrupted({ message: "You do not control this browser tab." });
     const epoch = this.epoch;
     return this.enqueue(async () => {
+      if (authorize) await authorize();
       this.assertOpen();
       if (epoch !== this.epoch || !allowed()) throw new BrowserControlInterrupted();
       if (deadlineMs !== undefined && performance.now() >= deadlineMs) {
@@ -110,7 +149,13 @@ export class SessionControl {
     return this.agentId === null || this.agentId === agentId;
   }
 
-  agent<A>(agentId: string, run: () => Promise<A>, deadlineMs?: number) {
+  /** May act on its own tab or one a human opened, never while a human controls it. */
+  agent<A>(
+    agentId: string,
+    run: () => Promise<A>,
+    deadlineMs?: number,
+    authorize?: () => Promise<void>,
+  ) {
     if (!this.agentMayAct(agentId))
       return Promise.reject(
         new BrowserControlInterrupted({
@@ -125,7 +170,12 @@ export class SessionControl {
           reason: "humanControl",
         }),
       );
-    return this.action(() => this.agentMayAct(agentId) && this.owner === null, run, deadlineMs);
+    return this.action(
+      () => this.agentMayAct(agentId) && this.owner === null,
+      run,
+      deadlineMs,
+      authorize,
+    );
   }
 
   agentCanActNow(agentId: string) {
@@ -146,8 +196,8 @@ export class SessionControl {
     });
   }
 
-  human<A>(viewerId: string, run: () => Promise<A>) {
-    return this.action(() => this.owner === viewerId, run);
+  human<A>(viewerId: string, run: () => Promise<A>, authorize?: () => Promise<void>) {
+    return this.action(() => this.owner === viewerId, run, undefined, authorize);
   }
 
   /**
@@ -177,13 +227,27 @@ export class SessionControl {
     return result;
   }
 
-  async take(viewerId: string) {
+  async take(viewerId: string, authorize?: () => Promise<void>, onReserved: () => void = () => {}) {
+    const admittedGeneration = this.epoch;
+    if (authorize) await authorize();
     this.assertOpen();
-    if (this.owner !== null && this.owner !== viewerId) {
+    if (this.epoch !== admittedGeneration) throw new BrowserControlInterrupted();
+    if (this.owner !== null && this.owner !== DISCONNECTED_HUMAN && this.owner !== viewerId) {
       throw new BrowserControlInterrupted({ message: "Another viewer controls this browser tab." });
     }
-    if (this.owner !== viewerId) this.changeOwner(viewerId);
-    return this.human(viewerId, async () => {});
+    const previousOwner = this.owner;
+    const changed = this.owner !== viewerId;
+    if (changed) this.changeOwner(viewerId);
+    const generation = this.epoch;
+    try {
+      onReserved();
+      await this.human(viewerId, async () => {}, authorize);
+    } catch (cause) {
+      // Retire only this failed reservation, never a later takeover or reopening.
+      if (changed && this.owner === viewerId && this.epoch === generation)
+        this.changeOwner(previousOwner);
+      throw cause;
+    }
   }
 
   async release(viewerId: string, afterDrain: () => Promise<void> = async () => {}) {
@@ -201,7 +265,14 @@ export class SessionControl {
   }
 
   async disconnect(viewerId: string, afterDrain?: () => Promise<void>) {
-    if (!this.closed && this.owner === viewerId) await this.release(viewerId, afterDrain);
+    if (!this.closed && this.owner === viewerId) {
+      // A lost stream retires its input, but only an explicit human release resumes agents.
+      this.changeOwner(DISCONNECTED_HUMAN);
+      await this.enqueue(async () => {
+        await Promise.all(this.handoff);
+        await afterDrain?.();
+      });
+    }
   }
 
   async close() {
