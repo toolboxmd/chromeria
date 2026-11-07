@@ -352,6 +352,7 @@ const cleanupFixture = (
     let outboxStatus: string | null = null;
     let fullStatusCalls = 0;
     let gitInspections = 0;
+    let branchReadStderr: string | null = null;
     let snapshotReads = 0;
     let terminalListener: ((event: TerminalMetadataStreamEvent) => Effect.Effect<void>) | undefined;
     let events: Stream.Stream<OrchestrationV2DomainEvent> = Stream.empty;
@@ -362,6 +363,8 @@ const cleanupFixture = (
         execute: (input) =>
           Effect.gen(function* () {
             gitInspections++;
+            if (input.operation === "StorageCleanup.branchChanged" && branchReadStderr !== null)
+              return { stdout: "", stderr: branchReadStderr, exitCode: 128 };
             // Before Git's own clean check: inside `git worktree remove`, or on
             // Windows the same status check the removal makes before deleting.
             if (
@@ -559,6 +562,9 @@ const cleanupFixture = (
         }) ?? Effect.void,
       gitInspections: () => gitInspections,
       fullStatusCalls: () => fullStatusCalls,
+      setBranchReadStderr: (stderr: string | null) => {
+        branchReadStderr = stderr;
+      },
       snapshotReads: () => snapshotReads,
       sessionLiveChecks: () => sessionLiveChecks,
       activate: (domainEvents: Stream.Stream<OrchestrationV2DomainEvent>) => {
@@ -2413,8 +2419,16 @@ describe("storage cleanup reports and local file policies", () => {
   it.live("compares the checked-out branch without a full status", () =>
     runCleanupTest(
       Effect.gen(function* () {
-        const { service, fs, repo, worktree, command, setThreads, fullStatusCalls } =
-          yield* cleanupFixture();
+        const {
+          service,
+          fs,
+          repo,
+          worktree,
+          command,
+          setThreads,
+          fullStatusCalls,
+          setBranchReadStderr,
+        } = yield* cleanupFixture();
         const changed = { outcome: "kept", reason: "Repository or branch changed" };
         yield* command(worktree, ["checkout", "--detach"]);
         expect((yield* service.runNow).entries[0]).toMatchObject(changed);
@@ -2445,6 +2459,21 @@ describe("storage cleanup reports and local file policies", () => {
         yield* fs.writeFileString(`${worktree}/.git`, "gitdir: /missing-git-directory\n");
         expect((yield* service.runNow).entries[0]).toMatchObject(changed);
         yield* fs.writeFileString(`${worktree}/.git`, gitFile);
+        for (const stderr of [
+          "fatal: not a git repository (or any of the parent directories): .git",
+          `fatal: gitfile does not point to a valid repository: ${worktree}/.git`,
+        ]) {
+          setBranchReadStderr(stderr);
+          expect((yield* service.runNow).entries[0]).toMatchObject(changed);
+          expect(yield* fs.readFileString(`${worktree}/tracked.txt`)).toBe("original\n");
+        }
+        const stderr = "fatal: detected dubious ownership in repository";
+        setBranchReadStderr(stderr);
+        expect((yield* service.runNow).entries[0]).toMatchObject({
+          outcome: "failed",
+          reason: `git: ${stderr}`,
+        });
+        setBranchReadStderr(null);
         expect((yield* service.runNow).entries[0]).toMatchObject({ outcome: "removed" });
         expect(fullStatusCalls()).toBe(0);
       }),
