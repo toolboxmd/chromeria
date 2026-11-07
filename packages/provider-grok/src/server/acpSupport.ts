@@ -33,6 +33,7 @@ interface GrokAcpRuntimeInput extends Omit<
 > {
   readonly grokSettings: GrokAcpRuntimeGrokSettings | null | undefined;
   readonly environment?: NodeJS.ProcessEnv;
+  readonly bare?: boolean;
   readonly runtimeMode?: RuntimeMode;
 }
 
@@ -57,15 +58,18 @@ export function grokAcpSpawnArgs(runtimeMode?: RuntimeMode): ReadonlyArray<strin
   }
 }
 
-function buildGrokAcpSpawnInput(
+export function buildGrokAcpSpawnInput(
   grokSettings: GrokAcpRuntimeGrokSettings | null | undefined,
   cwd: string,
   environment?: NodeJS.ProcessEnv,
   runtimeMode?: RuntimeMode,
+  bare?: boolean,
 ): AcpSessionRuntime.AcpSpawnInput {
   return {
     command: grokSettings?.binaryPath || "grok",
-    args: [...grokAcpSpawnArgs(runtimeMode)],
+    args: bare
+      ? [...grokAcpSpawnArgs(runtimeMode).slice(0, -1), "--no-leader", "stdio"]
+      : [...grokAcpSpawnArgs(runtimeMode)],
     cwd,
     env: {
       ...environment,
@@ -80,7 +84,7 @@ function resolveGrokAuthMethodId(environment: NodeJS.ProcessEnv | undefined): st
     : GROK_AUTH_METHOD_CACHED_TOKEN;
 }
 
-function grokAcpRuntimeProcessOwnership(
+export function grokAcpRuntimeProcessOwnership(
   processGroupPlatform: NodeJS.Platform,
 ): Pick<
   AcpSessionRuntime.AcpSessionRuntimeOptions,
@@ -137,10 +141,14 @@ export const makeGrokAcpRuntime = Effect.fn("GrokAcpSupport.makeGrokAcpRuntime")
         input.cwd,
         input.environment,
         input.runtimeMode,
+        input.bare,
       ),
       authMethodId: resolveGrokAuthMethodId(input.environment),
       cancelMeta: { ...input.cancelMeta, ...GROK_ACP_CANCEL_META },
       initializeMeta: GROK_ACP_INITIALIZE_META,
+      // Grok persists input chunks without broadcasting them unless the client
+      // requests live echoes. Their promptIndex is the native input identity.
+      clientCapabilities: { _meta: { "x.ai/userMessageEcho": true } },
       ...grokAcpRuntimeProcessOwnership(processGroupPlatform),
     }),
   );
