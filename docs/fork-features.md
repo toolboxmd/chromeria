@@ -214,7 +214,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/t3code/issues/12",
     "https://github.com/toolboxmd/t3code/issues/13",
     "https://github.com/toolboxmd/t3code/issues/14",
-    "https://github.com/toolboxmd/chromeria/issues/205"
+    "https://github.com/toolboxmd/chromeria/issues/205",
+    "https://github.com/toolboxmd/chromeria/issues/653"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/12",
@@ -247,6 +248,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/desktop/src/app/DesktopUserData.test.ts",
     "apps/desktop/src/app/DesktopUserData.ts",
     "apps/web/index.html",
+    "apps/web/public/manifest.webmanifest",
     "apps/web/src/branding.ts",
     "apps/web/src/bundledDev.test.ts",
     "apps/web/src/components/T3Wordmark.tsx",
