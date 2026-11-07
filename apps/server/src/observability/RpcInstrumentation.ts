@@ -1,16 +1,26 @@
-import { ORCHESTRATION_V2_WS_METHODS, WS_METHODS, type WsRpcGroup } from "@t3tools/contracts";
+import {
+  ORCHESTRATION_V2_WS_METHODS,
+  PROMACHOS_HOME_WS_METHODS,
+  SPECTRUM_WS_METHODS,
+  WS_METHODS,
+  type WsRpcGroup,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as References from "effect/References";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
 
+import { ISSUE_RPC_AGGREGATES } from "../issues/issueRpcHandlers.ts";
 import { rpcRequestDuration, rpcRequestsTotal, withMetrics } from "./Metrics.ts";
 
 type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 
 // Trace queries and dashboards depend on these labels, including deviations from method prefixes.
 const RPC_AGGREGATES = {
+  [SPECTRUM_WS_METHODS.abandonReport]: "spectrum",
+  [SPECTRUM_WS_METHODS.stop]: "spectrum",
+  [PROMACHOS_HOME_WS_METHODS.create]: "promachos",
   [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: "orchestrationV2",
   [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: "orchestration",
   [ORCHESTRATION_V2_WS_METHODS.getNativeChildWork]: "orchestration",
@@ -61,6 +71,13 @@ const RPC_AGGREGATES = {
   [WS_METHODS.serverRunStorageCleanup]: "server",
   [WS_METHODS.serverGetStorageCleanupReport]: "server",
   [WS_METHODS.serverGetDatabaseStorage]: "server",
+  [WS_METHODS.serverGetSettings]: "server",
+  [WS_METHODS.remoteTaskView]: "orchestration",
+  [WS_METHODS.remoteTaskRequest]: "orchestration",
+  [WS_METHODS.remoteTaskRequestRead]: "orchestration",
+  [WS_METHODS.remoteTaskStop]: "orchestration",
+  [WS_METHODS.peerGrantsList]: "peerLinks",
+  [WS_METHODS.peerGrantsUpdate]: "peerLinks",
   [WS_METHODS.peerLinksList]: "peerLinks",
   [WS_METHODS.peerLinksLink]: "peerLinks",
   [WS_METHODS.peerLinksUnlink]: "peerLinks",
@@ -90,6 +107,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.serverRefreshUsageRates]: "server",
   [WS_METHODS.serverSignalProcess]: "server",
   [WS_METHODS.serverReportClientActivity]: "server",
+  [WS_METHODS.scheduledTasksList]: "scheduledTasks",
   [WS_METHODS.scheduledTasksSubscribe]: "scheduledTasks",
   [WS_METHODS.scheduledTasksUpsert]: "scheduledTasks",
   [WS_METHODS.scheduledTasksSetEnabled]: "scheduledTasks",
@@ -199,6 +217,8 @@ const RPC_AGGREGATES = {
   [WS_METHODS.terminalClose]: "terminal",
   [WS_METHODS.subscribeTerminalMetadata]: "terminal",
   [WS_METHODS.previewOpen]: "preview",
+  [WS_METHODS.previewViewerOpen]: "preview",
+  [WS_METHODS.previewViewerClose]: "preview",
   [WS_METHODS.previewResize]: "preview",
   [WS_METHODS.previewAdjust]: "preview",
   [WS_METHODS.previewClose]: "preview",
@@ -215,6 +235,8 @@ const RPC_AGGREGATES = {
   [WS_METHODS.deviceSimlockIdentity]: "device",
   [WS_METHODS.deviceList]: "device",
   [WS_METHODS.deviceOpen]: "device",
+  [WS_METHODS.deviceViewerOpen]: "device",
+  [WS_METHODS.deviceViewerClose]: "device",
   [WS_METHODS.deviceClose]: "device",
   [WS_METHODS.deviceShutdown]: "device",
   [WS_METHODS.deviceDetail]: "device",
@@ -223,6 +245,8 @@ const RPC_AGGREGATES = {
   [WS_METHODS.subscribeServerConfig]: "server",
   [WS_METHODS.subscribeServerLifecycle]: "server",
   [WS_METHODS.subscribeAuthAccess]: "auth",
+  // Fork: GitHub Issues and their thread links (toolboxmd/t3code#27, #28).
+  ...ISSUE_RPC_AGGREGATES,
 } as const satisfies Readonly<Record<WsRpcMethod, string>>;
 
 const RPC_SPAN_PREFIX = "ws.rpc";
