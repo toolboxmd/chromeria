@@ -3,7 +3,6 @@ import {
   SpectrumSettings as SpectrumPreferences,
   type SpectrumSettingsSlot,
 } from "@t3tools/contracts";
-import * as Schema from "effect/Schema";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { useState } from "react";
 import { useEnvironmentProviders } from "../../state/environments";
@@ -22,8 +21,10 @@ import { ColorList } from "./ColorList";
 import { colorProviderChoices, defaultColor } from "./ColorPicker.logic";
 import {
   addSpectrumSlot,
+  isReservedSpectrumName,
   removeSpectrumSlot,
   renameSpectrumSlot,
+  spectrumSaveError,
   spectrumSlotColors,
   spectrumWhiteColors,
 } from "./SpectrumSettings.logic";
@@ -37,8 +38,6 @@ import {
   planScopedSettingsPatch,
   planScopedSettingsClear,
 } from "./scopedSettings";
-
-const decodeUnknownExitSpectrumPreferences = Schema.decodeUnknownExit(SpectrumPreferences);
 
 export function SpectrumSettings() {
   const { scope, target, targets, environments } = useSettingsScope();
@@ -115,11 +114,9 @@ function SpectrumEditor({
     change({ ...draft, slots: draft.slots.map((value, i) => (i === index ? slot : value)) });
   async function save(reset = false) {
     if (saving) return;
-    const decoded = decodeUnknownExitSpectrumPreferences(draft);
-    if (!reset && decoded._tag === "Failure") {
-      setError(
-        "Use two to eight unique labels, a primary Color for every slot and for White, at least two reply rounds and one to twelve turns per Color.",
-      );
+    const invalid = reset ? null : spectrumSaveError(draft);
+    if (invalid) {
+      setError(invalid);
       return;
     }
     const projectScope = scope.kind === "project" || scope.kind === "checkout";
@@ -187,9 +184,9 @@ function SpectrumEditor({
         }
       >
         <p className="px-3 text-sm text-muted-foreground sm:px-4">
-          Choose default slots and White, then ask an agent to start a Spectrum with just a
-          question. Each slot and White try their primary Color, then their fallbacks, only before a
-          turn starts. Save when you finish editing.
+          Choose default Colors and White, then ask an agent to start a Spectrum with just a
+          question. Each Color and White try their primary model, then their fallbacks, only before
+          a turn starts. Save when you finish editing.
         </p>
         {mixed && (
           <p role="status" className="px-3 text-sm text-muted-foreground sm:px-4">
@@ -207,11 +204,17 @@ function SpectrumEditor({
             {draft.slots.map((slot, index) => (
               <section key={slotKeys[index]} className="space-y-3">
                 <div className="flex items-center gap-3">
-                  <Label htmlFor={`spectrum-label-${index}`}>Slot label</Label>
+                  <Label htmlFor={`spectrum-label-${index}`}>Color name</Label>
                   <div className="flex-1">
                     <Input
                       id={`spectrum-label-${index}`}
                       value={slot.label}
+                      aria-invalid={isReservedSpectrumName(slot.label) || undefined}
+                      aria-describedby={
+                        isReservedSpectrumName(slot.label)
+                          ? `spectrum-label-${index}-reserved`
+                          : undefined
+                      }
                       disabled={disabled || saving}
                       onChange={(event) =>
                         change(renameSpectrumSlot(draft, index, event.target.value))
@@ -227,11 +230,16 @@ function SpectrumEditor({
                       setSlotKeys(slotKeys.filter((_, position) => position !== index));
                     }}
                   >
-                    Remove slot
+                    Remove Color
                   </Button>
                 </div>
+                {isReservedSpectrumName(slot.label) && (
+                  <p id={`spectrum-label-${index}-reserved`} className="text-xs text-destructive">
+                    White is the moderator below, not a Color. Rename this Color before saving.
+                  </p>
+                )}
                 <ColorList
-                  title={slot.label || `Slot ${index + 1}`}
+                  title={slot.label || `Color ${index + 1}`}
                   saved={[slot.primary, ...slot.fallbacks]}
                   providers={providers}
                   disabled={disabled || saving}
@@ -258,11 +266,11 @@ function SpectrumEditor({
                 }
               }}
             >
-              Add slot
+              Add Color
             </Button>
             {draft.slots.length === 0 && (
               <p className="text-sm text-muted-foreground">
-                Configure two to eight slots before starting with only a question.
+                Configure two to eight Colors before starting with only a question.
               </p>
             )}
             <section className="space-y-3">
