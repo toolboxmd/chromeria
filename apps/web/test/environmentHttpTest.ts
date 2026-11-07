@@ -23,13 +23,16 @@ import { HttpApiTest } from "effect/http-api";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 
 import { PrimaryEnvironmentHttpClient } from "../src/environments/primary/httpClient";
-import { __setPrimaryHttpRunnerForTests } from "../src/lib/runtime";
+import { __setPrimaryHttpRunnerForTests, __setRenewalRunnerForTests } from "../src/lib/runtime";
+import { SessionRenewal } from "@t3tools/client-runtime/authorization";
 
 type BrowserSessionHandler = (
   payload: AuthBrowserSessionRequest,
 ) => Effect.Effect<AuthBrowserSessionResult, EnvironmentAuthInvalidError>;
 
 interface EnvironmentHttpTestScenario {
+  readonly renewalLayer?: Layer.Layer<SessionRenewal.SessionRenewal>;
+  readonly renewal?: SessionRenewal.SessionRenewal["Service"]["ensure"];
   readonly descriptor?: () => Effect.Effect<ExecutionEnvironmentDescriptor>;
   readonly session?: () => Effect.Effect<AuthSessionState>;
   readonly browserSession?: BrowserSessionHandler;
@@ -102,6 +105,8 @@ export async function installEnvironmentHttpTest(scenario: EnvironmentHttpTestSc
               }),
             )
             .handle("token", () => unexpectedEndpoint("auth.token"))
+            .handle("renewSession", () => unexpectedEndpoint("auth.renewSession"))
+            .handle("enrollRenewal", () => unexpectedEndpoint("auth.enrollRenewal"))
             .handle("webSocketTicket", () => unexpectedEndpoint("auth.webSocketTicket"))
             .handle("webSocketTicketFor", () => unexpectedEndpoint("auth.webSocketTicketFor"))
             .handle(
@@ -115,6 +120,8 @@ export async function installEnvironmentHttpTest(scenario: EnvironmentHttpTestSc
               }),
             )
             .handle("revokePairingLink", () => unexpectedEndpoint("auth.revokePairingLink"))
+            .handle("clients", () => unexpectedEndpoint("auth.clients"))
+            .handle("setClientPerson", () => unexpectedEndpoint("auth.setClientPerson"))
             .handle("revokeClient", () => unexpectedEndpoint("auth.revokeClient"))
             .handle("revokeOtherClients", () => unexpectedEndpoint("auth.revokeOtherClients")),
         ),
@@ -124,13 +131,35 @@ export async function installEnvironmentHttpTest(scenario: EnvironmentHttpTestSc
     ),
   );
 
-  const runtime = ManagedRuntime.make(Layer.succeed(PrimaryEnvironmentHttpClient, client));
+  const runtime = ManagedRuntime.make(
+    Layer.mergeAll(
+      Layer.succeed(PrimaryEnvironmentHttpClient, client),
+      scenario.renewalLayer ??
+        Layer.mock(SessionRenewal.SessionRenewal, {
+          ensure: scenario.renewal ?? (() => Effect.succeed({ _tag: "NotEnrolled" })),
+          stage: (input) =>
+            Effect.succeed({
+              ...input,
+              epoch: "fixture",
+              current: "a".repeat(43),
+              generation: 0,
+              pending: null,
+              accessToken: null,
+              expiresAt: null,
+              renewAfter: null,
+            }),
+          complete: () => Effect.void,
+        }),
+    ),
+  );
   __setPrimaryHttpRunnerForTests((effect) => runtime.runPromise(effect));
+  __setRenewalRunnerForTests((effect) => runtime.runPromise(effect));
 
   return {
     calls,
     async dispose() {
       __setPrimaryHttpRunnerForTests();
+      __setRenewalRunnerForTests();
       await runtime.dispose();
     },
   };
