@@ -10,8 +10,10 @@ import {
   TurnItemId,
   type ModelSelection,
   type OrchestrationV2ThreadProjection,
+  type PurposeSelection,
   type ServerConfig,
 } from "@t3tools/contracts";
+import type { ThreadRuntimeSummary } from "@t3tools/client-runtime/state/models";
 import {
   v2Now,
   v2Projection,
@@ -37,6 +39,7 @@ const state = vi.hoisted(() => ({
   enqueue: vi.fn(async () => undefined),
   freshPending: false,
   compactDue: false,
+  canPromoteToSteer: false,
   setFreshPending: vi.fn(),
   clearDraft: vi.fn(),
   approve: vi.fn(),
@@ -58,8 +61,9 @@ const state = vi.hoisted(() => ({
     modelSelection: { instanceId: "codex", model: "gpt-5.4" },
     runtimeMode: "full-access",
     interactionMode: "default",
-    runtime: null,
+    runtime: null as ThreadRuntimeSummary | null,
     latestRun: null as unknown,
+    purposeSelection: undefined as PurposeSelection | undefined,
   },
 }));
 
@@ -103,6 +107,10 @@ vi.mock("./use-thread-selection", () => ({
   useThreadSelection: () => ({
     selectedThread: state.thread,
     selectedThreadCreation: null,
+    selectedThreadDetailRef: {
+      environmentId: state.thread.environmentId,
+      threadId: state.thread.id,
+    },
     selectedEnvironmentRuntime: {
       connectionState: state.connectionState,
       serverConfig: state.serverConfig,
@@ -120,7 +128,7 @@ vi.mock("./threads", async () => {
   const { Atom } = await import("effect/reactivity");
   return {
     environmentThreadDetails: {
-      queueWorkflowAtom: () => Atom.make(null),
+      queueWorkflowAtom: () => Atom.make({ canPromoteToSteer: state.canPromoteToSteer }),
       checkpointSummariesAtom: () => Atom.make([]),
       sequenceAtom: () => Atom.make(0),
       pendingRequestsAtom: () => Atom.make(state.pendingRequests),
@@ -196,7 +204,10 @@ beforeEach(() => {
   state.draft = { text: "Keep my draft", attachments: [], modelSelection: undefined };
   state.freshPending = false;
   state.compactDue = false;
+  state.canPromoteToSteer = false;
   state.thread.latestRun = null;
+  state.thread.runtime = null;
+  state.thread.purposeSelection = undefined;
   state.projection = null;
   state.serverConfig = {
     providers: [{ instanceId: "codex", driver: "codex", enabled: true }],
@@ -270,19 +281,85 @@ describe("mobile task permissions", () => {
     });
   });
 
-  it("keeps an armed fresh session for the message after an approval redirect", async () => {
-    state.grantedEnvironments.add("secondary");
-    state.freshPending = true;
-    const composer = useThreadComposerState(NO_SIDE_CHATS);
-    expect(await composer.onSendMessage(undefined, async () => true)).toBe("message");
-    expect(state.enqueue).toHaveBeenLastCalledWith(
-      expect.not.objectContaining({ freshContext: true }),
-    );
-    expect(state.setFreshPending).not.toHaveBeenCalled();
-    expect(await composer.onSendMessage()).toBe("message");
-    expect(state.enqueue).toHaveBeenLastCalledWith(expect.objectContaining({ freshContext: true }));
-    expect(state.setFreshPending).toHaveBeenCalledWith("secondary:thread", false);
-  });
+  it.each([true, false])(
+    "keeps an armed fresh session for the message after an approval redirect (purpose capability: %s)",
+    async (supportsPurpose) => {
+      state.grantedEnvironments.add("secondary");
+      state.serverConfig = {
+        ...state.serverConfig,
+        environment: {
+          capabilities: {
+            freshContext: true,
+            ...(supportsPurpose ? { executionPurposeVersions: [1] } : {}),
+          },
+        },
+      } as ServerConfig;
+      state.canPromoteToSteer = true;
+      state.thread.runtime = {
+        status: "running",
+        activeRunId: RunId.make("active-run"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        providerName: "Codex",
+        lastError: null,
+        updatedAt: "2026-09-05T00:00:00.000Z",
+      };
+      state.thread.latestRun = { runId: "active-run", status: "running" };
+      state.thread.purposeSelection = {
+        revision: 7,
+        scope: {
+          type: "single",
+          reference: {
+            host: "github.com",
+            repository: "toolboxmd/chromeria",
+            kind: "issue",
+            number: 636,
+          },
+        },
+      };
+      state.freshPending = true;
+      const composer = useThreadComposerState(NO_SIDE_CHATS);
+      expect(composer.followUpBehavior).toBe("steer");
+      expect(await composer.onSendMessage(undefined, async () => true)).toBe("message");
+      expect(state.enqueue).toHaveBeenLastCalledWith(
+        expect.not.objectContaining({ freshContext: true }),
+      );
+      expect(state.enqueue).toHaveBeenLastCalledWith(
+        expect.objectContaining({ dispatchMode: "steer" }),
+      );
+      expect(state.enqueue).toHaveBeenLastCalledWith(
+        supportsPurpose
+          ? expect.objectContaining({ purposeIntent: { version: 1, intent: { type: "target" } } })
+          : expect.not.objectContaining({ purposeIntent: expect.anything() }),
+      );
+      expect(state.setFreshPending).not.toHaveBeenCalled();
+      expect(await composer.onSendMessage()).toBe("message");
+      expect(state.enqueue).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          freshContext: true,
+          dispatchMode: "queue",
+          ...(supportsPurpose
+            ? { purposeIntent: { version: 1, intent: { type: "selection", expectedRevision: 7 } } }
+            : {}),
+        }),
+      );
+      if (!supportsPurpose) {
+        expect(state.enqueue).toHaveBeenLastCalledWith(
+          expect.not.objectContaining({ purposeIntent: expect.anything() }),
+        );
+      }
+      expect(state.setFreshPending).toHaveBeenCalledWith("secondary:thread", false);
+      state.freshPending = false;
+      expect(await composer.onSendMessage()).toBe("message");
+      expect(state.enqueue).toHaveBeenLastCalledWith(
+        expect.objectContaining({ dispatchMode: "steer" }),
+      );
+      expect(state.enqueue).toHaveBeenLastCalledWith(
+        supportsPurpose
+          ? expect.objectContaining({ purposeIntent: { version: 1, intent: { type: "target" } } })
+          : expect.not.objectContaining({ purposeIntent: expect.anything() }),
+      );
+    },
+  );
 
   it("compacts a stale thread before sending unless a fresh session is armed", async () => {
     state.grantedEnvironments.add("secondary");
