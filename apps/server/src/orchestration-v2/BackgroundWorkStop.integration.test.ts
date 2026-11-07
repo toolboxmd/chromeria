@@ -231,6 +231,23 @@ const stopEarlierBackgroundWork = ({
           );
           assert.isTrue(after.runs.find((run) => run.id === followUp?.id)?.queueHeld);
           assert.isTrue(after.runs.find((run) => run.id === wake?.id)?.queueHeld);
+          assert.equal(after.thread.forkRetirement?.token, CommandId.make("stop"));
+          assert.deepEqual(after.thread.forkResumedRetirements, []);
+          const immediateWake = yield* orchestrator
+            .dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make("immediate-provider-wake"),
+              threadId,
+              messageId: MessageId.make("message:immediate-provider-wake"),
+              text: "Background task completed.",
+              attachments: [],
+              dispatchMode: { type: "start_immediately" },
+              createdBy: "agent",
+              creationSource: "provider",
+            })
+            .pipe(Effect.result);
+          assert.equal(immediateWake._tag, "Failure");
+          assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runs, 3);
           assert.lengthOf(started, 1);
           return;
         }
