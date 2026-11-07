@@ -534,3 +534,49 @@ it.effect("explicit Colors and White never inherit the caller's model options", 
       );
   }).pipe(Effect.provide(runtime)),
 );
+
+it.effect(
+  "a Color on another provider instance with the same model slug drops foreign options",
+  () =>
+    Effect.gen(function* () {
+      const caller = yield* setup;
+      yield* (yield* EventSink.EventSinkV2).write({
+        events: [
+          {
+            id: EventId.make("caller:other-instance"),
+            type: "thread.metadata-updated",
+            threadId: caller.id,
+            occurredAt: NOW,
+            payload: {
+              ...caller,
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("other"),
+                model: "effort-only",
+                options: [
+                  { id: "fastMode", value: true },
+                  { id: "reasoningEffort", value: "medium" },
+                ],
+              },
+            },
+          },
+        ],
+      });
+      const { moderator: _moderator, ...request } = input;
+      const state = yield* (yield* Launch.SpectrumLaunchService).register({
+        ...request,
+        colors: [
+          {
+            label: "Blue",
+            selection,
+            fallbacks: [{ instanceId: "codex", model: "effort-only" }],
+          },
+          { label: "Red", instanceId: "codex", model: "effort-only" },
+        ],
+      });
+      for (const options of [
+        state.participants[0]!.fallbacks[0]!.options,
+        state.participants[1]!.selection.options,
+      ])
+        assert.deepStrictEqual(options, [{ id: "reasoningEffort", value: "medium" }]);
+    }).pipe(Effect.provide(runtime)),
+);

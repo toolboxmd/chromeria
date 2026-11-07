@@ -197,12 +197,9 @@ it.effect(
       expect(explicit.participants).toHaveLength(2);
       expect(explicit.white?.selection).toEqual(explicit.participants[0]?.selection);
       expect(explicit.participants[0]?.fallbacks).toEqual([]);
+      // The spare instance advertises no options, so the caller's reasoningEffort does not carry over.
       expect(explicit.participants[1]?.fallbacks).toEqual([
-        {
-          ...primary,
-          instanceId: spareInstanceId,
-          options: [{ id: "reasoningEffort", value: "high" }],
-        },
+        { ...primary, instanceId: spareInstanceId, options: [] },
       ]);
       for (const [key, labels] of [
         ["explicit-white-first", ["Sol", "Grok"]],

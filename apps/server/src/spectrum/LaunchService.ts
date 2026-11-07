@@ -225,12 +225,18 @@ const make = Effect.gen(function* () {
         (provider) => provider.instanceId === instanceId,
       );
       const model = spec.model ?? base.model;
-      // Another model keeps only the base options it advertises with a valid value.
-      const descriptors = provider?.models.find(
-        (candidate) => candidate.slug === model || candidate.aliases?.includes(model),
-      )?.capabilities?.optionDescriptors;
+      const advertised = (slug: string) =>
+        provider?.models.find(
+          (candidate) => candidate.slug === slug || candidate.aliases?.includes(slug),
+        );
+      const target = advertised(model);
+      const descriptors = target?.capabilities?.optionDescriptors;
+      // Another provider instance or model keeps only the base options it advertises with a valid value.
+      const unchanged =
+        instanceId === base.instanceId &&
+        (target?.slug ?? model) === (advertised(base.model)?.slug ?? base.model);
       const options =
-        base.options === undefined || model === base.model
+        base.options === undefined || unchanged
           ? base.options
           : base.options.filter(
               (option) =>
