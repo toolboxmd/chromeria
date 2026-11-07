@@ -185,7 +185,8 @@ upstream `main`.
 Absorptions do not run the full paired model evals. Upstream evals its own
 model-facing text. Select only the [eval](../evals/README.md) cases whose
 instructions, MCP tool descriptions, schemas, results or guidance are fork-owned
-and differ between the candidate and the absorbed upstream target. Run those on
+and changed in this absorption, comparing the candidate with the current `main`.
+No such change means no eval run; record the empty diff. Run those on
 the candidate, three samples each; a case fails when half or more fail. Compare a
 failing case with earlier baseline rows before calling it a regression. Record the
 selection and results in the owning Issue.
