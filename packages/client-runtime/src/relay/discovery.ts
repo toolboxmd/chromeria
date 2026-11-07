@@ -34,8 +34,8 @@ export interface RelayDiscoveredEnvironment {
 
 export interface RelayEnvironmentDiscoveryState {
   readonly environments: ReadonlyMap<string, RelayDiscoveredEnvironment>;
-  // Only a loaded account list distinguishes a missing registration from an unknown one.
-  readonly listed: boolean;
+  /** A complete account listing, tied to the session that obtained it. */
+  readonly listedSession: Option.Option<ClientCapabilities.CloudSessionIdentity>;
   readonly refreshing: boolean;
   readonly offline: boolean;
   readonly error: Option.Option<ConnectionAttemptError>;
@@ -51,7 +51,7 @@ export class RelayEnvironmentDiscovery extends Context.Service<
 
 export const EMPTY_RELAY_ENVIRONMENT_DISCOVERY_STATE: RelayEnvironmentDiscoveryState = {
   environments: new Map(),
-  listed: false,
+  listedSession: Option.none(),
   refreshing: false,
   offline: false,
   error: Option.none(),
@@ -64,7 +64,7 @@ export function relayEnvironmentRegistration(
   environmentId: string,
 ): RelayEnvironmentRegistration {
   if (state.environments.has(environmentId)) return "registered";
-  return state.listed ? "unregistered" : "unknown";
+  return Option.isSome(state.listedSession) ? "unregistered" : "unknown";
 }
 
 function validateStatus(
@@ -229,14 +229,16 @@ export const make = Effect.fn("RelayEnvironmentDiscovery.make")(function* () {
       yield* Ref.set(refreshGeneration, generation);
       yield* SubscriptionRef.set(state, {
         environments: new Map(),
-        listed: false,
+        listedSession: Option.none(),
         refreshing: true,
         offline: false,
         error: Option.none(),
       });
 
-      // Sign-out triggers credentials-changed refreshes and must settle to an empty list.
-      // Only session-level missing credentials are benign; relay-side auth failures must surface.
+      // Signed out is idle, not a failure: the refresh on credentials-changed also runs on sign-out and
+      // must settle to an empty list. Only the session-level "no credentials" error is benign; relay
+      // auth failures happen later and must surface.
+      const listingSession = yield* session.identity;
       const tokenResult = yield* Effect.result(session.clerkToken);
       if (tokenResult._tag === "Failure") {
         const failure = tokenResult.failure;
@@ -270,7 +272,13 @@ export const make = Effect.fn("RelayEnvironmentDiscovery.make")(function* () {
       const environments = yield* relay
         .listEnvironments({ clerkToken })
         .pipe(Effect.mapError(mapManagedRelayError));
-      if ((yield* Ref.get(accountGeneration)) !== generation) {
+      const currentSession = yield* session.identity;
+      if (
+        (yield* Ref.get(accountGeneration)) !== generation ||
+        Option.isNone(listingSession) ||
+        Option.isNone(currentSession) ||
+        listingSession.value !== currentSession.value
+      ) {
         return;
       }
       const next = new Map<string, RelayDiscoveredEnvironment>();
@@ -285,7 +293,7 @@ export const make = Effect.fn("RelayEnvironmentDiscovery.make")(function* () {
       yield* SubscriptionRef.update(state, (current) => ({
         ...current,
         environments: next,
-        listed: true,
+        listedSession: listingSession,
       }));
 
       yield* Effect.forEach(
@@ -314,6 +322,7 @@ export const make = Effect.fn("RelayEnvironmentDiscovery.make")(function* () {
             ...current,
             refreshing: false,
             error: Option.some(error),
+            listedSession: Option.none(),
           }));
         }),
       ),
@@ -345,7 +354,11 @@ export const make = Effect.fn("RelayEnvironmentDiscovery.make")(function* () {
             yield* SubscriptionRef.set(state, EMPTY_RELAY_ENVIRONMENT_DISCOVERY_STATE);
             yield* refresh.pipe(Effect.forkScoped);
           })
-        : Effect.void,
+        : reason === "application-active" ||
+            reason === "application-active-probe" ||
+            reason === "application-active-long"
+          ? refresh.pipe(Effect.forkScoped)
+          : Effect.void,
     ),
     Effect.forkScoped,
   );
