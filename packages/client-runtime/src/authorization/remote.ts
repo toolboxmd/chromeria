@@ -147,6 +147,7 @@ export const bootstrapRemoteBearerSession = Effect.fn(
 )(function* (input: {
   readonly httpBaseUrl: string;
   readonly credential: string;
+  readonly renewalCommitment?: string;
   readonly scopes?: ReadonlyArray<AuthEnvironmentScope>;
   readonly clientMetadata?: AuthClientPresentationMetadata;
   readonly timeoutMs?: number;
@@ -162,6 +163,9 @@ export const bootstrapRemoteBearerSession = Effect.fn(
         subject_token: input.credential,
         subject_token_type: AuthEnvironmentBootstrapTokenType,
         requested_token_type: AuthAccessTokenType,
+        ...(input.renewalCommitment === undefined
+          ? {}
+          : { renewal_commitment: input.renewalCommitment }),
         ...(input.scopes ? { scope: encodeOAuthScope(input.scopes) } : {}),
         ...clientMetadataTokenExchangeFields(input.clientMetadata),
       },
