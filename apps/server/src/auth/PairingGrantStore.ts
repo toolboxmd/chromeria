@@ -1,5 +1,6 @@
 import {
   AuthStandardClientScopes,
+  AuthCookieMirrorWriteScope,
   type AuthEnvironmentScope,
   type AuthPairingLink,
   type ServerAuthBootstrapMethod,
@@ -443,6 +444,22 @@ const make = Effect.gen(function* () {
   const consume: PairingGrantStore["Service"]["consume"] = Effect.fn("PairingGrantStore.consume")(
     function* (credential, input) {
       const now = yield* DateTime.now;
+      if (
+        desktopBootstrapSecret !== undefined &&
+        (yield* isValidDesktopBootstrapToken(
+          desktopBootstrapSecret,
+          credential,
+          now.epochMilliseconds,
+          "cookie-mirror",
+        ).pipe(Effect.provideService(Mac.Mac, mac)))
+      ) {
+        return {
+          method: "desktop-bootstrap",
+          scopes: [AuthCookieMirrorWriteScope],
+          subject: "desktop-cookie-mirror",
+          expiresAt: DateTime.add(now, { milliseconds: DESKTOP_BOOTSTRAP_TOKEN_WINDOW_MS }),
+        } satisfies BootstrapGrant;
+      }
       if (yield* consumeRotatingDesktopToken(credential, now.epochMilliseconds)) {
         return {
           method: "desktop-bootstrap",
