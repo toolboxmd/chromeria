@@ -8,14 +8,20 @@ import { act, render, stubGlobal } from "../../../test/render";
 
 vi.mock(import("~/state/device"), async (original) => ({
   ...(await original()),
-  useDeviceHubAccess: () => access,
+  useDeviceHubAccessState: () => ({ access, error: null, refresh: refreshAccess }),
 }));
 vi.mock(import("./DevicePhoneViewport"), () => ({
   DevicePhoneViewport: () => <></>,
 }));
 import { DeviceStreamView } from "./DeviceStreamView";
 
-const access = { httpBase: "http://test", wsBase: "ws://test", query: {}, credentials: true };
+const refreshAccess = () => {};
+const access = {
+  httpBase: "http://test",
+  wsBase: "ws://test",
+  query: { hostId: "local" },
+  credentials: true,
+};
 function setup() {
   const registry = AtomRegistry.make();
   const touches: unknown[] = [];
