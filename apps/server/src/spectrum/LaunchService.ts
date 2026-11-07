@@ -39,7 +39,7 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderAdapters from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Prism from "../prism/PrismService.ts";
-import { colorModelSelection } from "../prism/modelOptions.ts";
+import { colorModelSelection, invalidOptionSelections } from "../prism/modelOptions.ts";
 import { resolveSchedulerRun, schedulerRunOpenGuard } from "../scheduledTaskChecks/handoff.ts";
 import { spectrumTaskEvent, spectrumTaskId, spectrumTaskRow } from "./delegatedTask.ts";
 import { spectrumRegistrationPlan } from "./registrationPlan.ts";
@@ -224,11 +224,32 @@ const make = Effect.gen(function* () {
       const provider = (yield* providers.getProviders).find(
         (provider) => provider.instanceId === instanceId,
       );
+      const model = spec.model ?? base.model;
+      const advertised = (slug: string) =>
+        provider?.models.find(
+          (candidate) => candidate.slug === slug || candidate.aliases?.includes(slug),
+        );
+      const target = advertised(model);
+      const descriptors = target?.capabilities?.optionDescriptors;
+      // Another provider instance or model keeps only the base options it advertises with a valid value.
+      const unchanged =
+        instanceId === base.instanceId &&
+        (target?.slug ?? model) === (advertised(base.model)?.slug ?? base.model);
+      const options =
+        base.options === undefined || unchanged
+          ? base.options
+          : base.options.filter(
+              (option) =>
+                descriptors !== undefined &&
+                descriptors.some(({ id }) => id === option.id) &&
+                invalidOptionSelections([option], descriptors).length === 0,
+            );
       return colorModelSelection(
         {
           ...base,
+          ...(options === undefined ? {} : { options }),
           instanceId,
-          model: spec.model ?? base.model,
+          model,
           ...(spec.effort === undefined ? {} : { effort: spec.effort }),
         },
         provider?.driver,
@@ -287,7 +308,12 @@ const make = Effect.gen(function* () {
               next === undefined ||
               (error.code !== "provider_unavailable" && error.code !== "model_unavailable")
             )
-              return Effect.fail(error);
+              return Effect.fail(
+                new OrchestratorMcpFailure({
+                  code: error.code,
+                  message: `${color.label} (${candidate === undefined ? `Prism ${color.role ?? "worker"}` : `${candidate.instanceId}/${candidate.model}`}) was refused: ${error.message}`,
+                }),
+              );
             if (candidate !== undefined) attempted.push(candidate);
             return resolveFrom(next, rest);
           }),

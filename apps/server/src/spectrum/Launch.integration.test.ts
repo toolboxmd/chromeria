@@ -66,7 +66,25 @@ const registry = Layer.mock(Providers.ProviderRegistry)({
         installed: true,
         status: "ready" as const,
         availability: "available" as const,
-        models: [{ slug: "test-model", name: "Test", isCustom: false, capabilities: null }],
+        models: [
+          { slug: "test-model", name: "Test", isCustom: false, capabilities: null },
+          { slug: "plain-model", name: "Plain", isCustom: false, capabilities: null },
+          {
+            slug: "effort-only",
+            name: "Effort only",
+            isCustom: false,
+            capabilities: {
+              optionDescriptors: [
+                {
+                  id: "reasoningEffort",
+                  label: "Reasoning",
+                  type: "select" as const,
+                  options: [{ id: "medium", label: "Medium" }],
+                },
+              ],
+            },
+          },
+        ],
       },
     ],
   ),
@@ -472,5 +490,93 @@ it.effect(
         { id: "serviceTier", value: "priority" },
         { id: "reasoningEffort", value: "medium" },
       ]);
+    }).pipe(Effect.provide(runtime)),
+);
+
+it.effect("explicit Colors and White never inherit the caller's model options", () =>
+  Effect.gen(function* () {
+    const caller = yield* setup;
+    yield* (yield* EventSink.EventSinkV2).write({
+      events: [
+        {
+          id: EventId.make("caller:fast-mode"),
+          type: "thread.metadata-updated",
+          threadId: caller.id,
+          occurredAt: NOW,
+          payload: {
+            ...caller,
+            modelSelection: {
+              ...selection,
+              options: [
+                { id: "fastMode", value: true },
+                { id: "reasoningEffort", value: "high" },
+              ],
+            },
+          },
+        },
+      ],
+    });
+    const { moderator: _moderator, ...request } = input;
+    const state = yield* (yield* Launch.SpectrumLaunchService).register({
+      ...request,
+      colors: [
+        { label: "Astra", instanceId: "codex", model: "effort-only", effort: "medium" },
+        { label: "Red", model: "effort-only" },
+        { label: "Plain", model: "plain-model" },
+      ],
+    });
+    for (const member of [...state.participants, state.white!])
+      assert.deepStrictEqual(
+        member.selection.options ?? [],
+        member.label === "Red" || member.label === "Plain"
+          ? []
+          : [{ id: "reasoningEffort", value: "medium" }],
+      );
+  }).pipe(Effect.provide(runtime)),
+);
+
+it.effect(
+  "a Color on another provider instance with the same model slug drops foreign options",
+  () =>
+    Effect.gen(function* () {
+      const caller = yield* setup;
+      yield* (yield* EventSink.EventSinkV2).write({
+        events: [
+          {
+            id: EventId.make("caller:other-instance"),
+            type: "thread.metadata-updated",
+            threadId: caller.id,
+            occurredAt: NOW,
+            payload: {
+              ...caller,
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("other"),
+                model: "effort-only",
+                options: [
+                  { id: "fastMode", value: true },
+                  { id: "reasoningEffort", value: "medium" },
+                ],
+              },
+            },
+          },
+        ],
+      });
+      const { moderator: _moderator, ...request } = input;
+      const state = yield* (yield* Launch.SpectrumLaunchService).register({
+        ...request,
+        colors: [
+          {
+            label: "Blue",
+            selection,
+            fallbacks: [{ instanceId: "codex", model: "effort-only" }],
+          },
+          { label: "Red", instanceId: "codex", model: "effort-only" },
+        ],
+      });
+      for (const options of [
+        state.participants[0]!.fallbacks[0]!.options,
+        state.participants[1]!.selection.options,
+      ])
+        assert.deepStrictEqual(options, [{ id: "reasoningEffort", value: "medium" }]);
     }).pipe(Effect.provide(runtime)),
 );

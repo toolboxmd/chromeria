@@ -197,12 +197,9 @@ it.effect(
       expect(explicit.participants).toHaveLength(2);
       expect(explicit.white?.selection).toEqual(explicit.participants[0]?.selection);
       expect(explicit.participants[0]?.fallbacks).toEqual([]);
+      // The spare instance advertises no options, so the caller's reasoningEffort does not carry over.
       expect(explicit.participants[1]?.fallbacks).toEqual([
-        {
-          ...primary,
-          instanceId: spareInstanceId,
-          options: [{ id: "reasoningEffort", value: "high" }],
-        },
+        { ...primary, instanceId: spareInstanceId, options: [] },
       ]);
       for (const [key, labels] of [
         ["explicit-white-first", ["Sol", "Grok"]],
@@ -284,6 +281,24 @@ it.effect("start_spectrum rejects invalid values before persisting a Spectrum", 
           ],
         },
         /labels must be unique/,
+      ],
+      [
+        {
+          colors: [
+            { label: "Blue", ...primary },
+            {
+              label: "Red",
+              selection: {
+                ...primary,
+                options: [
+                  { id: "serviceTier", value: "fast" },
+                  { id: "serviceTier", value: "flex" },
+                ],
+              },
+            },
+          ],
+        },
+        /^Red \(codex\/test-model\) was refused: .*serviceTier was specified more than once/,
       ],
     ] as const) {
       const result = yield* toolkit
