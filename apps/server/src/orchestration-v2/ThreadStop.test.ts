@@ -3083,6 +3083,69 @@ it.effect("ancestor Stop wins before producer offer", () =>
   }).pipe(Effect.scoped),
 );
 
+// A Stopped child parks its grandchild's completion until resume; the parked
+// wake must not hold the child's own task open.
+it.effect.each(["finishes after Stop", "was claimed before Stop and startup repairs"] as const)(
+  "a Stopped child settles while its grandchild result %s",
+  (ordering) =>
+    Effect.gen(function* () {
+      const offers =
+        yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const before = ordering !== "finishes after Stop";
+        const rootId = ThreadId.make(`retired-settle-root:${before}`);
+        yield* createWatchingThread(rootId, 112);
+        yield* send(rootId, "delegate", "start_immediately");
+        const childId = yield* delegate(rootId, `cancelled child ${before}`);
+        const childRun = (yield* orchestrator.getThreadProjection(childId)).runs[0]!;
+        const grandchildId = yield* delegate(childId, `parked grandchild ${before}`);
+        const grandchildRun = (yield* orchestrator.getThreadProjection(grandchildId)).runs[0]!;
+        const finishGrandchild = completeRunWithoutProvider(
+          grandchildId,
+          grandchildRun.id,
+          `retired-settle-grandchild:${before}`,
+        ).pipe(Effect.andThen(orchestrator.recoverDelegatedTask(grandchildId, grandchildRun.id)));
+        // The claimed wake was never dispatched before the server restarted.
+        if (before) yield* finishGrandchild.pipe(Effect.andThen(Queue.take(offers)));
+        yield* orchestrator.dispatch({
+          type: "thread.stop",
+          threadId: childId,
+          commandId: CommandId.make(`retired-settle-stop:${before}`),
+        });
+        yield* orchestrator.recoverDelegatedTask(childId, childRun.id);
+        if (before) yield* orchestrator.recoverDelegatedTasks;
+        else yield* finishGrandchild;
+
+        const child = yield* orchestrator.getThreadProjection(childId);
+        assert.equal(child.subagents[0]?.completionDelivery?.state, "claimed");
+        const task = (yield* orchestrator.getThreadProjection(rootId)).subagents.find(
+          (candidate) => candidate.childThreadId === childId,
+        )!;
+        assert.deepEqual(
+          { status: task.status, settled: task.result !== null },
+          { status: "interrupted", settled: true },
+        );
+        assert.isFalse(yield* orchestrator.delegatedTaskResultPending(childId));
+        // Only the root, which owes A's result, is woken; startup may re-offer it.
+        assert.deepEqual(
+          [...new Set((yield* Queue.clear(offers)).map((offer) => offer.threadId))],
+          [rootId],
+        );
+        yield* send(childId, "resume after cancel", "start_immediately");
+        yield* orchestrator.recoverDelegatedTasks;
+        const wake = yield* Queue.take(offers);
+        assert.equal(wake.threadId, childId);
+      }).pipe(
+        Effect.provide(layerTest),
+        Effect.provideService(ProviderContinuationRequests.ProviderContinuationRequests, {
+          offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+          take: Effect.never,
+        }),
+      );
+    }),
+);
+
 it.effect("a queued completion survives startup held until queue.resume", () =>
   Effect.gen(function* () {
     const offers =
