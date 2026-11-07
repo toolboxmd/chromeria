@@ -14,6 +14,7 @@ import {
   addSpectrumSlot,
   removeSpectrumSlot,
   renameSpectrumSlot,
+  spectrumSaveError,
   spectrumSlotColors,
   spectrumWhiteColors,
 } from "./SpectrumSettings.logic";
@@ -27,11 +28,16 @@ const red = { label: "Red", primary, fallbacks: [] };
 const judge = { instanceId: ProviderInstanceId.make("claude"), model: "opus" };
 const white = { primary: judge, fallbacks: [primary] };
 const configured = { ...DEFAULT_SPECTRUM_SETTINGS, slots: [blue, red], white };
+it("refuses to save a Color named White, in any case", () => {
+  expect(spectrumSaveError(configured)).toBeNull();
+  for (const name of ["White", " white ", "WHITE"]) {
+    const renamed = renameSpectrumSlot(configured, 1, name);
+    expect(renamed.white).toEqual(white);
+    expect(spectrumSaveError(renamed)).toMatch(/White is reserved/);
+  }
+  expect(spectrumSaveError(renameSpectrumSlot(configured, 1, "Whitehall"))).toBeNull();
+});
 it("keeps White separate from slot edits and allocates unique labels", () => {
-  // A slot may be called White; it stays a slot and White keeps its own Colors.
-  const renamed = renameSpectrumSlot(configured, 1, "White");
-  expect(renamed.slots.map((slot) => slot.label)).toEqual(["Blue", "White"]);
-  expect(renamed.white).toEqual(white);
   expect(removeSpectrumSlot(configured, 1).white).toEqual(white);
   expect(addSpectrumSlot(configured, primary).white).toEqual(white);
   const first = addSpectrumSlot(DEFAULT_SPECTRUM_SETTINGS, primary);

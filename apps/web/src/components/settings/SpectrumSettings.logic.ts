@@ -1,9 +1,24 @@
 import {
   type Color,
-  type SpectrumSettings,
+  SpectrumSettings,
   type SpectrumSettingsSlot,
   type SpectrumWhite,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+
+const decodeUnknownExitSpectrumSettings = Schema.decodeUnknownExit(SpectrumSettings);
+
+/** White moderates and never speaks as a Color, so no Color may take its name. */
+export const isReservedSpectrumName = (label: string) => label.trim().toLowerCase() === "white";
+
+export function spectrumSaveError(settings: SpectrumSettings): string | null {
+  if (settings.slots.some((slot) => isReservedSpectrumName(slot.label))) {
+    return "White is reserved for the moderator. Rename the Color called White.";
+  }
+  return decodeUnknownExitSpectrumSettings(settings)._tag === "Failure"
+    ? "Use two to eight Colors with unique names, a primary model for every Color and for White, at least two reply rounds and one to twelve turns per Color."
+    : null;
+}
 
 export function renameSpectrumSlot(
   settings: SpectrumSettings,

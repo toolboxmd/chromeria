@@ -117,7 +117,7 @@ describe("ColorList while a save is pending", () => {
   });
 });
 
-describe("ColorList adding a Color", () => {
+describe("ColorList adding a fallback", () => {
   it("appends the picked Color and keeps existing rows mounted when the save lands", async () => {
     const codex: ColorProviderChoice = {
       instanceId: first.instanceId,
@@ -132,7 +132,7 @@ describe("ColorList adding a Color", () => {
     await list.render();
     const [firstRow, secondRow] = rows();
     await act(() =>
-      container.querySelector<HTMLButtonElement>('[aria-label="Add Reviewer Color"]')!.click(),
+      container.querySelector<HTMLButtonElement>('[aria-label="Add Reviewer fallback"]')!.click(),
     );
     expect(list.save).toHaveBeenCalledWith([
       first,

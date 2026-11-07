@@ -168,6 +168,7 @@ export function ColorList({
   // The Color being added; null follows the scope's first choice.
   const [adding, setAdding] = useState<Color | null>(null);
   const addColor = adding ?? defaultColor(providers);
+  const addKind = draft.length === 0 ? "primary" : "fallback";
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -232,7 +233,7 @@ export function ColorList({
           <ColorPicker
             value={addColor}
             providers={providers}
-            label={`New ${title} Color`}
+            label={`New ${title} ${addKind}`}
             disabled={disabled}
             onChange={setAdding}
           />
@@ -249,9 +250,9 @@ export function ColorList({
               commit([...draft, editablePreference(addColor, nextPrismEntryId(draft))]);
               setAdding(null);
             }}
-            aria-label={`Add ${title} Color`}
+            aria-label={`Add ${title} ${addKind}`}
           >
-            Add Color
+            Add {addKind}
           </Button>
         </div>
       )}
