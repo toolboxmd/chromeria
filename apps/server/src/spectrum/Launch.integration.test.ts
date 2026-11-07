@@ -68,6 +68,7 @@ const registry = Layer.mock(Providers.ProviderRegistry)({
         availability: "available" as const,
         models: [
           { slug: "test-model", name: "Test", isCustom: false, capabilities: null },
+          { slug: "plain-model", name: "Plain", isCustom: false, capabilities: null },
           {
             slug: "effort-only",
             name: "Effort only",
@@ -504,7 +505,13 @@ it.effect("explicit Colors and White never inherit the caller's model options", 
           occurredAt: NOW,
           payload: {
             ...caller,
-            modelSelection: { ...selection, options: [{ id: "fastMode", value: true }] },
+            modelSelection: {
+              ...selection,
+              options: [
+                { id: "fastMode", value: true },
+                { id: "reasoningEffort", value: "high" },
+              ],
+            },
           },
         },
       ],
@@ -515,12 +522,15 @@ it.effect("explicit Colors and White never inherit the caller's model options", 
       colors: [
         { label: "Astra", instanceId: "codex", model: "effort-only", effort: "medium" },
         { label: "Red", model: "effort-only" },
+        { label: "Plain", model: "plain-model" },
       ],
     });
     for (const member of [...state.participants, state.white!])
       assert.deepStrictEqual(
         member.selection.options ?? [],
-        member.label === "Red" ? [] : [{ id: "reasoningEffort", value: "medium" }],
+        member.label === "Red" || member.label === "Plain"
+          ? []
+          : [{ id: "reasoningEffort", value: "medium" }],
       );
   }).pipe(Effect.provide(runtime)),
 );

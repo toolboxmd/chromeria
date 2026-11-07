@@ -39,7 +39,7 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderAdapters from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Prism from "../prism/PrismService.ts";
-import { colorModelSelection } from "../prism/modelOptions.ts";
+import { colorModelSelection, invalidOptionSelections } from "../prism/modelOptions.ts";
 import { resolveSchedulerRun, schedulerRunOpenGuard } from "../scheduledTaskChecks/handoff.ts";
 import { spectrumTaskEvent, spectrumTaskId, spectrumTaskRow } from "./delegatedTask.ts";
 import { spectrumRegistrationPlan } from "./registrationPlan.ts";
@@ -225,16 +225,19 @@ const make = Effect.gen(function* () {
         (provider) => provider.instanceId === instanceId,
       );
       const model = spec.model ?? base.model;
-      // Another model keeps only the base options it advertises, like delegate_task inheritance.
+      // Another model keeps only the base options it advertises with a valid value.
       const descriptors = provider?.models.find(
         (candidate) => candidate.slug === model || candidate.aliases?.includes(model),
       )?.capabilities?.optionDescriptors;
       const options =
-        base.options === undefined ||
-        descriptors === undefined ||
-        (instanceId === base.instanceId && model === base.model)
+        base.options === undefined || model === base.model
           ? base.options
-          : base.options.filter((option) => descriptors.some(({ id }) => id === option.id));
+          : base.options.filter(
+              (option) =>
+                descriptors !== undefined &&
+                descriptors.some(({ id }) => id === option.id) &&
+                invalidOptionSelections([option], descriptors).length === 0,
+            );
       return colorModelSelection(
         {
           ...base,
