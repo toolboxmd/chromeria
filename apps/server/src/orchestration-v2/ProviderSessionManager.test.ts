@@ -1,10 +1,30 @@
+import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
+import * as CheckpointService from "./CheckpointService.ts";
+import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
+import * as RunExecutionService from "./RunExecutionService.ts";
+import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
 import * as NetAddress from "effect/net/NetAddress";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import {
+  AuthSessionId,
   EnvironmentId,
+  CommandId,
+  CheckpointScopeId,
+  MessageId,
+  NodeId,
+  RunId,
+  RunAttemptId,
+  ProviderTurnId,
+  TurnItemId,
+  type OrchestrationV2Run,
+  type OrchestrationV2RunAttempt,
+  type OrchestrationV2ExecutionNode,
+  type OrchestrationV2CheckpointScope,
+  type BareSupport,
   type ModelSelection,
   type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
@@ -422,13 +442,16 @@ function unimplemented(detail: string) {
 const makeProviderAdapter = Effect.fnUntraced(function* (
   state: Ref.Ref<TestProviderRuntimeState>,
   options: {
+    readonly bareSupport?: Effect.Effect<BareSupport>;
     readonly failEventStream?: boolean;
     readonly capabilities?: OrchestrationV2ProviderCapabilities;
     readonly extensionStatuses?: OrchestrationV2ProviderSession["extensionStatuses"];
     readonly mcpConfigs?: Ref.Ref<
       ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
     >;
+    readonly createdSessions?: ProviderAdapter.ProviderAdapterV2SessionRuntime["createdSessions"];
     readonly beforeOpen?: (input: {
+      readonly newSessionInstructions?: string;
       readonly providerSessionId: ProviderSessionId;
       readonly initialProviderItemIdentityVersion?: 2;
     }) => Effect.Effect<void>;
@@ -460,6 +483,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: ProviderInstanceId.make("codex"),
     driver: CODEX_DRIVER,
+    ...(options.bareSupport === undefined ? {} : { bareSupport: options.bareSupport }),
     getCapabilities: () => Effect.succeed(options.capabilities ?? CodexCapabilities),
     planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
     openSession: (input) =>
@@ -512,6 +536,9 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
           get providerSession() {
             return session;
           },
+          ...(options.createdSessions === undefined
+            ? {}
+            : { createdSessions: options.createdSessions }),
           events: options.failEventStream
             ? Stream.fail(
                 new ProviderAdapter.ProviderAdapterEventStreamError({
@@ -576,16 +603,24 @@ function layerTest(input: {
   readonly state: Ref.Ref<TestProviderRuntimeState>;
   readonly idleTimeoutMs: number;
   readonly maxIdlePinMs?: number;
+  readonly bareSupport?: Effect.Effect<BareSupport>;
   readonly failEventStream?: boolean;
   readonly capabilities?: OrchestrationV2ProviderCapabilities;
   readonly extensionStatuses?: OrchestrationV2ProviderSession["extensionStatuses"];
   readonly mcpConfigs?: Ref.Ref<
     ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
   >;
+  readonly createdSessions?: ProviderAdapter.ProviderAdapterV2SessionRuntime["createdSessions"];
   readonly beforeOpen?: (input: {
+    readonly newSessionInstructions?: string;
     readonly providerSessionId: ProviderSessionId;
     readonly initialProviderItemIdentityVersion?: 2;
   }) => Effect.Effect<void>;
+  readonly observeIngest?: (
+    input: Parameters<
+      ProviderEventIngestor.ProviderEventIngestorV2["Service"]["ingestNormalized"]
+    >[0],
+  ) => Effect.Effect<void>;
   readonly failReleaseEventWrites?: boolean;
   readonly flakyReleaseWrites?: FlakyReleaseWrites;
   readonly pauseAttachWrite?: Parameters<typeof layerPausingAttachEventSink>[0];
@@ -619,12 +654,14 @@ function layerTest(input: {
   const layerRegistry = Layer.unwrap(
     makeProviderAdapter(input.state, {
       failEventStream: input.failEventStream ?? false,
+      ...(input.bareSupport === undefined ? {} : { bareSupport: input.bareSupport }),
       ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
       ...(input.extensionStatuses === undefined
         ? {}
         : { extensionStatuses: input.extensionStatuses }),
       ...(input.mcpConfigs === undefined ? {} : { mcpConfigs: input.mcpConfigs }),
       ...(input.beforeOpen === undefined ? {} : { beforeOpen: input.beforeOpen }),
+      ...(input.createdSessions === undefined ? {} : { createdSessions: input.createdSessions }),
       ...(input.hasPendingBackgroundWork === undefined
         ? {}
         : { hasPendingBackgroundWork: input.hasPendingBackgroundWork }),
@@ -650,7 +687,7 @@ function layerTest(input: {
     input.pauseResolve === undefined
       ? layerTestMcpRegistry
       : layerPausingMcpRegistry(input.pauseResolve);
-  const layerProviderEventIngestorTest = ProviderEventIngestor.layer.pipe(
+  const layerProviderEventIngestorBase = ProviderEventIngestor.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
@@ -666,7 +703,22 @@ function layerTest(input: {
       ),
     ),
   );
+  const layerProviderEventIngestorTest =
+    input.observeIngest === undefined
+      ? layerProviderEventIngestorBase
+      : Layer.effect(
+          ProviderEventIngestor.ProviderEventIngestorV2,
+          Effect.gen(function* () {
+            const delegate = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+            return ProviderEventIngestor.ProviderEventIngestorV2.of({
+              ...delegate,
+              ingestNormalized: (event) =>
+                input.observeIngest!(event).pipe(Effect.andThen(delegate.ingestNormalized(event))),
+            });
+          }),
+        ).pipe(Layer.provide(layerProviderEventIngestorBase));
   return Layer.mergeAll(
+    layerProviderEventIngestorTest,
     layerTestStores,
     layerConfiguredEventSink,
     IdAllocator.layer,
@@ -1150,6 +1202,60 @@ it.effect("ProviderSessionManagerV2 opens a duplicate session only once", () =>
 );
 
 it.effect(
+  "ProviderSessionManagerV2 forwards creation instructions once and preserves receipts on cached opens",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const forwarded = yield* Ref.make<Array<string | undefined>>([]);
+      const receipts = [
+        { nativeSessionId: "grok-created", text: "rules A", site: "fallback" as const },
+      ];
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-creation-instructions");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const first = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+          newSessionInstructions: "rules A",
+        });
+        const cached = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+          newSessionInstructions: "rules B",
+        });
+        assert.strictEqual(cached, first);
+        assert.deepEqual(yield* Ref.get(forwarded), ["rules A"]);
+        assert.deepEqual(cached.createdSessions?.(), receipts);
+        assert.equal((yield* Ref.get(state)).openCount, 1);
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            createdSessions: () => receipts,
+            beforeOpen: (input) =>
+              Ref.update(forwarded, (values) => [...values, input.newSessionInstructions]),
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect(
   "ProviderSessionManagerV2 starts a thread's session without its last agent's OOM kill",
   () =>
     Effect.gen(function* () {
@@ -1193,6 +1299,58 @@ it.effect(
       yield* effect.pipe(
         Effect.provide(layerTest({ state, idleTimeoutMs: 60_000 })),
         Effect.provideService(AgentScope, agentScope),
+      );
+    }),
+);
+
+it.effect(
+  "bare session open drops accidental native ContextMD instructions at the adapter boundary",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const forwarded = yield* Ref.make<Array<string | undefined>>([]);
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-bare-native-instructions");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const input = {
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy: { ...runtimePolicy, bare: { additions: [] } },
+          newSessionInstructions: "UNNAMED_CONTEXTMD_NATIVE_POINTER",
+        };
+        const first = yield* manager.open(input);
+        const cached = yield* manager.open(input);
+        assert.strictEqual(cached, first);
+        assert.deepEqual(yield* Ref.get(forwarded), [undefined]);
+        assert.equal((yield* Ref.get(state)).openCount, 1);
+        yield* manager.close(providerSessionId);
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            bareSupport: Effect.succeed({ supported: true }),
+            beforeOpen: (input) =>
+              Effect.sync(() => {
+                assert.notProperty(input, "newSessionInstructions");
+              }).pipe(
+                Effect.andThen(
+                  Ref.update(forwarded, (values) => [...values, input.newSessionInstructions]),
+                ),
+              ),
+          }),
+        ),
       );
     }),
 );
@@ -4263,10 +4421,14 @@ it.effect(
     }),
 );
 
-it.effect(
-  "ProviderSessionManagerV2 rejects a second thread when the provider runtime is exclusive, and reopens it when Linked environments changes",
-  () =>
+it.effect.each([
+  { name: "a normal session reopens", bare: false },
+  { name: "a bare session without T3 MCP stays open", bare: true },
+])(
+  "ProviderSessionManagerV2 rejects a second thread when the provider runtime is exclusive; on a Linked environments change $name",
+  ({ bare }) =>
     Effect.gen(function* () {
+      const policy = bare ? { ...runtimePolicy, bare: { additions: [] } } : runtimePolicy;
       const state = yield* Ref.make(emptyState);
       const settings = yield* ServerSettings.ServerSettingsService.pipe(
         Effect.provide(ServerSettings.layerTest()),
@@ -4302,14 +4464,14 @@ it.effect(
           threadId: firstThreadId,
           providerSessionId,
           modelSelection,
-          runtimePolicy,
+          runtimePolicy: policy,
         });
         const error = yield* manager
           .open({
             threadId: secondThreadId,
             providerSessionId,
             modelSelection,
-            runtimePolicy,
+            runtimePolicy: policy,
           })
           .pipe(Effect.flip);
 
@@ -4322,10 +4484,10 @@ it.effect(
           threadId: firstThreadId,
           providerSessionId,
           modelSelection,
-          runtimePolicy,
+          runtimePolicy: policy,
         });
-        assert.equal((yield* Ref.get(state)).openCount, 2);
-        assert.equal((yield* Ref.get(state)).closeCount, 1);
+        assert.equal((yield* Ref.get(state)).openCount, bare ? 1 : 2);
+        assert.equal((yield* Ref.get(state)).closeCount, bare ? 0 : 1);
       });
 
       yield* effect.pipe(
@@ -4334,6 +4496,7 @@ it.effect(
             state,
             idleTimeoutMs: 1000,
             capabilities: ExclusiveCapabilities,
+            ...(bare ? { bareSupport: Effect.succeed({ supported: true }) } : {}),
             serverSettingsLayer: Layer.succeed(ServerSettings.ServerSettingsService, settings),
           }),
         ),
@@ -4472,4 +4635,633 @@ it.effect("ProviderSessionManagerV2 gives a delegated child its project's device
     });
     assert.isTrue(child?.capabilities?.has("device"));
   }),
+);
+
+it.effect.each(["none", "server", "tools"] as const)(
+  "bare sessions issue scoped T3 MCP credentials when named (%s)",
+  (selection) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const mcpConfigs = yield* Ref.make<
+        ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
+      >([]);
+      yield* Effect.gen(function* () {
+        const sink = yield* EventSink.EventSinkV2;
+        const ids = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const threadId = ThreadId.make("thread:bare-mcp");
+        const now = yield* DateTime.now;
+        yield* sink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now })],
+        });
+        const providerSessionId = yield* ids.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        const bare = {
+          additions:
+            selection === "none"
+              ? []
+              : [
+                  {
+                    type: "mcp" as const,
+                    server: "t3-code" as const,
+                    ...(selection === "tools" ? { tool: "preview_open" } : {}),
+                  },
+                ],
+        };
+        yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy: { ...runtimePolicy, bare },
+        });
+        const captured = yield* Ref.get(mcpConfigs);
+        assert.equal(captured.length, 1);
+        assert.equal(captured[0] !== undefined, selection !== "none");
+        if (selection !== "none") {
+          assert.equal(captured[0]?.threadId, threadId);
+          const registry = yield* McpSessionRegistry.McpSessionRegistry;
+          const scope = yield* registry.resolve(captured[0]!.authorizationHeader.slice(7));
+          assert.deepEqual(
+            scope?.bareToolNames,
+            selection === "tools" ? ["preview_open"] : undefined,
+          );
+        }
+        yield* manager.close(providerSessionId);
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            mcpConfigs,
+            idleTimeoutMs: 60_000,
+            bareSupport: Effect.succeed({ supported: true }),
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect("bare session opens recheck support and refuse cached process sharing", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const supported = yield* Ref.make(true);
+    const bareSupport = Ref.get(supported).pipe(
+      Effect.map((value): BareSupport =>
+        value ? { supported: true } : { supported: false, reason: "runtime generation changed" },
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const ids = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const threadId = ThreadId.make("thread:bare-cache");
+      const now = yield* DateTime.now;
+      yield* sink.write({
+        events: [yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now })],
+      });
+      const providerSessionId = yield* ids.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      const input = {
+        threadId,
+        providerSessionId,
+        modelSelection,
+        runtimePolicy: { ...runtimePolicy, bare: { additions: [] } },
+      };
+      yield* manager.open(input);
+      yield* Ref.set(supported, false);
+      const refused = yield* manager.open(input).pipe(Effect.flip);
+      assert.deepInclude(refused.cause, { reason: "runtime generation changed" });
+      yield* Ref.set(supported, true);
+      const mixed = yield* manager.open({ ...input, runtimePolicy }).pipe(Effect.flip);
+      assert.include(String((mixed.cause as Error).message), "cannot share");
+      const other = yield* manager
+        .open({ ...input, threadId: ThreadId.make("thread:other") })
+        .pipe(Effect.flip);
+      assert.include(String((other.cause as Error).message), "cannot share");
+      assert.equal((yield* Ref.get(state)).openCount, 1);
+      yield* manager.close(providerSessionId);
+    }).pipe(Effect.provide(layerTest({ state, bareSupport, idleTimeoutMs: 60_000 })));
+  }),
+);
+
+it.effect.each([
+  { runless: false, deliveries: 1 },
+  { runless: true, deliveries: 1 },
+  { runless: false, deliveries: 2 },
+  { runless: true, deliveries: 2 },
+])(
+  "ingests each shared-child delivery once with overlapping subscribers: %j",
+  ({ runless, deliveries }) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const calls: Array<{ subscriber: ThreadId; status: string }> = [];
+      const childThreadId = ThreadId.make("thread:fanout:child");
+      const itemId = TurnItemId.make("item:fanout:command");
+      const base = layerTest({
+        state,
+        idleTimeoutMs: 60_000,
+        observeIngest: (input) =>
+          Effect.sync(() => {
+            if (input.event.type === "turn_item.updated" && input.event.turnItem.id === itemId)
+              calls.push({ subscriber: input.threadId, status: input.event.turnItem.status });
+          }),
+      });
+      const layer = RunExecutionService.layer.pipe(
+        Layer.provideMerge(PreviewAgentActivity.layer),
+        Layer.provideMerge(TurnItemPositionStore.layer.pipe(Layer.provide(layerTestDatabase))),
+        Layer.provideMerge(
+          Layer.mergeAll(
+            base,
+            McpAppModelContext.layerEmpty,
+            ServerSettings.layerTest(),
+            Layer.mock(CheckpointService.CheckpointServiceV2)({
+              captureBaseline: () => Effect.void,
+            }),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const allocator = yield* IdAllocator.IdAllocatorV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const execution = yield* RunExecutionService.RunExecutionServiceV2;
+        const now = yield* DateTime.now;
+        const threadIds = [
+          ThreadId.make("thread:fanout:parent"),
+          runless ? ThreadId.make("thread:fanout:other-parent") : childThreadId,
+        ];
+        for (const threadId of new Set([...threadIds, childThreadId]))
+          yield* sink.write({
+            events: [yield* makeThreadCreatedEvent({ idAllocator: allocator, threadId, now })],
+          });
+        const sessionId = yield* allocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId: threadIds[0]!,
+        });
+        const runtime = yield* manager.open({
+          providerSessionId: sessionId,
+          threadId: threadIds[0]!,
+          modelSelection,
+          runtimePolicy,
+        });
+        const queue = (yield* Ref.get(state)).eventQueues.get(String(sessionId))!;
+        const closes = [];
+        const turns = [];
+        for (const [index, threadId] of threadIds.entries()) {
+          const closed = yield* Deferred.make<void>();
+          closes.push(closed);
+          const providerThread = makeProviderThread({
+            idAllocator: allocator,
+            threadId,
+            providerSessionId: sessionId,
+            now,
+            nativeThreadId: `fanout-${index}`,
+          });
+          const turnId = ProviderTurnId.make(`turn:fanout:${index}`);
+          turns.push({ providerThreadId: providerThread.id, turnId });
+          const runId = RunId.make(`run:fanout:${index}`);
+          const attemptId = RunAttemptId.make(`attempt:fanout:${index}`);
+          yield* execution.startRootRun({
+            commandId: CommandId.make(`command:fanout:${index}`),
+            appThread: yield* projections.getThread(threadId),
+            providerSessionId: sessionId,
+            session: {
+              ...runtime,
+              subscribeEvents: runtime.subscribeEvents!.pipe(
+                Effect.map((subscription) => ({
+                  ...subscription,
+                  events: subscription.events.pipe(
+                    Stream.ensuring(Deferred.succeed(closed, undefined)),
+                  ),
+                })),
+              ),
+            },
+            run: {
+              id: runId,
+              threadId,
+              ordinal: 1,
+              providerInstanceId: modelSelection.instanceId,
+            } as OrchestrationV2Run,
+            rootNode: { id: NodeId.make(`node:fanout:${index}`) } as OrchestrationV2ExecutionNode,
+            checkpointScope: {
+              id: CheckpointScopeId.make(`scope:fanout:${index}`),
+            } as OrchestrationV2CheckpointScope,
+            providerThread,
+            attempt: { id: attemptId, providerTurnId: turnId } as OrchestrationV2RunAttempt,
+            attemptId,
+            providerTurnOrdinal: 1,
+            relatedThreadIds: [childThreadId],
+            shouldFinalizeRun: () => Effect.succeed(false),
+            message: {
+              messageId: MessageId.make(`message:fanout:${index}`),
+              text: "work",
+              attachments: [],
+              createdBy: "user",
+              creationSource: "web",
+            },
+            modelSelection,
+            runtimePolicy,
+          });
+        }
+        const command = {
+          id: itemId,
+          threadId: childThreadId,
+          runId: runless ? null : RunId.make("run:fanout:1"),
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 1,
+          type: "command_execution" as const,
+          status: "running" as const,
+          title: null,
+          input: "printf result",
+          startedAt: now,
+          completedAt: null,
+          updatedAt: now,
+        };
+        const running = {
+          type: "turn_item.updated" as const,
+          driver: CODEX_DRIVER,
+          turnItem: command,
+        };
+        const completed = {
+          ...running,
+          turnItem: {
+            ...command,
+            status: "completed" as const,
+            completedAt: now,
+            output: "result",
+            exitCode: 0,
+          },
+        };
+        // Reusing the objects for a separate emission must not suppress a real
+        // transition back to running, even with the same provider-turn/time.
+        for (let delivery = 0; delivery < deliveries; delivery++) {
+          yield* Queue.offer(queue, running);
+          yield* Queue.offer(queue, completed);
+        }
+        for (const turn of turns)
+          yield* Queue.offer(queue, {
+            type: "turn.terminal",
+            driver: CODEX_DRIVER,
+            providerThreadId: turn.providerThreadId,
+            providerTurnId: turn.turnId,
+            runOrdinal: 1,
+            status: "completed",
+            failure: null,
+            threadDisposition: "reusable",
+          });
+        for (const close of closes) yield* Deferred.await(close);
+        const store = yield* EventStore.EventStoreV2;
+        const stored = yield* store
+          .read({ threadId: childThreadId, eventType: "turn-item.updated" })
+          .pipe(Stream.runCollect);
+        const items = stored.flatMap(({ event }) =>
+          event.type === "turn-item.updated" && event.payload.id === itemId ? [event.payload] : [],
+        );
+        assert.deepEqual(
+          calls.map((call) => call.status),
+          Array.from({ length: deliveries }, () => ["running", "completed"]).flat(),
+          JSON.stringify({
+            calls,
+            stored: items.length,
+            distinctPayloads: new Set(items.map((item) => JSON.stringify(item))).size,
+          }),
+        );
+        assert.equal(items.length, 2 * deliveries);
+        assert.equal(new Set(items.map((item) => JSON.stringify(item))).size, 2);
+        assert.equal(
+          (yield* projections.getThreadProjection(childThreadId)).turnItems.at(-1)?.status,
+          "completed",
+        );
+      }).pipe(Effect.provide(layer), Effect.scoped);
+    }),
+);
+
+it.effect(
+  "releases completed parent observers while an app-owned child follow-up keeps running",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const childThreadId = ThreadId.make("thread:observers:child");
+      const parentThreadId = ThreadId.make("thread:observers:parent");
+      const childAttemptId = RunAttemptId.make("attempt:observers:child");
+      const childTurnId = ProviderTurnId.make("turn:observers:child");
+      const probeTurnId = ProviderTurnId.make("turn:observers:probe");
+      const barrierTurnId = ProviderTurnId.make("turn:observers:barrier");
+      let observers = 0;
+      let ingestions = 0;
+      const childClosed = yield* Deferred.make<void>();
+      const base = layerTest({
+        state,
+        idleTimeoutMs: 60_000,
+        observeIngest: (input) =>
+          Effect.sync(() => {
+            if (
+              input.event.type === "provider_turn.updated" &&
+              input.event.providerTurn.id === probeTurnId
+            )
+              ingestions++;
+          }),
+      });
+      const layer = RunExecutionService.layer.pipe(
+        Layer.provideMerge(PreviewAgentActivity.layer),
+        Layer.provideMerge(TurnItemPositionStore.layer.pipe(Layer.provide(layerTestDatabase))),
+        Layer.provideMerge(
+          Layer.mergeAll(
+            base,
+            McpAppModelContext.layerEmpty,
+            ServerSettings.layerTest(),
+            Layer.mock(CheckpointService.CheckpointServiceV2)({
+              captureBaseline: () => Effect.void,
+            }),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const allocator = yield* IdAllocator.IdAllocatorV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const execution = yield* RunExecutionService.RunExecutionServiceV2;
+        const now = yield* DateTime.now;
+        for (const threadId of [parentThreadId, childThreadId])
+          yield* sink.write({
+            events: [yield* makeThreadCreatedEvent({ idAllocator: allocator, threadId, now })],
+          });
+        const sessionId = yield* allocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId: parentThreadId,
+        });
+        const runtime = yield* manager.open({
+          providerSessionId: sessionId,
+          threadId: parentThreadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const queue = (yield* Ref.get(state)).eventQueues.get(String(sessionId))!;
+        const childProviderThread = makeProviderThread({
+          idAllocator: allocator,
+          threadId: childThreadId,
+          providerSessionId: sessionId,
+          now,
+          nativeThreadId: "observers-child",
+        });
+        const barriers: Array<Deferred.Deferred<void>> = [];
+        const start = Effect.fnUntraced(function* (index: number) {
+          const isChild = index === 0;
+          const threadId = isChild ? childThreadId : parentThreadId;
+          const providerThread = isChild
+            ? childProviderThread
+            : makeProviderThread({
+                idAllocator: allocator,
+                threadId,
+                providerSessionId: sessionId,
+                now,
+                nativeThreadId: "observers-parent",
+              });
+          const runId = RunId.make(`run:observers:${index}`);
+          const attemptId = isChild
+            ? childAttemptId
+            : RunAttemptId.make(`attempt:observers:${index}`);
+          const turnId = isChild ? childTurnId : ProviderTurnId.make(`turn:observers:${index}`);
+          const drained = yield* Deferred.make<void>();
+          barriers.push(drained);
+          yield* execution.startRootRun({
+            commandId: CommandId.make(`command:observers:${index}`),
+            appThread: yield* projections.getThread(threadId),
+            providerSessionId: sessionId,
+            session: {
+              ...runtime,
+              subscribeEvents: runtime.subscribeEvents!.pipe(
+                Effect.map((subscription) => {
+                  observers++;
+                  return {
+                    ...subscription,
+                    // One signal at a time makes the barrier follow prior ingestion.
+                    events: subscription.events.pipe(
+                      Stream.rechunk(1),
+                      Stream.tap((event) =>
+                        event.type === "provider_turn.updated" &&
+                        event.providerTurn.id === barrierTurnId
+                          ? Deferred.succeed(drained, undefined)
+                          : Effect.void,
+                      ),
+                    ),
+                    close: subscription.close.pipe(
+                      Effect.andThen(
+                        Effect.sync(() => {
+                          observers--;
+                        }),
+                      ),
+                      Effect.andThen(Deferred.succeed(drained, undefined)),
+                      Effect.andThen(
+                        isChild ? Deferred.succeed(childClosed, undefined) : Effect.void,
+                      ),
+                    ),
+                  };
+                }),
+              ),
+            },
+            run: {
+              id: runId,
+              threadId,
+              ordinal: index || 1,
+              providerInstanceId: modelSelection.instanceId,
+            } as OrchestrationV2Run,
+            rootNode: {
+              id: NodeId.make(`node:observers:${index}`),
+            } as OrchestrationV2ExecutionNode,
+            checkpointScope: {
+              id: CheckpointScopeId.make(`scope:observers:${index}`),
+            } as OrchestrationV2CheckpointScope,
+            providerThread,
+            attempt: { id: attemptId, providerTurnId: turnId } as OrchestrationV2RunAttempt,
+            attemptId,
+            providerTurnOrdinal: index || 1,
+            // Use the production adoption rule. The durable task stays completed
+            // while its independently owned child runs a t3_thread_send follow-up.
+            relatedThreadIds:
+              !isChild && RunExecutionService.canRouteRelatedSubagent("completed", "app_owned")
+                ? [childThreadId]
+                : [],
+            shouldFinalizeRun: () => Effect.succeed(false),
+            message: {
+              messageId: MessageId.make(`message:observers:${index}`),
+              text: "continue",
+              attachments: [],
+              createdBy: "agent",
+              creationSource: "server",
+            },
+            modelSelection,
+            runtimePolicy,
+          });
+          return { providerThread, turnId };
+        });
+        const childEvent = (id: ProviderTurnId): ProviderAdapter.ProviderAdapterV2Event => ({
+          type: "provider_turn.updated",
+          driver: CODEX_DRIVER,
+          threadId: childThreadId,
+          providerTurn: {
+            id,
+            providerThreadId: childProviderThread.id,
+            nodeId: NodeId.make("node:observers:0"),
+            runAttemptId: childAttemptId,
+            nativeTurnRef: null,
+            ordinal: id === childTurnId ? 7 : id === probeTurnId ? 8 : 9,
+            status: "running",
+            startedAt: now,
+            completedAt: null,
+          },
+        });
+        yield* start(0);
+        // Match the live band: 98 later parent runs, one long-running child.
+        for (let index = 1; index <= 98; index++) {
+          const parent = yield* start(index);
+          yield* Queue.offer(queue, childEvent(childTurnId));
+          yield* Queue.offer(queue, {
+            type: "turn.terminal",
+            driver: CODEX_DRIVER,
+            providerThreadId: parent.providerThread.id,
+            providerTurnId: parent.turnId,
+            runOrdinal: index,
+            status: "completed",
+            failure: null,
+            threadDisposition: "reusable",
+          });
+        }
+        yield* Queue.offer(queue, childEvent(probeTurnId));
+        yield* Queue.offer(queue, childEvent(barrierTurnId));
+        for (const barrier of barriers) yield* Deferred.await(barrier);
+        yield* sink.stream({ afterSequence: 0, threadId: childThreadId }).pipe(
+          Stream.filter(
+            ({ event }) =>
+              event.type === "provider-turn.updated" && event.payload.id === barrierTurnId,
+          ),
+          Stream.runHead,
+        );
+        const store = yield* EventStore.EventStoreV2;
+        const stored = yield* store
+          .read({ threadId: childThreadId, eventType: "provider-turn.updated" })
+          .pipe(Stream.runCollect);
+        const storedProbeEvents = stored.filter(
+          ({ event }) => event.type === "provider-turn.updated" && event.payload.id === probeTurnId,
+        ).length;
+        assert.deepEqual(
+          { observers, ingestions, stored: storedProbeEvents },
+          { observers: 1, ingestions: 1, stored: 1 },
+        );
+        yield* Queue.offer(queue, {
+          type: "turn.terminal",
+          driver: CODEX_DRIVER,
+          providerThreadId: childProviderThread.id,
+          providerTurnId: barrierTurnId,
+          runOrdinal: 1,
+          status: "completed",
+          failure: null,
+          threadDisposition: "reusable",
+        });
+        yield* Deferred.await(childClosed);
+        assert.equal(observers, 0);
+      }).pipe(Effect.provide(layer), Effect.scoped);
+    }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 reuses one native credential across run owners without retaining the previous authority",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const mcpConfigs = yield* Ref.make<
+        ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
+      >([]);
+      const owner = yield* Ref.make<PeerAuthority.Authority | undefined>(undefined);
+      const environmentId = EnvironmentId.make("peer-source");
+      const owned = (id: string): PeerAuthority.Authority => ({
+        id,
+        peer: { environmentId, generation: "original-grant" },
+        sessionId: AuthSessionId.make("peer-session"),
+        localThreadId: null,
+        originClientId: null,
+        parentId: null,
+        ceiling: {
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          resourceScope: "environment-resources",
+          onward: false,
+          capabilities: ["orchestration"],
+        },
+        envelope: {
+          version: 1,
+          environmentId,
+          generation: "original-grant",
+          recordId: id,
+          actionId: id,
+          digest: "fixture",
+          route: [environmentId],
+          descendant: true,
+        },
+        tool: "t3_thread_send",
+        readOnly: false,
+        originRunId: null,
+      });
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const ids = yield* IdAllocator.IdAllocatorV2;
+        const registry = yield* McpSessionRegistry.McpSessionRegistry;
+        const sessions = yield* McpProviderSessions.McpProviderSessions;
+        const threadId = ThreadId.make("run-owner-reused-credential");
+        const providerSessionId = yield* ids.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* sink.write({
+          events: [
+            yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now: yield* DateTime.now }),
+          ],
+        });
+        const input = { threadId, providerSessionId, modelSelection, runtimePolicy };
+        yield* manager.open(input);
+        const first = (yield* Ref.get(mcpConfigs)).at(-1);
+        if (!first) return yield* Effect.die("Missing native credential");
+        const token = first.authorizationHeader.replace(/^Bearer\s+/, "");
+        for (const next of [owned("peer-run-one"), owned("peer-run-two"), undefined]) {
+          yield* Ref.set(owner, next);
+          yield* manager.detach({ threadId, providerSessionId, detail: "Next authorized run" });
+          yield* manager.open(input);
+          const config = yield* sessions.read(threadId);
+          assert.equal(config?.providerSessionId, first.providerSessionId);
+          const resolved = yield* registry.resolve(token);
+          assert.equal(resolved?.authority?.id, next?.id);
+          assert.deepEqual([...(config?.capabilities ?? [])], [...(resolved?.capabilities ?? [])]);
+          assert.equal(resolved?.capabilities.has("worktree"), next === undefined);
+          assert.equal(
+            resolved?.capabilities.has("preview"),
+            next === undefined && (first.capabilities?.has("preview") ?? false),
+          );
+          assert.equal(
+            resolved?.capabilities.has("device"),
+            next === undefined && (first.capabilities?.has("device") ?? false),
+          );
+        }
+      }).pipe(
+        Effect.provide(
+          layerTest({ state, idleTimeoutMs: 1000, mcpConfigs }).pipe(
+            Layer.provide(
+              Layer.mock(PeerAuthority.PeerAuthority)({
+                forThread: () => Ref.get(owner),
+                legacyCeiling: () => Effect.undefined,
+              }),
+            ),
+          ),
+        ),
+      );
+    }),
 );

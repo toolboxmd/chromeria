@@ -1,5 +1,16 @@
 import { pipe } from "effect/Function";
 import * as DocumentText from "../../provider/DocumentText.ts";
+import { executionPurposeOf, type NativeExecutionSegment } from "@t3tools/contracts";
+import {
+  bareHome,
+  nativeHome,
+  prepareCodexBareHome,
+} from "@t3tools/provider-core/server/BareProviderRuntime";
+import {
+  bareReceipt,
+  bareInventoryEvidence,
+  namesT3Mcp,
+} from "@t3tools/provider-core/server/bareLaunch";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
@@ -85,6 +96,7 @@ import * as CodexSchema from "effect-codex-app-server/schema";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
+import * as Hex from "effect/encoding/Hex";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -243,6 +255,13 @@ const CODEX_CLIENT_CAPABILITIES = {
 } as const;
 
 export const CodexProviderCapabilitiesV2 = {
+  purposeEvidence: {
+    version: 1,
+    nativeInputs: "native_turn",
+    childSegments: "initial_turn_only",
+    backgroundInventory: "observed_causes",
+    nativeUsageFinality: "main_agent_only",
+  },
   sessions: {
     supportsMultipleProviderThreadsPerSession: true,
     supportsModelSwitchInSession: true,
@@ -793,13 +812,13 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
         : getCodexServiceTierOptionValue(input.modelSelection);
     // MCP-written app context must be quoted user input, not developer instructions.
     const appContext = Object.fromEntries(
-      (input.appContext ?? []).map((entry) => [
+      (input.runtimePolicy.bare === undefined ? (input.appContext ?? []) : []).map((entry) => [
         entry.key,
         { kind: "untrusted" as const, value: entry.text },
       ]),
     );
     const t3Context =
-      input.hasT3Mcp === true
+      input.runtimePolicy.bare === undefined && input.hasT3Mcp === true
         ? buildCodexAdditionalContext(
             { model: input.modelSelection.model, reasoningEffort: effort ?? undefined },
             {
@@ -827,13 +846,18 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
       ...(effort === undefined ? {} : { effort }),
       ...(serviceTier === undefined ? {} : { serviceTier }),
       // Codex supplies its own mode instructions; send both modes to clear Plan on exit.
-      collaborationMode: {
-        mode: input.runtimePolicy.interactionMode,
-        settings: {
-          model: input.modelSelection.model,
-          ...(effort === undefined ? {} : { reasoning_effort: effort }),
-        },
-      },
+      // Fork: bare turns add no mode instructions.
+      ...(input.runtimePolicy.bare !== undefined
+        ? {}
+        : {
+            collaborationMode: {
+              mode: input.runtimePolicy.interactionMode,
+              settings: {
+                model: input.modelSelection.model,
+                ...(effort === undefined ? {} : { reasoning_effort: effort }),
+              },
+            },
+          }),
     });
   },
 );
@@ -1279,6 +1303,20 @@ interface CodexGoalHold {
 interface DeferredCodexRootTerminal {
   readonly context: ActiveCodexTurnContext;
   readonly event: CodexRootTerminalEvent;
+  /** A governed root's native end, withheld together with its terminal. */
+  readonly providerTurn?: OrchestrationV2ProviderTurn;
+  /** Fork: a failed root already settled; the entry keeps its lineage reachable for Stop. */
+  readonly terminalEmitted?: true;
+}
+
+/** The native cohort an explicit cut-in has not yet confirmed stopped. */
+interface CodexCutIn {
+  readonly providerThreadId: ProviderThreadId;
+  readonly roots: Set<ActiveCodexTurnContext>;
+  readonly targets: Map<string, ActiveCodexTurnContext>;
+  /** Codex answers an interrupt only after its turn aborted. */
+  readonly acknowledged: Set<string>;
+  readonly contained: Set<string>;
 }
 
 interface CodexSubagentThreadContext {
@@ -1403,7 +1441,7 @@ const CODEX_T3_MCP_TOOL_TIMEOUT_SEC = 65 * 60;
 const CODEX_T3_DIRECT_MCP_SERVER = "t3-code-direct";
 const CODEX_DIRECT_ONLY_T3_TOOL = "t3_thread_wait";
 
-function codexThreadRuntimeParams(input: {
+export function codexThreadRuntimeParams(input: {
   readonly threadId: ThreadId | null;
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
   readonly modelSelection?: { readonly model: string };
@@ -1412,8 +1450,13 @@ function codexThreadRuntimeParams(input: {
   readonly cwd?: string;
   readonly model?: string;
   readonly config: Readonly<Record<string, Schema.Json>>;
+  readonly baseInstructions?: string;
+  readonly developerInstructions?: null;
 } {
-  const { mcpSession } = input;
+  const mcpSession =
+    input.runtimePolicy?.bare !== undefined && !namesT3Mcp(input.runtimePolicy.bare)
+      ? undefined
+      : input.mcpSession;
   const t3Server =
     mcpSession === undefined
       ? undefined
@@ -1425,8 +1468,13 @@ function codexThreadRuntimeParams(input: {
   return {
     ...(input.runtimePolicy?.cwd == null ? {} : { cwd: input.runtimePolicy.cwd }),
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
+    ...(input.runtimePolicy?.bare === undefined
+      ? {}
+      : { baseInstructions: "", developerInstructions: null }),
     config: {
-      ...CODEX_THREAD_CONFIG,
+      ...(input.runtimePolicy?.bare === undefined
+        ? CODEX_THREAD_CONFIG
+        : { "tools.update_plan.enabled": false }),
       // One app-server serves many threads, so the id goes in per-thread shell config, not its env.
       ...(input.threadId === null
         ? {}
@@ -1732,6 +1780,21 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
     driver: CODEX_PROVIDER,
+    bareSupport: Effect.gen(function* () {
+      if (adapterOptions.settings.setupMode === "managed") return { supported: true as const };
+      const source =
+        adapterOptions.settings.homePath ||
+        nativeHome(adapterOptions.environment, "CODEX_HOME", ".codex");
+      return (yield* fileSystem
+        .exists(`${source}/auth.json`)
+        .pipe(Effect.orElseSucceed(() => false)))
+        ? { supported: true as const }
+        : {
+            supported: false as const,
+            reason:
+              "Codex native keyring-only auth is unsupported for bare; no auth.json credential owner.",
+          };
+    }),
     getCapabilities: Effect.fn("CodexAdapterV2.getCapabilities")(function () {
       return Effect.succeed(CodexProviderCapabilitiesV2);
     }),
@@ -1754,13 +1817,65 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     }),
                 ),
               );
+        let launchSettings = resolvedRuntime?.config ?? adapterOptions.settings;
+        let launchEnvironment = resolvedRuntime?.environment ?? adapterOptions.environment;
+        const bare = input.runtimePolicy.bare;
+        const owner = bare?.nativeHomeOwnerThreadId;
+        // Fresh threads isolate native bootstrap state. Native forks retain the
+        // source's initialized store, with a separate app-server and native id.
+        const homeRoot = bareHome(serverConfig.stateDir, adapterOptions.instanceId, "codex");
+        // Derived MCP thread ids can exceed a filesystem component's length.
+        const home =
+          bare === undefined
+            ? homeRoot
+            : `${homeRoot}/thread-${Hex.encode(yield* digest.digest(Digest.sha256, new TextEncoder().encode(owner ?? input.threadId)))}`;
+        if (input.runtimePolicy.bare !== undefined) {
+          if (owner === undefined)
+            return yield* new ProviderAdapter.ProviderAdapterOpenSessionError({
+              driver: CODEX_PROVIDER,
+              providerSessionId: input.providerSessionId,
+              cause: "Bare Codex launch is missing its server-owned native home identity.",
+            });
+          if (
+            (owner !== input.threadId || input.initialNativeThreadId !== undefined) &&
+            !(yield* fileSystem.exists(home))
+          )
+            return yield* new ProviderAdapter.ProviderAdapterOpenSessionError({
+              driver: CODEX_PROVIDER,
+              providerSessionId: input.providerSessionId,
+              cause: "Bare Codex native home is missing; native history cannot be reconstructed.",
+            });
+          yield* prepareCodexBareHome({
+            home,
+            managed: launchSettings.setupMode === "managed",
+            sourceHome:
+              launchSettings.homePath || nativeHome(launchEnvironment, "CODEX_HOME", ".codex"),
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapter.ProviderAdapterOpenSessionError({
+                  driver: CODEX_PROVIDER,
+                  providerSessionId: input.providerSessionId,
+                  cause,
+                }),
+            ),
+          );
+          launchSettings = {
+            ...launchSettings,
+            homePath: home,
+            launchArgs: `${launchSettings.setupMode === "managed" ? launchSettings.launchArgs : ""} --strict-config`,
+          };
+          launchEnvironment = { ...launchEnvironment, CODEX_HOME: home };
+          delete launchEnvironment.T3CODE_CODEX_LAUNCH_ARGS;
+        }
         const client = yield* clientFactory.open({
           instanceId: adapterOptions.instanceId,
           threadId: input.threadId,
           providerSessionId: input.providerSessionId,
           runtimePolicy: input.runtimePolicy,
-          settings: resolvedRuntime?.config ?? adapterOptions.settings,
-          environment: resolvedRuntime?.environment ?? adapterOptions.environment,
+          settings: launchSettings,
+          environment: launchEnvironment,
         });
         const additionalContextByThread = yield* Ref.make(
           new Map<
@@ -1975,6 +2090,22 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         const terminalizedNonCompletedNativeTurns = yield* Ref.make(new Set<string>());
         // Keep the stream open until descendants settle to avoid stranding child projections.
         const deferredRootTerminals = yield* Ref.make(new Map<string, DeferredCodexRootTerminal>());
+        // The counterpart of the OpenCode cut-in holds. Native events and retries
+        // find the same cohort even after its turns leave activeTurns.
+        const cutIns = new Map<ProviderThreadId, CodexCutIn>();
+        const cutInCalls = new Map<
+          ProviderThreadId,
+          { readonly providerTurnId: ProviderTurnId; readonly exit: Deferred.Deferred<void> }
+        >();
+        const governs = (cutIn: CodexCutIn, context: ActiveCodexTurnContext) =>
+          cutIn.roots.has(approvalOwnerCodexTurn(context).owner) ||
+          cutIn.targets.get(context.nativeTurnId) === context;
+        const cutInFor = (context: ActiveCodexTurnContext) => {
+          const cutIn = cutIns.get(approvalOwnerCodexTurn(context).owner.providerThread.id);
+          return cutIn !== undefined && governs(cutIn, context) ? cutIn : undefined;
+        };
+        const terminalKey = (context: ActiveCodexTurnContext, processId: string) =>
+          `${context.providerThread.nativeThreadRef?.nativeId}:${processId}`;
         const offeredContinuationItemsByTurn = yield* Ref.make(new Map<string, Set<string>>());
         const finalAnswerItemIdsByTurn = yield* Ref.make(new Map<string, Set<string>>());
         const completedFinalAnswerTextsByTurn = yield* Ref.make(new Map<string, Set<string>>());
@@ -2222,6 +2353,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 nativeId: input.nativeTurnId,
                 strength: "strong",
               },
+              nativeInputs: [
+                {
+                  version: 1,
+                  kind: "turn",
+                  nativeId: input.nativeTurnId,
+                  validation: "codex_turn_started",
+                },
+              ],
               ordinal: input.turnInput.providerTurnOrdinal,
               status: "running",
               startedAt: input.startedAt,
@@ -2260,6 +2399,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const settled = (yield* Ref.get(settledTurns)).get(nativeTurnId);
             if (settled !== undefined) {
               return { context: settled, settled: true } as const;
+            }
+            for (const cutIn of cutIns.values()) {
+              const target = cutIn.targets.get(nativeTurnId);
+              if (target !== undefined) return { context: target, settled: false } as const;
             }
             const context = yield* awaitActiveTurn(nativeTurnId);
             return context === undefined ? undefined : ({ context, settled: false } as const);
@@ -2417,12 +2560,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           nativeTurnId: string,
           status: "interrupted" | "failed",
           completedAt: DateTime.Utc,
+          keep?: (item: TrackedRunningCommandItem) => boolean,
         ) {
           const items = (yield* Ref.get(runningCommandItemsByTurn)).get(nativeTurnId);
           if (items === undefined || items.size === 0) {
             return;
           }
           for (const tracked of items.values()) {
+            if (keep?.(tracked)) continue;
             const nodeId = idAllocator.derive.nodeFromProviderItem({
               driver: CODEX_PROVIDER,
               nativeItemId: tracked.id,
@@ -2480,6 +2625,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               driver: CODEX_PROVIDER,
               turnItem,
             });
+            if (keep !== undefined) yield* clearRunningCommandItem(nativeTurnId, tracked.id);
           }
         });
 
@@ -2712,8 +2858,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const currentParent = yield* findActiveTurnByNativeThreadId(parentNativeThreadId);
             if (currentParent !== undefined) subagent.parentContext = currentParent;
             const terminalizedNativeTurns = yield* Ref.get(terminalizedNonCompletedNativeTurns);
+            const cutIn = cutInFor(subagent.parentContext);
             let ancestor: ActiveCodexTurnContext | undefined = subagent.parentContext;
             while (ancestor !== undefined) {
+              // This callback runs on the serial reader. Register governed work
+              // here; the cut-in call sends its interrupt outside the reader.
+              if (cutIn !== undefined) break;
               if (terminalizedNativeTurns.has(ancestor.nativeTurnId)) {
                 const nativeThreadId = yield* getNativeThreadId(subagent.providerThread);
                 // Fork requests off the notification reader so it can read their responses.
@@ -2741,7 +2891,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                           },
                         ),
                     }),
-                    Effect.forkIn(scope),
+                    Effect.forkIn(scope, { startImmediately: true }),
                   );
                 return;
               }
@@ -2781,6 +2931,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               fileChangeKindsByItem: new Map(),
               runningCompactionItemIds: new Set(),
             };
+            cutIn?.targets.set(turn.nativeTurnId, activeContext);
             beginTurnTokenUsage(activeContext);
             endSessionApprovalsOnModeChange(activeContext);
             yield* Ref.update(activeTurns, (current) => {
@@ -2788,6 +2939,22 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               updated.set(turn.nativeTurnId, activeContext);
               return updated;
             });
+            const initial = subagent.task.nativeSegments?.[0];
+            if (
+              providerTurnOrdinal === 1 &&
+              initial?.kind === "start" &&
+              subagent.task.nativeSegments?.length === 1
+            ) {
+              subagent.task = {
+                ...subagent.task,
+                nativeSegments: [
+                  {
+                    ...initial,
+                    boundary: { state: "native_turns", nativeTurnIds: [turn.nativeTurnId] },
+                  },
+                ],
+              };
+            }
             yield* emitSubagentTaskUpdate({
               subagent,
               status: "running",
@@ -2818,6 +2985,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   nativeId: turn.nativeTurnId,
                   strength: "strong",
                 },
+                nativeInputs: [
+                  {
+                    version: 1,
+                    kind: "turn",
+                    nativeId: turn.nativeTurnId,
+                    validation: "codex_turn_started",
+                  },
+                ],
                 ordinal: activeContext.providerTurnOrdinal,
                 status: "running",
                 startedAt: turn.startedAt,
@@ -2921,6 +3096,109 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           });
         });
 
+        const codexNativeCause = (
+          context: ActiveCodexTurnContext,
+        ): Pick<NativeExecutionSegment, "source" | "purpose"> => {
+          if (context.projectionRunId !== null)
+            return {
+              source: {
+                type: "app_run",
+                threadId: context.projectionThreadId,
+                runId: context.projectionRunId,
+              },
+              purpose: executionPurposeOf(context.input),
+            };
+          const segment = context.subagent?.task.nativeSegments?.find(
+            (segment) =>
+              segment.boundary.state === "native_turns" &&
+              segment.boundary.nativeTurnIds.includes(context.nativeTurnId),
+          );
+          return segment === undefined || context.subagent === null
+            ? {
+                source: { type: "unresolved", reason: "codex_owning_child_turn_unresolved" },
+                purpose: {
+                  version: 1,
+                  scope: { type: "unscoped", reason: "unknown_cause" },
+                  provenance: { type: "native_operation", operationIds: [context.nativeTurnId] },
+                },
+              }
+            : {
+                source: {
+                  type: "native_segment",
+                  threadId: context.subagent.task.threadId,
+                  subagentId: context.subagent.task.id,
+                  segmentId: segment.id,
+                },
+                purpose: segment.purpose,
+              };
+        };
+
+        const codexSegment = (
+          context: ActiveCodexTurnContext,
+          nativeOperationId: string,
+          nativeChildId: string,
+          kind: "start" | "resume" | "background",
+          now: DateTime.Utc,
+        ): NativeExecutionSegment => ({
+          version: 1,
+          id: `${context.providerThread.nativeThreadRef?.nativeId ?? context.providerThread.id}:${nativeChildId}:${nativeOperationId}`,
+          nativeSessionId:
+            context.providerThread.nativeThreadRef?.nativeId ?? String(context.providerThread.id),
+          nativeOperationId,
+          nativeChildId,
+          kind,
+          ...codexNativeCause(context),
+          boundary: {
+            state: "unresolved",
+            reason:
+              kind === "start"
+                ? "awaiting_initial_native_child_turn"
+                : "codex_resume_response_boundary_missing",
+          },
+          status: "running",
+          usageFinality: "unreconciled",
+          noticeIds: [],
+          wakeDispositions: [],
+          observedAt: DateTime.formatIso(now),
+        });
+
+        const recordCodexBackgroundOperation = Effect.fnUntraced(function* (
+          context: ActiveCodexTurnContext,
+          nativeOperationId: string,
+          update: {
+            readonly status: "running" | "ended";
+            readonly wakeDisposition?: NativeExecutionSegment["wakeDispositions"][number];
+          },
+        ) {
+          const now = yield* DateTime.now;
+          const operation = codexSegment(
+            context,
+            nativeOperationId,
+            nativeOperationId,
+            "background",
+            now,
+          );
+          yield* emitProviderEvent({
+            type: "provider_thread.updated",
+            driver: CODEX_PROVIDER,
+            providerThread: {
+              ...context.providerThread,
+              nativeOperations: [
+                {
+                  ...operation,
+                  boundary: { state: "native_turns", nativeTurnIds: [context.nativeTurnId] },
+                  status: update.status,
+                  noticeIds: update.status === "ended" ? [nativeOperationId] : [],
+                  wakeDispositions:
+                    update.wakeDisposition === undefined ? [] : [update.wakeDisposition],
+                },
+              ],
+              updatedAt: now,
+            },
+          });
+          return operation;
+        });
+
         const registerSubagentThread =
           /* Provider events include streaming deltas; avoid a span for each update. */
           Effect.fnUntraced(function* (input: {
@@ -2989,7 +3267,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               updatedAt: now,
             } satisfies OrchestrationV2ProviderThread;
             const reportedSelection = subagentSelections.get(input.nativeThreadId);
-            const task = {
+            const task: OrchestrationV2Subagent = {
+              nativeSegments: [
+                codexSegment(
+                  input.context,
+                  input.nativeToolCallId,
+                  input.nativeThreadId,
+                  "start",
+                  now,
+                ),
+              ],
               id: subagentNodeId,
               threadId: input.context.projectionThreadId,
               runId: input.context.projectionRunId,
@@ -4593,6 +4880,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   nativeId: payload.turnId,
                   strength: "strong",
                 },
+                nativeInputs: [
+                  {
+                    version: 1,
+                    kind: "turn",
+                    nativeId: payload.turnId,
+                    validation: "codex_turn_started",
+                  },
+                ],
                 ordinal: context.providerTurnOrdinal,
                 status: "running",
                 startedAt: context.startedAt,
@@ -4687,6 +4982,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               goalRun.push(next);
               continuedRuns.set(goalHold.context.providerTurnId, goalRun);
               continuedRuns.set(next.providerTurnId, goalRun);
+              const cutIn = cutInFor(goalHold.context);
+              if (cutIn !== undefined) {
+                cutIn.roots.add(next);
+                cutIn.targets.set(next.nativeTurnId, next);
+              }
               yield* Deferred.succeed(goalHold.next, next);
               return;
             }
@@ -5053,6 +5353,35 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return;
             }
             if (payload.item.type === "collabAgentToolCall" && payload.item.tool !== "spawnAgent") {
+              if (payload.item.tool === "resumeAgent" || payload.item.tool === "sendInput") {
+                const owner = yield* resolveItemEventContext(payload.turnId);
+                if (owner !== undefined) {
+                  const now = yield* DateTime.now;
+                  const subagents = yield* Ref.get(subagentThreads);
+                  for (const childId of payload.item.receiverThreadIds) {
+                    const child = subagents.get(childId);
+                    if (
+                      child === undefined ||
+                      child.task.nativeSegments?.some(
+                        (segment) => segment.nativeOperationId === payload.item.id,
+                      )
+                    )
+                      continue;
+                    child.task = {
+                      ...child.task,
+                      nativeSegments: [
+                        ...(child.task.nativeSegments ?? []),
+                        codexSegment(owner.context, payload.item.id, childId, "resume", now),
+                      ],
+                    };
+                    yield* emitProviderEvent({
+                      type: "subagent.updated",
+                      driver: CODEX_PROVIDER,
+                      subagent: child.task,
+                    });
+                  }
+                }
+              }
               yield* updateSubagentStates({ item: payload.item });
               return;
             }
@@ -5099,9 +5428,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 turnItem: artifacts.turnItem,
               });
               if (settled) {
+                const operation = yield* recordCodexBackgroundOperation(context, payload.item.id, {
+                  status: "ended",
+                });
                 if (
                   context.subagent === null &&
                   continuationRequests !== undefined &&
+                  cutInFor(context) === undefined &&
                   !(yield* Ref.get(interruptingNativeTurns)).has(payload.turnId)
                 ) {
                   const alreadyOffered = yield* Ref.modify(
@@ -5118,14 +5451,31 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       return [false, updated] as const;
                     },
                   );
+                  yield* recordCodexBackgroundOperation(context, payload.item.id, {
+                    status: "ended",
+                    wakeDisposition: alreadyOffered ? "duplicate" : "offered",
+                  });
                   if (!alreadyOffered) {
                     yield* continuationRequests.offer({
+                      recordDisposition: (wakeDisposition) =>
+                        recordCodexBackgroundOperation(context, payload.item.id, {
+                          status: "ended",
+                          wakeDisposition,
+                        }).pipe(Effect.asVoid),
                       threadId: context.projectionThreadId,
                       providerThreadId: context.providerThread.id,
                       driver: CODEX_PROVIDER,
                       // Codex starts a new turn from this text, so nothing is buffered.
                       delivery: "message_text",
                       detail: codexBackgroundCommandDetail(payload.item),
+                      nativeCauses: [
+                        {
+                          operationId: operation.id,
+                          ...(operation.source.type === "unresolved"
+                            ? {}
+                            : { purpose: operation.purpose }),
+                        },
+                      ],
                       notification: {
                         ...backgroundWorkNotification([
                           {
@@ -5149,6 +5499,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   yield* releaseSettledTurnIfIdle(payload.turnId);
                 }
               }
+              const cutIn = cutInFor(context);
+              if (cutIn !== undefined) yield* releaseCutInIfSettled(cutIn);
               return;
             }
 
@@ -5890,7 +6242,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                         ...failure,
                         resetAt: failureResetAt(failure, yield* Ref.get(rateLimitSnapshot)),
                       }
-                    : failure,
+                    : failure.code === "serverOverloaded" &&
+                        input.context.capacityRetryAttempt === CODEX_CAPACITY_MAX_RETRIES
+                      ? { ...failure, retryable: true }
+                      : failure,
                 ...(input.providerRetry === undefined
                   ? {}
                   : {
@@ -5977,15 +6332,35 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             readonly failureErrorInfo?: CodexErrorInfo;
             readonly providerRetry?: ActiveCodexProviderRetry;
             readonly goalHoldTurn?: OrchestrationV2ProviderTurn;
+            readonly withheldTurn?: OrchestrationV2ProviderTurn;
           }) {
             const event = yield* makeRootTerminalEvent(input);
+            const withheldTurn = input.withheldTurn;
+            if (withheldTurn !== undefined) {
+              yield* Ref.update(deferredRootTerminals, (current) =>
+                new Map(current).set(input.nativeTurnId, {
+                  context: input.context,
+                  event,
+                  providerTurn: withheldTurn,
+                }),
+              );
+              return;
+            }
             const hasActiveDescendants = Array.from((yield* Ref.get(activeTurns)).values()).some(
               (candidate) => isContinuedRunDescendant(candidate, input.context),
             );
             // Failed roots leave native children working and must settle without them.
             // Interrupted roots wait for descendants because Stop interrupts the whole lineage.
             if (event.status === "failed" && hasActiveDescendants) {
-              yield* emitRootTerminal(input.context, { ...event, childTurnsContinue: true });
+              const settled = { ...event, childTurnsContinue: true as const };
+              yield* Ref.update(deferredRootTerminals, (current) =>
+                new Map(current).set(input.nativeTurnId, {
+                  context: input.context,
+                  event: settled,
+                  terminalEmitted: true,
+                }),
+              );
+              yield* emitRootTerminal(input.context, settled);
               return;
             }
             if (event.status !== "completed" && hasActiveDescendants) {
@@ -6095,22 +6470,32 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           expected?: CodexRootTerminalEvent,
         ) {
           const hold = goalHolds.get(nativeThreadId);
-          if (hold === undefined || goalStops.has(nativeThreadId)) return;
+          if (
+            hold === undefined ||
+            goalStops.has(nativeThreadId) ||
+            cutInFor(hold.context) !== undefined
+          )
+            return;
           if (expected !== undefined && hold.event !== expected) return;
           goalHolds.delete(nativeThreadId);
           yield* settleGoalHold(hold, "completed");
         });
+
+        const dropCommandTracking = (nativeTurnId: string) =>
+          Ref.update(runningCommandItemsByTurn, (current) => {
+            const updated = new Map(current);
+            updated.delete(nativeTurnId);
+            return updated;
+          });
 
         const flushReadyRootTerminals = Effect.fn("CodexAdapterV2.flushReadyRootTerminals")(
           function* () {
             const activeTurnContexts = Array.from((yield* Ref.get(activeTurns)).values());
             const readyEvents = yield* Ref.modify(deferredRootTerminals, (current) => {
               const updated = new Map(current);
-              const ready: Array<{
-                context: ActiveCodexTurnContext;
-                event: CodexRootTerminalEvent;
-              }> = [];
+              const ready: Array<DeferredCodexRootTerminal> = [];
               for (const [nativeTurnId, deferred] of current) {
+                if (cutInFor(deferred.context) !== undefined) continue;
                 if (
                   !activeTurnContexts.some((candidate) =>
                     isContinuedRunDescendant(candidate, deferred.context),
@@ -6123,6 +6508,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return [ready, updated] as const;
             });
             for (const ready of readyEvents) {
+              yield* dropCommandTracking(ready.context.nativeTurnId);
+              if (ready.terminalEmitted === true) continue;
+              if (ready.providerTurn !== undefined)
+                yield* emitProviderEvent({
+                  type: "provider_turn.updated",
+                  driver: CODEX_PROVIDER,
+                  threadId: ready.context.projectionThreadId,
+                  providerTurn: ready.providerTurn,
+                });
               yield* emitRootTerminal(ready.context, ready.event);
             }
           },
@@ -6160,6 +6554,119 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             state.saved.clear();
           },
         );
+        /** Ordinary Stop's retained-item settlement, without rewriting a completed turn. */
+        const stopRetainedItems = Effect.fnUntraced(function* (
+          context: ActiveCodexTurnContext,
+          completedAt: DateTime.Utc,
+        ) {
+          yield* terminalizeRunningCommandItems(
+            context,
+            context.nativeTurnId,
+            "interrupted",
+            completedAt,
+          );
+          yield* terminalizeRunningDynamicTools(
+            context,
+            context.nativeTurnId,
+            "interrupted",
+            completedAt,
+            true,
+          );
+          yield* terminalizeMcpAppCaptures(context, context.nativeTurnId);
+          yield* dropCommandTracking(context.nativeTurnId);
+          yield* clearImageWork(context);
+          yield* releaseSettledTurnIfIdle(context.nativeTurnId);
+        });
+
+        /** Call under the terminalization permit; these helpers never send a native request. */
+        const settleGovernedGoalHold = Effect.fnUntraced(function* (cutIn: CodexCutIn) {
+          for (const [nativeThreadId, hold] of goalHolds) {
+            if (!governs(cutIn, hold.context)) continue;
+            goalHolds.delete(nativeThreadId);
+            yield* settleGoalHold(hold, "interrupted");
+          }
+        });
+
+        const cutInSettled = Effect.fnUntraced(function* (cutIn: CodexCutIn) {
+          for (const context of (yield* Ref.get(activeTurns)).values())
+            if (governs(cutIn, context)) return false;
+          const running = yield* Ref.get(runningCommandItemsByTurn);
+          for (const target of cutIn.targets.values())
+            for (const item of running.get(target.nativeTurnId)?.values() ?? [])
+              if (
+                item.processId !== undefined &&
+                !cutIn.contained.has(terminalKey(target, item.processId))
+              )
+                return false;
+          return true;
+        });
+
+        // The permit serializes readers but does not mask cancellation. Publish
+        // the entire confirmed cohort before cancellation can retire its owner.
+        const releaseCutIn = Effect.fnUntraced(function* (cutIn: CodexCutIn) {
+          if (cutIns.get(cutIn.providerThreadId) !== cutIn) return;
+          cutIns.delete(cutIn.providerThreadId);
+          const completedAt = yield* DateTime.now;
+          for (const target of cutIn.targets.values()) {
+            if ((yield* Ref.get(settledTurns)).get(target.nativeTurnId) === target) {
+              yield* stopRetainedItems(target, completedAt);
+              continue;
+            }
+            yield* terminalizeRunningCommandItems(
+              target,
+              target.nativeTurnId,
+              "interrupted",
+              completedAt,
+            );
+            yield* dropCommandTracking(target.nativeTurnId);
+          }
+          yield* settleGovernedGoalHold(cutIn);
+          yield* flushReadyRootTerminals();
+        }, Effect.uninterruptible);
+
+        const releaseCutInIfSettled = Effect.fnUntraced(function* (cutIn: CodexCutIn) {
+          if (cutIns.get(cutIn.providerThreadId) === cutIn && (yield* cutInSettled(cutIn)))
+            yield* releaseCutIn(cutIn);
+        });
+
+        const takeOverCutIn = Effect.fnUntraced(function* (cutIn: CodexCutIn) {
+          cutIns.delete(cutIn.providerThreadId);
+          const completedAt = yield* DateTime.now;
+          const active = yield* Ref.get(activeTurns);
+          const settled = yield* Ref.get(settledTurns);
+          for (const target of cutIn.targets.values()) {
+            if (
+              active.get(target.nativeTurnId) === target ||
+              settled.get(target.nativeTurnId) === target
+            )
+              continue;
+            // Preserve tracking for Stop's native terminal pass. Its ordinary
+            // outcome policy publishes these item ends even if termination fails.
+            yield* terminalizeRunningCommandItems(
+              target,
+              target.nativeTurnId,
+              "interrupted",
+              completedAt,
+            );
+          }
+          yield* settleGovernedGoalHold(cutIn);
+          yield* flushReadyRootTerminals();
+        }, Effect.uninterruptible);
+
+        const rootNamedByLiveDescendant = (
+          contexts: ReadonlyArray<ActiveCodexTurnContext>,
+          providerTurnId: ProviderTurnId,
+        ) => {
+          for (const context of contexts)
+            for (
+              let parent = context.subagent?.parentContext;
+              parent !== undefined;
+              parent = parent.subagent?.parentContext
+            )
+              if (parent.subagent === null && parent.providerTurnId === providerTurnId)
+                return parent;
+          return undefined;
+        };
 
         const finalizeCodexTurn = (input: {
           readonly context: ActiveCodexTurnContext;
@@ -6177,6 +6684,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               if (current !== input.context) {
                 return false;
               }
+              const cutIn = cutInFor(input.context);
+              cutIn?.targets.set(input.nativeTurnId, input.context);
+              const withheld =
+                cutIn !== undefined &&
+                input.context.subagent === null &&
+                input.status !== "completed";
               input.context.fileChangeKindsByItem.clear();
               const providerRetry = yield* Ref.modify(providerRetries, (current) => {
                 const retry = current.get(input.context.providerTurnId);
@@ -6263,6 +6776,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   nativeId: input.nativeTurnId,
                   strength: "strong",
                 },
+                nativeInputs: [
+                  {
+                    version: 1,
+                    kind: "turn",
+                    nativeId: input.nativeTurnId,
+                    validation: "codex_turn_started",
+                  },
+                ],
                 ordinal: input.context.providerTurnOrdinal,
                 status: input.status,
                 startedAt: input.context.startedAt,
@@ -6280,7 +6801,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   ),
                 ),
               };
-              if (!holdsForGoal) {
+              if (!holdsForGoal && !withheld) {
                 yield* emitProviderEvent({
                   type: "provider_turn.updated",
                   driver: CODEX_PROVIDER,
@@ -6340,6 +6861,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     completedAt: input.completedAt,
                   },
                 });
+                input.context.subagent.task = {
+                  ...input.context.subagent.task,
+                  nativeSegments: input.context.subagent.task.nativeSegments?.map((segment) =>
+                    segment.boundary.state === "native_turns" &&
+                    segment.boundary.nativeTurnIds.includes(input.nativeTurnId)
+                      ? { ...segment, status: "ended" as const }
+                      : segment,
+                  ),
+                };
                 yield* emitSubagentTaskUpdate({
                   subagent: input.context.subagent,
                   status: input.status,
@@ -6388,6 +6918,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   input.nativeTurnId,
                   input.status,
                   input.completedAt,
+                  cutIn === undefined
+                    ? undefined
+                    : (item) =>
+                        item.processId !== undefined &&
+                        !cutIn.contained.has(terminalKey(input.context, item.processId)),
                 );
                 yield* terminalizeMcpAppCaptures(input.context, input.nativeTurnId);
               }
@@ -6407,6 +6942,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   ...input,
                   ...(providerRetry === undefined ? {} : { providerRetry }),
                   ...(holdsForGoal ? { goalHoldTurn: completedTurn } : {}),
+                  ...(withheld ? { withheldTurn: completedTurn } : {}),
                 });
               }
               const waiter = (yield* Ref.get(turnWaiters)).get(input.nativeTurnId);
@@ -6434,6 +6970,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ).pipe(Effect.forkIn(scope));
               }
               if (retainSettledContext) {
+                for (const item of (yield* Ref.get(runningCommandItemsByTurn))
+                  .get(input.nativeTurnId)
+                  ?.values() ?? []) {
+                  yield* recordCodexBackgroundOperation(input.context, item.id, {
+                    status: "running",
+                  });
+                }
                 yield* Ref.update(settledTurns, (current) => {
                   const updated = new Map(current);
                   updated.set(input.nativeTurnId, input.context);
@@ -6454,15 +6997,21 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 yield* Deferred.succeed(input.context.capacityRetryPending, undefined);
               }
               yield* flushReadyRootTerminals();
-              if (!retainSettledContext && !interruptInProgress) {
-                yield* Ref.update(runningCommandItemsByTurn, (current) => {
-                  if (!current.has(input.nativeTurnId)) {
-                    return current;
-                  }
-                  const updated = new Map(current);
-                  updated.delete(input.nativeTurnId);
-                  return updated;
-                });
+              // A deferred root's processes can outlive it; Stop still has to
+              // terminate them, and the deferred terminal's flush drops them.
+              const awaitsDescendants = (yield* Ref.get(deferredRootTerminals)).has(
+                input.nativeTurnId,
+              );
+              if (!retainSettledContext && !interruptInProgress && cutIn === undefined) {
+                if (!awaitsDescendants)
+                  yield* Ref.update(runningCommandItemsByTurn, (current) => {
+                    if (!current.has(input.nativeTurnId)) {
+                      return current;
+                    }
+                    const updated = new Map(current);
+                    updated.delete(input.nativeTurnId);
+                    return updated;
+                  });
                 yield* Ref.update(runningDynamicToolsByTurn, (current) => {
                   if (!current.has(input.nativeTurnId)) {
                     return current;
@@ -6491,6 +7040,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   return updated;
                 });
               }
+              if (cutIn !== undefined) yield* releaseCutInIfSettled(cutIn);
               return true;
             }),
           );
@@ -6779,9 +7329,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ...(heldBefore?.providerTurnId === requestedTurnId ? [heldBefore] : []),
             ];
             const activation = goalActivations.get(goalThreadId);
-            if (activation !== undefined) activation.stopped = true;
+            const cutInCall = turnInput.replacementFollows === true;
+            if (!cutInCall && activation !== undefined) activation.stopped = true;
             if (goalsByNativeThread.get(goalThreadId)?.status === "active") {
-              yield* client
+              const pause = client
                 .request("thread/goal/set", { threadId: goalThreadId, status: "paused" })
                 .pipe(
                   Effect.tap(({ goal }) =>
@@ -6789,11 +7340,25 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       goalsByNativeThread.set(goalThreadId, providerGoalFromCodex(goal)),
                     ),
                   ),
+                );
+              if (cutInCall) {
+                const paused = yield* pause.pipe(
+                  Effect.timeoutOption("10 seconds"),
+                  Effect.catch((cause) =>
+                    toProtocolError("Codex did not pause the goal within 10 seconds.", cause),
+                  ),
+                );
+                if (Option.isNone(paused))
+                  return yield* toProtocolError("Codex did not pause the goal within 10 seconds.");
+              } else {
+                yield* pause.pipe(
                   Effect.catch((cause) =>
                     Effect.logWarning("orchestration-v2.codex-goal-pause-failed", { cause }),
                   ),
                 );
+              }
             }
+            if (cutInCall && activation !== undefined) activation.stopped = true;
             return yield* turnTerminalizationPermit.withPermits(1)(
               Effect.gen(function* () {
                 const providerTurnId = latestRunTurnId(turnInput.providerTurnId);
@@ -6807,8 +7372,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   ]),
                 );
                 if (!held) return { turnInput: { ...turnInput, providerTurnId }, goalTurns };
-                goalHolds.delete(goalThreadId);
-                yield* settleGoalHold(hold, "interrupted");
+                if (!cutInCall) {
+                  goalHolds.delete(goalThreadId);
+                  yield* settleGoalHold(hold, "interrupted");
+                }
                 return {
                   turnInput: { ...turnInput, providerTurnId, requestRuntimeRestart: true },
                   goalTurns,
@@ -7107,6 +7674,63 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         };
 
         const runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
+          ...(input.runtimePolicy.bare === undefined
+            ? {}
+            : {
+                getBareReceipt: Effect.fn("CodexAdapterV2.getBareReceipt")(function* (
+                  thread: OrchestrationV2ProviderThread,
+                ) {
+                  const nativeId = thread.nativeThreadRef?.nativeId;
+                  const evidence: Array<import("@t3tools/contracts").BareEvidence> = [];
+                  if (nativeId !== undefined) {
+                    const status = yield* client
+                      .request("mcpServerStatus/list", { threadId: nativeId })
+                      .pipe(Effect.option);
+                    if (Option.isSome(status))
+                      evidence.push(
+                        bareInventoryEvidence(
+                          "mcp",
+                          status.value.data.map((server) => server.name),
+                          namesT3Mcp(input.runtimePolicy.bare!) ? ["t3-code"] : [],
+                          `Codex mcpServerStatus/list ${nativeId}`,
+                        ),
+                      );
+                    const skills = yield* client
+                      .request("skills/list", {
+                        cwds: input.runtimePolicy.cwd === null ? [] : [input.runtimePolicy.cwd],
+                      })
+                      .pipe(Effect.option);
+                    if (Option.isSome(skills))
+                      evidence.push({
+                        category: "skills",
+                        status: "unobserved",
+                        identities: skills.value.data.flatMap((entry) =>
+                          entry.skills.map((skill) => skill.name),
+                        ),
+                        source: `Codex skills/list ${nativeId}; discovery inventory does not certify prompt inclusion`,
+                      });
+                  }
+                  return bareReceipt({
+                    driver: CODEX_PROVIDER,
+                    bare: input.runtimePolicy.bare!,
+                    mode: input.runtimePolicy.runtimeMode,
+                    effective: `Codex ${input.runtimePolicy.runtimeMode}`,
+                    controls: [
+                      "own CODEX_HOME and app-server",
+                      "native forks retain the initialized native home owner",
+                      "strict-config",
+                      "empty base/developer instructions",
+                      "skills.include_instructions=false",
+                      "skip_host_skill_discovery",
+                      "tools.update_plan.enabled=false",
+                    ],
+                    retained: ["native shell/file tool schemas"],
+                    root: `${home}/sessions`,
+                    sessionId: nativeId ?? null,
+                    evidence,
+                  });
+                }),
+              }),
           instanceId: adapterOptions.instanceId,
           driver: CODEX_PROVIDER,
           providerSessionId: input.providerSessionId,
@@ -7143,6 +7767,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const contexts = [
               ...(yield* Ref.get(activeTurns)).values(),
               ...(yield* Ref.get(settledTurns)).values(),
+              ...Array.from(cutIns.values()).flatMap((cutIn) => Array.from(cutIn.targets.values())),
             ];
             const roots = contexts.filter(
               (context) => context.providerThread.id === providerThread.id,
@@ -7158,6 +7783,25 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 return true;
             }
             return false;
+          }),
+          endedTurnHold: Effect.fn("CodexAdapterV2.endedTurnHold")(function* (heldInput) {
+            const cutIn = cutIns.get(heldInput.providerThread.id);
+            if (
+              cutInCalls.get(heldInput.providerThread.id)?.providerTurnId ===
+                heldInput.providerTurnId ||
+              (cutIn !== undefined &&
+                Array.from(cutIn.roots).some(
+                  (root) => root.providerTurnId === heldInput.providerTurnId,
+                ))
+            )
+              return "cut-in" as const;
+            for (const deferred of (yield* Ref.get(deferredRootTerminals)).values())
+              if (
+                deferred.context.providerThread.id === heldInput.providerThread.id &&
+                deferred.context.providerTurnId === heldInput.providerTurnId
+              )
+                return "descendants" as const;
+            return undefined;
           }),
           ensureThread: (threadInput) =>
             ensureInitialized.pipe(
@@ -7415,127 +8059,327 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     "Codex did not start the capacity retry within 10 seconds; Stop could not be delivered.",
                   );
               }
-              const { turnInput, goalTurns } = yield* resolveGoalStopTarget(requestedInput);
-              const [activeTurnContexts, settledTurnContexts] =
-                yield* turnTerminalizationPermit.withPermits(1)(
+              const cutInCall = requestedInput.replacementFollows === true;
+              const threadKey = requestedInput.providerThread.id;
+              const exit = yield* Deferred.make<void>();
+              if (requestedInput.requestRuntimeRestart === true)
+                for (
+                  let previous = cutInCalls.get(threadKey);
+                  previous !== undefined;
+                  previous = cutInCalls.get(threadKey)
+                )
+                  yield* Deferred.await(previous.exit);
+              // No yield between the last check and registration. Cancellation
+              // frees the outbox lane before its old callback finishes exiting.
+              if (cutInCall)
+                cutInCalls.set(threadKey, { providerTurnId: requestedInput.providerTurnId, exit });
+              return yield* Effect.gen(function* () {
+                const { turnInput, goalTurns } = yield* resolveGoalStopTarget(requestedInput);
+                const stopScope = turnInput.requestRuntimeRestart === true;
+                const {
+                  settledTurnContexts,
+                  lineageRoots,
+                  interruptTargetContexts,
+                  cutIn,
+                  takenOver,
+                } = yield* turnTerminalizationPermit.withPermits(1)(
                   Effect.gen(function* () {
-                    return [
-                      Array.from((yield* Ref.get(activeTurns)).values()),
-                      Array.from((yield* Ref.get(settledTurns)).values()),
-                    ] as const;
+                    const activeTurnContexts = Array.from((yield* Ref.get(activeTurns)).values());
+                    const settledTurnContexts = Array.from((yield* Ref.get(settledTurns)).values());
+                    const threadCutIn = stopScope ? cutIns.get(threadKey) : undefined;
+                    const isTarget = (context: ActiveCodexTurnContext) =>
+                      context.providerTurnId === turnInput.providerTurnId;
+                    // A naturally ended root keeps owning live descendants, so
+                    // ordinary Stop must find it just as a cut-in does.
+                    const deferredRoot = stopScope
+                      ? Array.from((yield* Ref.get(deferredRootTerminals)).values()).find(
+                          (deferred) =>
+                            deferred.context.providerThread.id === threadKey &&
+                            isTarget(deferred.context),
+                        )?.context
+                      : undefined;
+                    const activeTurn =
+                      activeTurnContexts.find(isTarget) ??
+                      (threadCutIn === undefined
+                        ? undefined
+                        : Array.from(threadCutIn.roots).find(isTarget)) ??
+                      deferredRoot ??
+                      (stopScope
+                        ? (settledTurnContexts.find(isTarget) ??
+                          rootNamedByLiveDescendant(activeTurnContexts, turnInput.providerTurnId) ??
+                          settledTurnContexts.find(
+                            (context) => context.providerThread.id === threadKey,
+                          ))
+                        : undefined);
+                    const lineageRoots = Array.from(
+                      new Set([
+                        ...(activeTurn === undefined ? [] : [activeTurn]),
+                        ...(startingRetry === undefined ? [] : [startingRetry]),
+                        ...goalTurns,
+                        ...(threadCutIn?.roots ?? []),
+                      ]),
+                    );
+                    const inLineage = (context: ActiveCodexTurnContext) =>
+                      lineageRoots.some(
+                        (root) => context === root || isDescendantCodexTurn(context, root),
+                      );
+                    const interruptTargetContexts = Array.from(
+                      new Set([
+                        ...(activeTurn === undefined ? [] : [activeTurn]),
+                        ...activeTurnContexts.filter(
+                          (candidate) => candidate !== activeTurn && inLineage(candidate),
+                        ),
+                        ...settledTurnContexts.filter(
+                          (candidate) =>
+                            candidate !== activeTurn &&
+                            ((stopScope && candidate.providerThread.id === threadKey) ||
+                              inLineage(candidate)),
+                        ),
+                        ...(threadCutIn?.targets.values() ?? []),
+                      ]),
+                    );
+                    let cutIn: CodexCutIn | undefined;
+                    let takenOver: CodexCutIn | undefined;
+                    if (
+                      cutInCall &&
+                      (interruptTargetContexts.length > 0 || lineageRoots.length > 0)
+                    ) {
+                      cutIn = threadCutIn ?? {
+                        providerThreadId: threadKey,
+                        roots: new Set(),
+                        targets: new Map(),
+                        acknowledged: new Set(),
+                        contained: new Set(),
+                      };
+                      for (const root of lineageRoots)
+                        if (root.subagent === null) cutIn.roots.add(root);
+                      for (const target of interruptTargetContexts)
+                        cutIn.targets.set(target.nativeTurnId, target);
+                      cutIns.set(threadKey, cutIn);
+                    } else if (!cutInCall && threadCutIn !== undefined) {
+                      takenOver = threadCutIn;
+                      yield* takeOverCutIn(threadCutIn);
+                    }
+                    return {
+                      settledTurnContexts,
+                      lineageRoots,
+                      interruptTargetContexts,
+                      cutIn,
+                      takenOver,
+                    };
                   }),
                 );
-              const activeTurn =
-                activeTurnContexts.find(
-                  (candidate) => candidate.providerTurnId === turnInput.providerTurnId,
-                ) ??
-                (turnInput.requestRuntimeRestart === true
-                  ? settledTurnContexts.find(
-                      (candidate) => candidate.providerThread.id === turnInput.providerThread.id,
+                const inLineage = (context: ActiveCodexTurnContext) => {
+                  // Native ends can release the cohort before an outstanding
+                  // interrupt answers. That retired call owns no later work.
+                  if (cutIn !== undefined && cutIns.get(threadKey) !== cutIn) return false;
+                  return (
+                    (cutIn !== undefined && governs(cutIn, context)) ||
+                    lineageRoots.some(
+                      (root) => context === root || isDescendantCodexTurn(context, root),
                     )
-                  : undefined);
-              const lineageRoots = Array.from(
-                new Set([
-                  ...(activeTurn === undefined ? [] : [activeTurn]),
-                  ...(startingRetry === undefined ? [] : [startingRetry]),
-                  ...goalTurns,
-                ]),
-              );
-              const inLineage = (context: ActiveCodexTurnContext) =>
-                lineageRoots.some(
-                  (root) => context === root || isDescendantCodexTurn(context, root),
-                );
-              const interruptTargetContexts = [
-                ...(activeTurn === undefined ? [] : [activeTurn]),
-                ...activeTurnContexts.filter(
-                  (candidate) => candidate !== activeTurn && inLineage(candidate),
-                ),
-                ...settledTurnContexts.filter(
-                  (candidate) =>
-                    candidate !== activeTurn &&
-                    ((turnInput.requestRuntimeRestart === true &&
-                      candidate.providerThread.id === turnInput.providerThread.id) ||
-                      inLineage(candidate)),
-                ),
-              ];
-              if (interruptTargetContexts.length === 0) {
-                if (turnInput.requestRuntimeRestart === true) return;
-                return yield* toProtocolError(
-                  `Provider turn ${turnInput.providerTurnId} is not active and cannot be interrupted.`,
-                );
-              }
-              const interruptTargets: Array<{
-                readonly context: ActiveCodexTurnContext;
-                readonly completion: Deferred.Deferred<void, never>;
-              }> = [];
-              for (const context of interruptTargetContexts) {
-                interruptTargets.push({ context, completion: yield* Deferred.make<void>() });
-              }
-              yield* Ref.update(turnWaiters, (current) => {
-                const updated = new Map(current);
-                for (const target of interruptTargets) {
-                  updated.set(target.context.nativeTurnId, target.completion);
+                  );
+                };
+                const acknowledged =
+                  cutIn?.acknowledged ?? takenOver?.acknowledged ?? new Set<string>();
+                const acknowledge = (context: ActiveCodexTurnContext) =>
+                  turnTerminalizationPermit.withPermits(1)(
+                    Effect.sync(() => {
+                      acknowledged.add(context.nativeTurnId);
+                    }),
+                  );
+                const containedTerminalKeys = cutIn?.contained ?? new Set(takenOver?.contained);
+                if (interruptTargetContexts.length === 0 && cutIn === undefined) {
+                  if (stopScope) return;
+                  return yield* toProtocolError(
+                    `Provider turn ${turnInput.providerTurnId} is not active and cannot be interrupted.`,
+                  );
                 }
-                return updated;
-              });
-              yield* Ref.update(interruptingNativeTurns, (current) => {
-                const updated = new Set(current);
-                for (const target of interruptTargets) {
-                  updated.add(target.context.nativeTurnId);
+                const interruptTargets: Array<{
+                  readonly context: ActiveCodexTurnContext;
+                  readonly completion: Deferred.Deferred<void, never>;
+                }> = [];
+                for (const context of interruptTargetContexts) {
+                  interruptTargets.push({ context, completion: yield* Deferred.make<void>() });
                 }
-                return updated;
-              });
-              const registeredActiveTurns = yield* Ref.get(activeTurns);
-              for (const target of interruptTargets) {
-                if (registeredActiveTurns.get(target.context.nativeTurnId) !== target.context) {
-                  yield* Deferred.succeed(target.completion, undefined);
-                }
-              }
-
-              const cleanupInterruptState = Effect.gen(function* () {
                 yield* Ref.update(turnWaiters, (current) => {
                   const updated = new Map(current);
                   for (const target of interruptTargets) {
-                    updated.delete(target.context.nativeTurnId);
+                    updated.set(target.context.nativeTurnId, target.completion);
                   }
                   return updated;
                 });
                 yield* Ref.update(interruptingNativeTurns, (current) => {
                   const updated = new Set(current);
                   for (const target of interruptTargets) {
-                    updated.delete(target.context.nativeTurnId);
+                    updated.add(target.context.nativeTurnId);
                   }
                   return updated;
                 });
-                yield* Ref.update(runningCommandItemsByTurn, (current) => {
-                  const updated = new Map(current);
-                  for (const target of interruptTargets) {
-                    if (settledTurnContexts.includes(target.context)) continue;
-                    updated.delete(target.context.nativeTurnId);
+                const registeredActiveTurns = yield* Ref.get(activeTurns);
+                for (const target of interruptTargets) {
+                  if (registeredActiveTurns.get(target.context.nativeTurnId) !== target.context) {
+                    yield* Deferred.succeed(target.completion, undefined);
                   }
-                  return updated;
-                });
-              });
+                }
 
-              const trackedInterruptNativeTurnIds = new Set(
-                interruptTargets.map((target) => target.context.nativeTurnId),
-              );
-              const finalizeRemainingInterruptLineage = Effect.gen(function* () {
-                while (true) {
-                  const newlyDiscovered: Array<ActiveCodexTurnContext> = [];
+                const cleanupInterruptState = Effect.gen(function* () {
+                  const ownedWaiters = yield* Ref.modify(turnWaiters, (current) => {
+                    const updated = new Map(current);
+                    const owned = new Set<string>();
+                    for (const target of interruptTargets) {
+                      const nativeTurnId = target.context.nativeTurnId;
+                      if (updated.get(nativeTurnId) !== target.completion) continue;
+                      owned.add(nativeTurnId);
+                      updated.delete(nativeTurnId);
+                    }
+                    return [owned, updated] as const;
+                  });
+                  yield* Ref.update(interruptingNativeTurns, (current) => {
+                    const updated = new Set(current);
+                    for (const nativeTurnId of ownedWaiters) updated.delete(nativeTurnId);
+                    return updated;
+                  });
+                  yield* Ref.update(runningCommandItemsByTurn, (current) => {
+                    // A failed cut-in keeps observing and retrying the same work.
+                    // Ordinary Stop retains its existing local cleanup behavior.
+                    if (cutInCall) return current;
+                    const updated = new Map(current);
+                    for (const target of interruptTargets) {
+                      if (settledTurnContexts.includes(target.context)) continue;
+                      updated.delete(target.context.nativeTurnId);
+                    }
+                    return updated;
+                  });
+                });
+
+                const trackedInterruptNativeTurnIds = new Set(
+                  interruptTargets.map((target) => target.context.nativeTurnId),
+                );
+                const finalizeRemainingInterruptLineage = Effect.gen(function* () {
+                  while (true) {
+                    const newlyDiscovered: Array<ActiveCodexTurnContext> = [];
+                    const activeLineage = yield* turnTerminalizationPermit.withPermits(1)(
+                      Effect.gen(function* () {
+                        const lineage = Array.from((yield* Ref.get(activeTurns)).values()).filter(
+                          inLineage,
+                        );
+                        for (const context of lineage) {
+                          if (trackedInterruptNativeTurnIds.has(context.nativeTurnId)) {
+                            continue;
+                          }
+                          const completion = yield* Deferred.make<void>();
+                          interruptTargets.push({ context, completion });
+                          trackedInterruptNativeTurnIds.add(context.nativeTurnId);
+                          newlyDiscovered.push(context);
+                          cutIn?.targets.set(context.nativeTurnId, context);
+                          yield* Ref.update(turnWaiters, (current) => {
+                            const updated = new Map(current);
+                            updated.set(context.nativeTurnId, completion);
+                            return updated;
+                          });
+                          yield* Ref.update(interruptingNativeTurns, (current) => {
+                            const updated = new Set(current);
+                            updated.add(context.nativeTurnId);
+                            return updated;
+                          });
+                        }
+                        return lineage;
+                      }),
+                    );
+                    if (activeLineage.length === 0) {
+                      return;
+                    }
+                    if (newlyDiscovered.length > 0) {
+                      const completed = yield* Effect.forEach(
+                        newlyDiscovered.filter(
+                          (context) => !acknowledged.has(context.nativeTurnId),
+                        ),
+                        (context) =>
+                          Effect.flatMap(getNativeThreadId(context.providerThread), (threadId) =>
+                            client.request("turn/interrupt", {
+                              threadId,
+                              turnId: context.nativeTurnId,
+                            }),
+                          ).pipe(
+                            Effect.tap(() => acknowledge(context)),
+                            Effect.catch((cause) =>
+                              turnInput.replacementFollows === true
+                                ? Effect.fail(cause)
+                                : Effect.logWarning(
+                                    "orchestration-v2.codex-remaining-lineage-interrupt-failed",
+                                    {
+                                      nativeTurnId: context.nativeTurnId,
+                                      providerSessionId: input.providerSessionId,
+                                      cause,
+                                    },
+                                  ),
+                            ),
+                          ),
+                        { concurrency: "unbounded", discard: true },
+                      ).pipe(Effect.timeoutOption("10 seconds"));
+                      if (Option.isNone(completed)) {
+                        if (turnInput.replacementFollows === true) {
+                          return yield* toProtocolError(
+                            "Codex did not acknowledge a descendant interrupt within 10 seconds.",
+                          );
+                        }
+                        yield* Effect.logWarning(
+                          "orchestration-v2.codex-remaining-lineage-interrupt-timeout",
+                          {
+                            nativeTurnIds: newlyDiscovered.map((context) => context.nativeTurnId),
+                            providerSessionId: input.providerSessionId,
+                          },
+                        );
+                      }
+                    }
+                    const completedAt = yield* DateTime.now;
+                    for (const context of activeLineage) {
+                      if ((yield* Ref.get(activeTurns)).get(context.nativeTurnId) !== context)
+                        continue;
+                      if (cutInCall) {
+                        if (!acknowledged.has(context.nativeTurnId))
+                          return yield* toProtocolError(
+                            "Codex did not acknowledge a descendant interrupt within 10 seconds.",
+                          );
+                        const items = (yield* Ref.get(runningCommandItemsByTurn)).get(
+                          context.nativeTurnId,
+                        );
+                        if (
+                          Array.from(items?.values() ?? []).some(
+                            (item) =>
+                              item.processId !== undefined &&
+                              !containedTerminalKeys.has(terminalKey(context, item.processId)),
+                          )
+                        )
+                          return yield* toProtocolError(
+                            "Codex started more work while it was being stopped.",
+                          );
+                      }
+                      yield* finalizeCodexTurn({
+                        context,
+                        nativeTurnId: context.nativeTurnId,
+                        status: "interrupted",
+                        completedAt,
+                      });
+                    }
+                  }
+                });
+
+                const interruptLateDescendants = Effect.gen(function* () {
                   const activeLineage = yield* turnTerminalizationPermit.withPermits(1)(
                     Effect.gen(function* () {
                       const lineage = Array.from((yield* Ref.get(activeTurns)).values()).filter(
-                        inLineage,
+                        (context) =>
+                          !lineageRoots.includes(context) &&
+                          inLineage(context) &&
+                          !trackedInterruptNativeTurnIds.has(context.nativeTurnId),
                       );
                       for (const context of lineage) {
-                        if (trackedInterruptNativeTurnIds.has(context.nativeTurnId)) {
-                          continue;
-                        }
                         const completion = yield* Deferred.make<void>();
                         interruptTargets.push({ context, completion });
                         trackedInterruptNativeTurnIds.add(context.nativeTurnId);
-                        newlyDiscovered.push(context);
+                        cutIn?.targets.set(context.nativeTurnId, context);
                         yield* Ref.update(turnWaiters, (current) => {
                           const updated = new Map(current);
                           updated.set(context.nativeTurnId, completion);
@@ -7550,272 +8394,216 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       return lineage;
                     }),
                   );
-                  if (activeLineage.length === 0) {
-                    return;
-                  }
-                  if (newlyDiscovered.length > 0) {
-                    const completed = yield* Effect.forEach(
-                      newlyDiscovered,
-                      (context) =>
-                        Effect.flatMap(getNativeThreadId(context.providerThread), (threadId) =>
-                          client.request("turn/interrupt", {
-                            threadId,
-                            turnId: context.nativeTurnId,
-                          }),
-                        ).pipe(
-                          Effect.catch((cause) =>
-                            Effect.logWarning(
-                              "orchestration-v2.codex-remaining-lineage-interrupt-failed",
-                              {
-                                nativeTurnId: context.nativeTurnId,
-                                providerSessionId: input.providerSessionId,
-                                cause,
-                              },
-                            ),
-                          ),
-                        ),
-                      { concurrency: "unbounded", discard: true },
-                    ).pipe(Effect.timeoutOption("10 seconds"));
-                    if (Option.isNone(completed)) {
-                      yield* Effect.logWarning(
-                        "orchestration-v2.codex-remaining-lineage-interrupt-timeout",
-                        {
-                          nativeTurnIds: newlyDiscovered.map((context) => context.nativeTurnId),
-                          providerSessionId: input.providerSessionId,
-                        },
-                      );
-                    }
-                  }
-                  const completedAt = yield* DateTime.now;
-                  for (const context of activeLineage) {
-                    yield* finalizeCodexTurn({
-                      context,
-                      nativeTurnId: context.nativeTurnId,
-                      status: "interrupted",
-                      completedAt,
-                    });
-                  }
-                }
-              });
-
-              const interruptLateDescendants = Effect.gen(function* () {
-                const activeLineage = yield* turnTerminalizationPermit.withPermits(1)(
-                  Effect.gen(function* () {
-                    const lineage = Array.from((yield* Ref.get(activeTurns)).values()).filter(
-                      (context) =>
-                        !lineageRoots.includes(context) &&
-                        inLineage(context) &&
-                        !trackedInterruptNativeTurnIds.has(context.nativeTurnId),
-                    );
-                    for (const context of lineage) {
-                      const completion = yield* Deferred.make<void>();
-                      interruptTargets.push({ context, completion });
-                      trackedInterruptNativeTurnIds.add(context.nativeTurnId);
-                      yield* Ref.update(turnWaiters, (current) => {
-                        const updated = new Map(current);
-                        updated.set(context.nativeTurnId, completion);
-                        return updated;
-                      });
-                      yield* Ref.update(interruptingNativeTurns, (current) => {
-                        const updated = new Set(current);
-                        updated.add(context.nativeTurnId);
-                        return updated;
-                      });
-                    }
-                    return lineage;
-                  }),
-                );
-                const completed = yield* Effect.forEach(
-                  activeLineage,
-                  (context) =>
-                    Effect.flatMap(getNativeThreadId(context.providerThread), (threadId) =>
-                      client.request("turn/interrupt", {
-                        threadId,
-                        turnId: context.nativeTurnId,
-                      }),
-                    ),
-                  { concurrency: "unbounded", discard: true },
-                ).pipe(Effect.timeoutOption("10 seconds"));
-                if (Option.isNone(completed)) {
-                  yield* Effect.logWarning(
-                    "orchestration-v2.codex-late-descendant-interrupt-timeout",
-                    {
-                      nativeTurnIds: activeLineage.map((context) => context.nativeTurnId),
-                      providerSessionId: input.providerSessionId,
-                    },
-                  );
-                }
-              });
-
-              yield* Effect.gen(function* () {
-                for (const target of interruptTargets) {
-                  const context = target.context;
-                  if (context.capacityRetryPending !== undefined) {
-                    yield* finalizeCodexTurn({
-                      context,
-                      nativeTurnId: context.nativeTurnId,
-                      status: "interrupted",
-                      completedAt: yield* DateTime.now,
-                    });
-                    continue;
-                  }
-                  // Null start timestamps ACK queued turns; interruption must wait for turn/started.
-                  if (context.nativeStartReady !== undefined) {
-                    const ready = yield* Deferred.await(context.nativeStartReady).pipe(
-                      Effect.timeoutOption("10 seconds"),
-                    );
-                    if (Option.isNone(ready)) {
+                  const completed = yield* Effect.forEach(
+                    activeLineage.filter((context) => !acknowledged.has(context.nativeTurnId)),
+                    (context) =>
+                      Effect.flatMap(getNativeThreadId(context.providerThread), (threadId) =>
+                        client.request("turn/interrupt", {
+                          threadId,
+                          turnId: context.nativeTurnId,
+                        }),
+                      ).pipe(Effect.tap(() => acknowledge(context))),
+                    { concurrency: "unbounded", discard: true },
+                  ).pipe(Effect.timeoutOption("10 seconds"));
+                  if (Option.isNone(completed)) {
+                    if (turnInput.replacementFollows === true) {
                       return yield* toProtocolError(
-                        "Codex did not start the queued turn within 10 seconds; Stop could not be delivered.",
+                        "Codex did not acknowledge a late descendant interrupt within 10 seconds.",
                       );
                     }
-                  }
-                  if ((yield* Ref.get(activeTurns)).get(context.nativeTurnId) !== context) {
-                    continue;
-                  }
-                  yield* client.request("turn/interrupt", {
-                    threadId: yield* getNativeThreadId(context.providerThread),
-                    turnId: context.nativeTurnId,
-                  });
-                }
-                const containedTerminalKeys = new Set<string>();
-                const attemptedTerminalKeys = new Set<string>();
-                const collectTrackedTerminals = Effect.fn("CodexAdapterV2.collectTrackedTerminals")(
-                  function* (targets: typeof interruptTargets) {
-                    const trackedTerminals = new Map<
-                      string,
-                      { readonly nativeThreadId: string; readonly processId: string }
-                    >();
-                    const runningItems = yield* Ref.get(runningCommandItemsByTurn);
-                    for (const target of targets) {
-                      const nativeThreadId = yield* getNativeThreadId(
-                        target.context.providerThread,
-                      );
-                      const items = runningItems.get(target.context.nativeTurnId);
-                      for (const item of items?.values() ?? []) {
-                        if (item.processId !== undefined) {
-                          trackedTerminals.set(`${nativeThreadId}:${item.processId}`, {
-                            nativeThreadId,
-                            processId: item.processId,
-                          });
-                        }
-                      }
-                    }
-                    return trackedTerminals;
-                  },
-                );
-                const terminateTrackedTerminals = Effect.fn(
-                  "CodexAdapterV2.terminateTrackedTerminals",
-                )(function* (targets: typeof interruptTargets) {
-                  const trackedTerminals = yield* collectTrackedTerminals(targets);
-                  const pendingTerminals = Array.from(trackedTerminals.entries())
-                    .filter(([key]) => !containedTerminalKeys.has(key))
-                    .sort(
-                      ([leftKey], [rightKey]) =>
-                        Number(attemptedTerminalKeys.has(leftKey)) -
-                        Number(attemptedTerminalKeys.has(rightKey)),
+                    yield* Effect.logWarning(
+                      "orchestration-v2.codex-late-descendant-interrupt-timeout",
+                      {
+                        nativeTurnIds: activeLineage.map((context) => context.nativeTurnId),
+                        providerSessionId: input.providerSessionId,
+                      },
                     );
-                  return yield* Effect.forEach(
-                    pendingTerminals,
-                    ([key, { nativeThreadId, processId }]) =>
-                      Effect.gen(function* () {
-                        attemptedTerminalKeys.add(key);
-                        yield* terminateBackgroundTerminal(nativeThreadId, processId);
-                        containedTerminalKeys.add(key);
-                      }).pipe(
-                        Effect.as({ success: true as const }),
-                        Effect.catch((error) => Effect.succeed({ success: false as const, error })),
-                      ),
-                  );
+                  }
                 });
 
-                const [, completed] = yield* Effect.all(
-                  [
-                    terminateTrackedTerminals(interruptTargets),
-                    Effect.forEach(
-                      interruptTargets,
-                      (target) => Deferred.await(target.completion),
-                      { concurrency: "unbounded", discard: true },
-                    ).pipe(Effect.timeoutOption("10 seconds")),
-                  ],
-                  { concurrency: "unbounded" },
-                );
-                if (Option.isNone(completed)) {
+                yield* Effect.gen(function* () {
                   for (const target of interruptTargets) {
                     const context = target.context;
-                    if ((yield* Ref.get(activeTurns)).get(context.nativeTurnId) !== context) {
+                    if (context.capacityRetryPending !== undefined) {
+                      yield* finalizeCodexTurn({
+                        context,
+                        nativeTurnId: context.nativeTurnId,
+                        status: "interrupted",
+                        completedAt: yield* DateTime.now,
+                      });
                       continue;
                     }
-                    yield* Effect.logWarning("orchestration-v2.codex-interrupt-timeout", {
-                      providerSessionId: input.providerSessionId,
-                      providerThreadId: context.providerThread.id,
-                      providerTurnId: context.providerTurnId,
-                      nativeTurnId: context.nativeTurnId,
+                    // A null start timestamp acknowledges a queued turn; Codex cannot interrupt it
+                    // until turn/started confirms that the native task exists.
+                    if (context.nativeStartReady !== undefined) {
+                      const ready = yield* Deferred.await(context.nativeStartReady).pipe(
+                        Effect.timeoutOption("10 seconds"),
+                      );
+                      if (Option.isNone(ready)) {
+                        return yield* toProtocolError(
+                          "Codex did not start the queued turn within 10 seconds; Stop could not be delivered.",
+                        );
+                      }
+                    }
+                    if (
+                      (yield* Ref.get(activeTurns)).get(context.nativeTurnId) !== context ||
+                      acknowledged.has(context.nativeTurnId)
+                    )
+                      continue;
+                    const interrupt = client.request("turn/interrupt", {
+                      threadId: yield* getNativeThreadId(context.providerThread),
+                      turnId: context.nativeTurnId,
                     });
+                    if (cutInCall) {
+                      const answered = yield* interrupt.pipe(Effect.timeoutOption("10 seconds"));
+                      if (Option.isNone(answered))
+                        return yield* toProtocolError(
+                          "Codex did not acknowledge the interrupt within 10 seconds.",
+                        );
+                    } else yield* interrupt;
+                    yield* acknowledge(context);
                   }
-                }
+                  const attemptedTerminalKeys = new Set<string>();
+                  const collectTrackedTerminals = () =>
+                    turnTerminalizationPermit.withPermits(1)(
+                      Effect.gen(function* () {
+                        const targets =
+                          cutIn === undefined
+                            ? interruptTargets
+                            : Array.from(cutIn.targets.values(), (context) => ({ context }));
+                        const trackedTerminals = new Map<
+                          string,
+                          { readonly nativeThreadId: string; readonly processId: string }
+                        >();
+                        const runningItems = yield* Ref.get(runningCommandItemsByTurn);
+                        for (const target of targets) {
+                          const nativeThreadId = yield* getNativeThreadId(
+                            target.context.providerThread,
+                          );
+                          const items = runningItems.get(target.context.nativeTurnId);
+                          for (const item of items?.values() ?? []) {
+                            if (item.processId !== undefined) {
+                              trackedTerminals.set(`${nativeThreadId}:${item.processId}`, {
+                                nativeThreadId,
+                                processId: item.processId,
+                              });
+                            }
+                          }
+                        }
+                        return trackedTerminals;
+                      }),
+                    );
+                  const terminateTrackedTerminals = Effect.fn(
+                    "CodexAdapterV2.terminateTrackedTerminals",
+                  )(function* () {
+                    const trackedTerminals = yield* collectTrackedTerminals();
+                    const pendingTerminals = Array.from(trackedTerminals.entries())
+                      .filter(([key]) => !containedTerminalKeys.has(key))
+                      .sort(
+                        ([leftKey], [rightKey]) =>
+                          Number(attemptedTerminalKeys.has(leftKey)) -
+                          Number(attemptedTerminalKeys.has(rightKey)),
+                      );
+                    return yield* Effect.forEach(
+                      pendingTerminals,
+                      ([key, { nativeThreadId, processId }]) =>
+                        Effect.gen(function* () {
+                          attemptedTerminalKeys.add(key);
+                          yield* terminateBackgroundTerminal(nativeThreadId, processId);
+                          yield* turnTerminalizationPermit.withPermits(1)(
+                            Effect.sync(() => {
+                              containedTerminalKeys.add(key);
+                            }),
+                          );
+                        }).pipe(
+                          Effect.as({ success: true as const }),
+                          Effect.catch((error) =>
+                            Effect.succeed({ success: false as const, error }),
+                          ),
+                        ),
+                    );
+                  });
 
-                yield* interruptLateDescendants;
-                yield* finalizeRemainingInterruptLineage;
-
-                const terminationResults = yield* terminateTrackedTerminals(interruptTargets);
-                const failedTermination = terminationResults.find((result) => !result.success);
-                if (failedTermination !== undefined && !failedTermination.success) {
-                  return yield* failedTermination.error;
-                }
-                yield* turnTerminalizationPermit.withPermits(1)(
-                  Effect.gen(function* () {
-                    const completedAt = yield* DateTime.now;
+                  const [, completed] = yield* Effect.all(
+                    [
+                      terminateTrackedTerminals(),
+                      Effect.forEach(
+                        interruptTargets,
+                        (target) => Deferred.await(target.completion),
+                        { concurrency: "unbounded", discard: true },
+                      ).pipe(Effect.timeoutOption("10 seconds")),
+                    ],
+                    { concurrency: "unbounded" },
+                  );
+                  if (Option.isNone(completed)) {
                     for (const target of interruptTargets) {
                       const context = target.context;
-                      if ((yield* Ref.get(settledTurns)).get(context.nativeTurnId) !== context)
+                      if ((yield* Ref.get(activeTurns)).get(context.nativeTurnId) !== context) {
                         continue;
-                      yield* terminalizeRunningCommandItems(
-                        context,
-                        context.nativeTurnId,
-                        "interrupted",
-                        completedAt,
-                      );
-                      yield* terminalizeRunningDynamicTools(
-                        context,
-                        context.nativeTurnId,
-                        "interrupted",
-                        completedAt,
-                        true,
-                      );
-                      yield* terminalizeMcpAppCaptures(context, context.nativeTurnId);
-                      yield* Ref.update(runningCommandItemsByTurn, (current) => {
-                        const updated = new Map(current);
-                        updated.delete(context.nativeTurnId);
-                        return updated;
+                      }
+                      yield* Effect.logWarning("orchestration-v2.codex-interrupt-timeout", {
+                        providerSessionId: input.providerSessionId,
+                        providerThreadId: context.providerThread.id,
+                        providerTurnId: context.providerTurnId,
+                        nativeTurnId: context.nativeTurnId,
                       });
                       yield* clearImageWork(context);
                       yield* releaseSettledTurnIfIdle(context.nativeTurnId);
                     }
-                  }),
+                  }
+
+                  yield* interruptLateDescendants;
+                  if (turnInput.replacementFollows === true) {
+                    const failed = (yield* terminateTrackedTerminals()).find(
+                      (result) => !result.success,
+                    );
+                    if (failed !== undefined && !failed.success) return yield* failed.error;
+                  }
+                  yield* finalizeRemainingInterruptLineage;
+                  const terminationResults = yield* terminateTrackedTerminals();
+                  const failedTermination = terminationResults.find((result) => !result.success);
+                  if (failedTermination !== undefined && !failedTermination.success) {
+                    return yield* failedTermination.error;
+                  }
+                  yield* turnTerminalizationPermit.withPermits(1)(
+                    Effect.gen(function* () {
+                      if (cutIn !== undefined) {
+                        if (cutIns.get(cutIn.providerThreadId) !== cutIn) return;
+                        if (!(yield* cutInSettled(cutIn)))
+                          return yield* toProtocolError(
+                            "Codex started more work while it was being stopped.",
+                          );
+                        yield* releaseCutIn(cutIn);
+                        return;
+                      }
+                      const completedAt = yield* DateTime.now;
+                      for (const { context } of interruptTargets)
+                        if ((yield* Ref.get(settledTurns)).get(context.nativeTurnId) === context)
+                          yield* stopRetainedItems(context, completedAt);
+                    }),
+                  );
+                }).pipe(
+                  Effect.onError(() =>
+                    cutInCall
+                      ? cutIn === undefined
+                        ? Effect.void
+                        : turnTerminalizationPermit.withPermits(1)(releaseCutInIfSettled(cutIn))
+                      : finalizeRemainingInterruptLineage.pipe(Effect.ignore),
+                  ),
+                  Effect.ensuring(cleanupInterruptState),
                 );
               }).pipe(
-                Effect.onError(() => finalizeRemainingInterruptLineage),
-                Effect.ensuring(cleanupInterruptState),
+                Effect.ensuring(
+                  Effect.gen(function* () {
+                    if (!cutInCall) return;
+                    if (cutInCalls.get(threadKey)?.exit === exit) cutInCalls.delete(threadKey);
+                    yield* Deferred.succeed(exit, undefined);
+                  }),
+                ),
               );
             },
             (effect, requestedInput) =>
-              Effect.acquireUseRelease(
-                Effect.sync(() => {
-                  const nativeThreadId = requestedInput.providerThread.nativeThreadRef?.nativeId;
-                  if (nativeThreadId != null)
-                    goalStops.set(nativeThreadId, (goalStops.get(nativeThreadId) ?? 0) + 1);
-                  return nativeThreadId;
-                }),
-                () => effect,
-                (nativeThreadId) =>
-                  Effect.sync(() => {
-                    if (nativeThreadId == null) return;
-                    const stops = (goalStops.get(nativeThreadId) ?? 1) - 1;
-                    if (stops > 0) goalStops.set(nativeThreadId, stops);
-                    else goalStops.delete(nativeThreadId);
-                  }),
-              ).pipe(
+              effect.pipe(
                 Effect.mapError(
                   (cause) =>
                     new ProviderAdapter.ProviderAdapterInterruptError({
