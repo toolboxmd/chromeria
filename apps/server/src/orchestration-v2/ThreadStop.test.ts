@@ -3615,7 +3615,19 @@ it.effect.each(["finishes after Stop", "was claimed before Stop and startup repa
         });
         yield* orchestrator.recoverDelegatedTask(childId, childRun.id);
         if (before) yield* orchestrator.recoverDelegatedTasks;
-        else yield* finishGrandchild;
+        else {
+          // A grandchild that is still working keeps the Stopped child's task open.
+          const waiting = (yield* orchestrator.getThreadProjection(rootId)).subagents.find(
+            (candidate) => candidate.childThreadId === childId,
+          )!;
+          assert.deepEqual(
+            { status: waiting.status, settled: waiting.result !== null },
+            { status: "running", settled: false },
+          );
+          assert.isTrue(yield* orchestrator.delegatedTaskResultPending(childId));
+          assert.isTrue(Option.isNone(yield* Queue.poll(offers)));
+          yield* finishGrandchild;
+        }
 
         const child = yield* orchestrator.getThreadProjection(childId);
         assert.equal(child.subagents[0]?.completionDelivery?.state, "claimed");
