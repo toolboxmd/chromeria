@@ -192,7 +192,9 @@ export function ColorList({
           Preferences differ across this scope. A change replaces this list on the selected targets.
         </p>
       )}
-      {draft.length === 0 && <p className="text-sm text-muted-foreground">No Colors configured.</p>}
+      {draft.length === 0 && (
+        <p className="text-sm text-muted-foreground">No primary model configured.</p>
+      )}
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}
