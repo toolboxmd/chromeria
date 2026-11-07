@@ -1,8 +1,10 @@
 import * as Dialog from "../../components/ui/Dialog";
 import { useAtom, useAtomValue } from "@effect/atom-react";
+import { PeerGrantSettings } from "./PeerGrantSettings";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   AuthProvidersManageScope,
+  AuthAccessReadScope,
   AuthOrchestrationReadScope,
   managedUpdatesDenial,
   type EnvironmentId,
@@ -90,6 +92,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
     ) ?? false;
   const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
   const canRead = useEnvironmentScope(environmentId, AuthOrchestrationReadScope);
+  const canReadAccess = useEnvironmentScope(environmentId, AuthAccessReadScope);
   const busy = !connected || pending !== null || running || providerBusy;
   const disabled = !allowed || busy;
   const version = config?.environment.serverVersion;
@@ -196,6 +199,9 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                 onUpdate={connections.onUpdateEnvironment}
               />
             </SettingsSection>
+            {connected && canReadAccess && capabilities?.peerAuthority === 1 ? (
+              <PeerGrantSettings environmentId={environmentId} />
+            ) : null}
             <EnvironmentRoutesSection
               environmentId={environmentId}
               connected={connected}

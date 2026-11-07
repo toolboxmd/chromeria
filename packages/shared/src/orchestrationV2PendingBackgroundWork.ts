@@ -1,4 +1,5 @@
 import type {
+  EnvironmentId,
   OrchestrationV2PendingBackgroundTask,
   OrchestrationV2ProviderThread,
   OrchestrationV2Run,
@@ -136,6 +137,14 @@ type PendingBackgroundWorkTurnItem = {
   readonly monitor?: boolean | undefined;
   readonly prompt?: string | undefined;
   readonly childThreadId?: ThreadId | null;
+  readonly remoteChild?:
+    | {
+        readonly environmentId: EnvironmentId;
+        readonly threadId?: ThreadId | undefined;
+        readonly label?: string | undefined;
+      }
+    | null
+    | undefined;
 };
 
 function isLatestRunSettledForBackgroundWait(
@@ -182,15 +191,22 @@ function pendingTaskFromTurnItem(
   const description = descriptionFromTurnItem(item);
   const named = { taskId, ...(description === undefined ? {} : { description }) };
   switch (item.type) {
-    case "subagent":
+    case "subagent": {
+      // A remote delegated task has no local child thread; its thread lives
+      // in the linked environment named by remoteChild once attached.
+      const childThreadId = item.childThreadId ?? item.remoteChild?.threadId ?? null;
       return {
         ...named,
         kind: "subagent",
         ...(item.owningProviderInstanceId === undefined
           ? {}
           : { providerInstanceId: item.owningProviderInstanceId }),
-        ...(item.childThreadId == null ? {} : { childThreadId: item.childThreadId }),
+        ...(childThreadId === null ? {} : { childThreadId }),
+        ...(item.childThreadId == null && item.remoteChild?.threadId !== undefined
+          ? { childEnvironmentId: item.remoteChild.environmentId }
+          : {}),
       };
+    }
     case "command_execution":
       return { ...named, kind: item.monitor === true ? "monitor" : "command" };
     default:
