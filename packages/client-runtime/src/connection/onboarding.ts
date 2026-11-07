@@ -1,3 +1,6 @@
+import * as SessionRenewal from "../authorization/renewal.ts";
+import { renewalCommitment } from "@t3tools/shared/sessionRenewal";
+import * as Clock from "effect/Clock";
 import type { DesktopSshEnvironmentTarget, EnvironmentId } from "@t3tools/contracts";
 import { resolveRemotePairingTarget } from "@t3tools/shared/remote";
 import * as Context from "effect/Context";
@@ -138,11 +141,33 @@ export const preparePairingRegistration = Effect.fn(
   if (compatibilityError !== null && compatibilityError.serverUpdateRequired !== true) {
     return yield* compatibilityError;
   }
+  const renewal = yield* Effect.serviceOption(SessionRenewal.SessionRenewal);
+  const slot = Option.isSome(renewal)
+    ? yield* renewal.value
+        .stage({
+          key: connectionId,
+          environmentId: descriptor.environmentId,
+          origin: target.httpBaseUrl,
+          kind: "bearer",
+        })
+        .pipe(Effect.asSome)
+    : Option.none();
+  const issuedAt = yield* Clock.currentTimeMillis;
   const access = yield* bootstrapRemoteBearerSession({
     httpBaseUrl: target.httpBaseUrl,
     credential: target.credential,
+    ...(Option.isSome(slot) ? { renewalCommitment: renewalCommitment(slot.value.current) } : {}),
     clientMetadata: presentation.metadata,
   }).pipe(Effect.mapError(mapRemoteEnvironmentError));
+  if (Option.isSome(renewal) && Option.isSome(slot) && access.renewAfter !== undefined) {
+    yield* renewal.value
+      .complete(connectionId, slot.value.epoch, {
+        accessToken: access.access_token,
+        expiresAt: issuedAt + access.expires_in * 1000,
+        renewAfter: access.renewAfter,
+      })
+      .pipe(Effect.ignore);
+  }
 
   return new BearerConnectionRegistration({
     ...route,
