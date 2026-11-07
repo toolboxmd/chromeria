@@ -10,6 +10,7 @@ import {
 import {
   ArchiveIcon,
   FlaskConicalIcon,
+  RouteIcon,
   BotIcon,
   createLucideIcon,
   CalendarClockIcon,
@@ -59,6 +60,7 @@ import {
 import { useAvailableSettingsSearchItems } from "./useAvailableSettingsSearchItems";
 import { useSettingsSectionNavigation } from "./useSettingsSectionNavigation";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
+import { ChromeriaFeatureMark } from "../ChromeriaFeatureMark";
 
 const SnapShotIcon = createLucideIcon("snap-shot", [
   [
@@ -99,6 +101,9 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/threads": MessagesSquareIcon,
   "/settings/browser": GlobeIcon,
   "/settings/devices": SmartphoneIcon,
+  "/settings/prism": RouteIcon,
+  "/settings/promachos": BotIcon,
+  "/settings/spectrum": PaletteIcon,
   "/settings/scheduled-tasks": CalendarClockIcon,
   "/settings/source-control": GitBranchIcon,
   "/settings/worktrees": FolderTreeIcon,
@@ -421,6 +426,11 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                                 >
                                   {SETTINGS_SECTION_LABELS[to]}
                                 </span>
+                                {to === "/settings/prism" ||
+                                to === "/settings/promachos" ||
+                                to === "/settings/spectrum" ? (
+                                  <ChromeriaFeatureMark focusable={false} />
+                                ) : null}
                               </SidebarMenuButton>
                             </SidebarMenuItem>
                           );
