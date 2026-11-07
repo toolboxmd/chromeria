@@ -1,5 +1,11 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { type EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  RunId,
+  ThreadId,
+  type DeviceViewerResource,
+  type PreviewViewerResource,
+} from "@t3tools/contracts";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { useClosedViewStore } from "./closedViewStore";
@@ -55,6 +61,86 @@ describe("rightPanelStore", () => {
     expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refB)?.id).toBe(
       "file:src/app.ts",
     );
+  });
+
+  it("opens an Issue beside a thread in one tab that the next Issue replaces", () => {
+    const store = useRightPanelStore.getState();
+    const pullRequest = { projectId: "project-1", repository: "acme/app", number: 7 };
+    const first = "https://github.com/acme/app/issues/120";
+    const second = "https://github.com/acme/app/issues/121";
+    store.openPullRequest(refA, pullRequest);
+    store.openIssue(refA, { environmentId: "env-1", url: first });
+    let state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.isOpen).toBe(true);
+    expect(state.activeSurfaceId).toBe("issue");
+    expect(state.surfaces.map((surface) => surface.kind)).toEqual(["pull-request", "issue"]);
+
+    store.openIssue(refA, { environmentId: "env-1", url: second });
+    state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces.filter((surface) => surface.kind === "issue")).toEqual([
+      { id: "issue", kind: "issue", environmentId: "env-1", url: second },
+    ]);
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refB)).toEqual(
+      expect.objectContaining({ surfaces: [] }),
+    );
+
+    store.closeSurface(refA, "issue");
+    state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces.map((surface) => surface.kind)).toEqual(["pull-request"]);
+    expect(state.activeSurfaceId).toBe(state.surfaces[0]!.id);
+  });
+
+  it("restores valid Issue tabs and discards malformed persisted targets", () => {
+    const valid = {
+      id: "issue",
+      kind: "issue",
+      environmentId: "env-1",
+      url: "https://github.com/acme/app/issues/120",
+    };
+    for (const surface of [
+      valid,
+      { ...valid, id: "other" },
+      { ...valid, environmentId: 3 },
+      { ...valid, environmentId: "" },
+      { ...valid, url: 3 },
+      { ...valid, url: "https://github.com/acme/app/pull/120" },
+    ]) {
+      const state = migratePersistedRightPanelState({
+        byThreadKey: { thread: { isOpen: true, activeSurfaceId: "issue", surfaces: [surface] } },
+      }).byThreadKey.thread;
+      expect(state).toEqual(
+        surface === valid
+          ? { isOpen: true, activeSurfaceId: "issue", surfaces: [valid] }
+          : { isOpen: false, activeSurfaceId: null, surfaces: [] },
+      );
+    }
+  });
+
+  it("opens the Map as one tab per thread and restores it, dropping kinds this build lacks", () => {
+    const store = useRightPanelStore.getState();
+    store.open(refA, "map");
+    store.open(refA, "map");
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces).toEqual([{ id: "map", kind: "map" }]);
+    expect(state.activeSurfaceId).toBe("map");
+
+    const restored = migratePersistedRightPanelState({
+      byThreadKey: {
+        thread: {
+          isOpen: true,
+          activeSurfaceId: "map",
+          surfaces: [
+            { id: "map", kind: "map" },
+            { id: "timeline", kind: "timeline" },
+          ],
+        },
+      },
+    }).byThreadKey.thread;
+    expect(restored).toEqual({
+      isOpen: true,
+      activeSurfaceId: "map",
+      surfaces: [{ id: "map", kind: "map" }],
+    });
   });
 
   it("records single and bulk tab closes, newest first", () => {
@@ -1238,4 +1324,88 @@ describe("rightPanelStore", () => {
     expect(surfaceIds()).toEqual(["browser:tab-a", "terminal:term-1", "diff", "browser:tab-b"]);
     expect(store.getUserActionRevision(refA)).toBe(revision);
   });
+});
+
+it("keeps qualified resource openings in the source panel without cross-environment collisions", () => {
+  const resource: DeviceViewerResource = {
+    type: "device",
+    environmentId: "B" as EnvironmentId,
+    threadId: ThreadId.make("b-thread"),
+    hostId: "local",
+    deviceId: "same-id",
+    platform: "ios",
+    toolSessionId: "11111111-1111-4111-8111-111111111111",
+  };
+  const target = {
+    hostId: "local",
+    deviceId: "same-id",
+    platform: "ios" as const,
+    name: "Device",
+    resource,
+  };
+  const store = useRightPanelStore.getState();
+  store.openDevice(refA, target);
+  const oldId = selectThreadRightPanelState(
+    useRightPanelStore.getState().byThreadKey,
+    refA,
+  ).activeSurfaceId!;
+  store.openDevice(refA, {
+    ...target,
+    resource: { ...resource, toolSessionId: "22222222-2222-4222-8222-222222222222" },
+  });
+  const newId = selectThreadRightPanelState(
+    useRightPanelStore.getState().byThreadKey,
+    refA,
+  ).activeSurfaceId!;
+  expect(newId).not.toBe(oldId);
+  store.closeSurface(refA, oldId);
+  const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+  expect(state.surfaces.map((surface) => surface.id)).toEqual([newId]);
+  expect(Object.keys(useRightPanelStore.getState().byThreadKey)).toEqual(["env-1:thread-A"]);
+  const browser: PreviewViewerResource = {
+    type: "preview",
+    environmentId: resource.environmentId,
+    threadId: resource.threadId,
+    tabId: "same-tab",
+    serverEpoch: "epoch-1",
+  };
+  store.openBrowser(refA, browser.tabId, browser);
+  store.openBrowser(refA, browser.tabId, { ...browser, environmentId: "C" as EnvironmentId });
+  const next = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+  expect(next.surfaces.filter((surface) => surface.kind === "preview")).toHaveLength(2);
+  const restored = migratePersistedRightPanelState({
+    byThreadKey: useRightPanelStore.getState().byThreadKey,
+  });
+  expect(restored.byThreadKey["env-1:thread-A"]?.surfaces).toEqual(next.surfaces);
+});
+
+it("does not restore malformed qualified resources as legacy local tabs", () => {
+  const restored = migratePersistedRightPanelState({
+    byThreadKey: {
+      "env-1:thread-A": {
+        isOpen: true,
+        activeSurfaceId: "device:bad",
+        surfaces: [
+          {
+            id: "device:bad",
+            kind: "device",
+            target: {
+              hostId: "local",
+              deviceId: "same-id",
+              platform: "ios",
+              name: "Device",
+              resource: { type: "device", toolSessionId: "guessed" },
+            },
+          },
+          {
+            id: "browser:bad",
+            kind: "preview",
+            resourceId: "same-tab",
+            resource: { type: "preview", tabId: "same-tab", ticket: "private" },
+          },
+        ],
+      },
+    },
+  });
+  expect(restored.byThreadKey["env-1:thread-A"]?.surfaces ?? []).toEqual([]);
 });
