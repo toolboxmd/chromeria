@@ -206,6 +206,9 @@ const makeTestRelay = Effect.fnUntraced(function* (
     getThreadTitles: unused,
     ensureLegacyTranscript: unused,
     dispatch: unused,
+    recordRestartCutDecline: unused,
+    readRunRecovery: unused,
+    readRestartCutView: unused,
     searchThread: () => Effect.die("unused"),
     searchThreadStream: () => Stream.empty,
     getThreadHistoryPage: () => Effect.die("unused"),
@@ -235,7 +238,6 @@ const makeTestRelay = Effect.fnUntraced(function* (
     getThreadEventSequence: unused,
     recoverDelegatedTask: unused,
     delegatedTaskResultPending: unused,
-    streamStoredEvents: Stream.empty,
     streamStoredEventsFrom: () => Stream.empty,
     streamDomainEvents: options.domainEvents ?? Stream.empty,
   });
