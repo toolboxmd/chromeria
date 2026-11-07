@@ -158,7 +158,7 @@ export interface ManagedSettings {
     | { readonly _tag: "Locked"; readonly path: string };
   readonly lockedPaths: ReadonlyArray<string>;
   /**
-   * Put back into a stripped settings file the values `stored`, the file before this write, held
+   * Restore encoded values from `stored`, the file before this write, into a stripped settings file
    * at or under paths the policy defaults: equal to the policy's default, they are still the
    * user's choice. A key `isAtomic` names comes back whole or not at all. Undefined without
    * policy defaults, so writers can skip reading the file.
@@ -487,7 +487,7 @@ export function makeManagedSettings(
             }
             return getPath(tree, segments) === undefined &&
               jsonEqual(previous, getPath(encoded, segments))
-              ? setPath(tree, segments, getPath(settings, segments))
+              ? setPath(tree, segments, getPath(encoded, segments))
               : tree;
           };
           // A default inside an atomic setting restores that whole setting, never part of it.
