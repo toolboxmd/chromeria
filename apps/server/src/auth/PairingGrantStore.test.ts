@@ -1,4 +1,4 @@
-import { AuthStandardClientScopes } from "@t3tools/contracts";
+import { AuthStandardClientScopes, AuthCookieMirrorWriteScope } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
@@ -68,6 +68,22 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("PairingGrantStor
         SecureRandom.make((size) => new Uint8Array(size).fill(8)),
       ),
     ),
+  );
+
+  it.effect("consumes SQLite grants with both omitted and explicit requested scopes", () =>
+    Effect.gen(function* () {
+      const grants = yield* PairingGrantStore.PairingGrantStore;
+      for (const requestedScopes of [undefined, ["orchestration:read"] as const]) {
+        const issued = yield* grants.issueOneTimeToken({ scopes: ["orchestration:read"] });
+        const consumed = yield* grants.consume(
+          issued.credential,
+          requestedScopes === undefined ? {} : { requestedScopes },
+        );
+        expect(consumed.scopes).toEqual(["orchestration:read"]);
+        const second = yield* Effect.flip(grants.consume(issued.credential));
+        expect(second._tag).toBe("UnknownBootstrapCredentialError");
+      }
+    }).pipe(Effect.provide(layerPairingGrantStore())),
   );
 
   it.effect("atomically consumes a one-time token when multiple requests race", () =>
@@ -187,6 +203,14 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("PairingGrantStor
         ),
       );
       expect(current.method).toBe("desktop-bootstrap");
+      expect(current.scopes).not.toContain(AuthCookieMirrorWriteScope);
+      const main = yield* bootstrapCredentials.consume(
+        yield* currentDesktopBootstrapToken("desktop-secret", now, "cookie-mirror").pipe(
+          Effect.provide(NodeCrypto.layerMac),
+        ),
+      );
+      expect(main.scopes).toEqual([AuthCookieMirrorWriteScope]);
+      expect(main.subject).toBe("desktop-cookie-mirror");
 
       const staleToken = yield* currentDesktopBootstrapToken(
         "desktop-secret",

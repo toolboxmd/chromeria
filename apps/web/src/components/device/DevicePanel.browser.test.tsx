@@ -72,6 +72,8 @@ vi.mock("~/state/device", async () => {
       Atom.make(() => Effect.promise(() => mocks.list({ environmentId, input: {} }))),
     ),
     NO_DEVICE_PROBE_ATOM: Atom.make(AsyncResult.initial<void, never>()),
+    renewDeviceHubAccess: () => Promise.resolve(null),
+    useDeviceHubAccessState: () => ({ access: null, error: null, refresh: () => {} }),
     useDeviceState: () => ({ state: currentState, loaded: true }),
   };
 });
