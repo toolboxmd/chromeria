@@ -184,6 +184,7 @@ import {
   readRetirementState,
   readRetirementThreadIds,
   retirementAdmission,
+  withoutParkedCompletions,
 } from "../childThreads/retirement.ts";
 import type { ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
 import { EventSinkV2 } from "./EventSink.ts";
@@ -1225,6 +1226,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     `effect:provider-turn.restart:${attemptId}`;
   const retirement = (threadId: ThreadId) =>
     readRetirementState(threadId).pipe(Effect.provideService(ProjectionStoreV2, projectionStore));
+  const settlementProgress = <T extends Parameters<typeof delegatedTaskProgress>[0]>(
+    records: T & { readonly thread: { readonly id: ThreadId } },
+  ) => {
+    const progress = delegatedTaskProgress(records);
+    return progress.state !== "waiting_for_children"
+      ? Effect.succeed(progress)
+      : retirement(records.thread.id).pipe(
+          Effect.map((state) => delegatedTaskProgress(withoutParkedCompletions(records, state))),
+        );
+  };
   const nextTurnItemOrdinal = (
     projection: Pick<OrchestrationV2ThreadProjection, "thread"> &
       Partial<Pick<OrchestrationV2ThreadProjection, "turnItems">>,
@@ -15088,7 +15099,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     settledContinuationOf?: RunId,
   ) {
     const childThreadId = childControls.thread.id;
-    const progress = delegatedTaskProgress(childControls);
+    const progress = yield* settlementProgress(childControls);
     const { resultRun } = progress;
     if (progress.state !== "result_available" || resultRun === undefined) return;
     const status = delegatedTaskTerminalStatus(runOutcome(resultRun));
@@ -15150,7 +15161,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       childControls.thread.forkedFrom?.type !== "node"
     )
       return;
-    const progress = delegatedTaskProgress(childControls);
+    const progress = yield* settlementProgress(childControls);
     const parent = yield* projectionStore.getThreadRecords(parentThreadId, [
       "subagents",
       "contextTransfers",
@@ -16975,6 +16986,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     Effect.forkIn(requestWakeScope),
   );
 
+  // A retired thread's parked completions wake nobody, so its own task, and
+  // each retired ancestor's after it, settles here instead.
+  const settleRetiredAncestors = Effect.fn("Orchestrator.settleRetiredAncestors")(function* (
+    threadId: ThreadId,
+  ) {
+    const seen = new Set<ThreadId>();
+    let current = threadId;
+    while (!seen.has(current)) {
+      seen.add(current);
+      const state = yield* retirement(current);
+      if (!state.retired && state.complete) return;
+      const parentThreadId = yield* appOwnedSubagentParentThreadId(current);
+      if (parentThreadId === undefined) return;
+      yield* threadDispatch.withLock(parentThreadId, finalizeAppOwnedSubagent(current));
+      current = parentThreadId;
+    }
+  });
+
   // Settles child results and deliveries whose runs ended without the listener above: before this
   // boot, or during runtime reconciliation. Startup runs it after reconciliation and before the effect
   // worker; queue recovery holds unstarted runs until an explicit queue.resume.
@@ -16992,6 +17021,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               const parentThreadId = thread?.lineage.parentThreadId;
               if (parentThreadId === undefined || parentThreadId === null) return;
               yield* threadDispatch.withLock(parentThreadId, finalizeAppOwnedSubagent(threadId));
+              yield* settleRetiredAncestors(parentThreadId);
             }).pipe(
               Effect.catchCause((cause) =>
                 Effect.logWarning("Failed to recover terminal app-owned subagent", {
@@ -17112,7 +17142,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         if (run === undefined || delegatedTaskTerminalStatus(run.status) === null) return true;
         return yield* childAwaitsRestartContinuation(runs, run);
       }
-      const progress = delegatedTaskProgress(child);
+      const progress = yield* settlementProgress(child);
       if (progress.state !== "result_available") return true;
       if (progress.resultRun === undefined) return false;
       return yield* childAwaitsRestartContinuation(child.runs, progress.resultRun);
@@ -17136,6 +17166,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           sourceRunId === undefined ? undefined : { settledContinuationOf: sourceRunId },
         ),
       );
+      yield* settleRetiredAncestors(parentThreadId);
       yield* requestWake(threadId);
     },
     (effect, threadId, _sourceRunId) =>
