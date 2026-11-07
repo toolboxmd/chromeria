@@ -44,7 +44,7 @@ Every eval follows the same shape, so a new one is easy to write and an old one 
 
 ## Cost
 
-Run only the cases your change touches until they pass. Then do one full run per model before the PR merges. Each eval's summary records what the run cost. Upstream absorptions instead follow the [eval scope in the fork guide](../docs/fork.md#proof-and-upstream-overlap).
+Run only the cases your change touches until they pass. Then do one full run per model before the PR merges. Each eval's summary records what the run cost.
 
 ## Add an eval
 

@@ -157,7 +157,7 @@ For mobile verification, a missing or outdated native client is an install step,
 
 ## Evals
 
-`evals/` checks how real models behave with T3 Code's model-facing text: agent instructions, MCP tool descriptions and schemas, and generated titles. Before you change that text, read [evals/README.md](evals/README.md) and run the evals it names. When you fix a model behavior bug, add a case that fails before the fix.
+`evals/` checks how real models behave with T3 Code's model-facing text: agent instructions, MCP tool descriptions and schemas, and generated titles. Before you change that text, read [evals/README.md](evals/README.md) and run the evals it names. Upstream absorptions instead follow the [eval scope in the fork guide](docs/fork.md#proof-and-upstream-overlap). When you fix a model behavior bug, add a case that fails before the fix.
 
 ## Upstream first
 
