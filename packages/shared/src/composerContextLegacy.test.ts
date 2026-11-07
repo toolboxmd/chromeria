@@ -80,7 +80,14 @@ describe("upgradeLegacyContextMessage", () => {
     expect(upgradeLegacyContextMessage(text)).toEqual({ text, records: [] });
   });
 
-  it.each(["email@build:7", "@build:7foo", "@build:7.foo"])(
+  it("upgrades terminal labels after a supplementary character outside the word class", () => {
+    const result = upgradeLegacyContextMessage(
+      "See 😀@build:7\n<terminal_context>\n- Build line 7:\n  output\n</terminal_context>",
+    );
+    expect(result.text).toBe("See 😀[Build line 7](t3-context://v1/terminal/legacy_terminal_1)");
+  });
+
+  it.each(["email@build:7", "𝟎@build:7", "\u{1D167}@build:7", "@build:7foo", "@build:7.foo"])(
     "does not replace terminal labels embedded in %s",
     (prompt) => {
       const upgraded = upgradeLegacyContextMessage(
