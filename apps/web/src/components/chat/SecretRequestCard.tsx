@@ -2,11 +2,13 @@ import { pipe } from "effect/Function";
 import {
   SECRET_REQUEST_DEFAULT_PLACEHOLDER,
   secretRequestAnswerInput,
+  secretRequestComplete,
   secretRequestDisplay,
   secretRequestFailureMessage,
   secretRequestPrivacyNote,
   secretRequestReference,
   secretRequestSources,
+  secretRequestFields,
   type SecretRequestItem,
   type SecretRequestReply,
   type SecretRequestSource,
@@ -84,11 +86,16 @@ function PendingSecretRequestForm(props: {
     reportFailure: false,
     reportDefect: false,
   });
-  const sources = useSecretRequestSources(props.environmentId);
+  const configuredSources = useSecretRequestSources(props.environmentId);
+  const sources =
+    item.fields === undefined && item.destination === undefined ? configuredSources : NO_SOURCES;
   const [sourceId, setSourceId] = useState<SecretProviderId | null>(null);
   const source = sources.find((candidate) => candidate.id === sourceId) ?? null;
-  const [secret, setSecret] = useState("");
   const [reference, setReference] = useState("");
+  const fields = secretRequestFields(item);
+  const fieldId = (index: number) => `${inputId}-${index}`;
+  const [values, setValues] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const complete = secretRequestComplete(item, values);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Enter and click can both submit before a render.
@@ -105,8 +112,8 @@ function PendingSecretRequestForm(props: {
       setSubmitting(false);
     });
     if (result._tag === "Success") {
-      setSecret("");
       setReference("");
+      setValues(new Map());
       return;
     }
     if (!isAtomCommandInterrupted(result)) {
@@ -117,14 +124,13 @@ function PendingSecretRequestForm(props: {
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (source === null) {
-      void send({ type: "save", secret });
+      void send({ type: "save", values });
     } else if (secretRequestReference(source, reference) === undefined) {
       setError(source.invalidReferenceMessage);
     } else {
       void send({ type: "reference", source, reference });
     }
   };
-  const draft = source === null ? secret : reference;
   const describedBy = error !== null ? `${privacyId} ${errorId}` : privacyId;
 
   return (
@@ -140,18 +146,23 @@ function PendingSecretRequestForm(props: {
         if (!(event.target instanceof Element)) return;
         if (event.target.closest("input, button, a")) return;
         if (window.getSelection()?.isCollapsed === false) return;
-        document.getElementById(inputId)?.focus();
+        document.getElementById(fieldId(0))?.focus();
       }}
     >
       <div className="flex min-w-0 flex-col gap-1">
-        <label htmlFor={inputId} className="text-sm font-medium text-foreground">
-          {item.label}
-        </label>
+        {/* With several fields, each input carries its own label. */}
+        {item.fields === undefined ? (
+          <label htmlFor={fieldId(0)} className="text-sm font-medium text-foreground">
+            {item.label}
+          </label>
+        ) : (
+          <p className="text-sm font-medium text-foreground">{item.label}</p>
+        )}
         {item.reason.trim() ? (
           <p className="text-sm wrap-anywhere text-muted-foreground">{item.reason}</p>
         ) : null}
       </div>
-      <div className="flex min-w-0 items-center gap-2">
+      <div className="flex min-w-0 items-end gap-2">
         {sources.length > 0 ? (
           <SecretSourceSelect
             value={source?.id ?? null}
@@ -164,29 +175,44 @@ function PendingSecretRequestForm(props: {
             }}
           />
         ) : null}
-        <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 flex-1 flex-col gap-2">
           {source === null ? (
-            <Input
-              id={inputId}
-              // A CSS-masked text field still exposes its value to screen readers.
-              type="password"
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="off"
-              spellCheck={false}
-              data-1p-ignore
-              data-lpignore="true"
-              data-bwignore
-              placeholder={item.placeholder ?? SECRET_REQUEST_DEFAULT_PLACEHOLDER}
-              value={secret}
-              disabled={submitting}
-              aria-invalid={error !== null || undefined}
-              aria-describedby={describedBy}
-              onChange={(event) => setSecret(event.currentTarget.value)}
-            />
+            <>
+              {fields.map((field, index) => (
+                <div key={field.name} className="flex min-w-0 flex-col gap-1">
+                  {/* A single field is titled by the card itself. */}
+                  {item.fields === undefined ? null : (
+                    <label htmlFor={fieldId(index)} className="text-xs text-muted-foreground">
+                      {field.label}
+                    </label>
+                  )}
+                  <Input
+                    id={fieldId(index)}
+                    type="password"
+                    autoComplete="off"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck={false}
+                    // Password managers otherwise offer to save or fill this field.
+                    data-1p-ignore
+                    data-lpignore="true"
+                    data-bwignore
+                    placeholder={field.placeholder ?? SECRET_REQUEST_DEFAULT_PLACEHOLDER}
+                    value={values.get(field.name) ?? ""}
+                    disabled={submitting}
+                    aria-invalid={error !== null || undefined}
+                    aria-describedby={error !== null ? `${privacyId} ${errorId}` : privacyId}
+                    onChange={(event) => {
+                      const value = event.currentTarget.value;
+                      setValues((current) => new Map(current).set(field.name, value));
+                    }}
+                  />
+                </div>
+              ))}
+            </>
           ) : (
             <Input
-              id={inputId}
+              id={fieldId(0)}
               font="mono"
               autoComplete="off"
               autoCorrect="off"
@@ -204,7 +230,10 @@ function PendingSecretRequestForm(props: {
             />
           )}
         </div>
-        <Button type="submit" disabled={submitting || draft.trim().length === 0}>
+        <Button
+          type="submit"
+          disabled={submitting || (source === null ? !complete : reference.trim().length === 0)}
+        >
           Save securely
         </Button>
       </div>

@@ -2,11 +2,13 @@ import { pipe } from "effect/Function";
 import {
   SECRET_REQUEST_DEFAULT_PLACEHOLDER,
   secretRequestAnswerInput,
+  secretRequestComplete,
   secretRequestDisplay,
   secretRequestFailureMessage,
   secretRequestPrivacyNote,
   secretRequestReference,
   secretRequestSources,
+  secretRequestFields,
   type SecretRequestItem,
   type SecretRequestReply,
 } from "@t3tools/client-runtime/secret-request";
@@ -80,11 +82,16 @@ function PendingSecretRequestForm(props: {
     reportDefect: false,
   });
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
-  const sources = secretRequestSources(config, config?.settings.secretProviders ?? {});
+  const sources =
+    item.fields === undefined && item.destination === undefined
+      ? secretRequestSources(config, config?.settings.secretProviders ?? {})
+      : [];
   const [sourceId, setSourceId] = useState<SecretProviderId | null>(null);
   const source = sources.find((candidate) => candidate.id === sourceId) ?? null;
-  const [secret, setSecret] = useState("");
   const [reference, setReference] = useState("");
+  const fields = secretRequestFields(item);
+  const [values, setValues] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const complete = secretRequestComplete(item, values);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Submit then a tap can both run before a re-render; this guard is synchronous.
@@ -101,8 +108,8 @@ function PendingSecretRequestForm(props: {
       setSubmitting(false);
     });
     if (result._tag === "Success") {
-      setSecret("");
       setReference("");
+      setValues(new Map());
       return;
     }
     if (!isAtomCommandInterrupted(result)) {
@@ -111,14 +118,13 @@ function PendingSecretRequestForm(props: {
   };
   const save = () => {
     if (source === null) {
-      void send({ type: "save", secret });
+      void send({ type: "save", values });
     } else if (secretRequestReference(source, reference) === undefined) {
       setError(source.invalidReferenceMessage);
     } else {
       void send({ type: "reference", source, reference });
     }
   };
-  const draft = source === null ? secret : reference;
 
   return (
     <View className="mb-3 gap-3 rounded-[20px] border border-border bg-card-alt p-4">
@@ -158,14 +164,30 @@ function PendingSecretRequestForm(props: {
         </View>
       ) : null}
       {source === null ? (
-        <SecretTextInput
-          accessibilityLabel={item.label}
-          placeholder={item.placeholder ?? SECRET_REQUEST_DEFAULT_PLACEHOLDER}
-          value={secret}
-          onChangeText={setSecret}
-          editable={!submitting}
-          onSubmitEditing={(value) => void send({ type: "save", secret: value })}
-        />
+        <>
+          {fields.map((field) => (
+            <View key={field.name} className="gap-1">
+              {/* A single field is titled by the card itself. */}
+              {item.fields === undefined ? null : (
+                <Text className="font-sans text-xs text-foreground-muted">{field.label}</Text>
+              )}
+              <SecretTextInput
+                accessibilityLabel={field.label}
+                placeholder={field.placeholder ?? SECRET_REQUEST_DEFAULT_PLACEHOLDER}
+                value={values.get(field.name) ?? ""}
+                onChangeText={(value) =>
+                  setValues((current) => new Map(current).set(field.name, value))
+                }
+                editable={!submitting}
+                onSubmitEditing={(value) => {
+                  const next = new Map(values).set(field.name, value);
+                  setValues(next);
+                  void send({ type: "save", values: next });
+                }}
+              />
+            </View>
+          ))}
+        </>
       ) : (
         <TextInput
           key={source.id}
@@ -200,7 +222,7 @@ function PendingSecretRequestForm(props: {
         label="Save securely"
         tone="primary"
         fullWidth
-        disabled={submitting || draft.trim().length === 0}
+        disabled={submitting || (source === null ? !complete : reference.trim().length === 0)}
         onPress={save}
       />
       <View className="flex-row items-center justify-between gap-2">
