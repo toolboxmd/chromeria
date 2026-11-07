@@ -182,6 +182,14 @@ mode without explicit authority for its repo-wide checks. Do not run it while
 preparing a pinned integration foundation: it fetches and rebases onto newer
 upstream `main`.
 
+Absorptions do not run the full paired model evals. Upstream evals its own
+model-facing text. Select only the [eval](../evals/README.md) cases whose
+instructions, MCP tool descriptions, schemas, results or guidance are fork-owned
+and differ between the candidate and the absorbed upstream target. Run those on
+the candidate, three samples each; a case fails when half or more fail. Compare a
+failing case with earlier baseline rows before calling it a regression. Record the
+selection and results in the owning Issue.
+
 ## CI and delivery
 
 Fork CI retains upstream's jobs and gates while mapping PR and main checks from
