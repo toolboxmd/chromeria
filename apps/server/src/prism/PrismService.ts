@@ -260,23 +260,33 @@ const make = Effect.gen(function* () {
         preferences.length > 0 ? preferences : input.inherited ? [input.inherited] : [];
       const count = Math.max(1, input.count ?? 1);
       const started: Array<ModelSelection> = [];
+      const skipped: Array<string> = [];
+      const skip = (candidate: ModelSelection, reason: string) =>
+        skipped.push(`${candidate.instanceId}/${candidate.model}: ${reason}`);
       for (const candidate of candidates) {
         if (started.length >= count) break;
         const provider = providers.find((p) => p.instanceId === candidate.instanceId);
-        if (
-          !provider?.enabled ||
-          limitedInstances.has(candidate.instanceId) ||
-          blocked(provider, now)
-        )
+        if (!provider?.enabled) {
+          skip(candidate, provider ? "provider is disabled" : "provider is not configured");
           continue;
+        }
+        if (limitedInstances.has(candidate.instanceId) || blocked(provider, now)) {
+          skip(candidate, "provider usage limit reached");
+          continue;
+        }
         // A validator can re-probe stale unavailable snapshots before refusing the candidate.
         const rechecking = provider.availability === "unavailable" && input.validate !== undefined;
-        if (provider.availability === "unavailable" && !rechecking) continue;
+        if (provider.availability === "unavailable" && !rechecking) {
+          skip(candidate, "provider is unavailable");
+          continue;
+        }
         const model = provider.models.find(
           (m) => m.slug === candidate.model || m.aliases?.includes(candidate.model),
         );
-        if (!model && !rechecking && (preferences.length > 0 || provider.models.length > 0))
+        if (!model && !rechecking && (preferences.length > 0 || provider.models.length > 0)) {
+          skip(candidate, "model is not advertised by the provider");
           continue;
+        }
         const selection = colorModelSelection(
           { ...candidate, model: model?.slug ?? candidate.model },
           provider.driver,
@@ -286,10 +296,13 @@ const make = Effect.gen(function* () {
         ).pipe(
           Effect.catchIf(
             (error) => error.code === "provider_unavailable" || error.code === "model_unavailable",
-            () => Effect.succeed(null),
+            (error) => Effect.succeed(error.message),
           ),
         );
-        if (validated === null) continue;
+        if (typeof validated === "string") {
+          skip(candidate, validated.replace(/\.$/, ""));
+          continue;
+        }
         const advertisedModel = rechecking
           ? (yield* registry.getProviders)
               .find((p) => p.instanceId === validated.instanceId)
@@ -322,7 +335,10 @@ const make = Effect.gen(function* () {
         yield* input.validate(input.inherited);
       return yield* new OrchestratorMcpFailure({
         code: "provider_unavailable",
-        message: "No eligible model with usage headroom for this Prism role and lane.",
+        message:
+          skipped.length === 0
+            ? "No eligible model with usage headroom for this Prism role and lane."
+            : `No eligible model with usage headroom for this Prism role and lane. Skipped: ${skipped.join("; ")}.`,
       });
     },
   );
