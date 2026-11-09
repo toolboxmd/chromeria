@@ -1,9 +1,12 @@
 import * as Dialog from "../../components/ui/Dialog";
+import { ExecutionPurposePicker } from "../threads/ExecutionPurposePicker";
+import { savedPurposeIntentForScope } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import {
   AuthOrchestrationOperateScope,
   clampManagedRuntimeMode,
   managedCapabilityDenial,
+  isForkScheduledTaskSchedule,
   resolveProjectProviderInstanceEnabled,
 } from "@t3tools/contracts";
 import { readEnvironmentScope } from "../../state/session";
@@ -55,6 +58,7 @@ import { Menu } from "../../components/ui/Menu";
 import type { ComposerEditorSelection } from "../../components/ComposerEditor";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { SegmentedControl } from "../../components/ui/SegmentedControl";
+import * as ScheduledTaskFork from "./scheduledTaskFork";
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
 import { webhookAddress } from "@t3tools/client-runtime/webhook-address";
 import { tryCopyTextWithHaptic } from "../../lib/copyTextWithHaptic";
@@ -120,9 +124,11 @@ const THREAD_MODE_LABELS: Record<ScheduledTaskThreadMode, string> = {
 function describeSchedule(task: ScheduledTask): string {
   if (task.schedule.type === "webhook") return "On webhook";
   if (task.schedule.type === "once") {
-    const runAt = new Date(task.schedule.runAt);
+    const runAt = new Date("runAt" in task.schedule ? task.schedule.runAt : task.schedule.at);
     return `Once, ${formatRunAtDate(runAt)} at ${formatRunAtTime(runAt)}`;
   }
+  if (isForkScheduledTaskSchedule(task.schedule))
+    return ScheduledTaskFork.forkScheduleLabel(task.schedule);
   if (task.schedule.type === "interval") return formatScheduledTaskInterval(task.schedule.everyMs);
   const days = task.schedule.weekdays?.length ? repeatLabel(task.schedule.weekdays) : "Every day";
   return `${days} at ${formatTime(task.schedule.timeOfDay)}`;
@@ -762,7 +768,20 @@ function TaskForm({
       Dialog.alert("Project unavailable", "Choose a project in this environment.");
       return;
     }
+    if (
+      draft.purposeScope?.type === "unscoped" &&
+      draft.purposeScope.reason === "legacy_no_intent"
+    ) {
+      Dialog.alert(
+        "Choose this task's purpose",
+        "Select an Issue or PR, or clear the purpose to choose unscoped work.",
+      );
+      return;
+    }
     const input: ScheduledTaskUpsertInput = {
+      purposeIntent: savedPurposeIntentForScope(
+        draft.purposeScope ?? { type: "unscoped", reason: "deliberate" },
+      ),
       ...(draft.task ? { id: draft.task.id, requireExisting: true } : {}),
       title: draft.title.trim(),
       prompt: draft.prompt.trim(),
@@ -854,6 +873,11 @@ function TaskForm({
             value={draft.title}
             placeholder="Check for issues"
             onChange={(title) => setDraft({ ...draft, title })}
+          />
+          <ExecutionPurposePicker
+            scope={draft.purposeScope ?? { type: "unscoped", reason: "deliberate" }}
+            disabled={saving || !canOperate}
+            onChange={(scope) => setDraft({ ...draft, purposeScope: scope })}
           />
           {promptField}
         </SettingsSection>
@@ -1018,7 +1042,8 @@ function TaskForm({
         </SettingsSection>
 
         <SettingsSection title="Schedule">
-          <View className="px-4 py-3">
+          <ScheduledTaskFork.PreservedScheduleText schedule={draft.schedule.preserved} />
+          <View className={draft.schedule.preserved ? "hidden" : "px-4 py-3"}>
             <SegmentedControl
               variant="card"
               options={[
@@ -1054,7 +1079,7 @@ function TaskForm({
               }}
             />
           </View>
-          {draft.schedule.mode === "fixed_time" ? (
+          {draft.schedule.mode === "preserved" ? null : draft.schedule.mode === "fixed_time" ? (
             <>
               <Pressable
                 accessibilityRole="button"
@@ -1288,7 +1313,7 @@ function TaskForm({
             />
           </View>
         </SettingsSection>
-        {draft.schedule.mode === "fixed_time" ? (
+        {draft.schedule.mode === "preserved" ? null : draft.schedule.mode === "fixed_time" ? (
           <Text className="px-2 text-sm text-foreground-muted">
             Time uses the environment's time zone, which may differ from your phone's.
           </Text>
@@ -1435,6 +1460,7 @@ function EnvironmentTasks({
     reportFailure: false,
   });
   const selectDetail = useSelectWorkspaceDetail();
+  const abandonReport = ScheduledTaskFork.useAbandonReport(environmentId);
   const failure = (title: string, result: AtomCommandResult<unknown, unknown>) => {
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
       Dialog.alert(title, String(squashAtomCommandFailure(result)));
@@ -1512,6 +1538,7 @@ function EnvironmentTasks({
                   Last run failed: {task.lastRunError}
                 </Text>
               ) : null}
+              <ScheduledTaskFork.ForkTaskSummaryText task={task} />
             </Pressable>
             <Menu
               actions={[
@@ -1526,7 +1553,8 @@ function EnvironmentTasks({
                 },
                 ...(task.schedule.type === "webhook"
                   ? []
-                  : [{ id: "run", title: "Run now", attributes: { disabled: !canOperate } }]),
+                  : [ScheduledTaskFork.runNowAction(task, canOperate)]),
+                ...abandonReport.actions(task),
                 {
                   id: "delete",
                   title: "Delete",
@@ -1556,6 +1584,8 @@ function EnvironmentTasks({
                   ]);
                 } else if (action === "toggle" || action === "run") {
                   void act(task, action);
+                } else {
+                  abandonReport.onAction(action, task);
                 }
               }}
             >
