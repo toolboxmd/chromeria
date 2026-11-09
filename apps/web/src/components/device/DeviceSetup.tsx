@@ -88,7 +88,7 @@ function DeviceHostDiagnostics(props: {
 
 export function platformSetupStatus(state: DeviceServiceState, platform: DevicePlatform) {
   const hasDevices = state.devices.some((device) => device.platform === platform);
-  if (platform === "android" && !hasDevices && isAndroidDiscoveryUncertain(state)) {
+  if (platform === "android" && isAndroidDiscoveryUncertain(state)) {
     return {
       ready: false,
       message: "The Android device list may be incomplete. Check the device host and try again.",
@@ -381,7 +381,7 @@ export function AgentDeviceSetupStatus(props: {
   return null;
 }
 
-function PlatformStatus(props: {
+export function PlatformStatus(props: {
   readonly platform: string;
   readonly status: { readonly ready: boolean; readonly message: string };
   readonly compact?: boolean;

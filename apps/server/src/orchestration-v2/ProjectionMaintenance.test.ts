@@ -154,7 +154,7 @@ function subagentEvents(
 ): ReadonlyArray<OrchestrationV2DomainEvent> {
   const id = NodeId.make("subagent:turn-item-compaction");
   const prompt = revision === 0 ? "Review prompt A. ".repeat(40) : "Review prompt B. ".repeat(40);
-  const progress = `Review progress ${revision}`;
+  const progress = `Review progress ${eventSuffix}`;
   return [
     {
       id: EventId.make(`event:turn-item-compaction:subagent:${eventSuffix}`),
@@ -270,6 +270,7 @@ it.effect("prunes events the projections cover once the retained day has passed"
     yield* sink.write({ events: subagentEvents(threadId, now, 0, "repeat") });
     yield* sink.write({ events: [itemEvent(threadId, now, itemSpecs[0], 3)] });
     const highWater = yield* eventStore.latestSequence();
+
     const projection = yield* projections.getThreadProjection(threadId);
 
     yield* TestClock.adjust("23 hours");
