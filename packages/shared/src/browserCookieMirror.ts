@@ -60,6 +60,41 @@ const cookieMirrorUrl = (cookie: CookieMirrorKey, secure: boolean) => {
   return `${secure ? "https" : "http"}://${authority}${cookie.path}`;
 };
 
+/** Opaque-partition cookies have no mirror key: `throw` rejects them, `skip` drops them. */
+export function cdpMirrorCookies(
+  response: unknown,
+  opaque: "throw" | "skip",
+): ReadonlyArray<MirrorCookie> {
+  return decodeCookies(response).cookies.flatMap((cookie): MirrorCookie[] => {
+    if (cookie.partitionKeyOpaque) {
+      if (opaque === "throw") throw new Error("Opaque partition");
+      return [];
+    }
+    return [
+      {
+        name: cookie.name,
+        value: cookie.value,
+        domain: cookie.domain,
+        path: cookie.path,
+        secure: cookie.secure,
+        httpOnly: cookie.httpOnly,
+        sameSite:
+          cookie.sameSite === "None"
+            ? "no_restriction"
+            : cookie.sameSite === "Lax"
+              ? "lax"
+              : cookie.sameSite === "Strict"
+                ? "strict"
+                : "unspecified",
+        ...(!cookie.session && cookie.expires > 0
+          ? { expires: expiryMillis(cookie.expires) / 1000 }
+          : {}),
+        ...(cookie.partitionKey ? { partitionKey: cookie.partitionKey } : {}),
+      },
+    ];
+  });
+}
+
 /** A private CDP connection keeps partition keys and unspecified SameSite intact. */
 export function cdpCookieMirrorStore(
   cdp: CookieMirrorCdp,
@@ -68,32 +103,10 @@ export function cdpCookieMirrorStore(
   return {
     read: async () => {
       try {
-        const { cookies } = decodeCookies(
+        return cdpMirrorCookies(
           await cdp.send(scope === "browser" ? "Storage.getCookies" : "Network.getAllCookies"),
+          "throw",
         );
-        return cookies.map((cookie): MirrorCookie => {
-          if (cookie.partitionKeyOpaque) throw new Error("Opaque partition");
-          return {
-            name: cookie.name,
-            value: cookie.value,
-            domain: cookie.domain,
-            path: cookie.path,
-            secure: cookie.secure,
-            httpOnly: cookie.httpOnly,
-            sameSite:
-              cookie.sameSite === "None"
-                ? "no_restriction"
-                : cookie.sameSite === "Lax"
-                  ? "lax"
-                  : cookie.sameSite === "Strict"
-                    ? "strict"
-                    : "unspecified",
-            ...(!cookie.session && cookie.expires > 0
-              ? { expires: expiryMillis(cookie.expires) / 1000 }
-              : {}),
-            ...(cookie.partitionKey ? { partitionKey: cookie.partitionKey } : {}),
-          };
-        });
       } catch {
         // Protocol and schema errors may embed the cookie payload.
         throw new Error("Could not read browser mirror cookies.");
@@ -137,7 +150,7 @@ export function cdpCookieMirrorStore(
   };
 }
 
-const signature = (cookie: MirrorCookie) =>
+export const mirrorCookieSignature = (cookie: MirrorCookie) =>
   JSON.stringify([
     cookie.value,
     cookie.secure,
@@ -155,7 +168,7 @@ export function diffMirrorCookies(
   const mutations: CookieMirrorMutation[] = [];
   for (const [key, cookie] of next) {
     const old = previous.get(key);
-    if (old === undefined || signature(old) !== signature(cookie))
+    if (old === undefined || mirrorCookieSignature(old) !== mirrorCookieSignature(cookie))
       mutations.push({ type: "set", cookie });
   }
   for (const [key, cookie] of previous) {

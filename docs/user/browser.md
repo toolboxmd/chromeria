@@ -44,6 +44,8 @@ to the environment's agent browser. To reuse logins from another browser:
   profile folder maps to Chromeria's `default` profile.
 - Sending mirrored logins to another environment requires **Mirror desktop
   browser logins** permission on that connection.
+- A login you make inside an agent tab keeps its cookies until the desktop sends
+  a new value for them; signing out on the desktop does not remove them.
 - For a one-time copy, open **Settings → Integrations → Browser profiles →
   Add profile** and choose **Import from**.
 
