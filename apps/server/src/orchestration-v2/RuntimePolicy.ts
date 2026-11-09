@@ -81,6 +81,8 @@ export class RuntimePolicyV2 extends Context.Service<RuntimePolicyV2, RuntimePol
 export const layer: Layer.Layer<RuntimePolicyV2> = Layer.succeed(RuntimePolicyV2, {
   resolve: Effect.fn("RuntimePolicyV2.resolve")(function (input) {
     return Effect.succeed({
+      ...(input.thread.bare === undefined ? {} : { bare: input.thread.bare }),
+      ...(input.thread.tools === undefined ? {} : { tools: input.thread.tools }),
       runtimeMode: input.thread.runtimeMode,
       interactionMode: input.thread.interactionMode,
       cwd: input.thread.worktreePath,
@@ -185,6 +187,8 @@ export const layerFromProjectStore: Layer.Layer<
             ),
           ));
         return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          ...(input.thread.bare === undefined ? {} : { bare: input.thread.bare }),
+          ...(input.thread.tools === undefined ? {} : { tools: input.thread.tools }),
           runtimeMode: providerRuntimeMode(input.thread.runtimeMode, supportedRuntimeModes),
           interactionMode: input.thread.interactionMode,
           cwd,

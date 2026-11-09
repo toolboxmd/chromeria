@@ -138,6 +138,39 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
     }),
   );
 
+  it.effect("preserves the native home owner when reopening a bare fork", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const thread = {
+        ...makeThread({ now: yield* DateTime.now, worktreePath: null }),
+        bare: {
+          additions: [],
+          nativeHomeOwnerThreadId: ThreadId.make("thread:bare-original-owner"),
+        },
+      };
+      const resolved = yield* policy.resolve({ thread, modelSelection });
+      assert.deepEqual(resolved.bare, thread.bare);
+      const reopened = yield* policy.resolve({ thread, modelSelection });
+      assert.deepEqual(reopened.bare, resolved.bare);
+    }),
+  );
+  it.effect("retains the tool boundary when resolving a reopened or compacted thread", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const thread = {
+        ...makeThread({ now: yield* DateTime.now, worktreePath: null }),
+        tools: {
+          allow: ["mcp:outreach:read_venue"],
+          mcpConfigId: "00000000-0000-0000-0000-000000000001",
+        },
+      };
+      const first = yield* policy.resolve({ thread, modelSelection });
+      const reopened = yield* policy.resolve({ thread, modelSelection });
+      assert.deepEqual(first.tools, thread.tools);
+      assert.deepEqual(reopened.tools, thread.tools);
+    }),
+  );
+
   it.effect("runs a mode the provider does not offer in Supervised", () =>
     Effect.gen(function* () {
       const policy = yield* RuntimePolicy.RuntimePolicyV2;
