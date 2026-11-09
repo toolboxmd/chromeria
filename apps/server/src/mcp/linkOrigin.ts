@@ -1,60 +1,138 @@
+import { interactiveAuthority } from "../peer/PeerAuthorityRecord.ts";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
+import * as Option from "effect/Option";
 import {
-  linkOriginIsFenced,
+  ThreadId,
+  ScheduledTaskId,
   OrchestratorMcpFailure,
   type OrchestrationV2LinkOrigin,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
+import { clientModeCeiling, intersectModes } from "./McpInvocationContext.ts";
 import type { Caller } from "./threadAccess.ts";
 
 /**
- * Below full access, work a link starts here (all of it carries that session in `linkOrigin`)
- * may change only work from the same link: not the user's threads, projects or settings, nor
- * this environment's links. Reads are not fenced. It is a routing rule for T3's tools; agents
- * still run as this environment's user, so a full-access link is not fenced at all.
+ * Legacy work carries one linkOrigin. Modern work additionally persists every
+ * contributing authority, whose resource predicates PeerAuthority checks together.
+ * Creation labels cannot stand in for that proof. Ordinary reads stay unfenced.
  */
 
-/** The link a caller acts for: its own session, or the link that started its thread. */
+/** Descriptive creation provenance. Never use this single origin as modern authorization. */
 export const callerLinkOrigin = (
-  caller: Pick<Caller, "scope" | "caller">,
-): OrchestrationV2LinkOrigin | undefined =>
-  caller.caller?.linkOrigin ??
-  (caller.scope.client?.linked === true
-    ? {
-        sessionId: caller.scope.client.sessionId,
-        label: caller.scope.client.label,
-        access: caller.scope.client.access,
-      }
-    : undefined);
+  caller: Pick<Caller, "scope"> & {
+    readonly caller: Pick<OrchestrationV2ThreadShell, "linkOrigin"> | undefined;
+  },
+): OrchestrationV2LinkOrigin | undefined => {
+  const record = caller.scope.authority;
+  const resourceSessionId =
+    record !== undefined && "resourceSessionId" in record ? record.resourceSessionId : undefined;
+  if (resourceSessionId !== undefined)
+    return {
+      sessionId: resourceSessionId,
+      label: caller.caller?.linkOrigin?.label ?? "linked environment",
+    };
+  const wire = interactiveAuthority(record);
+  if (wire?.sessionId != null) return { sessionId: wire.sessionId, label: wire.peer.environmentId };
+  return (
+    caller.caller?.linkOrigin ??
+    (caller.scope.client?.linked === true
+      ? {
+          sessionId: caller.scope.client.sessionId,
+          label: caller.scope.client.label,
+          access: caller.scope.client.access,
+        }
+      : undefined)
+  );
+};
 
-/** The link that fences a caller, if any: one paired below full access. */
-const fencingLinkOrigin = (caller: Pick<Caller, "scope" | "caller">) => {
+/** Apply the link's resource scope to destination thread mutations. */
+export const assertSameLink = Effect.fn("linkOrigin.assertSameLink")(function* <
+  T extends Pick<OrchestrationV2ThreadShell, "linkOrigin">,
+>(
+  caller: Pick<Caller, "scope"> & {
+    readonly caller: Pick<OrchestrationV2ThreadShell, "linkOrigin"> | undefined;
+  },
+  target: T,
+) {
+  const owner = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+  if (Option.isSome(owner)) {
+    if (!("id" in target) || typeof target.id !== "string")
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "A canonical destination identity is required.",
+      });
+    yield* owner.value.checkTarget(
+      caller.scope,
+      "schedule" in target
+        ? { type: "schedule", taskId: ScheduledTaskId.make(target.id) }
+        : { type: "thread", threadId: ThreadId.make(target.id) },
+    );
+    return;
+  }
   const origin = callerLinkOrigin(caller);
-  return origin !== undefined && linkOriginIsFenced(origin) ? origin : undefined;
-};
-
-const outsideLink = (origin: OrchestrationV2LinkOrigin, message: string) =>
-  new OrchestratorMcpFailure({
+  // Standalone legacy consumers have no durable modern authority service.
+  // A modern record must never fall back to one copied linkOrigin.
+  if (
+    caller.scope.authority === undefined &&
+    (origin === undefined ||
+      (!("schedule" in target) && directFullAccessPeer(caller)) ||
+      target.linkOrigin?.sessionId === origin.sessionId)
+  )
+    return;
+  return yield* new OrchestratorMcpFailure({
     code: "capability_denied",
-    message: `This work was started from ${origin.label} through a linked environment, so ${message} A link paired with full access is not limited this way.`,
+    message: "The destination is outside the caller's verified resource scope.",
   });
+});
 
-/** A thread a fenced caller may change: one its own link started. */
-export const assertSameLink = (
-  caller: Pick<Caller, "scope" | "caller">,
-  target: Pick<OrchestrationV2ThreadShell, "id" | "linkOrigin">,
-) => {
-  const origin = fencingLinkOrigin(caller);
-  return origin === undefined || target.linkOrigin?.sessionId === origin.sessionId
-    ? Effect.void
-    : Effect.fail(outsideLink(origin, `it may change only threads that link started.`));
+/** Direct peer calls may use the full access granted by the user.
+ * Descendants retain their origin fence; narrowed/plan calls never qualify.
+ */
+const directFullAccessPeer = (caller: Pick<Caller, "scope"> & { readonly caller: unknown }) => {
+  const ceiling = intersectModes(
+    clientModeCeiling(caller.scope.client),
+    caller.scope.authority?.ceiling,
+  );
+  return (
+    caller.caller === undefined &&
+    caller.scope.client?.linked === true &&
+    (caller.scope.authority === undefined ||
+      interactiveAuthority(caller.scope.authority)?.envelope.descendant === false) &&
+    ceiling.runtimeMode === "full-access" &&
+    ceiling.interactionMode === "default"
+  );
 };
 
-/** Fenced work never changes what the environment already has: projects, settings, scheduled runs. */
-export const assertNotLinked = (caller: Pick<Caller, "scope" | "caller">, what: string) => {
-  const origin = fencingLinkOrigin(caller);
-  return origin === undefined
-    ? Effect.void
-    : Effect.fail(outsideLink(origin, `it cannot ${what}.`));
+/** Preserve legacy direct access and explicitly granted descendant environment operations. */
+export const assertNotLinked = (
+  caller: Pick<Caller, "scope" | "caller" | "limits">,
+  what: string,
+) => {
+  const modes = intersectModes(
+    caller.limits,
+    caller.scope.authority?.ceiling ?? caller.scope.legacyPeerCeiling,
+  );
+  const origin = callerLinkOrigin(caller);
+  return Effect.gen(function* () {
+    const owner = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+    if (Option.isSome(owner)) {
+      yield* owner.value.checkTarget(caller.scope, { type: "environment" });
+      if (
+        origin === undefined ||
+        directFullAccessPeer(caller) ||
+        (modes.runtimeMode === "full-access" && modes.interactionMode === "default")
+      )
+        return;
+    } else if (
+      caller.scope.authority === undefined &&
+      (origin === undefined || directFullAccessPeer(caller))
+    )
+      return;
+    return yield* new OrchestratorMcpFailure({
+      code: "capability_denied",
+      message: `The caller's current authority${origin === undefined ? "" : ` (${origin.label})`} cannot ${what}.`,
+    });
+  });
 };

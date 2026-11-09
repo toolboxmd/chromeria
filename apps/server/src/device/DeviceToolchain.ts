@@ -78,6 +78,16 @@ const deviceToolchainPaths = (path: Path.Path, baseDir: string): DeviceToolchain
   agentDevice: toolPaths(path, baseDir, AGENT_DEVICE_SPEC),
 });
 
+/** Inspection only. Typed execution never installs or substitutes a different runtime. */
+export const installedAgentDevice = Effect.fn("DeviceToolchain.installedAgentDevice")(function* (
+  baseDir: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const paths = deviceToolchainPaths(path, baseDir).agentDevice;
+  return (yield* isInstalled(fs, paths, AGENT_DEVICE_VERSION)) ? paths : undefined;
+});
+
 export const agentDeviceStateDir = (path: Path.Path, stateDir: string): string =>
   path.join(stateDir, "device", "agent-device");
 
