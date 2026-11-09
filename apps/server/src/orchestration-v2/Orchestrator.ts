@@ -6349,7 +6349,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
     return [
       ...(singleIds.length === 0 ? [] : [delegatedCompletionWakeDetail(singleIds, tasks)]),
-      ...Array.from(groupIds, (groupId) => runGroupWakeDetail(parent, groupId)),
+      ...Array.from(groupIds, (groupId) => runGroupWakeDetail({ subagents: tasks }, groupId)),
       ...(restartCuts.length === 0
         ? []
         : [
