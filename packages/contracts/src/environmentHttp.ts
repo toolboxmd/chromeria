@@ -1,4 +1,5 @@
 import * as Context from "effect/Context";
+import { DeviceViewerOpenInput, DeviceViewerCloseInput, DeviceViewerAccess } from "./device.ts";
 import type * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 import * as HttpApi from "effect/http-api/HttpApi";
@@ -11,6 +12,11 @@ import * as HttpServerResponse from "effect/http/HttpServerResponse";
 
 import {
   AuthAccessTokenResult,
+  AuthClientSession,
+  AuthSessionRenewRequest,
+  AuthSessionRenewResult,
+  AuthRenewalEnrollmentRequest,
+  AuthRenewalEnrollmentResult,
   AuthBrowserSessionRequest,
   AuthBrowserSessionResult,
   AuthCreatePairingCredentialInput,
@@ -29,6 +35,7 @@ import {
   AuthMcpTokenResult,
   AuthPairingCredentialResult,
   AuthRevokeClientSessionInput,
+  AuthSetClientSessionPersonInput,
   AuthRevokePairingLinkInput,
   AuthEnvironmentScope,
   AuthTokenExchangeRequest,
@@ -124,6 +131,10 @@ export type EnvironmentAuthInvalidReason = typeof EnvironmentAuthInvalidReason.T
 
 export const EnvironmentOperationForbiddenReason = Schema.Literals([
   "current_session_revoke_not_allowed",
+  "unknown_person",
+  "renewal_pending_approval",
+  "device_viewer_unavailable",
+  "device_viewer_unsupported",
 ]);
 export type EnvironmentOperationForbiddenReason = typeof EnvironmentOperationForbiddenReason.Type;
 
@@ -138,6 +149,7 @@ export const EnvironmentInternalErrorReason = Schema.Literals([
   "pairing_link_revoke_failed",
   "client_sessions_load_failed",
   "client_session_revoke_failed",
+  "client_session_person_update_failed",
   "project_snapshot_failed",
   "project_mutation_failed",
   "orchestration_snapshot_failed",
@@ -218,6 +230,10 @@ export class EnvironmentOperationForbiddenError extends Schema.TaggedError<Envir
   }
 
   override get message(): string {
+    if (this.reason === "device_viewer_unavailable")
+      return "This device opening is unavailable or is no longer permitted. Refresh it before reconnecting.";
+    if (this.reason === "device_viewer_unsupported")
+      return "The destination does not support resource-bound device viewing. Update that environment before opening a viewer.";
     return `The environment refused this operation (${this.reason}).`;
   }
 }
@@ -557,7 +573,51 @@ class EnvironmentMetadataHttpApi extends HttpApiGroup.make("metadata").add(
   }),
 ) {}
 
+class EnvironmentDevicesHttpApi extends HttpApiGroup.make("devices")
+  .add(
+    HttpApiEndpoint.post("viewerOpen", "/api/device-hub/viewer/open", {
+      headers: OptionalBearerHeaders,
+      payload: DeviceViewerOpenInput,
+      success: DeviceViewerAccess,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentOperationForbiddenError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("viewerClose", "/api/device-hub/viewer/close", {
+      headers: OptionalBearerHeaders,
+      payload: DeviceViewerCloseInput,
+      success: Schema.Boolean,
+      error: EnvironmentScopedOperationErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
 class EnvironmentAuthHttpApi extends HttpApiGroup.make("auth")
+  .add(
+    HttpApiEndpoint.post("renewSession", "/api/auth/session/renew", {
+      payload: AuthSessionRenewRequest,
+      success: AuthSessionRenewResult,
+      error: [
+        EnvironmentAuthInvalidError,
+        EnvironmentOperationForbiddenError,
+        EnvironmentHttpConflictError,
+        EnvironmentInternalError,
+      ],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("enrollRenewal", "/api/auth/session/renewal/enroll", {
+      headers: OptionalBearerHeaders,
+      payload: AuthRenewalEnrollmentRequest,
+      success: AuthRenewalEnrollmentResult,
+      error: [
+        EnvironmentAuthInvalidError,
+        EnvironmentOperationForbiddenError,
+        EnvironmentHttpConflictError,
+        EnvironmentInternalError,
+      ],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+
   .add(
     HttpApiEndpoint.get("session", "/api/auth/session", {
       headers: OptionalBearerHeaders,
@@ -609,6 +669,21 @@ class EnvironmentAuthHttpApi extends HttpApiGroup.make("auth")
       payload: AuthRevokePairingLinkInput,
       success: AuthPairingLinkRevokeResult,
       error: EnvironmentScopedOperationErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("clients", "/api/auth/clients", {
+      headers: OptionalBearerHeaders,
+      success: Schema.Array(AuthClientSession),
+      error: EnvironmentScopedOperationErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("setClientPerson", "/api/auth/clients/person", {
+      headers: OptionalBearerHeaders,
+      payload: AuthSetClientSessionPersonInput,
+      success: Schema.Struct({ updated: Schema.Boolean }),
+      error: EnvironmentSessionRevokeErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
@@ -1003,6 +1078,7 @@ class EnvironmentWebhooksHttpApi extends HttpApiGroup.make("webhooks")
 export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)
+  .add(EnvironmentDevicesHttpApi)
   .add(EnvironmentMcpOAuthHttpApi)
   .add(EnvironmentOrchestrationHttpApi)
   .add(EnvironmentPullRequestsHttpApi)

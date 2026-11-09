@@ -5,6 +5,7 @@ import type {
   AuthCreatePairingCredentialInput,
   AuthRevokeClientSessionInput,
   AuthRevokePairingLinkInput,
+  AuthSetClientSessionPersonInput,
 } from "@t3tools/contracts";
 import { WS_METHODS } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -88,6 +89,17 @@ export function createAuthEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | HttpClient.HttpClient | R, E>,
 ) {
   return {
+    setClientPerson: createEnvironmentCommand(runtime, {
+      label: "environment-data:server:auth-set-client-person",
+      execute: (input: AuthSetClientSessionPersonInput) =>
+        executeConnectedEnvironmentHttpRequest({
+          group: "auth",
+          method: "POST",
+          url: (urls) => urls.setClientPerson(),
+          timeoutMs: ACCESS_REQUEST_TIMEOUT_MS,
+          request: ({ client, headers }) => client.setClientPerson({ headers, payload: input }),
+        }),
+    }),
     createPairingCredential: createEnvironmentCommand(runtime, {
       label: "environment-data:server:auth-create-pairing-credential",
       execute: (input: AuthCreatePairingCredentialInput) =>
