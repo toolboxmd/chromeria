@@ -1,6 +1,9 @@
+import * as Redacted from "effect/Redacted";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  type ModelSelection,
+  OrchestratorMcpCreateThreadsInput,
   ProjectId,
   MessageId,
   NodeId,
@@ -28,6 +31,7 @@ import * as Stream from "effect/Stream";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
+import * as Sink from "effect/Sink";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import type * as EffectAcpSchema from "effect-acp/compat";
 
@@ -39,13 +43,16 @@ import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegist
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as RuntimePolicy from "../RuntimePolicy.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import { acpPermissionDisposition } from "@t3tools/provider-acp/server/clientPolicy";
+import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
 import { acpCompletedTurnShouldTerminalizeTool } from "@t3tools/provider-acp/server/adapter";
 import {
   makeGrokAcpAdapterFlavor,
   makeGrokAdapterV2,
+  type GrokAdapterV2Options,
   GROK_PROVIDER,
   GROK_ACP_INITIALIZE_META,
 } from "@t3tools/provider-grok/testing";
@@ -55,6 +62,7 @@ import { makeAcpReplayRuntime, type AcpReplayTranscript } from "./AcpAdapterV2.t
 const LAUNCH_TEST_GROK_SETTINGS = Schema.decodeSync(GrokSettings)({
   binaryPath: "grok-launch-test",
 });
+const decodeCreateThreadsInput = Schema.decodeUnknownEffect(OrchestratorMcpCreateThreadsInput);
 
 function permissionRequest(
   kind: EffectAcpSchema.ToolKind,
@@ -105,6 +113,14 @@ describe("GrokAdapterV2 capabilities", () => {
     assert.equal(limit?.class, "usage_limit");
     assert.equal(limit?.code, String(xAiRateLimitedErrorCode));
     assert.equal(limit?.message, "Grok usage limit reached. Try again later.");
+    const network = flavor.promptFailure?.(
+      new EffectAcpErrors.AcpRequestError({
+        code: -32603,
+        errorMessage: "connect ECONNREFUSED api.x.ai",
+      }),
+    );
+    assert.equal(network?.class, "transport_error");
+    assert.equal(network?.retryable, true);
     assert.equal(
       flavor.promptFailure?.(
         new EffectAcpErrors.AcpRequestError({
@@ -288,6 +304,140 @@ describe("Grok launch permission mode", () => {
       cwd: process.cwd(),
       ...override,
     });
+
+  it.effect("prepares isolated, reopenable bare homes for maximum-length MCP request IDs", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const host = yield* ProviderHost.ProviderHost;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const nativeHome = path.join(root, "native");
+      const cwd = path.join(root, "destination");
+      yield* fs.makeDirectory(nativeHome);
+      yield* fs.makeDirectory(cwd);
+      yield* fs.writeFileString(path.join(nativeHome, "auth.json"), "FAKE_TEST_AUTH");
+      const request = yield* decodeCreateThreadsInput({
+        clientRequestId: "a".repeat(256),
+        threads: [
+          { bare: {}, prompt: "first" },
+          { bare: {}, prompt: "second" },
+        ],
+      });
+      // The public create_threads identity includes its caller namespace and request key.
+      const threadIds = request.threads.map((_, index) =>
+        ThreadId.make(
+          `thread:mcp:123e4567-e89b-12d3-a456-426614174000:${request.clientRequestId}:${index}`,
+        ),
+      );
+      assert.equal(new TextEncoder().encode(encodeURIComponent(threadIds[0]!)).length, 314);
+      const instanceId = ProviderInstanceId.make("grok-launch-test");
+      const launches: Array<{ home: string; args: ReadonlyArray<string> }> = [];
+      const inspectedHomes: Array<string> = [];
+      const spawner = ChildProcessSpawner.make((command) =>
+        Effect.gen(function* () {
+          assert.equal(command._tag, "StandardCommand");
+          if (command._tag !== "StandardCommand") return yield* Effect.die("Unexpected pipe");
+          const rawHome = command.options.env?.GROK_HOME;
+          const home = Redacted.isRedacted(rawHome) ? Redacted.value(rawHome) : rawHome;
+          assert.isString(home);
+          assert.equal(command.options.cwd, cwd);
+          if (command.args[0] === "inspect") {
+            inspectedHomes.push(home!);
+            assert.equal(
+              yield* fs.readLink(path.join(home!, "auth.json")),
+              path.join(nativeHome, "auth.json"),
+            );
+            assert.include(
+              yield* fs.readFileString(path.join(home!, "config.toml")),
+              "[workflows]\nenabled = false",
+            );
+            return ChildProcessSpawner.makeHandle({
+              pid: ChildProcessSpawner.ProcessId(1),
+              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+              isRunning: Effect.succeed(false),
+              kill: () => Effect.void,
+              unref: Effect.succeed(Effect.void),
+              stdin: Sink.drain,
+              stdout: Stream.encodeText(Stream.make('{"skills":[],"plugins":[],"hooks":[]}')),
+              stderr: Stream.empty,
+              all: Stream.empty,
+              getInputFd: () => Sink.drain,
+              getOutputFd: () => Stream.empty,
+            });
+          }
+          launches.push({
+            home: home!,
+            args: command.args.map((word) =>
+              Redacted.isRedacted(word) ? Redacted.value(word) : word,
+            ),
+          });
+          // Stop at the native process boundary without launching Grok.
+          return yield* PlatformError.systemError({
+            _tag: "NotFound",
+            module: "grok-launch-test",
+            method: "spawn",
+          });
+        }),
+      );
+      const open = (threadId: ThreadId, bare: boolean) =>
+        Effect.gen(function* () {
+          const adapter = yield* makeGrokAdapterV2({
+            instanceId,
+            settings: LAUNCH_TEST_GROK_SETTINGS,
+            environment: { HOME: root, GROK_HOME: nativeHome },
+            hostPlatform: "darwin",
+            selfInvocation: yield* resolveSelfInvocation(),
+          });
+          yield* adapter.openSession({
+            threadId,
+            providerSessionId: ProviderSessionId.make(`session:${threadId}`),
+            modelSelection: { instanceId, model: "grok-build" },
+            runtimePolicy: policy("full-access", {
+              cwd,
+              ...(bare ? { bare: { additions: [] } } : {}),
+            }),
+          });
+        }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.scoped,
+          Effect.ignore,
+        );
+      for (const threadId of threadIds) yield* open(threadId, true);
+      assert.equal(launches.length, 2);
+      const [first, second] = launches;
+      assert.notEqual(first!.home, second!.home);
+      for (const { home, args } of launches) {
+        assert.equal(
+          path.dirname(home),
+          path.join(host.paths.stateDir, "bare", instanceId, "grok"),
+        );
+        assert.isAtMost(new TextEncoder().encode(path.basename(home)).length, 255);
+        assert.deepEqual(args, ["agent", "--always-approve", "--no-leader", "stdio"]);
+      }
+      yield* fs.makeDirectory(path.join(first!.home, "sessions"));
+      yield* fs.writeFileString(path.join(first!.home, "sessions", "native-marker"), "retained");
+      yield* open(threadIds[0]!, true);
+      assert.equal(launches[2]!.home, first!.home);
+      assert.equal(
+        yield* fs.readFileString(path.join(launches[2]!.home, "sessions", "native-marker")),
+        "retained",
+      );
+      assert.deepEqual(
+        inspectedHomes,
+        launches.map(({ home }) => home),
+      );
+      yield* open(threadIds[0]!, false);
+      assert.equal(inspectedHomes.length, 3);
+      assert.deepEqual(launches[3], {
+        home: nativeHome,
+        args: ["agent", "--always-approve", "stdio"],
+      });
+    }).pipe(
+      Effect.provideService(HostProcess.Platform, "darwin"),
+      Effect.provide(layerTest),
+      Effect.scoped,
+    ),
+  );
 
   it.effect.each(
     (
@@ -598,5 +748,233 @@ describe("Grok native questions", () => {
       });
       yield* Deferred.await(terminal);
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+});
+
+describe("Grok model selection carries the reasoning effort", () => {
+  const flavor = makeGrokAcpAdapterFlavor(
+    {
+      makeRuntime: () => Effect.never,
+    } as unknown as GrokAdapterV2Options,
+    "/test-home",
+  );
+  const select = (model: string, effort?: string): ModelSelection =>
+    ({
+      instanceId: "grok",
+      model,
+      ...(effort === undefined ? {} : { options: [{ id: "reasoningEffort", value: effort }] }),
+    }) as unknown as ModelSelection;
+  const selectEffort = (effort: string) => select("grok-4.6", effort);
+  const selection = selectEffort("low");
+  const modelOption = (currentValue: string) => ({
+    id: "model",
+    name: "Model",
+    category: "model",
+    type: "select",
+    currentValue,
+    options: [],
+  });
+  const effortOption = (currentValue: string, offered: ReadonlyArray<string>) => ({
+    id: "reasoning_effort",
+    name: "Reasoning effort",
+    category: "thought_level",
+    type: "select",
+    currentValue,
+    options: offered.map((value) => ({ value, name: value })),
+  });
+
+  const makeRuntime = (input?: {
+    readonly configOptions?: ReadonlyArray<unknown>;
+    /** What the session advertises once `setModel` has switched it. */
+    readonly configOptionsAfterModelSwitch?: ReadonlyArray<unknown>;
+    readonly setConfigOptionFailure?: EffectAcpErrors.AcpError;
+  }) => {
+    const calls: Array<Record<string, unknown>> = [];
+    let live = input?.configOptions ?? [];
+    const runtime = {
+      getConfigOptions: Effect.sync(() => live),
+      setSessionModel: (modelId: string, meta?: { readonly [key: string]: unknown } | null) =>
+        Effect.sync(() => {
+          calls.push(
+            meta === undefined ? { setSessionModel: modelId } : { setSessionModel: modelId, meta },
+          );
+          return {};
+        }),
+      setModel: (model: string) =>
+        Effect.sync(() => {
+          calls.push({ setModel: model });
+          live = input?.configOptionsAfterModelSwitch ?? live;
+        }),
+      setConfigOption: (configId: string, value: string | boolean) =>
+        Effect.suspend(() => {
+          calls.push({ setConfigOption: configId, value });
+          return input?.setConfigOptionFailure === undefined
+            ? Effect.succeed({ configOptions: [] })
+            : Effect.fail(input.setConfigOptionFailure);
+        }),
+    } as unknown as AcpSessionRuntime.AcpSessionRuntime["Service"];
+    return { runtime, calls };
+  };
+
+  const startResult = (protocolVersion: number, currentEffort?: string) =>
+    ({
+      sessionId: "session-1",
+      initializeResult: { protocolVersion },
+      sessionSetupResult: {
+        sessionId: "session-1",
+        models: {
+          currentModelId: "grok-4.6",
+          availableModels: [
+            {
+              modelId: "grok-4.6",
+              name: "Grok 4.6",
+              ...(currentEffort === undefined ? {} : { _meta: { reasoningEffort: currentEffort } }),
+            },
+          ],
+        },
+      },
+      modelConfigId: undefined,
+    }) as unknown as AcpSessionRuntime.AcpSessionRuntimeStartResult;
+
+  it.effect("sends the selected effort as session/set_model metadata on protocol 1", () =>
+    Effect.gen(function* () {
+      const { runtime, calls } = makeRuntime();
+      // Same model as the session default: only the effort changes.
+      const applied = yield* flavor.applyModelSelection!({
+        runtime,
+        startResult: startResult(1, "xhigh"),
+        modelSelection: selection,
+        previousSelection: null,
+      });
+      assert.equal(applied, "grok-4.6");
+      assert.deepEqual(calls, [{ setSessionModel: "grok-4.6", meta: { reasoningEffort: "low" } }]);
+    }),
+  );
+
+  it.effect("does not resend an effort the protocol 1 session already runs at", () =>
+    Effect.gen(function* () {
+      const { runtime, calls } = makeRuntime();
+      yield* flavor.applyModelSelection!({
+        runtime,
+        startResult: startResult(1, "low"),
+        modelSelection: selection,
+        previousSelection: null,
+      });
+      assert.deepEqual(calls, []);
+    }),
+  );
+
+  it.effect("returns a protocol 1 session to its setup-time effort after a live change", () =>
+    Effect.gen(function* () {
+      const { runtime, calls } = makeRuntime();
+      const setup = startResult(1, "xhigh");
+      yield* flavor.applyModelSelection!({
+        runtime,
+        startResult: setup,
+        modelSelection: selection,
+        previousSelection: null,
+      });
+      // The adapter replays same-runtime switches against the stored setup,
+      // whose metadata still says xhigh; only the previous selection knows the
+      // session actually runs at low.
+      yield* flavor.applyModelSelection!({
+        runtime,
+        startResult: setup,
+        modelSelection: selectEffort("xhigh"),
+        previousSelection: selection,
+      });
+      assert.deepEqual(calls, [
+        { setSessionModel: "grok-4.6", meta: { reasoningEffort: "low" } },
+        { setSessionModel: "grok-4.6", meta: { reasoningEffort: "xhigh" } },
+      ]);
+    }),
+  );
+
+  it.effect("resends the effort after an effort-free selection on protocol 1", () =>
+    Effect.gen(function* () {
+      const { runtime, calls } = makeRuntime();
+      const setup = startResult(1, "xhigh");
+      const effortFree = select("grok-4.6");
+      yield* flavor.applyModelSelection!({
+        runtime,
+        startResult: setup,
+        modelSelection: selection,
+        previousSelection: null,
+      });
+      // Same model, no effort: nothing is sent and the session stays at low,
+      // but the adapter now remembers only this effort-free selection.
+      yield* flavor.applyModelSelection!({
+        runtime,
+        startResult: setup,
+        modelSelection: effortFree,
+        previousSelection: selection,
+      });
+      yield* flavor.applyModelSelection!({
+        runtime,
+        startResult: setup,
+        modelSelection: selectEffort("xhigh"),
+        previousSelection: effortFree,
+      });
+      assert.deepEqual(calls, [
+        { setSessionModel: "grok-4.6", meta: { reasoningEffort: "low" } },
+        { setSessionModel: "grok-4.6", meta: { reasoningEffort: "xhigh" } },
+      ]);
+    }),
+  );
+
+  it.effect("writes the thought-level option on newer protocols without a model change", () =>
+    Effect.gen(function* () {
+      const { runtime, calls } = makeRuntime({
+        configOptions: [modelOption("grok-4.6"), effortOption("xhigh", ["low", "xhigh"])],
+      });
+      const applied = yield* flavor.applyModelSelection!({
+        runtime,
+        startResult: startResult(2),
+        modelSelection: selection,
+        previousSelection: null,
+      });
+      assert.equal(applied, "grok-4.6");
+      assert.deepEqual(calls, [{ setConfigOption: "reasoning_effort", value: "low" }]);
+    }),
+  );
+
+  it.effect("skips an effort the switched-to model's live option does not offer", () =>
+    Effect.gen(function* () {
+      const { runtime, calls } = makeRuntime({
+        configOptions: [modelOption("grok-4.6"), effortOption("xhigh", ["low", "xhigh"])],
+        configOptionsAfterModelSwitch: [
+          modelOption("grok-4.5"),
+          effortOption("high", ["low", "high"]),
+        ],
+      });
+      const applied = yield* flavor.applyModelSelection!({
+        runtime,
+        startResult: startResult(2),
+        modelSelection: select("grok-4.5", "xhigh"),
+        previousSelection: null,
+      });
+      assert.equal(applied, "grok-4.5");
+      assert.deepEqual(calls, [{ setModel: "grok-4.5" }]);
+    }),
+  );
+
+  it.effect("keeps the session open when the live option rejects the effort", () =>
+    Effect.gen(function* () {
+      const { runtime, calls } = makeRuntime({
+        configOptions: [modelOption("grok-4.6"), effortOption("xhigh", ["low", "xhigh"])],
+        setConfigOptionFailure: new EffectAcpErrors.AcpRequestError({
+          code: -32602,
+          errorMessage: "Unsupported reasoning effort",
+        }),
+      });
+      const applied = yield* flavor.applyModelSelection!({
+        runtime,
+        startResult: startResult(2),
+        modelSelection: selection,
+        previousSelection: null,
+      });
+      assert.equal(applied, "grok-4.6");
+      assert.deepEqual(calls, [{ setConfigOption: "reasoning_effort", value: "low" }]);
+    }),
   );
 });
