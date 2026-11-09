@@ -7,6 +7,8 @@ import {
   isRuntimeModeAbove,
   managedRuntimeModeCeilingMessage,
   parseMcpApprovalCode,
+  AuthMcpOperation,
+  ProjectId,
 } from "@t3tools/contracts";
 import { Radio as RadioPrimitive } from "@base-ui/react/radio";
 import { isLoopbackHost } from "@t3tools/shared/preview";
@@ -96,6 +98,12 @@ export function ConnectAgentSurface() {
     loaded.status === "ready" ? loaded.details.runtimeModeCeiling : undefined,
     pairingCode.trim().length > 0,
   );
+  const [duration, setDuration] = useState<"30-days" | "until-revoked">("30-days");
+  const [projectId, setProjectId] = useState("");
+  const [scoped, setScoped] = useState(false);
+  const [operations, setOperations] = useState<ReadonlyArray<AuthMcpOperation>>(
+    AuthMcpOperation.literals,
+  );
   const [errorMessage, setErrorMessage] = useState("");
   const [pending, setPending] = useState<"approve" | "deny" | null>(null);
 
@@ -123,13 +131,26 @@ export function ConnectAgentSurface() {
 
   const decide = async (choice: "approve" | "deny") => {
     if (loaded.status !== "ready") return;
-    const decision: AuthMcpApprovalDecision | null =
+    const approval =
       choice === "deny"
-        ? { _tag: "deny" }
+        ? null
         : resolveApprovalDecision({ code: pairingCode, access, details: loaded.details });
-    if (decision === null) return;
+    if (choice === "approve" && approval === null) return;
     setPending(choice);
     setErrorMessage("");
+    const options = {
+      duration,
+      ...(scoped
+        ? {
+            limits: {
+              ...(projectId.trim() ? { projectId: ProjectId.make(projectId.trim()) } : {}),
+              operations,
+            },
+          }
+        : {}),
+    };
+    const decision: AuthMcpApprovalDecision =
+      approval === null ? { _tag: "deny" } : { ...approval, ...options };
     const answer = await runApproval((client) =>
       client.mcpOAuth.decision({ payload: { authorization, decision } }),
     );
@@ -176,7 +197,7 @@ export function ConnectAgentSurface() {
         title={`Connect ${details.clientName}`}
         description={
           <>
-            This agent wants to use the threads in every project on{" "}
+            Choose which threads this agent may use on{" "}
             <span className="font-medium text-foreground">{details.environmentHost}</span>.
           </>
         }
@@ -258,6 +279,72 @@ export function ConnectAgentSurface() {
             </p>
           </div>
         )}
+
+        <fieldset className="space-y-2">
+          <legend className="text-sm font-medium">Sign-in duration</legend>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              name="duration"
+              checked={duration === "30-days"}
+              onChange={() => setDuration("30-days")}
+            />
+            30 days
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              name="duration"
+              checked={duration === "until-revoked"}
+              onChange={() => setDuration("until-revoked")}
+            />
+            Until revoked
+          </label>
+          <p className="text-xs text-muted-foreground">
+            Until revoked lets the agent renew its sign-in automatically. Revoke it in Settings →
+            Connections.
+          </p>
+        </fieldset>
+        <fieldset className="space-y-2">
+          <legend className="text-sm font-medium">Project and operations</legend>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={scoped}
+              onChange={(event) => setScoped(event.target.checked)}
+            />
+            Limit this agent's access
+          </label>
+          {scoped ? (
+            <>
+              <label className="text-sm" htmlFor="grant-project">
+                Project id (leave empty for all projects)
+              </label>
+              <Input
+                id="grant-project"
+                nativeInput
+                value={projectId}
+                onChange={(event) => setProjectId(event.target.value)}
+              />
+              {AuthMcpOperation.literals.map((operation) => (
+                <label key={operation} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={operations.includes(operation)}
+                    onChange={(event) =>
+                      setOperations((current) =>
+                        event.target.checked
+                          ? [...current, operation]
+                          : current.filter((value) => value !== operation),
+                      )
+                    }
+                  />
+                  {operation}
+                </label>
+              ))}
+            </>
+          ) : null}
+        </fieldset>
 
         {errorMessage ? (
           <Alert variant="error">
