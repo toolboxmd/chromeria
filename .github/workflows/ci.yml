@@ -195,6 +195,14 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node apps/desktop/scripts/verify-preload-bundle.mjs
 
+      # The standalone server rejects static imports of file-backed packages only
+      # when bundled as a single executable; the desktop build never sees that.
+      - name: Build standalone server executable
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          node apps/server/scripts/cli.ts build-exe
+          ./apps/server/dist-exe/t3 --version
+
       # The release launch check, run unpackaged against the same old-state fixture, for
       # startup and sidebar changes. Packaging and signing stay release-only.
       - name: Open the seeded thread in the built desktop app
