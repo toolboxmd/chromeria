@@ -81,7 +81,7 @@ export function runGroupWakeDetail(
   const members = runGroupMembers(parent.subagents, groupId)
     .map(
       (member) =>
-        `[${member.id} · ${member.model ?? member.providerInstanceId}] ${member.status}\n${member.result ?? "(no result)"}`,
+        `[${member.id} · ${member.model ?? member.providerInstanceId}] ${member.status}\n${member.followUpResult ?? member.result ?? "(no result)"}`,
     )
     .join("\n\n");
   return `Run group ${groupId} finished. Each member's status and result:\n\n${members}\n\ntask_status with taskId ${groupId} returns them again.`;
