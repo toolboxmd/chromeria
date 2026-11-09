@@ -292,7 +292,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/chromeria/issues/411",
     "https://github.com/toolboxmd/chromeria/issues/380",
     "https://github.com/toolboxmd/chromeria/issues/589",
-    "https://github.com/toolboxmd/chromeria/issues/633"
+    "https://github.com/toolboxmd/chromeria/issues/633",
+    "https://github.com/toolboxmd/chromeria/issues/665"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/9",
@@ -304,7 +305,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/chromeria/pull/391",
     "https://github.com/toolboxmd/chromeria/pull/591",
     "https://github.com/toolboxmd/chromeria/pull/603",
-    "https://github.com/toolboxmd/chromeria/pull/632"
+    "https://github.com/toolboxmd/chromeria/pull/632",
+    "https://github.com/toolboxmd/chromeria/pull/667"
   ],
   "newFiles": [
     ".github/workflows/fork.yml",
@@ -346,6 +348,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "scripts/dev-runner.test.ts",
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",
+    "packages/source-control-cursor-origin/package.json",
+    "packages/source-control-cursor-origin/src/server/OriginCli.ts",
     "packages/source-control-github/graphql.config.ts",
     "packages/source-control-github/src/server/GitHubPullRequestApi.test.ts",
     "packages/source-control-github/src/server/GitHubPullRequestApi.ts",
