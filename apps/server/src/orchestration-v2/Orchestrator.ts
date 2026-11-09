@@ -874,8 +874,9 @@ function delegatedCompletionWakeDetail(
     .map((taskId) => {
       const task = tasks.find((candidate) => candidate.id === taskId);
       const label = `Delegated task ${taskId}${task?.title == null ? "" : ` (${task.title})`}${task === undefined ? " reached a terminal state" : ` [${task.status}]`}`;
-      if (task?.result != null) {
-        const detail = `${label}:\n${task.result}`;
+      const result = task?.followUpResult ?? task?.result;
+      if (result != null) {
+        const detail = `${label}:\n${result}`;
         const bytes = Buffer.byteLength(detail);
         if (bytes <= remainingBytes) {
           remainingBytes -= bytes;
@@ -9905,6 +9906,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? unobserved
         : task),
       remoteChild,
+      ...(followUp && observation.result !== undefined
+        ? { followUpResult: observation.result.text }
+        : {}),
       ...(observation?.result !== undefined
         ? {
             completionSource: {
@@ -15013,6 +15017,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const updatedTask: OrchestrationV2Subagent = {
         ...resultTask,
         completionSource: { runId: childRun.id, purpose: executionPurposeOf(childRun) },
+        ...(followUp ? { followUpResult: result.text } : {}),
         updatedAt: now,
       };
       // The parent sent the follow-up after the delegating turn, so no blocking
