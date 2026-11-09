@@ -1321,10 +1321,12 @@ describe("orchestrator MCP toolkit", () => {
           const {
             completionDelivery: _delivery,
             completionSource: _completionSource,
+            followUpResult,
             updatedAt: _updatedAt,
             ...stableResult
           } = finishedTask;
           expect(stableResult).toEqual(firstResult);
+          expect(followUpResult).toBe(result);
           expect(finishedTask.completionSource).toEqual({
             runId: queuedFollowup.runId,
             purpose: finalProjection.runs.find((run) => run.id === queuedFollowup.runId)?.purpose,

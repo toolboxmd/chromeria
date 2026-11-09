@@ -2467,6 +2467,7 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
           const {
             completionDelivery: _delivery,
             completionSource: _latestCompletionSource,
+            followUpResult: _followUpResult,
             updatedAt: _updatedAt,
             ...stableResult
           } = followup;
@@ -3976,6 +3977,27 @@ it.layer(layerTest)("delegated task follow-up turns", (it) => {
       yield* eventSink.write({
         commandId: CommandId.make("command:follow-up-child:completed"),
         events: [
+          {
+            id: EventId.make("event:follow-up-child:result"),
+            type: "message.updated",
+            threadId: child.childThreadId,
+            runId: followUpRunId,
+            occurredAt: now,
+            payload: {
+              id: MessageId.make("message:follow-up-child:result"),
+              threadId: child.childThreadId,
+              runId: followUpRunId,
+              nodeId: null,
+              role: "assistant",
+              text: "Follow-up answer.",
+              attachments: [],
+              streaming: false,
+              createdBy: "agent",
+              creationSource: "server",
+              createdAt: now,
+              updatedAt: now,
+            },
+          },
           runEvent({
             threadId: child.childThreadId,
             runId: followUpRunId,
@@ -3990,10 +4012,29 @@ it.layer(layerTest)("delegated task follow-up turns", (it) => {
       assert.deepEqual(results(woken), [child.childRunId, followUpRunId]);
       const task = woken.subagents.find((row) => row.id === child.taskId);
       assert.equal(task?.completionDelivery?.state, "claimed");
-      assert.deepEqual(
-        woken.runs.find((row) => row.id === runId)?.delegatedCompletion?.delivery?.taskIds,
-        [child.taskId],
+      const delivery = woken.runs.find((row) => row.id === runId)?.delegatedCompletion?.delivery;
+      assert.deepEqual(delivery?.taskIds, [child.taskId]);
+      // The wake carries the follow-up's own result, not the task's first one.
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("command:follow-up-child:wake"),
+        threadId,
+        messageId: delivery!.messageId,
+        text: "Delegated task reached a terminal state.",
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "agent",
+        creationSource: "server",
+        delegatedCompletion: {
+          parentRunId: runId,
+          generation: delivery!.generation,
+          taskIds: delivery!.taskIds,
+        },
+      });
+      const wake = (yield* orchestrator.getThreadProjection(threadId)).messages.find(
+        (row) => row.id === delivery!.messageId,
       );
+      assert.include(wake?.text ?? "", "Follow-up answer.");
       // Replaying the same finished turn creates no second result.
       yield* orchestrator.recoverDelegatedTask(child.childThreadId, followUpRunId);
       assert.deepEqual(results(yield* orchestrator.getThreadProjection(threadId)), [

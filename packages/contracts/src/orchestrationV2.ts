@@ -1098,6 +1098,8 @@ export const OrchestrationV2Subagent = Schema.Struct({
   purposeIntent: Schema.optional(PurposeIntent),
   /** Latest completed child run, independent of the original delegated job's purpose. */
   completionSource: Schema.optional(Schema.Struct({ runId: RunId, purpose: ExecutionPurpose })),
+  /** Fork: the latest follow-up run's own result; `result` stays the task's first one. */
+  followUpResult: Schema.optional(Schema.String),
   id: NodeId,
   threadId: ThreadId,
   runId: Schema.NullOr(RunId),
