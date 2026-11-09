@@ -267,6 +267,10 @@ apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts
 pnpm-lock.yaml
 pnpm-workspace.yaml
 
+# Standalone executable undici import repair (#665), owned by fork-maintenance.
+packages/source-control-cursor-origin/package.json
+packages/source-control-cursor-origin/src/server/OriginCli.ts
+
 # Isolated dev backend Serve configuration (#287), owned by fork-maintenance.
 scripts/dev-runner.ts
 scripts/dev-runner.test.ts

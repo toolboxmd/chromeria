@@ -3,6 +3,8 @@
  * over one long-lived HTTP/2 connection: spawning the CLI per request costs about 0.8s, a warm
  * request about 0.2s.
  */
+import * as NodeModule from "node:module";
+
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -12,9 +14,7 @@ import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
-import { HttpClient, HttpClientRequest } from "effect/http";
-import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
-import { Agent } from "@effect/platform-node/Undici";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { collectUint8StreamText } from "@t3tools/provider-core/server/collectStreamText";
 import { decodeJsonResult } from "@t3tools/shared/schemaJson";
 import { parseGitRemoteHost } from "@t3tools/source-control-core/shared/definition";
@@ -23,6 +23,11 @@ import { retryAtFromHeader } from "@t3tools/source-control-core/server/SourceCon
 import * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
 import type { SourceControlProviderContext } from "@t3tools/source-control-core/server/SourceControlProvider";
 import { repositoryPathFromRemoteUrl } from "@t3tools/source-control-core/server/SourceControlProvider";
+import type * as Undici from "undici";
+
+// undici is external to the CLI bundle; Node single-executables can load it from disk only with require.
+// NodeHttpClient's undici client would bundle a static undici import, so requests go through undici's fetch.
+const requireUndici = NodeModule.createRequire(import.meta.url);
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MISSING_TOKEN_TTL_MS = 10_000;
@@ -493,16 +498,27 @@ const make = Effect.gen(function* () {
  * request always outlasts; Origin keeps one open for minutes, and HTTP/2 carries a detail's
  * parallel reads on it at once.
  */
-const httpClientLayer = NodeHttpClient.layerUndiciNoDispatcher.pipe(
+const httpClientLayer = FetchHttpClient.layer.pipe(
   Layer.provide(
-    Layer.effect(NodeHttpClient.Dispatcher)(
-      Effect.acquireRelease(
-        Effect.sync(
-          () =>
-            new Agent({ allowH2: true, keepAliveTimeout: 300_000, keepAliveMaxTimeout: 300_000 }),
-        ),
-        (agent) => Effect.promise(() => agent.destroy()),
-      ),
+    Layer.effect(FetchHttpClient.Fetch)(
+      Effect.gen(function* () {
+        const undici = requireUndici("undici") as typeof Undici;
+        const dispatcher = yield* Effect.acquireRelease(
+          Effect.sync(
+            () =>
+              new undici.Agent({
+                allowH2: true,
+                keepAliveTimeout: 300_000,
+                keepAliveMaxTimeout: 300_000,
+              }),
+          ),
+          (agent) => Effect.promise(() => agent.destroy()),
+        );
+        const fetch: typeof Undici.fetch = (input, init) =>
+          undici.fetch(input, { ...init, dispatcher });
+        // undici declares its own Request and Response types for the same WHATWG shapes.
+        return fetch as unknown as typeof globalThis.fetch;
+      }),
     ),
   ),
 );
