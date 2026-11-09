@@ -1351,6 +1351,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "prs": ["https://github.com/toolboxmd/chromeria/pull/512"],
   "newFiles": [
     "apps/server/src/mcp/RunGroups.integration.test.ts",
+    "apps/server/src/orchestration-v2/RunGroups.test.ts",
     "apps/server/src/orchestration-v2/RunGroups.ts"
   ],
   "upstreamFiles": [],
