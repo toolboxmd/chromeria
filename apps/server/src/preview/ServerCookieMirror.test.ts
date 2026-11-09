@@ -62,4 +62,72 @@ describe("ServerCookieMirror", () => {
 
     expect(context.newCDPSession).toHaveBeenCalledTimes(2);
   });
+
+  it("replays never overwrite a cookie the server profile changed, but fresh desktop values do", async () => {
+    const { context, contexts } = harness();
+    const jar = new Map<string, { name: string; value: string; domain: string; path: string }>();
+    context.newCDPSession.mockImplementation(async () => ({
+      on: vi.fn(),
+      detach: vi.fn(async () => {}),
+      send: vi.fn(
+        async (
+          method: string,
+          params?: {
+            cookies?: Array<{ name: string; value: string; domain?: string; path: string }>;
+            name?: string;
+          },
+        ) => {
+          if (method === "Storage.getCookies")
+            return {
+              cookies: [...jar.values()].map((cookie) => ({
+                ...cookie,
+                secure: true,
+                httpOnly: true,
+                session: true,
+                expires: -1,
+              })),
+            };
+          if (method === "Storage.setCookies")
+            for (const cookie of params!.cookies!)
+              jar.set(cookie.name, { ...cookie, domain: cookie.domain! });
+          if (method === "Network.deleteCookies") jar.delete(params!.name!);
+          return {};
+        },
+      ),
+    }));
+    const mirror = new ServerCookieMirror(contexts);
+    const desktop = (name: string, value: string): CookieMirrorBatch["mutations"][number] => ({
+      type: "set",
+      cookie: {
+        name,
+        value,
+        domain: ".dash.example.test",
+        path: "/",
+        secure: true,
+        httpOnly: true,
+        sameSite: "unspecified",
+      },
+    });
+    const send = (mutations: CookieMirrorBatch["mutations"]) =>
+      mirror.apply({ ...batch, mutations });
+    const values = () => Object.fromEntries([...jar].map(([name, cookie]) => [name, cookie.value]));
+
+    await send([desktop("session", "desktop-logged-out"), desktop("other", "desktop-other")]);
+    jar.set("session", { ...jar.get("session")!, value: "agent-login" });
+    jar.set("own", { name: "own", value: "agent-own", domain: ".dash.example.test", path: "/" });
+    // A reconnect or resync replays every value the desktop already sent.
+    await send([desktop("session", "desktop-logged-out"), desktop("other", "desktop-other")]);
+    await send([
+      { type: "remove", key: { name: "session", domain: ".dash.example.test", path: "/" } },
+    ]);
+    expect(values()).toEqual({ session: "agent-login", other: "desktop-other", own: "agent-own" });
+
+    jar.delete("other");
+    await send([desktop("session", "desktop-login"), desktop("other", "desktop-other")]);
+    expect(values()).toEqual({
+      session: "desktop-login",
+      other: "desktop-other",
+      own: "agent-own",
+    });
+  });
 });

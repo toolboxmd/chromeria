@@ -18,8 +18,8 @@ profile keeps it removed, including after restarting Chromeria.
 Changes reach each connected environment's browser through its matching desktop
 partition. Allow roughly a minute for Chrome to save a change and Chromeria to
 observe it. Logins made inside one environment's desktop partition stay with that
-environment. Cookies created only downstream survive unless the mirror has managed
-that same cookie identity.
+environment. A login made inside an agent tab is kept until the desktop's value for
+the same cookie changes, for example when you sign in or out of that site on the desktop.
 The paired desktop connection needs **Mirror desktop browser logins** permission
 in that environment's Connections settings. Existing connections may need pairing
 again with that permission.
