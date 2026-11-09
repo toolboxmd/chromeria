@@ -18,15 +18,17 @@ profile keeps it removed, including after restarting Chromeria.
 Changes reach each connected environment's browser through its matching desktop
 partition. Allow roughly a minute for Chrome to save a change and Chromeria to
 observe it. Logins made inside one environment's desktop partition stay with that
-environment. A login made inside an agent tab is kept until the desktop's value for
-the same cookie changes, for example when you sign in or out of that site on the desktop.
+environment. A login made inside an agent tab keeps its cookies until the desktop
+sends a new value for one of them, for example when you sign in to that site on the
+desktop. Signing out on the desktop does not remove them. A restart of the
+environment's server can still replace them once with the desktop's values.
 The paired desktop connection needs **Mirror desktop browser logins** permission
 in that environment's Connections settings. Existing connections may need pairing
 again with that permission.
 
 When the Mac app is off, environments retain the cookies they last received.
-Persistent-cookie removals catch up after reconnect or restart. Session-cookie
-sign-outs propagate when Chrome stays open between observations. After Chrome or
+Persistent-cookie removals catch up after reconnect or restart, except for cookies an
+agent tab has changed. Session-cookie sign-outs propagate when Chrome stays open between observations. After Chrome or
 Chromeria restarts, vanished session cookies are retained downstream because Chrome
 can clear them during startup. An expired or replaced cookie can still end a
 session according to the site's own rules.
