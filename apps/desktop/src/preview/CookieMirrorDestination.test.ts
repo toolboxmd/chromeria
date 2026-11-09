@@ -116,6 +116,29 @@ describe("main-owned mirror destination", () => {
       }),
   );
 
+  it.effect("accepts an expiring session whose expiresAt arrives as a JSON string", () =>
+    Effect.gen(function* () {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string, _init?: RequestInit) =>
+          Response.json(
+            url.endsWith("/api/auth/session")
+              ? {
+                  ...session([AuthCookieMirrorWriteScope]),
+                  expiresAt: "2026-11-09T14:22:29.000Z",
+                }
+              : descriptor,
+          ),
+        ),
+      );
+      const resolve = yield* fixture();
+      expect(yield* Effect.promise(() => resolve(environmentId))).toEqual({
+        httpBaseUrl: "https://saved.test",
+        headers: { authorization: "Bearer synthetic-paired-token" },
+      });
+    }),
+  );
+
   it.effect("rejects unknown or disabled environments before making any request", () =>
     Effect.gen(function* () {
       const fetch = vi.fn();

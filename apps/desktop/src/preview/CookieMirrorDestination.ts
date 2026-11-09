@@ -26,7 +26,7 @@ import { cookieMirrorDpopProof } from "./CookieMirrorDpop.ts";
 
 const decodeCatalog = Schema.decodeUnknownSync(Schema.fromJsonString(ConnectionCatalogDocument));
 const decodeDescriptor = Schema.decodeUnknownSync(ExecutionEnvironmentDescriptor);
-const decodeSession = Schema.decodeUnknownSync(AuthSessionState);
+const decodeSession = Schema.decodeUnknownSync(Schema.toCodecJson(AuthSessionState));
 
 const readJson = async (url: string, headers?: Readonly<Record<string, string>>) => {
   const response = await fetch(url, {
