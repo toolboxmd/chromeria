@@ -1,4 +1,5 @@
 import { SheetHeader } from "../../components/ui/SheetHeader";
+import { environmentProjects } from "../../state/projects";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
@@ -172,6 +173,7 @@ function ThreadArrangementSheet(props: { onClose: () => void }) {
   const threads = useAtomValue(environmentThreadShells.navigationThreadShellsAtom);
   const configs = useAtomValue(environmentServerConfigsAtom);
   const listEnvironments = useAtomValue(threadListEnvironmentsAtom);
+  const projects = useAtomValue(environmentProjects.projectsAtom);
   const queuedThreadKeys = useAtomValue(queuedThreadKeysAtom);
   const pendingOrder = useAtomValue(pendingThreadOrderAtom);
   const dropBusy = useAtomValue(threadDropBusyAtom);
@@ -191,6 +193,7 @@ function ThreadArrangementSheet(props: { onClose: () => void }) {
   const sections = useMemo(() => {
     const shared = {
       threads,
+      projects,
       now,
       queuedThreadKeys,
       pendingOrder,
@@ -201,7 +204,15 @@ function ThreadArrangementSheet(props: { onClose: () => void }) {
     const active = getThreadListV2OrderedSection({ ...shared, section: "active" });
     const visible = new Set([...pinned, ...active].map(keyOf));
     const parked = threads.filter(
-      (thread) => thread.archivedAt === null && !visible.has(keyOf(thread)),
+      (thread) =>
+        thread.archivedAt === null &&
+        thread.lineage.relationshipToParent !== "subagent" &&
+        !visible.has(keyOf(thread)) &&
+        ((shared.snoozeEnvironmentIds.has(thread.environmentId) &&
+          effectiveSnoozed(thread, { now })) ||
+          (shared.settlementEnvironmentIds.has(thread.environmentId) &&
+            thread.settledOverride === "settled" &&
+            !queuedThreadKeys.has(keyOf(thread)))),
     );
     return {
       pinned,
@@ -211,7 +222,7 @@ function ThreadArrangementSheet(props: { onClose: () => void }) {
       snoozed: parked.filter((thread) => effectiveSnoozed(thread, { now })),
       settled: sortSettledThreads(parked.filter((thread) => !effectiveSnoozed(thread, { now }))),
     };
-  }, [threads, configs, now, queuedThreadKeys, pendingOrder, workingShelfEnabled]);
+  }, [threads, projects, configs, now, queuedThreadKeys, pendingOrder, workingShelfEnabled]);
   const listedSettled = sections.settled.filter(olderSettledShelf.isListed);
   useOlderSettledShelfGrowth(olderSettledShelf, listedSettled);
   const visibleSettled = listedSettled.slice(0, settledVisibleCount);
@@ -219,6 +230,7 @@ function ThreadArrangementSheet(props: { onClose: () => void }) {
   const planners = useMemo(() => {
     const planner = (section: "pinned" | "active") =>
       createThreadMovePlanner({
+        projects,
         ordered: sections[section],
         allThreads: threads,
         section,
@@ -230,7 +242,7 @@ function ThreadArrangementSheet(props: { onClose: () => void }) {
               : listEnvironments.activeReorderEnvironmentIds,
       });
     return { pinned: planner("pinned"), active: planner("active") };
-  }, [sections, threads, listEnvironments, workingShelfEnabled]);
+  }, [sections, threads, projects, listEnvironments, workingShelfEnabled]);
   const rows = useMemo(() => {
     const result: Row[] = [];
     let offset = 0;
@@ -368,17 +380,24 @@ function ThreadArrangementSheet(props: { onClose: () => void }) {
     ? rows.find((row) => row.key === keyOf(visiblePreview.thread))
     : undefined;
   const destination = visiblePreview?.destination;
-  const targetRow = destination
-    ? rows.find(
-        (row) =>
-          row.section === destination.section &&
-          row.key === (destination.targetId ?? destination.section),
-      )
-    : undefined;
+  const noProjectDrop =
+    destination?.section === "active" &&
+    visiblePreview !== null &&
+    planners.active(keyOf(visiblePreview.thread), destination)?.length === 0;
+  const targetRow =
+    destination && !noProjectDrop
+      ? rows.find(
+          (row) =>
+            row.section === destination.section &&
+            row.key === (destination.targetId ?? destination.section),
+        )
+      : undefined;
   const insertionOffset = targetRow
     ? targetRow.offset +
       (!targetRow.thread || destination?.placement === "after" ? targetRow.height : 0)
-    : sourceRow?.offset;
+    : noProjectDrop
+      ? undefined
+      : sourceRow?.offset;
   return (
     <Modal
       visible
@@ -576,6 +595,7 @@ function ThreadArrangementSheet(props: { onClose: () => void }) {
                           visiblePreview.sourceSection,
                           visiblePreview.destination.section,
                         )}
+                        {noProjectDrop ? " · No project" : ""}
                       </Text>
                     ) : null}
                   </Animated.View>
