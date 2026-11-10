@@ -1,6 +1,6 @@
 import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouter } from "@tanstack/react-router";
 import { type MouseEvent } from "react";
 
 import {
@@ -61,6 +61,7 @@ export function useOpenChangeRequestLink(
   onCommitUnavailable?: () => void,
 ) => boolean {
   const navigate = useNavigate();
+  const router = useRouter();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const openInApp = useClientSettings((settings) => settings.pullRequestLinksOpenInApp);
   const ignoreWhitespace = useClientSettings((settings) => settings.diffIgnoreWhitespace);
@@ -111,13 +112,13 @@ export function useOpenChangeRequestLink(
         if (!resolvedThreadRef) {
           void navigate({
             to: "/pull-requests",
-            search: (previous) => ({
+            search: ({ view: _view, issue: _issue, ...previous }) => ({
               ...previous,
               involvement: previous.involvement ?? "all",
               state: previous.state ?? "all",
               ...pullRequestsSearch,
             }),
-            replace: true,
+            replace: !("view" in router.state.location.search),
           });
         }
         return true;
