@@ -1,3 +1,12 @@
+import {
+  ProjectSpectrumSettings,
+  SpectrumSettings,
+  DEFAULT_SPECTRUM_SETTINGS,
+} from "./spectrumSettings.ts";
+import { WebResearchSettings, WebResearchSettingsPatch } from "./webResearch.ts";
+import { forkOpaqueSettingsFields } from "./forkSettings.ts";
+import { CredentialVaultSettings, DEFAULT_CREDENTIAL_VAULT_SETTINGS } from "./previewCredential.ts";
+import { PrismProjectRoleKits, PrismRoleKits, PrismRoleKitsPatch } from "./prism.ts";
 import { EasDeviceHostConfigs, SimlockDeviceHostConfigs, SshDeviceHostConfigs } from "./device.ts";
 import {
   AuthOrchestrationOperateScope,
@@ -51,6 +60,7 @@ import {
   ProviderInstanceId,
   ProviderDriverKind,
 } from "./providerInstance.ts";
+import { WightMode } from "./wight.ts";
 import { PullRequestMergeMethod } from "./pullRequest.ts";
 import {
   CloudSpeechModelId,
@@ -444,6 +454,7 @@ export const ClientSettingsSchema = Schema.Struct({
   browserProfiles: Schema.Array(BrowserProfile).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  chromeBrowserProfileIds: Schema.optionalKey(Schema.Array(BrowserProfileId)),
 
   browserDefaultProfileId: BrowserProfileId.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_BROWSER_PROFILE_ID)),
@@ -1170,6 +1181,8 @@ export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "continueThreadsAfterServerUpdate",
   "responseStreamingMode",
   "speechProjectCustomWords",
+  "prismRoles",
+  "spectrum",
 ] as const;
 export type ProjectScopedServerSettingKey = (typeof PROJECT_SCOPED_SERVER_SETTING_KEYS)[number];
 
@@ -1178,9 +1191,13 @@ export const ProjectProviderInstanceOverride = Schema.Struct({
 });
 export type ProjectProviderInstanceOverride = typeof ProjectProviderInstanceOverride.Type;
 
-/** Absent keys inherit; null is a value for nullable settings.
- * providerInstances overrides fields per instance; other keys replace the whole setting. */
+/**
+ * An absent key inherits the environment value; `null` is a real value where the type is nullable.
+ * `prismRoles` and `spectrum` overlay environment values partially; other scoped keys replace whole.
+ * `providerInstances` keeps the settings.json shape but overrides per `ProviderInstanceId`.
+ */
 export const ProjectSettingsOverrides = Schema.Struct({
+  ...forkOpaqueSettingsFields,
   worktreeCleanup: Schema.optionalKey(WorktreeCleanup),
   defaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
@@ -1208,6 +1225,8 @@ export const ProjectSettingsOverrides = Schema.Struct({
   continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),
   speechProjectCustomWords: Schema.optionalKey(SpeechCustomWords),
+  prismRoles: Schema.optionalKey(PrismProjectRoleKits),
+  spectrum: Schema.optionalKey(ProjectSpectrumSettings),
   providerInstances: Schema.optionalKey(
     Schema.Record(ProviderInstanceId, ProjectProviderInstanceOverride),
   ),
@@ -1331,11 +1350,29 @@ export const CloudSpeechCredentials = Schema.Struct({
 });
 
 export const ServerSettings = Schema.Struct({
-  // Null means unmigrated; empty is authoritative and must not resurrect cleared preferences.
+  webResearch: WebResearchSettings.pipe(
+    Schema.withDecodingDefault(
+      Effect.succeed({
+        host: null,
+        searxngUrl: "https://bestia.napoleon-sun.ts.net:8888",
+      }),
+    ),
+  ),
+  // Null means no client has migrated this preference yet; an empty value is
+  // authoritative so another device cannot resurrect cleared preferences.
   favorites: Schema.NullOr(ModelFavorites).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   providerModelPreferences: Schema.NullOr(ProviderModelPreferences).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  ...forkOpaqueSettingsFields,
+  wightModes: Schema.Record(ThreadId, WightMode).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+  autoUpdateProviders: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  spectrum: SpectrumSettings.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SPECTRUM_SETTINGS)),
+  ),
+  prismRoles: PrismRoleKits.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   worktreeCleanup: WorktreeCleanup.pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   storageCleanup: StorageCleanupSettings.pipe(
     Schema.withDecodingDefault(Effect.succeed(Schema.decodeSync(StorageCleanupSettings)({}))),
@@ -1402,6 +1439,12 @@ export const ServerSettings = Schema.Struct({
   ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   /** Fold once so restarts cannot undo later UI resets. */
   projectSettingsFolded: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
+   * Whether project `prismRoles` overrides are partial role maps. Earlier builds stored whole kits
+   * whose empty lists ran unset roles on the caller's model; the one-time rewrite drops those. A write
+   * declaring partial overrides sets it too, so a later deliberate empty list is never rewritten.
+   */
+  prismRoleOverridesPartial: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
 
   enableAgentDeviceAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** Enabling the Device panel must not grant providers device control. */
@@ -1420,7 +1463,7 @@ export const ServerSettings = Schema.Struct({
   ),
   idleCompaction: Schema.optionalKey(IdleCompactionMode),
   snoozeLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-  autoResumeLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  autoResumeLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   snoozePresets: SnoozePresetSettings.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SNOOZE_PRESETS)),
   ),
@@ -1550,6 +1593,10 @@ export const ServerSettings = Schema.Struct({
 
   /** Sent by the Usage tab with each summary request to this environment; edit in settings.json. Invalid values are ignored. */
   usageModelFilter: ForwardCompatibleOptional(UsageModelFilter),
+  // Edited in settings.json only; preview_fill_credential reads it.
+  credentialVault: CredentialVaultSettings.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_CREDENTIAL_VAULT_SETTINGS)),
+  ),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -1749,6 +1796,7 @@ const ModelSelectionPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  webResearch: Schema.optionalKey(WebResearchSettingsPatch),
   setModelFavorites: Schema.optionalKey(
     Schema.Array(Schema.Struct({ ...ModelFavorite.fields, favorite: Schema.Boolean })),
   ),
@@ -1767,6 +1815,9 @@ export const ServerSettingsPatch = Schema.Struct({
       providerModelPreferences: Schema.optionalKey(ProviderModelPreferences),
     }),
   ),
+  prismRoles: Schema.optionalKey(PrismRoleKitsPatch),
+  spectrum: Schema.optionalKey(SpectrumSettings),
+  wightModes: Schema.optionalKey(Schema.Record(ThreadId, Schema.NullOr(WightMode))),
   worktreeCleanup: Schema.optionalKey(
     Schema.NullOr(
       Schema.Union([
@@ -1801,6 +1852,7 @@ export const ServerSettingsPatch = Schema.Struct({
   fastWorktreeCheckout: Schema.optionalKey(Schema.Boolean),
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
+  autoUpdateProviders: Schema.optionalKey(Schema.Boolean),
   continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
   cloudSpeechCredentials: Schema.optionalKey(
@@ -1843,6 +1895,12 @@ export const ServerSettingsPatch = Schema.Struct({
       ),
     ),
   ),
+  /**
+   * The writer stores partial Prism project overrides. Older clients send unset roles back as empty
+   * lists, so an undeclared write drops empty Prism lists; only a declared write stores one. Client
+   * runtime sets it on every project override write and never clears the stored marker.
+   */
+  prismRoleOverridesPartial: Schema.optionalKey(Schema.Boolean),
   enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),
   enableDeviceSupport: Schema.optionalKey(Schema.Boolean),
   deviceOnboardingCompleted: Schema.optionalKey(Schema.Boolean),
@@ -1937,7 +1995,7 @@ export function requiredScopesForServerSettingsPatch(
   let changesProviders = false;
   let changesSettings = false;
   for (const [key, value] of Object.entries(patch)) {
-    if (value === undefined) continue;
+    if (value === undefined || key === "prismRoleOverridesPartial") continue;
     if (
       key === "providers" ||
       key === "providerInstances" ||
@@ -1994,6 +2052,7 @@ export const ClientSettingsPatch = Schema.Struct({
   browserCustomSearchUrl: Schema.optionalKey(BrowserCustomSearchUrl),
   browserAutoShowFloatingPreview: Schema.optionalKey(Schema.Boolean),
   browserProfiles: Schema.optionalKey(Schema.Array(BrowserProfile)),
+  chromeBrowserProfileIds: Schema.optionalKey(Schema.Array(BrowserProfileId)),
   browserDefaultProfileId: Schema.optionalKey(BrowserProfileId),
   confirmQuit: Schema.optionalKey(QuitConfirmationMode),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
