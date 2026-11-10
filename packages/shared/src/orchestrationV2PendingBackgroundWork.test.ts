@@ -360,6 +360,47 @@ describe("derivePendingBackgroundWork kinds", () => {
     ]);
   });
 
+  it("carries a remote delegated task's thread and environment from remoteChild", () => {
+    const tasks = derivePendingBackgroundWork({
+      latestRun: { id: "run-1" as never, ordinal: 1, status: "completed" },
+      providerThreads: [],
+      turnItems: [
+        {
+          id: "item-remote" as never,
+          type: "subagent",
+          status: "running",
+          title: "Remote roast",
+          nativeItemRef: { nativeId: "remote-sub" },
+          childThreadId: null,
+          remoteChild: {
+            environmentId: "environment:cavallo" as never,
+            threadId: "thread:remote-child" as never,
+            label: "cavallo",
+          },
+        },
+        {
+          id: "item-unattached" as never,
+          type: "subagent",
+          status: "running",
+          title: "Launching roast",
+          nativeItemRef: { nativeId: "unattached-sub" },
+          childThreadId: null,
+          remoteChild: { environmentId: "environment:cavallo" as never, label: "cavallo" },
+        },
+      ],
+    });
+    expect(tasks).toEqual([
+      {
+        taskId: "remote-sub",
+        description: "Remote roast",
+        kind: "subagent",
+        childThreadId: "thread:remote-child",
+        childEnvironmentId: "environment:cavallo",
+      },
+      { taskId: "unattached-sub", description: "Launching roast", kind: "subagent" },
+    ]);
+  });
+
   describe("pull request watches", () => {
     const watch = {
       startedAt: "2026-10-05T00:00:00.000Z",

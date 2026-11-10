@@ -1,3 +1,4 @@
+import * as ServerSettings from "../serverSettings.ts";
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -10,14 +11,20 @@ import {
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import { McpSchema, McpServer } from "effect/ai";
+import * as Schema from "effect/Schema";
+import { McpSchema, McpServer, Tool } from "effect/ai";
 
 import * as ServerConfig from "../config.ts";
 import * as DeviceService from "../device/DeviceService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
+import { DeviceToolkit } from "./toolkits/device/tools.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
+
+const decodeFailureText = Schema.decodeSync(
+  Schema.fromJsonString(Schema.Struct({ message: Schema.String })),
+);
 
 const environmentId = EnvironmentId.make("environment-device-test");
 const threadId = ThreadId.make("thread-device-test");
@@ -148,6 +155,7 @@ const layerDeviceServiceMock = Layer.mock(DeviceService.DeviceService)({
 
 const layerTest = McpHttpServer.layerDeviceToolkit.pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+  Layer.provide(ServerSettings.layerTest()),
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
   Layer.provideMerge(layerDeviceServiceMock),
   Layer.provide(layerProjectsMock),
@@ -155,12 +163,26 @@ const layerTest = McpHttpServer.layerDeviceToolkit.pipe(
   Layer.provide(NodeServices.layer),
 );
 
+it.effect("offers app-owned typed device commands through the registered toolkit", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    expect(Tool.getJsonSchema(DeviceToolkit.tools.device_execute)).toMatchObject({
+      type: "object",
+    });
+    expect(server.tools.map(({ tool }) => tool.name)).toEqual(
+      expect.arrayContaining(["device_commands", "device_execute"]),
+    );
+  }).pipe(Effect.scoped, Effect.provide(layerTest)),
+);
+
 it.effect("registers the device tools and returns the screenshot as image content", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const server = yield* McpServer.McpServer;
       const names = server.tools.map(({ tool }) => tool.name).toSorted();
-      expect(names).toEqual(["device_close", "device_list", "device_open", "device_screenshot"]);
+      expect(names).toEqual(
+        expect.arrayContaining(["device_close", "device_list", "device_open", "device_screenshot"]),
+      );
 
       const callWith = (capabilities: ReadonlyArray<McpInvocationContext.McpCapability>) =>
         Effect.provideService(McpInvocationContext.McpInvocationContext, invocation(capabilities));
@@ -232,11 +254,13 @@ it.effect("registers the device tools and returns the screenshot as image conten
       expect(denied.isError).toBe(true);
       // The agent can't see Settings, and a running session keeps the capabilities it started with,
       // so the error says where the user turns access on and when it applies.
-      expect(denied.content).toEqual([
-        {
-          type: "text",
-          text: "Agent device access is turned off for this environment. Ask the user to turn on Agent device access in Settings > Integrations > Devices; it applies when the agent session next starts, such as in a new thread.",
-        },
+      expect(denied.content.map((entry) => entry.type)).toEqual(["text"]);
+      expect(
+        denied.content.map((entry) =>
+          entry.type === "text" ? decodeFailureText(entry.text).message : undefined,
+        ),
+      ).toEqual([
+        "Agent device access is turned off for this environment. Ask the user to turn on Agent device access in Settings > Integrations > Devices; it applies when the agent session next starts, such as in a new thread.",
       ]);
     }),
   ).pipe(Effect.provide(layerTest)),
@@ -273,6 +297,7 @@ it.effect("rejects unavailable agent access before booting or opening a device",
     Effect.provide(
       McpHttpServer.layerDeviceToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(ServerSettings.layerTest()),
         Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
         Layer.provide(layerUnavailable),
         Layer.provide(layerProjectsMock),
@@ -413,6 +438,7 @@ describe("device targeting across hosts", () => {
       Effect.provide(
         McpHttpServer.layerDeviceToolkit.pipe(
           Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+          Layer.provide(ServerSettings.layerTest()),
           Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
           Layer.provide(layerDevices),
           Layer.provide(layerProjectsMock),
@@ -424,8 +450,14 @@ describe("device targeting across hosts", () => {
       ),
     );
   };
-  const text = (result: McpSchema.CallToolResult) =>
-    result.content.flatMap((entry) => (entry.type === "text" ? [entry.text] : [])).join("\n");
+  const text = (result: McpSchema.CallToolResult) => {
+    const content = result.content
+      .flatMap((entry) => (entry.type === "text" ? [entry.text] : []))
+      .join("\n");
+    return result.isError && result.structuredContent === undefined
+      ? decodeFailureText(content).message
+      : content;
+  };
 
   it.effect("opens a device id that exists only on another host", () =>
     run([], ({ opened, call }) =>

@@ -1,5 +1,6 @@
 import {
   type AuthMcpClientAccess,
+  type AuthMcpGrantLimits,
   type EnvironmentId,
   McpCapabilityUnavailableError,
   OrchestratorMcpFailure,
@@ -8,6 +9,7 @@ import {
   type ProviderInteractionMode,
   type RuntimeMode,
   type ThreadId,
+  type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -35,6 +37,7 @@ export interface McpClientCaller {
   readonly sessionId: string;
   readonly label: string;
   readonly access: AuthMcpClientAccess;
+  readonly limits?: AuthMcpGrantLimits;
   /**
    * Another T3 Code environment's peer link. What it starts here carries its
    * session as `linkOrigin`, and it changes only that work (`linkOrigin.ts`).
@@ -47,6 +50,11 @@ export interface McpClientCaller {
   readonly narrowedTo?: ClientModes | undefined;
   /** An outside client's thread links go through this hosted app, as Copy thread's do. */
   readonly hostedAppUrl?: string | undefined;
+  /**
+   * The Promachos thread in the linked environment this call answers for
+   * (`T3-Promachos-Thread`), set only on a peer link (toolboxmd/chromeria#532).
+   */
+  readonly promachosThreadId?: ThreadId | undefined;
 }
 
 /**
@@ -56,6 +64,7 @@ export interface McpClientCaller {
  * `clientModeCeiling`), so a client gains nothing by sending a broad one.
  */
 export const MODE_LIMIT_HEADER = "t3-mode-limit";
+export const PROMACHOS_THREAD_HEADER = "t3-promachos-thread";
 
 export interface ClientModes {
   readonly runtimeMode: RuntimeMode;
@@ -82,18 +91,7 @@ export const clientModeCeiling = (client: McpClientCaller | undefined): ClientMo
       client === undefined || client.access === "read-only" ? "approval-required" : client.access,
     interactionMode: "default",
   };
-  const asked = client?.narrowedTo;
-  if (asked === undefined) return approved;
-  return {
-    runtimeMode:
-      runtimeModeRank[asked.runtimeMode] < runtimeModeRank[approved.runtimeMode]
-        ? asked.runtimeMode
-        : approved.runtimeMode,
-    interactionMode:
-      interactionModeRank[asked.interactionMode] < interactionModeRank[approved.interactionMode]
-        ? asked.interactionMode
-        : approved.interactionMode,
-  };
+  return intersectModes(approved, client?.narrowedTo);
 };
 
 /**
@@ -122,7 +120,35 @@ export const withRuntimeModeCeiling = (
 };
 
 /** Thread callers default to their own thread; client callers need thread for tools that act as the caller. */
+/** Intersect mode ceilings without inventing a caller or credential. */
+export const intersectModes = (
+  approved: ClientModes,
+  asked: ClientModes | undefined,
+): ClientModes =>
+  asked === undefined
+    ? approved
+    : {
+        runtimeMode:
+          runtimeModeRank[asked.runtimeMode] < runtimeModeRank[approved.runtimeMode]
+            ? asked.runtimeMode
+            : approved.runtimeMode,
+        interactionMode:
+          interactionModeRank[asked.interactionMode] < interactionModeRank[approved.interactionMode]
+            ? asked.interactionMode
+            : approved.interactionMode,
+      };
+
+/**
+ * A thread caller's omitted target falls back to its own thread; a client
+ * caller has no own thread, so tools that act as the caller (delegate_task,
+ * preview, worktree handoff) need `thread`.
+ */
 export interface McpInvocationScope {
+  readonly bareToolNames?: ReadonlyArray<string>;
+  /** Frozen migration ceiling for pre-protocol linked work, without invented remote provenance. */
+  readonly legacyPeerCeiling?: import("@t3tools/contracts").PeerCeiling;
+  /** Server-verified durable authority, absent for legacy and ordinary local callers. */
+  readonly authority?: import("../peer/PeerAuthority.ts").Authority;
   readonly environmentId: EnvironmentId;
   readonly capabilities: ReadonlySet<McpCapability>;
   readonly issuedAt: number;
@@ -230,3 +256,24 @@ export const requireThreadScope = (scope: McpInvocationScope, operation: string)
   scope.thread === undefined
     ? Effect.fail(threadCallerRequired(operation))
     : Effect.succeed(scope as McpThreadInvocationScope);
+
+/**
+ * A caller's thread is live while it is not archived, runs on the caller's provider instance, and has
+ * an active run or a background subagent that instance started. A background subagent outlives its
+ * run and uses its thread's credential, revoked when the provider process goes away.
+ */
+export const isLiveCallerShell = (
+  shell: Pick<
+    OrchestrationV2ThreadShell,
+    "archivedAt" | "activeRunId" | "providerInstanceId" | "pendingBackgroundTasks"
+  > | null,
+  providerInstanceId: ProviderInstanceId | undefined,
+) =>
+  shell !== null &&
+  shell.archivedAt === null &&
+  shell.providerInstanceId === providerInstanceId &&
+  (shell.activeRunId !== null ||
+    (shell.pendingBackgroundTasks?.some(
+      (task) => task.kind === "subagent" && task.providerInstanceId === providerInstanceId,
+    ) ??
+      false));

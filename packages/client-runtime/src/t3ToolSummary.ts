@@ -280,6 +280,9 @@ export function summarizeT3ToolCalls(
         quantity(countEntities(entityIds("queuedRunId")), "queued run"),
       );
       break;
+    case "queue-resume":
+      label = phrase("Resumed", "resume", quantity(countEntities(threadIds), "held queue"));
+      break;
     case "queue-reorder":
       label = phrase(
         "Reordered",
@@ -308,6 +311,13 @@ export function summarizeT3ToolCalls(
       label = phrase(
         "Answered",
         "answer",
+        quantity(countEntities(entityIds("requestId")), "pending question request"),
+      );
+      break;
+    case "question-dismiss":
+      label = phrase(
+        "Dismissed",
+        "dismiss",
         quantity(countEntities(entityIds("requestId")), "pending question request"),
       );
       break;
@@ -352,20 +362,48 @@ export function summarizeT3ToolCalls(
     case "environment-read":
       label = phrase("Checked", "check", `environment preferences ${times}`);
       break;
-    case "environment-update":
-      label = phrase("Updated", "update", `environment preferences ${times}`);
-      break;
     case "environment-links":
       label = phrase("Listed", "list", `linked environments ${times}`);
       break;
     case "environment-link":
-      label = phrase("Asked to link", "ask to link", quantity(selected.length, "environment"));
+      label = phrase("Linked", "link", quantity(selected.length, "environment"));
       break;
     case "environment-unlink":
+      label = phrase("Unlinked", "unlink", quantity(selected.length, "environment"));
+      break;
+    case "environment-update":
+      label = phrase("Updated", "update", `environment preferences ${times}`);
+      break;
+    case "attachment-inspect": {
+      const capabilitiesOnly = selected.every(
+        (call) => asRecord(call.input?.source)?.type === "capabilities",
+      );
+      label = capabilitiesOnly
+        ? phrase("Checked", "check", `attachment transfer support ${times}`)
+        : phrase(
+            "Inspected",
+            "inspect",
+            quantity(
+              countEntities(selected.map((call) => id(asRecord(call.input?.source)?.attachmentId))),
+              "attachment upload",
+            ),
+          );
+      break;
+    }
+    case "attachment-acquire":
       label = phrase(
-        "Forgot",
-        "forget",
-        quantity(countEntities(entityIds("environmentId")), "linked environment"),
+        "Recorded acquisition of",
+        "acquire",
+        quantity(
+          countEntities(
+            selected.map(
+              (call) =>
+                id(asRecord(asRecord(call.output?.resource)?.reference)?.attachmentId) ??
+                id(call.input?.clientRequestId),
+            ),
+          ),
+          "attachment",
+        ),
       );
       break;
     case "attachment-prepare":
