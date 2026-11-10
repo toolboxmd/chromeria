@@ -1,3 +1,5 @@
+import * as RecoveryHooks from "../prism/RecoveryHooks.ts";
+import { waitForRecovery, RecoveryWaitState } from "../peer/recoveryWait.ts";
 import type {
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -8,6 +10,7 @@ import type {
   ProjectionRecords,
   ShellSnapshotOptions,
 } from "./ProjectionStore.ts";
+import { ProjectionStoreThreadNotFoundError } from "./ProjectionStore.ts";
 import {
   type ChatAttachment,
   CommandId,
@@ -20,6 +23,7 @@ import {
   type OrchestrationV2ForceStopThreadResult,
   type ModelSelection,
   type OrchestrationV2Actor,
+  type OrchestrationV2AppThread,
   type OrchestrationV2Command,
   type OrchestrationV2GetTurnItemResult,
   type OrchestrationV2ServerCommand,
@@ -38,6 +42,8 @@ import {
   resolveProjectProviderInstanceEnabled,
   RunId,
   type ScheduledTaskId,
+  type NodeId,
+  type EnvironmentId,
   ThreadId,
   type TurnItemId,
 } from "@t3tools/contracts";
@@ -57,6 +63,8 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
+import { readStopDescendants } from "../childThreads/stopDescendants.ts";
+import { ForkProviderlessMessages } from "../fork/ForkProviderlessMessages.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { projectedRowEncodedBytes } from "./threadHistoryPaging.ts";
@@ -84,10 +92,14 @@ export function withCreationProvenance(
       const { linkOrigin: _linkOrigin, delegatedFrom: _delegatedFrom, ...rest } = command;
       return { ...rest, ...provenance };
     }
-    case "message.dispatch":
+    case "message.dispatch": {
+      const { senderThreadId: _sender, scheduledTaskId: _schedule, ...message } = command;
+      return { ...message, ...provenance };
+    }
     case "thread.fork":
     case "thread.merge_back":
     case "delegated_task.request":
+    case "queued-message.promote-to-steer":
       return { ...command, ...provenance };
     default:
       return command;
@@ -114,10 +126,16 @@ function existingThreadIdsForCommand(
         ? [command.sourceThreadId]
         : [command.sourceThreadId, command.targetThreadId];
     case "delegated_task.request":
+    case "delegated_task.group.request":
     case "delegated_task.wake-policy":
+    case "delegated_task.group-cancel":
+    case "delegated_task.group-cancel.release":
     case "delegated_task.completion-delivery.acknowledge":
     case "delegated_task.completion-delivery.dispose":
     case "delegated_task.remote.request":
+    case "delegated_task.remote.launch":
+    case "delegated_task.remote.attach":
+    case "delegated_task.remote.observe":
     case "delegated_task.remote.complete":
     case "delegated_task.remote.stop":
       return [command.parentThreadId];
@@ -136,12 +154,21 @@ export type ThreadManagementTerminalRunStatus = Extract<
 >;
 
 export interface ThreadManagementSendInput {
+  readonly purposeIntent?: import("@t3tools/contracts").PurposeIntent | undefined;
+  readonly purposeSource?: import("@t3tools/contracts").ExecutionPurpose | undefined;
   readonly projectId: ProjectId;
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
   readonly messageId: MessageId;
   readonly scheduledTaskId?: ScheduledTaskId;
   readonly senderThreadId?: ThreadId;
+  /** Constructed only by the authenticated pair owner, never decoded from tool inputs. */
+  readonly remoteDescendant?: {
+    readonly taskId: NodeId;
+    readonly environmentId: EnvironmentId;
+    readonly threadId: ThreadId;
+    readonly runId: RunId;
+  };
   readonly text: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
   readonly modelSelection?: ModelSelection;
@@ -160,6 +187,7 @@ export interface ThreadManagementSendResult {
   >;
   readonly message: OrchestrationV2ConversationMessage;
   readonly run: OrchestrationV2Run;
+  /** Null for notifications and queued sends; a queued user item materializes on turn start. */
   readonly turnItem: Extract<OrchestrationV2TurnItem, { readonly type: "user_message" }> | null;
   readonly delivery: "started" | "queued" | "steered" | "restarted";
 }
@@ -261,6 +289,29 @@ export class ThreadManagementNoSteerableRunError extends Schema.TaggedError<Thre
   }
 }
 
+export class ThreadManagementAncestorDeliveryModeError extends Schema.TaggedError<ThreadManagementAncestorDeliveryModeError>()(
+  "ThreadManagementAncestorDeliveryModeError",
+  { threadId: ThreadId, senderThreadId: ThreadId, mode: Schema.Literals(["steer", "restart"]) },
+) {
+  override get message(): string {
+    return "Ancestor threads receive descendant messages as queued notices; use mode auto or queue.";
+  }
+}
+
+export class ThreadManagementAncestryUnavailableError extends Schema.TaggedError<ThreadManagementAncestryUnavailableError>()(
+  "ThreadManagementAncestryUnavailableError",
+  {
+    threadId: ThreadId,
+    senderThreadId: ThreadId,
+    atThreadId: ThreadId,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Unable to determine whether thread ${this.threadId} is an ancestor of ${this.senderThreadId}.`;
+  }
+}
+
 export class ThreadManagementThreadNotInterruptibleError extends Schema.TaggedError<ThreadManagementThreadNotInterruptibleError>()(
   "ThreadManagementThreadNotInterruptibleError",
   {
@@ -349,6 +400,8 @@ export const ThreadManagementError = Schema.Union([
   ThreadManagementRunNotFoundError,
   ThreadManagementThreadArchivedError,
   ThreadManagementNoSteerableRunError,
+  ThreadManagementAncestorDeliveryModeError,
+  ThreadManagementAncestryUnavailableError,
   ThreadManagementThreadNotInterruptibleError,
   ThreadManagementProjectionLoadError,
   ThreadManagementProjectThreadsListError,
@@ -487,14 +540,21 @@ export interface ThreadManagementServiceShape {
     readonly threadId: ThreadId;
     readonly commandId: CommandId;
     readonly reason?: string | undefined;
+    readonly forkRetirementStop?:
+      | { readonly ancestorThreadId: ThreadId; readonly originalToken: CommandId }
+      | undefined;
   }) => Effect.Effect<
     void,
     Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
   >;
   readonly getThreadEventSequence: Orchestrator.OrchestratorV2["Service"]["getThreadEventSequence"];
   readonly recoverDelegatedTask: Orchestrator.OrchestratorV2["Service"]["recoverDelegatedTask"];
+  readonly recordRestartCutDecline: Orchestrator.OrchestratorV2["Service"]["recordRestartCutDecline"];
+  readonly readRunRecovery: Context.Service.Shape<
+    typeof RecoveryHooks.RecoveryHooks
+  >["readRunRecovery"];
+  readonly readRestartCutView: Orchestrator.OrchestratorV2["Service"]["readRestartCutView"];
   readonly delegatedTaskResultPending: Orchestrator.OrchestratorV2["Service"]["delegatedTaskResultPending"];
-  readonly streamStoredEvents: Orchestrator.OrchestratorV2["Service"]["streamStoredEvents"];
   readonly streamStoredEventsFrom: Orchestrator.OrchestratorV2["Service"]["streamStoredEventsFrom"];
   readonly streamDomainEvents: Orchestrator.OrchestratorV2["Service"]["streamDomainEvents"];
 }
@@ -573,9 +633,42 @@ const SETTLE_AFTER_RUN_WAIT_MS = 24 * 60 * 60 * 1_000;
 const FORCE_STOP_REASON = "Force stopped by user";
 const FORCE_STOP_RELEASE_WAIT = "10 seconds";
 const isForceStopThreadError = Schema.is(OrchestrationV2ForceStopThreadError);
+const isProjectionThreadNotFound = Schema.is(ProjectionStoreThreadNotFoundError);
+
+function descendantNotice(
+  input: ThreadManagementSendInput,
+  sender: Pick<OrchestrationV2AppThread, "id" | "title">,
+) {
+  const label = sender.title.split(/\r?\n/, 1)[0]!.trim().slice(0, 80);
+  const names = input.attachments.map((attachment) => attachment.name);
+  const preview = input.text.trim().split(/\r?\n/, 1)[0]!.replace(/\s+/g, " ").slice(0, 100);
+  const attachmentSummary = `${names.length} attachment${names.length === 1 ? "" : "s"}: ${names
+    .slice(0, 3)
+    .map((name) => name.replace(/\s+/g, " ").slice(0, 60))
+    .join(", ")}${names.length > 3 ? ` and ${names.length - 3} more` : ""}`;
+  const content =
+    preview.length > 0
+      ? `${preview}${names.length > 0 ? ` (+${names.length} attachments)` : ""}`
+      : attachmentSummary;
+  const detail =
+    names.length === 0
+      ? input.text
+      : `${input.text}${input.text.trim().length === 0 ? "" : "\n\n"}Attachments: ${names.join(", ")}`;
+  return {
+    text: `[From thread ${sender.id} "${label}"]\n\n${input.text}`,
+    notification: {
+      source: { kind: "subagent", childThreadId: sender.id },
+      outcome: "updated",
+      summary: `${content} (from "${label.slice(0, 32)}")`,
+      detail,
+    } satisfies NonNullable<OrchestrationV2ConversationMessage["notification"]>,
+  };
+}
 
 const make = Effect.gen(function* () {
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+  const recoveryWait = yield* RecoveryWaitState;
+  const recoveryHooks = yield* RecoveryHooks.RecoveryHooks;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
   const layerScope = yield* Effect.scope;
@@ -583,6 +676,7 @@ const make = Effect.gen(function* () {
   const legacyImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+  const providerlessMessages = yield* ForkProviderlessMessages;
 
   const assertProviderInstanceEnabled: ThreadManagementServiceShape["assertProviderInstanceEnabled"] =
     (input) =>
@@ -714,20 +808,33 @@ const make = Effect.gen(function* () {
   const assertDispatchTargetEnabled = (command: OrchestrationV2ServerCommand) => {
     switch (command.type) {
       case "message.dispatch":
-        return orchestrator.getThreadRecords(command.threadId, []).pipe(
-          Effect.flatMap((projection) =>
-            assertProviderInstanceEnabled({
-              projectId: projection.thread.projectId,
-              commandId: command.commandId,
-              instanceId: (command.modelSelection ?? projection.thread.modelSelection).instanceId,
-            }),
-          ),
-        );
+        return Effect.gen(function* () {
+          if (yield* hasReceipt(command.commandId)) return;
+          if (
+            yield* providerlessMessages.contains(command.threadId).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new Orchestrator.OrchestratorCommandRejectedError({
+                    commandId: command.commandId,
+                    commandType: command.type,
+                    cause,
+                  }),
+              ),
+            )
+          )
+            return;
+          const projection = yield* orchestrator.getThreadRecords(command.threadId, []);
+          yield* assertProviderInstanceEnabled({
+            projectId: projection.thread.projectId,
+            commandId: command.commandId,
+            instanceId: (command.modelSelection ?? projection.thread.modelSelection).instanceId,
+          });
+        });
       case "delegated_task.request":
         return orchestrator.getThreadRecords(command.parentThreadId, []).pipe(
           Effect.flatMap((parent) =>
             assertProviderInstanceEnabled({
-              projectId: parent.thread.projectId,
+              projectId: command.projectId ?? parent.thread.projectId,
               commandId: command.commandId,
               instanceId: command.modelSelection.instanceId,
             }),
@@ -749,6 +856,21 @@ const make = Effect.gen(function* () {
                   });
             }),
           );
+      case "delegated_task.group.request":
+        return orchestrator.getThreadRecords(command.parentThreadId, []).pipe(
+          Effect.flatMap((parent) =>
+            Effect.forEach(
+              command.members,
+              (member) =>
+                assertProviderInstanceEnabled({
+                  projectId: parent.thread.projectId,
+                  commandId: command.commandId,
+                  instanceId: member.modelSelection.instanceId,
+                }),
+              { discard: true },
+            ),
+          ),
+        );
       default:
         return Effect.void;
     }
@@ -824,6 +946,63 @@ const make = Effect.gen(function* () {
         threadId: input.threadId,
       });
     }
+
+    const ancestorSender = yield* Effect.gen(function* () {
+      const senderThreadId = input.senderThreadId;
+      if (
+        input.createdBy !== "agent" ||
+        senderThreadId === undefined ||
+        senderThreadId === input.threadId
+      )
+        return null;
+      const readThread = (threadId: ThreadId) =>
+        orchestrator.getThreadRecords(threadId, []).pipe(
+          Effect.map((records) => records.thread),
+          Effect.mapError(
+            (cause) =>
+              new ThreadManagementAncestryUnavailableError({
+                threadId: input.threadId,
+                senderThreadId,
+                atThreadId: threadId,
+                cause,
+              }),
+          ),
+        );
+      const sender = yield* readThread(senderThreadId);
+      if (sender.lineage.rootThreadId !== target.thread.lineage.rootThreadId) return null;
+      if (sender.lineage.rootThreadId === input.threadId) return sender;
+      const seen = new Set<ThreadId>([senderThreadId]);
+      let current = sender;
+      while (current.lineage.parentThreadId !== null) {
+        const parentId = current.lineage.parentThreadId;
+        if (parentId === input.threadId) return sender;
+        if (seen.has(parentId))
+          return yield* new ThreadManagementAncestryUnavailableError({
+            threadId: input.threadId,
+            senderThreadId,
+            atThreadId: parentId,
+          });
+        seen.add(parentId);
+        // Records include soft-deleted intermediates; visible shells do not.
+        current = yield* readThread(parentId);
+      }
+      return null;
+    });
+    const remote = input.remoteDescendant;
+    const notice =
+      remote !== undefined
+        ? {
+            text: input.text,
+            notification: {
+              source: { kind: "delegated_task" as const, taskIds: [remote.taskId] },
+              outcome: "updated" as const,
+              summary: input.text.trim().split(/\r?\n/, 1)[0]!.slice(0, 100),
+              detail: input.text,
+            },
+          }
+        : ancestorSender === null
+          ? undefined
+          : descendantNotice(input, ancestorSender);
     const steerableRun = latestSteerableRun(target);
     // A fresh send never joins a running turn, so it needs none to steer or restart.
     const mode =
@@ -834,17 +1013,46 @@ const make = Effect.gen(function* () {
       OrchestrationV2Command,
       { readonly type: "message.dispatch" }
     >["dispatchMode"];
-    if (mode === "steer" || mode === "restart") {
-      if (steerableRun === undefined) {
-        return yield* new ThreadManagementNoSteerableRunError({
+    if (notice !== undefined) {
+      if (input.mode === "steer" || input.mode === "restart")
+        return yield* new ThreadManagementAncestorDeliveryModeError({
           threadId: input.threadId,
-          mode,
+          senderThreadId: input.senderThreadId ?? input.threadId,
+          mode: input.mode,
         });
+      dispatchMode = { type: "queue_after_active" };
+    } else if (mode === "steer" || mode === "restart") {
+      if (steerableRun === undefined) {
+        const receipt = yield* receipts.getByCommandId(input.commandId).pipe(
+          Effect.mapError(
+            (cause) =>
+              new Orchestrator.OrchestratorDispatchError({
+                commandId: input.commandId,
+                commandType: "message.dispatch",
+                cause,
+              }),
+          ),
+        );
+        if (
+          Option.isNone(receipt) ||
+          receipt.value.status !== "accepted" ||
+          receipt.value.commandType !== "message.dispatch" ||
+          receipt.value.threadId !== input.threadId
+        ) {
+          return yield* new ThreadManagementNoSteerableRunError({
+            threadId: input.threadId,
+            mode: mode,
+          });
+        }
+        // Receipt replay ignores this mode and returns the original events.
+        // Replacement startup must not require a newly steerable target.
+        dispatchMode = { type: "start_immediately" };
+      } else {
+        dispatchMode = {
+          type: mode === "steer" ? "steer_active" : "restart_active",
+          targetRunId: steerableRun.id,
+        };
       }
-      dispatchMode = {
-        type: mode === "steer" ? "steer_active" : "restart_active",
-        targetRunId: steerableRun.id,
-      };
     } else if (mode === "auto" && steerableRun !== undefined) {
       dispatchMode = { type: "steer_active", targetRunId: steerableRun.id };
     } else {
@@ -855,51 +1063,111 @@ const make = Effect.gen(function* () {
 
     const dispatched = yield* dispatch({
       type: "message.dispatch",
+      ...(input.purposeIntent === undefined ? {} : { purposeIntent: input.purposeIntent }),
+      ...(input.purposeSource === undefined ? {} : { purposeSource: input.purposeSource }),
+      ...(notice !== undefined || input.mode === "queue" ? {} : { deliveryIntent: input.mode }),
       commandId: input.commandId,
       threadId: input.threadId,
       messageId: input.messageId,
       ...(input.scheduledTaskId === undefined ? {} : { scheduledTaskId: input.scheduledTaskId }),
       ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
-      text: input.text,
+      text: notice?.text ?? input.text,
       attachments: input.attachments,
       ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
       ...(input.freshContext ? { freshContext: true } : {}),
       dispatchMode,
       createdBy: input.createdBy,
-      creationSource: input.creationSource,
+      creationSource: notice === undefined ? input.creationSource : "server",
+      ...(notice === undefined ? {} : { notification: notice.notification }),
     });
-    const projection = yield* getProjectThreadRecords(input, ["runs", "messages", "turnItems"], {
-      messageIds: [input.messageId],
-      turnItemTypes: ["user_message"],
-    });
-    const message = projection.messages.find((candidate) => candidate.id === input.messageId);
-    const run =
-      message?.runId === null || message?.runId === undefined
-        ? undefined
-        : projection.runs.find((candidate) => candidate.id === message.runId);
-    const turnItem =
-      projection.turnItems.find(
-        (
-          candidate,
-        ): candidate is Extract<OrchestrationV2TurnItem, { readonly type: "user_message" }> =>
-          candidate.type === "user_message" && candidate.messageId === input.messageId,
-      ) ?? null;
-    if (
-      message === undefined ||
-      run === undefined ||
-      (turnItem === null && run.status !== "queued")
-    ) {
+    // Retries may change their payload; only committed events identify the
+    // accepted message and delivery, even after its run has moved on.
+    const acceptedMessage = dispatched.storedEvents.flatMap(({ event }) =>
+      event.type === "message.updated" && event.payload.role === "user" ? [event.payload] : [],
+    )[0];
+    if (acceptedMessage === undefined) {
       return yield* new ThreadManagementDurableRunProjectionError({
         threadId: input.threadId,
         messageId: input.messageId,
       });
     }
+    const messageId = acceptedMessage.id;
+    const acceptedTurnItem = dispatched.storedEvents.flatMap(({ event }) =>
+      event.type === "turn-item.updated" &&
+      event.payload.type === "user_message" &&
+      event.payload.messageId === messageId
+        ? [event.payload]
+        : [],
+    )[0];
+    const projection = yield* getProjectThreadRecords(input, ["runs", "messages", "turnItems"], {
+      messageIds: [messageId],
+      turnItemTypes: ["user_message"],
+    });
+    const message = projection.messages.find((candidate) => candidate.id === messageId);
+    const run = projection.runs.find((candidate) => candidate.id === acceptedMessage.runId);
+    const turnItem =
+      projection.turnItems.find(
+        (
+          candidate,
+        ): candidate is Extract<OrchestrationV2TurnItem, { readonly type: "user_message" }> =>
+          candidate.type === "user_message" && candidate.messageId === messageId,
+      ) ?? null;
+    const createdRun = dispatched.storedEvents.flatMap(({ event }) =>
+      event.type === "run.created" && event.payload.userMessageId === messageId
+        ? [event.payload]
+        : [],
+    )[0];
+    if (acceptedMessage.notification !== undefined) {
+      if (
+        message?.notification === undefined ||
+        message.delegatedCompletion !== undefined ||
+        run === undefined ||
+        run.userMessageId !== messageId ||
+        createdRun === undefined ||
+        createdRun.id !== run.id
+      )
+        return yield* new ThreadManagementDurableRunProjectionError({
+          threadId: input.threadId,
+          messageId,
+        });
+      return {
+        dispatch: dispatched,
+        projection,
+        message,
+        run,
+        turnItem: null,
+        delivery: createdRun.status === "queued" ? ("queued" as const) : ("started" as const),
+      };
+    }
+    // A queued message's user turn item is deliberately not emitted at
+    // dispatch time — it materializes when the queued turn actually starts,
+    // so it can map onto the provider turn. Every other dispatch mode still
+    // produces its turn item transactionally with the run.
+    if (
+      message === undefined ||
+      run === undefined ||
+      (acceptedTurnItem === undefined && createdRun?.status !== "queued") ||
+      (turnItem === null && acceptedTurnItem !== undefined)
+    ) {
+      return yield* new ThreadManagementDurableRunProjectionError({
+        threadId: input.threadId,
+        messageId,
+      });
+    }
+    // Pre-field events cannot distinguish restart intent from its native mechanism.
+    // Preserve their old mode-based response; recorded intent wins for newer events.
     const delivery: ThreadManagementSendResult["delivery"] =
-      turnItem === null || turnItem.inputIntent === "queued_turn"
+      acceptedTurnItem === undefined || acceptedTurnItem.inputIntent === "queued_turn"
         ? "queued"
-        : turnItem.inputIntent === "turn_start"
+        : acceptedTurnItem.inputIntent === "turn_start"
           ? "started"
-          : mode === "restart"
+          : dispatched.storedEvents.some(
+                ({ event }) =>
+                  event.type === "run-attempt.created" &&
+                  event.payload.runId === run.id &&
+                  event.payload.reason === "steering_restart" &&
+                  (event.payload.deliveryIntent ?? mode) === "restart",
+              )
             ? "restarted"
             : "steered";
     return { dispatch: dispatched, projection, message, run, turnItem, delivery };
@@ -919,37 +1187,6 @@ const make = Effect.gen(function* () {
     const afterSequence = yield* orchestrator
       .getThreadEventSequence(input.threadId)
       .pipe(Effect.mapError(loadError));
-    const target = yield* getProjectThreadRecords(input, ["runs"]);
-    const selectedRun =
-      input.runId === undefined
-        ? latestRun(target)
-        : target.runs.find((candidate) => candidate.id === input.runId);
-    if (input.runId !== undefined && selectedRun === undefined) {
-      return yield* new ThreadManagementRunNotFoundError({
-        threadId: input.threadId,
-        runId: input.runId,
-      });
-    }
-    if (selectedRun === undefined) {
-      return { threadId: input.threadId, run: null, timedOut: false };
-    }
-    // A restart cuts a run and continues it as a new run. Follow that chain,
-    // so a cut run is not the answer while its continuation is pending.
-    // Runs per matching event and is already covered by the waitForThread span.
-    const outcome = Effect.fnUntraced(function* (runs: ReadonlyArray<OrchestrationV2Run>) {
-      const current = runs.find((candidate) => candidate.id === selectedRun.id);
-      if (current === undefined) {
-        return yield* new ThreadManagementRunNotFoundError({
-          threadId: input.threadId,
-          runId: selectedRun.id,
-        });
-      }
-      const run = latestRestartContinuation(runs, current);
-      const pending =
-        isTerminalRunStatus(run.status) && (yield* orchestrator.restartContinuationPending(run));
-      return { run, pending, settled: isTerminalRunStatus(run.status) && !pending };
-    });
-    const untilDelegatedWorkSettled = input.untilDelegatedWorkSettled === true;
     const delegatedWorkResult = Effect.gen(function* () {
       const records = yield* getProjectThreadRecords(
         input,
@@ -965,81 +1202,53 @@ const make = Effect.gen(function* () {
         return latestRun(records);
       }
       if (progress.state !== "result_available") return undefined;
-      const pending = yield* orchestrator
-        .delegatedTaskResultPending(input.threadId)
-        .pipe(Effect.mapError(loadError));
-      return pending ? undefined : progress.resultRun;
+      return progress.resultRun;
     });
-    const evaluate = Effect.fn("orchestrationV2.threadManagement.evaluate")(function* (
-      runs: ReadonlyArray<OrchestrationV2Run>,
-    ) {
-      const current = yield* outcome(runs);
-      if (!current.settled || !untilDelegatedWorkSettled) {
-        return { ...current, resultRun: undefined };
-      }
-      const resultRun = yield* delegatedWorkResult;
-      return { ...current, settled: resultRun !== undefined, resultRun };
-    });
-    const settledResult = (current: Effect.Success<ReturnType<typeof evaluate>>) => ({
-      threadId: input.threadId,
-      run: current.run,
-      timedOut: !current.settled,
-      ...(current.resultRun === undefined ? {} : { resultRun: current.resultRun }),
-    });
-    const initial = yield* evaluate(target.runs);
-    if (initial.settled) return settledResult(initial);
-
-    // A declined continuation records no event, so its effect settling wakes
-    // the wait too.
-    const wait = Stream.merge(
-      Stream.mergeAll(
-        (
-          [
-            "run.updated",
-            "thread.deleted",
-            // What delegated work reads besides runs: tasks and their
-            // deliveries, and a provider thread's background tasks.
-            ...(untilDelegatedWorkSettled
-              ? (["subagent.updated", "provider-thread.updated"] as const)
-              : []),
-          ] as const
-        ).map((eventType) =>
-          orchestrator.streamStoredEventsFrom({
-            threadId: input.threadId,
-            afterSequence,
-            eventType,
-          }),
+    return yield* waitForRecovery<ThreadManagementError>(
+      {
+        ...input,
+        ...(input.untilDelegatedWorkSettled === true ? { result: delegatedWorkResult } : {}),
+        readRuns: getProjectThreadRecords(input, ["runs"]).pipe(
+          Effect.map((records) => records.runs),
         ),
-        { concurrency: "unbounded" },
-      ).pipe(
-        Stream.mapError(loadError),
-        Stream.filter(
-          (stored) =>
-            untilDelegatedWorkSettled ||
-            stored.event.type !== "run.updated" ||
-            stored.event.payload.id === selectedRun.id ||
-            stored.event.payload.restartContinuationOfRunId !== undefined,
-        ),
-      ),
-      initial.pending
-        ? Stream.fromEffect(orchestrator.awaitRestartContinuation(initial.run))
-        : Stream.empty,
-    ).pipe(
-      Stream.mapEffect(() =>
-        getProjectThreadRecords(input, ["runs"]).pipe(
-          Effect.flatMap((current) => evaluate(current.runs)),
-        ),
-      ),
-      Stream.filter((current) => current.settled),
-      Stream.runHead,
-      Effect.timeoutOption(Duration.millis(Math.max(1, input.timeoutMs))),
+        latest: (runs) => latestRun({ runs }),
+        events: Stream.mergeAll(
+          (
+            [
+              "run.updated",
+              "run.created",
+              "thread.metadata-updated",
+              "thread.deleted",
+              "thread.settled",
+              "thread.archived",
+              "thread.runtime-mode-updated",
+              "thread.model-selection-updated",
+              "thread.provider-switched",
+              ...(input.untilDelegatedWorkSettled === true
+                ? (["subagent.updated", "provider-thread.updated"] as const)
+                : []),
+            ] as const
+          ).map((eventType) =>
+            orchestrator.streamStoredEventsFrom({
+              threadId: input.threadId,
+              afterSequence,
+              eventType,
+            }),
+          ),
+          { concurrency: "unbounded" },
+        ).pipe(Stream.mapError(loadError)),
+        missing: (runId) =>
+          new ThreadManagementRunNotFoundError({ threadId: input.threadId, runId }),
+        loadError,
+      },
+      recoveryWait,
+      {
+        latest: latestRestartContinuation,
+        pending: (run) =>
+          orchestrator.restartContinuationPending(run).pipe(Effect.mapError(loadError)),
+        await: (run) => orchestrator.awaitRestartContinuation(run).pipe(Effect.mapError(loadError)),
+      },
     );
-    const waited = Option.flatten(yield* wait);
-    if (Option.isSome(waited)) return settledResult(waited.value);
-    // The run may have reached a terminal status while the timeout was
-    // winning the race; the final projection read decides what actually
-    // happened, so only a still-active run counts as timed out.
-    return settledResult(yield* evaluate((yield* getProjectThreadRecords(input, ["runs"])).runs));
   });
 
   const settleAfterRun: ThreadManagementServiceShape["settleAfterRun"] = Effect.fn(
@@ -1470,60 +1679,96 @@ const make = Effect.gen(function* () {
   const stopDelegatedTasks: ThreadManagementServiceShape["stopDelegatedTasks"] = Effect.fn(
     "ThreadManagementService.stopDelegatedTasks",
   )(function* (input) {
+    const snapshot = yield* orchestrator.getShellSnapshot();
     const { subagents } = yield* orchestrator.getThreadRecords(input.threadId, ["subagents"]);
+    // Fork: one flat walk covers every subagent descendant, including those whose parent was
+    // deleted, so each stopped child skips its own delegated-task walk.
+    const descendants = yield* readStopDescendants(
+      input.threadId,
+      [...snapshot.threads, ...snapshot.archivedThreads],
+      (id) =>
+        orchestrator.getThreadRecords(id, []).pipe(
+          Effect.map(({ thread }) => Option.some(thread)),
+          Effect.catchTags({
+            OrchestratorProjectionError: (error) =>
+              isProjectionThreadNotFound(error.cause) ? Effect.succeedNone : Effect.fail(error),
+          }),
+        ),
+    );
     const failures: Array<
       Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
     > = [];
-    const stoppedChildThreadIds = new Set<ThreadId>();
+    const stoppedChildThreadIds = new Set<ThreadId>(descendants);
     for (const task of subagents) {
-      if (task.origin !== "app_owned") continue;
-      if (task.childThreadId === null) {
+      if (task.origin === "app_owned" && task.childThreadId !== null)
+        stoppedChildThreadIds.add(task.childThreadId);
+    }
+    const stopRemoteTasks = Effect.fn("ThreadManagementService.stopRemoteTasks")(function* (
+      parentThreadId: ThreadId,
+      tasks: typeof subagents,
+      retirement?: typeof input.forkRetirementStop,
+    ) {
+      for (const task of tasks) {
         // A task in a linked environment ends here; its follower then stops it there.
-        // One with its result keeps it, but its thread there may run follow-up work.
-        if (task.remoteChild === undefined) continue;
-        const commandId = CommandId.make(`${input.commandId}:stop:${task.id}`);
-        yield* dispatch(
-          task.result === null
-            ? {
-                type: "delegated_task.remote.complete",
-                commandId,
-                parentThreadId: input.threadId,
-                taskId: task.id,
-                status: "interrupted",
-                result:
-                  input.reason === undefined
-                    ? "Stopped with its parent."
-                    : `Stopped with its parent: ${input.reason}`,
-              }
-            : {
-                type: "delegated_task.remote.stop",
-                commandId,
-                parentThreadId: input.threadId,
-                taskId: task.id,
-              },
-        ).pipe(
+        if (
+          task.origin !== "app_owned" ||
+          task.childThreadId !== null ||
+          task.remoteChild === undefined
+        )
+          continue;
+        yield* dispatch({
+          type: "delegated_task.remote.observe",
+          commandId: CommandId.make(`${input.commandId}:stop-intent:${task.id}`),
+          parentThreadId,
+          taskId: task.id,
+          ...(retirement === undefined ? {} : { forkRetirementStop: retirement }),
+          stop: {
+            requestId: `${input.commandId}:stop:${task.id}`,
+            state: "pending",
+            ...(input.reason === undefined ? {} : { reason: input.reason }),
+          },
+          stopResult: {
+            status: "interrupted",
+            result:
+              input.reason === undefined
+                ? "Stopped with its parent."
+                : `Stopped with its parent: ${input.reason}`,
+          },
+        }).pipe(
           Effect.catch((error) =>
             Effect.logWarning("Unable to stop a delegated task", {
-              parentThreadId: input.threadId,
+              parentThreadId,
               taskId: task.id,
               error,
             }).pipe(Effect.andThen(Effect.sync(() => failures.push(error)))),
           ),
         );
-        continue;
       }
-      const threadId = task.childThreadId;
-      // Follow-up tasks reuse a child thread; walk its subtree only once.
-      if (stoppedChildThreadIds.has(threadId)) continue;
-      stoppedChildThreadIds.add(threadId);
+    });
+    yield* stopRemoteTasks(input.threadId, subagents, input.forkRetirementStop);
+    const provenance = input.forkRetirementStop ?? {
+      ancestorThreadId: input.threadId,
+      originalToken: input.commandId,
+    };
+    for (const threadId of stoppedChildThreadIds) {
       yield* dispatch({
         type: "thread.stop",
         commandId: CommandId.make(`${input.commandId}:stop:${threadId}`),
         threadId,
         stopDelegatedTasks: false,
+        forkRetirementStop: provenance,
         ...(input.reason === undefined ? {} : { reason: input.reason }),
       }).pipe(
-        Effect.andThen(stopDelegatedTasks({ ...input, threadId })),
+        Effect.andThen(
+          Effect.gen(function* () {
+            const child = yield* orchestrator.getThreadRecords(threadId, ["subagents"]);
+            if (
+              child.thread.forkRetirement?.token === provenance.originalToken &&
+              !child.thread.forkResumedRetirements?.includes(provenance.originalToken)
+            )
+              yield* stopRemoteTasks(threadId, child.subagents, provenance);
+          }),
+        ),
         Effect.catch((error) =>
           Effect.logWarning("Unable to stop a delegated task", {
             parentThreadId: input.threadId,
@@ -1628,8 +1873,10 @@ const make = Effect.gen(function* () {
     awaitBackgroundTasks,
     getThreadEventSequence: orchestrator.getThreadEventSequence,
     recoverDelegatedTask: orchestrator.recoverDelegatedTask,
+    recordRestartCutDecline: orchestrator.recordRestartCutDecline,
+    readRunRecovery: recoveryHooks.readRunRecovery,
+    readRestartCutView: orchestrator.readRestartCutView,
     delegatedTaskResultPending: orchestrator.delegatedTaskResultPending,
-    streamStoredEvents: orchestrator.streamStoredEvents,
     streamStoredEventsFrom: orchestrator.streamStoredEventsFrom,
     streamDomainEvents: orchestrator.streamDomainEvents,
   });

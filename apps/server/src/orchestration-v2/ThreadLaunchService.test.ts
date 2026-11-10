@@ -1,4 +1,13 @@
 import * as DocumentText from "../provider/DocumentText.ts";
+import { McpSchema, McpServer } from "effect/ai";
+import * as McpHttpServer from "../mcp/McpHttpServer.ts";
+import * as RequestReceipts from "../mcp/McpRequestReceipts.ts";
+import { ThreadMcpToolkit } from "../mcp/toolkits/threadMcp/tools.ts";
+import * as ThreadMcpHandlers from "../mcp/toolkits/threadMcp/handlers.ts";
+import * as ThreadMcpConfig from "./ThreadMcpConfig.ts";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as BareLaunch from "./BareLaunch.ts";
+import { registerPromachosLaunchTests } from "../promachos/PromachosLaunch.tests.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
@@ -8,7 +17,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as ServerConfig from "../config.ts";
 import { createPendingAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
 import * as ThreadMessageIntake from "./ThreadMessageIntake.ts";
-import { assert, it, vi } from "@effect/vitest";
+import { assert, expect, it, vi } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
   ChatAttachmentId,
@@ -22,12 +31,16 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   OrchestrationV2ThreadProjectionJson,
+  OrchestratorMcpFailure,
+  ScheduledTaskError,
   ScheduledTaskId,
   type ServerProvider,
   ThreadId,
+  EnvironmentId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -49,6 +62,13 @@ import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.t
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProviderRegistryMock from "../provider/testUtils/providerRegistryMock.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as OrchestratorMcp from "../mcp/OrchestratorMcpService.ts";
+import * as Invocation from "../mcp/McpInvocationContext.ts";
+import { assertSameLink, assertNotLinked } from "../mcp/linkOrigin.ts";
+import * as PeerForwarding from "../peer/PeerForwarding.ts";
+import * as PeerLinks from "../peer/PeerLinks.ts";
+import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
+import { OrchestratorToolkit } from "../mcp/toolkits/orchestrator/tools.ts";
 import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
@@ -61,14 +81,16 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ThreadLaunch from "./ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as OrchestratorMcpService from "../mcp/OrchestratorMcpService.ts";
+import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as ThreadTitleRegeneration from "./ThreadTitleRegenerationService.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
-import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 const projectId = ProjectId.make("project:launch-test");
 const otherProjectId = ProjectId.make("project:launch-other");
+const isTaskError = Schema.is(ScheduledTaskError);
 const encodeThreadProjection = Schema.encodeEffect(OrchestrationV2ThreadProjectionJson);
 const modelSelection = {
   instanceId: ProviderInstanceId.make("codex"),
@@ -100,6 +122,7 @@ const otherProject = {
 const adapter = {
   instanceId: modelSelection.instanceId,
   driver: ProviderDriverKind.make("codex"),
+  bareSupport: Effect.succeed({ supported: true }),
   getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
   openSession: () => Effect.die("provider execution is disabled in launch tests"),
@@ -120,6 +143,9 @@ const claudeAdapter = {
 interface HarnessOptions {
   readonly closeTerminal?: TerminalManager.TerminalManager["Service"]["close"];
   readonly adapters?: ReadonlyArray<ProviderAdapter.ProviderAdapterV2["Service"]>;
+  readonly bare?: boolean;
+  readonly otherWorkspaceRoot?: string;
+  readonly databaseLayer?: typeof SqlitePersistence.layerMemory;
   readonly managedFolders?: Layer.Layer<ManagedProjectFolders.ManagedProjectFolders>;
   readonly createWorktree?: GitWorkflow.GitWorkflowService["Service"]["createWorktree"];
   readonly fetchWorktreeBaseCommit?: GitWorkflow.GitWorkflowService["Service"]["fetchWorktreeBaseCommit"];
@@ -132,10 +158,11 @@ interface HarnessOptions {
   readonly serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
   readonly providers?: ReadonlyArray<ServerProvider>;
   readonly git?: Partial<GitWorkflow.GitWorkflowService["Service"]>;
+  readonly gitVcs?: Partial<GitVcsDriver.GitVcsDriver["Service"]>;
 }
 
 function makeHarness(options: HarnessOptions = {}) {
-  const layerDatabase = SqlitePersistence.layerMemory;
+  const layerDatabase = options.databaseLayer ?? SqlitePersistence.layerMemory;
   const layerRegistry = ProviderAdapterRegistry.layerFromAdapters(options.adapters ?? [adapter]);
   const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
     { name: "thread-launch" },
@@ -144,7 +171,7 @@ function makeHarness(options: HarnessOptions = {}) {
   );
   const layerServerSettings = ServerSettings.layerTest(options.serverSettings);
   const layerReceipts = CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase));
-  const layerThreadManagement = ThreadManagement.layer.pipe(
+  const layerThreadManagement = Layer.fresh(ThreadManagement.layer).pipe(
     Layer.provide(layerOrchestrator),
     Layer.provide(layerServerSettings),
     Layer.provide(layerReceipts),
@@ -193,7 +220,10 @@ function makeHarness(options: HarnessOptions = {}) {
           id === projectId
             ? Option.some(project)
             : id === otherProjectId
-              ? Option.some(otherProject)
+              ? Option.some({
+                  ...otherProject,
+                  workspaceRoot: options.otherWorkspaceRoot ?? otherProject.workspaceRoot,
+                })
               : Option.none(),
         ),
       getByWorkspaceRoot: () => Effect.succeedSome(project),
@@ -232,7 +262,22 @@ function makeHarness(options: HarnessOptions = {}) {
         folderForThread: () => Effect.succeedNone,
       }),
   );
+  const bareLayer = options.bare
+    ? Layer.fresh(BareLaunch.layer).pipe(
+        Layer.provide(Layer.mergeAll(layerRegistry, layerExternalServices)),
+        Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+      )
+    : Layer.mock(BareLaunch.BareLaunch)({});
   const layerLaunch = ThreadLaunch.layer.pipe(
+    Layer.provide(bareLayer),
+    Layer.provide(layerRegistry),
+    Layer.provide(
+      ThreadMcpConfig.layer.pipe(
+        Layer.provide(ServerSecretStore.layer),
+        Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-tool-policy-" })),
+        Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+      ),
+    ),
     Layer.provide(
       Layer.mergeAll(
         layerExternalServices,
@@ -271,12 +316,14 @@ function makeHarness(options: HarnessOptions = {}) {
         layerThreadManagement,
         layerProjectedProjects,
         layerExternalServices,
-        NodeServices.layer,
+        Layer.merge(NodeServices.layer, NodeCrypto.layer),
       ),
     ),
   );
   return {
+    bareLayer,
     layer: Layer.mergeAll(
+      layerRegistry,
       layerLaunch,
       layerRegistry,
       layerThreadManagement,
@@ -284,6 +331,9 @@ function makeHarness(options: HarnessOptions = {}) {
       layerOutbox,
       layerDatabase,
       layerExternalServices,
+      Layer.merge(NodeServices.layer, NodeCrypto.layer),
+      Layer.mock(GitVcsDriver.GitVcsDriver)(options.gitVcs ?? {}),
+      ProjectStore.layer.pipe(Layer.provide(layerDatabase)),
     ),
     createWorktree,
     removeWorktree,
@@ -334,6 +384,7 @@ it.effect.each(
   ({ target, createdBy }) => {
     const harness = makeHarness();
     const layerScheduledTasks = ScheduledTasks.layer.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
       Layer.provide(
         Layer.mergeAll(
           harness.layer,
@@ -356,6 +407,7 @@ it.effect.each(
             )
           : null;
       const { task } = yield* tasks.upsert({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         id: ScheduledTaskId.make("scheduled-task:attribution"),
         title: "Daily audit",
         prompt: "Audit performance and crashes.",
@@ -401,6 +453,7 @@ it.effect(
   () => {
     const harness = makeHarness();
     const layerScheduledTasks = ScheduledTasks.layer.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
       Layer.provide(
         Layer.mergeAll(
           harness.layer,
@@ -419,6 +472,7 @@ it.effect(
         launchInput({ command: "command:missing", thread: "thread:missing" }),
       );
       const { task } = yield* tasks.upsert({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         title: "Daily audit",
         prompt: "Audit performance and crashes.",
         enabled: false,
@@ -448,6 +502,7 @@ it.effect(
 it.effect("runs a thread-bound automation on the provider the thread uses now", () => {
   const harness = makeHarness({ adapters: [adapter, claudeAdapter] });
   const layerScheduledTasks = ScheduledTasks.layer.pipe(
+    Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
     Layer.provide(
       Layer.mergeAll(
         harness.layer,
@@ -466,6 +521,7 @@ it.effect("runs a thread-bound automation on the provider the thread uses now", 
       launchInput({ command: "command:switched", thread: "thread:switched" }),
     );
     const { task } = yield* tasks.upsert({
+      purposeIntent: { version: 1, intent: { type: "unscoped" } },
       id: ScheduledTaskId.make("scheduled-task:switched"),
       title: "Hourly check",
       prompt: "Check on the delegated workers.",
@@ -512,6 +568,9 @@ it.effect("retains automation and sender attribution while a message waits in th
     );
     const scheduledTaskId = ScheduledTaskId.make("scheduled-task:queued");
     const senderThreadId = ThreadId.make("thread:agent-sender");
+    yield* launches.launch(
+      launchInput({ command: "command:agent-sender", thread: senderThreadId }),
+    );
     const queued = yield* threads.sendToThread({
       projectId,
       commandId: CommandId.make("command:automation:queued"),
@@ -927,6 +986,7 @@ function scratchHarness() {
           } as never),
   });
   const layerScheduledTasks = ScheduledTasks.layer.pipe(
+    Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
     Layer.provide(
       Layer.mergeAll(
         harness.layer,
@@ -950,7 +1010,7 @@ const worktreeStrategy = { type: "worktree", baseRef: "main", startFromOrigin: t
 const preparationSettled = (threadId: ThreadId) =>
   Effect.gen(function* () {
     const threads = yield* ThreadManagement.ThreadManagementService;
-    yield* threads.streamStoredEventsFrom({ threadId }).pipe(
+    yield* threads.streamStoredEventsFrom({ threadId, afterSequence: 0 }).pipe(
       Stream.filter(
         (stored) =>
           stored.event.type === "run.updated" &&
@@ -964,6 +1024,7 @@ const preparationSettled = (threadId: ThreadId) =>
 
 function scheduledTaskInput(id: string, targetProjectId: ProjectId) {
   return {
+    purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
     id: ScheduledTaskId.make(id),
     title: "Daily summary",
     prompt: "Summarize the day.",
@@ -1149,7 +1210,19 @@ it.effect.each(["stable", "upstream/release"])(
       Effect.provide(
         GitVcsDriver.layer.pipe(
           Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "launch-remote-git-" })),
-          Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+          Layer.provideMerge(
+            Layer.merge(
+              Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+              DocumentText.layer.pipe(
+                Layer.provide(
+                  Layer.mergeAll(
+                    Layer.merge(NodeServices.layer, NodeCrypto.layer),
+                    NodeCrypto.layer,
+                  ),
+                ),
+              ),
+            ),
+          ),
         ),
       ),
     ),
@@ -1204,7 +1277,7 @@ it.effect("shows the fetch diagnosis when preparing a worktree from origin fails
         workspace: { type: "worktree", baseRef: "main", startFromOrigin: true },
       }),
     );
-    yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+    yield* threads.streamStoredEventsFrom({ threadId: launched.threadId, afterSequence: 0 }).pipe(
       Stream.filter(
         (stored) => stored.event.type === "run.updated" && stored.event.payload.status === "failed",
       ),
@@ -1382,13 +1455,15 @@ it.effect.each(["fails", "is interrupted"] as const)(
           });
         }
 
-        yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
-          Stream.filter(
-            (stored) =>
-              stored.event.type === "run.updated" && stored.event.payload.queueHeld === true,
-          ),
-          Stream.runHead,
-        );
+        yield* threads
+          .streamStoredEventsFrom({ threadId: launched.threadId, afterSequence: 0 })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "run.updated" && stored.event.payload.queueHeld === true,
+            ),
+            Stream.runHead,
+          );
         const projection = yield* threads.getThreadProjection(launched.threadId);
         assert.equal(projection.runs.at(-1)?.status, "queued");
         assert.equal(projection.thread.worktreePath, null);
@@ -1445,7 +1520,7 @@ it.effect.each(["failed", "interrupted"] as const)(
           runId: launched.projection.runs[0]!.id,
         });
       }
-      yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+      yield* threads.streamStoredEventsFrom({ threadId: launched.threadId, afterSequence: 0 }).pipe(
         Stream.filter(
           (stored) => stored.event.type === "run.updated" && stored.event.payload.status === ending,
         ),
@@ -1551,7 +1626,7 @@ it.effect("replays a server-allocated launch", () =>
       assert.equal(retry.projection.messages[0]?.id, first.projection.messages[0]?.id);
       assert.equal(retry.projection.runs[0]?.id, first.projection.runs[0]?.id);
       yield* Deferred.succeed(allowSetup, undefined);
-      yield* threads.streamStoredEventsFrom({ threadId: first.threadId }).pipe(
+      yield* threads.streamStoredEventsFrom({ threadId: first.threadId, afterSequence: 0 }).pipe(
         Stream.filter(
           (stored) =>
             stored.commandId === CommandId.make(`${rest.commandId}:release`) &&
@@ -1603,6 +1678,178 @@ it.effect("replays an accepted launch after the project disables the instance", 
     if (fresh._tag !== "ThreadManagementProviderInstanceDisabledError") {
       assert.fail(`expected ThreadManagementProviderInstanceDisabledError, got ${fresh._tag}`);
     }
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("replays an accepted launch receipt after rebuilding the destination runtime", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const databaseLayer = Layer.succeedContext(database);
+      const { threadId: _unusedThreadId, ...input } = launchInput({
+        command: "command:launch:restart-receipt",
+        thread: "unused",
+        message: "Only once across restart",
+      });
+      const first = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const launches = yield* ThreadLaunch.ThreadLaunchService;
+          const threads = yield* ThreadManagement.ThreadManagementService;
+          const launched = yield* launches.launch(input);
+          yield* threads
+            .streamStoredEventsFrom({ threadId: launched.threadId, afterSequence: 0 })
+            .pipe(
+              Stream.filter(
+                (stored) =>
+                  stored.commandId === CommandId.make(`${input.commandId}:release`) &&
+                  stored.event.type === "run.updated",
+              ),
+              Stream.runHead,
+            );
+          return launched;
+        }).pipe(Effect.provide(makeHarness({ databaseLayer }).layer)),
+      );
+      const after = makeHarness({ databaseLayer });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const retry = yield* launches.launch(input);
+        assert.isTrue(retry.resumed);
+        assert.equal(retry.threadId, first.threadId);
+        assert.equal(retry.projection.messages.length, 1);
+        assert.equal(retry.projection.runs.length, 1);
+        assert.equal(retry.projection.messages[0]?.id, first.projection.messages[0]?.id);
+        assert.equal(retry.projection.runs[0]?.id, first.projection.runs[0]?.id);
+        assert.equal(after.runSetup.mock.calls.length, 0);
+      }).pipe(Effect.provide(after.layer));
+    }),
+  ),
+);
+
+it.effect(
+  "accepted launch replay skips unavailable admission and enforces identity and mode limits",
+  () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const input = {
+        ...launchInput({
+          command: "command:receipt-first",
+          thread: "thread:receipt-first",
+          message: "Once",
+        }),
+        createdBy: "agent" as const,
+        linkOrigin: { sessionId: "link:original", label: "Original" },
+      };
+      const first = yield* launches.launch(input);
+      const identity = { ...input, messageId: input.initialMessage!.messageId };
+      const unavailable = new OrchestratorMcpFailure({
+        code: "provider_unavailable",
+        message: "destination catalog has no eligible models",
+      });
+      const replay = yield* launches.replayOrLaunch(identity, Effect.fail(unavailable));
+      assert.equal(replay.threadId, first.threadId);
+      assert.isTrue(replay.resumed);
+      assert.equal(replay.projection.runs.length, 1);
+      assert.deepEqual(replay.projection.runs[0]?.modelSelection, modelSelection);
+      for (const changed of [
+        { ...identity, threadId: ThreadId.make("thread:wrong") },
+        { ...identity, projectId: otherProjectId },
+        { ...identity, linkOrigin: { sessionId: "link:other", label: "Other" } },
+        { ...identity, runtimeMode: "approval-required" as const },
+        { ...identity, interactionMode: "plan" as const },
+      ]) {
+        const error = yield* launches
+          .replayOrLaunch(changed, Effect.fail(unavailable))
+          .pipe(Effect.flip);
+        assert.equal(error._tag, "ThreadLaunchError");
+      }
+      const fresh = yield* launches
+        .replayOrLaunch(
+          { ...identity, commandId: CommandId.make("command:fresh-unavailable") },
+          Effect.fail(unavailable),
+        )
+        .pipe(Effect.flip);
+      assert.equal(fresh, unavailable);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
+it.effect("launch receipt replay refuses inheritance from a different-purpose parent run", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const parents = [];
+    for (const number of [11, 12]) {
+      const parent = yield* launches.launch({
+        ...launchInput({
+          command: `purpose-parent-${number}`,
+          thread: `purpose-parent-${number}`,
+          message: "Parent fixture",
+        }),
+        purposeIntent: {
+          version: 1,
+          intent: {
+            type: "reference",
+            reference: { host: "github.com", repository: "example/repo", kind: "issue", number },
+          },
+        },
+      });
+      parents.push({ threadId: parent.threadId, runId: parent.projection.runs[0]!.id });
+    }
+    const input = {
+      ...launchInput({
+        command: "purpose-child-replay",
+        thread: "purpose-child-replay",
+        message: "Child fixture",
+      }),
+      purposeIntent: { version: 1, intent: { type: "inherit" } } as const,
+      purposeParentRun: parents[0]!,
+    };
+    const first = yield* launches.launch(input);
+    const identity = { ...input, messageId: input.initialMessage!.messageId };
+    const replay = yield* launches.replayOrLaunch(
+      identity,
+      Effect.die("A receipt must bypass new execution"),
+    );
+    assert.deepEqual(replay.projection.runs[0]?.purpose, first.projection.runs[0]?.purpose);
+    const error = yield* launches
+      .replayOrLaunch(
+        { ...identity, purposeParentRun: parents[1]! },
+        Effect.die("A changed source must be rejected before execution"),
+      )
+      .pipe(Effect.flip);
+    assert.equal(error._tag, "ThreadLaunchError");
+    assert.include(String(error.cause), "purpose intent");
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("a launch inheriting a deliberately unscoped parent run keeps that exact scope", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const parent = yield* launches.launch({
+      ...launchInput({
+        command: "purpose-unscoped-parent",
+        thread: "purpose-unscoped-parent",
+        message: "Parent fixture",
+      }),
+      purposeIntent: { version: 1, intent: { type: "unscoped" } },
+    });
+    const parentRun = { threadId: parent.threadId, runId: parent.projection.runs[0]!.id };
+    const child = yield* launches.launch({
+      ...launchInput({
+        command: "purpose-unscoped-child",
+        thread: "purpose-unscoped-child",
+        message: "Child fixture",
+      }),
+      purposeIntent: { version: 1, intent: { type: "inherit" } },
+      purposeParentRun: parentRun,
+    });
+    assert.deepEqual(child.projection.runs[0]?.purpose, {
+      version: 1,
+      scope: { type: "unscoped", reason: "deliberate" },
+      provenance: { type: "parent_run", ...parentRun },
+    });
   }).pipe(Effect.provide(harness.layer));
 });
 
@@ -1991,7 +2238,19 @@ it.effect("creates a strong provider-thread mapping for an imported native sessi
 it.effect("shared intake preserves durable attachment bytes after a lost launch result", () => {
   const harness = makeHarness();
   const layerFiles = ServerConfig.layerTest(process.cwd(), { prefix: "t3-message-intake-" }).pipe(
-    Layer.provideMerge(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+    Layer.provideMerge(
+      DocumentText.layer.pipe(
+        Layer.provideMerge(
+          Layer.merge(
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
+            DocumentText.layer.pipe(
+              Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+            ),
+          ),
+        ),
+      ),
+    ),
+    Layer.merge(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
   );
   return Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;
@@ -2050,7 +2309,9 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
               }),
             ),
           ),
+        configureMcp: launches.configureMcp,
         checkWorktreeBase: launches.checkWorktreeBase,
+        replayOrLaunch: launches.replayOrLaunch,
         retryPreparation: launches.retryPreparation,
         prepareRun: launches.prepareRun,
       }),
@@ -2349,6 +2610,55 @@ it.effect("stops an in-flight branch rename when tracked setup is cancelled", ()
   }),
 );
 
+it.effect("drains a delayed branch rename before cancelled setup clears its workspace", () =>
+  Effect.gen(function* () {
+    const setupEntered = yield* Deferred.make<void>();
+    const renameEntered = yield* Deferred.make<void>();
+    const renameResume = yield* Deferred.make<void>();
+    const renameInterrupted = yield* Ref.make(false);
+    const harness = makeHarness({
+      renameBranch: () =>
+        Deferred.succeed(renameEntered, undefined).pipe(
+          Effect.andThen(Deferred.await(renameResume)),
+          Effect.as({ branch: "late-generated-branch" }),
+          Effect.onInterrupt(() => Ref.set(renameInterrupted, true)),
+        ),
+      runSetup: () => Deferred.succeed(setupEntered, undefined).pipe(Effect.andThen(Effect.never)),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const input = launchInput({
+        command: "launch:delayed-cancel-rename",
+        thread: "thread:delayed-cancel-rename",
+        message: "Start",
+        workspace: { type: "worktree", baseRef: "main" },
+      });
+      const launched = yield* launches.launch(input);
+      yield* Deferred.await(setupEntered);
+      yield* Deferred.await(renameEntered);
+      const cancellation = yield* tracker.cancel(launched.threadId).pipe(Effect.forkChild);
+      yield* tracker.stream(launched.threadId).pipe(
+        Stream.filter((snapshot) => snapshot?.phase === "cancelled"),
+        Stream.runHead,
+      );
+      assert.equal(harness.removeWorktree.mock.calls.length, 0);
+      yield* Deferred.succeed(renameResume, undefined);
+      assert.isTrue(yield* Fiber.join(cancellation));
+      const projection = yield* threads.getThreadProjection(launched.threadId);
+      assert.isNull(projection.thread.worktreePath);
+      assert.isNull(projection.thread.branch);
+      assert.isFalse(yield* Ref.get(renameInterrupted));
+      assert.equal(projection.runs[0]?.status, "failed");
+      assert.equal(harness.removeWorktree.mock.calls.length, 1);
+      assert.equal(harness.deleteLocalBranch.mock.calls[0]?.[0].refName, "late-generated-branch");
+      assert.isEmpty(yield* outbox.listByCommandId(CommandId.make(`${input.commandId}:release`)));
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
 it.effect.each([0, 1])("releases an async setup before its completion with exit %s", (exitCode) =>
   Effect.gen(function* () {
     const completion = yield* Deferred.make<{ exitCode: number | null; durationMs: number }>();
@@ -2458,7 +2768,18 @@ it.effect.each([
 it.effect("replays an accepted send after the project disables the instance", () => {
   const harness = makeHarness();
   const layerFiles = ServerConfig.layerTest(process.cwd(), { prefix: "t3-send-retry-" }).pipe(
-    Layer.provideMerge(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+    Layer.provideMerge(
+      DocumentText.layer.pipe(
+        Layer.provideMerge(
+          Layer.merge(
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
+            DocumentText.layer.pipe(
+              Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+            ),
+          ),
+        ),
+      ),
+    ),
   );
   return Effect.gen(function* () {
     const launches = yield* ThreadLaunch.ThreadLaunchService;
@@ -2502,3 +2823,950 @@ it.effect("replays an accepted send after the project disables the instance", ()
     }
   }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerFiles)));
 });
+
+it.effect(
+  "prepares an accepted delegated destination once through the existing workspace pipeline",
+  () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const harness = makeHarness({
+        runSetup: () =>
+          Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.as({ status: "no-script" as const }),
+          ),
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const threadId = ThreadId.make("delegated-destination");
+        yield* threads.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("delegated-create"),
+          threadId,
+          projectId: otherProjectId,
+          title: "Delegated destination",
+          modelSelection,
+          runtimeMode: "approval-required",
+          interactionMode: "plan",
+          branch: null,
+          worktreePath: null,
+          createdBy: "agent",
+          creationSource: "mcp",
+        });
+        yield* threads.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("delegated-message"),
+          threadId,
+          messageId: MessageId.make("delegated-message"),
+          text: "Destination task",
+          attachments: [],
+          modelSelection,
+          dispatchMode: {
+            type: "defer_start",
+            workspaceStrategy: { type: "worktree", baseRef: "main" },
+          },
+          createdBy: "agent",
+          creationSource: "mcp",
+        });
+        const before = yield* threads.getThreadProjection(threadId);
+        const run = before.runs[0]!;
+        const released = yield* threads.streamStoredEventsFrom({ afterSequence: 0 }).pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.threadId === threadId &&
+              stored.event.type === "run.updated" &&
+              stored.event.payload.id === run.id &&
+              stored.event.payload.status === "starting",
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        const input = {
+          commandId: CommandId.make("delegated-prepare"),
+          threadId,
+          runId: run.id,
+          projectId: otherProjectId,
+        };
+        yield* Effect.all([launches.prepareRun(input), launches.prepareRun(input)], {
+          concurrency: "unbounded",
+        });
+        yield* Deferred.await(entered);
+        assert.equal(harness.createWorktree.mock.calls.length, 1);
+        assert.equal(harness.runSetup.mock.calls.length, 1);
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(released);
+        const after = yield* threads.getThreadProjection(threadId);
+        assert.equal(after.runs[0]!.status, "starting");
+        assert.equal(after.thread.projectId, otherProjectId);
+        assert.equal(after.thread.worktreePath, "/repo-worktrees/feature");
+        assert.equal(after.thread.runtimeMode, "approval-required");
+        assert.equal(after.thread.interactionMode, "plan");
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);
+
+it.effect.each([false, true])(
+  "direct intake validates destination, prepares once on replay, and honors Stop during preparation: %s",
+  (stopDuringPreparation) =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const harness = makeHarness({
+        otherWorkspaceRoot: "/destination",
+        gitVcs: {
+          listWorktreePaths: (cwd) => {
+            assert.equal(cwd, "/destination");
+            return Effect.succeed(["/destination", "/destination-worktree"]);
+          },
+        },
+        runSetup: () =>
+          Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.as({ status: "no-script" as const }),
+          ),
+      });
+      yield* Effect.gen(function* () {
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, default_thread_env_mode, created_at, updated_at)
+        VALUES (${otherProjectId}, 'Destination', '/destination', '[]', 'local', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`;
+        const parentId = ThreadId.make("direct-parent");
+        yield* threads.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("direct-create"),
+          threadId: parentId,
+          projectId,
+          title: "Parent",
+          modelSelection,
+          runtimeMode: "approval-required",
+          interactionMode: "plan",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* threads.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("direct-parent-work"),
+          threadId: parentId,
+          messageId: MessageId.make("direct-parent-work"),
+          text: "Work",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const parent = yield* threads.getThreadProjection(parentId);
+        const command = {
+          type: "delegated_task.request" as const,
+          commandId: CommandId.make("direct-delegate"),
+          parentThreadId: parentId,
+          parentRunId: parent.runs[0]!.id,
+          parentNodeId: parent.runs[0]!.rootNodeId!,
+          projectId: otherProjectId,
+          workspaceStrategy: stopDuringPreparation
+            ? { type: "worktree" as const, baseRef: "main" }
+            : {
+                type: "existing_worktree" as const,
+                worktreePath: "/destination-worktree",
+              },
+          task: "Child work",
+          modelSelection,
+          runtimeMode: "approval-required" as const,
+          interactionMode: "plan" as const,
+          createdBy: "user" as const,
+          creationSource: "web" as const,
+        };
+        const before = yield* sql<{
+          count: number;
+        }>`SELECT COUNT(*) AS count FROM projection_threads`;
+        for (const invalid of [
+          {
+            ...command,
+            commandId: CommandId.make("direct-unregistered"),
+            workspaceStrategy: {
+              type: "existing_worktree" as const,
+              worktreePath: "/other-project-worktree",
+            },
+          },
+          {
+            ...command,
+            commandId: CommandId.make("direct-missing"),
+            projectId: ProjectId.make("missing"),
+          },
+        ]) {
+          const failure = yield* ThreadMessageIntake.dispatchCommand(invalid).pipe(Effect.flip);
+          assert.equal(failure._tag, "OrchestratorMcpFailure");
+          if (failure._tag === "OrchestratorMcpFailure")
+            assert.equal(failure.code, "invalid_request");
+          assert.deepEqual(
+            yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM projection_threads`,
+            before,
+          );
+          assert.lengthOf((yield* threads.getThreadProjection(parentId)).subagents, 0);
+        }
+        const result = yield* ThreadMessageIntake.dispatchCommand(command);
+        yield* Deferred.await(entered);
+        const task = (yield* threads.getThreadProjection(parentId)).subagents[0]!;
+        const childId = task.childThreadId!;
+        assert.equal((yield* threads.getThreadProjection(childId)).runs[0]!.status, "preparing");
+        assert.equal(harness.runSetup.mock.calls[0]![0].projectCwd, "/destination");
+        assert.equal(
+          harness.runSetup.mock.calls[0]![0].worktreePath,
+          stopDuringPreparation ? "/repo-worktrees/feature" : "/destination-worktree",
+        );
+        const replay = yield* ThreadMessageIntake.dispatchCommand(command);
+        assert.equal(replay.sequence, result.sequence);
+        assert.equal(harness.runSetup.mock.calls.length, 1);
+        if (stopDuringPreparation) {
+          const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+          const settled = yield* tracker.stream(childId).pipe(
+            Stream.filter((snapshot) => snapshot !== null && snapshot.phase !== "running"),
+            Stream.runHead,
+            Effect.forkChild,
+          );
+          yield* threads.dispatch({
+            type: "thread.stop",
+            commandId: CommandId.make("direct-stop-preparing"),
+            threadId: childId,
+          });
+          yield* Deferred.succeed(release, undefined);
+          assert.isTrue(Option.isSome(yield* Fiber.join(settled)));
+          const releaseReceipts = yield* sql<{
+            status: string;
+          }>`SELECT status FROM orchestration_command_receipts WHERE command_id = 'direct-delegate:release'`;
+          assert.deepEqual(releaseReceipts, [{ status: "rejected" }]);
+          const stopped = yield* threads.getThreadProjection(childId);
+          assert.equal(stopped.runs[0]!.status, "interrupted");
+          assert.equal(harness.runSetup.mock.calls.length, 1);
+          return;
+        }
+        const started = yield* threads.streamStoredEventsFrom({ afterSequence: 0 }).pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.threadId === childId &&
+              stored.event.type === "run.updated" &&
+              stored.event.payload.status === "starting",
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* Deferred.succeed(release, undefined);
+        assert.isTrue(Option.isSome(yield* Fiber.join(started)));
+        const child = yield* threads.getThreadProjection(childId);
+        assert.equal(child.thread.projectId, otherProjectId);
+        assert.equal(child.thread.lineage.parentThreadId, parentId);
+        assert.equal(child.thread.runtimeMode, "approval-required");
+        assert.equal(child.thread.interactionMode, "plan");
+        yield* threads.dispatch({
+          type: "thread.stop",
+          commandId: CommandId.make("direct-stop"),
+          threadId: childId,
+        });
+        assert.equal((yield* threads.getThreadProjection(childId)).runs[0]!.status, "interrupted");
+      }).pipe(
+        Effect.provide(
+          harness.layer.pipe(
+            Layer.provideMerge(
+              Layer.mergeAll(
+                ProjectStore.layer,
+                ServerConfig.layerTest(process.cwd(), { prefix: "t3-delegated-intake-" }).pipe(
+                  Layer.provideMerge(
+                    Layer.merge(
+                      Layer.merge(NodeServices.layer, NodeCrypto.layer),
+                      DocumentText.layer.pipe(
+                        Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+                      ),
+                    ),
+                  ),
+                ),
+              ).pipe(Layer.provide(harness.layer)),
+            ),
+          ),
+        ),
+      );
+    }),
+);
+
+registerPromachosLaunchTests({ makeHarness, launchInput, modelSelection });
+
+it.effect.each(["new_thread", "continue", "fresh_session"] as const)(
+  "peer schedules retain origin through persistence, edits and restarted real launches: %s",
+  (threadMode) => {
+    const h = makeHarness();
+    const schedulerDeps = Layer.mergeAll(
+      ManagedPolicy.layerTest().pipe(Layer.provide(NodeCrypto.layer)),
+      h.layer,
+      NodeCrypto.layer,
+      Scheduler.layer,
+      Layer.mock(SecretRequests.SecretRequests)({}),
+    );
+    const tasksLayer = ScheduledTasks.layer.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+      Layer.provideMerge(schedulerDeps),
+    );
+    const mcp = OrchestratorMcp.layer.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+      Layer.provideMerge(
+        Layer.mergeAll(
+          tasksLayer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
+          Layer.mock(GitVcsDriver.GitVcsDriver)({
+            resolvePrimaryRemoteName: () => Effect.succeed("origin"),
+            resolveDefaultBranchName: () => Effect.succeed("main"),
+            resolveCommit: () => Effect.succeed({ commitSha: "abc" }),
+          }),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        ),
+      ),
+    );
+    return Effect.gen(function* () {
+      const origin = { sessionId: "peer-schedule", label: "Peer", access: "full-access" as const };
+      const scope: Invocation.McpInvocationScope = {
+        environmentId: EnvironmentId.make("destination"),
+        thread: undefined,
+        client: { ...origin, linked: true, access: "full-access" },
+        capabilities: new Set(["orchestration"]),
+        requestNamespace: "peer-schedule",
+        issuedAt: 1,
+      };
+      const tools = yield* OrchestratorMcp.OrchestratorMcpService;
+      const created = yield* tools.scheduleTask(scope, {
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
+        projectId,
+        prompt: "Do linked work",
+        enabled: false,
+        schedule: { type: "interval", everyMs: 60_000 },
+        bindToCurrentThread: false,
+        clientRequestId: "peer-timer",
+      });
+      const tasks = yield* ScheduledTasks.ScheduledTaskService;
+      const stored = (yield* tasks.list()).tasks.find(
+        (task) => task.id === created.scheduledTaskId,
+      )!;
+      assert.deepStrictEqual(stored.linkOrigin, origin);
+      const { linkOrigin: _origin, ...form } = stored;
+      const edited = yield* tasks.upsert({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
+        ...form,
+        requireExisting: true,
+        title: "UI edit without ownership fields",
+        threadMode,
+      });
+      assert.deepStrictEqual(edited.task.linkOrigin, origin);
+      assert.strictEqual(edited.task.threadMode, threadMode);
+      const foreign = { ...scope, client: { ...scope.client!, sessionId: "another-peer" } };
+      assert.strictEqual(
+        (yield* tools
+          .updateScheduledTask(foreign, { scheduledTaskId: stored.id, prompt: "Foreign" })
+          .pipe(Effect.flip)).code,
+        "capability_denied",
+      );
+      assert.strictEqual(
+        (yield* tools
+          .deleteScheduledTask(foreign, { scheduledTaskId: stored.id })
+          .pipe(Effect.flip)).code,
+        "capability_denied",
+      );
+      const persistedServices = yield* Effect.context<Layer.Success<typeof schedulerDeps>>();
+      // A fresh service reads durable origin, rather than relying on the creating request's context.
+      yield* Effect.gen(function* () {
+        const restarted = yield* ScheduledTasks.ScheduledTaskService;
+        assert.deepStrictEqual((yield* restarted.list()).tasks[0]!.linkOrigin, origin);
+        const run = yield* restarted.runNow({ id: stored.id });
+        assert.strictEqual(run.task.lastRunStatus, "succeeded");
+        assert.isNotNull(run.threadId);
+        assert.strictEqual(run.task.threadId, threadMode === "new_thread" ? null : run.threadId);
+        yield* TestClock.adjust(Duration.seconds(1));
+        const repeated = yield* restarted.runNow({ id: stored.id });
+        assert.strictEqual(repeated.task.lastRunStatus, "succeeded");
+        assert.isNotNull(repeated.threadId);
+        assert.strictEqual(repeated.threadId === run.threadId, threadMode !== "new_thread");
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const projection = yield* threads.getThreadProjection(repeated.threadId!);
+        assert.deepStrictEqual(projection.thread.linkOrigin, origin);
+        assert.strictEqual(
+          projection.runs.at(-1)?.freshContext ?? false,
+          threadMode === "fresh_session",
+        );
+      }).pipe(
+        Effect.provide(
+          ScheduledTasks.layer.pipe(
+            Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+            Layer.provide(Layer.succeedContext(persistedServices)),
+          ),
+        ),
+      );
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const child = (yield* threads.listProjectThreads({ projectId, includeSubagents: false }))[0]!;
+      const shell = yield* threads.getThreadShell(child.id);
+      assert.isNotNull(shell);
+      if (shell === null) return;
+      assert.deepStrictEqual(shell.linkOrigin, origin);
+      const childScope: Invocation.McpInvocationScope = {
+        ...scope,
+        client: undefined,
+        thread: {
+          threadId: shell.id,
+          providerInstanceId: modelSelection.instanceId,
+          providerSessionId: "scheduled-agent",
+        },
+      };
+      const context = { scope: childScope, caller: shell, limits: shell };
+      assert.strictEqual(
+        (yield* assertSameLink(context, { linkOrigin: undefined }).pipe(Effect.flip)).code,
+        "capability_denied",
+      );
+      assert.strictEqual(
+        (yield* assertNotLinked(context, "change projects").pipe(Effect.flip)).code,
+        "capability_denied",
+      );
+      const denial = yield* Effect.gen(function* () {
+        const forwarding = yield* PeerForwarding.PeerForwarding;
+        return yield* forwarding.call(
+          childScope,
+          OrchestratorToolkit.tools.t3_thread_list,
+          EnvironmentId.make("third-machine"),
+          {},
+        );
+      }).pipe(
+        Effect.provide(
+          PeerForwarding.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.succeedContext(persistedServices),
+                Layer.mock(PeerLinks.PeerLinks)({
+                  enabled: Effect.succeed(true),
+                  get: () => Effect.die("Must not use onward links"),
+                }),
+                Layer.mock(PeerMcpClient.PeerMcpClient)({
+                  call: () => Effect.die("Must not reach another peer"),
+                }),
+              ),
+            ),
+          ),
+        ),
+        Effect.provideService(Invocation.McpInvocationContext, childScope),
+        Effect.flip,
+      );
+      if (denial._tag !== "OrchestratorMcpFailure") return yield* Effect.die(denial);
+      assert.strictEqual(denial.code, "capability_denied");
+      const userThread = yield* (yield* ThreadLaunch.ThreadLaunchService).launch(
+        launchInput({ command: "user-thread", thread: "user-thread" }),
+      );
+      const rebound = yield* tasks
+        .upsert({
+          ...form,
+          threadMode: "continue",
+          threadId: userThread.threadId,
+          requireExisting: true,
+        })
+        .pipe(Effect.flip);
+      assert.include(rebound.message, "own link");
+      // A binding changed outside the service is checked again at execution.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE scheduled_tasks SET thread_id = ${userThread.threadId} WHERE task_id = ${stored.id}`;
+      const refused = yield* tasks.runNow({ id: stored.id }).pipe(Effect.flip);
+      if (!isTaskError(refused)) return yield* Effect.die(refused);
+      assert.include(refused.message, "own link");
+      const untouched = yield* threads.getThreadProjection(userThread.threadId);
+      assert.deepStrictEqual(untouched.messages, []);
+    }).pipe(Effect.provide(mcp));
+  },
+);
+
+it.effect(
+  "bare launch resolves in the provisioned worktree before creating a thread and persists only hashes",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped().pipe(Effect.flatMap(fs.realPath));
+      yield* fs.writeFileString(`${root}/input.txt`, "only named input");
+      const h = makeHarness({
+        bare: true,
+        createWorktree: (input) =>
+          Effect.succeed({
+            worktree: { path: root, refName: input.newRefName, headSha: "abc" },
+          } as never),
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const input = {
+          ...launchInput({
+            command: "bare-final-cwd",
+            thread: "thread:bare-final-cwd",
+            workspace: { type: "worktree", baseRef: "main", branch: "bare-final" },
+          }),
+          runtimeMode: "approval-required" as const,
+          bareReadGrant: { type: "roots" as const, roots: [] },
+          bare: { additions: [{ type: "file" as const, path: `${root}/input.txt` }] },
+        };
+        const result = yield* launches.launch(input);
+        expect(result.projection.thread.bare?.nativeHomeOwnerThreadId).toBe(result.threadId);
+        expect(result.projection.thread.bare?.additions[0]).toMatchObject({
+          type: "file",
+          path: `${root}/input.txt`,
+          byteCount: 16,
+        });
+        expect(result.projection.thread.worktreePath).toBe(root);
+        expect(result.projection.thread.runtimeMode).toBe("approval-required");
+        expect(result.projection.thread.bare?.additions[0]).not.toHaveProperty("body");
+        expect(h.createWorktree).toHaveBeenCalledTimes(1);
+        yield* fs.writeFileString(`${root}/input.txt`, "Changed after acceptance");
+        const replay = yield* launches.launch(input);
+        expect(replay.projection.thread.bare).toEqual(result.projection.thread.bare);
+        expect(h.createWorktree).toHaveBeenCalledTimes(1);
+      }).pipe(Effect.provide(h.layer));
+    }).pipe(
+      Effect.provide(
+        Layer.merge(
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
+          DocumentText.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
+        ),
+      ),
+    ),
+);
+
+it.effect("bare launch persists selected t3-code tools through replay", () => {
+  const h = makeHarness({ bare: true });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const input = {
+      ...launchInput({ command: "bare-selected-tools", thread: "thread:bare-selected-tools" }),
+      bare: {
+        additions: [
+          { type: "mcp" as const, server: "t3-code", tool: "preview_open" },
+          { type: "mcp" as const, server: "t3-code", tool: "mcp__t3-code__preview_snapshot" },
+        ],
+      },
+    };
+    const result = yield* launches.launch(input);
+    expect(result.projection.thread.bare?.additions).toEqual([
+      { type: "mcp", server: "t3-code", tool: "preview_open" },
+      { type: "mcp", server: "t3-code", tool: "preview_snapshot" },
+    ]);
+    expect((yield* launches.launch(input)).projection.thread.bare).toEqual(
+      result.projection.thread.bare,
+    );
+  }).pipe(Effect.provide(h.layer));
+});
+
+it.effect(
+  "invalid bare additions and native imports create no thread and normal launches stay normal",
+  () => {
+    const h = makeHarness({ bare: true });
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const rejected = yield* launches
+        .launch({
+          ...launchInput({ command: "bare-unsupported", thread: "thread:bare-unsupported" }),
+          bare: { additions: [{ type: "plugin", name: "not-attached" }] },
+        })
+        .pipe(Effect.flip);
+      expect(rejected.cause).toMatchObject({ reason: expect.stringContaining("not supported") });
+      expect(
+        yield* (yield* ThreadManagement.ThreadManagementService).listProjectThreads({
+          projectId,
+          includeSubagents: true,
+        }),
+      ).toHaveLength(0);
+      const imported = yield* launches
+        .launch({
+          ...launchInput({ command: "bare-import", thread: "thread:bare-import" }),
+          bare: {},
+          importedNativeThread: {
+            ref: {
+              driver: ProviderDriverKind.make("codex"),
+              nativeId: "existing",
+              strength: "strong",
+            },
+          },
+        })
+        .pipe(Effect.flip);
+      expect(String(imported.cause)).toContain("import");
+      const normal = yield* launches.launch(
+        launchInput({ command: "normal-after-bare", thread: "thread:normal-after-bare" }),
+      );
+      expect(normal.projection.thread).not.toHaveProperty("bare");
+    }).pipe(Effect.provide(h.layer));
+  },
+);
+
+it.effect.each(["full-access", "approval-required"] as const)(
+  "MCP delegate and batch launches retain bare intent and the %s caller ceiling",
+  (mode) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped();
+      yield* fs.writeFileString(`${root}/named.txt`, "Named body");
+      const h = makeHarness({
+        bare: true,
+        serverSettings: {
+          prismRoles: { worker: { instructions: "UNASKED_ROLE_KIT", skills: ["unasked-skill"] } },
+        },
+        providers: [
+          {
+            instanceId: modelSelection.instanceId,
+            driver: ProviderDriverKind.make("codex"),
+            enabled: true,
+            installed: true,
+            version: "test",
+            checkedAt: "2026-10-14T00:00:00Z",
+            slashCommands: [],
+            skills: [],
+            status: "ready",
+            auth: { status: "authenticated" },
+            models: [
+              { slug: modelSelection.model, name: "Test", isCustom: false, capabilities: null },
+            ],
+          },
+        ],
+      });
+      const mcp = OrchestratorMcpService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            h.layer,
+            h.bareLayer,
+            NodeCrypto.layer,
+            Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+            Layer.mock(ScheduledTasks.ScheduledTaskService)({}),
+            Layer.mock(SecretRequests.SecretRequests)({}),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const parentId = ThreadId.make("bare:mcp:parent");
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO projection_projects (project_id,title,workspace_root,scripts_json,created_at,updated_at)
+        VALUES (${projectId},${project.title},${project.workspaceRoot},'[]',${project.createdAt},${project.updatedAt})`;
+        yield* threads.dispatch({
+          ...launchInput({ command: "mcp:create-parent", thread: parentId }),
+          type: "thread.create",
+          bare: { additions: [] },
+          runtimeMode: mode,
+          branch: null,
+          worktreePath: root,
+        });
+        yield* threads.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("mcp:start-parent"),
+          threadId: parentId,
+          messageId: MessageId.make("mcp:parent-input"),
+          text: "Launch children",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const scope: Invocation.McpInvocationScope = {
+          environmentId: EnvironmentId.make("bare:mcp"),
+          requestNamespace: "bare:mcp",
+          thread: {
+            threadId: parentId,
+            providerInstanceId: modelSelection.instanceId,
+            providerSessionId: "parent-session",
+          },
+          capabilities: new Set(["orchestration"]),
+          client: undefined,
+          issuedAt: 1,
+        };
+        const bare = { additions: [{ type: "file" as const, path: `${root}/named.txt` }] };
+        const intent = {
+          task: "Only the caller task",
+          role: "implementation" as const,
+          bare,
+          clientRequestId: "bare-delegate",
+          target: { providerInstanceId: modelSelection.instanceId, model: modelSelection.model },
+        };
+        const delegated = yield* service.delegateTask(scope, intent);
+        assert.isNotNull(delegated.childThreadId);
+        const child = yield* threads.getThreadProjection(delegated.childThreadId!);
+        expect(child.thread.bare?.nativeHomeOwnerThreadId).toBe(child.thread.id);
+        expect(child.thread.bare?.nativeHomeOwnerThreadId).not.toBe(parentId);
+        expect(child.thread.runtimeMode).toBe(mode);
+        expect(child.thread.bare?.additions[0]).toMatchObject({ type: "file", byteCount: 10 });
+        expect(child.messages[0]?.text).toBe(intent.task);
+        const batchInput = {
+          clientRequestId: "bare-batch",
+          threads: [{ bare, prompt: "Batch task" }, { prompt: "Ordinary task" }],
+        };
+        const batch = yield* service.createThreads(scope, batchInput);
+        const bareBatch = yield* threads.getThreadProjection(batch.threads[0]!.threadId);
+        const normalBatch = yield* threads.getThreadProjection(batch.threads[1]!.threadId);
+        expect(bareBatch.thread.bare?.additions).toEqual(child.thread.bare?.additions);
+        expect(bareBatch.thread.bare?.nativeHomeOwnerThreadId).toBe(bareBatch.thread.id);
+        expect(bareBatch.thread.bare?.nativeHomeOwnerThreadId).not.toBe(
+          child.thread.bare?.nativeHomeOwnerThreadId,
+        );
+        expect(bareBatch.thread.runtimeMode).toBe(mode);
+        expect(bareBatch.messages[0]?.text).toBe("Batch task");
+        expect(normalBatch.thread).not.toHaveProperty("bare");
+        yield* fs.writeFileString(`${root}/named.txt`, "Changed after acceptance");
+        expect((yield* service.delegateTask(scope, intent)).taskId).toBe(delegated.taskId);
+        expect((yield* service.createThreads(scope, batchInput)).threads[0]!.threadId).toBe(
+          bareBatch.thread.id,
+        );
+        expect((yield* threads.getThreadProjection(child.thread.id)).thread.bare).toEqual(
+          child.thread.bare,
+        );
+      }).pipe(Effect.provide(Layer.merge(h.layer, mcp)));
+    }).pipe(
+      Effect.provide(
+        Layer.merge(
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
+          DocumentText.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
+        ),
+      ),
+    ),
+);
+
+const encodeToolPolicyProjection = Schema.encodeEffect(
+  Schema.fromJsonString(OrchestrationV2ThreadProjectionJson),
+);
+
+it.effect(
+  "restricted launch persists only the allowlist and private config reference, rejects other drivers, and rotates one thread independently",
+  () => {
+    const h = makeHarness({
+      adapters: [{ ...adapter, driver: ProviderDriverKind.make("claudeAgent") }],
+    });
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const tools = {
+        allow: ["mcp:outreach:read_venue", "mcp:outreach:submit_result"],
+        mcpServers: {
+          outreach: {
+            type: "http" as const,
+            url: "http://localhost/outreach",
+            headers: { Authorization: "test-venue-secret" },
+          },
+        },
+      };
+      const firstInput = {
+        ...launchInput({ command: "restricted-one", thread: "restricted-one" }),
+        tools,
+      };
+      const first = yield* launches.launch(firstInput);
+      const second = yield* launches.launch({
+        ...launchInput({ command: "restricted-two", thread: "restricted-two" }),
+        tools,
+      });
+      expect(first.projection.thread.tools?.allow).toEqual(tools.allow);
+      expect(first.projection.thread.tools?.mcpConfigId).toBeDefined();
+      expect(first.projection.thread.tools?.mcpConfigId).not.toEqual(
+        second.projection.thread.tools?.mcpConfigId,
+      );
+      const encoded = yield* encodeToolPolicyProjection(first.projection);
+      expect(encoded).not.toContain("test-venue-secret");
+      expect(encoded).not.toContain("localhost/outreach");
+      const replay = yield* launches.replayOrLaunch(
+        { ...firstInput, tools: { ...tools, allow: [...tools.allow] } },
+        Effect.die("must replay"),
+      );
+      expect(replay.threadId).toBe(first.threadId);
+      yield* launches
+        .replayOrLaunch({ ...firstInput, tools: { allow: ["Bash"] } }, Effect.die("must reject"))
+        .pipe(Effect.flip);
+      yield* launches.configureMcp({ threadId: first.threadId, servers: {} });
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const updated = yield* threads.getThreadRecords(first.threadId, []);
+      const untouched = yield* threads.getThreadRecords(second.threadId, []);
+      expect(updated.thread.tools?.allow).toEqual(tools.allow);
+      expect(updated.thread.tools?.mcpConfigId).not.toEqual(
+        first.projection.thread.tools?.mcpConfigId,
+      );
+      expect(untouched.thread.tools).toEqual(second.projection.thread.tools);
+      yield* threads
+        .dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("restricted-lower-mode"),
+          threadId: first.threadId,
+          runtimeMode: "approval-required",
+        })
+        .pipe(Effect.flip);
+      yield* threads
+        .dispatch({
+          type: "thread.interaction-mode.set",
+          commandId: CommandId.make("restricted-plan-mode"),
+          threadId: first.threadId,
+          interactionMode: "plan",
+        })
+        .pipe(Effect.flip);
+      const admitted = yield* threads.getThreadRecords(first.threadId, []);
+      expect(admitted.thread.runtimeMode).toBe("full-access");
+      expect(admitted.thread.interactionMode).toBe("default");
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("restricted-busy"),
+        threadId: second.threadId,
+        messageId: MessageId.make("restricted-busy"),
+        text: "Stay active",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "agent",
+        creationSource: "mcp",
+      });
+      const busy = yield* launches
+        .configureMcp({ threadId: second.threadId, servers: {} })
+        .pipe(Effect.flip);
+      expect(busy.message).toContain("idle restricted thread");
+    }).pipe(Effect.provide(h.layer));
+  },
+);
+
+it.effect(
+  "tool allowlists reject providers without proven native enforcement before creating a thread",
+  () => {
+    const h = makeHarness();
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const error = yield* launches
+        .launch({
+          ...launchInput({ command: "reject-tools", thread: "reject-tools" }),
+          tools: { allow: [] },
+        })
+        .pipe(Effect.flip);
+      expect(error.cause).toMatchObject({
+        reason: expect.stringContaining("not supported on codex"),
+      });
+      expect(error.message).toContain("not supported on codex");
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      expect(yield* threads.listProjectThreads({ projectId, includeSubagents: true })).toHaveLength(
+        0,
+      );
+    }).pipe(Effect.provide(h.layer));
+  },
+);
+
+it.effect.each([
+  { runtimeMode: "approval-required" as const, interactionMode: "default" as const },
+  { runtimeMode: "auto-accept-edits" as const, interactionMode: "default" as const },
+  { runtimeMode: "auto" as const, interactionMode: "default" as const },
+  { runtimeMode: "full-access" as const, interactionMode: "plan" as const },
+])("rejects restricted launches in unsupported modes: $runtimeMode/$interactionMode", (modes) => {
+  const h = makeHarness({
+    adapters: [{ ...adapter, driver: ProviderDriverKind.make("claudeAgent") }],
+  });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const error = yield* launches
+      .launch({
+        ...launchInput({ command: "unsupported-mode", thread: "unsupported-mode" }),
+        ...modes,
+        tools: {
+          allow: ["mcp:outreach:read_venue"],
+          mcpServers: {
+            outreach: { type: "http", url: "http://localhost/outreach" },
+          },
+        },
+      })
+      .pipe(Effect.flip);
+    expect(error.message).toContain("full-access");
+    expect(
+      yield* (yield* ThreadManagement.ThreadManagementService).listProjectThreads({
+        projectId,
+        includeSubagents: true,
+      }),
+    ).toHaveLength(0);
+  }).pipe(Effect.provide(h.layer));
+});
+
+it.effect(
+  "configure379: registered keyed replay preserves a later private configuration and original receipt",
+  () => {
+    const h = makeHarness({
+      adapters: [{ ...adapter, driver: ProviderDriverKind.make("claudeAgent") }],
+    });
+    const services = h.layer.pipe(
+      Layer.provideMerge(RequestReceipts.layer.pipe(Layer.provide(h.layer))),
+    );
+    const registered = McpHttpServer.toolkitRegistration(
+      ThreadMcpToolkit,
+      ThreadMcpHandlers.layer,
+    ).pipe(Layer.provideMerge(McpHttpServer.layerInProcessMcpServer), Layer.provideMerge(services));
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const server = yield* McpServer.McpServer;
+        const launched = yield* launches.launch({
+          ...launchInput({ command: "configure379-launch", thread: "configure379-thread" }),
+          tools: { allow: ["mcp:outreach:read_venue"] },
+        });
+        const scope: Invocation.McpInvocationScope = {
+          environmentId: EnvironmentId.make("configure379"),
+          requestNamespace: "configure379-client",
+          issuedAt: 0,
+          capabilities: new Set(["orchestration"]),
+          thread: undefined,
+          client: {
+            sessionId: "configure379-client",
+            label: "Test",
+            access: "full-access",
+            linked: false,
+          },
+        };
+        const client = McpSchema.McpServerClient.of({
+          clientId: 1,
+          protocolVersion: "2025-06-18",
+          clientCapabilities: {},
+          clientInfo: { name: "configure379", version: "1" },
+          initializePayload: {
+            protocolVersion: "2025-06-18",
+            capabilities: {},
+            clientInfo: { name: "configure379", version: "1" },
+          },
+          getClient: Effect.die("unused"),
+        });
+        const servers = (label: string) => ({
+          outreach: {
+            type: "http" as const,
+            url: `https://${label}.example.test/mcp`,
+            headers: { Authorization: `synthetic-private-${label}` },
+          },
+        });
+        const call = (key: string, label: string) =>
+          server
+            .callTool({
+              name: "t3_thread_mcp_configure",
+              arguments: {
+                threadId: launched.threadId,
+                servers: servers(label),
+                clientRequestId: key,
+              },
+            })
+            .pipe(
+              Effect.provideService(Invocation.McpInvocationContext, scope),
+              Effect.provideService(McpSchema.McpServerClient, client),
+            );
+        const first = yield* call("K", "a");
+        expect(first.isError, JSON.stringify(first)).not.toBe(true);
+        const configA = (yield* threads.getThreadRecords(launched.threadId, [])).thread.tools
+          ?.mcpConfigId;
+        const second = yield* call("L", "b");
+        expect(second.isError, JSON.stringify(second)).not.toBe(true);
+        const configB = (yield* threads.getThreadRecords(launched.threadId, [])).thread.tools
+          ?.mcpConfigId;
+        expect(configB).not.toBe(configA);
+        const replay = yield* call("K", "a");
+        expect(replay.isError, JSON.stringify(replay)).not.toBe(true);
+        expect(replay.structuredContent).toEqual(first.structuredContent);
+        expect(
+          (yield* threads.getThreadRecords(launched.threadId, [])).thread.tools?.mcpConfigId,
+        ).toBe(configB);
+        const sql = yield* SqlClient.SqlClient;
+        const receipts = yield* sql`SELECT * FROM mcp_request_receipts`;
+        expect(JSON.stringify(receipts)).not.toContain("synthetic-private");
+        expect(JSON.stringify(receipts)).not.toContain("example.test");
+        expect(JSON.stringify(yield* call("K", "changed"))).toContain("invalid_request");
+        expect(
+          (yield* threads.getThreadRecords(launched.threadId, [])).thread.tools?.mcpConfigId,
+        ).toBe(configB);
+      }),
+    ).pipe(Effect.provide(registered));
+  },
+);
