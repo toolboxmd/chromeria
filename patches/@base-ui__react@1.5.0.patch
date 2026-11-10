@@ -1,0 +1,30 @@
+diff --git a/esm/floating-ui-react/hooks/useHoverFloatingInteraction.js b/esm/floating-ui-react/hooks/useHoverFloatingInteraction.js
+index 39d901f2626f028faf2e5a2badd2d29bfaa812ea..5ee3b45865c9198e3f93c514d1448f0c4cab24cb 100644
+--- a/esm/floating-ui-react/hooks/useHoverFloatingInteraction.js
++++ b/esm/floating-ui-react/hooks/useHoverFloatingInteraction.js
+@@ -120,6 +120,10 @@ export function useHoverFloatingInteraction(context, parameters = {}) {
+       clearPointerEvents();
+     }
+     function onFloatingMouseLeave(event) {
++      // A closing popup can emit mouseleave when its pointer-events change after Escape.
++      if (!store.select('open')) {
++        return;
++      }
+       if (hasParentChildren() && tree) {
+         tree.events.on('floating.closed', onNodeClosed);
+         return;
+diff --git a/floating-ui-react/hooks/useHoverFloatingInteraction.js b/floating-ui-react/hooks/useHoverFloatingInteraction.js
+index 765582c4af9c92a8ed98916a63bc326826f65c47..86126c820b774b0e80d1f731d6d632023d768692 100644
+--- a/floating-ui-react/hooks/useHoverFloatingInteraction.js
++++ b/floating-ui-react/hooks/useHoverFloatingInteraction.js
+@@ -126,6 +126,10 @@ function useHoverFloatingInteraction(context, parameters = {}) {
+       clearPointerEvents();
+     }
+     function onFloatingMouseLeave(event) {
++      // A closing popup can emit mouseleave when its pointer-events change after Escape.
++      if (!store.select('open')) {
++        return;
++      }
+       if (hasParentChildren() && tree) {
+         tree.events.on('floating.closed', onNodeClosed);
+         return;
