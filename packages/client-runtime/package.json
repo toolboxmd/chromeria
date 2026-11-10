@@ -83,6 +83,18 @@
       "types": "./src/scheduledTaskWebhook.ts",
       "default": "./src/scheduledTaskWebhook.ts"
     },
+    "./scheduled-task-fork": {
+      "types": "./src/scheduledTaskFork.ts",
+      "default": "./src/scheduledTaskFork.ts"
+    },
+    "./spectrum-report": {
+      "types": "./src/spectrumReport.ts",
+      "default": "./src/spectrumReport.ts"
+    },
+    "./spectrum-stop": {
+      "types": "./src/spectrumStop.ts",
+      "default": "./src/spectrumStop.ts"
+    },
     "./connection": {
       "types": "./src/connection/index.ts",
       "default": "./src/connection/index.ts"
@@ -290,6 +302,14 @@
     "./state/usage-progress": {
       "types": "./src/state/usageProgress.ts",
       "default": "./src/state/usageProgress.ts"
+    },
+    "./state/remote-tasks": {
+      "types": "./src/state/remoteTasks.ts",
+      "default": "./src/state/remoteTasks.ts"
+    },
+    "./state/peer-grants": {
+      "types": "./src/state/peerGrants.ts",
+      "default": "./src/state/peerGrants.ts"
     },
     "./state/server": {
       "types": "./src/state/server.ts",

@@ -9,6 +9,11 @@ import { threadKey } from "@t3tools/client-runtime/state/entities";
 import type { EnvironmentId, OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
 import { monitorHoldsWakeCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import type { ClientSettings } from "@t3tools/contracts/settings";
+import {
+  type CommandHealth,
+  commandTasksTurnedFailing,
+} from "@t3tools/client-runtime/scheduled-task-fork";
+import { AsyncResult } from "effect/reactivity";
 import * as Option from "effect/Option";
 import type { AtomRegistry } from "effect/reactivity";
 import {
@@ -21,6 +26,7 @@ import {
 import { getClientSettings, subscribeClientSettings } from "../hooks/useSettings";
 import { isWindowsPlatform } from "../lib/utils";
 import { environmentSummaries } from "../state/presentation";
+import { serverEnvironment } from "../state/server";
 import { environmentShell } from "../state/shell";
 import { environmentThreadShells } from "../state/threads";
 import {
@@ -32,6 +38,7 @@ import {
   unlockNotificationAudio,
 } from "../threadNotifications";
 import { resolveBackgroundThreadRequest } from "./backgroundThreadAnnouncement";
+import { presentScheduledCommandFailures } from "./ScheduledCommandNotifications";
 import { resolveSidebarThreadStatus, type SidebarThreadStatus } from "./Sidebar.logic";
 import {
   createThreadNotificationGate,
@@ -66,13 +73,13 @@ export function startThreadNotifications(
 ): () => void {
   const pending = new Map<
     string,
-    { environmentId: EnvironmentId; threadId: ThreadId; notification: Notification }
+    { environmentId: EnvironmentId; threadId: ThreadId | null; notification: Notification }
   >();
   const watched = new Map<EnvironmentId, WatchedEnvironment>();
 
   const trackNotification = (
     environmentId: EnvironmentId,
-    threadId: ThreadId,
+    threadId: ThreadId | null,
     notification: Notification,
   ) => {
     pending.get(notification.tag)?.notification.close();
@@ -101,7 +108,11 @@ export function startThreadNotifications(
     }
     const count = pending.size;
     for (const [tag, entry] of pending) {
-      if (!shouldClose(threadKey(entry))) continue;
+      if (
+        entry.threadId === null ||
+        !shouldClose(threadKey({ environmentId: entry.environmentId, threadId: entry.threadId }))
+      )
+        continue;
       entry.notification.close();
       pending.delete(tag);
     }
@@ -331,7 +342,24 @@ export function startThreadNotifications(
       environmentThreadShells.delegatedUnderParentAtom,
       reobserve,
     );
+    let commandHealth: CommandHealth | null = null;
+    const unsubscribeCommands = registry.subscribe(
+      serverEnvironment.scheduledTasksLive({ environmentId, input: {} }),
+      (result) => {
+        if (!AsyncResult.isSuccess(result)) return;
+        const { health, failing } = commandTasksTurnedFailing(commandHealth, result.value.tasks);
+        commandHealth = health;
+        presentScheduledCommandFailures(environmentId, failing, {
+          ...getClientSettings(),
+          open: () =>
+            void router.navigate({ to: "/settings/scheduled-tasks", search: { environmentId } }),
+          onNotification: (id, notification) => trackNotification(id, null, notification),
+        });
+      },
+      { immediate: true },
+    );
     entry.unsubscribe = () => {
+      unsubscribeCommands();
       unsubscribeShell();
       unsubscribeRequests();
       unsubscribeDelegated();
