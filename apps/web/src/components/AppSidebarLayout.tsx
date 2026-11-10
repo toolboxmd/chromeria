@@ -1,3 +1,5 @@
+import { PromachosSidebar } from "./promachos/PromachosSidebar";
+import { usePromachosMode } from "./promachos/promachosMode";
 import { useAtomValue } from "@effect/atom-react";
 import * as Schema from "effect/Schema";
 import {
@@ -417,6 +419,7 @@ export function AppSidebarLayout({
     observedKey: null,
     pendingKey: null,
   }));
+  const [promachosMode] = usePromachosMode();
   const { active: panelAnimationsActive, durationMs: panelAnimationDurationMs } =
     usePanelAnimationSettings();
   const pathname = useLocation({ select: (location) => location.pathname });
@@ -481,7 +484,11 @@ export function AppSidebarLayout({
               }}
               style={windowControlsInsetStyle}
             >
-              <ThreadSidebar routeReveal={sidebarRouteReveal} />
+              {promachosMode ? (
+                <PromachosSidebar />
+              ) : (
+                <ThreadSidebar routeReveal={sidebarRouteReveal} />
+              )}
               <SidebarRail onDoubleClick={resetSidebarWidth} />
             </Sidebar>
           </>
