@@ -25,6 +25,9 @@ export type SettingsPath =
   | "/settings/diffs"
   | "/settings/keybindings"
   | "/settings/snap-shot"
+  | "/settings/prism"
+  | "/settings/promachos"
+  | "/settings/spectrum"
   | "/settings/providers"
   | "/settings/threads"
   | "/settings/browser"
@@ -114,6 +117,9 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/labs": "Labs",
   "/settings/about": "About",
   "/settings/voice": "Voice",
+  "/settings/prism": "Prism",
+  "/settings/promachos": "Promachos",
+  "/settings/spectrum": "Spectrum",
   "/settings/archived": "Archive",
 };
 
@@ -138,6 +144,9 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
     heading: "Agents",
     paths: [
       "/settings/providers",
+      "/settings/prism",
+      "/settings/promachos",
+      "/settings/spectrum",
       "/settings/threads",
       "/settings/browser",
       "/settings/devices",
@@ -240,6 +249,49 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/maintenance",
     scope: "environment-defaults",
     searchTerms: ["storage cleanup run now results report removed kept failed"],
+  },
+  {
+    id: "prism-roles",
+    title: "Prism role preferences",
+    to: "/settings/prism",
+    targetId: "prism-roles",
+    scope: "project-defaults",
+    searchTerms: ["model", "routing", "worker", "lane", "kit", "effort"],
+  },
+  {
+    id: "spectrum-defaults",
+    title: "Spectrum defaults",
+    to: "/settings/spectrum",
+    targetId: "spectrum-defaults",
+    scope: "project-defaults",
+    searchTerms: [
+      "Color",
+      "White",
+      "mode",
+      "council",
+      "free",
+      "relay",
+      "rounds",
+      "turns",
+      "fallback",
+      "label",
+    ],
+  },
+  {
+    id: "promachos-colors",
+    title: "Promachos Colors",
+    to: "/settings/promachos",
+    targetId: "promachos-colors",
+    scope: "project-defaults",
+    searchTerms: ["model", "provider", "effort", "fallback", "persona"],
+  },
+  {
+    id: "prism-capacity",
+    title: "Prism live capacity",
+    to: "/settings/prism",
+    targetId: "prism-capacity",
+    scope: "environment",
+    searchTerms: ["usage", "limits", "provider"],
   },
   {
     id: "storage-worktrees",
@@ -734,11 +786,20 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "provider-update-checks",
     title: "Provider update checks",
-    to: "/settings/maintenance",
+    to: "/settings/providers",
     searchTerms: [
       "installed cli versions newer available codex claude cursor grok fx kiro opencode",
     ],
     scope: "environment-defaults",
+    providerSettingsOnly: true,
+  },
+  {
+    id: "auto-update-providers",
+    title: "Update providers automatically",
+    to: "/settings/providers",
+    scope: "environment-defaults",
+    providerSettingsOnly: true,
+    searchTerms: ["automatic provider updates cli install codex claude cursor grok opencode"],
   },
   {
     id: "continue-threads-after-server-update",
@@ -1340,6 +1401,9 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/threads": null,
   "/settings/browser": null,
   "/settings/devices": null,
+  "/settings/prism": "project-defaults",
+  "/settings/promachos": "project-defaults",
+  "/settings/spectrum": "project-defaults",
   "/settings/source-control": "environment-defaults",
   "/settings/worktrees": "project-defaults",
   "/settings/connections": "connections",
