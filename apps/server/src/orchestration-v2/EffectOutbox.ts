@@ -54,6 +54,7 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("provider-turn.interrupt"),
     providerSessionId: ProviderSessionId,
+    replacementProviderSessionId: Schema.optional(ProviderSessionId),
     providerThreadId: ProviderThreadId,
     providerTurnId: ProviderTurnId,
     subagent: Schema.optional(Schema.Struct({ id: NodeId, nativeTaskId: Schema.String })),
@@ -72,6 +73,7 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     providerTurnId: ProviderTurnId,
     interruptedAttemptId: RunAttemptId,
     runId: RunId,
+    interruption: Schema.optional(Schema.Literal("stop")),
     sessionTransition: Schema.optional(
       Schema.Union([
         Schema.Struct({
@@ -125,6 +127,12 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("delegated-tasks.stop"),
     reason: Schema.optional(Schema.String),
+    forkRetirementStop: Schema.optional(
+      Schema.Struct({
+        ancestorThreadId: ThreadId,
+        originalToken: CommandId,
+      }),
+    ),
   }),
 ]);
 export type OrchestrationEffectRequestV2 = typeof OrchestrationEffectRequestV2.Type;
@@ -221,6 +229,11 @@ export interface EffectOutboxV2Shape {
     readonly reason: string;
   }) => Effect.Effect<ReadonlyArray<string>, EffectOutboxError>;
   readonly signalCancellations: (effectIds: ReadonlyArray<string>) => Effect.Effect<void>;
+  /**
+   * Waits until each listed effect that was running here has stopped. Take it
+   * before signalling: the worker forgets an effect once it stops.
+   */
+  readonly drains: (effectIds: ReadonlyArray<string>) => Effect.Effect<Effect.Effect<void>>;
   readonly awaitCancellation: (effectId: string) => Effect.Effect<void>;
   readonly clearCancellation: (effectId: string) => Effect.Effect<void>;
   /** Resolves once the effect is neither pending nor running, or right away when it does not exist. */
@@ -316,6 +329,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         },
         { discard: true },
       );
+    const cancellationDrains = new Map<string, Deferred.Deferred<void>>();
     const notifyAvailable = (count = 1) =>
       Queue.offerAll(
         available,
@@ -482,6 +496,14 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         },
         Effect.mapError((cause) => new EffectOutboxError({ operation: "cancel-unsettled", cause })),
       ),
+      drains: (effectIds) =>
+        Effect.sync(() => {
+          const drains = effectIds.flatMap((id) => {
+            const done = cancellationDrains.get(id);
+            return done === undefined ? [] : [done];
+          });
+          return Effect.forEach(drains, Deferred.await, { discard: true });
+        }),
       signalCancellations: Effect.fn("EffectOutbox.signalCancellations")(function* (effectIds) {
         yield* Effect.forEach(
           effectIds,
@@ -494,11 +516,18 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         yield* signalSettled(effectIds);
         if (effectIds.length > 0) yield* notifyAvailable(effectIds.length);
       }),
-      awaitCancellation: (effectId) => Deferred.await(cancellationSignal(effectId)),
-      clearCancellation: (effectId) =>
-        Effect.sync(() => {
-          cancellationSignals.delete(effectId);
-        }),
+      awaitCancellation: (effectId) => {
+        // Registration precedes the worker's durable recheck and external execution.
+        if (!cancellationDrains.has(effectId))
+          cancellationDrains.set(effectId, Deferred.makeUnsafe<void>());
+        return Deferred.await(cancellationSignal(effectId));
+      },
+      clearCancellation: Effect.fn("EffectOutbox.clearCancellation")(function* (effectId) {
+        const drained = cancellationDrains.get(effectId);
+        cancellationSignals.delete(effectId);
+        cancellationDrains.delete(effectId);
+        if (drained !== undefined) yield* Deferred.succeed(drained, undefined);
+      }),
       awaitSettled: Effect.fn("EffectOutbox.awaitSettled")(function* (effectId) {
         // Registered before the read, so a settle right after it still resolves.
         const signal = settledSignals.get(effectId) ?? Deferred.makeUnsafe<void>();

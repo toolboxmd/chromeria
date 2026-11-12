@@ -1324,7 +1324,7 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
     const approval = requestEvent("event:approval", "request:approval", "message", "command");
     const eventSink = yield* EventSink.EventSinkV2;
     yield* eventSink.write({
-      events: [question, asyncQuestion, answered, approval],
+      events: [question],
     });
 
     yield* reactor.handle(question);
@@ -1333,6 +1333,9 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
         (message) => message.notification !== undefined,
       ),
     );
+    // The active request listener sweeps all durable requests. Introduce the
+    // independently actionable async question after proving the live wait is quiet.
+    yield* eventSink.write({ events: [asyncQuestion, answered, approval] });
     yield* reactor.handle(asyncQuestion);
     assert.equal(
       (yield* projections.getThreadProjection(parentThreadId)).messages.filter(
@@ -1409,9 +1412,18 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
     ] as const) {
       yield* reactor.handle({ ...parentCompleted, payload: { ...parentRun, status } });
     }
-    assert.equal(
-      (yield* projections.getThreadRecords(parentThreadId, ["messages"])).messages.length,
-      2,
+    yield* orchestrator.recoverDelegatedTasks;
+    const approvalNoticeId = MessageId.make(
+      `child-request:${task.childThreadId}:request:approval:${parentThreadId}`,
+    );
+    const parentMessages = (yield* projections.getThreadRecords(parentThreadId, ["messages"]))
+      .messages;
+    assert.equal(parentMessages.filter((message) => message.id !== approvalNoticeId).length, 2);
+    assert.deepEqual(
+      parentMessages
+        .filter((message) => message.id.startsWith("child-request:"))
+        .map((message) => message.id),
+      [approvalNoticeId],
     );
     yield* eventSink.write({ events: [parentCompleted] });
     for (const state of ["disposed", "pending"] as const) {
@@ -1429,7 +1441,9 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
       yield* reactor.handle(parentCompleted);
       if (state === "disposed") {
         assert.equal(
-          (yield* projections.getThreadRecords(parentThreadId, ["messages"])).messages.length,
+          (yield* projections.getThreadRecords(parentThreadId, ["messages"])).messages.filter(
+            (message) => message.id !== approvalNoticeId,
+          ).length,
           2,
         );
       }
@@ -1551,7 +1565,7 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
       (run) => run.userMessageId === "message:question-followup",
     )!;
     assert.isDefined(followup.delegatedTaskId);
-    assert.notEqual(followup.delegatedTaskId, task.id);
+    assert.equal(followup.delegatedTaskId, task.id);
     const followupQuestion = requestEvent(
       "event:followup-question",
       "request:followup-question",

@@ -1,5 +1,9 @@
 import * as NodeSqlite from "node:sqlite";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import { retirementAdmission } from "../childThreads/retirement.ts";
+import { ForkCommitGuardRejected, type ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import { assert, it } from "@effect/vitest";
 import {
   CheckpointId,
@@ -26,7 +30,6 @@ import {
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
-import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Queue from "effect/Queue";
@@ -56,7 +59,6 @@ import { vi } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
 import * as DatabaseStorage from "../persistence/DatabaseStorage.ts";
-import * as ServerSettings from "../serverSettings.ts";
 import { LIVE_STREAM_MAX_ITEMS, LiveStreamBufferError } from "./LiveStreamBudget.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -66,6 +68,7 @@ import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import type * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectionReplay from "./testkit/ProjectionReplay.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -147,7 +150,7 @@ function threadCreatedEvent(input: {
   readonly id: string;
   readonly thread: OrchestrationV2AppThread;
   readonly now: DateTime.Utc;
-}): OrchestrationV2DomainEvent {
+}): Extract<OrchestrationV2DomainEvent, { type: "thread.created" }> {
   return {
     id: EventId.make(input.id),
     type: "thread.created",
@@ -157,6 +160,314 @@ function threadCreatedEvent(input: {
     payload: input.thread,
   };
 }
+
+it.effect.each([0, -1])(
+  "stores changed command states and accepts null-provider-turn retry (clock offset %s)",
+  (offset) =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const sql = yield* SqlClient.SqlClient;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:foundation-item-redelivery");
+      const thread = makeThread(threadId, now);
+      yield* sink.write({
+        events: [threadCreatedEvent({ id: "event:item-redelivery:thread", thread, now })],
+      });
+      yield* sql`CREATE TEMP TABLE item_write_counts (writes INTEGER NOT NULL)`;
+      yield* sql`INSERT INTO item_write_counts VALUES (0)`;
+      yield* sql`CREATE TEMP TRIGGER count_item_insert AFTER INSERT ON orchestration_v2_projection_turn_items
+      BEGIN UPDATE item_write_counts SET writes = writes + 1; END`;
+      yield* sql`CREATE TEMP TRIGGER count_item_update AFTER UPDATE ON orchestration_v2_projection_turn_items
+      BEGIN UPDATE item_write_counts SET writes = writes + 1; END`;
+      const running = {
+        id: TurnItemId.make("turn-item:foundation-item-redelivery"),
+        threadId,
+        runId: null,
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 400,
+        type: "command_execution",
+        status: "running",
+        title: null,
+        input: "printf result",
+        startedAt: now,
+        completedAt: null,
+        updatedAt: now,
+      } satisfies OrchestrationV2TurnItem;
+      const completed = {
+        ...running,
+        status: "completed",
+        completedAt: now,
+        output: "result",
+        exitCode: 0,
+      } satisfies OrchestrationV2TurnItem;
+      const corrected = { ...completed, output: "corrected result" };
+      let nextEvent = 0;
+      const event = (payload: OrchestrationV2TurnItem): OrchestrationV2DomainEvent => ({
+        id: EventId.make(`event:item-redelivery:${nextEvent++}`),
+        type: "turn-item.updated",
+        threadId,
+        occurredAt: now,
+        payload,
+      });
+      const stored = yield* sink.write({
+        events: [
+          event(running),
+          event({ ...running, ordinal: 900 }),
+          event(completed),
+          event(completed),
+          event(corrected),
+          event(corrected),
+        ],
+      });
+      assert.lengthOf(stored, 3);
+      const projection = yield* projections.getThreadProjection(threadId);
+      assert.lengthOf(projection.turnItems, 1);
+      assert.equal(projection.turnItems[0]?.ordinal, 1);
+      assert.deepEqual(projection.turnItems[0], { ...corrected, ordinal: 1 });
+      const duplicateWrites = yield* Effect.forEach(
+        Array.from({ length: 8 }),
+        () => sink.write({ events: [event({ ...corrected, ordinal: 800 })] }),
+        { concurrency: 8 },
+      );
+      assert.isTrue(duplicateWrites.every((writes) => writes.length === 0));
+      const counts = yield* sql<{ writes: number }>`SELECT writes FROM item_write_counts`;
+      assert.equal(counts[0]?.writes, 3, "duplicates must not rewrite the projection row");
+      // A real correction can return to an earlier value. This is not historical deduplication.
+      assert.lengthOf(yield* sink.write({ events: [event(completed)] }), 1);
+      assert.lengthOf(
+        yield* sink.write({ events: [event({ ...completed, status: "failed" })] }),
+        1,
+      );
+      const retryTime = DateTime.makeUnsafe(DateTime.toEpochMillis(now) + offset);
+      const restarted = { ...running, updatedAt: retryTime };
+      assert.lengthOf(yield* sink.write({ events: [event(restarted)] }), 1);
+      assert.deepEqual(
+        (yield* projections.getThreadProjection(threadId)).turnItems[0],
+        { ...restarted, ordinal: 1 },
+        "a preparation retry must clear failed output even with a tied/backward clock",
+      );
+      assert.lengthOf(
+        yield* sink.write({
+          events: [event({ ...completed, id: TurnItemId.make("turn-item:other-command") })],
+        }),
+        1,
+      );
+      const rows = yield* sql<{
+        events: number;
+      }>`SELECT count(*) AS events FROM orchestration_events
+      WHERE stream_id = ${threadId} AND event_type = 'turn-item.updated'`;
+      assert.equal(rows[0]?.events, 7);
+    }).pipe(Effect.provide(Layer.fresh(layerTest))),
+);
+
+it.effect.each([
+  { withEffects: false, withForkPlan: false },
+  { withEffects: true, withForkPlan: false },
+  { withEffects: false, withForkPlan: true },
+  { withEffects: true, withForkPlan: true },
+])("accepts an all-filtered command and preserves its receipt and effects: %j", (variant) => {
+  const notifications: Array<number> = [];
+  const layerObservedOutbox = Layer.effect(
+    EffectOutbox.EffectOutboxV2,
+    Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      return EffectOutbox.EffectOutboxV2.of({
+        ...outbox,
+        notifyAvailable: (count = 1) =>
+          Effect.sync(() => {
+            notifications.push(count);
+          }),
+      });
+    }),
+  ).pipe(Layer.provide(layerEffectOutboxProvided));
+  const layerObservedSink = EventSink.layerFromStores.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        layerStoresProvided,
+        layerObservedOutbox,
+        layerCommandReceiptStoreProvided,
+        ProjectStore.layer.pipe(Layer.provide(layerDatabase)),
+        TurnItemPositionStore.layer.pipe(Layer.provide(layerDatabase)),
+      ),
+    ),
+  );
+  return Effect.gen(function* () {
+    const sink = yield* EventSink.EventSinkV2;
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+    const now = yield* DateTime.now;
+    const threadId = ThreadId.make("thread:filtered-command");
+    const commandId = CommandId.make("command:filtered-command");
+    const item = {
+      id: TurnItemId.make("turn-item:filtered-command"),
+      threadId,
+      runId: null,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 900,
+      type: "command_execution",
+      status: "completed",
+      title: null,
+      input: "printf result",
+      output: "result",
+      exitCode: 0,
+      startedAt: now,
+      completedAt: now,
+      updatedAt: now,
+    } satisfies OrchestrationV2TurnItem;
+    yield* sink.write({
+      events: [
+        threadCreatedEvent({
+          id: "event:filtered-command:thread",
+          thread: makeThread(threadId, now),
+          now,
+        }),
+        {
+          id: EventId.make("event:filtered-command:item"),
+          type: "turn-item.updated",
+          threadId,
+          occurredAt: now,
+          payload: item,
+        },
+      ],
+    });
+    const beforeSequence = yield* sink.latestSequence({ threadId });
+    const input = {
+      commandId,
+      threadId,
+      commandType: "prepared-run.progress",
+      acceptedAt: now,
+      events: [
+        {
+          id: EventId.make("event:filtered-command:duplicate"),
+          type: "turn-item.updated" as const,
+          threadId,
+          occurredAt: now,
+          payload: item,
+        },
+      ],
+      effects: variant.withEffects
+        ? [
+            {
+              id: "effect:filtered-command",
+              commandId,
+              threadId,
+              request: { type: "terminal.cleanup" as const },
+            },
+          ]
+        : [],
+      ...(variant.withForkPlan ? { forkPlans: [{ guards: [], mutations: [] }] } : {}),
+    };
+    const result = yield* sink.commitCommand(input);
+    assert.isTrue(result.committed);
+    assert.lengthOf(result.storedEvents, 0);
+    assert.equal(result.receipt.status, "accepted");
+    assert.equal(result.receipt.resultSequence, beforeSequence);
+    const saved = yield* receipts.getByCommandId(commandId);
+    assert.isTrue(Option.isSome(saved));
+    if (Option.isSome(saved)) assert.deepEqual(saved.value, result.receipt);
+    assert.lengthOf(yield* outbox.listByCommandId(commandId), variant.withEffects ? 1 : 0);
+    assert.deepEqual(notifications, variant.withEffects ? [1] : []);
+    assert.equal(yield* sink.latestSequence({ threadId }), beforeSequence);
+    const retry = yield* sink.commitCommand(input);
+    assert.isFalse(retry.committed);
+    assert.deepEqual(retry.receipt, result.receipt);
+    assert.lengthOf(retry.storedEvents, 0);
+    assert.lengthOf(yield* outbox.listByCommandId(commandId), variant.withEffects ? 1 : 0);
+    assert.deepEqual(notifications, variant.withEffects ? [1] : []);
+  }).pipe(
+    Effect.provide(
+      Layer.fresh(
+        Layer.mergeAll(layerObservedSink, layerObservedOutbox, layerCommandReceiptStoreProvided),
+      ),
+    ),
+  );
+});
+
+it.effect("rebuilds event history one bounded page at a time", () =>
+  Effect.gen(function* () {
+    const eventStore = yield* EventStore.EventStoreV2;
+    const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+    const now = yield* DateTime.now;
+    const threadId = ThreadId.make("thread:foundation-paged-rebuild");
+    const thread = makeThread(threadId, now);
+    const eventCount = 1_005;
+    yield* eventStore.append({
+      events: [
+        threadCreatedEvent({ id: "event:paged-rebuild:0", thread, now }),
+        ...Array.from({ length: eventCount - 1 }, (_, index) => ({
+          id: EventId.make(`event:paged-rebuild:${index + 1}`),
+          type: "thread.metadata-updated" as const,
+          threadId,
+          occurredAt: now,
+          payload: { ...thread, title: `Rebuilt update ${index + 1}` },
+        })),
+      ],
+    });
+    let applied = 0;
+    let failAfterFirstPage = false;
+    const appliedAtRead: Array<number> = [];
+    const layerObservedStores = Layer.mergeAll(
+      Layer.succeed(EventStore.EventStoreV2, {
+        ...eventStore,
+        read: (input) =>
+          Stream.suspend(() => {
+            appliedAtRead.push(applied);
+            if (failAfterFirstPage && applied >= 500) {
+              return Stream.fail(
+                new EventStore.EventStoreReadEventsError({ afterSequence: input?.afterSequence }),
+              );
+            }
+            return eventStore.read(input);
+          }),
+      }),
+      Layer.succeed(ProjectionStore.ProjectionStoreV2, {
+        ...projectionStore,
+        apply: (event) =>
+          projectionStore.apply(event).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                applied += 1;
+              }),
+            ),
+          ),
+      }),
+    );
+    const rebuild = Effect.gen(function* () {
+      const maintenance = yield* ProjectionReplay.ProjectionReplay;
+      return yield* maintenance.rebuild;
+    }).pipe(
+      Effect.provide(Layer.fresh(ProjectionReplay.layer.pipe(Layer.provide(layerObservedStores)))),
+    );
+    const rebuilt = yield* rebuild;
+    assert.isTrue(rebuilt.valid);
+    assert.equal(applied, eventCount);
+    assert.deepEqual(appliedAtRead, [0, 500, 1_000]);
+    assert.equal(
+      (yield* projectionStore.getThreadProjection(threadId)).thread.title,
+      "Rebuilt update 1004",
+    );
+    applied = 0;
+    failAfterFirstPage = true;
+    const failed = yield* Effect.exit(rebuild);
+    assert.equal(failed._tag, "Failure");
+    assert.equal(applied, 500);
+    assert.equal(
+      (yield* projectionStore.getThreadProjection(threadId)).thread.title,
+      "Rebuilt update 1004",
+    );
+    const maintenance = yield* ProjectionReplay.ProjectionReplay;
+    assert.isTrue((yield* maintenance.verify).valid);
+  }).pipe(Effect.provide(layerTest)),
+);
 
 const seedCompaction = Effect.fnUntraced(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -329,6 +640,26 @@ it.effect("paces scheduled compaction while preserving retention state and fixed
     ]);
   }).pipe(Effect.scoped, Effect.provide(layerTest)),
 );
+// `@ts-expect-error` fails the build if a missing cursor, or the removed
+// cursorless stream, ever compiles. Never called.
+export function cursorRequiredAtCompileTime(
+  sink: EventSink.EventSinkV2Shape,
+  orchestrator: Orchestrator.OrchestratorV2Shape,
+  threadId: ThreadId,
+): void {
+  // @ts-expect-error stream requires afterSequence
+  const missingArguments: unknown = sink.stream();
+  // @ts-expect-error a thread filter is not a cursor
+  const missingCursor: unknown = sink.stream({ threadId });
+  // @ts-expect-error streamStoredEventsFrom requires afterSequence
+  const missingStoredCursor: unknown = orchestrator.streamStoredEventsFrom({ threadId });
+  // @ts-expect-error streamStoredEvents was removed
+  const removedStream: unknown = orchestrator.streamStoredEvents;
+  void missingArguments;
+  void missingCursor;
+  void missingStoredCursor;
+  void removedStream;
+}
 
 it.effect(
   "commits an ordered provider batch atomically and publishes only after the outer commit",
@@ -998,7 +1329,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
             `.pipe(Effect.orDie),
         );
         const pull = yield* Stream.toPull(
-          sink.stream({ threadId: thread.id, eventType: "run.updated" }),
+          sink.stream({ threadId: thread.id, eventType: "run.updated", afterSequence: 0 }),
         );
         assert.deepEqual(
           (yield* pull).map((stored) => stored.sequence),
@@ -1062,6 +1393,473 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         Array.from({ length: eventCount }, (_, index) => index + 1),
       );
     }),
+  );
+
+  it.effect("replays only the paged events after the cursor", () =>
+    Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:foundation-cursor-replay");
+      const otherThreadId = ThreadId.make("thread:foundation-cursor-replay-other");
+      const thread = makeThread(threadId, now);
+      const other = makeThread(otherThreadId, now);
+      const metadata = (
+        id: string,
+        target: ThreadId,
+        title: string,
+      ): OrchestrationV2DomainEvent => ({
+        id: EventId.make(id),
+        type: "thread.metadata-updated",
+        threadId: target,
+        providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...(target === threadId ? thread : other),
+          title,
+        },
+      });
+      const before = yield* eventSink.write({
+        events: [
+          threadCreatedEvent({ id: "event:cursor-replay:created", thread, now }),
+          threadCreatedEvent({ id: "event:cursor-replay:other-created", thread: other, now }),
+          metadata("event:cursor-replay:before", threadId, "before"),
+        ],
+      });
+      const cursor = before.at(-1)!.sequence;
+      const afterCount = 501;
+      const written = yield* eventSink.write({
+        events: [
+          ...Array.from({ length: 250 }, (_, index) =>
+            metadata(`event:cursor-replay:a:${index}`, threadId, `a ${index}`),
+          ),
+          metadata("event:cursor-replay:other-during", otherThreadId, "during"),
+          ...Array.from({ length: afterCount - 250 }, (_, index) =>
+            metadata(`event:cursor-replay:b:${index}`, threadId, `b ${index}`),
+          ),
+        ],
+      });
+      const expected = written
+        .filter((stored) => stored.event.threadId === threadId)
+        .map((stored) => stored.sequence);
+      assert.lengthOf(expected, afterCount);
+      assert.isAbove(Math.min(...expected), cursor);
+
+      const collect = (bounded: boolean) =>
+        eventSink
+          .stream({
+            threadId,
+            afterSequence: cursor,
+            ...(bounded ? { bounded: true } : {}),
+          })
+          .pipe(
+            Stream.take(afterCount),
+            Stream.runCollect,
+            Effect.map((events) => Array.from(events).map((stored) => stored.sequence)),
+          );
+
+      assert.deepEqual(yield* collect(false), expected);
+      assert.deepEqual(yield* collect(true), expected);
+    }),
+  );
+
+  // `streamStoredEventsFrom` is this bounded call plus `Stream.mapError`.
+  // One owner check has to reject the cursor for both.
+  it.effect("rejects an unusable replay cursor before it reads", () =>
+    Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:foundation-cursor-contract");
+      const thread = makeThread(threadId, now);
+      const written = yield* eventSink.write({
+        events: [
+          threadCreatedEvent({ id: "event:cursor-contract:created", thread, now }),
+          {
+            id: EventId.make("event:cursor-contract:title"),
+            type: "thread.metadata-updated",
+            threadId,
+            occurredAt: now,
+            payload: { ...thread, title: "After the cursor" },
+          },
+        ],
+      });
+      const sequences = written.map((stored) => stored.sequence);
+      const badCursors: ReadonlyArray<{
+        readonly label: string;
+        readonly afterSequence?: number;
+      }> = [
+        { label: "missing" },
+        { label: "NaN", afterSequence: Number.NaN },
+        { label: "Infinity", afterSequence: Number.POSITIVE_INFINITY },
+        { label: "fraction", afterSequence: 1.5 },
+        { label: "negative", afterSequence: -1 },
+        { label: "unsafe", afterSequence: Number.MAX_SAFE_INTEGER + 1 },
+      ];
+      const open = (input: { readonly afterSequence?: number; readonly bounded: boolean }) =>
+        eventSink.stream({
+          threadId,
+          ...(input.bounded ? { bounded: true as const } : {}),
+          ...(input.afterSequence === undefined ? {} : { afterSequence: input.afterSequence }),
+        } as Parameters<EventSink.EventSinkV2Shape["stream"]>[0]);
+      // Bad cursors are rejected before any subscribe or read, so a stream still
+      // running after one yield fell through into the live tail: a miss.
+      const classifyOpened = (opened: ReturnType<EventSink.EventSinkV2Shape["stream"]>) =>
+        Effect.gen(function* () {
+          const fiber = yield* opened.pipe(
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.forkChild({ startImmediately: true }),
+          );
+          yield* Effect.yieldNow;
+          const done = fiber.pollUnsafe();
+          if (done === undefined) {
+            yield* Fiber.interrupt(fiber);
+            return "waited for a live event";
+          }
+          const exit = done;
+          if (Exit.isSuccess(exit)) {
+            return `emitted ${Array.from(exit.value, (stored) => stored.sequence).join(",")}`;
+          }
+          const squashed = Cause.squash(exit.cause);
+          if (
+            typeof squashed !== "object" ||
+            squashed === null ||
+            !("_tag" in squashed) ||
+            squashed._tag !== "EventSinkStreamError"
+          ) {
+            return `failed as ${typeof squashed === "object" && squashed !== null && "_tag" in squashed ? String(squashed._tag) : typeof squashed}`;
+          }
+          const detail =
+            "cause" in squashed && squashed.cause instanceof Error
+              ? squashed.cause.message
+              : String("cause" in squashed ? squashed.cause : squashed);
+          return detail.includes("afterSequence") ? "rejected" : detail;
+        });
+      const observeCursor = (input: {
+        readonly afterSequence?: number;
+        readonly bounded: boolean;
+      }) => classifyOpened(open(input));
+      // Call the real method with no argument and with undefined. An object
+      // that merely omits afterSequence does not reach this path.
+      const observeOmittedArgument = (label: "omitted call" | "omitted undefined") =>
+        Effect.gen(function* () {
+          const called = yield* Effect.exit(
+            Effect.sync(() => {
+              if (label === "omitted call") {
+                // @ts-expect-error an omitted argument is not a cursor
+                return eventSink.stream();
+              }
+              // @ts-expect-error undefined is not a cursor
+              return eventSink.stream(undefined);
+            }),
+          );
+          if (Exit.isFailure(called)) {
+            const squashed = Cause.squash(called.cause);
+            const thrown =
+              squashed instanceof Error ? `${squashed.name}: ${squashed.message}` : typeof squashed;
+            return `threw ${thrown}`;
+          }
+          return yield* classifyOpened(called.value);
+        });
+
+      const rejected: Array<string> = [];
+      for (const bounded of [false, true] as const) {
+        const path = bounded ? "bounded" : "unbounded";
+        for (const cursor of badCursors) {
+          const observed = yield* observeCursor({
+            ...(cursor.afterSequence === undefined ? {} : { afterSequence: cursor.afterSequence }),
+            bounded,
+          });
+          if (observed !== "rejected") rejected.push(`${path} ${cursor.label} ${observed}`);
+        }
+
+        const fromZero = yield* open({ afterSequence: 0, bounded }).pipe(
+          Stream.take(sequences.length),
+          Stream.runCollect,
+        );
+        assert.deepEqual(
+          Array.from(fromZero, (stored) => stored.sequence),
+          sequences,
+          `${path} cursor 0`,
+        );
+        const fromFirst = yield* open({ afterSequence: sequences[0]!, bounded }).pipe(
+          Stream.take(1),
+          Stream.runCollect,
+        );
+        assert.deepEqual(
+          Array.from(fromFirst, (stored) => stored.sequence),
+          [sequences[1]!],
+          `${path} positive cursor`,
+        );
+      }
+      for (const label of ["omitted call", "omitted undefined"] as const) {
+        const observed = yield* observeOmittedArgument(label);
+        if (observed !== "rejected") rejected.push(`${label} ${observed}`);
+      }
+      assert.deepEqual(rejected, []);
+    }),
+  );
+
+  it.effect("replays interleaved threads across more than three pages", () =>
+    Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:foundation-interleaved-pages");
+      const otherThreadId = ThreadId.make("thread:foundation-interleaved-pages-other");
+      const thread = makeThread(threadId, now);
+      const other = makeThread(otherThreadId, now);
+      // Four 500-row pages. READ_PAGE_SIZE is 500.
+      const perThread = 2_000;
+      const metadata = (
+        id: string,
+        target: ThreadId,
+        title: string,
+      ): OrchestrationV2DomainEvent => ({
+        id: EventId.make(id),
+        type: "thread.metadata-updated",
+        threadId: target,
+        providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...(target === threadId ? thread : other),
+          title,
+        },
+      });
+      const events: Array<OrchestrationV2DomainEvent> = [
+        threadCreatedEvent({ id: "event:interleaved-pages:created", thread, now }),
+        threadCreatedEvent({ id: "event:interleaved-pages:other-created", thread: other, now }),
+      ];
+      const updates = perThread - 1;
+      const chunk = 100;
+      for (let start = 0; start < updates; start += chunk) {
+        const count = Math.min(chunk, updates - start);
+        for (let offset = 0; offset < count; offset += 1) {
+          const index = start + offset;
+          events.push(metadata(`event:interleaved-pages:a:${index}`, threadId, `a ${index}`));
+        }
+        for (let offset = 0; offset < count; offset += 1) {
+          const index = start + offset;
+          events.push(metadata(`event:interleaved-pages:b:${index}`, otherThreadId, `b ${index}`));
+        }
+      }
+      const written = yield* eventSink.write({ events });
+      const expected = written
+        .filter((stored) => stored.event.threadId === threadId)
+        .map((stored) => stored.sequence);
+      assert.lengthOf(expected, perThread);
+      assert.isAbove(expected.at(-1)! - expected[0]!, expected.length - 1);
+
+      const collect = (bounded: boolean) =>
+        Effect.gen(function* () {
+          const seen: Array<number> = [];
+          yield* eventSink
+            .stream({
+              threadId,
+              afterSequence: 0,
+              ...(bounded ? { bounded: true } : {}),
+            })
+            .pipe(
+              Stream.take(perThread),
+              Stream.runForEach((stored) =>
+                Effect.sync(() => {
+                  seen.push(stored.sequence);
+                }),
+              ),
+            );
+          return seen;
+        });
+
+      assert.deepEqual(yield* collect(false), expected);
+      assert.deepEqual(yield* collect(true), expected);
+    }),
+  );
+
+  it.effect.each(["bounded", "unbounded"] as const)(
+    "delivers one event committed after the high-water mark once on the %s path",
+    (path) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const eventSink = yield* EventSink.EventSinkV2;
+          const now = yield* DateTime.now;
+          const threadId = ThreadId.make(`thread:foundation-after-high-water:${path}`);
+          const thread = makeThread(threadId, now);
+          const metadata = (id: string, title: string): OrchestrationV2DomainEvent => ({
+            id: EventId.make(id),
+            type: "thread.metadata-updated",
+            threadId,
+            providerInstanceId,
+            occurredAt: now,
+            payload: { ...thread, title },
+          });
+          const written = yield* eventSink.write({
+            events: [
+              threadCreatedEvent({ id: `event:after-high-water:${path}:created`, thread, now }),
+              metadata(`event:after-high-water:${path}:1`, "one"),
+              metadata(`event:after-high-water:${path}:2`, "two"),
+            ],
+          });
+          const expected = written.map((stored) => stored.sequence);
+          const pull = yield* Stream.toPull(
+            eventSink.stream({
+              threadId,
+              afterSequence: 0,
+              ...(path === "bounded" ? { bounded: true } : {}),
+            }),
+          );
+          const seen: Array<number> = [];
+          while (seen.length < expected.length) {
+            for (const stored of yield* pull) seen.push(stored.sequence);
+          }
+          assert.deepEqual(seen, expected);
+
+          const pending = yield* Effect.forkChild(pull);
+          yield* Effect.yieldNow;
+          yield* Effect.yieldNow;
+          assert.equal(pending.pollUnsafe(), undefined);
+          const [live] = yield* eventSink.write({
+            events: [metadata(`event:after-high-water:${path}:live`, "live")],
+          });
+          assert.deepEqual(
+            (yield* Fiber.join(pending)).map((stored) => stored.sequence),
+            [live!.sequence],
+          );
+          const extra = yield* Effect.forkChild(pull);
+          yield* Effect.yieldNow;
+          yield* Effect.yieldNow;
+          assert.equal(extra.pollUnsafe(), undefined);
+          yield* Fiber.interrupt(extra);
+        }),
+      ),
+  );
+
+  it.effect.each(["bounded", "unbounded"] as const)(
+    "cancels a replay after the first page is emitted on the %s path",
+    (path) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const eventSink = yield* EventSink.EventSinkV2;
+          const now = yield* DateTime.now;
+          const threadId = ThreadId.make(`thread:foundation-cancel-replay:${path}`);
+          const thread = makeThread(threadId, now);
+          const eventCount = 1_000;
+          yield* eventSink.write({
+            events: [
+              threadCreatedEvent({ id: `event:cancel-replay:${path}:0`, thread, now }),
+              ...Array.from({ length: eventCount - 1 }, (_, index) => ({
+                id: EventId.make(`event:cancel-replay:${path}:${index + 1}`),
+                type: "thread.metadata-updated" as const,
+                threadId,
+                providerInstanceId,
+                occurredAt: now,
+                payload: { ...thread, title: `Cancel ${index + 1}` },
+              })),
+            ],
+          });
+          const secondPage = yield* Deferred.make<void>();
+          let payloadPages = 0;
+          // Paginate emits a 500-row page before it fetches the next one.
+          const blockSecondPage: Statement.Transformer = (statement) => {
+            const [query] = statement.compile();
+            if (
+              !query.includes("payload_json") ||
+              !query.includes("FROM orchestration_events") ||
+              query.includes("MAX(sequence)")
+            ) {
+              return Effect.succeed(statement);
+            }
+            payloadPages += 1;
+            if (payloadPages < 2) return Effect.succeed(statement);
+            return Deferred.succeed(secondPage, undefined).pipe(
+              Effect.ignore,
+              Effect.andThen(Effect.never),
+              Effect.as(statement),
+            );
+          };
+          const seen: Array<number> = [];
+          const fiber = yield* eventSink
+            .stream({
+              threadId,
+              afterSequence: 0,
+              ...(path === "bounded" ? { bounded: true } : {}),
+            })
+            .pipe(
+              Stream.provideService(Statement.CurrentTransformer, blockSecondPage),
+              Stream.runForEach((stored) =>
+                Effect.sync(() => {
+                  seen.push(stored.sequence);
+                }),
+              ),
+              Effect.forkScoped,
+            );
+          yield* Deferred.await(secondPage);
+          yield* Fiber.interrupt(fiber);
+          const exit = yield* Fiber.await(fiber);
+          assert.lengthOf(seen, 500);
+          assert.isTrue(Exit.isFailure(exit));
+          if (Exit.isFailure(exit)) assert.isTrue(Cause.hasInterruptsOnly(exit.cause));
+        }),
+      ),
+  );
+
+  it.effect.each(["bounded", "unbounded"] as const)(
+    "emits earlier rows when a matching row in the page cannot be decoded on the %s path",
+    (path) =>
+      Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const sql = yield* SqlClient.SqlClient;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make(`thread:foundation-bad-row:${path}`);
+        const thread = makeThread(threadId, now);
+        const written = yield* eventSink.write({
+          events: [
+            threadCreatedEvent({ id: `event:bad-row:${path}:0`, thread, now }),
+            ...Array.from({ length: 9 }, (_, index) => ({
+              id: EventId.make(`event:bad-row:${path}:${index + 1}`),
+              type: "thread.metadata-updated" as const,
+              threadId,
+              providerInstanceId,
+              occurredAt: now,
+              payload: { ...thread, title: `Row ${index + 1}` },
+            })),
+          ],
+        });
+        const bad = written[5]!;
+        const original = yield* sql<{ readonly payload_json: string }>`
+          SELECT payload_json FROM orchestration_events WHERE sequence = ${bad.sequence}
+        `;
+        yield* sql`
+          UPDATE orchestration_events SET payload_json = 'not-json'
+          WHERE sequence = ${bad.sequence}
+        `;
+        const seen: Array<number> = [];
+        const result = yield* eventSink
+          .stream({
+            threadId,
+            afterSequence: 0,
+            ...(path === "bounded" ? { bounded: true } : {}),
+          })
+          .pipe(
+            Stream.runForEach((stored) =>
+              Effect.sync(() => {
+                seen.push(stored.sequence);
+              }),
+            ),
+            Effect.result,
+            Effect.ensuring(
+              sql`
+                UPDATE orchestration_events SET payload_json = ${original[0]!.payload_json}
+                WHERE sequence = ${bad.sequence}
+              `.pipe(Effect.orDie),
+            ),
+          );
+        assert.deepEqual(
+          seen,
+          written.slice(0, 5).map((stored) => stored.sequence),
+        );
+        assert.equal(result._tag, "Failure");
+        if (result._tag === "Failure") {
+          assert.equal(result.failure._tag, "EventSinkStreamError");
+        }
+      }),
   );
 
   it.effect("does not lose or duplicate events while transitioning from catch-up to live", () =>
@@ -1776,6 +2574,377 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         expectedSequences,
       );
       assert.deepEqual(pageLimits, [500, 500, 500]);
+    }),
+  );
+
+  it.effect.each(["guard", "mutation", "event-write"] as const)(
+    "rolls back the complete fork command transaction on %s failure",
+    (failure) =>
+      Effect.gen(function* () {
+        const sink = yield* EventSink.EventSinkV2;
+        const sql = yield* SqlClient.SqlClient;
+        const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make(`thread:fork-rollback:${failure}`);
+        const commandId = CommandId.make(`command:fork-rollback:${failure}`);
+        yield* sql`CREATE TABLE IF NOT EXISTS fork_commit_proof (id TEXT PRIMARY KEY)`;
+        const rejected = new ForkCommitGuardRejected({ threadId, kind: "state_conflict" });
+        const mutation = Effect.gen(function* () {
+          const transactionSql = yield* SqlClient.SqlClient;
+          yield* transactionSql`INSERT INTO fork_commit_proof (id) VALUES (${commandId})`.pipe(
+            Effect.mapError(
+              () => new ForkCommitGuardRejected({ threadId, kind: "storage_failure" }),
+            ),
+          );
+        });
+        const event = threadCreatedEvent({
+          id: `event:fork-rollback:${failure}`,
+          thread: makeThread(threadId, now),
+          now,
+        });
+        const plans: ReadonlyArray<ForkCommitPlan> = [
+          {
+            guards: failure === "guard" ? [Effect.fail(rejected)] : [],
+            mutations: failure === "mutation" ? [mutation, Effect.fail(rejected)] : [mutation],
+          },
+        ];
+        const outcome = yield* sink
+          .commitCommand({
+            commandId,
+            threadId,
+            commandType: "fork.proof",
+            acceptedAt: now,
+            events: failure === "event-write" ? [event, event] : [event],
+            effects: [
+              {
+                id: `effect:fork-rollback:${failure}`,
+                commandId,
+                threadId,
+                request: { type: "terminal.cleanup" },
+              },
+            ],
+            forkPlans: plans,
+          })
+          .pipe(Effect.result);
+        assert.equal(outcome._tag, "Failure");
+        if (outcome._tag === "Failure" && failure !== "event-write") {
+          assert.instanceOf(outcome.failure, ForkCommitGuardRejected);
+        }
+        assert.lengthOf(yield* sql`SELECT id FROM fork_commit_proof WHERE id = ${commandId}`, 0);
+        assert.isTrue(Option.isNone(yield* receipts.getByCommandId(commandId)));
+        assert.lengthOf(yield* outbox.listByCommandId(commandId), 0);
+        assert.lengthOf(
+          Array.from(yield* sink.readByCommandId({ commandId }).pipe(Stream.runCollect)),
+          0,
+        );
+        assert.equal((yield* projections.getThread(threadId).pipe(Effect.result))._tag, "Failure");
+      }),
+  );
+
+  it.effect(
+    "accept_noop commits only its accepted receipt and skips every later fork plan and side effect",
+    () =>
+      Effect.gen(function* () {
+        const sink = yield* EventSink.EventSinkV2;
+        const sql = yield* SqlClient.SqlClient;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread:fork-noop");
+        const commandId = CommandId.make("command:fork-noop");
+        yield* sink.write({
+          events: [
+            threadCreatedEvent({
+              id: "event:fork-noop:seed",
+              thread: makeThread(threadId, now),
+              now,
+            }),
+          ],
+        });
+        yield* outbox.enqueue([
+          {
+            id: "effect:fork-noop:existing",
+            commandId: CommandId.make("command:fork-noop:seed"),
+            threadId,
+            request: { type: "terminal.cleanup" },
+          },
+        ]);
+        yield* sql`CREATE TABLE fork_noop_proof (id TEXT PRIMARY KEY)`;
+        const beforeThread = yield* projections.getThread(threadId);
+        const beforeEffects = yield* sql`SELECT * FROM orchestration_v2_effect_outbox`;
+        const beforeSequence = yield* sink.latestSequence({ threadId });
+        const mutation = Effect.gen(function* () {
+          const transactionSql = yield* SqlClient.SqlClient;
+          yield* transactionSql`INSERT INTO fork_noop_proof (id) VALUES ('unexpected')`.pipe(
+            Effect.mapError(
+              () => new ForkCommitGuardRejected({ threadId, kind: "storage_failure" }),
+            ),
+          );
+        });
+        const input = {
+          commandId,
+          threadId,
+          commandType: "thread.stop",
+          acceptedAt: now,
+          events: [
+            threadCreatedEvent({
+              id: "event:fork-noop:unexpected",
+              thread: { ...beforeThread, title: "Must not change" },
+              now,
+            }),
+          ],
+          effects: [
+            {
+              id: "effect:fork-noop:unexpected",
+              commandId,
+              threadId,
+              request: { type: "terminal.cleanup" as const },
+            },
+          ],
+          cancelUnsettledEffects: {
+            effectTypes: ["terminal.cleanup" as const],
+            reason: "Must not cancel",
+            drain: true,
+          },
+        };
+        const result = yield* sink.commitCommand({
+          ...input,
+          forkPlans: [
+            { guards: [Effect.succeed("accept_noop" as const)], mutations: [mutation] },
+            {
+              guards: [
+                Effect.fail(new ForkCommitGuardRejected({ threadId, kind: "state_conflict" })),
+              ],
+              mutations: [mutation],
+            },
+          ],
+        });
+        assert.equal(result.receipt.status, "accepted");
+        assert.equal(result.receipt.resultSequence, beforeSequence);
+        assert.isTrue(result.committed);
+        assert.lengthOf(result.storedEvents, 0);
+        assert.equal(result.cancelledEffectCount, 0);
+        assert.deepEqual(yield* projections.getThread(threadId), beforeThread);
+        assert.deepEqual(yield* sql`SELECT * FROM orchestration_v2_effect_outbox`, beforeEffects);
+        assert.lengthOf(yield* sql`SELECT id FROM fork_noop_proof`, 0);
+        assert.equal(yield* sink.latestSequence({ threadId }), beforeSequence);
+        const replay = yield* sink.commitCommand({
+          ...input,
+          forkPlans: [
+            {
+              guards: [Effect.die("No-op receipt replay must not evaluate guards")],
+              mutations: [mutation],
+            },
+          ],
+        });
+        assert.isFalse(replay.committed);
+        assert.equal(replay.receipt.status, "accepted");
+        assert.lengthOf(replay.storedEvents, 0);
+        // This suite shares its store; leave no pending proof effect for later worker tests.
+        yield* outbox.cancelUnsettled({
+          threadId,
+          effectTypes: ["terminal.cleanup"],
+          reason: "No-op proof complete",
+        });
+      }),
+  );
+
+  it.effect("does not evaluate fork guards or mutations on accepted receipt replay", () =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:fork-plan-replay");
+      const commandId = CommandId.make("command:fork-plan-replay");
+      const input = {
+        commandId,
+        threadId,
+        commandType: "fork.proof",
+        acceptedAt: now,
+        events: [
+          threadCreatedEvent({
+            id: "event:fork-plan-replay",
+            thread: makeThread(threadId, now),
+            now,
+          }),
+        ],
+        effects: [],
+      };
+      assert.isTrue((yield* sink.commitCommand(input)).committed);
+      const rejection = Effect.fail(
+        new ForkCommitGuardRejected({ threadId, kind: "state_conflict" }),
+      );
+      const replay = yield* sink.commitCommand({
+        ...input,
+        forkPlans: [{ guards: [rejection], mutations: [rejection] }],
+      });
+      assert.isFalse(replay.committed);
+      assert.lengthOf(replay.storedEvents, 1);
+    }),
+  );
+
+  it.effect("Stop drains a blocked native descendant provider start before returning", () =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const now = yield* DateTime.now;
+      const rootId = ThreadId.make("thread:fork-drain:root");
+      const childId = ThreadId.make("thread:fork-drain:child");
+      const root = makeThread(rootId, now);
+      const child = {
+        ...makeThread(childId, now),
+        lineage: {
+          parentThreadId: rootId,
+          rootThreadId: rootId,
+          relationshipToParent: "subagent" as const,
+        },
+      };
+      yield* sink.write({
+        events: [
+          threadCreatedEvent({ id: "event:fork-drain:root", thread: root, now }),
+          threadCreatedEvent({ id: "event:fork-drain:child", thread: child, now }),
+        ],
+      });
+      const commandId = CommandId.make("command:fork-drain:start");
+      const effectId = "effect:fork-drain:start";
+      yield* outbox.enqueue([
+        {
+          id: effectId,
+          commandId,
+          threadId: childId,
+          request: { type: "provider-turn.start", runId: RunId.make("run:fork-drain") },
+        },
+      ]);
+      const entered = yield* Deferred.make<void>();
+      const interrupted = yield* Deferred.make<void>();
+      const releaseCleanup = yield* Deferred.make<void>();
+      const cleanupDone = yield* Ref.make(false);
+      const executor = Layer.succeed(
+        EffectWorker.OrchestrationEffectExecutorV2,
+        EffectWorker.OrchestrationEffectExecutorV2.of({
+          execute: () =>
+            Effect.gen(function* () {
+              yield* Deferred.succeed(entered, undefined);
+              return yield* Effect.never;
+            }).pipe(
+              Effect.ensuring(
+                Effect.gen(function* () {
+                  yield* Deferred.succeed(interrupted, undefined);
+                  yield* Deferred.await(releaseCleanup);
+                  yield* Ref.set(cleanupDone, true);
+                }),
+              ),
+            ),
+        }),
+      );
+      yield* Effect.gen(function* () {
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const execution = yield* worker.runOnce().pipe(Effect.forkChild);
+        yield* Deferred.await(entered);
+        const stopId = CommandId.make("command:fork-drain:stop");
+        const stop = yield* sink
+          .commitCommand({
+            commandId: stopId,
+            threadId: rootId,
+            commandType: "thread.stop",
+            acceptedAt: now,
+            events: [
+              {
+                ...threadCreatedEvent({
+                  id: "event:fork-drain:stop",
+                  thread: { ...root, forkRetirement: { token: stopId } },
+                  now,
+                }),
+                type: "thread.metadata-updated",
+              },
+            ],
+            effects: [],
+            cancelUnsettledEffects: {
+              effectTypes: ["provider-turn.start", "provider-turn.restart"],
+              reason: "Stop",
+              includeSubagentDescendants: true,
+              drain: true,
+            },
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(interrupted);
+        assert.isUndefined(stop.pollUnsafe());
+        assert.isFalse(yield* Ref.get(cleanupDone));
+        yield* Deferred.succeed(releaseCleanup, undefined);
+        yield* Fiber.join(stop);
+        yield* Fiber.join(execution);
+        assert.isTrue(yield* Ref.get(cleanupDone));
+        const stored = yield* outbox.get(effectId);
+        assert.equal(Option.getOrThrow(stored).status, "cancelled");
+      }).pipe(
+        Effect.provide(
+          EffectWorker.layerWithOptions({ workerId: "fork-drain" }).pipe(
+            Layer.provide(
+              Layer.merge(Layer.succeed(EffectOutbox.EffectOutboxV2, outbox), executor),
+            ),
+          ),
+        ),
+      );
+    }).pipe(Effect.provide(Layer.fresh(layerTest))),
+  );
+
+  it.effect("checks the ancestor retirement token in the child admission transaction", () =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const rootId = ThreadId.make("thread:fork-admission:root");
+      const childId = ThreadId.make("thread:fork-admission:child");
+      const root = makeThread(rootId, now);
+      const child = {
+        ...makeThread(childId, now),
+        lineage: {
+          rootThreadId: rootId,
+          parentThreadId: rootId,
+          relationshipToParent: "subagent" as const,
+        },
+      };
+      yield* sink.write({
+        events: [
+          threadCreatedEvent({ id: "event:fork-admission:root", thread: root, now }),
+          threadCreatedEvent({ id: "event:fork-admission:child", thread: child, now }),
+        ],
+      });
+      // The child plan is constructed before Stop wins, then evaluated in its actual commit.
+      const guard = retirementAdmission({ threadId: childId, expectedTokens: [] });
+      yield* sink.write({
+        events: [
+          {
+            ...threadCreatedEvent({
+              id: "event:fork-admission:stop",
+              thread: { ...root, forkRetirement: { token: CommandId.make("stop:fork-admission") } },
+              now,
+            }),
+            type: "thread.metadata-updated",
+          },
+        ],
+      });
+      const commandId = CommandId.make("command:fork-admission:late");
+      const result = yield* sink
+        .commitCommand({
+          commandId,
+          threadId: childId,
+          commandType: "message.dispatch",
+          acceptedAt: now,
+          events: [
+            {
+              ...threadCreatedEvent({ id: "event:fork-admission:late", thread: child, now }),
+              type: "thread.metadata-updated",
+            },
+          ],
+          effects: [],
+          forkPlans: [guard],
+        })
+        .pipe(Effect.result);
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") assert.equal(result.failure._tag, "ForkCommitGuardRejected");
+      const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+      assert.isTrue(Option.isNone(yield* receipts.getByCommandId(commandId)));
     }),
   );
 

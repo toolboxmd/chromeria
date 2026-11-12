@@ -10,6 +10,8 @@ import * as Orchestrator from "./Orchestrator.ts";
 import * as AttachmentClaims from "./AttachmentClaims.ts";
 import * as ThreadLaunch from "./ThreadLaunchService.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
+import { dispatchDelegatedRequest } from "../childThreads/delegatedIntake.ts";
+import { ForkProviderlessMessages } from "../fork/ForkProviderlessMessages.ts";
 
 // These failures precede commitCommand; generic dispatch errors can follow commits and remain ambiguous.
 function dispatchWasNotAccepted(
@@ -27,6 +29,8 @@ function dispatchWasNotAccepted(
     case "OrchestratorProviderSelectionBusyError":
     case "OrchestratorRuntimeModeAboveCeilingError":
     case "ThreadManagementProviderInstanceDisabledError":
+    case "ThreadManagementAncestorDeliveryModeError":
+    case "ThreadManagementAncestryUnavailableError":
       return true;
     default:
       return false;
@@ -89,6 +93,26 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
   const command =
     incoming.type === "message.dispatch" ? yield* withGuestAttachments(incoming) : incoming;
   const threads = yield* ThreadManagement.ThreadManagementService;
+  if (command.type === "thread.metadata.update" && command.mcpConfigUpdate !== undefined)
+    return yield* new AttachmentClaims.AttachmentClaimError({
+      message: "Only the server resolves MCP configuration; use t3_thread_mcp_configure.",
+    });
+  if (
+    (command.type === "thread.create" || command.type === "delegated_task.request") &&
+    (command.bare !== undefined || command.tools !== undefined)
+  )
+    return yield* new AttachmentClaims.AttachmentClaimError({
+      message:
+        command.bare !== undefined
+          ? "Only the server resolves bare launch state; use launchThread or the launch tools."
+          : "Only the server resolves tool policy state; use launchThread or the launch tools.",
+    });
+
+  if (
+    command.type === "delegated_task.request" &&
+    (command.projectId !== undefined || command.workspaceStrategy !== undefined)
+  )
+    return yield* dispatchDelegatedRequest(command);
   if (command.type === "runtime-request.respond" && command.attachmentsByQuestionId) {
     const config = yield* ServerConfig.ServerConfig;
     const incomingByQuestionId = command.attachmentsByQuestionId;
@@ -99,6 +123,7 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
       for (const [questionId, attachments] of Object.entries(incomingByQuestionId)) {
         const claimed = yield* AttachmentClaims.claimPendingAttachments({
           threadId: command.threadId,
+          commandId: command.commandId,
           attachments,
         });
         claimedPaths.push(...claimed.claimedPaths);
@@ -160,6 +185,7 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
     return yield* threads.dispatch(command);
   const claimed = yield* AttachmentClaims.claimPendingAttachments({
     threadId: command.threadId,
+    commandId: command.commandId,
     attachments: command.attachments ?? [],
   });
   return yield* threads
@@ -197,8 +223,57 @@ export const sendToThread = Effect.fn("ThreadMessageIntake.sendToThread")(functi
   input: ThreadManagement.ThreadManagementSendInput,
 ) {
   const threads = yield* ThreadManagement.ThreadManagementService;
+  const providerless = yield* (yield* ForkProviderlessMessages).contains(input.threadId).pipe(
+    Effect.mapError(
+      (cause) =>
+        new AttachmentClaims.AttachmentClaimError({
+          message: "Failed to identify the attachment delivery target.",
+          cause,
+        }),
+    ),
+  );
+  if (providerless && (input.mode === "steer" || input.mode === "restart"))
+    return yield* new ThreadManagement.ThreadManagementNoSteerableRunError({
+      threadId: input.threadId,
+      mode: input.mode,
+    });
   const claimed = yield* AttachmentClaims.claimPendingAttachments(input);
-  return yield* threads.sendToThread({ ...input, attachments: claimed.attachments }).pipe(
+  const send = Effect.gen(function* () {
+    if (!providerless)
+      return yield* threads.sendToThread({ ...input, attachments: claimed.attachments });
+    const dispatch = yield* threads.dispatch({
+      type: "message.dispatch",
+      commandId: input.commandId,
+      threadId: input.threadId,
+      messageId: input.messageId,
+      ...(input.purposeIntent === undefined ? {} : { purposeIntent: input.purposeIntent }),
+      ...(input.purposeSource === undefined ? {} : { purposeSource: input.purposeSource }),
+      ...(input.scheduledTaskId === undefined ? {} : { scheduledTaskId: input.scheduledTaskId }),
+      text: input.text,
+      attachments: claimed.attachments,
+      ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
+      createdBy: input.createdBy,
+      creationSource: input.creationSource,
+      dispatchMode: {
+        type: input.mode === "queue" ? "queue_after_active" : "start_immediately",
+      },
+    });
+    const message = dispatch.storedEvents.flatMap(({ event }) =>
+      event.type === "message.updated" &&
+      event.threadId === input.threadId &&
+      event.payload.role === "user" &&
+      event.payload.runId === null
+        ? [event.payload]
+        : [],
+    )[0];
+    if (message === undefined)
+      return yield* new ThreadManagement.ThreadManagementDurableRunProjectionError({
+        threadId: input.threadId,
+        messageId: input.messageId,
+      });
+    return { message, run: null, delivery: "transcript" } as const;
+  });
+  return yield* send.pipe(
     Effect.tap((result) => releaseUnusedClaims(claimed.claimedPaths, result.message.attachments)),
     Effect.tapError((error) =>
       dispatchWasNotAccepted(error)
@@ -223,6 +298,7 @@ export const launchThread = Effect.fn("ThreadMessageIntake.launchThread")(functi
   }
   const claimed = yield* AttachmentClaims.claimPendingAttachments({
     threadId: input.threadId,
+    commandId: `${input.commandId}:initial-message`,
     attachments: input.initialMessage.attachments,
   });
   return yield* launches
