@@ -182,7 +182,12 @@ it.effect.each(["full-access", "approval-required"] as const)(
             } as unknown as ThreadLaunch.ThreadLaunchResult);
           },
         }),
-        Layer.mock(Project.ProjectService)({}),
+        Layer.mock(Project.ProjectService)({
+          getById: (id) =>
+            Effect.succeed(
+              Option.some({ id, workspaceRoot: "/projects/target" } as unknown as ProjectRecord),
+            ),
+        }),
         Layer.mock(PeerForwarding.PeerForwarding)({}),
         Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
@@ -270,7 +275,12 @@ it.effect("attributes a launched thread's first message to the calling thread", 
           } as unknown as ThreadLaunch.ThreadLaunchResult);
         },
       }),
-      Layer.mock(Project.ProjectService)({}),
+      Layer.mock(Project.ProjectService)({
+        getById: (id) =>
+          Effect.succeed(
+            Option.some({ id, workspaceRoot: "/projects/target" } as unknown as ProjectRecord),
+          ),
+      }),
       Layer.mock(PeerForwarding.PeerForwarding)({}),
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
       Layer.mock(GitVcsDriver.GitVcsDriver)({}),
@@ -362,7 +372,12 @@ it.effect("launches a scratch thread into the Scratch project", () =>
           } as unknown as ThreadLaunch.ThreadLaunchResult);
         },
       }),
-      Layer.mock(Project.ProjectService)({}),
+      Layer.mock(Project.ProjectService)({
+        getById: (id) =>
+          Effect.succeed(
+            Option.some({ id, workspaceRoot: "/projects/target" } as unknown as ProjectRecord),
+          ),
+      }),
       Layer.mock(PeerForwarding.PeerForwarding)({}),
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         namedProjectsRoot: "/projects",

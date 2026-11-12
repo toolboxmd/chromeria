@@ -794,7 +794,9 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
               ),
         ),
         Layer.provide(Layer.mock(ProviderCatalog.ProviderRegistry)({})),
-        Layer.provide(Layer.mock(GitWorkflow.GitWorkflowService)({})),
+        Layer.provide(
+          Layer.mock(GitWorkflow.GitWorkflowService)({ currentBranch: () => Effect.succeed(null) }),
+        ),
         Layer.provide(
           Layer.mock(SourceProviders.SourceControlProviderRegistry)({
             resolveLink: () => Effect.die("No external repository host in this fixture"),
@@ -1256,7 +1258,9 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
         Layer.mock(ProjectClone.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
         Layer.mock(Terminals.TerminalManager)({ close: () => Effect.void }),
         ownerWorkspace === undefined
-          ? Layer.mock(GitWorkflow.GitWorkflowService)({})
+          ? Layer.mock(GitWorkflow.GitWorkflowService)({
+              currentBranch: () => Effect.succeed(null),
+            })
           : handoffGit.pipe(Layer.provide(nodeConfig)),
         Layer.mock(TextGeneration.TextGeneration)({}),
         Layer.mock(SetupScripts.ProjectSetupScriptRunner)({

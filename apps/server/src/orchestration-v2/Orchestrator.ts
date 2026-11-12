@@ -2344,6 +2344,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   ) {
     if (notification?.source.kind !== "delegated_task" || notification.outcome !== "updated")
       return false;
+    // Only question wakes go stale; a linked environment's return notice shares their source.
+    if (!messageId.startsWith("message:delegated-task-question:")) return false;
     const source = notification.source;
     const threadId = projection.thread.id;
     const task =
@@ -2356,18 +2358,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // An unknown task gives no evidence the question is obsolete.
     if (task === undefined) return false;
     const childThreadId = task.childThreadId;
-    if (
-      childThreadId === null ||
-      ["completed", "failed", "cancelled", "interrupted"].includes(task.status)
-    )
-      return true;
+    if (childThreadId === null) return true;
     const child = yield* projectionStore
-      .getThreadRecords(childThreadId, ["runtimeRequests"])
+      .getThreadRecords(childThreadId, ["runtimeRequests", "runs"])
       .pipe(
         Effect.mapError(
           (cause) => new OrchestratorProjectionError({ threadId: childThreadId, cause }),
         ),
       );
+    // A follow-up reruns the finished task on its child, so its questions stay live.
+    if (
+      ["completed", "failed", "cancelled", "interrupted"].includes(task.status) &&
+      !child.runs.some(
+        (run) => run.delegatedTaskId === task.id && (run.status === "queued" || isActiveRun(run)),
+      )
+    )
+      return true;
     return !child.runtimeRequests.some(
       (request) =>
         request.kind === "user_input" &&
