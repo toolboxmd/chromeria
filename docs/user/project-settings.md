@@ -102,6 +102,68 @@ Webhook tasks only run when their URL is called, so they can't be run
 immediately.
 Leaving an edited form asks before discarding unsaved changes.
 
+## Agent-managed scheduled tasks
+
+Agents can schedule work for you with the scheduled task tools. Besides the
+schedules above, an agent can set a task to run once at a set time, or weekly
+on chosen days at one or more times in a named time zone. To spread load,
+Chromeria may move a weekly time by up to 30 minutes and shows the move, such
+as `09:00 (+4 min)`. These schedules appear in **Settings → Scheduled tasks**,
+but only an agent can change them.
+
+A task can carry an **outcome check**: a shell command that proves the work is
+done. The agent keeps working in the same thread until the check passes. If it
+still fails after a few retries, the task shows **Needs you**, and **Run now**
+continues it in the same thread. A task can also start each run with a Prism
+role, or run a shell command instead of an agent; on desktop and web,
+Chromeria alerts you when a scheduled command starts failing.
+
+When a scheduled run asks a Spectrum, the run finishes only after the turn
+that delivers the Spectrum's report has completed in its thread. If that
+delivery fails, Spectrum may send the same report again, up to three attempts
+in total. A partially processed report can therefore be processed twice. Stop,
+explicit abandonment and a failure that cannot be retried end automatic retries.
+If delivery cannot finish, the task shows **Needs you** with the reason. Choose
+**Abandon report** in web settings or the mobile task menu to stop delivering it
+and continue to the task's check. An active Spectrum still holds that check.
+
+Tasks brought over from Chromeria 1 start paused, and their earlier runs stay
+as history that never resumes; **Run now** starts a new run. Turn a task on
+when you stop using it in Chromeria 1.
+
+## Spectrum conversations
+
+Set default slots, White, mode and limits in **Settings > Spectrum**, then ask
+your agent to start a Spectrum with just a question. Each slot has a unique label,
+a primary Color and optional fallbacks used only when that Color cannot start.
+White has its own primary Color and fallbacks, set separately from the slots:
+White is not a Color, so it never answers or takes a turn as one. Settings apply
+to the selected environment; a project override replaces the Spectrum defaults
+for that project, and resetting it restores inheritance.
+
+You can also supply explicit values when starting. Explicit slots replace the
+saved slots and have no fallbacks unless supplied. With explicit slots, White
+copies the first Color's model unless you give White its own. Saved White
+applies when you use the saved slots. A new environment starts without
+configured slots.
+
+**Council** collects independent answers, then each Color reads the others'
+answers and replies for the number of **Council: reply rounds** (at least two),
+then White writes the final answer. **Free** lets each Color speak once in
+order; then White picks who speaks next after every turn, or ends the
+discussion, and writes a closing summary. It ends after **Free discussion:
+turns per Color** times the number of Colors, or earlier when White says it is
+done.
+
+The Spectrum thread shows the full discussion. Send a message there to join at
+the next barrier. **Stop** cancels its owned Drafter work. After the report
+finishes or you explicitly abandon it, reopen the thread to continue.
+
+A Spectrum an agent starts from its own thread is one of that agent's delegated
+tasks. The agent can check it with `task_status`, whose result is the report,
+and stop it with `task_cancel`. The agent still learns of the result from the
+report message.
+
 ## Webhook automations
 
 In **Settings → Scheduled tasks**, choose **On webhook**
