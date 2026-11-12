@@ -3,14 +3,26 @@ import {
   scopedThreadKey,
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
-import { EnvironmentId, RunId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  parseIssueUrl,
+  RunId,
+  ThreadId,
+  type ScopedThreadRef,
+  DeviceViewerResource,
+  PreviewViewerResource,
+} from "@t3tools/contracts";
 import { create } from "zustand";
+import * as Schema from "effect/Schema";
 import { createJSONStorage, persist } from "zustand/middleware";
 
 import { useClosedViewStore } from "./closedViewStore";
 import { resolveStorage } from "./lib/storage";
 import type { ThreadPanelPresentation } from "./rightPanelLayout";
 import type { ChatFileAttachment } from "./types";
+
+const isDeviceResource = Schema.is(DeviceViewerResource);
+const isPreviewResource = Schema.is(PreviewViewerResource);
 
 const RIGHT_PANEL_KINDS = [
   "diff",
@@ -22,20 +34,45 @@ const RIGHT_PANEL_KINDS = [
   "pull-request",
   "pull-requests",
   "side-chat",
+  "issue",
+  "map",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
 export type PullRequestDetailTab = "summary" | "guide" | "timeline" | "code";
 
 export interface DeviceTabTarget {
+  resource?: DeviceViewerResource;
   hostId: string;
   deviceId: string;
   platform: "ios" | "android";
   name: string;
 }
 
+const deviceTabSurfaceId = (target: DeviceTabTarget) =>
+  `device:${
+    target.resource
+      ? encodeURIComponent(
+          JSON.stringify([
+            target.resource.environmentId,
+            target.resource.threadId,
+            target.resource.hostId,
+            target.resource.deviceId,
+            target.resource.toolSessionId,
+          ]),
+        )
+      : `${encodeURIComponent(target.hostId)}:${encodeURIComponent(target.deviceId)}`
+  }` as const;
+export const browserResourceSurfaceId = (resource: PreviewViewerResource) =>
+  `browser:${encodeURIComponent(JSON.stringify([resource.environmentId, resource.threadId, resource.tabId, resource.serverEpoch]))}` as const;
+
 export type RightPanelSurface =
-  | { id: `browser:${string}`; kind: "preview"; resourceId: string }
+  | {
+      id: `browser:${string}`;
+      kind: "preview";
+      resourceId: string;
+      resource?: PreviewViewerResource;
+    }
   | { id: "browser:new"; kind: "preview"; resourceId: null }
   | { id: "device" | `device:${string}`; kind: "device"; target?: DeviceTabTarget; title?: string }
   | {
@@ -78,7 +115,9 @@ export type RightPanelSurface =
       detailTab?: PullRequestDetailTab;
     }
   | { id: "pull-requests"; kind: "pull-requests" }
-  | { id: `side-chat:${string}`; kind: "side-chat"; threadId: ThreadId };
+  | { id: `side-chat:${string}`; kind: "side-chat"; threadId: ThreadId }
+  | { id: "issue"; kind: "issue"; environmentId: string; url: string }
+  | { id: "map"; kind: "map" };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 const RIGHT_PANEL_STORAGE_VERSION = 14;
@@ -125,12 +164,16 @@ interface RightPanelStoreState {
   ) => boolean;
   open: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "side-chat">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "side-chat" | "issue">,
   ) => void;
   openSideChat: (ref: ScopedThreadRef, threadId: ThreadId) => void;
   openDevice: (ref: ScopedThreadRef, target: DeviceTabTarget, automatic?: boolean) => void;
   renameDevice: (ref: ScopedThreadRef, surfaceId: string, title: string) => void;
-  openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
+  openBrowser: (
+    ref: ScopedThreadRef,
+    tabId: string | null,
+    resource?: PreviewViewerResource,
+  ) => void;
   openFile: (ref: ScopedThreadRef, relativePath: string, line?: number) => void;
   /** Moves in place; "" opens the root explorer. folderTrail keeps the return path; keepSource opens beside the source. */
   navigateFolder: (
@@ -162,6 +205,7 @@ interface RightPanelStoreState {
   ) => void;
   /** Clears the surface's pending link only while it is still `revealUrl`. */
   settlePullRequestReveal: (ref: ScopedThreadRef, surfaceId: string, revealUrl: string) => void;
+  openIssue: (ref: ScopedThreadRef, target: { environmentId: string; url: string }) => void;
   openTerminal: (ref: ScopedThreadRef, terminalId: string) => void;
   splitTerminal: (
     ref: ScopedThreadRef,
@@ -191,7 +235,7 @@ interface RightPanelStoreState {
   toggleVisibility: (ref: ScopedThreadRef) => void;
   toggle: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "side-chat">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "side-chat" | "issue">,
   ) => void;
   setThreadPanelOpen: (
     ref: ScopedThreadRef,
@@ -214,7 +258,10 @@ const DEFAULT_THREAD_PANEL_VISIBILITY: ThreadPanelVisibility = {
 };
 
 const singletonSurface = (
-  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "pull-request" | "side-chat">,
+  kind: Exclude<
+    RightPanelKind,
+    "file" | "preview" | "terminal" | "pull-request" | "side-chat" | "issue"
+  >,
 ): RightPanelSurface => {
   switch (kind) {
     case "diff":
@@ -225,6 +272,8 @@ const singletonSurface = (
       return { id: "pull-requests", kind };
     case "device":
       return { id: "device", kind };
+    case "map":
+      return { id: "map", kind };
   }
 };
 
@@ -511,6 +560,44 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                       const { folderTrail: _invalid, ...rest } = surface;
                       surface = rest;
                     }
+                    // A kind this build does not know cannot render; drop it rather than show an
+                    // empty tab.
+                    if (!(RIGHT_PANEL_KINDS as ReadonlyArray<string | undefined>).includes(kind))
+                      return [];
+                    if (surface.kind === "device" && surface.target?.resource !== undefined) {
+                      const { resource } = surface.target;
+                      if (
+                        !isDeviceResource(resource) ||
+                        surface.id !== deviceTabSurfaceId(surface.target) ||
+                        resource.hostId !== surface.target.hostId ||
+                        resource.deviceId !== surface.target.deviceId ||
+                        resource.platform !== surface.target.platform
+                      )
+                        return [];
+                    }
+                    if (
+                      surface.kind === "preview" &&
+                      "resource" in surface &&
+                      surface.resource !== undefined
+                    ) {
+                      if (
+                        !isPreviewResource(surface.resource) ||
+                        surface.id !== browserResourceSurfaceId(surface.resource) ||
+                        surface.resource.tabId !== surface.resourceId
+                      )
+                        return [];
+                    }
+                    if (surface.kind === "issue") {
+                      if (
+                        surface.id !== "issue" ||
+                        typeof surface.environmentId !== "string" ||
+                        surface.environmentId.length === 0 ||
+                        typeof surface.url !== "string" ||
+                        parseIssueUrl(surface.url) === null
+                      )
+                        return [];
+                      return [surface];
+                    }
                     if (surface.kind === "file") {
                       const revealLine =
                         typeof surface.revealLine === "number" &&
@@ -713,8 +800,7 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
       openDevice: (ref, target, automatic = false) =>
         set((state) =>
           (automatic ? automaticUpdate : userAction)(state, scopedThreadKey(ref), (current) => {
-            const id =
-              `device:${encodeURIComponent(target.hostId)}:${encodeURIComponent(target.deviceId)}` as const;
+            const id = deviceTabSurfaceId(target);
             if (automatic && current.dismissedDeviceSurfaceIds?.includes(id)) return current;
             const surface: RightPanelSurface = { id, kind: "device", target };
             const existing = current.surfaces.find((entry) => entry.id === id);
@@ -750,10 +836,18 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             ),
           })),
         ),
-      openBrowser: (ref, tabId) =>
+      openBrowser: (ref, tabId, resource) =>
         set((state) =>
           userAction(state, scopedThreadKey(ref), (current) => {
-            const surface = browserSurface(tabId);
+            const surface: RightPanelSurface =
+              resource === undefined
+                ? browserSurface(tabId)
+                : {
+                    id: browserResourceSurfaceId(resource),
+                    kind: "preview",
+                    resourceId: resource.tabId,
+                    resource,
+                  };
             const withoutPlaceholder = tabId
               ? current.surfaces.filter((entry) => entry.id !== "browser:new")
               : current.surfaces;
@@ -809,6 +903,17 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             ),
           }));
         }),
+      openIssue: (ref, target) =>
+        set((state) =>
+          userAction(state, scopedThreadKey(ref), (current) => {
+            const surface: RightPanelSurface = { id: "issue", kind: "issue", ...target };
+            const next = upsertSurface(current, surface);
+            return {
+              ...next,
+              surfaces: next.surfaces.map((entry) => (entry.id === surface.id ? surface : entry)),
+            };
+          }),
+        ),
       openFile: (ref, requestedPath, line) =>
         set((state) =>
           userAction(state, scopedThreadKey(ref), (current) => {
@@ -1233,7 +1338,9 @@ useRightPanelStore.subscribe((next, previous) => {
     for (const surface of closedInOrder.map(withoutReveal)) {
       if (
         surface.kind === "terminal" ||
-        (surface.kind === "preview" && surface.resourceId !== null)
+        (surface.kind === "preview" &&
+          surface.resourceId !== null &&
+          !("resource" in surface && surface.resource !== undefined))
       )
         continue;
       useClosedViewStore.getState().remember({ kind: "panel-tab", threadRef, surface });
