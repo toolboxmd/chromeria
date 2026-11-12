@@ -2,6 +2,8 @@ import { it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Logger from "effect/Logger";
+import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import { describe, expect } from "vite-plus/test";
 
@@ -13,6 +15,8 @@ import {
   extractGrokPlanMarkdownFromToolCallData,
   extractXAiAcpBackgroundToolMutation,
   extractXAiAcpSubagentEndNotice,
+  registerXAiBackgroundTaskTracking,
+  registerXAiSubagentFinished,
   extractXAiAcpSubagentUpdate,
   extractXAiAskUserQuestions,
   extractXAiBackgroundTaskCompletion,
@@ -39,6 +43,127 @@ import { compactDynamicToolOutput, htmlRenderFromToolItem } from "@t3tools/share
 const decodeXAiAskUserQuestionRequest = Schema.decodeUnknownSync(XAiAskUserQuestionRequest);
 
 describe("xAiPromptCompleteFromSessionUpdate", () => {
+  it.effect.each(["valid metadata", "malformed task metadata"] as const)(
+    "tracks task ends on shared session methods alongside subagent ends: %s",
+    (scenario) =>
+      Effect.gen(function* () {
+        const handlers = new Map<string, (notification: unknown) => Effect.Effect<void>>();
+        const baseRuntime = {
+          handleExtNotification: (
+            method: string,
+            schema: Schema.Codec<unknown>,
+            handler: (notification: unknown) => Effect.Effect<void>,
+          ) =>
+            Effect.sync(() => {
+              handlers.set(method, (notification) =>
+                Schema.decodeUnknownEffect(schema)(notification).pipe(
+                  Effect.orDie,
+                  Effect.flatMap(handler),
+                ),
+              );
+            }),
+        } as unknown as AcpSessionRuntime.AcpSessionRuntime["Service"];
+        const runtime = yield* makeXAiPromptCompletionRuntime(baseRuntime);
+        const tasks: Array<{ readonly taskId: string; readonly status: string }> = [];
+        const subagents: Array<{ readonly childSessionId: string }> = [];
+        yield* registerXAiBackgroundTaskTracking(runtime, (mutation) =>
+          Effect.sync(() => {
+            tasks.push(mutation);
+          }),
+        );
+        yield* registerXAiSubagentFinished(runtime, (notice) =>
+          Effect.sync(() => {
+            subagents.push(notice);
+          }),
+        );
+        for (const method of [
+          "x.ai/session_notification",
+          "_x.ai/session_notification",
+          "_x.ai/session/update",
+        ]) {
+          const handle = handlers.get(method);
+          if (handle === undefined) return yield* Effect.die(`missing ${method}`);
+          yield* handle({
+            sessionId: "root",
+            update: {
+              sessionUpdate: "task_completed",
+              task_snapshot: { task_id: "command-1", kind: "bash", exit_code: 0, output: "done" },
+            },
+          });
+          yield* handle({
+            sessionId: "root",
+            update: {
+              sessionUpdate: "subagent_finished",
+              child_session_id: "child-1",
+              status: "completed",
+              output: "done",
+              ...(scenario === "malformed task metadata" ? { description: 123 } : {}),
+            },
+          });
+        }
+        expect(tasks.map(({ taskId, status }) => [taskId, status])).toEqual([
+          ["command-1", "completed"],
+          ["command-1", "completed"],
+          ["command-1", "completed"],
+        ]);
+        expect(subagents.map(({ childSessionId }) => childSessionId)).toEqual([
+          "child-1",
+          "child-1",
+          "child-1",
+        ]);
+      }),
+  );
+
+  it.effect("logs once when every shared-method consumer rejects without exposing payloads", () => {
+    const logs: unknown[] = [];
+    const logger = Logger.make(({ message }) => {
+      logs.push(message);
+    });
+    return Effect.gen(function* () {
+      const handlers = new Map<string, (params: unknown) => Effect.Effect<void>>();
+      const baseRuntime = {
+        handleExtNotification: (
+          method: string,
+          _schema: unknown,
+          handler: (params: unknown) => Effect.Effect<void>,
+        ) =>
+          Effect.sync(() => {
+            handlers.set(method, handler);
+          }),
+      } as unknown as AcpSessionRuntime.AcpSessionRuntime["Service"];
+      const runtime = yield* makeXAiPromptCompletionRuntime(baseRuntime);
+      yield* registerXAiBackgroundTaskTracking(runtime, () => Effect.void);
+      yield* registerXAiSubagentFinished(runtime, () => Effect.void);
+      const handle = handlers.get("_x.ai/session_notification");
+      if (handle === undefined) return yield* Effect.die("missing shared handler");
+      yield* handle({
+        sessionId: "root",
+        update: {
+          sessionUpdate: "task_completed",
+          child_session_id: 123,
+          description: 123,
+          task_snapshot: "secret-malformed-payload",
+        },
+      });
+      expect(logs).toHaveLength(1);
+      expect(JSON.stringify(logs)).toContain("rejected by all consumers");
+      expect(JSON.stringify(logs)).not.toContain("secret-malformed-payload");
+      yield* handle({
+        sessionId: "root",
+        update: {
+          sessionUpdate: "subagent_finished",
+          child_session_id: "child",
+          status: "completed",
+          description: 123,
+        },
+      });
+      expect(logs).toHaveLength(1);
+    }).pipe(
+      Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
+      Effect.provideService(References.MinimumLogLevel, "Debug"),
+    );
+  });
+
   it("ignores non-turn updates and task-completed prompt ids", () => {
     expect(
       xAiPromptCompleteFromSessionUpdate({
@@ -75,6 +200,26 @@ function parseRecordedToolCallUpdate(update: Record<string, unknown>): AcpToolCa
 }
 
 describe("XAiAcpExtension", () => {
+  it("does not treat a command quoting spawn subagents as a subagent launch", () => {
+    const command = "printf '%s\\n' 'Do not spawn subagents.'";
+    for (const status of ["inProgress", "completed"] as const) {
+      const tool = normalizeXAiAcpToolCallState(
+        parseRecordedToolCallUpdate({
+          sessionUpdate: "tool_call_update",
+          toolCallId: "command-with-quoted-instruction",
+          title: `[bg] ${command} (01a14eed)`,
+          status,
+          rawInput: { variant: "Bash", command, description: "Probe without subagents" },
+          rawOutput: {
+            type: "BackgroundTaskStarted",
+            task_id: "01a14eed-b0b2-7842-9fd2-c78e94e43f56",
+          },
+        }),
+      );
+      expect(extractXAiAcpSubagentUpdate(tool)).toBeUndefined();
+    }
+  });
+
   it("recognizes Grok Task starts as native subagents", () => {
     expect(
       extractXAiAcpSubagentUpdate({
@@ -101,6 +246,26 @@ describe("XAiAcpExtension", () => {
       suppressNormalTool: true,
     });
   });
+
+  it.each(["subagent_type", "subagentType"])(
+    "uses legacy %s when variant is absent, while an explicit Bash variant wins",
+    (field) => {
+      const rawInput = { [field]: "generalPurpose", prompt: "Audit apps/server." };
+      const tool = {
+        toolCallId: "legacy-task",
+        title: "Tool",
+        status: "inProgress" as const,
+        data: { rawInput },
+      };
+      expect(extractXAiAcpSubagentUpdate(tool)?.nativeTaskId).toBe("legacy-task");
+      expect(
+        extractXAiAcpSubagentUpdate({
+          ...tool,
+          data: { rawInput: { ...rawInput, variant: "Bash" } },
+        }),
+      ).toBeUndefined();
+    },
+  );
 
   it("extracts Grok child session lineage from completed Task output", () => {
     expect(
@@ -885,6 +1050,42 @@ describe("XAiAcpExtension", () => {
         data: { rawInput: { variant: "TaskOutput", task_ids: ["call-bg-5"] } },
       }),
     ).toEqual([]);
+  });
+
+  it("ends only the tasks a Grok 1.0.46 KillTask result confirms", () => {
+    const killTask = (rawOutput: unknown): AcpToolCallState => ({
+      toolCallId: "call-kill-4",
+      title: "kill call-bg-6 (killed)",
+      status: "completed",
+      data: { rawInput: { variant: "KillTask", task_id: "call-bg-6" }, rawOutput },
+    });
+    expect(
+      extractXAiKilledBackgroundTasks(
+        killTask({ type: "KillTask", Result: { task_id: "call-bg-6", outcome: "killed" } }),
+      ),
+    ).toEqual([{ taskId: "call-bg-6", status: "completed", appendOutput: "" }]);
+    expect(
+      extractXAiKilledBackgroundTasks(
+        killTask({ type: "KillTask", Result: { task_id: "call-bg-6", outcome: "error" } }),
+      ),
+    ).toEqual([]);
+    expect(
+      extractXAiKilledBackgroundTasks(
+        killTask({
+          type: "KillTask",
+          MultiResult: {
+            results: [
+              { task_id: "call-bg-6", outcome: "killed" },
+              { task_id: "call-bg-7", outcome: "error" },
+              { task_id: "call-bg-8", outcome: "already_exited" },
+            ],
+          },
+        }),
+      ),
+    ).toEqual([
+      { taskId: "call-bg-6", status: "completed", appendOutput: "" },
+      { taskId: "call-bg-8", status: "completed", appendOutput: "" },
+    ]);
   });
 
   it("maps task lifecycle notifications to background mutations", () => {
