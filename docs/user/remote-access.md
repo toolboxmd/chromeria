@@ -130,6 +130,16 @@ You can reorder a learned route, but not remove it; it
 goes away with the route it was learned through, or when the machine stops
 reporting that address.
 
+When you sign in to T3 Connect, a saved remote machine also gains its T3 Connect
+route automatically once its managed tunnel answers and supports this client.
+The new route goes after LAN and Tailscale. This uses the machine's existing
+tunnel; it does not create another one. Without a T3 Connect sign-in, your
+paired routes keep working. If the account no longer lists that tunnel, its
+relay route is removed when another independently authorized route remains.
+A machine whose only routes depend on T3 Connect stays saved to preserve its
+local data. Removing a relay route by hand can cause it to be learned again
+while the account still lists the tunnel.
+
 T3 Code connects over the first route that answers. Away from home, a LAN
 address that does not answer is checked briefly and skipped. It is only tried
 again, after the other routes, if none of them connect. While connected over a
@@ -236,22 +246,105 @@ again on its next connect.
 For Antigravity's Google callback on a remote host, see
 [remote sign-in](./providers-antigravity.md#sign-in-from-a-remote-device).
 
+## Share research across environments
+
+Agents in Chromeria can share one environment's public-page cache and request
+limits through `web_read` and discovery budgets through `web_search`. Link each source environment to the research
+environment with agent access, then find its ID with `t3 environment list`.
+In each source server's `userdata/settings.json`, set:
+
+```json
+{ "webResearch": { "host": "<linked-environment-id>" } }
+```
+
+Merge this entry into your existing settings. Leave it unset, or set `host` to
+`null`, on the research environment itself. An unavailable or revoked link
+returns an error; reads and searches do not fall back to the source machine. These server
+settings apply to agents used from web, desktop and mobile.
+
+Logged-in reading is off by default. With your explicit account authorization,
+an agent can pass `useSession:true` and `session:{environmentId,profileId,tabId}`
+to read one page through an existing Chromeria profile tab selected with
+`preview_status`. The tab stays on its owning environment, even when your public
+research uses another server. A remote owner requires a direct agent-access link
+and `session.contextThreadId` for a live thread owned by that link with browser
+access; unrelated threads and forwarding through a second environment are refused.
+Human control, expired logins and account warnings stop the read. The reader
+does not log in or perform account actions, and adds no session pacing or quotas.
+Private results stay outside the public cache. Continue with the same session
+selection and explicit opt-in within five minutes, or read the URL again.
+
+Use `web_search(query, locale?)` for site/social and non-English community
+queries, preserving `site:` and `-site:` filters and a locale such as `pl-PL`.
+Keep the harness's own search for bulk discovery. Results include attributed
+snippets and each engine's health; an unhealthy engine's empty output does not
+mean no matches. Search results are not cached, and shared 25-second spacing
+and provider budgets can delay or limit new queries.
+
+The research server uses the existing SearXNG JSON service at
+`https://bestia.napoleon-sun.ts.net:8888`. Set `webResearch.searxngUrl` on that
+server to use another configured service. TinyFish search uses the same server
+secret as its page-reading fallback and only accepts observed zero-cost calls.
+
+For long pages, pass the returned `cacheId`, `cacheEnvironmentId` and
+`nextOffset` (as `offset`) to continue. Changing the research host requires
+reading the URL again. Outside MCP clients and links with read-only access
+cannot spend the research environment's request budget.
+
+When a maintainer provisions `web-research-treg-token` in the research
+environment's server secret store, TinyFish can read public pages after an
+eligible local render failure, through a pinned zero-cost endpoint. Its bounded
+attempt must fit the active reader's remaining budget. A traversal keeps its
+30-second limit and returns the local typed status when there is too little
+time for hosted work. Root provider/budget errors stay explicit; a failed child
+reports `providerError` while preserving the root and prior children.
+
+Results identify TinyFish and the observed charge. Hosted pages have
+`cacheStorage: "memory"`: continue them on the same research server before
+`cacheExpiresAt`, at most 15 minutes. Buffers can be evicted sooner and are lost
+on restart; an expired continuation asks you to read the URL again. Reading the
+URL again repeats the local ladder rather than reusing a hosted buffer.
+Provider retention permission, including this temporary buffer, remains
+unresolved; persistent hosted caching stays disabled. Local pages keep their
+persistent cache. Requested and final hosted URLs are checked here; TinyFish
+owns networking inside its service, whose DNS and subresource isolation remain
+unverified.
+
+## Automations on another environment
+
+Save a schedule, webhook or Spectrum while its contributors are reachable. The
+receiving environment can then run that accepted work while the source sleeps,
+within the saved permissions and their known expiry. Edits and Spectrum reopens
+require fresh authorization. Both environments must support this behavior;
+older peers refuse the save.
+
+Disable the automation on its receiving environment to stop new execution
+there immediately. Revoking or unlinking its source queues a disable that remains
+unconfirmed until the receiver durably acknowledges it. If the receiver cannot
+be reached, accepted local work can continue until that disable arrives or its
+known authorization expires. Relinking does not revive the old automation.
+Calling another environment still requires the original contributors online;
+local progress and returning its result are separate operations. Webhooks keep
+the receiving environment's URL.
+
 ## Browser on a remote environment
 
 Browser tabs belong to the environment, so you and your agents see the same
-tabs from any device. The desktop app shows its own environment's tabs
-directly. Every other device, and the desktop app for other environments,
-streams them from the host. Agents keep using them while no device is
+tabs from any device. The desktop app shows the tabs you open in its own
+environment directly. Agents' tabs, every other device, and the desktop app for
+other environments stream from the host. Agents keep using them while no device is
 connected, and `localhost` addresses reach servers on the host.
 
-The first tab downloads a headless Chrome, about 120 MB, into the T3 home. It
+The first tab downloads a headless Chrome, about 200 MB, into the T3 home. It
 is the same browser [HTML renders](html-renders.md) use, so a host downloads it
 only once. Some Linux hosts need [setup](#browser-host-setup) before it can
 start.
 
-Agent tabs have separate storage and share a Chromium process. Take control before
-typing into an agent's tab, then release control when you want the agent to
-continue. Read-only connections can watch without changing the page.
+Agent tabs share sign-ins and one Chrome process per saved profile; incognito
+tabs share a process with separate cookie jars. See the [Browser guide](browser.md)
+for profiles, logins and tab limits. Take control before typing into an agent's
+tab, then release control when you want the agent to continue. Read-only
+connections can watch without changing the page.
 
 While you have control, the tab works with your device: text the page copies or
 cuts goes to your clipboard, a file picker on the page opens your device's
@@ -377,6 +470,51 @@ service on the same machine this way, including its T3 Connect link.
 
 A session with an open connection stays listed after its access credential
 expires.
+New direct pairings renew while the client is connected. Renewal preserves the
+device's permissions and identity. A revoked or expired session cannot renew;
+devices left offline past expiry need a fresh pairing.
+
+Pairings created before renewal was available need one administrator approval
+per device. This can be done over SSH without opening Settings or creating a
+new pairing code. On the server, list requests with:
+
+```sh
+t3 auth renewal list
+```
+
+Match the client name, route, and last-seen time. Independently read the full
+commitment on the intended desktop, using its actual state directory:
+
+```sh
+t3 auth renewal client-commitments --desktop-state-dir /path/to/desktop/userdata
+```
+
+For an existing Chromium, Chrome, Brave, or Edge browser pairing, run this on
+the client machine with that browser's executable and profile directory:
+
+```sh
+t3 browser renewal-commitments --browser-executable /path/to/browser \
+  --profile-dir /path/to/profile/Default --origin https://server.example
+```
+
+This headless command reads a private temporary copy of the origin's storage,
+then removes it. Use the same browser engine version or newer. It does not
+contact the server or restart the open browser. Legacy Firefox, Safari, and
+mobile-browser pairings have no supported headless commitment read and retain
+their original expiry; new pairings in these browsers enroll automatically.
+
+Approve on the server with that device value:
+
+```sh
+t3 auth renewal approve <enrollment-id> --commitment <full-device-commitment>
+```
+
+Names and routes help select a request but do not prove which device submitted
+it. Do not copy the commitment from the server's pending list for approval.
+Use `t3 auth renewal reject <enrollment-id>` to reject a pending request, and
+`t3 auth session revoke <session-id>` to revoke approved access. These commands
+also accept `--base-dir` when the server uses a custom T3 home. Existing direct
+mobile pairings retain their original lifetime; new mobile pairings renew.
 
 To choose a token's permissions, pass `--scope` once for each scope you want:
 
@@ -471,3 +609,23 @@ whichever connection you reach it through.
 
 Switch **Local environment** back on in the same place to restart with your previous local
 settings.
+
+## Continue delegated work on another environment
+
+A new remote delegated task keeps its first result. Later messages to the same task's
+thread continue that job, and each completed run becomes its latest result.
+The parent can also see queued work, pending children, questions, and recovery.
+Both environments must support delegated lifecycle observation before a new
+remote task can start.
+
+Open the remote task from the thread's agent relationships to inspect its work
+through the parent environment. This works on web, desktop, and mobile without
+saving a separate client connection to the destination. Refresh to retry a stale
+observation or page through the messages. Older jobs keep their original direct
+connection navigation and first-result observation.
+
+**Stop remote work** records a request to stop the destination thread and its
+nested work. Pending or unconfirmed means the destination has not confirmed the
+request. Acknowledged means it accepted Stop; confirmed means its execution has
+settled. The first result stays available. A later Stop request applies to work
+started since the earlier Stop, subject to the current link and permissions.
