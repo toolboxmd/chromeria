@@ -4,12 +4,52 @@ import * as Schema from "effect/Schema";
 import {
   OrchestratorMcpDelegateTaskInput,
   OrchestratorMcpDelegateTaskResult,
+  OrchestratorMcpRequestSecretInput,
+  OrchestratorMcpThreadRun,
 } from "./orchestratorMcp.ts";
 
 const decodeDelegateTaskInput = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
 const decodeDelegateTaskResult = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskResult);
+const decodeThreadRun = Schema.decodeUnknownSync(OrchestratorMcpThreadRun);
 
 describe("orchestrator MCP contracts", () => {
+  it("reads runs from older linked environments without inventing recovery facts", () => {
+    const olderRun = {
+      runId: "run:older-peer",
+      ordinal: 1,
+      status: "failed",
+      providerInstanceId: "codex",
+      model: "fixed",
+      requestedAt: "2026-10-08T10:00:00Z",
+      startedAt: null,
+      completedAt: "2026-10-08T10:01:00Z",
+    };
+    expect(decodeThreadRun(olderRun)).toEqual(olderRun);
+    expect(
+      decodeThreadRun({ ...olderRun, recovery: { state: "given_up", reason: "exhausted" } })
+        .recovery,
+    ).toEqual({ state: "given_up", reason: "exhausted" });
+  });
+
+  it("accepts 1-5 uniquely named secret fields that can each be a file name", () => {
+    const decode = Schema.decodeUnknownOption(OrchestratorMcpRequestSecretInput);
+    const ask = (fields: ReadonlyArray<{ name: string; label: string }>) =>
+      decode({ label: "Credentials", reason: "For the deploy job.", fields });
+    const field = (name: string) => ({ name, label: name });
+    expect(ask([field("client_id"), field("client-secret")])._tag).toBe("Some");
+    expect(ask([field("constructor")])._tag).toBe("Some");
+    for (const fields of [
+      [],
+      [field("a"), field("a")],
+      [1, 2, 3, 4, 5, 6].map((index) => field(`f${index}`)),
+      [field("../x")],
+      [field("Token")],
+      [field("__proto__")],
+    ]) {
+      expect(ask(fields)._tag).toBe("None");
+    }
+  });
+
   it("decodes cross-provider delegated task requests and durable results", () => {
     const request = decodeDelegateTaskInput({
       task: "Inspect the workspace and report the result.",
