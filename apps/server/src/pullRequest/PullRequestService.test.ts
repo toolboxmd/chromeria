@@ -4982,3 +4982,69 @@ it.effect.each(["expiry", "commit expiry", "cache hit", "commit cache hit", "ref
       assert.strictEqual(diffReads, 2);
     }),
 );
+
+it.effect("lists and reads the fork origin while preserving the canonical project identity", () =>
+  Effect.gen(function* () {
+    const canonical = project({
+      id: "fork",
+      title: "Chromeria",
+      workspaceRoot: "/fork",
+      repository: "pingdotgg/t3code",
+    });
+    const fork = {
+      ...canonical,
+      repositoryIdentity: {
+        ...canonical.repositoryIdentity!,
+        origin: {
+          canonicalKey: "github.com/toolboxmd/chromeria",
+          displayName: "toolboxmd/chromeria",
+        },
+      },
+    };
+    const requested = new Set<string>();
+    const service = yield* makeService({
+      projects: [fork],
+      providers: [
+        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
+          listChangeRequests: ({ repository }) => {
+            requested.add(repository);
+            return Effect.succeed({
+              items: [changeRequest(167, "2026-07-02T00:00:00Z")],
+              truncated: false,
+              continues: true,
+            });
+          },
+          getChangeRequestPreview: ({ repository, number }) => {
+            requested.add(repository);
+            return Effect.succeed({
+              ...changeRequest(number, "2026-07-02T00:00:00Z"),
+              title: "Unlisted fork pull request",
+            });
+          },
+        }),
+      ],
+    });
+    const result = yield* service.list({ state: "open" });
+    assert.equal(result.entries[0]?.repository, "toolboxmd/chromeria");
+    const cached = yield* service.preview({
+      projectId: fork.id,
+      repository: "toolboxmd/chromeria",
+      number: 167,
+    });
+    assert.equal(cached.repository, "toolboxmd/chromeria");
+    assert.equal(cached.projectId, fork.id);
+    assert.equal(cached.number, 167);
+    assert.equal(cached.title, "Change request 167");
+    const unlisted = yield* service.preview({
+      projectId: fork.id,
+      repository: "toolboxmd/chromeria",
+      number: 168,
+    });
+    assert.equal(unlisted.repository, "toolboxmd/chromeria");
+    assert.equal(unlisted.projectId, fork.id);
+    assert.equal(unlisted.number, 168);
+    assert.equal(unlisted.title, "Unlisted fork pull request");
+    assert.deepEqual(requested, new Set(["toolboxmd/chromeria"]));
+    assert.equal(fork.repositoryIdentity.canonicalKey, "github.com/pingdotgg/t3code");
+  }),
+);
