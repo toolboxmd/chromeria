@@ -166,6 +166,32 @@ describe("V2 environment commands", () => {
     }).pipe(Effect.provide(layerTestRandom)),
   );
 
+  it.effect("Stop cancels transport recovery even when there is no active run", () =>
+    Effect.gen(function* () {
+      const projection: OrchestrationV2ThreadProjection = {
+        ...v2Projection,
+        thread: {
+          ...v2Projection.thread,
+          transportRecovery: { runId: RunId.make("waiting-network"), retryAt: 60_000 },
+        },
+      };
+      const commands: OrchestrationV2Command[] = [];
+      const supervisor = yield* makeSupervisor({ commands, projects: [], projection });
+      yield* interruptThreadTurn({ threadId: v2ThreadId }).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+      );
+      expect(commands).toEqual([
+        {
+          type: "run.interrupt",
+          commandId: expect.any(String),
+          threadId: v2ThreadId,
+          runId: RunId.make("waiting-network"),
+          holdQueue: true,
+        },
+      ]);
+    }).pipe(Effect.provide(layerTestRandom)),
+  );
+
   it.effect("preserves caller command ids for idempotent V2 commands", () =>
     Effect.gen(function* () {
       const commands: OrchestrationV2Command[] = [];
@@ -233,6 +259,7 @@ describe("V2 environment commands", () => {
 
       yield* startThreadTurn({
         commandId: CommandId.make("launch-existing-worktree"),
+        prismRole: "promachos",
         threadId: v2ThreadId,
         message: {
           messageId: MessageId.make("message-existing-worktree"),
@@ -258,6 +285,7 @@ describe("V2 environment commands", () => {
       }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
 
       expect(launches[0]).toMatchObject({
+        prismRole: "promachos",
         threadId: v2ThreadId,
         title: "Continue here",
         generateTitle: true,
@@ -282,25 +310,35 @@ describe("V2 environment commands", () => {
         ["steer", "start_immediately"],
         ["restart", "start_immediately"],
       ] as const) {
-        yield* startThreadTurn({
-          commandId: CommandId.make(`command-${mode}`),
-          threadId: v2ThreadId,
-          message: {
-            messageId: MessageId.make(`message-${mode}`),
-            role: "user",
-            text: mode,
-            attachments: [],
-          },
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          dispatchMode: mode,
-        }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+        for (const creationSource of ["web", "mobile"] as const) {
+          const purposeIntent =
+            mode === "steer" || mode === "restart"
+              ? ({ version: 1, intent: { type: "target" } } as const)
+              : ({ version: 1, intent: { type: "selection", expectedRevision: 7 } } as const);
+          yield* startThreadTurn({
+            commandId: CommandId.make(`command-${creationSource}-${mode}`),
+            creationSource,
+            purposeIntent,
+            threadId: v2ThreadId,
+            message: {
+              messageId: MessageId.make(`message-${mode}`),
+              role: "user",
+              text: mode,
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            dispatchMode: mode,
+          }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
 
-        expect(commands.at(-1)).toMatchObject({
-          type: "message.dispatch",
-          dispatchMode: { type: expectedType },
-          ...(mode === "queue" ? {} : { deliveryIntent: mode }),
-        });
+          expect(commands.at(-1)).toMatchObject({
+            type: "message.dispatch",
+            creationSource,
+            purposeIntent,
+            dispatchMode: { type: expectedType },
+            ...(mode === "queue" ? {} : { deliveryIntent: mode }),
+          });
+        }
       }
       expect(projectionRequests).toEqual([]);
     }).pipe(Effect.provide(layerTestRandom)),

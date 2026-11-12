@@ -1,4 +1,6 @@
 import {
+  PROMACHOS_HOME_WS_METHODS,
+  clientRpcRequiredScopes,
   AuthEnvironmentMaintainScope,
   AuthDiagnosticsReadScope,
   AuthFilesystemReadScope,
@@ -6,6 +8,7 @@ import {
   AuthSettingsWriteScope,
   DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
+  EnvironmentId,
   ProviderInstanceId,
   SecretProviderId,
   ThreadId,
@@ -31,6 +34,15 @@ import {
 import * as RpcAuthorization from "./RpcAuthorization.ts";
 
 describe("RPC authorization scopes", () => {
+  it("requires operate scope for Promachos home creation on both client and server", () => {
+    expect(requiredScopeForRpcMethod(PROMACHOS_HOME_WS_METHODS.create)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+    expect(
+      clientRpcRequiredScopes(PROMACHOS_HOME_WS_METHODS.create, { path: "~/promachos" }),
+    ).toEqual([AuthOrchestrationOperateScope]);
+  });
+
   it("declares exactly one scope for every RPC in the server group", () => {
     expect(new Set(Object.keys(RPC_REQUIRED_SCOPES))).toEqual(new Set(WsRpcGroup.requests.keys()));
   });
@@ -84,6 +96,7 @@ describe("RPC authorization scopes", () => {
 });
 
 it("requires operate permission for host retry while preserving read-only listing", () => {
+  expect(requiredScopeForRpcMethod(WS_METHODS.scheduledTasksList)).toBe(AuthOrchestrationReadScope);
   expect(requiredScopeForDeviceList({})).toBe(AuthOrchestrationReadScope);
   expect(requiredScopeForDeviceList({ retryHostId: "remote-host" })).toBe(
     AuthOrchestrationOperateScope,
@@ -207,6 +220,40 @@ describe("settings mutation authorization", () => {
     operation: "remove" as const,
     instanceId: ProviderInstanceId.make("codex_work"),
   };
+
+  it.effect.each([false, true])(
+    "authorizes research host and search endpoint settings (grant=%s)",
+    (granted) =>
+      Effect.gen(function* () {
+        let handled = 0;
+        const client = yield* RpcTest.makeClient(group).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              group.toLayerHandler(WS_METHODS.serverUpdateSettings, () =>
+                Effect.sync(() => {
+                  handled++;
+                  return DEFAULT_SERVER_SETTINGS;
+                }),
+              ),
+              RpcAuthorization.layer(granted ? [AuthSettingsWriteScope] : []),
+            ),
+          ),
+        );
+        for (const webResearch of [
+          { host: null },
+          { host: EnvironmentId.make("research-bestia") },
+          { searxngUrl: "http://configured-search.internal:8888" },
+        ]) {
+          const request = client[WS_METHODS.serverUpdateSettings]({ patch: { webResearch } });
+          if (granted) yield* request;
+          else
+            expect(yield* request.pipe(Effect.flip)).toMatchObject({
+              requiredPermission: AuthSettingsWriteScope,
+            });
+        }
+        expect(handled).toBe(granted ? 3 : 0);
+      }).pipe(Effect.scoped),
+  );
 
   it.effect("allows provider-only mutations while denying mixed settings without their grant", () =>
     Effect.gen(function* () {
@@ -472,3 +519,66 @@ it.effect("denies manual cleanup before the handler without settings permission"
     expect(handled).toBe(false);
   }).pipe(Effect.scoped),
 );
+
+describe("device viewer RPC authorization", () => {
+  const tested = [WS_METHODS.deviceViewerOpen, WS_METHODS.deviceViewerClose] as const;
+  const group = WsRpcGroup.omit(
+    ...[...WsRpcGroup.requests.keys()].filter(
+      (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, (typeof tested)[number]> =>
+        !(tested as ReadonlyArray<string>).includes(tag),
+    ),
+  );
+  const resource = {
+    type: "device" as const,
+    environmentId: EnvironmentId.make("destination"),
+    threadId: ThreadId.make("destination-thread"),
+    hostId: "local",
+    deviceId: "emulator-5554",
+    platform: "android" as const,
+    toolSessionId: "343d5809-4cc6-4c3b-9ddb-329ae5fe9630",
+  };
+  it.effect("allows viewing without control and refuses control before admission", () =>
+    Effect.gen(function* () {
+      const admitted: string[] = [];
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            group.toLayerHandler(WS_METHODS.deviceViewerOpen, (input) =>
+              Effect.sync(() => {
+                admitted.push(input.operation);
+                return {
+                  viewerId: "b370bd03-1415-470c-b823-9175595402bd",
+                  ticket: "test-viewer-ticket",
+                  expiresAt: "2026-10-18T20:00:00.000Z",
+                  hubBasePath: "/api/device-hub" as const,
+                };
+              }),
+            ),
+            group.toLayerHandler(WS_METHODS.deviceViewerClose, () => Effect.succeed(true)),
+            RpcAuthorization.layer([AuthOrchestrationReadScope]),
+          ),
+        ),
+      );
+      expect(
+        (yield* client[WS_METHODS.deviceViewerOpen]({ resource, operation: "view" })).viewerId,
+      ).toBe("b370bd03-1415-470c-b823-9175595402bd");
+      expect(
+        yield* client[WS_METHODS.deviceViewerOpen]({ resource, operation: "control" }).pipe(
+          Effect.flip,
+        ),
+      ).toMatchObject({
+        _tag: "EnvironmentAuthorizationError",
+        requiredPermission: AuthOrchestrationOperateScope,
+      });
+      expect(admitted).toEqual(["view"]);
+      expect(
+        clientRpcRequiredScopes(WS_METHODS.deviceViewerOpen, { resource, operation: "control" }),
+      ).toEqual([AuthOrchestrationReadScope, AuthOrchestrationOperateScope]);
+      expect(
+        yield* client[WS_METHODS.deviceViewerClose]({
+          viewerId: "b370bd03-1415-470c-b823-9175595402bd",
+        }),
+      ).toBe(true);
+    }).pipe(Effect.scoped),
+  );
+});

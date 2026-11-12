@@ -45,6 +45,7 @@ import {
   isRpcClientError,
   request,
 } from "../rpc/client.ts";
+import { stopForkSpectrumThread } from "../spectrumStop.ts";
 
 interface CommandMetadata {
   readonly commandId?: CommandId;
@@ -138,6 +139,10 @@ export interface VisitThreadInput extends ThreadCommandInput {
 export type MarkThreadUnreadInput = ThreadCommandInput;
 
 export interface UpdateThreadMetadataInput extends ThreadCommandInput {
+  readonly purposeSelection?: {
+    readonly expectedRevision: number;
+    readonly scope: import("@t3tools/contracts").ExecutionPurposeScope;
+  };
   readonly limitRecovery?: import("@t3tools/contracts").OrchestrationV2LimitRecoveryUpdate | null;
   readonly title?: string;
   readonly modelSelection?: ModelSelection;
@@ -178,6 +183,8 @@ interface StartThreadBootstrap {
 }
 
 export interface StartThreadTurnInput extends ThreadCommandInput {
+  readonly purposeIntent?: import("@t3tools/contracts").PurposeIntent | undefined;
+  readonly prismRole?: "promachos";
   readonly manualContinuationOfRunId?: RunId;
   readonly message: {
     readonly messageId: MessageId;
@@ -204,6 +211,8 @@ export interface InterruptThreadTurnInput extends ThreadCommandInput {
   readonly runId?: RunId;
   readonly subagentId?: NodeId;
   readonly turnId?: string;
+  /** Fork (toolboxmd/chromeria#176): the shell reports a running Spectrum; see `spectrumStop.ts`. */
+  readonly forkSpectrumRunning?: boolean;
 }
 
 export interface RespondToThreadApprovalInput extends ThreadCommandInput {
@@ -683,6 +692,7 @@ export const updateThreadMetadata = Effect.fn("EnvironmentCommands.updateThreadM
     let result = null;
     if (
       input.title !== undefined ||
+      input.purposeSelection !== undefined ||
       input.branch !== undefined ||
       input.worktreePath !== undefined ||
       input.regenerateTitle !== undefined ||
@@ -691,6 +701,9 @@ export const updateThreadMetadata = Effect.fn("EnvironmentCommands.updateThreadM
     ) {
       result = yield* dispatch({
         type: "thread.metadata.update",
+        ...(input.purposeSelection === undefined
+          ? {}
+          : { purposeSelection: input.purposeSelection }),
         ...(input.limitRecovery === undefined ? {} : { limitRecovery: input.limitRecovery }),
         commandId,
         threadId: input.threadId,
@@ -781,6 +794,8 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
                 : { branch: bootstrap.branch }),
             };
     return yield* request(ORCHESTRATION_V2_WS_METHODS.launchThread, {
+      ...(input.purposeIntent === undefined ? {} : { purposeIntent: input.purposeIntent }),
+      ...(input.prismRole === undefined ? {} : { prismRole: input.prismRole }),
       commandId,
       creationSource: input.creationSource ?? "web",
       threadId: input.threadId,
@@ -807,6 +822,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
     return yield* dispatchMessage(
       {
         type: "message.dispatch",
+        ...(input.purposeIntent === undefined ? {} : { purposeIntent: input.purposeIntent }),
         commandId,
         createdBy: "user",
         creationSource: input.creationSource ?? "web",
@@ -839,6 +855,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
   return yield* dispatchMessage(
     {
       type: "message.dispatch",
+      ...(input.purposeIntent === undefined ? {} : { purposeIntent: input.purposeIntent }),
       commandId,
       createdBy: "user",
       creationSource: input.creationSource ?? "web",
@@ -866,6 +883,10 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
 export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThreadTurn")(function* (
   input: InterruptThreadTurnInput,
 ) {
+  // Fork (toolboxmd/chromeria#176): the whole thread stops with its Spectrum, run or not.
+  if (input.forkSpectrumRunning === true) {
+    return yield* stopForkSpectrumThread(input.threadId, yield* allocateCommandId(input));
+  }
   let threadId = input.threadId;
   if (input.subagentId !== undefined) {
     const projection = yield* getProjection(input.threadId);
@@ -917,6 +938,7 @@ export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThrea
         run.status === "running" ||
         run.status === "waiting",
     )?.id;
+    runId ??= projection.thread.transportRecovery?.runId;
     if (runId === undefined) {
       const latestRun = projection.runs.at(-1);
       if (
