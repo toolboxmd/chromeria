@@ -195,6 +195,7 @@ const processLayer = (path: string) => {
     management,
     EventSink.layer.pipe(Layer.provide(stores)),
     service,
+    Layer.mock(RemoteDelegation.RemoteDelegation)({}),
   ).pipe(Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)));
 };
 const resetAt = "2026-10-08T12:00:00Z";

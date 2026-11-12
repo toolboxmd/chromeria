@@ -1496,7 +1496,7 @@ describe("orchestrator MCP toolkit", () => {
           while (nextTextOffset !== null) {
             const beforeContinuation = yield* orchestrator.getThreadProjection(parentThreadId);
             expect(
-              beforeContinuation.subagents.find((task) => task.id === queuedFollowup.taskId)
+              beforeContinuation.subagents.find((task) => task.id === delegated.taskId)
                 ?.completionDelivery?.state,
             ).toBe("claimed");
             const continuation = yield* invoke("t3_thread_read", {

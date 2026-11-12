@@ -2010,17 +2010,17 @@ it.effect.each(["complete", "stop-before-decline", "stop-after-decline", "queued
           undefined,
           {
             onSteer: (turn) =>
-            Effect.suspend(() => beforeDecline).pipe(
-              Effect.andThen(
-                Effect.fail(
-                  new ProviderAdapter.ProviderAdapterSteerDeclinedError({
-                    driver,
-                    providerThreadId: turn.providerThread.id,
-                    providerTurnId: turn.providerTurnId,
-                  }),
+              Effect.suspend(() => beforeDecline).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new ProviderAdapter.ProviderAdapterSteerDeclinedError({
+                      driver,
+                      providerThreadId: turn.providerThread.id,
+                      providerTurnId: turn.providerTurnId,
+                    }),
+                  ),
                 ),
               ),
-            ),
           },
         );
         yield* Effect.gen(function* () {

@@ -480,6 +480,7 @@ it.effect.each([
           Scheduler.layer,
         ),
       ),
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
     );
     yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;

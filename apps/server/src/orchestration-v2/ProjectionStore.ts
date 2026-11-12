@@ -9436,8 +9436,28 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
     const sequence = yield* Ref.make(0);
 
     const service: ProjectionStoreV2Shape = {
+      // Zero is a valid floor: the export then measures itself.
+      getTranscriptByteFloor: () => Effect.succeed(0),
       getSubagentCount: (threadId) =>
         service.getThreadProjection(threadId).pipe(Effect.map((p) => p.subagents.length)),
+      hasPendingDelegatedCompletion: (childThreadId) =>
+        Ref.get(replayState).pipe(
+          Effect.map((state) =>
+            [...state.projections.values()].some((parent) =>
+              parent.subagents.some((task) => {
+                if (task.childThreadId !== childThreadId || task.origin !== "app_owned")
+                  return false;
+                if (task.result === null) return true;
+                const owner = parent.runs.find((run) => run.id === task.runId);
+                return (
+                  task.completionDelivery?.state === "claimed" &&
+                  owner?.delegatedCompletion?.disposition === "open" &&
+                  owner.delegatedCompletion.delivery !== undefined
+                );
+              }),
+            ),
+          ),
+        ),
       listAppOwnedChildThreadIds: (threadId) =>
         service
           .getThreadProjection(threadId)
@@ -9487,8 +9507,8 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
           ),
         ),
       listActiveShellIndex: () =>
-        service.getShellSnapshot().pipe(
-          Effect.map(({ threads }) =>
+        Effect.all([service.getShellSnapshot(), Ref.get(replayState)]).pipe(
+          Effect.map(([{ threads }, state]) =>
             threads.map((thread) => ({
               id: thread.id,
               projectId: thread.projectId,
@@ -9498,6 +9518,15 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
               pinnedAt: thread.pinnedAt,
               snoozedUntil: thread.snoozedUntil,
               mayBeLive: true,
+              hasRemoteTasks:
+                state.projections
+                  .get(thread.id)
+                  ?.subagents.some(
+                    (task) =>
+                      task.origin === "app_owned" &&
+                      task.childThreadId === null &&
+                      task.remoteChild !== undefined,
+                  ) ?? false,
             })),
           ),
         ),

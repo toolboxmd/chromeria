@@ -5035,7 +5035,7 @@ it.layer(layerTest)("delegated task follow-up turns", (it) => {
           }),
         ],
       });
-      yield* orchestrator.recoverDelegatedTask(child.childThreadId, followUpRunId);
+      yield* orchestrator.recoverDelegatedTask(child.childThreadId, { sourceRunId: followUpRunId });
       const woken = yield* orchestrator.getThreadProjection(threadId);
       assert.deepEqual(results(woken), [child.childRunId, followUpRunId]);
       const task = woken.subagents.find((row) => row.id === child.taskId);
@@ -5064,7 +5064,7 @@ it.layer(layerTest)("delegated task follow-up turns", (it) => {
       );
       assert.include(wake?.text ?? "", "Follow-up answer.");
       // Replaying the same finished turn creates no second result.
-      yield* orchestrator.recoverDelegatedTask(child.childThreadId, followUpRunId);
+      yield* orchestrator.recoverDelegatedTask(child.childThreadId, { sourceRunId: followUpRunId });
       assert.deepEqual(results(yield* orchestrator.getThreadProjection(threadId)), [
         child.childRunId,
         followUpRunId,
@@ -5117,7 +5117,7 @@ it.layer(layerTest)("delegated task follow-up turns", (it) => {
           }),
         ],
       });
-      yield* orchestrator.recoverDelegatedTask(child.childThreadId, monitorRunId);
+      yield* orchestrator.recoverDelegatedTask(child.childThreadId, { sourceRunId: monitorRunId });
       const quiet = yield* orchestrator.getThreadProjection(threadId);
       assert.deepEqual(results(quiet), [child.childRunId, followUpRunId]);
       assert.equal(
@@ -5268,7 +5268,7 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
           followUpRun,
         ],
       });
-      yield* orchestrator.recoverDelegatedTask(child.childThreadId, followUpRunId);
+      yield* orchestrator.recoverDelegatedTask(child.childThreadId, { sourceRunId: followUpRunId });
       const parent = yield* orchestrator.getThreadProjection(threadId);
       assert.deepEqual(
         parent.contextTransfers
@@ -5541,7 +5541,7 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
           },
         ],
       });
-      yield* orchestrator.recoverDelegatedTask(child.childThreadId, requested.id);
+      yield* orchestrator.recoverDelegatedTask(child.childThreadId, { sourceRunId: requested.id });
       const parent = yield* orchestrator.getThreadProjection(threadId);
       assert.deepEqual(
         parent.contextTransfers

@@ -9816,7 +9816,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             sdkMessageLock.withPermits(1)(retireOfferedWake(nativeThreadId, token));
           const notices =
             (yield* Ref.get(wakeBuffers))
-              .get(wakeInput.nativeThreadId)
+              .get(nativeThreadId)
               ?.messages.filter(
                 (entry): entry is Extract<SDKMessage, { readonly subtype: "task_notification" }> =>
                   entry.type === "system" && entry.subtype === "task_notification",
@@ -9829,13 +9829,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 : ((registry.get(notice.task_id)?.task.nativeSegments ?? []).find(
                     (segment) => segment.nativeOperationId === notice.tool_use_id,
                   ) ??
-                  (nativeOperationsByNativeThread.get(wakeInput.nativeThreadId) ?? []).find(
+                  (nativeOperationsByNativeThread.get(nativeThreadId) ?? []).find(
                     (operation) =>
                       operation.nativeOperationId === notice.tool_use_id &&
                       operation.nativeChildId === notice.task_id,
                   ));
             return {
-              operationId: segment?.id ?? `${wakeInput.nativeThreadId}:notice:${notice.uuid}`,
+              operationId: segment?.id ?? `${nativeThreadId}:notice:${notice.uuid}`,
               ...(segment === undefined || segment.source.type === "unresolved"
                 ? {}
                 : { purpose: segment.purpose }),
@@ -9845,9 +9845,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             disposition: "offered" | "dropped_disabled",
           ) {
             const causeIds = new Set(nativeCauses.map((cause) => cause.operationId));
-            const operations = nativeOperationsByNativeThread.get(wakeInput.nativeThreadId) ?? [];
+            const operations = nativeOperationsByNativeThread.get(nativeThreadId) ?? [];
             nativeOperationsByNativeThread.set(
-              wakeInput.nativeThreadId,
+              nativeThreadId,
               operations.map((operation) =>
                 causeIds.has(operation.id)
                   ? {
@@ -9882,11 +9882,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 });
             }
             const providerThread = (yield* Ref.get(lastProviderThreadByNativeThread)).get(
-              wakeInput.nativeThreadId,
+              nativeThreadId,
             );
             if (providerThread !== undefined)
               yield* emitProviderThreadRoster({
-                nativeThreadId: wakeInput.nativeThreadId,
+                nativeThreadId: nativeThreadId,
                 providerThread,
               });
           });

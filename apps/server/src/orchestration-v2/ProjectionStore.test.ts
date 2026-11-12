@@ -846,7 +846,9 @@ it.effect.each([layerTest, ProjectionStore.layerMemory])(
             statement.includes(`FROM orchestration_v2_projection_${table}`),
           );
           assert.isDefined(query);
-          const plan = (yield* sql.unsafe<{ readonly detail: string }>(`EXPLAIN QUERY PLAN ${query}`))
+          const plan = (yield* sql.unsafe<{ readonly detail: string }>(
+            `EXPLAIN QUERY PLAN ${query}`,
+          ))
             .map((row) => row.detail)
             .join("\n");
           for (const seek of seeks) assert.include(plan, seek);
@@ -1388,7 +1390,9 @@ it.effect.each([layerTest, ProjectionStore.layerMemory])(
           })
           .pipe(Effect.withTracer(withItems.tracer));
         assert.deepEqual(ordered.messages, userMessages.messages);
-        assert.isFalse(withItems.statements.some((statement) => statement.includes("MIN(ordinal)")));
+        assert.isFalse(
+          withItems.statements.some((statement) => statement.includes("MIN(ordinal)")),
+        );
       }
       assert.lengthOf((yield* store.getThreadRecords(threadId, ["messages"])).messages, 4);
       assert.lengthOf(

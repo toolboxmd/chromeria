@@ -1544,6 +1544,7 @@ const makeOpenCode2Boundary = Effect.fn("makeOpenCode2UrgentStopBoundary")(funct
       };
       const server = OpenCode2Server.OpenCode2Server.of({
         withConnection: (use) => use(connection),
+        forget: Effect.void,
       });
       const adapter = yield* OpenCode2Adapter.make(ProviderInstanceId.make("opencode")).pipe(
         Effect.provideService(OpenCode2Server.OpenCode2Server, server),

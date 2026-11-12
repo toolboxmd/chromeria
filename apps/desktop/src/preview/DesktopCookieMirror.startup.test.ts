@@ -57,6 +57,7 @@ import * as DesktopBackendConfiguration from "../backend/DesktopBackendConfigura
 import * as DesktopCliCommand from "../app/DesktopCliCommand.ts";
 import * as DesktopIpc from "../ipc/DesktopIpc.ts";
 import * as DesktopLocalEnvironmentAuth from "../backend/DesktopLocalEnvironmentAuth.ts";
+import * as DesktopPrimaryPaste from "../app/DesktopPrimaryPaste.ts";
 import * as DesktopRenewalStore from "../app/DesktopRenewalStore.ts";
 import * as DesktopSshPasswordPrompts from "../ssh/DesktopSshPasswordPrompts.ts";
 import * as DesktopTelemetryPublisher from "../telemetry/DesktopTelemetryPublisher.ts";
@@ -227,6 +228,7 @@ it.effect.each([
       Layer.mock(DesktopCliCommand.DesktopCliCommand, {}),
       Layer.mock(DesktopIpc.DesktopIpc, {}),
       Layer.mock(DesktopLocalEnvironmentAuth.DesktopLocalEnvironmentAuth, {}),
+      Layer.succeed(DesktopPrimaryPaste.DesktopPrimaryPaste, { enabled: true }),
       Layer.mock(DesktopRenewalStore.DesktopRenewalStore, {}),
       Layer.mock(DesktopSshPasswordPrompts.DesktopSshPasswordPrompts, {}),
       Layer.mock(DesktopTelemetryPublisher.DesktopTelemetryPublisher, {}),

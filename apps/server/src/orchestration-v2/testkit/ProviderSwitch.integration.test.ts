@@ -1327,7 +1327,7 @@ describe("orchestration v2 provider switching", () => {
               dispatchMode: { type: "start_immediately" },
             });
           const wait = (ordinal: number) =>
-            orchestrator.streamStoredEvents.pipe(
+            orchestrator.streamStoredEventsFrom({ afterSequence: 0, threadId }).pipe(
               Stream.filter(
                 ({ event }) =>
                   event.type === "run.updated" &&

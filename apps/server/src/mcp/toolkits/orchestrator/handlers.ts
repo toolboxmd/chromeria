@@ -6,7 +6,6 @@ import type * as Tool from "effect/ai/Tool";
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as PeerLinkRequests from "../../../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../../../peer/PeerLinks.ts";
-import * as RemoteDelegation from "../../../peer/RemoteDelegation.ts";
 import { readCaller } from "../../threadAccess.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
@@ -221,22 +220,15 @@ const handlers = {
     (input, scope) =>
       PeerForwarding.remoteTarget(scope, input.environmentId) === undefined ? [input.threadId] : [],
     (input) =>
-      Effect.gen(function* () {
-        const scope = yield* McpInvocationContext.McpInvocationContext;
-        const sent = yield* routed(
-          tools.t3_thread_send,
-          input,
-          Effect.gen(function* () {
-            const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-            return yield* service.sendToThread(scope, input);
-          }),
-        );
-        const target = PeerForwarding.remoteTarget(scope, input.environmentId);
-        // There the thread's parent is here, so only this side can make a follow-up a task.
-        if (target === undefined || sent.runId === null) return sent;
-        const remote = yield* RemoteDelegation.RemoteDelegation;
-        return yield* remote.followUp(scope, target, input, sent);
-      }),
+      routed(
+        tools.t3_thread_send,
+        input,
+        Effect.gen(function* () {
+          const scope = yield* McpInvocationContext.McpInvocationContext;
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          return yield* service.sendToThread(scope, input);
+        }),
+      ),
   ),
   t3_thread_wait: McpToolAccess.reads((input) =>
     Effect.gen(function* () {

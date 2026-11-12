@@ -812,8 +812,8 @@ it.effect("live run recovery finalizes its child without reading settled childre
       Layer.succeed(Orchestrator.OrchestratorV2, {
         ...orchestrator,
         recoverDelegatedTasks: orchestrator.recoverDelegatedTasks.pipe(wake),
-        recoverDelegatedTask: (threadId, sourceRunId) =>
-          orchestrator.recoverDelegatedTask(threadId, sourceRunId).pipe(wake),
+        recoverDelegatedTask: (threadId, options) =>
+          orchestrator.recoverDelegatedTask(threadId, options).pipe(wake),
       }),
     );
     yield* Effect.gen(function* () {
@@ -864,9 +864,9 @@ it.effect.each(["fresh", "decided-history", "unresolved-history"] as const)(
         Layer.succeed(ServerActivation, undefined),
         Layer.succeed(Orchestrator.OrchestratorV2, {
           ...orchestrator,
-          recoverDelegatedTask: (threadId, sourceRunId) =>
+          recoverDelegatedTask: (threadId, options) =>
             orchestrator
-              .recoverDelegatedTask(threadId, sourceRunId)
+              .recoverDelegatedTask(threadId, options)
               .pipe(
                 Effect.andThen(
                   threadId === childId ? Queue.offer(observed, undefined) : Effect.void,

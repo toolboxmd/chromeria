@@ -360,7 +360,7 @@ it.effect.each([
           Effect.forkChild,
         );
         const finalizing = yield* engine
-          .recoverDelegatedTask(child.thread.id, childRun.id)
+          .recoverDelegatedTask(child.thread.id, { sourceRunId: childRun.id })
           .pipe(Effect.forkChild);
         assert.isTrue(Option.isSome(yield* Fiber.join(observed)));
         yield* Fiber.interrupt(finalizing);

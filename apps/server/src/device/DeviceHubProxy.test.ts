@@ -102,7 +102,14 @@ const fixture = (
     { disableLogger: true },
   );
   disposers.push(dispose);
-  return { handler, requests, screenshots, headers, upstreamHeaders: headers, finalized: () => finalized };
+  return {
+    handler,
+    requests,
+    screenshots,
+    headers,
+    upstreamHeaders: headers,
+    finalized: () => finalized,
+  };
 };
 
 describe("device hub proxy", () => {

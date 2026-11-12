@@ -1554,6 +1554,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
       const adapter = yield* OpenCode2AdapterV2.make(instanceId).pipe(
         Effect.provideService(OpenCode2Server.OpenCode2Server, {
           withConnection: (use) => use(connection),
+          forget: Effect.void,
         }),
       );
       const runtime = yield* adapter.openSession({

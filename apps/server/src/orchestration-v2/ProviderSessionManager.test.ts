@@ -38,9 +38,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderSessionId,
-  RunId,
   ThreadId,
-  TurnItemId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
@@ -5758,6 +5756,7 @@ it.effect.each([
           }),
       });
       const layer = RunExecutionService.layer.pipe(
+        Layer.provideMerge(ThreadCommandExecutor.layer),
         Layer.provideMerge(PreviewAgentActivity.layer),
         Layer.provideMerge(TurnItemPositionStore.layer.pipe(Layer.provide(layerTestDatabase))),
         Layer.provideMerge(
@@ -5959,6 +5958,7 @@ it.effect(
           }),
       });
       const layer = RunExecutionService.layer.pipe(
+        Layer.provideMerge(ThreadCommandExecutor.layer),
         Layer.provideMerge(PreviewAgentActivity.layer),
         Layer.provideMerge(TurnItemPositionStore.layer.pipe(Layer.provide(layerTestDatabase))),
         Layer.provideMerge(

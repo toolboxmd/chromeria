@@ -1,5 +1,4 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
-import { EnvironmentId } from "@t3tools/contracts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import { NodeHttpServer } from "@effect/platform-node";
@@ -64,6 +63,7 @@ const senderToolkit = Toolkit.make(
   Tool.make("sender", {
     description: "Returns the thread this request is made for.",
     success: Schema.Struct({ senderThread: Schema.NullOr(OrchestrationV2LinkedSender) }),
+    failure: OrchestratorMcpFailure,
     dependencies: [McpInvocationContext.McpInvocationContext],
   }),
 );

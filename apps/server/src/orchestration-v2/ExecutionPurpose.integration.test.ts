@@ -823,7 +823,7 @@ it.effect(
       assert.deepEqual(initial.purpose?.scope, scopedA);
       assert.equal(initial.delegatedTaskId, task.id);
       yield* complete(initial);
-      yield* orchestrator.recoverDelegatedTask(childId, initial.id);
+      yield* orchestrator.recoverDelegatedTask(childId, { sourceRunId: initial.id });
       yield* orchestrator.dispatch({
         type: "thread.metadata.update",
         commandId: CommandId.make("child-select-b"),
@@ -840,7 +840,7 @@ it.effect(
       assert.deepEqual(human.purpose?.scope, scopedB);
       assert.equal(human.delegatedTaskId, task.id);
       yield* complete(human);
-      yield* orchestrator.recoverDelegatedTask(childId, human.id);
+      yield* orchestrator.recoverDelegatedTask(childId, { sourceRunId: human.id });
       const notified = yield* orchestrator.getThreadProjection(parentId);
       assert.deepEqual(notified.subagents.find((row) => row.id === task.id)?.completionSource, {
         runId: human.id,

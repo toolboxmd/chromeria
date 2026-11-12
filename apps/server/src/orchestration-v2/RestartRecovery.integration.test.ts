@@ -436,7 +436,7 @@ it.live(
               },
             ],
           });
-          yield* orchestrator.recoverDelegatedTask(childId, first.id);
+          yield* orchestrator.recoverDelegatedTask(childId, { sourceRunId: first.id });
           const originalParent = yield* orchestrator.getThreadProjection(parentId);
           const originalTransfer = originalParent.contextTransfers.find(
             (transfer) => transfer.type === "subagent_result",
@@ -914,7 +914,7 @@ it.live(
                 },
               ],
             });
-            yield* orchestrator.recoverDelegatedTask(childId, current.id);
+            yield* orchestrator.recoverDelegatedTask(childId, { sourceRunId: current.id });
             assert.isNotNull(
               (yield* orchestrator.getThreadProjection(parentId)).subagents[0]?.result,
             );

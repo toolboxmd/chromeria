@@ -120,7 +120,9 @@ export const layerExecutor: Layer.Layer<
                         RESTART_CUT_REASONS.EFFECT_FAILED,
                       )
                       .pipe(
-                        Effect.andThen(threads.recoverDelegatedTask(effect.threadId, { sourceRunId })),
+                        Effect.andThen(
+                          threads.recoverDelegatedTask(effect.threadId, { sourceRunId }),
+                        ),
                       ),
               ),
               Effect.mapError(

@@ -561,7 +561,7 @@ it.effect.each(["queued", "starting"] as const)(
           yield* completeRunWithoutProvider(parentId, parentRun.id, `parent-finished-${phase}`);
         else yield* send(parentId, "held instructions", "queue_after_active");
         yield* completeRunWithoutProvider(childId, childRun.id, `child-finished-${phase}`);
-        yield* orchestrator.recoverDelegatedTask(childId, childRun.id);
+        yield* orchestrator.recoverDelegatedTask(childId, { sourceRunId: childRun.id });
         const first = yield* Queue.take(offers);
         yield* first.dispatchIfCurrent!(consumeCompletion(first));
         const dispatched = yield* orchestrator.getThreadProjection(parentId);
@@ -636,7 +636,7 @@ it.effect("retries the same unread mailbox identity when finalization follows re
       const childRun = (yield* orchestrator.getThreadProjection(childId)).runs[0]!;
       yield* completeRunWithoutProvider(parentId, parentRun.id, "late-parent-finished");
       yield* completeRunWithoutProvider(childId, childRun.id, "late-child-finished");
-      yield* orchestrator.recoverDelegatedTask(childId, childRun.id);
+      yield* orchestrator.recoverDelegatedTask(childId, { sourceRunId: childRun.id });
       const first = yield* Queue.take(offers);
       yield* first.dispatchIfCurrent!(consumeCompletion(first));
       yield* send(parentId, "held instructions", "queue_after_active");
@@ -720,7 +720,7 @@ it.effect.each(["thread", "ancestor"] as const)(
         const childId = yield* delegate(parentId, "race child");
         const childRun = (yield* orchestrator.getThreadProjection(childId)).runs[0]!;
         yield* completeRunWithoutProvider(childId, childRun.id, "race-child-finished");
-        yield* orchestrator.recoverDelegatedTask(childId, childRun.id);
+        yield* orchestrator.recoverDelegatedTask(childId, { sourceRunId: childRun.id });
         const request = yield* Queue.take(offers);
         const stopped = yield* request.dispatchIfCurrent!(
           Effect.gen(function* () {
@@ -774,7 +774,7 @@ it.effect.each(["archived", "disabled"] as const)(
         const childId = yield* delegate(parentId, `cleanup child ${reason}`);
         const childRun = (yield* orchestrator.getThreadProjection(childId)).runs[0]!;
         yield* completeRunWithoutProvider(childId, childRun.id, `cleanup-child-finished-${reason}`);
-        yield* orchestrator.recoverDelegatedTask(childId, childRun.id);
+        yield* orchestrator.recoverDelegatedTask(childId, { sourceRunId: childRun.id });
         if (reason === "archived") {
           yield* orchestrator.dispatch({
             type: "thread.archive",
@@ -889,7 +889,7 @@ it.effect.each(["before-stop", "after-stop", "after-resume"] as const)(
             },
           ],
         });
-        yield* orchestrator.recoverDelegatedTask(childId, childRun.id);
+        yield* orchestrator.recoverDelegatedTask(childId, { sourceRunId: childRun.id });
         if (timing !== "after-stop") yield* stop;
         assert.equal(yield* Ref.get(offers), timing === "after-stop" ? 0 : 1);
         yield* sink.write({
@@ -905,7 +905,7 @@ it.effect.each(["before-stop", "after-stop", "after-resume"] as const)(
             },
           ],
         });
-        yield* orchestrator.recoverDelegatedTask(readChildId, readChildRun.id);
+        yield* orchestrator.recoverDelegatedTask(readChildId, { sourceRunId: readChildRun.id });
         const readableTask = (yield* orchestrator.getThreadProjection(parentId)).subagents.find(
           (task) => task.childThreadId === readChildId,
         )!;
@@ -1015,7 +1015,7 @@ it.effect.each(["before-stop", "after-stop", "after-resume"] as const)(
           )?.queueHeld,
         );
         // Reconciliation and a second explicit resume cannot create a second delivery.
-        yield* orchestrator.recoverDelegatedTask(childId, childRun.id);
+        yield* orchestrator.recoverDelegatedTask(childId, { sourceRunId: childRun.id });
         yield* send(parentId, "resume again", "queue_after_active");
         assert.equal(yield* Ref.get(offers), timing === "after-stop" ? 1 : 2);
         assert.equal(dispatches, 1);
@@ -2953,7 +2953,7 @@ it.effect.each(["before settlement", "after reservation", "after queue"] as cons
         const laterRun = (yield* orchestrator.getThreadProjection(laterId)).runs[0]!;
         yield* completeRunWithoutProvider(parentId, parentRun.id, "late-parent-finished");
         yield* completeRunWithoutProvider(childId, childRun.id, "late-child-finished");
-        yield* orchestrator.recoverDelegatedTask(childId, childRun.id);
+        yield* orchestrator.recoverDelegatedTask(childId, { sourceRunId: childRun.id });
         const first = yield* Queue.take(offers);
         yield* first.dispatchIfCurrent!(consumeCompletion(first));
         const sink = yield* EventSink.EventSinkV2;
@@ -3005,7 +3005,7 @@ it.effect.each(["before settlement", "after reservation", "after queue"] as cons
           ],
         });
         yield* completeRunWithoutProvider(siblingId, siblingRun.id, "review-sibling-finished");
-        yield* orchestrator.recoverDelegatedTask(siblingId, siblingRun.id);
+        yield* orchestrator.recoverDelegatedTask(siblingId, { sourceRunId: siblingRun.id });
         assert.equal(
           (yield* orchestrator.getThreadProjection(parentId)).subagents.find(
             (task) => task.childThreadId === siblingId,
@@ -3049,7 +3049,9 @@ it.effect.each(["before settlement", "after reservation", "after queue"] as cons
           laterId,
           laterRun.id,
           "later-child-finished",
-        ).pipe(Effect.andThen(orchestrator.recoverDelegatedTask(laterId, laterRun.id)));
+        ).pipe(
+          Effect.andThen(orchestrator.recoverDelegatedTask(laterId, { sourceRunId: laterRun.id })),
+        );
         if (laterPhase === "before settlement") yield* finishLater;
         yield* orchestrator.recoverDelegatedTasks;
         const successor = yield* Queue.take(offers);
@@ -3153,7 +3155,7 @@ it.effect("ancestor Stop wins before producer offer", () =>
             : read;
         });
       const finalization = yield* orchestrator
-        .recoverDelegatedTask(childId, childRun.id)
+        .recoverDelegatedTask(childId, { sourceRunId: childRun.id })
         .pipe(Effect.forkChild);
       yield* Deferred.await(reached);
       yield* orchestrator.dispatch({
@@ -3192,7 +3194,7 @@ it.effect("a queued completion survives startup held until queue.resume", () =>
       const siblingRun = (yield* orchestrator.getThreadProjection(siblingId)).runs[0]!;
       yield* completeRunWithoutProvider(parentId, parentRun.id, "late-parent-finished");
       yield* completeRunWithoutProvider(childId, childRun.id, "late-child-finished");
-      yield* orchestrator.recoverDelegatedTask(childId, childRun.id);
+      yield* orchestrator.recoverDelegatedTask(childId, { sourceRunId: childRun.id });
       const first = yield* Queue.take(offers);
       yield* first.dispatchIfCurrent!(consumeCompletion(first));
       const sink = yield* EventSink.EventSinkV2;
@@ -3244,7 +3246,7 @@ it.effect("a queued completion survives startup held until queue.resume", () =>
         ],
       });
       yield* completeRunWithoutProvider(siblingId, siblingRun.id, "review-sibling-finished");
-      yield* orchestrator.recoverDelegatedTask(siblingId, siblingRun.id);
+      yield* orchestrator.recoverDelegatedTask(siblingId, { sourceRunId: siblingRun.id });
       assert.equal(
         (yield* orchestrator.getThreadProjection(parentId)).subagents.find(
           (task) => task.childThreadId === siblingId,
@@ -3362,7 +3364,7 @@ it.effect("acknowledging one queued completion preserves another result", () =>
       const laterRun = (yield* orchestrator.getThreadProjection(laterId)).runs[0]!;
       yield* completeRunWithoutProvider(parentId, parentRun.id, "late-parent-finished");
       yield* completeRunWithoutProvider(childId, childRun.id, "late-child-finished");
-      yield* orchestrator.recoverDelegatedTask(childId, childRun.id);
+      yield* orchestrator.recoverDelegatedTask(childId, { sourceRunId: childRun.id });
       const first = yield* Queue.take(offers);
       yield* first.dispatchIfCurrent!(consumeCompletion(first));
       const sink = yield* EventSink.EventSinkV2;
@@ -3414,7 +3416,7 @@ it.effect("acknowledging one queued completion preserves another result", () =>
         ],
       });
       yield* completeRunWithoutProvider(siblingId, siblingRun.id, "review-sibling-finished");
-      yield* orchestrator.recoverDelegatedTask(siblingId, siblingRun.id);
+      yield* orchestrator.recoverDelegatedTask(siblingId, { sourceRunId: siblingRun.id });
       assert.equal(
         (yield* orchestrator.getThreadProjection(parentId)).subagents.find(
           (task) => task.childThreadId === siblingId,
@@ -3456,7 +3458,7 @@ it.effect("acknowledging one queued completion preserves another result", () =>
       yield* orchestrator.recoverDelegatedTasks;
       const successor = yield* Queue.take(offers);
       yield* completeRunWithoutProvider(laterId, laterRun.id, "review-later-finished");
-      yield* orchestrator.recoverDelegatedTask(laterId, laterRun.id);
+      yield* orchestrator.recoverDelegatedTask(laterId, { sourceRunId: laterRun.id });
       assert.notEqual(
         successor.delegatedCompletion!.messageId,
         first.delegatedCompletion!.messageId,
@@ -3507,7 +3509,7 @@ it.effect(
         const firstRun = (yield* orchestrator.getThreadProjection(firstChild)).runs[0]!;
         const otherRun = (yield* orchestrator.getThreadProjection(otherChild)).runs[0]!;
         yield* completeRunWithoutProvider(firstChild, firstRun.id, "ack-first-child-finished");
-        yield* orchestrator.recoverDelegatedTask(firstChild, firstRun.id);
+        yield* orchestrator.recoverDelegatedTask(firstChild, { sourceRunId: firstRun.id });
         const first = yield* Queue.take(offers);
         yield* first.dispatchIfCurrent!(consumeCompletion(first));
         yield* orchestrator.dispatch({
@@ -3516,7 +3518,7 @@ it.effect(
           commandId: CommandId.make("command:runtime-reconcile:stop-queued-ack"),
         });
         yield* completeRunWithoutProvider(otherChild, otherRun.id, "ack-other-child-finished");
-        yield* orchestrator.recoverDelegatedTask(otherChild, otherRun.id);
+        yield* orchestrator.recoverDelegatedTask(otherChild, { sourceRunId: otherRun.id });
         const beforeAck = yield* orchestrator.getThreadProjection(parentId);
         const firstTask = beforeAck.subagents.find((task) => task.childThreadId === firstChild)!;
         const otherTask = beforeAck.subagents.find((task) => task.childThreadId === otherChild)!;
@@ -3622,7 +3624,7 @@ it.effect.each(["live", "startup", "preparing-restart"] as const)(
           });
         yield* send(parentId, "ordinary queued message", "queue_after_active");
         yield* completeRunWithoutProvider(childId, childRun.id, "review-worktree-child-complete");
-        yield* orchestrator.recoverDelegatedTask(childId, childRun.id);
+        yield* orchestrator.recoverDelegatedTask(childId, { sourceRunId: childRun.id });
         const request = yield* Queue.take(offers);
         yield* request.dispatchIfCurrent!(consumeCompletion(request));
         const queued = yield* orchestrator.getThreadProjection(parentId);
@@ -3637,7 +3639,7 @@ it.effect.each(["live", "startup", "preparing-restart"] as const)(
           siblingRun.id,
           "review-worktree-sibling-complete",
         );
-        yield* orchestrator.recoverDelegatedTask(siblingId, siblingRun.id);
+        yield* orchestrator.recoverDelegatedTask(siblingId, { sourceRunId: siblingRun.id });
         if (phase !== "live") {
           const recovery = yield* ProviderRuntimeRecovery.make.pipe(
             Effect.provide(IdAllocator.layer),
@@ -3760,7 +3762,7 @@ it.effect("review r4: provider-failure queue hold is inherited by a later comple
       const busy = (yield* orchestrator.getThreadProjection(parentId)).runs.at(-1)!;
       assert.equal(busy.status, "starting");
       yield* completeRunWithoutProvider(childId, childRun.id, "r4-child-completed");
-      yield* orchestrator.recoverDelegatedTask(childId, childRun.id);
+      yield* orchestrator.recoverDelegatedTask(childId, { sourceRunId: childRun.id });
       const offer = yield* Queue.take(offers);
       yield* offer.dispatchIfCurrent!(consumeCompletion(offer));
       const before = yield* orchestrator.getThreadProjection(parentId);

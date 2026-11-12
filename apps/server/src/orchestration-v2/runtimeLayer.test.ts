@@ -20,7 +20,6 @@ import {
   CheckpointRef,
   CommandId,
   ContextTransferId,
-  EnvironmentId,
   EventId,
   MessageId,
   NodeId,

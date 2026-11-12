@@ -184,6 +184,7 @@ it.effect.each([
             AppModelContext.layerEmpty,
             Settings.layerTest({ responseStreamingMode: mode }),
             Layer.mock(Checkpoints.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
+            ThreadCommands.layer,
           ),
         ),
       );

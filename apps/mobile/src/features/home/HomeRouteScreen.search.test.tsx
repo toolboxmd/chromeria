@@ -197,33 +197,35 @@ vi.mock("../../state/threads", async () => {
     Atom.make<ReadonlyArray<string> | null>(null),
   );
   state.hiddenTags = hiddenTags;
+  const shells = createEnvironmentThreadShellAtoms({
+    snapshotAtom: snapshots,
+    hiddenThreadTagsAtom: hiddenTags,
+    catalogValueAtom: Atom.make({
+      isReady: true,
+      entries: new Map(
+        ["destination", "other"].map((value) => {
+          const environmentId = EnvironmentId.make(value);
+          return [
+            environmentId,
+            {
+              enabled: true,
+              profile: Option.none(),
+              target: new PrimaryConnectionTarget({
+                environmentId,
+                label: value,
+                httpBaseUrl: "https://example.test",
+                wsBaseUrl: "wss://example.test",
+              }),
+            },
+          ];
+        }),
+      ),
+    }),
+  });
   return {
     startOpeningEnvironmentThread: () => {},
-    environmentThreadShells: createEnvironmentThreadShellAtoms({
-      snapshotAtom: snapshots,
-      hiddenThreadTagsAtom: hiddenTags,
-      catalogValueAtom: Atom.make({
-        isReady: true,
-        entries: new Map(
-          ["destination", "other"].map((value) => {
-            const environmentId = EnvironmentId.make(value);
-            return [
-              environmentId,
-              {
-                enabled: true,
-                profile: Option.none(),
-                target: new PrimaryConnectionTarget({
-                  environmentId,
-                  label: value,
-                  httpBaseUrl: "https://example.test",
-                  wsBaseUrl: "wss://example.test",
-                }),
-              },
-            ];
-          }),
-        ),
-      }),
-    }),
+    environmentThreadShells: shells,
+    steadyNavigationThreadShellsAtom: shells.navigationThreadShellsAtom,
   };
 });
 vi.mock("../../state/entities", () => ({ useProjects: () => [] }));
@@ -447,7 +449,7 @@ it("phone lists a creation the outbox is sending before its thread arrives, also
 it("phone keeps the visibility subscription guard while searching", () => {
   mount();
   click("Title search");
-  act(() => recordHomeTransitionEnd(true));
+  act(() => recordHomeTransitionEnd(true, false));
   const before = state.listRenders;
   act(() =>
     registry.set(state.snapshots!(destination), {

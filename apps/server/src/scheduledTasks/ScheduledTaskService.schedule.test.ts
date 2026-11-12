@@ -74,9 +74,8 @@ it.effect("rejects a stale form save after deletion while preserving explicit-id
     }).pipe(
       Effect.provide(
         ScheduledTaskService.layer.pipe(
-          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
-          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
           Layer.provide(layerDependencies),
+          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
         ),
       ),
     );
@@ -144,9 +143,8 @@ it.effect("preserves a due run when a save only pads the scheduled hour", () =>
     }).pipe(
       Effect.provide(
         ScheduledTaskService.layer.pipe(
-          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
-          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
           Layer.provide(layerDependencies),
+          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
         ),
       ),
     );
@@ -205,9 +203,8 @@ it.effect("keeps the task list order when a toggle or edit rewrites updated_at",
     }).pipe(
       Effect.provide(
         ScheduledTaskService.layer.pipe(
-          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
-          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
           Layer.provide(layerDependencies),
+          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
         ),
       ),
     );
@@ -361,7 +358,14 @@ it.effect("keeps one queued occurrence of a recurring task while its bound threa
       yield* TestClock.adjust("61 seconds");
       yield* Effect.flatten(Ref.get(runDueWork));
       expect(yield* queuedOccurrencesOf(once.id)).toBe(2);
-    }).pipe(Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))));
+    }).pipe(
+      Effect.provide(
+        ScheduledTaskService.layer.pipe(
+          Layer.provide(layerDependencies),
+          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+        ),
+      ),
+    );
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
@@ -428,8 +432,8 @@ it.effect(
       }).pipe(
         Effect.provide(
           ScheduledTaskService.layer.pipe(
-            Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
             Layer.provide(layerDependencies),
+            Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
           ),
         ),
       );
@@ -464,7 +468,12 @@ it.effect("a fixed-time slot missed while the server was off shows on the task",
     );
     const withServer = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(
-        Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))),
+        Effect.provide(
+          ScheduledTaskService.layer.pipe(
+            Layer.provide(layerDependencies),
+            Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+          ),
+        ),
       );
 
     const taskId = yield* withServer(
@@ -546,7 +555,12 @@ it.effect(
       );
       const withServer = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
         effect.pipe(
-          Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))),
+          Effect.provide(
+            ScheduledTaskService.layer.pipe(
+              Layer.provide(layerDependencies),
+              Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+            ),
+          ),
         );
       const upsert = (
         title: string,

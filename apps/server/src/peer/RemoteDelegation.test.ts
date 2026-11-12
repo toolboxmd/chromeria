@@ -33,7 +33,6 @@ import {
   CommandId,
   EventId,
   MessageId,
-  type ModelSelection,
   NodeId,
   type OrchestrationV2Run,
   type OrchestrationV2Subagent,
@@ -47,7 +46,6 @@ import {
   LEGACY_EXECUTION_PURPOSE,
   OrchestratorMcpThreadSendResult,
   RunId,
-  type ServerProvider,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -62,7 +60,6 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import * as Tracer from "effect/Tracer";
 import * as TestClock from "effect/testing/TestClock";
 import * as RequestReceipts from "../mcp/McpRequestReceipts.ts";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -154,8 +151,6 @@ interface BoxThread {
   /** Completed on the first interrupt there. */
   readonly interruptedOnce: Deferred.Deferred<void>;
   readonly finished: Deferred.Deferred<void>;
-  /** Ends the later run a message sent there started, for a wait pinned to it. */
-  readonly laterFinished: Deferred.Deferred<void>;
   /** While set, reading the thread there waits: completed once a read starts, released by `releaseRead`. */
   readonly holdRead: Ref.Ref<boolean>;
   readonly readStarted: Deferred.Deferred<void>;
@@ -191,7 +186,6 @@ const makeBoxThread = Effect.gen(function* () {
     runless: yield* Ref.make(false),
     interruptedOnce: yield* Deferred.make<void>(),
     finished: yield* Deferred.make<void>(),
-    laterFinished: yield* Deferred.make<void>(),
     holdRead: yield* Ref.make(false),
     readStarted: yield* Deferred.make<void>(),
     releaseRead: yield* Deferred.make<void>(),
@@ -249,8 +243,6 @@ const serveBox = (thread: BoxThread, lifecycleSupported: boolean | Ref.Ref<boole
 
 const boxRunId = RunId.make("run:box");
 const boxLaterRunId = RunId.make("run:box-later");
-const boxQueuedRunId = RunId.make("run:box-queued");
-const continuationOf = (runId: RunId) => RunId.make(`${runId}:restarted`);
 
 const boxToolkitLayer = (
   thread: BoxThread,
@@ -331,37 +323,6 @@ const boxToolkitLayer = (
             threadId: input.threadId,
           });
         }
-        // The queued run's own task stays open while the follow-up ahead of it settles.
-        if (input.runId === boxQueuedRunId) return yield* Effect.never;
-        if (input.runId === boxLaterRunId) {
-          const laterDone = yield* Deferred.await(thread.laterFinished).pipe(
-            Effect.timeoutOption(input.timeoutMs),
-          );
-          // Settled, the thread's answer is the run queued behind it, once there is one.
-          const queued =
-            Option.isSome(laterDone) &&
-            input.untilDelegatedWorkSettled === true &&
-            (yield* Ref.get(thread.queuedReply)) !== null;
-          // A restarted run is reported as its continuation, as the box follows the chain.
-          const restarted = (yield* Ref.get(thread.restart))?.of;
-          const latest = (runId: RunId) => (runId === restarted ? continuationOf(runId) : runId);
-          return {
-            threadId: input.threadId,
-            run: {
-              id: latest(boxLaterRunId),
-              status: Option.isSome(laterDone) ? "completed" : "running",
-            } as OrchestrationV2Run,
-            timedOut: Option.isNone(laterDone),
-            ...(queued
-              ? {
-                  resultRun: {
-                    id: latest(boxQueuedRunId),
-                    status: "completed",
-                  } as OrchestrationV2Run,
-                }
-              : {}),
-          };
-        }
         const done = yield* Deferred.await(thread.finished).pipe(
           Effect.timeoutOption(input.timeoutMs),
         );
@@ -405,10 +366,8 @@ const boxToolkitLayer = (
         }
         const reply = yield* Ref.get(thread.reply);
         const later = yield* Ref.get(thread.laterReply);
-        const queued = yield* Ref.get(thread.queuedReply);
         const error = yield* Ref.get(thread.error);
         const laterError = yield* Ref.get(thread.laterError);
-        const restart = yield* Ref.get(thread.restart);
         // One item per page, with errors available only in the activity view.
         const replies = [
           ...(reply === null
@@ -442,26 +401,6 @@ const boxToolkitLayer = (
                   runId: boxLaterRunId,
                   text: laterError,
                   type: "error",
-                },
-              ]),
-          ...(queued === null
-            ? []
-            : [
-                {
-                  id: TurnItemId.make("item:queued-reply"),
-                  runId: boxQueuedRunId,
-                  text: queued,
-                  type: "assistant_message",
-                },
-              ]),
-          ...(restart === null
-            ? []
-            : [
-                {
-                  id: TurnItemId.make("item:restarted-reply"),
-                  runId: continuationOf(restart.of),
-                  text: restart.reply,
-                  type: "assistant_message",
                 },
               ]),
         ].map((entry, position) => ({ ...entry, position }));
@@ -891,23 +830,6 @@ const mcpClient = McpSchema.McpServerClient.of({
   getClient: Effect.die("unused"),
 });
 
-/** The box's only provider: a Claude instance, under its own id. */
-const boxClaude: ServerProvider = {
-  instanceId: ProviderInstanceId.make("claude-box"),
-  driver: ProviderDriverKind.make("claudeAgent"),
-  enabled: true,
-  installed: true,
-  version: "test",
-  status: "ready",
-  auth: { status: "authenticated" },
-  checkedAt: "2026-09-13T00:00:00.000Z",
-  models: [
-    { slug: "claude-sonnet-4-6", name: "Claude Sonnet", isCustom: false, capabilities: null },
-  ],
-  slashCommands: [],
-  skills: [],
-};
-
 const adapter = {
   instanceId,
   driver,
@@ -1144,7 +1066,7 @@ const seedParent = (
       threadId: parentThreadId,
       projectId: ProjectId.make("project:laptop"),
       title: "Laptop parent",
-      modelSelection: parentModelSelection,
+      modelSelection,
       runtimeMode: "full-access",
       interactionMode: "default",
       branch: null,
@@ -1218,7 +1140,7 @@ const seedParent = (
             threadId: parentThreadId,
             ordinal: 1,
             providerInstanceId: instanceId,
-            modelSelection: parentModelSelection,
+            modelSelection,
             providerThreadId,
             userMessageId: MessageId.make("message:seed-user:laptop-parent"),
             rootNodeId: parentRootNode,

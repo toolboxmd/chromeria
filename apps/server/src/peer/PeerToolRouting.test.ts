@@ -69,6 +69,7 @@ import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import { idleThreadProjection, liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import * as OrchestratorHandlers from "../mcp/toolkits/orchestrator/handlers.ts";
 import { OrchestratorToolkit } from "../mcp/toolkits/orchestrator/tools.ts";
+import * as RemoteDelegation from "./RemoteDelegation.ts";
 import * as ThreadHandlers from "../mcp/toolkits/thread/handlers.ts";
 import { ThreadToolkit } from "../mcp/toolkits/thread/tools.ts";
 import * as ProjectHandlers from "../mcp/toolkits/project/handlers.ts";
@@ -481,6 +482,7 @@ const makeFixture = (realHtml = false) =>
       registrations.pipe(
         Layer.provide(Layer.succeedContext(destinationDependencies)),
         Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+        Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
       ),
       {
         settings: Context.get(destinationDependencies, Settings.ServerSettingsService),
@@ -496,6 +498,7 @@ const makeFixture = (realHtml = false) =>
     const here = yield* registrations.pipe(
       Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
       Layer.provide(dependencies),
+      Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
       Layer.provide(
         PeerForwarding.layer.pipe(
           Layer.provideMerge(Layer.succeedContext(linking)),
