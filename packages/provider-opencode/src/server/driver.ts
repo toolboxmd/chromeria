@@ -3,6 +3,8 @@ import {
   settingsSecretLiteral,
   type ServerProviderModel,
 } from "@t3tools/contracts";
+import { ProviderAdapterOpenSessionError } from "@t3tools/provider-core/server/ProviderAdapter";
+import { BareLaunchError } from "@t3tools/provider-core/server/bareLaunch";
 import { OpenCodeSettings } from "../settings.ts";
 import * as Digest from "effect/crypto/Digest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -173,6 +175,15 @@ function selectOpenCodeRuntimeAdapter(input: {
   return {
     instanceId: input.v1.instanceId,
     driver: DRIVER_KIND,
+    bareSupport: Effect.flatMap(
+      hot,
+      (adapter) =>
+        adapter.bareSupport ??
+        Effect.succeed({
+          supported: false as const,
+          reason: "OpenCode 2.x has no demonstrated bare stripping interface.",
+        }),
+    ),
     getCapabilities: Effect.fn("OpenCodeDriver.getCapabilities")(function* () {
       const probed = Option.getOrUndefined(yield* input.probe.lastSuccess);
       const adapter = yield* pick(Effect.succeed(probed));
@@ -190,7 +201,26 @@ function selectOpenCodeRuntimeAdapter(input: {
     planSelectionTransition: (transition) =>
       Effect.flatMap(hot, (adapter) => adapter.planSelectionTransition(transition)),
     openSession: (session) =>
-      Effect.flatMap(pick(input.resolve), (adapter) => adapter.openSession(session)),
+      Effect.flatMap(pick(input.resolve), (adapter) =>
+        Effect.gen(function* () {
+          if (session.runtimePolicy.bare !== undefined) {
+            const support =
+              adapter.bareSupport === undefined
+                ? {
+                    supported: false as const,
+                    reason: "OpenCode 2.x has no demonstrated bare stripping interface.",
+                  }
+                : yield* adapter.bareSupport;
+            if (!support.supported)
+              return yield* new ProviderAdapterOpenSessionError({
+                driver: DRIVER_KIND,
+                providerSessionId: session.providerSessionId,
+                cause: new BareLaunchError({ reason: support.reason }),
+              });
+          }
+          return yield* adapter.openSession(session);
+        }),
+      ),
   };
 }
 

@@ -1,4 +1,12 @@
+import { toolPolicyRejection, ToolPolicyError } from "@t3tools/provider-core/server/toolPolicy";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
 import { AgentScope } from "@t3tools/shared/AgentScope";
+import {
+  BareLaunchError,
+  namesT3Mcp,
+  bareT3ToolNames,
+  unsupportedBare,
+} from "@t3tools/provider-core/server/bareLaunch";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
@@ -207,6 +215,7 @@ export type ProviderSessionManagerV2Error = typeof ProviderSessionManagerV2Error
 export interface ProviderSessionManagerV2Shape {
   readonly shutdown: Effect.Effect<void>;
   readonly open: (input: {
+    readonly newSessionInstructions?: string;
     readonly threadId: ThreadId;
     readonly providerSessionId: ProviderSessionId;
     readonly modelSelection: ModelSelection;
@@ -280,6 +289,9 @@ interface LiveSessionEntry {
   readonly linkedEnvironmentsByThread: ReadonlyMap<ThreadId, boolean | null>;
   /** Scope revocation to recorded credential ids so superseded sessions cannot revoke replacements opened before detach. */
   readonly mcpCredentialIdByThread: ReadonlyMap<ThreadId, string>;
+  readonly bareThreadId: ThreadId | null;
+  /** A bare session without T3's MCP server has no linking tools to refresh. */
+  readonly withoutT3Mcp: boolean;
   readonly supportsMultipleProviderThreads: boolean;
   readonly runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime;
   readonly exposedRuntime: ProviderAdapter.ProviderAdapterV2SessionRuntime;
@@ -409,6 +421,7 @@ export const layerWithOptions = (
       const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
       const fileSystem = yield* FileSystem.FileSystem;
       const mcpSessionRegistry = yield* McpSessionRegistry.McpSessionRegistry;
+      const peerAuthority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
       const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
       /** Unreadable settings must preserve explicit browser-access opt-outs. */
       const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
@@ -533,17 +546,32 @@ export const layerWithOptions = (
       const prepareMcpSession = (
         threadId: ThreadId,
         providerInstanceId: ProviderInstanceId,
+        bare?: import("@t3tools/contracts").ThreadBare,
       ): Effect.Effect<PreparedMcpCredential> =>
-        options.configureMcp === false
+        options.configureMcp === false || (bare !== undefined && !namesT3Mcp(bare))
           ? mcpSessions
               .clear(threadId)
               .pipe(Effect.as<PreparedMcpCredential>({ mcpCredentialId: undefined, issued: false }))
           : mcpPrepareLock.withLock(
               threadId,
               Effect.gen(function* () {
-                // Live providers build MCP clients once; reuse credentials across workspace handoffs.
-                const { browser: browserToolsAvailable, device: deviceToolsAvailable } =
-                  yield* agentAccessSettings(threadId);
+                // Reuse a still-valid credential instead of rotating: long-lived provider processes build their
+                // MCP client once per conversation, so a thread re-attaching after a workspace handoff must get
+                // the same token or its tool calls fail auth.
+                const accessSettings = yield* agentAccessSettings(threadId);
+                const frozenAuthority = Option.isSome(peerAuthority)
+                  ? yield* peerAuthority.value.forThread(threadId).pipe(Effect.orDie)
+                  : undefined;
+                const frozenCeiling =
+                  frozenAuthority?.ceiling ??
+                  (Option.isSome(peerAuthority)
+                    ? yield* peerAuthority.value.legacyCeiling(threadId).pipe(Effect.orDie)
+                    : undefined);
+                const browserToolsAvailable =
+                  accessSettings.browser &&
+                  (frozenCeiling?.capabilities.includes("preview") ?? true);
+                const deviceToolsAvailable =
+                  accessSettings.device && (frozenCeiling?.capabilities.includes("device") ?? true);
                 const capabilities = new Set<
                   import("../mcp/McpInvocationContext.ts").McpCapability
                 >(["orchestration", "worktree", "pull-requests"]);
@@ -553,6 +581,11 @@ export const layerWithOptions = (
                   Effect.map((thread) => thread.lineage.relationshipToParent === "subagent"),
                   Effect.orElseSucceed(() => false),
                 );
+                if (frozenCeiling !== undefined) {
+                  for (const capability of capabilities)
+                    if (!frozenCeiling.capabilities.includes(capability))
+                      capabilities.delete(capability);
+                }
                 const existing = yield* mcpSessions.read(threadId);
                 if (existing !== undefined) {
                   // Reserve before async validation so release cannot revoke between validation and reservation.
@@ -572,11 +605,18 @@ export const layerWithOptions = (
                     resolved !== undefined &&
                     resolved.thread.threadId === threadId &&
                     resolved.thread.providerInstanceId === providerInstanceId &&
-                    resolved.capabilities.has("preview") === browserToolsAvailable &&
-                    resolved.capabilities.has("device") === deviceToolsAvailable &&
+                    resolved.capabilities.size === capabilities.size &&
+                    [...capabilities].every((capability) =>
+                      resolved.capabilities.has(capability),
+                    ) &&
                     // A credential issued while the lineage read failed is replaced once it works.
                     (resolved.thread.subagent === true) === subagent
                   ) {
+                    yield* mcpSessions.set({
+                      ...existing,
+                      browserToolsAvailable: resolved.capabilities.has("preview"),
+                      capabilities: resolved.capabilities,
+                    });
                     return { mcpCredentialId: existing.providerSessionId, issued: false };
                   }
                   dropMcpCredentialReservation(threadId, existing.providerSessionId);
@@ -586,8 +626,10 @@ export const layerWithOptions = (
                   threadId,
                   providerInstanceId,
                   browserToolsAvailable,
+                  bareToolNames: bareT3ToolNames(bare),
                   capabilities,
                   subagent,
+                  ...(frozenAuthority === undefined ? {} : { authority: frozenAuthority }),
                 });
                 yield* mcpSessions.set({
                   ...credential.config,
@@ -1574,6 +1616,7 @@ export const layerWithOptions = (
           const linkedEnvironmentsByThread = new Map(entry.linkedEnvironmentsByThread);
           if (
             input.linkedEnvironments !== undefined &&
+            !entry.withoutT3Mcp &&
             !linkedEnvironmentsByThread.has(input.threadId)
           ) {
             linkedEnvironmentsByThread.set(input.threadId, input.linkedEnvironments);
@@ -1617,7 +1660,11 @@ export const layerWithOptions = (
               Effect.uninterruptible,
             );
             if (attached !== undefined) {
-              const prepared = yield* prepareMcpSession(input.threadId, input.providerInstanceId);
+              const prepared = yield* prepareMcpSession(
+                input.threadId,
+                input.providerInstanceId,
+                (yield* projectionStore.getThread(input.threadId).pipe(Effect.orDie)).bare,
+              );
               preparedForCleanup = prepared;
               if (prepared.mcpCredentialId !== undefined) {
                 const mcpCredentialId = prepared.mcpCredentialId;
@@ -2736,7 +2783,12 @@ export const layerWithOptions = (
                     yield* releaseLiveOutput;
                     return;
                   }
-                  yield* publishToSubscribers(entry.eventSubscribers, { type: "event", event });
+                  // Each emission has its own delivery identity, even if an adapter
+                  // reuses an object. All run observers share that delivery.
+                  yield* publishToSubscribers(entry.eventSubscribers, {
+                    type: "event",
+                    event: { ...event },
+                  });
                   yield* releaseLiveOutput;
                 }),
               ),
@@ -2835,11 +2887,63 @@ export const layerWithOptions = (
                   });
                 }
               }
+              const loadAdapter = registry.get(input.modelSelection.instanceId).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderSessionOpenError({
+                      instanceId: input.modelSelection.instanceId,
+                      providerSessionId: input.providerSessionId,
+                      cause,
+                    }),
+                ),
+              );
+              if (input.runtimePolicy.tools !== undefined) {
+                const toolAdapter = yield* loadAdapter;
+                const rejection = toolPolicyRejection(
+                  toolAdapter.driver,
+                  input.runtimePolicy.tools,
+                  input.runtimePolicy,
+                );
+                if (rejection !== undefined)
+                  return yield* new ProviderSessionOpenError({
+                    instanceId: input.modelSelection.instanceId,
+                    providerSessionId: input.providerSessionId,
+                    cause: new ToolPolicyError({ reason: rejection }),
+                  });
+              }
+              const bareAdapter =
+                input.runtimePolicy.bare === undefined ? undefined : yield* loadAdapter;
+              if (bareAdapter !== undefined) {
+                const support =
+                  bareAdapter.bareSupport === undefined
+                    ? unsupportedBare(bareAdapter.driver)
+                    : yield* bareAdapter.bareSupport;
+                if (!support.supported)
+                  return yield* new ProviderSessionOpenError({
+                    instanceId: input.modelSelection.instanceId,
+                    providerSessionId: input.providerSessionId,
+                    cause: new BareLaunchError({ reason: support.reason }),
+                  });
+              }
               const key = sessionKey(input.providerSessionId);
               const live = (yield* Ref.get(sessions)).get(key);
               if (live !== undefined) yield* releaseForLinkedEnvironments(live);
               const existing = (yield* Ref.get(sessions)).get(key);
               if (existing !== undefined) {
+                if (
+                  existing.bareThreadId !==
+                  (input.runtimePolicy.bare === undefined && input.runtimePolicy.tools === undefined
+                    ? null
+                    : input.threadId)
+                )
+                  return yield* new ProviderSessionOpenError({
+                    instanceId: input.modelSelection.instanceId,
+                    providerSessionId: input.providerSessionId,
+                    cause: new BareLaunchError({
+                      reason:
+                        "Bare provider sessions cannot share a process with another thread or a normal launch.",
+                    }),
+                  });
                 const attached = existing.attachedThreadIds.has(input.threadId);
                 if (!attached && !existing.supportsMultipleProviderThreads) {
                   return yield* new ProviderSessionOpenError({
@@ -2858,20 +2962,16 @@ export const layerWithOptions = (
                 return existing.exposedRuntime;
               }
 
-              const adapter = yield* registry.get(input.modelSelection.instanceId).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new ProviderSessionOpenError({
-                      instanceId: input.modelSelection.instanceId,
-                      providerSessionId: input.providerSessionId,
-                      cause,
-                    }),
-                ),
-              );
-              const openedWithLinkedEnvironments = yield* readLinkedEnvironments;
+              const adapter = bareAdapter ?? (yield* loadAdapter);
+              const withoutT3Mcp =
+                input.runtimePolicy.bare !== undefined && !namesT3Mcp(input.runtimePolicy.bare);
+              const openedWithLinkedEnvironments = withoutT3Mcp
+                ? undefined
+                : yield* readLinkedEnvironments;
               const prepared = yield* prepareMcpSession(
                 input.threadId,
                 input.modelSelection.instanceId,
+                input.runtimePolicy.bare,
               );
               const mcpCredentialId = prepared.mcpCredentialId;
               let reservationDropped = mcpCredentialId === undefined;
@@ -2887,6 +2987,10 @@ export const layerWithOptions = (
                 .execute(
                   input.modelSelection.instanceId,
                   adapter.openSession({
+                    ...(input.runtimePolicy.bare !== undefined ||
+                    input.newSessionInstructions === undefined
+                      ? {}
+                      : { newSessionInstructions: input.newSessionInstructions }),
                     threadId: input.threadId,
                     providerSessionId: input.providerSessionId,
                     modelSelection: input.modelSelection,
@@ -2950,7 +3054,13 @@ export const layerWithOptions = (
                   mcpCredentialId === undefined
                     ? new Map()
                     : new Map([[input.threadId, mcpCredentialId]]),
+                bareThreadId:
+                  input.runtimePolicy.bare === undefined && input.runtimePolicy.tools === undefined
+                    ? null
+                    : input.threadId,
+                withoutT3Mcp,
                 supportsMultipleProviderThreads:
+                  input.runtimePolicy.bare === undefined &&
                   runtime.providerSession.capabilities.sessions
                     .supportsMultipleProviderThreadsPerSession,
                 runtime,
