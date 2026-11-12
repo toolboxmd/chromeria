@@ -283,6 +283,7 @@ export class OpenCodeRuntime extends Context.Service<
       readonly directory: string;
       readonly serverPassword?: string;
       readonly environment?: NodeJS.ProcessEnv;
+      readonly pure?: boolean;
       readonly port?: number;
       readonly hostname?: string;
       readonly timeoutMs?: number;
@@ -294,6 +295,7 @@ export class OpenCodeRuntime extends Context.Service<
       readonly serverUrl?: string | null;
       readonly serverPassword?: string;
       readonly environment?: NodeJS.ProcessEnv;
+      readonly pure?: boolean;
       readonly port?: number;
       readonly hostname?: string;
       readonly timeoutMs?: number;
@@ -548,7 +550,13 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
         ),
       ));
     const timeoutMs = input.timeoutMs ?? DEFAULT_OPENCODE_SERVER_TIMEOUT_MS;
-    const args = ["serve", `--hostname=${hostname}`, `--port=${port}`];
+    const args = [
+      "serve",
+      ...(input.pure ? ["--pure"] : []),
+      `--hostname=${hostname}`,
+      `--port=${port}`,
+    ];
+    // One server runs every session of the instance, so its scope has no thread.
     const launch = yield* agentScope.wrap({
       command: input.binaryPath,
       args,
@@ -792,6 +800,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     return startOpenCodeServerProcess({
       binaryPath: input.binaryPath,
       directory: input.directory,
+      ...(input.pure === undefined ? {} : { pure: input.pure }),
       ...(input.serverPassword !== undefined ? { serverPassword: input.serverPassword } : {}),
       ...(input.environment !== undefined ? { environment: input.environment } : {}),
       ...(input.port !== undefined ? { port: input.port } : {}),

@@ -1,3 +1,4 @@
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -174,6 +175,8 @@ it.effect.each([
         );
         const layerTest = Layer.merge(
           OrchestratorMcpService.layer.pipe(
+            Layer.provide(SqlitePersistence.layerMemory),
+            Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
             Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
             Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
           ),
