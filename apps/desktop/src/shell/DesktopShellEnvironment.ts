@@ -3,6 +3,7 @@ import {
   applyShellEnvironment,
   buildEnvironmentCaptureCommand,
   listLoginShellCandidates,
+  LOGIN_SHELL_CAPTURE_TIMEOUT_MS,
   readUserLoginShell,
   setWindowsPath,
 } from "@t3tools/shared/shell";
@@ -116,9 +117,10 @@ const WINDOWS_PROFILE_ENV_NAMES = ["PATH", "FNM_DIR", "FNM_MULTISHELL_PATH"] as 
 const LOCALE_ENV_NAMES = ["LANG", "LC_ALL", "LC_CTYPE"] as const;
 const FALLBACK_LC_CTYPE = "en_US.UTF-8";
 const WINDOWS_SHELL_CANDIDATES = ["pwsh.exe", "powershell.exe"] as const;
-const LOGIN_SHELL_TIMEOUT = Duration.seconds(5);
+const LOGIN_SHELL_TIMEOUT = Duration.millis(LOGIN_SHELL_CAPTURE_TIMEOUT_MS);
 // A profile can be slow only while the machine boots; one longer wait covers it.
 const SLOW_LOGIN_SHELL_TIMEOUT = Duration.seconds(20);
+const WINDOWS_SHELL_TIMEOUT = Duration.seconds(5);
 const LAUNCHCTL_TIMEOUT = Duration.seconds(2);
 const PROCESS_TERMINATE_GRACE = Duration.seconds(1);
 
@@ -392,7 +394,7 @@ const readWindowsEnvironment = Effect.fn("desktop.shellEnvironment.readWindowsEn
         command,
         args,
         env,
-        timeout: LOGIN_SHELL_TIMEOUT,
+        timeout: WINDOWS_SHELL_TIMEOUT,
       }).pipe(orEmptyOnTimeout);
       const environment = extractEnvironment(output, names);
       if (Object.keys(environment).length > 0) {
@@ -562,7 +564,8 @@ const installPosixEnvironment = Effect.fn("desktop.shellEnvironment.installPosix
       }
     }
 
-    const prepared = Option.isSome(trimNonEmpty(shellEnvironment.PATH));
+    // Only a login shell's PATH counts as discovered; a launchctl fallback alone does not.
+    const prepared = answeredBy !== undefined;
     return { prepared, fromUserShell: prepared && userShells.includes(answeredBy) };
   },
 );
