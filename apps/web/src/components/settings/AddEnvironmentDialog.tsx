@@ -64,6 +64,7 @@ import {
   parseRemotePairingFields,
   formatDesktopSshConnectionError,
 } from "./ConnectionsSettings.logic";
+import { isAddableRelayEnvironment } from "@t3tools/client-runtime/relay";
 
 const EMPTY_DISCOVERED_SSH_HOSTS: ReadonlyArray<DesktopDiscoveredSshHost> = [];
 // known_hosts can list one host on several ports. Its own bracketed form keeps an IPv6
@@ -428,7 +429,9 @@ export function AddEnvironmentDialog({
   const relayRouteOffer =
     routeTarget !== null &&
     !routeTarget.relayManaged &&
-    relayDiscoveryState.environments.has(routeTarget.environmentId)
+    isAddableRelayEnvironment(
+      relayDiscoveryState.environments.get(routeTarget.environmentId)?.environment,
+    )
       ? relayDiscoveryState.environments.get(routeTarget.environmentId)!.environment
       : null;
   const addRelayRoute = async () => {
