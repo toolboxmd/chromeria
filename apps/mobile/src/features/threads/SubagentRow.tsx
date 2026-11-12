@@ -6,6 +6,7 @@ import {
 } from "@t3tools/client-runtime/state/provider-instance-display";
 import { resolveSubagentMetadata } from "@t3tools/client-runtime/state/subagent-display";
 import { formatSubagentEffort } from "@t3tools/client-runtime/state/thread-execution";
+import { subagentChildTarget } from "@t3tools/client-runtime/state/thread-relationships";
 import type { EnvironmentId, OrchestrationV2Subagent } from "@t3tools/contracts";
 import type { ReactNode } from "react";
 import { View } from "react-native";
@@ -23,6 +24,7 @@ type SubagentRowSubagent = Pick<
   OrchestrationV2Subagent,
   | "threadId"
   | "childThreadId"
+  | "remoteChild"
   | "model"
   | "modelSelection"
   | "driver"
@@ -42,7 +44,13 @@ export function SubagentRow(props: {
   /** The task runs in a linked environment this app is connected to. */
   readonly canOpenRemote?: boolean;
 }) {
-  const presentation = resolveSubagentRowPresentation(props.subagent, props.canOpenRemote);
+  const childTarget = subagentChildTarget(props.subagent);
+  const child = useThreadShell(
+    childTarget === null
+      ? null
+      : scopeThreadRef(childTarget.environmentId ?? props.environmentId, childTarget.threadId),
+  )?.source;
+  const presentation = resolveSubagentRowPresentation(props.subagent, props.canOpenRemote, child);
   const detail = subagentCardDetail(presentation.detail);
   return (
     <View className="flex-row gap-3">
@@ -127,13 +135,17 @@ function SubagentMetadata(props: {
   );
   const showBadge = provider !== undefined && shouldShowInstanceBadge(provider, providers);
   const parent = useThreadShell(scopeThreadRef(environmentId, subagent.threadId))?.source;
+  const childTarget = subagentChildTarget(subagent);
+  const childEnvironmentId = childTarget?.environmentId ?? environmentId;
   const child = useThreadShell(
-    subagent.childThreadId === null ? null : scopeThreadRef(environmentId, subagent.childThreadId),
+    childTarget === null ? null : scopeThreadRef(childEnvironmentId, childTarget.threadId),
   )?.source;
   const parentProject = useProject(
     parent ? scopeProjectRef(environmentId, parent.projectId) : null,
   );
-  const childProject = useProject(child ? scopeProjectRef(environmentId, child.projectId) : null);
+  const childProject = useProject(
+    child ? scopeProjectRef(childEnvironmentId, child.projectId) : null,
+  );
   const selection = subagent.modelSelection;
   const { modelLabel, modelSlug, workspace } = resolveSubagentMetadata({
     model: subagent.model,
