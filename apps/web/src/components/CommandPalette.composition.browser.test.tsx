@@ -103,6 +103,7 @@ vi.mock("../state/query", async (original) => ({
   ...(await original<typeof import("../state/query")>()),
   useEnvironmentQuery: () => ({ data: undefined, isLoading: false }),
 }));
+vi.mock("./issues/issuePaletteThreads", () => ({ usePaletteIssueThreads: () => [] }));
 vi.mock("./settings/useAvailableSettingsSearchItems", () => ({
   useAvailableSettingsSearchItems: () => [],
 }));
