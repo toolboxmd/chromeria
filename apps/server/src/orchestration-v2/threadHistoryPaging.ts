@@ -303,7 +303,7 @@ export function selectDeferredWorkPage<Row extends HistoryRow>(input: {
 }
 
 /** Notifications can start wake turns when they are the run's first input; match ProjectionStore run_starts. */
-function threadHistoryTurnStarts(
+export function threadHistoryTurnStarts(
   items: ReadonlyArray<HistoryRow["item"]>,
   earlierRuns?: ReadonlySet<string>,
 ): ReadonlyArray<boolean> {
