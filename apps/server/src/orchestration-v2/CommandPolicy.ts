@@ -1,3 +1,4 @@
+import type { PurposeIntent } from "@t3tools/contracts";
 import {
   type ChatAttachment,
   CommandId,
@@ -15,6 +16,12 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import {
+  canInterruptSteer,
+  isMobileSteer,
+  isPersonSteering,
+  type SteeringRequester,
+} from "./SteeringInterruption.ts";
 
 export const SteeringExecutionPolicyV2 = Schema.Literals(["active_steering", "interrupt_restart"]);
 export type SteeringExecutionPolicyV2 = typeof SteeringExecutionPolicyV2.Type;
@@ -90,12 +97,46 @@ export function goalCommandStopsActiveRun(
   }
 }
 
+type DispatchProjection = Pick<
+  OrchestrationV2ThreadProjection,
+  "runs" | "providerThreads" | "providerSessions"
+>;
+
+/**
+ * True when this run's provider cancels running tools to take a steer and
+ * reports that cancel as a user refusal. Callers queue instead of steering.
+ * The check reads this run's own session.
+ */
+export function steeringCancelsRunningTools(
+  projection: DispatchProjection,
+  runId: OrchestrationV2Run["id"],
+): boolean {
+  const run = projection.runs.find((candidate) => candidate.id === runId);
+  const providerThread = projection.providerThreads.find(
+    (candidate) => candidate.id === run?.providerThreadId,
+  );
+  if (providerThread?.providerSessionId == null) return false;
+  const providerSession = projection.providerSessions.find(
+    (candidate) => candidate.id === providerThread.providerSessionId,
+  );
+  return providerSession?.capabilities.turns.activeSteeringInterruptsTools === true;
+}
+
+/** Resolve client intent from the state serialized by the thread dispatch lock. */
 export function resolveMessageDispatchIntent(
   projection: OrchestrationV2ThreadProjection,
   requestedMode: MessageDispatchMode,
   deliveryIntent?: "auto" | "steer" | "restart",
+  requester?: SteeringRequester,
+  purposeIntent?: PurposeIntent,
 ): MessageDispatchMode {
-  const mode = resolveDeliveryIntent(projection, requestedMode, deliveryIntent);
+  const mode = resolveDeliveryIntent(
+    projection,
+    requestedMode,
+    deliveryIntent,
+    requester,
+    purposeIntent,
+  );
   if (mode.type !== "steer_active") return mode;
   // Compaction and sign-out cannot accept steers; queue follow-ups.
   const target = projection.runs.find((run) => run.id === mode.targetRunId);
@@ -155,13 +196,41 @@ function resolveDeliveryIntent(
   projection: OrchestrationV2ThreadProjection,
   requestedMode: MessageDispatchMode,
   deliveryIntent?: "auto" | "steer" | "restart",
+  requester?: SteeringRequester,
+  purposeIntent?: PurposeIntent,
 ): MessageDispatchMode {
-  if (deliveryIntent === undefined) return requestedMode;
+  if (deliveryIntent === undefined) {
+    if (
+      requestedMode.type === "steer_active" &&
+      steeringCancelsRunningTools(projection, requestedMode.targetRunId)
+    )
+      return { type: "queue_after_active" };
+    return requestedMode;
+  }
 
   const activeRun = projection.runs.findLast(isActiveRun);
   if (activeRun === undefined) return { type: "start_immediately" };
+  if (
+    requester !== undefined &&
+    isPersonSteering(requester) &&
+    (deliveryIntent === "steer" ||
+      (purposeIntent === undefined && isMobileSteer(requester, deliveryIntent)))
+  ) {
+    const targetId =
+      requestedMode.type === "steer_active" ? requestedMode.targetRunId : activeRun.id;
+    if (canInterruptSteer(projection, targetId))
+      return { type: "restart_active", targetRunId: targetId };
+    const target = projection.runs.find((run) => run.id === targetId);
+    if (target?.status === "preparing" || target?.status === "starting")
+      return { type: "queue_after_active" };
+  }
   if (deliveryIntent === "steer") {
-    return { type: "steer_active", targetRunId: activeRun.id };
+    const targetId =
+      requestedMode.type === "steer_active" ? requestedMode.targetRunId : activeRun.id;
+    if (steeringCancelsRunningTools(projection, targetId)) {
+      return { type: "queue_after_active" };
+    }
+    return { type: "steer_active", targetRunId: targetId };
   }
   if (deliveryIntent === "restart") {
     return { type: "restart_active", targetRunId: activeRun.id };
@@ -179,14 +248,30 @@ function resolveDeliveryIntent(
   }
 
   const capabilities = providerTurnCapabilities(projection, activeRun);
-  if (capabilities?.supportsActiveSteering === true) {
+  if (
+    capabilities?.supportsActiveSteering === true &&
+    capabilities.activeSteeringInterruptsTools !== true
+  ) {
     return { type: "steer_active", targetRunId: activeRun.id };
   }
-  if (capabilities?.supportsQueuedMessages === true) {
+  // Thread sends already request routine steering on restart-capable harnesses.
+  // Keep that delivery after purpose resolution, using the current locked target,
+  // and queue like a legacy thread send when steering would cancel running tools.
+  if (
+    requestedMode.type === "steer_active" &&
+    capabilities?.supportsSteeringByInterruptRestart === true &&
+    capabilities.activeSteeringInterruptsTools !== true
+  ) {
+    return { type: "steer_active", targetRunId: activeRun.id };
+  }
+  if (
+    capabilities?.activeSteeringInterruptsTools === true ||
+    capabilities?.supportsQueuedMessages === true
+  ) {
     return { type: "queue_after_active" };
   }
   if (capabilities?.supportsSteeringByInterruptRestart === true) {
-    return { type: "restart_active", targetRunId: activeRun.id };
+    return { type: "steer_active", targetRunId: activeRun.id };
   }
   return { type: "queue_after_active" };
 }
@@ -265,10 +350,15 @@ const ensureQueuedMessages: CommandPolicyV2Shape["ensureQueuedMessages"] = (inpu
       );
 
 const decideSteeringExecution: CommandPolicyV2Shape["decideSteeringExecution"] = (input) => {
-  if (!input.forceRestart && input.capabilities.turns.supportsActiveSteering) {
+  if (
+    !input.forceRestart &&
+    input.capabilities.turns.supportsActiveSteering &&
+    input.capabilities.turns.activeSteeringInterruptsTools !== true
+  ) {
     return Effect.succeed("active_steering");
   }
   if (
+    (input.forceRestart || input.capabilities.turns.activeSteeringInterruptsTools !== true) &&
     input.capabilities.turns.supportsInterrupt &&
     input.capabilities.turns.supportsSteeringByInterruptRestart
   ) {
