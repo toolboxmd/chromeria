@@ -17,6 +17,7 @@ import {
   type ProjectId,
   type ProjectScopedServerSettingKey,
   ProjectSettingsOverrides,
+  withoutUnsetPrismRoles,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
@@ -273,13 +274,15 @@ function pickOverrideKeys(entry: ProjectSettingsOverrides | undefined, known: bo
 function mergeProjectSettingsOverridesPatch(
   current: Readonly<Record<string, ProjectSettingsOverrides>>,
   patch: Readonly<Record<string, ProjectSettingsOverrides | null>>,
+  partialPrismRoles: boolean,
 ): Record<string, ProjectSettingsOverrides> {
   const next = new Map(Object.entries(current));
-  for (const [projectId, entry] of Object.entries(patch)) {
-    if (entry === null) {
+  for (const [projectId, written] of Object.entries(patch)) {
+    if (written === null) {
       next.delete(projectId);
       continue;
     }
+    const entry = partialPrismRoles ? written : withoutUnsetPrismRoles(written);
     const storedProviderInstances = current[projectId]?.providerInstances;
     next.set(projectId, {
       // Preserve downgraded storage, but reject new unknown writes so clients can detect unsupported settings.
@@ -401,6 +404,7 @@ export function applyServerSettingsPatch(
     backgroundActivity,
     worktreeCleanup: worktreeCleanupPatch,
     // Merged per entry below; its `null` removals must not reach deepMerge.
+    wightModes: wightModesPatch,
     usageLimitSources: usageLimitSourcesPatch,
     textGenerators: textGeneratorsPatch,
     secretProviders: secretProvidersPatch,
@@ -412,6 +416,8 @@ export function applyServerSettingsPatch(
     projectAgentBrowserAccessOverrides: _legacyBrowserAccess,
     projectAutoPullOverrides: _legacyAutoPull,
     projectScriptOverrides: _legacyScripts,
+    // A write declaration, not a value: only a declared write sets the marker.
+    prismRoleOverridesPartial: partialPrismRoles,
     ...patchForMerge
   } = patch;
   const currentBackgroundActivity = normalizeServerBackgroundActivitySettings(current);
@@ -595,9 +601,11 @@ export function applyServerSettingsPatch(
               mergeProjectSettingsOverridesPatch(
                 current.projectSettingsOverrides,
                 projectSettingsOverridesPatch,
+                partialPrismRoles === true,
               ),
             ).filter(([, entry]) => Object.keys(entry).length > 0),
           ),
+          ...(partialPrismRoles === true ? { prismRoleOverridesPartial: true } : {}),
         }
       : {}),
     ...(patch.defaultModelSelection !== undefined
@@ -611,6 +619,9 @@ export function applyServerSettingsPatch(
       : {}),
     ...(patch.defaultProjectScripts !== undefined
       ? { defaultProjectScripts: patch.defaultProjectScripts }
+      : {}),
+    ...(wightModesPatch !== undefined
+      ? { wightModes: mergeSettingsEntries(current.wightModes, wightModesPatch) }
       : {}),
     ...(usageLimitSourcesPatch !== undefined
       ? {
