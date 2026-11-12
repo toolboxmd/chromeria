@@ -1,4 +1,5 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -50,6 +51,9 @@ import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 
 const layerOrchestratorService = OrchestratorMcpService.layer.pipe(
+  Layer.provide(SqlitePersistence.layerMemory),
+  Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+  Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
 );

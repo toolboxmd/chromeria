@@ -1,4 +1,7 @@
+import { MessageId } from "@t3tools/contracts";
 import * as DocumentText from "../provider/DocumentText.ts";
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
+
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -15,8 +18,10 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+
 import { McpSchema, McpServer } from "effect/ai";
 
 import * as ServerConfig from "../config.ts";
@@ -28,6 +33,7 @@ import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterReg
 import { makeSubagentChildThread } from "@t3tools/provider-core/server/subagentProjection";
 import * as ThreadForkService from "../orchestration-v2/ThreadForkService.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
+import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -37,7 +43,6 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as SourceControlRepositoryService from "../sourceControl/SourceControlRepositoryService.ts";
@@ -83,6 +88,14 @@ const layerLaunches = Layer.effect(
   Effect.gen(function* () {
     const threads = yield* ThreadManagement.ThreadManagementService;
     return ThreadLaunch.ThreadLaunchService.of({
+      replayOrLaunch: <E, R>(
+        _input: Parameters<ThreadLaunch.ThreadLaunchService["Service"]["replayOrLaunch"]>[0],
+        launch: Effect.Effect<ThreadLaunch.ThreadLaunchResult, E, R>,
+      ) => launch,
+      configureMcp: () => Effect.die("unused MCP configuration"),
+      checkWorktreeBase: () => Effect.void,
+      prepareRun: () => Effect.die("No workspace preparation needed for link-origin commands"),
+      retryPreparation: () => Effect.die("No workspace retry needed for link-origin commands"),
       launch: (input: ThreadLaunch.ThreadLaunchInput) =>
         threads
           .dispatch({
@@ -115,7 +128,7 @@ const layerLaunches = Layer.effect(
 );
 
 const layerTools = Layer.mergeAll(
-  McpHttpServer.layerOrchestratorToolkit,
+  McpHttpServer.layerOrchestratorToolkit.pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({}))),
   McpHttpServer.layerThreadToolkit,
   McpHttpServer.layerProjectRegistration,
 ).pipe(
@@ -124,13 +137,25 @@ const layerTools = Layer.mergeAll(
   Layer.provide(layerLaunches),
   Layer.provide(NodeCrypto.layer),
   Layer.provide(
-    Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
-  ),
-  Layer.provide(
-    Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
-      list: () => Effect.succeed([]),
+    Layer.mock(ProviderRegistry.ProviderRegistry)({
+      getProviders: Effect.succeed([
+        {
+          instanceId,
+          driver: adapter.driver,
+          enabled: true,
+          installed: true,
+          version: "test",
+          status: "ready",
+          auth: { status: "authenticated" },
+          checkedAt: "2026-10-18T00:00:00Z",
+          models: [{ slug: "gpt-5", name: "test", isCustom: false, capabilities: null }],
+          skills: [],
+          slashCommands: [],
+        },
+      ]),
     }),
   ),
+  Layer.provide(ProviderAdapterRegistry.layerFromAdapters([adapter])),
   Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
   Layer.provide(
     Layer.mock(ProjectService.ProjectService)({
@@ -317,6 +342,23 @@ it.layer(Layer.provideMerge(layerTools, layerOrchestration))("work a link starts
         creationSource: "mcp",
       });
       assert.deepEqual(child.linkOrigin, shell?.linkOrigin);
+      const _sourceRun = {
+        id: RunId.make("run:source"),
+        threadId: launched,
+        ordinal: 1,
+        providerInstanceId: thread.providerInstanceId,
+        modelSelection: thread.modelSelection,
+        providerThreadId: null,
+        userMessageId: MessageId.make("message:source"),
+        rootNodeId: null,
+        activeAttemptId: null,
+        status: "completed",
+        requestedAt: thread.createdAt,
+        startedAt: thread.createdAt,
+        completedAt: thread.createdAt,
+        checkpointId: null,
+        contextHandoffId: null,
+      };
       const fork = yield* ThreadForkService.ThreadForkServiceV2.pipe(
         Effect.flatMap((forks) =>
           forks.plan({

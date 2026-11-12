@@ -82,6 +82,7 @@ export interface ProjectThreadAwarenessV2Input {
     | "pendingBackgroundTasks"
     | "pendingRuntimeRequest"
     | "settledOverride"
+    | "remotePendingRequest"
     | "status"
     | "title"
     | "updatedAt"
@@ -152,6 +153,8 @@ function resolveThreadAwarenessPhaseV2(
   // The parent can finish its own turn while a delegated child keeps working,
   // so a child's request outranks the parent's run status.
   if (childAwaitsApproval) return "waiting_for_approval";
+  if (thread.remotePendingRequest === "approval") return "waiting_for_approval";
+  if (thread.remotePendingRequest === "user_input") return "waiting_for_input";
   switch (thread.activityRunStatus ?? thread.status) {
     case "preparing":
     case "starting":
