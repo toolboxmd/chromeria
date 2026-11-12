@@ -2119,6 +2119,7 @@ sources and reasons.
     "apps/server/src/preview/SessionControl.ts",
     "apps/web/src/browser/ServerBrowserSurface.browser.test.tsx",
     "apps/web/src/browser/ServerBrowserSurface.tsx",
+    "apps/web/src/browser/serverPictureInPicture.browser.test.ts",
     "apps/web/src/browser/serverPictureInPicture.ts",
     "apps/web/src/components/device/DeviceStreamView.browser.test.tsx",
     "apps/web/src/components/device/DeviceStreamView.tsx",
