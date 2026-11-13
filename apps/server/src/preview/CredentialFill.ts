@@ -8,6 +8,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import type { Frame, Locator } from "playwright-core";
+import { getDomain } from "tldts";
 
 import type { CredentialVault } from "./CredentialVault.ts";
 import { ServerBrowserOperationError } from "./ServerBrowserPage.ts";
@@ -59,21 +60,29 @@ const hostOf = (uri: string) => {
 
 const isIpHost = (host: string) => host.startsWith("[") || /^\d+(?:\.\d+){3}$/.test(host);
 
+// The registrable domain (eTLD+1) under the public suffix list, private suffixes such as
+// github.io included. IP hosts, single-label hosts and public suffixes have none.
+const registrableDomain = (host: string) =>
+  isIpHost(host) || !host.includes(".")
+    ? undefined
+    : (getDomain(host, { allowPrivateDomains: true, extractHostname: false }) ?? undefined);
+
 /**
- * Bitwarden's base-domain match: the item URI host that the page's host equals, or
- * is a subdomain of on a dot boundary. Schemes and ports are not compared; the
- * page must be https on its own.
+ * Bitwarden's default base-domain match: the first item URI host whose registrable domain
+ * equals the page host's, so www.example.com covers portal.example.com. Hosts without a
+ * registrable domain match only exactly. Schemes and ports are not compared; the page must
+ * be https on its own.
  */
 export const matchingItemHost = (pageUrl: string, uris: ReadonlyArray<string>) => {
   const host = hostOf(pageUrl);
   if (host === undefined) return undefined;
+  const domain = registrableDomain(host);
   return uris
     .map(hostOf)
     .find(
       (itemHost) =>
         itemHost !== undefined &&
-        (host === itemHost ||
-          (itemHost.includes(".") && !isIpHost(itemHost) && host.endsWith(`.${itemHost}`))),
+        (host === itemHost || (domain !== undefined && registrableDomain(itemHost) === domain)),
     );
 };
 

@@ -78,9 +78,11 @@ rbw executable on that machine, or to a wrapper that runs rbw on the machine tha
 The vault must be unlocked; Chromeria never prompts for your master password. A wrapper that
 exits with status 69 is reported as an unreachable vault.
 
-A fill happens only on an https page whose host is one of the item's URIs or a subdomain of
-one. For example, `shopify.com` covers `admin.shopify.com`, but not `evilshopify.com`. Inside an
-iframe, the iframe's own origin must match.
+A fill happens only on an https page in the same registrable domain as one of the item's URIs,
+as Bitwarden matches by default. For example, `www.shopify.com` covers `admin.shopify.com`, but
+not `evilshopify.com`. Public suffixes such as `github.io` or `co.uk` never widen a match:
+`a.github.io` does not cover `b.github.io`. IP addresses and single-word hosts such as
+`localhost` match only exactly. Inside an iframe, the iframe's own origin must match.
 
 Fills run only in the server's own browser tabs, not in tabs the desktop app hosts.
 

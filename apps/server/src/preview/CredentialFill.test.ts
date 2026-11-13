@@ -71,7 +71,31 @@ describe("matchingItemHost", () => {
     ["https://shopify.com/login", ["shopify.com"], true],
     ["https://accounts.shopify.com/login", ["shopify.com"], true],
     ["https://admin.shopify.com/store/x", ["https://shopify.com/"], true],
-    ["https://admin.shopify.com", ["https://accounts.shopify.com/lookup"], false],
+    // Registrable-domain siblings match, as in Bitwarden's default.
+    [
+      "https://portal.scmultirent.pl/logowanie",
+      ["https://www.scmultirent.pl/konto/logowanie"],
+      true,
+    ],
+    ["https://admin.shopify.com", ["https://accounts.shopify.com/lookup"], true],
+    ["https://scmultirent.pl", ["www.scmultirent.pl"], true],
+    // Public suffixes, including private ones, never widen a match.
+    ["https://b.github.io", ["https://a.github.io"], false],
+    ["https://x.a.github.io", ["https://a.github.io"], true],
+    ["https://a.github.io", ["github.io"], false],
+    ["https://github.io", ["github.io"], true],
+    ["https://other.co.uk", ["https://example.co.uk"], false],
+    ["https://www.example.co.uk", ["https://login.example.co.uk"], true],
+    ["https://example.co.uk", ["co.uk"], false],
+    ["https://b.s3.amazonaws.com", ["a.s3.amazonaws.com"], false],
+    // IP and single-label hosts match only exactly.
+    ["https://10.0.0.6", ["10.0.0.5"], false],
+    ["https://[::2]", ["[::1]"], false],
+    ["https://[::1]", ["[::1]"], true],
+    ["https://localhost", ["localhost"], true],
+    ["https://app.localhost", ["localhost"], false],
+    ["https://syndrom", ["syndrom"], true],
+    ["https://other", ["syndrom"], false],
     ["https://evilshopify.com", ["shopify.com"], false],
     ["https://shopify.com.evil.com", ["shopify.com"], false],
     ["https://shopify.com:8443/", ["shopify.com"], true],
@@ -86,6 +110,15 @@ describe("matchingItemHost", () => {
   ];
   it.each(table)("%s against %j is %s", (page, uris, expected) => {
     expect(matchingItemHost(page, uris) !== undefined).toBe(expected);
+  });
+
+  it("names the vault item's host, never the page's", () => {
+    expect(
+      matchingItemHost("https://portal.scmultirent.pl/logowanie", [
+        "https://other.example",
+        "https://www.scmultirent.pl/konto/logowanie",
+      ]),
+    ).toBe("www.scmultirent.pl");
   });
 });
 

@@ -3222,7 +3222,10 @@ sources and reasons.
 {
   "id": "preview-credential-fill",
   "purpose": "preview_fill_credential fills a login input in a server browser tab from the environment's rbw vault (credentialVault server setting) after an https and item-origin check, and returns only the outcome. The fill puts the tab's opener group in a login: every read is refused and session state shows Login in progress, until preview_end_login closes those tabs. Each attempt appends a value-free audit line. Drop when upstream fills credentials without exposing them to agents.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/557"],
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/557",
+    "https://github.com/toolboxmd/chromeria/issues/692"
+  ],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/561"],
   "newFiles": [
     "apps/server/src/preview/CredentialAudit.ts",
@@ -3239,6 +3242,7 @@ sources and reasons.
     "apps/server/src/preview/ServerBrowserPage.ts"
   ],
   "sharedFiles": [
+    "apps/server/package.json",
     "apps/server/src/mcp/toolkits/preview/tools.ts",
     "apps/server/src/preview/ServerBrowser.test.ts",
     "apps/server/src/preview/ServerBrowser.ts",
@@ -3249,7 +3253,8 @@ sources and reasons.
     "packages/contracts/src/index.ts",
     "packages/contracts/src/previewAutomation.ts",
     "packages/contracts/src/settings.ts",
-    "packages/shared/src/t3McpToolPresentation.ts"
+    "packages/shared/src/t3McpToolPresentation.ts",
+    "pnpm-lock.yaml"
   ],
   "keywords": ["preview_fill_credential", "fillCredential", "credentialVault", "rbw"]
 }
