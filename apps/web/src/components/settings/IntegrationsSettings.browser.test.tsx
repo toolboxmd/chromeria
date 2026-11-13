@@ -82,4 +82,17 @@ describe("Integrations browser discovery", () => {
       expect(container.textContent).toContain("device-bound, not mirrored");
     });
   });
+
+  it("marks the Chrome login mirror row as a Chromeria feature", async () => {
+    await using screen = await render(
+      <StrictMode>
+        <BrowserSettingsPanel />
+      </StrictMode>,
+    );
+    const heading = [...screen.container.querySelectorAll("h3")].find((element) =>
+      element.textContent?.includes("Chrome login mirror"),
+    );
+    expect(heading).toBeDefined();
+    expect(heading?.querySelector('[role="img"][aria-label="Chromeria feature"]')).not.toBeNull();
+  });
 });

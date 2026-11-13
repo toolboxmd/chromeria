@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { adoptDesktopBrowserProfiles } from "../../hooks/useSettings";
 import { recordCookieMirrorStatus, useCookieMirrorLimitations } from "../../rpc/cookieMirrorStatus";
+import { ChromeriaTitle } from "../ChromeriaFeatureMark";
 import { SettingsRow } from "./settingsLayout";
 
 export function ChromeCookieMirrorStatus() {
@@ -36,7 +37,7 @@ export function ChromeCookieMirrorStatus() {
   }, []);
   return (
     <SettingsRow
-      title="Chrome login mirror"
+      title={<ChromeriaTitle>Chrome login mirror</ChromeriaTitle>}
       description="On macOS, Chrome logins follow the Mac while Chromeria runs. Device-bound logins require signing in separately in each environment."
     >
       {limitations.length > 0 ? (

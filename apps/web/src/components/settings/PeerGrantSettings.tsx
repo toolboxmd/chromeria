@@ -10,6 +10,7 @@ import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Option from "effect/Option";
 import { peerGrants, updatePeerGrant } from "../../state/peerGrants";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { ChromeriaTitle } from "../ChromeriaFeatureMark";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 
@@ -28,7 +29,9 @@ function GrantEditor({
   const save = useAtomCommand(updatePeerGrant);
   return (
     <fieldset disabled={!canSave || saving} className="space-y-3 border-t border-border px-4 py-3">
-      <legend className="text-sm font-medium">{label}</legend>
+      <legend className="text-sm font-medium">
+        <ChromeriaTitle>{label}</ChromeriaTitle>
+      </legend>
       <p className="text-xs text-muted-foreground">
         New work uses these permissions. Existing delegated work keeps its original ceiling.
         Removing permission also limits existing work.

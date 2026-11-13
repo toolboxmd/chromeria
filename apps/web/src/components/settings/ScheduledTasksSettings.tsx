@@ -1,5 +1,6 @@
 import { savedPurposeIntentForScope } from "@t3tools/contracts";
 import { ExecutionPurposeControl } from "../chat/ExecutionPurposeControl";
+import { ChromeriaFeatureMark } from "../ChromeriaFeatureMark";
 import { useAtomValue } from "@effect/atom-react";
 import { connectionStatusTitle } from "@t3tools/client-runtime/connection";
 import { AsyncResult } from "effect/reactivity";
@@ -1772,15 +1773,22 @@ function ScheduledTaskEditorForm({
             </Field>
           ) : null}
 
-          <ExecutionPurposeControl
-            scope={draft.purposeScope ?? { type: "unscoped", reason: "deliberate" }}
-            runs={[]}
-            disabled={saving || !canOperate}
-            onChange={async (scope) => {
-              setDraft((current) => ({ ...current, purposeScope: scope }));
-              return true;
-            }}
-          />
+          <div className="flex items-start gap-1.5">
+            <div className="min-w-0 flex-1">
+              <ExecutionPurposeControl
+                scope={draft.purposeScope ?? { type: "unscoped", reason: "deliberate" }}
+                runs={[]}
+                disabled={saving || !canOperate}
+                onChange={async (scope) => {
+                  setDraft((current) => ({ ...current, purposeScope: scope }));
+                  return true;
+                }}
+              />
+            </div>
+            <span className="mt-3 inline-flex shrink-0">
+              <ChromeriaFeatureMark />
+            </span>
+          </div>
           <Field label="Prompt" htmlFor="scheduled-task-prompt">
             <Textarea
               id="scheduled-task-prompt"

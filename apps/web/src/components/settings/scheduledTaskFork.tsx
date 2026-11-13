@@ -114,8 +114,9 @@ export function PreservedScheduleNote({
   readonly schedule: ScheduledTaskUpsertSchedule | null;
 }) {
   return schedule === null || !isForkScheduledTaskSchedule(schedule) ? null : (
-    <span className="text-sm text-muted-foreground">
-      {forkScheduleLabel(schedule)} · change it through an agent
+    <span className="inline-flex items-center gap-1.5 text-sm text-muted-foreground">
+      <ChromeriaFeatureMark />
+      <span>{forkScheduleLabel(schedule)} · change it through an agent</span>
     </span>
   );
 }
