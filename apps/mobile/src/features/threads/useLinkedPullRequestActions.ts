@@ -1,5 +1,6 @@
 import {
   pullRequestLinkProject,
+  createThreadPullRequestWatchAction,
   resolveLinkPullRequestInput,
 } from "@t3tools/client-runtime/pull-request-link-input";
 import type {
@@ -43,6 +44,7 @@ export function useLinkedPullRequestActions(input: {
   );
   const canEdit = canOperate && capabilities !== undefined;
   const canWatch = canOperate && capabilities?.threadPullRequestWatch === true;
+  const supportsPurpose = capabilities?.executionPurposeVersions?.includes(1) === true;
   const canStartWatch =
     canWatch &&
     thread !== null &&
@@ -157,16 +159,12 @@ export function useLinkedPullRequestActions(input: {
     else if (action === "watch" && thread !== null)
       void run(
         "Couldn't change watching",
-        watch({
-          environmentId: thread.environmentId,
-          input: {
-            threadId: thread.id,
-            host: link.host,
-            repository: link.repository,
-            number: link.number,
-            watching: link.watch === undefined,
-          },
-        }),
+        createThreadPullRequestWatchAction({
+          threadRef: { environmentId: thread.environmentId, threadId: thread.id },
+          ownLinks: thread.pullRequests ?? [],
+          ...(supportsPurpose ? { purpose: { selection: thread.purposeSelection } } : {}),
+          watch,
+        })(link, link.watch === undefined),
       );
     else if (action === "unlink") setLinked(link, false);
   };
