@@ -1,6 +1,7 @@
 export {
   GROK_DEFAULT_INSTANCE_ID,
   GROK_PROVIDER,
+  GrokProviderCapabilitiesV2,
   grokLaunchRuntimeMode,
   makeGrokAcpAdapterFlavor,
   makeGrokAdapterV2,
@@ -9,6 +10,7 @@ export {
 export {
   GROK_ACP_CANCEL_META,
   GROK_ACP_INITIALIZE_META,
+  grokAcpRuntimeProcessOwnership,
   makeGrokAcpRuntime,
 } from "./server/acpSupport.ts";
 export {
