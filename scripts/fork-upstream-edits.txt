@@ -698,3 +698,14 @@ apps/server/src/orchestration-v2/ProjectionMaintenance.test.ts
 packages/client-runtime/src/state/auth.test.ts
 packages/client-runtime/src/state/auth.ts
 scripts/smoke-desktop-app.ts
+apps/server/src/cli/project.ts
+apps/server/src/orchestration-v2/ProjectCommands.ts
+apps/server/src/orchestration-v2/ProjectStore.ts
+apps/server/src/persistence/OrchestrationEventStore.ts
+apps/server/src/project/ProjectMutation.test.ts
+apps/server/src/project/ProjectMutation.ts
+apps/server/src/project/ProjectService.deletion.test.ts
+packages/contracts/src/applicationEvent.ts
+packages/contracts/src/project.ts
+packages/client-runtime/src/state/threads-sync.test.ts
+packages/client-runtime/src/state/threads.ts

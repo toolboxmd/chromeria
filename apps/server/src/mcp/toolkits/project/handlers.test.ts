@@ -1397,48 +1397,122 @@ it.effect("an agent's clone is not cut off while git is still transferring", () 
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it.effect("deleting a project through MCP also discards its clone record", () =>
-  Effect.gen(function* () {
-    const discarded: Array<ProjectId> = [];
-    const harness = clientLaunchHarness({ runtimeModeCeiling: "full-access", launched: [] });
-    const dependencies = Layer.merge(
-      harness.dependencies,
-      Layer.mergeAll(
+it.effect(
+  "an agent never deletes the No project, even when the scratch probe failed, and names itself to the cascade",
+  () =>
+    Effect.gen(function* () {
+      const callerId = ThreadId.make("thread:caller");
+      const scratchId = ProjectId.make("project:scratch");
+      const unprobedScratchId = ProjectId.make("project:unprobed-scratch");
+      const ownId = ProjectId.make("project:own");
+      const sharedId = ProjectId.make("project:shared");
+      const config = yield* ServerConfig.ServerConfig.pipe(
+        Effect.provide(
+          ServerConfig.layerTest(process.cwd(), { prefix: "t3-project-delete-" }).pipe(
+            Layer.provide(NodeServices.layer),
+          ),
+        ),
+      );
+      const { baseDir } = config;
+      const record = (projectId: ProjectId, workspaceRoot: string): ProjectRecord => ({
+        id: projectId,
+        title: projectId,
+        workspaceRoot,
+        repositoryIdentity: null,
+        faviconPath: null,
+        defaultModelSelection: null,
+        defaultThreadEnvMode: null,
+        autoPull: false,
+        projectIcon: null,
+        scripts: [],
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        deletedAt: null,
+      });
+      const roots: Record<string, string> = {
+        [scratchId]: `${baseDir}/scratch`,
+        // The probe reports no scratch folder, but this project still lives there.
+        [unprobedScratchId]: `${baseDir}/scratch`,
+        [ownId]: "/projects/own",
+        [sharedId]: "/projects/shared",
+      };
+      const requests: Array<Project.ProjectDeleteInput> = [];
+      const discarded: Array<ProjectId> = [];
+      const dependencies = Layer.mergeAll(
+        ServerSettings.layerTest(),
+        NodeCrypto.layer,
+        NodeServices.layer,
+        Layer.succeed(ServerConfig.ServerConfig, config),
+        Layer.succeed(McpInvocationContext.McpInvocationContext, {
+          environmentId: EnvironmentId.make("environment"),
+          requestNamespace: "session",
+          thread: {
+            threadId: callerId,
+            providerSessionId: "session",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+          },
+          client: undefined,
+          issuedAt: 0,
+          capabilities: new Set(["orchestration" as const]),
+        }),
+        Layer.mock(ThreadManagement.ThreadManagementService)({
+          getThreadShell: () => Effect.succeed(liveThreadShell(callerId)),
+        }),
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+          namedProjectsRoot: "/projects",
+          isScratchProject: (projectId) => Effect.succeed(projectId === scratchId),
+        }),
         Layer.mock(Project.ProjectService)({
+          getById: (projectId) => Effect.succeedSome(record(projectId, roots[projectId] ?? "")),
           delete: (input) =>
-            Effect.succeed({
-              id: input.projectId,
-              title: "client-target",
-              workspaceRoot: "/projects/client-target",
-              repositoryIdentity: null,
-              faviconPath: null,
-              defaultModelSelection: null,
-              defaultThreadEnvMode: null,
-              autoPull: false,
-              projectIcon: null,
-              scripts: [],
-              createdAt: "2026-01-01T00:00:00.000Z",
-              updatedAt: "2026-01-01T00:00:00.000Z",
-              deletedAt: "2026-01-01T00:00:00.000Z",
+            Effect.suspend(() => {
+              requests.push(input);
+              return input.projectId === sharedId
+                ? Effect.fail(
+                    new Project.ProjectHasOtherThreadsError({
+                      projectId: sharedId,
+                      threadCount: 1,
+                    }),
+                  )
+                : Effect.succeed({
+                    ...record(input.projectId, roots[input.projectId] ?? ""),
+                    deletedAt: "2026-01-01T00:00:00.000Z",
+                  });
             }),
         }),
         Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({
           discard: (projectId) => Effect.sync(() => void discarded.push(projectId)),
         }),
-      ),
-    );
-    const toolkit = yield* ProjectToolkit.pipe(
-      Effect.provide(
-        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
-      ),
-    );
+      );
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      const remove = (projectId: ProjectId) =>
+        toolkit
+          .handle("t3_project_delete", { projectId, force: true })
+          .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
 
-    yield* toolkit
-      .handle("t3_project_delete", { projectId: harness.projectId })
-      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
-
-    expect(discarded).toEqual([harness.projectId]);
-  }),
+      for (const projectId of [scratchId, unprobedScratchId]) {
+        expect((yield* remove(projectId)).at(-1)?.result).toMatchObject({
+          code: "invalid_request",
+          message: expect.stringContaining("shared No project"),
+        });
+      }
+      expect((yield* remove(sharedId)).at(-1)?.result).toMatchObject({
+        code: "invalid_request",
+        message: expect.stringContaining("t3_thread_organize"),
+      });
+      expect((yield* remove(ownId)).at(-1)?.result).toMatchObject({ id: ownId });
+      expect(requests.map((request) => [request.projectId, request.requester])).toEqual([
+        [sharedId, { kind: "agent", threadId: callerId }],
+        [ownId, { kind: "agent", threadId: callerId }],
+      ]);
+      expect(discarded).toEqual([ownId]);
+    }),
 );
 
 it.effect("an update the project refuses tells the agent why", () =>

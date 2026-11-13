@@ -215,6 +215,7 @@ function makeHarness(options: HarnessOptions = {}) {
       bootstrap: () => Effect.die("unused"),
       update: () => Effect.die("unused"),
       delete: () => Effect.die("unused"),
+      restore: () => Effect.die("unused"),
       listPage: () => Effect.die("unused"),
       getById: (id) =>
         Effect.succeed(

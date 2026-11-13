@@ -223,6 +223,14 @@ export const ProjectMutation = Schema.Union([
     projectId: ProjectId,
     force: Schema.optional(Schema.Boolean),
   }),
+  Schema.Struct({
+    type: Schema.Literal("project.restore"),
+    commandId: CommandId,
+    projectId: ProjectId,
+    threadIds: Schema.Array(ThreadId).annotate({
+      description: "Deleted threads of this project to restore with it.",
+    }),
+  }),
 ]);
 export type ProjectMutation = typeof ProjectMutation.Type;
 
