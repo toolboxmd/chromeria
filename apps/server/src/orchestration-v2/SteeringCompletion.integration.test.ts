@@ -1678,8 +1678,9 @@ it.effect.each(
         if (restarting) {
           yield* Fiber.join(secondPromoted);
           yield* worker.drain();
+          // Fork: a restart delivers each steer after the urgent-steering interruption note.
           assert.deepEqual(
-            started.map((turn) => turn.message.text),
+            started.map((turn) => turn.message.text.split("\n\n").at(-1)),
             ["first", "steer after setup", "second steer"],
           );
         } else {

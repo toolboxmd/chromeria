@@ -119,7 +119,7 @@ export function steeringCancelsRunningTools(
   const providerSession = projection.providerSessions.find(
     (candidate) => candidate.id === providerThread.providerSessionId,
   );
-  return providerSession?.capabilities.turns.activeSteeringInterruptsTools === true;
+  return providerSession?.capabilities.turns.steeringCancelReadsAsRefusal === true;
 }
 
 /** Resolve client intent from the state serialized by the thread dispatch lock. */
@@ -254,7 +254,7 @@ function resolveDeliveryIntent(
   const capabilities = providerTurnCapabilities(projection, activeRun);
   if (
     capabilities?.supportsActiveSteering === true &&
-    capabilities.activeSteeringInterruptsTools !== true
+    capabilities.steeringCancelReadsAsRefusal !== true
   ) {
     return { type: "steer_active", targetRunId: activeRun.id };
   }
@@ -264,12 +264,12 @@ function resolveDeliveryIntent(
   if (
     requestedMode.type === "steer_active" &&
     capabilities?.supportsSteeringByInterruptRestart === true &&
-    capabilities.activeSteeringInterruptsTools !== true
+    capabilities.steeringCancelReadsAsRefusal !== true
   ) {
     return { type: "steer_active", targetRunId: activeRun.id };
   }
   if (
-    capabilities?.activeSteeringInterruptsTools === true ||
+    capabilities?.steeringCancelReadsAsRefusal === true ||
     capabilities?.supportsQueuedMessages === true
   ) {
     return { type: "queue_after_active" };
@@ -357,12 +357,12 @@ const decideSteeringExecution: CommandPolicyV2Shape["decideSteeringExecution"] =
   if (
     !input.forceRestart &&
     input.capabilities.turns.supportsActiveSteering &&
-    input.capabilities.turns.activeSteeringInterruptsTools !== true
+    input.capabilities.turns.steeringCancelReadsAsRefusal !== true
   ) {
     return Effect.succeed("active_steering");
   }
   if (
-    (input.forceRestart || input.capabilities.turns.activeSteeringInterruptsTools !== true) &&
+    (input.forceRestart || input.capabilities.turns.steeringCancelReadsAsRefusal !== true) &&
     input.capabilities.turns.supportsInterrupt &&
     input.capabilities.turns.supportsSteeringByInterruptRestart
   ) {
