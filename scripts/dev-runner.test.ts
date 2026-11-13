@@ -71,6 +71,61 @@ const devServerInput = {
 
 it.layer(NodeServices.layer)("dev-runner", (it) => {
   describe("createDevRunnerEnv", () => {
+    it.effect("disables backend Tailscale Serve for server and web dev modes", () =>
+      Effect.gen(function* () {
+        for (const mode of ["dev", "dev:server", "dev:web"] as const) {
+          for (const ambientServe of ["true", "false", undefined]) {
+            const baseEnv = {
+              T3CODE_TAILSCALE_SERVE: ambientServe,
+              T3CODE_TAILSCALE_SERVE_PORT: "443",
+            };
+            const env = yield* createDevRunnerEnv({
+              mode,
+              baseEnv,
+              serverOffset: 0,
+              webOffset: 0,
+              t3Home: undefined,
+              browser: undefined,
+              autoBootstrapProjectFromCwd: undefined,
+              logWebSocketEvents: undefined,
+              host: undefined,
+              port: undefined,
+              devUrl: undefined,
+            });
+
+            assert.equal(env.T3CODE_TAILSCALE_SERVE, "false");
+            assert.equal(baseEnv.T3CODE_TAILSCALE_SERVE, ambientServe);
+          }
+        }
+      }),
+    );
+
+    it.effect("preserves ambient Tailscale Serve configuration for desktop dev", () =>
+      Effect.gen(function* () {
+        for (const ambientServe of ["true", "false", undefined]) {
+          const env = yield* createDevRunnerEnv({
+            mode: "dev:desktop",
+            baseEnv: {
+              T3CODE_TAILSCALE_SERVE: ambientServe,
+              T3CODE_TAILSCALE_SERVE_PORT: "443",
+            },
+            serverOffset: 0,
+            webOffset: 0,
+            t3Home: undefined,
+            browser: undefined,
+            autoBootstrapProjectFromCwd: undefined,
+            logWebSocketEvents: undefined,
+            host: undefined,
+            port: undefined,
+            devUrl: undefined,
+          });
+
+          assert.equal(env.T3CODE_TAILSCALE_SERVE, ambientServe);
+          assert.equal(env.T3CODE_TAILSCALE_SERVE_PORT, "443");
+        }
+      }),
+    );
+
     it.effect("forwards the reusable auth token to web dev and removes it for desktop", () =>
       Effect.gen(function* () {
         const input = {
