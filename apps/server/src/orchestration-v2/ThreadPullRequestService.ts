@@ -1,3 +1,4 @@
+import { forkPullRequestIdentity } from "../pullRequest/forkRepositoryIdentity.ts";
 import {
   CommandId,
   type OrchestrationProjectShell,
@@ -64,7 +65,7 @@ function pullRequestPredatesThread(
   return terminalAt != null && Date.parse(terminalAt) < DateTime.toEpochMillis(createdAt);
 }
 
-function pullRequestMatchesProject(
+export function pullRequestMatchesProject(
   pullRequest: GitManager.GitBranchPullRequest,
   project: OrchestrationProjectShell,
 ): boolean {
@@ -72,11 +73,13 @@ function pullRequestMatchesProject(
     pullRequest.repositoryKey !== null &&
     project.repositoryIdentity != null &&
     sourceControlDefinitions.canonicalRepositoryKey(pullRequest.repositoryKey) ===
-      sourceControlDefinitions.canonicalRepositoryKey(project.repositoryIdentity.canonicalKey)
+      sourceControlDefinitions.canonicalRepositoryKey(
+        forkPullRequestIdentity(project.repositoryIdentity)!.canonicalKey,
+      )
   );
 }
 
-const resolveProjectForPullRequestDiscovery = Effect.fn(
+export const resolveProjectForPullRequestDiscovery = Effect.fn(
   "ThreadPullRequestServiceV2.resolveProject",
 )(function* (
   project: OrchestrationProjectShell,
@@ -89,7 +92,9 @@ const resolveProjectForPullRequestDiscovery = Effect.fn(
   });
   return {
     project: { ...project, repositoryIdentity },
-    repository: sourceControlDefinitions.repositorySelector(repositoryIdentity),
+    repository: sourceControlDefinitions.repositorySelector(
+      forkPullRequestIdentity(repositoryIdentity),
+    ),
   };
 });
 
