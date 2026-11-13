@@ -561,6 +561,10 @@ const makeCodexBoundary = Effect.fn("makeCodexUrgentRestartBoundary")(function* 
           case "thread/resume":
             yield* reply(startedThread);
             break;
+          // Every turn/start follows a config/read.
+          case "config/read":
+            yield* reply({ config: {}, origins: {} });
+            break;
           case "thread/read":
             yield* reply({
               thread: {
