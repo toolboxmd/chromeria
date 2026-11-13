@@ -5,6 +5,7 @@ import {
   authScopeRequiredResponse,
   AssetCreateUrlInput,
   AuthAccessReadScope,
+  AuthAccessWriteScope,
   ServerSettingsPatch,
   ProviderInstanceMutation,
   requiredScopesForServerSettingsPatch,
@@ -22,6 +23,8 @@ import {
   AuthRelayReadScope,
   AuthRelayWriteScope,
   AuthTerminalOperateScope,
+  FEATURE_MAP_WS_METHODS,
+  ISSUE_WS_METHODS,
   ORCHESTRATION_V2_WS_METHODS,
   AuthTerminalReadScope,
   type AuthEnvironmentScope,
@@ -34,6 +37,8 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
+
+import { ISSUE_LINK_RPC_SCOPES } from "../issueLinks/rpcScopes.ts";
 
 type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 
@@ -90,6 +95,12 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.serverRemoveKeybinding]: AuthSettingsWriteScope,
   [WS_METHODS.serverGetStorageCleanupReport]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetDatabaseStorage]: AuthOrchestrationReadScope,
+  [WS_METHODS.serverGetSettings]: AuthOrchestrationReadScope,
+  [WS_METHODS.remoteTaskRequest]: AuthOrchestrationOperateScope,
+  [WS_METHODS.remoteTaskRequestRead]: AuthOrchestrationReadScope,
+  [WS_METHODS.remoteTaskView]: AuthOrchestrationReadScope,
+  [WS_METHODS.peerGrantsList]: AuthAccessReadScope,
+  [WS_METHODS.peerGrantsUpdate]: AuthAccessWriteScope,
   [WS_METHODS.peerLinksList]: AuthAccessReadScope,
   [WS_METHODS.serverUpdateSettings]: AuthSettingsWriteScope,
   [WS_METHODS.serverSearchAcpRegistry]: AuthOrchestrationReadScope,
@@ -115,6 +126,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.serverRefreshUsageRates]: AuthDiagnosticsReadScope,
   [WS_METHODS.serverSignalProcess]: AuthEnvironmentMaintainScope,
   [WS_METHODS.serverReportClientActivity]: AuthOrchestrationReadScope,
+  [WS_METHODS.scheduledTasksList]: AuthOrchestrationReadScope,
   [WS_METHODS.scheduledTasksSubscribe]: AuthOrchestrationReadScope,
   [WS_METHODS.secretsAnswerRequest]: AuthOrchestrationOperateScope,
   // Delivery logs hold request bodies, so they need the same scope as the URL.
@@ -215,6 +227,14 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.subscribeServerConfig]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeServerLifecycle]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeAuthAccess]: AuthAccessReadScope,
+  // Fork: GitHub Issues (toolboxmd/t3code#27); its writes are in CLIENT_GUARDED_RPC_SCOPES.
+  [ISSUE_WS_METHODS.issuesList]: AuthOrchestrationReadScope,
+  [ISSUE_WS_METHODS.issuesDetail]: AuthOrchestrationReadScope,
+  [ISSUE_WS_METHODS.issuesStates]: AuthOrchestrationReadScope,
+  // Fork: feature map (toolboxmd/chromeria#235).
+  [FEATURE_MAP_WS_METHODS.read]: AuthOrchestrationReadScope,
+  // Fork: Issue links (toolboxmd/t3code#28).
+  ...ISSUE_LINK_RPC_SCOPES,
 } as const satisfies Readonly<Record<WsRpcMethod, AuthEnvironmentScope>>;
 
 export function requiredScopeForRpcMethod(method: string): AuthEnvironmentScope {
