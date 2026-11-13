@@ -798,11 +798,21 @@ it.effect("a caller cannot rewrite a scheduled task that runs above its own mode
       enabled: false,
     });
     expect(allowed.isError).toBe(false);
+    const unscoped = { version: 1, intent: { type: "unscoped" } };
     const fresh = yield* call("schedule_task", {
-      scheduledTaskId: "task-auto",
+      scheduledTaskId: "task-unscoped",
       freshSession: true,
     });
-    expect(fresh.structuredContent).toMatchObject({ freshSession: true });
+    expect(fresh.structuredContent).toMatchObject({ freshSession: true, purposeIntent: unscoped });
+    const purposed = yield* call("schedule_task", {
+      scheduledTaskId: "task-auto",
+      prompt: "Run something else",
+      purposeIntent: unscoped,
+    });
+    expect(purposed.structuredContent).toMatchObject({
+      prompt: "Run something else",
+      purposeIntent: unscoped,
+    });
     const incomplete = yield* call("schedule_task", { prompt: "Run nightly" });
     expect(declaredFailure(incomplete)).toMatchObject({ code: "invalid_request" });
   }).pipe(
@@ -822,12 +832,25 @@ it.effect("a caller cannot rewrite a scheduled task that runs above its own mode
                 tasks: [
                   scheduledTask("task-full-access", "full-access"),
                   scheduledTask("task-auto", "auto"),
+                  {
+                    ...(scheduledTask("task-unscoped", "auto") as object),
+                    purposeIntent: { version: 1, intent: { type: "unscoped" } },
+                  } as never,
                 ],
               }),
             upsert: (input) =>
-              Effect.succeed({
-                task: { ...(scheduledTask(input.id ?? "task-auto", "auto") as object), ...input },
-              } as never),
+              input.purposeIntent === undefined
+                ? Effect.fail(
+                    new ScheduledTaskError({
+                      message: "Choose an Issue, PR or deliberately unscoped purpose.",
+                    }),
+                  )
+                : Effect.succeed({
+                    task: {
+                      ...(scheduledTask(input.id ?? "task-auto", "auto") as object),
+                      ...input,
+                    },
+                  } as never),
             setEnabled: (input) =>
               Effect.succeed({
                 task: { ...(scheduledTask(input.id, "auto") as object), enabled: input.enabled },

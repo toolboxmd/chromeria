@@ -2951,7 +2951,7 @@ const make = Effect.gen(function* () {
             ? existing.workspaceStrategy
             : yield* scheduledTaskWorkspaceStrategy(threadId !== null, existing.projectId);
         const upsertInput: ScheduledTaskUpsertInput = {
-          purposeIntent: input.purposeIntent,
+          purposeIntent: input.purposeIntent ?? existing.purposeIntent,
           id: existing.id,
           ...((input.bare ?? existing.bare) === undefined
             ? {}
