@@ -14,6 +14,7 @@ import {
   deriveProviderInstanceEntries,
 } from "../../providerInstances";
 import { Button } from "../ui/button";
+import { ChromeriaFeatureMark } from "../ChromeriaFeatureMark";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -169,6 +170,7 @@ function SpectrumEditor({
       <SettingsSection
         id="spectrum-defaults"
         title="Spectrum"
+        titleAction={<ChromeriaFeatureMark />}
         variant="plain"
         headerAction={
           <Button

@@ -357,8 +357,13 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                     >
                       <SettingsSectionIcon to={item.to} />
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium text-sidebar-foreground">
-                          {m(item.title)}
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <span className="block min-w-0 flex-1 truncate text-sm font-medium text-sidebar-foreground">
+                            {m(item.title)}
+                          </span>
+                          {item.forkAdded === true ? (
+                            <ChromeriaFeatureMark focusable={false} />
+                          ) : null}
                         </span>
                         <span className="block truncate text-2xs text-sidebar-muted-foreground/75">
                           {m(SETTINGS_SECTION_LABELS[item.to])}

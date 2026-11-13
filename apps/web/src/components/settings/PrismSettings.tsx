@@ -27,6 +27,7 @@ import { useThreadShells } from "../../state/entities";
 import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
 import { Button } from "../ui/button";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
+import { ChromeriaFeatureMark } from "../ChromeriaFeatureMark";
 import { SettingsGroup } from "./SettingsGroup";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
@@ -182,6 +183,7 @@ export function PrismSettings() {
       <SettingsSection
         id="prism-roles"
         title="Prism (Model Router)"
+        titleAction={<ChromeriaFeatureMark />}
         variant="plain"
         headerAction={
           <Button

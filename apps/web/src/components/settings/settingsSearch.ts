@@ -77,6 +77,8 @@ export interface SettingsSearchItem {
   readonly textGeneratorsOnly?: boolean;
   readonly secondary?: boolean;
   readonly requiresThreadAutoSettlement?: boolean;
+  // Fork: entries Chromeria added show the Chromeria feature mark in search results.
+  readonly forkAdded?: boolean;
 }
 
 export interface SettingsSearchAvailability {
@@ -261,6 +263,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     targetId: "prism-roles",
     scope: "project-defaults",
     searchTerms: ["model", "routing", "worker", "lane", "kit", "effort"],
+    forkAdded: true,
   },
   {
     id: "spectrum-defaults",
@@ -268,6 +271,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/spectrum",
     targetId: "spectrum-defaults",
     scope: "project-defaults",
+    forkAdded: true,
     searchTerms: [
       "Color",
       "White",
@@ -288,6 +292,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     targetId: "promachos-colors",
     scope: "project-defaults",
     searchTerms: ["model", "provider", "effort", "fallback", "persona"],
+    forkAdded: true,
   },
   {
     id: "prism-capacity",
@@ -296,6 +301,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     targetId: "prism-capacity",
     scope: "environment",
     searchTerms: ["usage", "limits", "provider"],
+    forkAdded: true,
   },
   {
     id: "storage-worktrees",
@@ -828,6 +834,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     scope: "environment-defaults",
     providerSettingsOnly: true,
     searchTerms: ["automatic provider updates cli install codex claude cursor grok opencode"],
+    forkAdded: true,
   },
   {
     id: "continue-threads-after-server-update",

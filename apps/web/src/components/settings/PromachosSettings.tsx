@@ -6,6 +6,7 @@ import {
   deriveProviderInstanceEntries,
 } from "../../providerInstances";
 import { Button } from "../ui/button";
+import { ChromeriaFeatureMark } from "../ChromeriaFeatureMark";
 import { ColorList } from "./ColorList";
 import { colorProviderChoices } from "./ColorPicker.logic";
 import { planPromachosReset } from "./PromachosSettings.logic";
@@ -37,6 +38,7 @@ export function PromachosSettings() {
       <SettingsSection
         id="promachos-colors"
         title="Promachos"
+        titleAction={<ChromeriaFeatureMark />}
         variant="plain"
         headerAction={
           <Button
