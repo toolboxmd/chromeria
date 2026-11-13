@@ -2084,7 +2084,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           });
           for (const owner of owners.toReversed())
             consume = threadDispatch.withLock(owner, consume);
-          return yield* consume;
+          // Message intake precedes the thread locks, as on every other message dispatch.
+          return yield* messageIntake.withLock(threadId, consume);
         }),
         delegatedCompletion: {
           parentRunId,
@@ -17731,10 +17732,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const dispatchWithReceipt = Effect.fnUntraced(function* (command: OrchestrationV2ServerCommand) {
     // A completion delivery already holds this thread's lock on its own fiber.
     const owner = yield* CompletionDeliveryLock;
-    const dispatch =
-      owner?.threadId === commandThreadId(command) && owner.fiberId === (yield* Effect.fiberId)
-        ? dispatchWithReceiptEffect(command)
-        : threadDispatch.withLock(commandThreadId(command), dispatchWithReceiptEffect(command));
+    const delivering =
+      owner?.threadId === commandThreadId(command) && owner.fiberId === (yield* Effect.fiberId);
+    const dispatch = delivering
+      ? dispatchWithReceiptEffect(command)
+      : threadDispatch.withLock(commandThreadId(command), dispatchWithReceiptEffect(command));
     // A parent's lock comes before its side chats' locks, so a delete cascade and a side chat
     // fork or command never interleave. A fork from a side chat or onto an existing thread would
     // invert that order; dispatch rejects both, so they skip the source lock.
@@ -17763,13 +17765,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
     // Taken before the lineage read, so a message whose read yields keeps its
     // place ahead of later messages to the same thread.
-    if (command.type === "message.dispatch")
-      return yield* messageIntake.withLock(
-        command.threadId,
-        mayStartSubagentFollowup(command)
-          ? withSubagentParentLock(command.threadId, dispatch)
-          : dispatch,
-      );
+    if (command.type === "message.dispatch") {
+      const intake = mayStartSubagentFollowup(command)
+        ? withSubagentParentLock(command.threadId, dispatch)
+        : dispatch;
+      // A completion delivery took this thread's intake before its thread locks.
+      return yield* delivering ? intake : messageIntake.withLock(command.threadId, intake);
+    }
     // Answering a message-mode question can also start a follow-up.
     return yield* command.type === "runtime-request.respond"
       ? withSubagentParentLock(command.threadId, dispatch)

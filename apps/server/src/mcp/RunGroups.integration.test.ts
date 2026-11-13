@@ -1310,7 +1310,11 @@ describe("Run groups", () => {
           expect((yield* firstOffer).delegatedCompletion?.messageId).toBe(
             woken.runs[0]?.delegatedCompletion?.delivery?.messageId,
           );
-          expect(yield* Ref.get(offers)).toHaveLength(1);
+          // Checkpoint capture may re-offer the same pending delivery, which dispatches once.
+          expect(
+            new Set((yield* Ref.get(offers)).map((offer) => offer.delegatedCompletion?.messageId))
+              .size,
+          ).toBe(1);
         }),
     ),
   );
