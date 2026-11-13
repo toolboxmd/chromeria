@@ -3470,7 +3470,7 @@ sources and reasons.
   "id": "project-restore-guard",
   "purpose": "Agents cannot delete the shared No project or a project holding threads they did not create, and a deleted project with chosen threads comes back through a project.restored event and thread record events that replay keeps. Drop when upstream guards agent project deletion and supports project restore.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/696"],
-  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...fix/696-restore-scratch-project"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/697"],
   "newFiles": ["apps/server/src/fork/projectDeleteGuard.ts"],
   "upstreamFiles": [
     "apps/server/src/cli/project.ts",
