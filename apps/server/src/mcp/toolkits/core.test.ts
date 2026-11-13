@@ -1,5 +1,8 @@
 import * as AssetSigner from "../../assets/AssetSigner.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
+import * as Database from "../../persistence/Sqlite.ts";
+import * as BareLaunch from "../../orchestration-v2/BareLaunch.ts";
+import * as PrismServerSettings from "../../serverSettings.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
@@ -66,8 +69,14 @@ import * as PeerLinkRequests from "../../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../../peer/PeerLinks.ts";
 
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
+  Layer.provide(Database.layerMemory),
+  Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+  Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+  Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+  Layer.provide(PrismServerSettings.layerTest()),
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+  Layer.provide(NodeServices.layer),
 );
 
 const declaredFailure = (result: McpSchema.CallToolResult) => {
@@ -165,7 +174,7 @@ it.effect("an answered question reports already answered instead of not found", 
     });
     expect(declaredFailure(yield* respond("missing-question"))).toMatchObject({
       code: "invalid_request",
-      message: "The pending user-input request was not found.",
+      message: "The pending approval or user-input request was not found.",
     });
   }).pipe(
     Effect.provide(
@@ -214,7 +223,14 @@ it.effect("an answered question reports already answered instead of not found", 
                   },
                 ],
               }),
-            dispatch: () => Effect.die("an answered question must not dispatch again"),
+            dispatch: (command) =>
+              Effect.fail(
+                new OrchestratorDispatchError({
+                  commandId: command.commandId,
+                  commandType: command.type,
+                  cause: `Runtime request ${requestId} is resolved.`,
+                }),
+              ),
           }),
         ),
       ),
@@ -305,6 +321,11 @@ it.effect("returns an HTML render reference that Codex and Claude tool rows both
     for (const name of ["html_preview", "html_render"]) {
       expect(yield* byPath(name, scope), name).toContain("only full-access threads");
       expect(yield* byPath(name, fullAccess), name).toContain("not a readable HTML document");
+      // A path names a file on this machine, but a peer's access check reads its own thread.
+      expect(
+        yield* byPath(name, { ...fullAccess, client: { linked: true } } as never),
+        name,
+      ).toContain("a path is read only on the caller's own environment");
     }
   }).pipe(
     Effect.provide(
@@ -562,8 +583,8 @@ it.effect("a client caller targets any thread within its ceiling and cannot act 
     });
 
     const forked = yield* call(
-      "t3_thread_transfer",
-      { action: "fork", sourcePoint: { type: "latest_stable" } },
+      "t3_thread_fork",
+      { sourcePoint: { type: "latest_stable" } },
       clientScope("auto"),
     );
     expect(declaredFailure(forked)).toMatchObject({ code: "target_required" });
@@ -661,7 +682,7 @@ it.effect("a read-only client reads threads and is refused every write before it
           Effect.provideService(McpSchema.McpServerClient, client),
         );
 
-    const configuration = yield* call("t3_thread_configure", {
+    const configuration = yield* call("t3_thread_configuration", {
       threadId: "other-project-thread",
     });
     expect(configuration.isError).toBe(false);
@@ -736,6 +757,7 @@ it.effect("refuses act-as-caller tools to a client caller", () =>
   }).pipe(
     Effect.provide(
       layerOrchestratorToolkit.pipe(
+        Layer.provide(PrismServerSettings.layerTest()),
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
@@ -786,6 +808,7 @@ it.effect("a caller cannot rewrite a scheduled task that runs above its own mode
   }).pipe(
     Effect.provide(
       layerOrchestratorToolkit.pipe(
+        Layer.provide(PrismServerSettings.layerTest()),
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
@@ -804,6 +827,10 @@ it.effect("a caller cannot rewrite a scheduled task that runs above its own mode
             upsert: (input) =>
               Effect.succeed({
                 task: { ...(scheduledTask(input.id ?? "task-auto", "auto") as object), ...input },
+              } as never),
+            setEnabled: (input) =>
+              Effect.succeed({
+                task: { ...(scheduledTask(input.id, "auto") as object), enabled: input.enabled },
               } as never),
           }),
         ),
@@ -925,6 +952,7 @@ it.effect.each(["t3_thread_interrupt", "t3_workflow_stop"])(
     }).pipe(
       Effect.provide(
         layerOrchestratorToolkit.pipe(
+          Layer.provide(PrismServerSettings.layerTest()),
           Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
           Layer.provide(NodeCrypto.layer),
           Layer.provide(
@@ -1033,6 +1061,7 @@ it.effect("discovers workflow stop targets and requires orchestration capability
   }).pipe(
     Effect.provide(
       layerOrchestratorToolkit.pipe(
+        Layer.provide(PrismServerSettings.layerTest()),
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(

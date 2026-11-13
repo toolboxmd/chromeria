@@ -1,3 +1,25 @@
+import { CurrentRequest, CommandIndex } from "../mcp/McpRequestReceipts.ts";
+import {
+  toolPolicyModeRejection,
+  toolPolicyRejection,
+  toolAllowlistsEqual,
+  ToolPolicyError,
+} from "@t3tools/provider-core/server/toolPolicy";
+import * as ThreadMcpConfig from "./ThreadMcpConfig.ts";
+import * as ToolPolicyAdapters from "./ProviderAdapterRegistry.ts";
+import { executionPurposesEqual } from "@t3tools/contracts";
+import { BareLaunchError } from "@t3tools/provider-core/server/bareLaunch";
+import {
+  type PurposeIntent,
+  type ExecutionPurpose,
+  executionPurposeOf,
+  purposeIntentsEqual,
+  purposeScopesEqual,
+} from "@t3tools/contracts";
+import * as ExecutionPurposeAdmission from "./ExecutionPurpose.ts";
+import type { BareReadGrant } from "./bareReadGrant.ts";
+import * as BareLaunch from "./BareLaunch.ts";
+import { type BareLaunchRequest, type OrchestrationV2ThreadPrismRole } from "@t3tools/contracts";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
@@ -53,7 +75,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type * as Orchestrator from "./Orchestrator.ts";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
-import { DispatchModeLimit } from "./DispatchModeLimit.ts";
+import { exceededDispatchModeLimit, DispatchModeLimit } from "./DispatchModeLimit.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 
 export type ThreadLaunchWorkspaceStrategy =
@@ -80,6 +102,12 @@ export interface ThreadLaunchInitialMessage {
 }
 
 export interface ThreadLaunchInput {
+  readonly purposeIntent?: PurposeIntent | undefined;
+  readonly purposeSource?: ExecutionPurpose | undefined;
+  readonly purposeParentRun?: { readonly threadId: ThreadId; readonly runId: RunId } | undefined;
+  readonly bare?: BareLaunchRequest | undefined;
+  readonly tools?: import("@t3tools/contracts").ThreadToolsRequest | undefined;
+  readonly bareReadGrant?: BareReadGrant | undefined;
   readonly commandId: CommandId;
   readonly threadId?: ThreadId;
   readonly reuseExistingThread?: boolean;
@@ -105,6 +133,10 @@ export interface ThreadLaunchInput {
   readonly linkOrigin?: OrchestrationV2LinkOrigin;
   /** The parent there, when that environment's agent delegated this as a task. */
   readonly delegatedFrom?: OrchestrationV2DelegatedFrom;
+  /** Fork: the person who owns the new thread (toolboxmd/chromeria#170). */
+  readonly owner?: string;
+  /** Fork: launched as the Promachos (toolboxmd/chromeria#532). */
+  readonly prismRole?: OrchestrationV2ThreadPrismRole;
 }
 
 type PreparationInput = Pick<
@@ -128,6 +160,26 @@ export interface ThreadLaunchResult {
   readonly sequence?: number;
 }
 
+type ThreadLaunchReplayInput = Pick<
+  ThreadLaunchInput,
+  | "commandId"
+  | "threadId"
+  | "projectId"
+  | "runtimeMode"
+  | "interactionMode"
+  | "createdBy"
+  | "linkOrigin"
+  | "bare"
+  | "tools"
+  | "purposeIntent"
+  | "purposeSource"
+  | "purposeParentRun"
+  | "delegatedFrom"
+> & { readonly messageId?: MessageId };
+
+const isBareLaunchError = Schema.is(BareLaunchError);
+const isToolPolicyError = Schema.is(ToolPolicyError);
+
 export class ThreadLaunchError extends Schema.TaggedError<ThreadLaunchError>()(
   "ThreadLaunchError",
   {
@@ -150,6 +202,7 @@ export class ThreadLaunchError extends Schema.TaggedError<ThreadLaunchError>()(
   },
 ) {
   override get message(): string {
+    if (isBareLaunchError(this.cause) || isToolPolicyError(this.cause)) return this.cause.reason;
     return `Thread launch ${this.commandId} failed during ${this.operation}.`;
   }
 }
@@ -198,6 +251,10 @@ export class ThreadLaunchNotRepositoryError extends Schema.TaggedError<ThreadLau
 export class ThreadLaunchService extends Context.Service<
   ThreadLaunchService,
   {
+    readonly configureMcp: (input: {
+      readonly threadId: ThreadId;
+      readonly servers: import("@t3tools/contracts").ThreadMcpServers;
+    }) => Effect.Effect<{ readonly sequence: number }, ToolPolicyError>;
     readonly launch: (
       input: ThreadLaunchInput,
     ) => Effect.Effect<
@@ -214,6 +271,12 @@ export class ThreadLaunchService extends Context.Service<
       void,
       ThreadLaunchBaseRefError | ThreadLaunchBranchConflictError | ThreadLaunchNotRepositoryError
     >;
+    /** Replay accepted work before evaluating admission, model selection or attachment claims. */
+    readonly replayOrLaunch: <E, R>(
+      input: ThreadLaunchReplayInput,
+      launch: Effect.Effect<ThreadLaunchResult, E, R>,
+    ) => Effect.Effect<ThreadLaunchResult, ThreadLaunchError | E, R>;
+    /** Dispatches prepared-run.retry and prepares the run's workspace again. */
     readonly retryPreparation: (
       input: ThreadLaunchPreparationInput,
     ) => Effect.Effect<
@@ -237,6 +300,9 @@ function failureDetail(error: unknown): string {
 }
 
 const make = Effect.gen(function* () {
+  const threadMcpConfig = yield* Effect.serviceOption(ThreadMcpConfig.ThreadMcpConfig);
+  const toolAdapters = yield* Effect.serviceOption(ToolPolicyAdapters.ProviderAdapterRegistryV2);
+  const bareLaunch = yield* BareLaunch.BareLaunch;
   const projects = yield* ProjectService.ProjectService;
   const setupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
   const cloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
@@ -261,7 +327,11 @@ const make = Effect.gen(function* () {
   yield* Effect.addFinalizer(() => Scope.close(preparationScope, Exit.void));
 
   const mapError =
-    (input: PreparationInput, operation: ThreadLaunchError["operation"], threadId?: ThreadId) =>
+    (
+      input: Pick<ThreadLaunchInput, "commandId" | "projectId">,
+      operation: ThreadLaunchError["operation"],
+      threadId?: ThreadId,
+    ) =>
     (cause: unknown) =>
       new ThreadLaunchError({
         operation,
@@ -311,10 +381,133 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  const readReceipt = (input: ThreadLaunchInput, commandId: CommandId) =>
+  const readReceipt = (
+    input: Pick<ThreadLaunchInput, "commandId" | "projectId" | "threadId">,
+    commandId: CommandId,
+  ) =>
     receipts
       .getByCommandId(commandId)
       .pipe(Effect.mapError(mapError(input, "read-receipt", input.threadId)));
+
+  const replayOrLaunch: ThreadLaunchService["Service"]["replayOrLaunch"] = Effect.fn(
+    "ThreadLaunchService.replayOrLaunch",
+  )(function* <E, R>(
+    input: ThreadLaunchReplayInput,
+    launch: Effect.Effect<ThreadLaunchResult, E, R>,
+  ): Effect.fn.Return<ThreadLaunchResult, ThreadLaunchError | E, R> {
+    const receipt = yield* readReceipt(input, input.commandId);
+    if (Option.isNone(receipt)) return yield* launch;
+    const accepted = receipt.value;
+    if (
+      accepted.status !== "accepted" ||
+      accepted.commandType !== "thread.create" ||
+      (input.threadId !== undefined && input.threadId !== accepted.threadId)
+    )
+      return yield* mapError(input, "read-receipt")("Launch receipt does not match this request.");
+    const threadId = accepted.threadId;
+    const projection = yield* threads
+      .getThreadProjection(threadId)
+      .pipe(Effect.mapError(mapError(input, "create-thread", threadId)));
+    if (!toolAllowlistsEqual(input.tools, projection.thread.tools))
+      return yield* mapError(
+        input,
+        "read-receipt",
+        projection.thread.id,
+      )(new ToolPolicyError({ reason: "Launch tool allowlist changed." }));
+    if ((input.bare !== undefined) !== (projection.thread.bare !== undefined))
+      return yield* mapError(
+        input,
+        "read-receipt",
+        threadId,
+      )(new BareLaunchError({ reason: "Launch bare intent changed." }));
+    if (projection.thread.projectId !== input.projectId)
+      return yield* mapError(input, "resolve-project", threadId)("Project identity changed.");
+    if (projection.thread.linkOrigin?.sessionId !== input.linkOrigin?.sessionId)
+      return yield* mapError(input, "create-thread", threadId)("Launch link origin changed.");
+    const recordedLaunch = projection.thread.delegatedFrom?.purposeLaunch;
+    const requestedLaunch = input.delegatedFrom?.purposeLaunch;
+    if (
+      (recordedLaunch === undefined) !== (requestedLaunch === undefined) ||
+      (recordedLaunch !== undefined &&
+        requestedLaunch !== undefined &&
+        (recordedLaunch.environmentId !== requestedLaunch.environmentId ||
+          recordedLaunch.threadId !== requestedLaunch.threadId ||
+          recordedLaunch.runId !== requestedLaunch.runId ||
+          recordedLaunch.launchId !== requestedLaunch.launchId ||
+          !executionPurposesEqual(recordedLaunch.purpose, requestedLaunch.purpose)))
+    ) {
+      return yield* mapError(
+        input,
+        "read-receipt",
+        threadId,
+      )(new ExecutionPurposeAdmission.PurposeAdmissionError({ reason: "remote_launch_mismatch" }));
+    }
+    if (
+      input.createdBy === "agent" &&
+      exceededDispatchModeLimit(input, projection.thread) !== undefined
+    )
+      return yield* mapError(
+        input,
+        "dispatch-message",
+        threadId,
+      )("Thread runs above the launch's mode limits.");
+    if (input.messageId !== undefined) {
+      const messageReceipt = yield* readReceipt(
+        input,
+        CommandId.make(`${input.commandId}:initial-message`),
+      );
+      // A create alone is not an accepted initial message. Resume its normal intake.
+      if (Option.isNone(messageReceipt)) return yield* launch;
+      const run = projection.runs.find((candidate) => candidate.userMessageId === input.messageId);
+      const message = projection.messages.find((candidate) => candidate.id === input.messageId);
+      if (!purposeIntentsEqual(message?.purposeIntent, input.purposeIntent)) {
+        return yield* mapError(
+          input,
+          "read-receipt",
+          threadId,
+        )(new ExecutionPurposeAdmission.PurposeAdmissionError({ reason: "intent_reused" }));
+      }
+      let source = input.purposeSource;
+      if (input.purposeIntent?.intent.type === "inherit" && input.purposeParentRun !== undefined) {
+        const parent = yield* threads
+          .getThreadRecords(input.purposeParentRun.threadId, ["runs"])
+          .pipe(Effect.mapError(mapError(input, "read-receipt", threadId)));
+        const parentRun = parent.runs.find(
+          (candidate) => candidate.id === input.purposeParentRun?.runId,
+        );
+        if (parentRun === undefined)
+          return yield* mapError(
+            input,
+            "read-receipt",
+            threadId,
+          )(new ExecutionPurposeAdmission.PurposeAdmissionError({ reason: "intent_reused" }));
+        source = executionPurposeOf(parentRun);
+      }
+      if (
+        source !== undefined &&
+        (run === undefined || !purposeScopesEqual(source.scope, executionPurposeOf(run).scope))
+      )
+        return yield* mapError(
+          input,
+          "read-receipt",
+          threadId,
+        )(new ExecutionPurposeAdmission.PurposeAdmissionError({ reason: "intent_reused" }));
+      if (
+        messageReceipt.value.status !== "accepted" ||
+        messageReceipt.value.commandType !== "message.dispatch" ||
+        messageReceipt.value.threadId !== threadId ||
+        run === undefined
+      )
+        return yield* mapError(
+          input,
+          "dispatch-message",
+          threadId,
+        )("Initial message receipt does not match this request.");
+      if (run.status === "preparing")
+        yield* prepareRun({ commandId: input.commandId, threadId, runId: run.id });
+    }
+    return { threadId, projection, resumed: true };
+  });
 
   const validateReusableThread = Effect.fn("ThreadLaunchService.validateReusableThread")(function* (
     input: ThreadLaunchInput,
@@ -986,6 +1179,72 @@ const make = Effect.gen(function* () {
         )("Reusing an existing thread requires a thread id.");
       }
 
+      let purposeSource: ExecutionPurpose | undefined = input.purposeSource;
+      const remotePurpose = input.delegatedFrom?.purposeLaunch;
+      if (remotePurpose !== undefined) {
+        if (
+          input.linkOrigin === undefined ||
+          remotePurpose.environmentId !== input.delegatedFrom?.environmentId ||
+          remotePurpose.threadId !== input.delegatedFrom.threadId
+        ) {
+          return yield* mapError(
+            input,
+            "dispatch-message",
+          )(
+            new ExecutionPurposeAdmission.PurposeAdmissionError({
+              reason: "remote_launch_mismatch",
+            }),
+          );
+        }
+        purposeSource = {
+          version: 1,
+          scope: remotePurpose.purpose.scope,
+          provenance: {
+            type: "remote_launch",
+            environmentId: remotePurpose.environmentId,
+            threadId: remotePurpose.threadId,
+            runId: remotePurpose.runId,
+            launchId: remotePurpose.launchId,
+          },
+        };
+      } else if (
+        input.purposeIntent?.intent.type === "inherit" &&
+        input.purposeParentRun !== undefined
+      ) {
+        const source = input.purposeParentRun;
+        const parent = yield* threads
+          .getThreadRecords(source.threadId, ["runs"])
+          .pipe(Effect.mapError(mapError(input, "dispatch-message")));
+        const run = parent.runs.find((candidate) => candidate.id === source.runId);
+        if (run === undefined) {
+          return yield* mapError(
+            input,
+            "dispatch-message",
+          )(
+            new ExecutionPurposeAdmission.PurposeAdmissionError({
+              reason: "inherit_source_missing",
+            }),
+          );
+        }
+        purposeSource = {
+          version: 1,
+          scope: executionPurposeOf(run).scope,
+          provenance: {
+            type: "parent_run",
+            threadId: source.threadId,
+            runId: source.runId,
+          },
+        };
+      }
+
+      if (input.purposeIntent?.intent.type === "inherit" && purposeSource === undefined) {
+        return yield* mapError(
+          input,
+          "dispatch-message",
+        )(
+          new ExecutionPurposeAdmission.PurposeAdmissionError({ reason: "inherit_source_missing" }),
+        );
+      }
       const launchReceipt = yield* readReceipt(input, input.commandId);
       yield* threads.assertProviderInstanceEnabled({
         projectId: input.projectId,
@@ -1028,7 +1287,7 @@ const make = Effect.gen(function* () {
           yield* validateReusableThread(input, candidateThreadId);
         }
 
-        const workspaceStrategy: ThreadLaunchWorkspaceStrategy =
+        let workspaceStrategy: ThreadLaunchWorkspaceStrategy =
           input.workspaceStrategy.type === "root" && Option.isNone(launchReceipt)
             ? Option.match(
                 yield* managedFolders
@@ -1044,6 +1303,129 @@ const make = Effect.gen(function* () {
                 },
               )
             : input.workspaceStrategy;
+        let resolvedTools: import("@t3tools/contracts").ThreadTools | undefined;
+        if (input.tools !== undefined) {
+          if (Option.isNone(toolAdapters))
+            return yield* mapError(
+              input,
+              "create-thread",
+            )(new ToolPolicyError({ reason: "Tool policy provider registry is unavailable." }));
+          const adapter = yield* toolAdapters.value
+            .get(input.modelSelection.instanceId)
+            .pipe(Effect.mapError(mapError(input, "create-thread")));
+          const rejection = toolPolicyRejection(adapter.driver, input.tools, input);
+          if (rejection !== undefined)
+            return yield* mapError(
+              input,
+              "create-thread",
+            )(new ToolPolicyError({ reason: rejection }));
+          if (input.reuseExistingThread || input.importedNativeThread !== undefined)
+            return yield* mapError(
+              input,
+              "create-thread",
+            )(new ToolPolicyError({ reason: "Tool allowlists require a new thread." }));
+          if (Option.isNone(launchReceipt)) {
+            if (Option.isNone(threadMcpConfig))
+              return yield* mapError(
+                input,
+                "create-thread",
+              )(
+                new ToolPolicyError({ reason: "Thread MCP configuration service is unavailable." }),
+              );
+            const configs = threadMcpConfig.value;
+            resolvedTools = yield* configs
+              .prepare(input.tools)
+              .pipe(Effect.mapError(mapError(input, "create-thread")));
+          }
+        }
+        let resolvedBare: import("@t3tools/contracts").ThreadBare | undefined;
+        if (
+          Option.isSome(launchReceipt) &&
+          launchReceipt.value.status === "accepted" &&
+          launchReceipt.value.threadId === candidateThreadId &&
+          launchReceipt.value.commandType ===
+            (input.reuseExistingThread ? "thread.metadata.update" : "thread.create")
+        ) {
+          const stored = yield* threads
+            .getThreadRecords(candidateThreadId, [])
+            .pipe(Effect.mapError(mapError(input, "read-receipt", candidateThreadId)));
+          if ((input.bare !== undefined) !== (stored.thread.bare !== undefined))
+            return yield* mapError(
+              input,
+              "read-receipt",
+              candidateThreadId,
+            )(new BareLaunchError({ reason: "Launch bare intent changed." }));
+          if (!toolAllowlistsEqual(input.tools, stored.thread.tools))
+            return yield* mapError(
+              input,
+              "read-receipt",
+              candidateThreadId,
+            )(new ToolPolicyError({ reason: "Launch tool allowlist changed." }));
+          resolvedBare = stored.thread.bare;
+          resolvedTools = stored.thread.tools;
+          if (resolvedBare !== undefined) {
+            workspaceStrategy =
+              stored.thread.worktreePath === null
+                ? { type: "root", branch: stored.thread.branch ?? undefined }
+                : {
+                    type: "existing_worktree",
+                    worktreePath: stored.thread.worktreePath,
+                    branch: stored.thread.branch ?? undefined,
+                  };
+          }
+        }
+        if (input.bare !== undefined && Option.isNone(launchReceipt)) {
+          if (input.importedNativeThread !== undefined)
+            return yield* mapError(
+              input,
+              "create-thread",
+            )(new BareLaunchError({ reason: "Bare native import is unsupported." }));
+          if (input.reuseExistingThread) {
+            const existing = yield* threads
+              .getThreadRecords(candidateThreadId, [])
+              .pipe(Effect.mapError(mapError(input, "read-receipt")));
+            if (existing.thread.bare === undefined)
+              return yield* mapError(
+                input,
+                "create-thread",
+              )(new BareLaunchError({ reason: "Cannot reuse a normal thread for bare launch." }));
+            resolvedBare = existing.thread.bare;
+            if ((input.bare.additions?.length ?? 0) > 0)
+              return yield* mapError(
+                input,
+                "create-thread",
+              )(
+                new BareLaunchError({
+                  reason: "A reused bare thread keeps its original additions.",
+                }),
+              );
+          } else {
+            const prepared = yield* bareLaunch
+              .prepare({
+                request: input.bare,
+                instanceId: input.modelSelection.instanceId,
+                projectRoot: project.workspaceRoot,
+                workspaceStrategy,
+                readGrant:
+                  input.bareReadGrant ??
+                  (input.runtimeMode === "full-access"
+                    ? { type: "all" }
+                    : { type: "roots", roots: [project.workspaceRoot] }),
+              })
+              .pipe(Effect.mapError(mapError(input, "create-thread")));
+            workspaceStrategy = prepared.workspaceStrategy;
+            resolvedBare = prepared.bare;
+          }
+        } else if (input.reuseExistingThread && Option.isNone(launchReceipt)) {
+          const existing = yield* threads
+            .getThreadRecords(candidateThreadId, [])
+            .pipe(Effect.mapError(mapError(input, "read-receipt")));
+          if (existing.thread.bare !== undefined)
+            return yield* mapError(
+              input,
+              "create-thread",
+            )(new BareLaunchError({ reason: "Cannot reuse a bare thread for a normal launch." }));
+        }
         const initialBranch = yield* launchBranch(workspaceStrategy, project.workspaceRoot);
         const initialWorktreePath =
           workspaceStrategy.type === "existing_worktree" ? workspaceStrategy.worktreePath : null;
@@ -1057,6 +1439,8 @@ const make = Effect.gen(function* () {
               })
             : threads.dispatch({
                 type: "thread.create",
+                ...(resolvedBare === undefined ? {} : { bare: resolvedBare }),
+                ...(resolvedTools === undefined ? {} : { tools: resolvedTools }),
                 commandId: input.commandId,
                 threadId: candidateThreadId,
                 projectId: input.projectId,
@@ -1069,6 +1453,12 @@ const make = Effect.gen(function* () {
                 ...(input.importedNativeThread === undefined
                   ? {}
                   : { importedNativeThread: input.importedNativeThread }),
+                ...(input.linkOrigin === undefined ? {} : { linkOrigin: input.linkOrigin }),
+                ...(input.delegatedFrom === undefined
+                  ? {}
+                  : { delegatedFrom: input.delegatedFrom }),
+                ...(input.owner === undefined ? {} : { owner: input.owner }),
+                ...(input.prismRole === undefined ? {} : { prismRole: input.prismRole }),
                 ...(input.linkOrigin === undefined ? {} : { linkOrigin: input.linkOrigin }),
                 ...(input.delegatedFrom === undefined
                   ? {}
@@ -1106,6 +1496,8 @@ const make = Effect.gen(function* () {
           const dispatched = yield* threads
             .dispatch({
               type: "message.dispatch",
+              ...(input.purposeIntent === undefined ? {} : { purposeIntent: input.purposeIntent }),
+              ...(purposeSource === undefined ? {} : { purposeSource }),
               commandId: messageCommandId,
               threadId,
               messageId,
@@ -1289,7 +1681,63 @@ const make = Effect.gen(function* () {
     );
   });
 
-  return ThreadLaunchService.of({ launch, checkWorktreeBase, retryPreparation, prepareRun });
+  const configureMcp: ThreadLaunchService["Service"]["configureMcp"] = Effect.fn(
+    "ThreadLaunchService.configureMcp",
+  )(function* (input) {
+    const failed = () =>
+      new ToolPolicyError({
+        reason:
+          "MCP configuration requires an idle restricted thread with unchanged configuration.",
+      });
+    const identity = yield* CurrentRequest;
+    const counter = yield* CommandIndex;
+    const commandId = CommandId.make(
+      identity !== undefined && counter !== undefined
+        ? `mcp:request:${identity.id}:${yield* Ref.getAndUpdate(counter, (index) => index + 1)}`
+        : `mcp-config:${yield* randomUuidV4}`,
+    );
+    const receipt = yield* receipts.getByCommandId(commandId).pipe(Effect.mapError(failed));
+    if (Option.isSome(receipt)) {
+      if (
+        receipt.value.status !== "accepted" ||
+        receipt.value.commandType !== "thread.metadata.update" ||
+        receipt.value.threadId !== input.threadId
+      )
+        return yield* failed();
+      return { sequence: receipt.value.resultSequence };
+    }
+    const { thread } = yield* threads
+      .getThreadRecords(input.threadId, [])
+      .pipe(Effect.mapError(failed));
+    if (thread.tools === undefined || Option.isNone(threadMcpConfig)) return yield* failed();
+    const modeError = toolPolicyModeRejection(thread);
+    if (modeError !== undefined) return yield* new ToolPolicyError({ reason: modeError });
+    const replacement = yield* threadMcpConfig.value.prepare({
+      allow: thread.tools.allow,
+      mcpServers: input.servers,
+    });
+    if (replacement.mcpConfigId === undefined) return yield* failed();
+    const result = yield* threads
+      .dispatch({
+        type: "thread.metadata.update",
+        commandId,
+        threadId: thread.id,
+        mcpConfigUpdate: {
+          expectedConfigId: thread.tools.mcpConfigId ?? null,
+          configId: replacement.mcpConfigId,
+        },
+      })
+      .pipe(Effect.mapError(failed));
+    return { sequence: result.sequence };
+  });
+  return ThreadLaunchService.of({
+    configureMcp,
+    launch,
+    replayOrLaunch,
+    checkWorktreeBase,
+    retryPreparation,
+    prepareRun,
+  });
 });
 
 export const layer = Layer.effect(ThreadLaunchService, make);

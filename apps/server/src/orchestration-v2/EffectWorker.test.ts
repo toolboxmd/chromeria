@@ -1,3 +1,4 @@
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { assert, it } from "@effect/vitest";
 import {
   CheckpointId,
@@ -5,6 +6,7 @@ import {
   CommandId,
   NodeId,
   ProviderSessionId,
+  ProviderDriverKind,
   ProviderThreadId,
   ProviderTurnId,
   RunAttemptId,
@@ -38,6 +40,9 @@ import * as ServerSettings from "../serverSettings.ts";
 
 const threadId = ThreadId.make("thread:effect-worker-restart");
 const oldSessionId = ProviderSessionId.make("provider-session:effect-worker-restart:old");
+const replacementSessionId = ProviderSessionId.make(
+  "provider-session:effect-worker-restart:replacement",
+);
 const providerThreadId = ProviderThreadId.make("provider-thread:effect-worker-restart");
 const providerTurnId = ProviderTurnId.make("provider-turn:effect-worker-restart");
 const attemptId = RunAttemptId.make("run-attempt:effect-worker-restart");
@@ -83,6 +88,7 @@ function layerExecutorFor(input: {
   readonly threads?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
   readonly continueAfterRestart?: boolean;
   readonly interrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interrupt"];
+  readonly restartInterrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interruptAndAwaitTerminal"];
   readonly rollback?: CheckpointRollbackService.CheckpointRollbackServiceV2Shape["execute"];
   readonly respond?: RuntimeRequestService.RuntimeRequestServiceV2["Service"]["respond"];
 }) {
@@ -94,12 +100,14 @@ function layerExecutorFor(input: {
         interrupt: input.interrupt ?? (() => Effect.void),
         steer: () => Effect.void,
         applyModelSelection: () => Effect.void,
-        interruptAndAwaitTerminal: (request) =>
-          record(
-            request.replacementProviderSessionId === undefined
-              ? "interrupt"
-              : `interrupt:${request.replacementProviderSessionId}`,
-          ),
+        interruptAndAwaitTerminal:
+          input.restartInterrupt ??
+          ((request) =>
+            record(
+              request.replacementProviderSessionId === undefined
+                ? "interrupt"
+                : `interrupt:${request.replacementProviderSessionId}`,
+            )),
       }),
     ),
     Layer.succeed(
@@ -121,6 +129,7 @@ function layerExecutorFor(input: {
     Layer.succeed(
       ProviderTurnStartService.ProviderTurnStartServiceV2,
       ProviderTurnStartService.ProviderTurnStartServiceV2.of({
+        settleUnstartedRun: () => record("failed-before-start"),
         start: () =>
           Effect.gen(function* () {
             yield* record("start");
@@ -171,6 +180,34 @@ function layerExecutorFor(input: {
     ),
   );
 }
+
+it.effect("refuses an urgent replacement when native Stop times out", () =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const failure = new ProviderTurnControlService.ProviderTurnControlError({
+      threadId,
+      operation: "restart",
+      providerTurnId,
+      cause: new ProviderAdapter.ProviderAdapterInterruptTimeoutError({
+        driver: ProviderDriverKind.make("claudeAgent"),
+        providerThreadId,
+        providerTurnId,
+        timeoutMs: 10000,
+      }),
+    });
+    const layer = layerExecutorFor({ events, restartInterrupt: () => failure });
+    yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      const restart = restartEffect(now, { type: "detach" });
+      yield* executor.execute(restart, { willRetry: true }).pipe(Effect.flip);
+      assert.deepEqual(yield* Ref.get(events), []);
+      const refused = yield* executor.execute(restart, { willRetry: false }).pipe(Effect.flip);
+      assert.strictEqual(refused.cause, failure);
+      assert.deepEqual(yield* Ref.get(events), ["failed-before-start"]);
+    }).pipe(Effect.provide(layer));
+  }),
+);
 
 it.effect.each([
   {
@@ -322,6 +359,49 @@ it.effect("does not report an answer whose last delivery attempt is interrupted"
     }).pipe(Effect.provide(layer));
     assert.isTrue(Exit.hasInterrupts(exit));
     assert.equal(yield* Ref.get(reported), 0);
+  }),
+);
+
+it.effect("does not settle work when the captured replacement target rejects Stop", () =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const layer = layerExecutorFor({
+      events,
+      interrupt: (request) => {
+        assert.equal(request.providerSessionId, oldSessionId);
+        assert.equal(request.replacementProviderSessionId, replacementSessionId);
+        return new ProviderTurnControlService.ProviderTurnControlError({
+          threadId,
+          operation: "interrupt",
+          providerTurnId,
+          cause: "Provider turn is not active.",
+        });
+      },
+      threads: {
+        dispatch: (command) =>
+          Ref.update(events, (current) => [...current, command.type]).pipe(
+            Effect.as({ sequence: 1, storedEvents: [] }),
+          ),
+      },
+    });
+    const result = yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      return yield* Effect.exit(
+        executor.execute({
+          ...restartEffect(now, { type: "detach" }),
+          request: {
+            type: "provider-turn.interrupt",
+            providerSessionId: oldSessionId,
+            replacementProviderSessionId: replacementSessionId,
+            providerThreadId,
+            providerTurnId,
+          },
+        }),
+      );
+    }).pipe(Effect.provide(layer));
+    assert.isTrue(Exit.isFailure(result));
+    assert.deepEqual(yield* Ref.get(events), []);
   }),
 );
 
@@ -538,6 +618,7 @@ it.effect("settles a delegated child once its restart continuation fails for goo
       continueAfterRestart: true,
       threads: {
         getThreadRecords: () => Effect.fail(new Error("provider instance removed") as never),
+        recordRestartCutDecline: () => Effect.void,
         recoverDelegatedTask: (childThreadId) =>
           Ref.update(recovered, (ids) => [...ids, childThreadId]),
       },
