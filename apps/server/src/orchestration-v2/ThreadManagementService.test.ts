@@ -1,3 +1,4 @@
+import { RecoveryWaitState } from "../peer/recoveryWait.ts";
 import { expect, it } from "@effect/vitest";
 import {
   CommandId,
@@ -38,6 +39,7 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
+import type { ProjectionRecordFilter } from "./ProjectionStore.ts";
 
 it("stamps authoritative provenance on commands that create threads or messages", () => {
   const command: OrchestrationV2Command = {
@@ -76,6 +78,26 @@ it("stamps authoritative provenance on commands that create threads or messages"
   expect(stamped).not.toHaveProperty("linkOrigin");
   expect(stamped).not.toHaveProperty("delegatedFrom");
 });
+it.each(["web", "mobile"] as const)(
+  "stamps a queued promotion with its actual %s requester",
+  (creationSource) => {
+    const command: OrchestrationV2Command = {
+      type: "queued-message.promote-to-steer",
+      commandId: CommandId.make("promote"),
+      threadId: ThreadId.make("thread"),
+      queuedRunId: RunId.make("queued"),
+      targetRunId: RunId.make("active"),
+      createdBy: "agent",
+      creationSource: "mcp",
+    };
+    expect(
+      ThreadManagementService.withCreationProvenance(command, {
+        createdBy: "user",
+        creationSource,
+      }),
+    ).toMatchObject({ createdBy: "user", creationSource });
+  },
+);
 
 const layerReceiptsTest = CommandReceiptStore.layer.pipe(
   Layer.provide(SqlitePersistence.layerMemory),
@@ -199,163 +221,330 @@ it.effect(
   },
 );
 
-it.effect("waitForThread follows a restart continuation instead of the cut run", () =>
-  Effect.gen(function* () {
-    const projectId = ProjectId.make("project:thread-management:wait-restart");
-    const threadId = ThreadId.make("thread:thread-management:wait-restart");
-    const runId = RunId.make("run:thread-management:wait-restart");
-    const continuationId = RunId.make("run:thread-management:wait-restart:2");
-    const subscribed = yield* Deferred.make<void>();
-    const events = yield* Queue.unbounded<OrchestrationV2StoredEvent>();
-    let runs: Array<{
-      id: RunId;
-      status: OrchestrationV2Run["status"];
-      restartContinuationOfRunId?: RunId;
-    }> = [{ id: runId, status: "cancelled" }];
-    let pending = true;
-    const stored = (sequence: number, event: object) =>
-      ({ sequence, event: { threadId, ...event } }) as unknown as OrchestrationV2StoredEvent;
-    const layerTest = ThreadManagementService.layer.pipe(
-      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
-      Layer.provide(
-        Layer.mock(Orchestrator.OrchestratorV2)({
-          getThreadEventSequence: () => Effect.succeed(0),
-          restartContinuationPending: (run) => Effect.succeed(pending && run.id === runId),
-          awaitRestartContinuation: () => Effect.never,
-          streamStoredEventsFrom: (input) =>
-            input?.eventType === "run.updated"
-              ? Stream.fromEffect(Deferred.succeed(subscribed, undefined)).pipe(
-                  Stream.drain,
-                  Stream.concat(Stream.fromQueue(events)),
-                )
-              : Stream.never,
-          getThreadRecords: () =>
-            Effect.sync(
-              () =>
-                ({
-                  thread: { id: threadId, projectId, deletedAt: null },
-                  runs,
-                }) as unknown as OrchestrationV2ThreadProjection,
-            ),
-        }),
-      ),
-      Layer.provide(ServerSettings.layerTest()),
-      Layer.provide(layerReceiptsTest),
-    );
-    const service = yield* ThreadManagementService.ThreadManagementService.pipe(
-      Effect.provide(layerTest),
-    );
-    const fiber = yield* service
-      .waitForThread({ projectId, threadId, runId, timeoutMs: 60 * 60 * 1_000 })
-      .pipe(Effect.forkChild);
-    yield* Deferred.await(subscribed);
-    const continuation = { id: continuationId, restartContinuationOfRunId: runId };
-    runs = [...runs, { ...continuation, status: "running" }];
-    pending = false;
-    yield* Queue.offer(
-      events,
-      stored(1, { type: "run.updated", payload: { ...continuation, status: "running" } }),
-    );
-    runs = [runs[0]!, { ...continuation, status: "completed" }];
-    yield* Queue.offer(
-      events,
-      stored(2, { type: "run.updated", payload: { ...continuation, status: "completed" } }),
-    );
-    const result = yield* Fiber.join(fiber);
+it.effect.each(["restart", "prism"] as const)(
+  "waitForThread follows a %s continuation instead of the cut run",
+  (kind) =>
+    Effect.gen(function* () {
+      const projectId = ProjectId.make("project:thread-management:wait-restart");
+      const threadId = ThreadId.make("thread:thread-management:wait-restart");
+      const runId = RunId.make("run:thread-management:wait-restart");
+      const continuationId = RunId.make("run:thread-management:wait-restart:2");
+      const subscribed = yield* Deferred.make<void>();
+      const events = yield* Queue.unbounded<OrchestrationV2StoredEvent>();
+      let runs: Array<{
+        id: RunId;
+        status: OrchestrationV2Run["status"];
+        restartContinuationOfRunId?: RunId;
+        forkPrismContinuationSourceRunId?: RunId;
+      }> = [{ id: runId, status: kind === "restart" ? "cancelled" : "failed" }];
+      let pending = true;
+      const stored = (sequence: number, event: object) =>
+        ({ sequence, event: { threadId, ...event } }) as unknown as OrchestrationV2StoredEvent;
+      const layerTest = ThreadManagementService.layer.pipe(
+        Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+        Layer.provide(
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            getThreadEventSequence: () => Effect.succeed(0),
+            restartContinuationPending: (run) =>
+              Effect.succeed(kind === "restart" && pending && run.id === runId),
+            awaitRestartContinuation: () => Effect.never,
+            streamStoredEventsFrom: (input) =>
+              input?.eventType === "run.updated"
+                ? Stream.fromEffect(Deferred.succeed(subscribed, undefined)).pipe(
+                    Stream.drain,
+                    Stream.concat(Stream.fromQueue(events)),
+                  )
+                : Stream.never,
+            getThreadRecords: () =>
+              Effect.sync(
+                () =>
+                  ({
+                    thread: { id: threadId, projectId, deletedAt: null },
+                    runs,
+                  }) as unknown as OrchestrationV2ThreadProjection,
+              ),
+          }),
+        ),
+        Layer.provide(
+          Layer.succeed(RecoveryWaitState, {
+            subscribe: Effect.succeed(Stream.never),
+            read: (_thread, source) =>
+              Effect.succeed({
+                decision:
+                  kind !== "prism" || source !== runId
+                    ? null
+                    : pending
+                      ? {
+                          sourceRunId: runId,
+                          threadId,
+                          status: "pending" as const,
+                          reason: "decision" as const,
+                        }
+                      : {
+                          sourceRunId: runId,
+                          threadId,
+                          status: "decided" as const,
+                          outcome: "retried" as const,
+                          successorRunId: continuationId,
+                        },
+                admittedContinuations: [],
+                pendingRecovery: null,
+              }),
+          }),
+        ),
+        Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(layerReceiptsTest),
+      );
+      const service = yield* ThreadManagementService.ThreadManagementService.pipe(
+        Effect.provide(layerTest),
+      );
+      const fiber = yield* service
+        .waitForThread({ projectId, threadId, runId, timeoutMs: 60 * 60 * 1_000 })
+        .pipe(Effect.forkChild);
+      expect(
+        yield* Effect.raceFirst(
+          Fiber.await(fiber).pipe(Effect.as(false)),
+          Deferred.await(subscribed).pipe(Effect.as(true)),
+        ),
+      ).toBe(true);
+      const continuation = {
+        id: continuationId,
+        ...(kind === "restart"
+          ? { restartContinuationOfRunId: runId }
+          : { forkPrismContinuationSourceRunId: runId }),
+      };
+      runs = [...runs, { ...continuation, status: "running" }];
+      pending = false;
+      yield* Queue.offer(
+        events,
+        stored(1, { type: "run.updated", payload: { ...continuation, status: "running" } }),
+      );
+      runs = [runs[0]!, { ...continuation, status: "completed" }];
+      yield* Queue.offer(
+        events,
+        stored(2, { type: "run.updated", payload: { ...continuation, status: "completed" } }),
+      );
+      const result = yield* Fiber.join(fiber);
 
-    expect(result).toMatchObject({
-      timedOut: false,
-      run: { id: continuationId, status: "completed" },
-    });
-  }),
+      expect(result).toMatchObject({
+        timedOut: false,
+        run: { id: continuationId, status: "completed" },
+      });
+    }),
 );
 
-it.effect("waitForThread can wait past an ended run for the thread's delegated work", () =>
-  Effect.gen(function* () {
-    const projectId = ProjectId.make("project:thread-management:wait-delegated");
-    const threadId = ThreadId.make("thread:thread-management:wait-delegated");
-    const runId = RunId.make("run:thread-management:wait-delegated");
-    const wakeRunId = RunId.make("run:thread-management:wait-delegated:wake");
-    const subscribed = yield* Deferred.make<void>();
-    const events = yield* Queue.unbounded<OrchestrationV2StoredEvent>();
-    const at = (seconds: number) => DateTime.makeUnsafe(seconds * 1_000);
-    const run = (id: RunId, ordinal: number, status: OrchestrationV2Run["status"], end: number) =>
-      ({
-        id,
-        ordinal,
-        status,
-        startedAt: at(end - 1),
-        completedAt: status === "running" ? null : at(end),
-      }) as unknown as OrchestrationV2Run;
-    // The run ended, but a task it delegated still runs and will wake the thread.
-    let runs = [run(runId, 1, "completed", 1)];
-    let subagents = [{ status: "running" }];
-    const stored = (sequence: number, event: object) =>
-      ({ sequence, event: { threadId, ...event } }) as unknown as OrchestrationV2StoredEvent;
-    const layerTest = ThreadManagementService.layer.pipe(
-      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
-      Layer.provide(
-        Layer.mock(Orchestrator.OrchestratorV2)({
-          getThreadEventSequence: () => Effect.succeed(0),
-          restartContinuationPending: () => Effect.succeed(false),
-          delegatedTaskResultPending: () => Effect.succeed(false),
-          streamStoredEventsFrom: (input) =>
-            input?.eventType === "subagent.updated"
-              ? Stream.fromEffect(Deferred.succeed(subscribed, undefined)).pipe(
-                  Stream.drain,
-                  Stream.concat(Stream.fromQueue(events)),
-                )
-              : Stream.never,
-          getThreadRecords: () =>
-            Effect.sync(
-              () =>
-                ({
+it.effect.each(["completed", "retry", "usage-limit", "declined", "native-declined"] as const)(
+  "waitForThread can wait past an ended run for delegated work: %s",
+  (kind) =>
+    Effect.gen(function* () {
+      const projectId = ProjectId.make("project:thread-management:wait-delegated");
+      const threadId = ThreadId.make("thread:thread-management:wait-delegated");
+      const runId = RunId.make("run:thread-management:wait-delegated");
+      const wakeRunId = RunId.make("run:thread-management:wait-delegated:wake");
+      const monitorRunId = RunId.make("run:thread-management:wait-delegated:monitor");
+      const messageReads: Array<ProjectionRecordFilter | undefined> = [];
+      const subscribed = yield* Deferred.make<void>();
+      const inspected = yield* Deferred.make<void>();
+      const recoveryChanges = yield* Queue.unbounded<ThreadId>();
+      const nativeChanges = yield* Queue.unbounded<"discarded" | "awaiting">();
+      const nativeSettled = yield* Deferred.make<void>();
+      const successorId = RunId.make("run:thread-management:wait-delegated:retry");
+      let pendingRecovery = true;
+      const events = yield* Queue.unbounded<OrchestrationV2StoredEvent>();
+      const at = (seconds: number) => DateTime.makeUnsafe(seconds * 1_000);
+      const run = (id: RunId, ordinal: number, status: OrchestrationV2Run["status"], end: number) =>
+        ({
+          id,
+          ordinal,
+          status,
+          startedAt: at(end - 1),
+          completedAt: status === "running" ? null : at(end),
+        }) as unknown as OrchestrationV2Run;
+      // The run ended, but a task it delegated still runs and will wake the thread.
+      let runs = [run(runId, 1, "completed", 1), run(monitorRunId, 99, "completed", 99)];
+      const messages = [
+        { runId, role: "user", text: "Original user request" },
+        { runId: wakeRunId, role: "user", text: "Ordinary delegated follow-up" },
+        {
+          runId: monitorRunId,
+          role: "user",
+          notification: { source: { kind: "monitor" } },
+          text: "Monitor notification",
+        },
+      ] as const;
+      let subagents = [{ status: "running" }];
+      const stored = (sequence: number, event: object) =>
+        ({ sequence, event: { threadId, ...event } }) as unknown as OrchestrationV2StoredEvent;
+      const layerTest = ThreadManagementService.layer.pipe(
+        Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+        Layer.provide(
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            getThreadEventSequence: () => Effect.succeed(0),
+            restartContinuationPending: (run) =>
+              Effect.succeed(kind === "native-declined" && run.id === wakeRunId && pendingRecovery),
+            awaitRestartContinuation: () =>
+              Queue.offer(nativeChanges, "awaiting").pipe(
+                Effect.andThen(Deferred.await(nativeSettled)),
+              ),
+            delegatedTaskResultPending: () =>
+              kind === "native-declined" && pendingRecovery
+                ? Queue.offer(nativeChanges, "discarded").pipe(Effect.as(true))
+                : Effect.succeed(false),
+            streamStoredEventsFrom: (input) =>
+              input?.eventType === (kind === "native-declined" ? "run.updated" : "subagent.updated")
+                ? Stream.fromEffect(Deferred.succeed(subscribed, undefined)).pipe(
+                    Stream.drain,
+                    Stream.concat(Stream.fromQueue(events)),
+                  )
+                : Stream.never,
+            getThreadRecords: (_threadId, fields, filter) =>
+              Effect.sync(() => {
+                if ((fields as ReadonlyArray<string>).includes("messages"))
+                  messageReads.push(filter);
+                return {
                   thread: { id: threadId, projectId, deletedAt: null },
                   runs,
-                  messages: [],
+                  messages: messages.filter(
+                    (message) =>
+                      (filter?.messageRoles === undefined ||
+                        filter.messageRoles.includes(message.role)) &&
+                      (filter?.monitorNotificationsOnly !== true ||
+                        ("notification" in message &&
+                          message.notification.source.kind === "monitor")),
+                  ),
                   subagents,
                   providerThreads: [],
-                }) as unknown as OrchestrationV2ThreadProjection,
-            ),
-        }),
-      ),
-      Layer.provide(ServerSettings.layerTest()),
-      Layer.provide(layerReceiptsTest),
-    );
-    const service = yield* ThreadManagementService.ThreadManagementService.pipe(
-      Effect.provide(layerTest),
-    );
-    // Without the option, the ended run is the answer, as before.
-    expect(
-      yield* service.waitForThread({ projectId, threadId, runId, timeoutMs: 60 * 60 * 1_000 }),
-    ).toMatchObject({ timedOut: false, run: { id: runId } });
-    expect(
-      yield* service.waitForThread({ projectId, threadId, runId, timeoutMs: 60 * 60 * 1_000 }),
-    ).not.toHaveProperty("resultRun");
+                } as unknown as OrchestrationV2ThreadProjection;
+              }),
+          }),
+        ),
+        Layer.provide(
+          Layer.succeed(RecoveryWaitState, {
+            subscribe: Effect.succeed(Stream.fromQueue(recoveryChanges)),
+            read: Effect.fn("test.readDelegatedRecovery")(function* (_threadId, sourceRunId) {
+              const decision =
+                sourceRunId !== wakeRunId || kind === "completed"
+                  ? null
+                  : pendingRecovery
+                    ? {
+                        sourceRunId,
+                        threadId,
+                        status: "pending" as const,
+                        reason: "retry" as const,
+                      }
+                    : kind === "retry"
+                      ? {
+                          sourceRunId,
+                          threadId,
+                          status: "decided" as const,
+                          outcome: "retried" as const,
+                          successorRunId: successorId,
+                        }
+                      : {
+                          sourceRunId,
+                          threadId,
+                          status: "decided" as const,
+                          outcome: "not_retryable" as const,
+                          reason: "opted_out" as const,
+                        };
+              if (sourceRunId === wakeRunId) yield* Deferred.succeed(inspected, undefined);
+              return {
+                decision: kind === "usage-limit" && !pendingRecovery ? null : decision,
+                admittedContinuations:
+                  kind === "usage-limit" && !pendingRecovery && sourceRunId === wakeRunId
+                    ? [{ threadId, sourceRunId, successorRunId: successorId }]
+                    : [],
+                pendingRecovery: null,
+              };
+            }),
+          }),
+        ),
+        Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(layerReceiptsTest),
+      );
+      const service = yield* ThreadManagementService.ThreadManagementService.pipe(
+        Effect.provide(layerTest),
+      );
+      // Without the option, the ended run is the answer, as before.
+      expect(
+        yield* service.waitForThread({ projectId, threadId, runId, timeoutMs: 60 * 60 * 1_000 }),
+      ).toMatchObject({ timedOut: false, run: { id: runId } });
+      expect(
+        yield* service.waitForThread({ projectId, threadId, runId, timeoutMs: 60 * 60 * 1_000 }),
+      ).not.toHaveProperty("resultRun");
+      expect(messageReads).toHaveLength(0);
 
-    const fiber = yield* service
-      .waitForThread({
-        projectId,
-        threadId,
-        runId,
-        timeoutMs: 60 * 60 * 1_000,
-        untilDelegatedWorkSettled: true,
-      })
-      .pipe(Effect.forkChild);
-    // A wait that returns early fails below instead of hanging here.
-    yield* Effect.raceFirst(Deferred.await(subscribed), Fiber.await(fiber));
-    // The task finishes; its delivery wakes the thread, whose next run answers.
-    subagents = [{ status: "completed" }];
-    runs = [...runs, run(wakeRunId, 2, "completed", 3)];
-    yield* Queue.offer(events, stored(1, { type: "subagent.updated", payload: {} }));
-    const result = yield* Fiber.join(fiber);
+      const fiber = yield* service
+        .waitForThread({
+          projectId,
+          threadId,
+          runId,
+          timeoutMs: 60 * 60 * 1_000,
+          untilDelegatedWorkSettled: true,
+        })
+        .pipe(Effect.forkChild);
+      // A wait that returns early fails below instead of hanging here.
+      yield* Effect.raceFirst(Deferred.await(subscribed), Fiber.await(fiber));
+      // The task finishes; its delivery wakes the thread, whose next run answers.
+      subagents = [{ status: "completed" }];
+      runs = [
+        ...runs,
+        run(
+          wakeRunId,
+          2,
+          kind === "completed" ? "completed" : kind === "native-declined" ? "cancelled" : "failed",
+          3,
+        ),
+      ];
+      yield* Queue.offer(
+        events,
+        stored(
+          1,
+          kind === "native-declined"
+            ? { type: "run.updated", payload: runs.at(-1) }
+            : { type: "subagent.updated", payload: {} },
+        ),
+      );
+      if (kind === "native-declined") {
+        expect(yield* Queue.take(nativeChanges)).toBe("awaiting");
+        yield* Queue.offer(events, stored(2, { type: "run.updated", payload: runs.at(-1) }));
+        expect(yield* Queue.take(nativeChanges)).toBe("awaiting");
+        pendingRecovery = false;
+        yield* Deferred.succeed(nativeSettled, undefined);
+      } else if (kind !== "completed") {
+        expect(
+          yield* Effect.raceFirst(
+            Fiber.await(fiber).pipe(Effect.as(false)),
+            Deferred.await(inspected).pipe(Effect.as(true)),
+          ),
+        ).toBe(true);
+        pendingRecovery = false;
+        if (kind === "retry" || kind === "usage-limit")
+          runs = [
+            ...runs,
+            {
+              ...run(successorId, 3, "completed", 5),
+              ...(kind === "retry"
+                ? { forkPrismContinuationSourceRunId: wakeRunId }
+                : { usageLimitContinuationOfRunId: wakeRunId }),
+            },
+          ];
+        yield* Queue.offer(recoveryChanges, threadId);
+      }
+      const result = yield* Fiber.join(fiber);
 
-    expect(result).toMatchObject({
-      timedOut: false,
-      run: { id: runId, status: "completed" },
-      resultRun: { id: wakeRunId, status: "completed" },
-    });
-  }),
+      expect(result).toMatchObject({
+        timedOut: false,
+        run: { id: runId, status: "completed" },
+        resultRun: {
+          id: kind === "retry" || kind === "usage-limit" ? successorId : wakeRunId,
+          status:
+            kind === "declined" ? "failed" : kind === "native-declined" ? "cancelled" : "completed",
+        },
+      });
+      expect(messageReads.length).toBeGreaterThan(0);
+      expect(messageReads.every((filter) => filter?.monitorNotificationsOnly === true)).toBe(true);
+    }),
 );
 
 it.effect("waitForThread settles delegated work on a thread rolled back past its only run", () =>
@@ -415,51 +604,90 @@ it.effect("waitForThread settles delegated work on a thread rolled back past its
   }),
 );
 
-it.effect("waitForThread returns the cut run once its continuation is declined", () =>
-  Effect.gen(function* () {
-    const projectId = ProjectId.make("project:thread-management:wait-declined");
-    const threadId = ThreadId.make("thread:thread-management:wait-declined");
-    const runId = RunId.make("run:thread-management:wait-declined");
-    const subscribed = yield* Deferred.make<void>();
-    const declined = yield* Deferred.make<void>();
-    let pending = true;
-    const layerTest = ThreadManagementService.layer.pipe(
-      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
-      Layer.provide(
-        Layer.mock(Orchestrator.OrchestratorV2)({
-          getThreadEventSequence: () => Effect.succeed(0),
-          restartContinuationPending: () => Effect.succeed(pending),
-          awaitRestartContinuation: () => Deferred.await(declined),
-          streamStoredEventsFrom: (input) =>
-            input?.eventType === "run.updated"
-              ? Stream.fromEffect(Deferred.succeed(subscribed, undefined)).pipe(
-                  Stream.drain,
-                  Stream.concat(Stream.never),
-                )
-              : Stream.never,
-          getThreadRecords: () =>
-            Effect.succeed({
-              thread: { id: threadId, projectId, deletedAt: null },
-              runs: [{ id: runId, status: "cancelled" }],
-            } as unknown as OrchestrationV2ThreadProjection),
-        }),
-      ),
-      Layer.provide(ServerSettings.layerTest()),
-      Layer.provide(layerReceiptsTest),
-    );
-    const service = yield* ThreadManagementService.ThreadManagementService.pipe(
-      Effect.provide(layerTest),
-    );
-    const fiber = yield* service
-      .waitForThread({ projectId, threadId, runId, timeoutMs: 60 * 60 * 1_000 })
-      .pipe(Effect.forkChild);
-    yield* Deferred.await(subscribed);
-    pending = false;
-    yield* Deferred.succeed(declined, undefined);
-    const result = yield* Fiber.join(fiber);
+it.effect.each(["restart", "prism"] as const)(
+  "waitForThread returns the cut run once its %s continuation is declined",
+  (kind) =>
+    Effect.gen(function* () {
+      const projectId = ProjectId.make("project:thread-management:wait-declined");
+      const threadId = ThreadId.make("thread:thread-management:wait-declined");
+      const runId = RunId.make("run:thread-management:wait-declined");
+      const subscribed = yield* Deferred.make<void>();
+      const declined = yield* Deferred.make<void>();
+      let pending = true;
+      const layerTest = ThreadManagementService.layer.pipe(
+        Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+        Layer.provide(
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            getThreadEventSequence: () => Effect.succeed(0),
+            restartContinuationPending: () => Effect.succeed(kind === "restart" && pending),
+            awaitRestartContinuation: () => Deferred.await(declined),
+            streamStoredEventsFrom: (input) =>
+              input?.eventType === "run.updated"
+                ? Stream.fromEffect(Deferred.succeed(subscribed, undefined)).pipe(
+                    Stream.drain,
+                    Stream.concat(Stream.never),
+                  )
+                : Stream.never,
+            getThreadRecords: () =>
+              Effect.succeed({
+                thread: { id: threadId, projectId, deletedAt: null },
+                runs: [{ id: runId, status: kind === "restart" ? "cancelled" : "failed" }],
+              } as unknown as OrchestrationV2ThreadProjection),
+          }),
+        ),
+        Layer.provide(
+          Layer.succeed(RecoveryWaitState, {
+            subscribe: Effect.succeed(
+              Stream.fromEffect(Deferred.await(declined)).pipe(Stream.as(threadId)),
+            ),
+            read: () =>
+              Effect.succeed({
+                decision:
+                  kind !== "prism"
+                    ? null
+                    : pending
+                      ? {
+                          sourceRunId: runId,
+                          threadId,
+                          status: "pending" as const,
+                          reason: "decision" as const,
+                        }
+                      : {
+                          sourceRunId: runId,
+                          threadId,
+                          status: "decided" as const,
+                          outcome: "not_retryable" as const,
+                          reason: "opted_out" as const,
+                        },
+                admittedContinuations: [],
+                pendingRecovery: null,
+              }),
+          }),
+        ),
+        Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(layerReceiptsTest),
+      );
+      const service = yield* ThreadManagementService.ThreadManagementService.pipe(
+        Effect.provide(layerTest),
+      );
+      const fiber = yield* service
+        .waitForThread({ projectId, threadId, runId, timeoutMs: 60 * 60 * 1_000 })
+        .pipe(Effect.forkChild);
+      expect(
+        yield* Effect.raceFirst(
+          Fiber.await(fiber).pipe(Effect.as(false)),
+          Deferred.await(subscribed).pipe(Effect.as(true)),
+        ),
+      ).toBe(true);
+      pending = false;
+      yield* Deferred.succeed(declined, undefined);
+      const result = yield* Fiber.join(fiber);
 
-    expect(result).toMatchObject({ timedOut: false, run: { id: runId, status: "cancelled" } });
-  }),
+      expect(result).toMatchObject({
+        timedOut: false,
+        run: { id: runId, status: kind === "restart" ? "cancelled" : "failed" },
+      });
+    }),
 );
 
 it.effect.each(["live", "no-session", "unsupported-runtime"] as const)(
@@ -948,3 +1176,41 @@ it.effect(
       }).pipe(Effect.provide(layerTest));
     }),
 );
+// Fork: a client cannot forge a linked environment origin (toolboxmd/chromeria#304).
+it("strips forged link provenance while stamping authoritative provenance", () => {
+  const command: OrchestrationV2Command = {
+    type: "thread.create",
+    createdBy: "agent",
+    creationSource: "mcp",
+    commandId: CommandId.make("command:thread-management:create"),
+    threadId: ThreadId.make("thread:thread-management:create"),
+    projectId: ProjectId.make("project:thread-management"),
+    title: "Thread management",
+    modelSelection: {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5-codex",
+    },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    // A client cannot claim a linked environment's origin, or a parent there.
+    linkOrigin: { sessionId: "forged", label: "Somewhere else" },
+    delegatedFrom: {
+      environmentId: EnvironmentId.make("environment:elsewhere"),
+      threadId: ThreadId.make("thread:elsewhere"),
+      title: "Somewhere else",
+    },
+  };
+
+  const stamped = ThreadManagementService.withCreationProvenance(command, {
+    createdBy: "user",
+    creationSource: "web",
+  });
+  expect(stamped).toMatchObject({
+    createdBy: "user",
+    creationSource: "web",
+  });
+  expect(stamped).not.toHaveProperty("linkOrigin");
+  expect(stamped).not.toHaveProperty("delegatedFrom");
+});

@@ -436,6 +436,7 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
   environmentLabelOf?: (thread: TThread) => string | null;
 }): CommandPaletteActionItem[] {
   // Callers order these: recents by last use, search results by rank.
+  // Fork: only native subagents are hidden; remote children stay searchable.
   const visibleThreads = input.threads.filter(
     (thread) => thread.archivedAt === null && !isSidebarHiddenThread(thread),
   );

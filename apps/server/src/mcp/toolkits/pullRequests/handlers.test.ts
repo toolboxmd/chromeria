@@ -246,8 +246,11 @@ describe("pull request toolkit handlers", () => {
       const error = yield* harness
         .call("link_pull_request", { threadId: bareId, number: 123 })
         .pipe(Effect.flip);
-      expect(error.message).toBe(`Thread ${bareId} was not found. Did you mean \`mcp:${bareId}\`?`);
-      expect(error).toMatchObject({ _tag: "OrchestratorMcpFailure", code: "thread_not_found" });
+      expect(error).toMatchObject({
+        _tag: "OrchestratorMcpFailure",
+        code: "thread_not_found",
+        message: `Thread ${bareId} was not found. Did you mean \`mcp:${bareId}\`?`,
+      });
       expect(yield* Ref.get(harness.commands)).toEqual([]);
     }),
   );
@@ -278,11 +281,38 @@ describe("pull request toolkit handlers", () => {
     }),
   );
 
+  it.effect("an already linked PR can declare a purpose without using the thread selection", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ thread: makeThread([makeLink(123)]) });
+      const purpose = {
+        host: "GitHub.com",
+        repository: "Other/Outcome",
+        kind: "issue" as const,
+        number: 11,
+      };
+      const result = yield* harness.call("link_pull_request", {
+        url: "https://github.com/t3tools/t3code/pull/123",
+        purposeDelivery: { version: 1, purpose },
+      });
+      expect(result).toMatchObject({
+        alreadyLinked: true,
+        purposeDelivery: {
+          version: 1,
+          purpose: { ...purpose, host: "github.com", repository: "other/outcome" },
+        },
+      });
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        { type: "thread.pull-request.link", purposeDelivery: { version: 1, purpose } },
+      ]);
+    }),
+  );
+
   it.effect("watching an unlinked pull request links it first", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
       const result = yield* harness.call("watch_pull_request", {
         url: "https://github.com/t3tools/t3code/pull/9",
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
       });
       expect(result).toMatchObject({ number: 9, watching: false, wasWatching: false });
       expect(yield* Ref.get(harness.commands)).toMatchObject([
@@ -290,6 +320,7 @@ describe("pull request toolkit handlers", () => {
           type: "thread.pull-request.watch",
           number: 9,
           watching: true,
+          purposeIntent: { version: 1, intent: { type: "unscoped" } } as const,
           link: { url: "https://github.com/t3tools/t3code/pull/9", source: "agent" },
         },
       ]);
@@ -338,9 +369,18 @@ describe("pull request toolkit handlers", () => {
           { ...closed, snapshot: closed.snapshot && { ...closed.snapshot, state: "closed" } },
         ]),
       });
-      yield* harness.call("watch_pull_request", { repository: "t3tools/t3code", number: 1 });
+      yield* harness.call("watch_pull_request", {
+        repository: "t3tools/t3code",
+        number: 1,
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
+      });
       expect(yield* Ref.get(harness.commands)).toMatchObject([
-        { type: "thread.pull-request.watch", number: 1, watching: true },
+        {
+          type: "thread.pull-request.watch",
+          number: 1,
+          watching: true,
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
+        },
       ]);
     }),
   );
@@ -435,6 +475,7 @@ describe("pull request toolkit handlers", () => {
         repository: "group/sub/project",
         number: 42,
       });
+      if ("type" in result) throw new Error("Unkeyed calls keep their legacy result.");
       expect(result.url).toBe("https://gitlab.com/group/sub/project/-/merge_requests/42");
       expect(result.host).toBe("gitlab.com");
       const other = yield* harness.call("link_pull_request", {
@@ -442,12 +483,14 @@ describe("pull request toolkit handlers", () => {
         repository: "team/repo",
         number: 7,
       });
+      if ("type" in other) throw new Error("Unkeyed calls keep their legacy result.");
       expect(other.url).toBe("https://gitlab.example.test/team/repo/-/merge_requests/7");
       const onGitHub = yield* harness.call("link_pull_request", {
         host: "github.com",
         repository: "acme/web",
         number: 9,
       });
+      if ("type" in onGitHub) throw new Error("Unkeyed calls keep their legacy result.");
       expect(onGitHub.url).toBe("https://github.com/acme/web/pull/9");
     }),
   );
@@ -496,6 +539,7 @@ describe("pull request toolkit handlers", () => {
       const result = yield* harness.call("link_pull_request", {
         url: "https://github.com/t3tools/t3code/pull/123",
       });
+      if ("type" in result) throw new Error("Unkeyed calls keep their legacy result.");
       expect(result.alreadyLinked).toBe(true);
     }),
   );
@@ -522,6 +566,7 @@ describe("pull request toolkit handlers", () => {
       const missing = yield* harness.call("unlink_pull_request", {
         url: "https://github.com/t3tools/t3code/pull/9",
       });
+      if ("type" in missing) throw new Error("Unkeyed calls keep their legacy result.");
       expect(missing.wasLinked).toBe(false);
       expect(yield* Ref.get(harness.commands)).toMatchObject([
         { type: "thread.pull-request.unlink", number: 5 },
@@ -538,6 +583,7 @@ describe("pull request toolkit handlers", () => {
         repository: "t3tools/t3code",
         number: 9,
       });
+      if ("type" in result) throw new Error("Unkeyed calls keep their legacy result.");
       expect(result.wasLinked).toBe(false);
       expect(yield* Ref.get(harness.commands)).toEqual([]);
     }),

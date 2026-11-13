@@ -1,3 +1,10 @@
+import { PreviewWatchToolkit } from "./toolkits/preview/tools.ts";
+import * as Option from "effect/Option";
+import { McpSavedSnapshotReceipt } from "@t3tools/contracts";
+import * as PlatformError from "effect/PlatformError";
+import * as Ref from "effect/Ref";
+import * as Context from "effect/Context";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -17,7 +24,6 @@ import {
   RuntimeMode,
   ThreadId,
 } from "@t3tools/contracts";
-import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -44,9 +50,12 @@ import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 
 import * as DeviceService from "../device/DeviceService.ts";
 import * as PullRequestReviewGuideService from "../pullRequest/PullRequestReviewGuideService.ts";
+import * as RequestReceipts from "./McpRequestReceipts.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
+import * as PeerForwarding from "../peer/PeerForwarding.ts";
+import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
@@ -86,13 +95,23 @@ const client = McpSchema.McpServerClient.of({
   },
   getClient: Effect.die("unused"),
 });
-const layerTest = McpHttpServer.layerPreviewToolkit.pipe(
-  Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
-  Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
-  Layer.provideMerge(PreviewAutomationBroker.layer),
-  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-http-server-test-" })),
-  Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
-);
+const layerSnapshotTest = (
+  fileSystem: Layer.Layer<FileSystem.FileSystem> | Layer.Layer<never> = Layer.empty,
+) =>
+  McpHttpServer.layerPreviewToolkit.pipe(
+    Layer.provideMerge(ServerSettings.layerTest()),
+    Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+    Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
+    Layer.provideMerge(PreviewAutomationBroker.layer),
+    Layer.provideMerge(RequestReceipts.layer.pipe(Layer.provideMerge(Sqlite.layerMemory))),
+    Layer.provideMerge(
+      ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-http-server-test-" }),
+    ),
+    Layer.provideMerge(fileSystem),
+    Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+  );
+const decodeSavedSnapshotReceipt = Schema.decodeUnknownEffect(McpSavedSnapshotReceipt);
+const layerTest = layerSnapshotTest();
 const layerPullRequestsTest = McpHttpServer.layerPullRequestsToolkit.pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
@@ -102,7 +121,7 @@ const layerPullRequestsTest = McpHttpServer.layerPullRequestsToolkit.pipe(
       Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
       Layer.mock(Orchestrator.OrchestratorV2)({}),
       Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
-      NodeServices.layer,
+      Layer.merge(NodeServices.layer, NodeCrypto.layer),
       NodeCrypto.layer,
     ),
   ),
@@ -231,6 +250,7 @@ it.effect.each([
     }).pipe(
       Effect.provide(
         McpHttpServer.layerDeviceToolkit.pipe(
+          Layer.provide(ServerSettings.layerTest()),
           Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
           Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
           Layer.provide(
@@ -263,7 +283,9 @@ it.effect.each([
           ),
           Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
           Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-device-mcp-test-" })),
-          Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+          Layer.provide(
+            Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+          ),
         ),
       ),
       Effect.scoped,
@@ -278,21 +300,23 @@ const layerRecordingTools = (calls: Array<unknown>) => {
     ProjectToolkit.tools.t3_project_update,
     ProjectToolkit.tools.t3_thread_launch,
   );
-  const record = McpToolAccess.reads((params: unknown) =>
+  const recordCall = (params: unknown) =>
     Effect.sync(() => calls.push(params)).pipe(
       Effect.andThen(
         Effect.fail(new OrchestratorMcpFailure({ code: "thread_not_found", message: "Recorded." })),
       ),
-    ),
-  );
+    );
+  const record = McpToolAccess.reads(recordCall);
+  // Fork: a tool's effect class is global, so writes keep the class their real handlers declare.
+  const recordOwned = McpToolAccess.readsAsCaller(recordCall, { effect: "owned" });
   return McpHttpServer.toolkitRegistration(
     RecordingToolkit,
     McpToolAccess.toLayer(RecordingToolkit, {
-      delegate_task: record,
+      delegate_task: recordOwned,
       t3_thread_read: record,
       t3_thread_wait: record,
-      t3_project_update: record,
-      t3_thread_launch: record,
+      t3_project_update: recordOwned,
+      t3_thread_launch: recordOwned,
     }),
   ).pipe(
     Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
@@ -309,6 +333,10 @@ const layerRecordingTools = (calls: Array<unknown>) => {
         Layer.mock(ServerSettings.ServerSettingsService)({}),
         Layer.mock(DocumentText.DocumentText)({}),
         Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+        // Fork: t3_thread_launch also declares peer forwarding, adapters and receipts storage.
+        Layer.mock(PeerForwarding.PeerForwarding)({}),
+        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
+        Sqlite.layerMemory,
         ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-http-server-test-" }),
         NodeCrypto.layer,
       ),
@@ -560,7 +588,10 @@ it.effect("refuses preview tools to a client outside a thread before they run", 
 it.effect("advertises the compact input schema for every registered tool", () =>
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
-    const tools: Record<string, Tool.Any> = PreviewToolkit.tools;
+    const tools: Record<string, Tool.Any> = {
+      ...PreviewToolkit.tools,
+      ...PreviewWatchToolkit.tools,
+    };
 
     expect(server.tools.length).toBe(Object.keys(tools).length);
     for (const { tool } of server.tools) {
@@ -622,7 +653,14 @@ it.effect("decodes null optional arguments the way it decodes omitted ones", () 
     expect(calls[1]).toEqual(calls[0]);
     expect(calls[3]).toEqual(calls[2]);
     expect(calls[4]).toStrictEqual({ projectId: "project-1", projectIcon: null });
-  }).pipe(Effect.provide(layerRecordingTools(calls)));
+  }).pipe(
+    // Recorded calls stay local; no linked environment is selected.
+    Effect.provide(
+      layerRecordingTools(calls).pipe(
+        Layer.provideMerge(Layer.mock(PeerForwarding.PeerForwarding)({})),
+      ),
+    ),
+  );
 });
 
 it.effect("rejects arguments a tool does not declare instead of dropping them", () => {
@@ -683,8 +721,123 @@ it.effect(
         { ...thread, limit: 100, runLimit: 50, maxCharsPerItem: 50_000 },
         { ...thread, limit: 7, runLimit: 1, maxCharsPerItem: 1 },
       ]);
-    }).pipe(Effect.provide(layerRecordingTools(calls)));
+    }).pipe(
+      // Recorded calls stay local; no linked environment is selected.
+      Effect.provide(
+        layerRecordingTools(calls).pipe(
+          Layer.provideMerge(Layer.mock(PeerForwarding.PeerForwarding)({})),
+        ),
+      ),
+    );
   },
+);
+
+it.effect(
+  "png382: keyed manual saves retain bounded acceptance and never repeat an uncertain filesystem write",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const actual = yield* FileSystem.FileSystem;
+        const writes = yield* Ref.make(0);
+        const loseConfirmation = yield* Ref.make(false);
+        const fileSystem = {
+          ...actual,
+          writeFile: (
+            path: string,
+            bytes: Uint8Array,
+            options?: Parameters<typeof actual.writeFile>[2],
+          ) =>
+            actual.writeFile(path, bytes, options).pipe(
+              Effect.tap(() =>
+                Effect.gen(function* () {
+                  if (!path.includes("browser-screenshot-")) return;
+                  yield* Ref.update(writes, (n) => n + 1);
+                  if (yield* Ref.getAndSet(loseConfirmation, false))
+                    return yield* PlatformError.systemError({
+                      _tag: "Unknown",
+                      module: "FileSystem",
+                      method: "writeFile",
+                      description: "Isolated saved PNG confirmation loss after the real write",
+                    });
+                }),
+              ),
+            ),
+        };
+        yield* Effect.gen(function* () {
+          yield* serveSnapshots("png382-client", snapshotResult);
+          const input = { save: true, includeImage: true, clientRequestId: "png382-confirmed" };
+          const first = yield* callSnapshot(input);
+          expect(first.isError).toBe(false);
+          const receipt = yield* decodeSavedSnapshotReceipt(first.structuredContent);
+          expect(receipt).toMatchObject({
+            type: "confirmed-operation",
+            stage: "confirmed",
+            artifact: {
+              environmentId: invocation.environmentId,
+              mimeType: "image/png",
+              sizeBytes: 3,
+            },
+          });
+          expect(receipt.artifact.digest).toBe(
+            "8f8cbb7dcf46e0bc7d53265749a6c17d116093a6ba95e442764060c76fd4a86c",
+          );
+          expect(first.content.some((item) => item.type === "image")).toBe(true);
+          const sql = yield* SqlClient.SqlClient;
+          const rows = yield* sql`SELECT * FROM mcp_request_receipts`;
+          expect(JSON.stringify(rows)).not.toContain(snapshotResult.url);
+          expect(JSON.stringify(rows)).not.toContain(snapshotResult.visibleText);
+          const rebuilt = Context.get(
+            yield* Layer.build(RequestReceipts.layer),
+            RequestReceipts.McpRequestReceipts,
+          );
+          const original = (yield* sql<{
+            id: string;
+            generation: string;
+            input_digest: string;
+          }>`SELECT * FROM mcp_request_receipts WHERE id=${receipt.operationId}`)[0]!;
+          expect(
+            yield* rebuilt.replay({
+              id: original.id,
+              generation: original.generation,
+              inputDigest: original.input_digest,
+              clientRequestId: input.clientRequestId,
+            }),
+          ).toEqual(Option.some(receipt));
+          expect((yield* callSnapshot(input)).structuredContent).toEqual(receipt);
+          expect(yield* Ref.get(writes)).toBe(1);
+          yield* actual.writeFileString(
+            receipt.artifact.screenshotPath,
+            "Later independent file edit",
+          );
+          const afterLater = yield* callSnapshot(input);
+          expect(afterLater.structuredContent).toEqual(receipt);
+          expect(afterLater.content.some((item) => item.type === "image")).toBe(false);
+          expect(yield* actual.readFileString(receipt.artifact.screenshotPath)).toBe(
+            "Later independent file edit",
+          );
+          expect(yield* Ref.get(writes)).toBe(1);
+          expect((yield* callSnapshot({ ...input, includeImage: false })).isError).toBe(true);
+          expect(yield* Ref.get(writes)).toBe(1);
+          yield* Ref.set(loseConfirmation, true);
+          const failed = yield* callSnapshot({ save: true, clientRequestId: "png382-uncertain" });
+          expect(failed.isError).toBe(true);
+          expect(failed.structuredContent).toMatchObject({
+            code: "outcome_unknown",
+            requestId: "png382-uncertain",
+            lastConfirmedStage: "dispatch_started",
+          });
+          expect(yield* Ref.get(writes)).toBe(2);
+          const again = yield* callSnapshot({ save: true, clientRequestId: "png382-uncertain" });
+          expect(again.structuredContent).toEqual(failed.structuredContent);
+          expect(yield* Ref.get(writes)).toBe(2);
+          const inspect = yield* callSnapshot({});
+          expect(inspect.isError).toBe(false);
+          expect(inspect.structuredContent).not.toHaveProperty("type");
+        }).pipe(
+          Effect.provide(layerSnapshotTest(Layer.succeed(FileSystem.FileSystem, fileSystem))),
+        );
+      }),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect.each(["limit", "runLimit", "maxCharsPerItem"])(
@@ -700,7 +853,14 @@ it.effect.each(["limit", "runLimit", "maxCharsPerItem"])(
 
       expect(String(rejected)).toContain("greater than or equal to 1");
       expect(calls).toEqual([]);
-    }).pipe(Effect.provide(layerRecordingTools(calls)));
+    }).pipe(
+      // Recorded calls stay local; no linked environment is selected.
+      Effect.provide(
+        layerRecordingTools(calls).pipe(
+          Layer.provideMerge(Layer.mock(PeerForwarding.PeerForwarding)({})),
+        ),
+      ),
+    );
   },
 );
 
@@ -740,7 +900,12 @@ it.effect(
         );
       expect(denied.isError).toBe(true);
       expect(denied.content).toEqual([
-        { type: "text", text: "MCP credential does not grant the pull-requests capability." },
+        {
+          type: "text",
+          text: JSON.stringify({
+            message: "MCP credential does not grant the pull-requests capability.",
+          }),
+        },
       ]);
     }).pipe(Effect.provide(layerPullRequestsTest)),
 );
@@ -935,7 +1100,7 @@ it.effect("terminates HTTP MCP sessions with DELETE", () =>
         issuedAt: 1,
       };
       const layerServer = McpHttpServer.layerMcpTransport(Layer.empty).pipe(
-        Layer.provide(ServerSettings.layerTest()),
+        Layer.provideMerge(ServerSettings.layerTest()),
         Layer.provide(
           Layer.mock(McpSessionRegistry.McpSessionRegistry)({
             resolve: (presented) =>
@@ -1014,6 +1179,7 @@ it.effect("answers 2026-07-28 discovery and keeps 2025-06-18 as the initialize f
         Tool.make("probe", {
           description: "Reports success.",
           success: Schema.Struct({ ok: Schema.Boolean }),
+          failure: OrchestratorMcpFailure,
         }),
       );
       const layerServer = McpHttpServer.layerMcpTransport(
@@ -1119,6 +1285,7 @@ it.effect("admits provider and OAuth client credentials and points only clients 
       const providerScope: McpInvocationContext.McpInvocationScope = {
         environmentId,
         requestNamespace: "provider-session",
+        bareToolNames: ["probe"],
         thread: {
           threadId: ThreadId.make("thread-provider"),
           providerSessionId: "provider-session",
@@ -1138,6 +1305,12 @@ it.effect("admits provider and OAuth client credentials and points only clients 
       };
       const seen: Array<McpInvocationContext.McpInvocationScope> = [];
       const ProbeToolkit = Toolkit.make(
+        Tool.make("unselected", {
+          description: "Unselected description must never reach the bare child.",
+          failure: OrchestratorMcpFailure,
+          failureMode: "return",
+          success: Schema.Void,
+        }),
         Tool.make("probe", {
           description: "Reports the caller.",
           success: Schema.Struct({ ok: Schema.Boolean }),
@@ -1150,6 +1323,7 @@ it.effect("admits provider and OAuth client credentials and points only clients 
         McpHttpServer.toolkitRegistration(
           ProbeToolkit,
           McpToolAccess.toLayer(ProbeToolkit, {
+            unselected: McpToolAccess.reads(() => Effect.void),
             probe: McpToolAccess.reads(() =>
               McpInvocationContext.McpInvocationContext.pipe(
                 Effect.tap((scope) => Effect.sync(() => seen.push(scope))),
@@ -1159,7 +1333,7 @@ it.effect("admits provider and OAuth client credentials and points only clients 
           }),
         ),
       ).pipe(
-        Layer.provide(ServerSettings.layerTest()),
+        Layer.provideMerge(ServerSettings.layerTest()),
         Layer.provide(
           Layer.mock(McpSessionRegistry.McpSessionRegistry)({
             resolve: (token) =>
@@ -1185,7 +1359,7 @@ it.effect("admits provider and OAuth client credentials and points only clients 
         Effect.withTracer(traced.tracer),
       );
       const httpClient = yield* HttpClient.HttpClient;
-      const call = (token: string | undefined) =>
+      const call = (token: string | undefined, method = "tools/call", name = "probe") =>
         Effect.gen(function* () {
           const headers = {
             accept: "application/json, text/event-stream",
@@ -1206,7 +1380,12 @@ it.effect("admits provider and OAuth client credentials and points only clients 
               "mcp-protocol-version": "2025-06-18",
             },
             body: HttpBody.text(
-              `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"probe","arguments":{}}}`,
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id: 2,
+                method,
+                params: method === "tools/list" ? {} : { name, arguments: {} },
+              }),
               "application/json",
             ),
           });
@@ -1233,6 +1412,15 @@ it.effect("admits provider and OAuth client credentials and points only clients 
         "provider-session",
         "client:session-1",
       ]);
+
+      const bareListing = yield* (yield* call(providerToken, "tools/list")).text;
+      expect(bareListing).toContain("Reports the caller.");
+      expect(bareListing).not.toContain("Unselected description");
+      expect(bareListing).not.toContain('"name":"unselected"');
+      const normalListing = yield* (yield* call(clientToken, "tools/list")).text;
+      expect(normalListing).toContain("Unselected description");
+      const denied = yield* (yield* call(providerToken, "tools/call", "unselected")).text;
+      expect(denied).toContain("error");
 
       const missing = yield* call(undefined);
       expect(missing.status).toBe(401);
@@ -1278,7 +1466,9 @@ it.effect("accepts case-insensitive MCP bearer schemes and diagnoses rejected cr
     Layer.provide(ManagedPolicy.layerTest()),
     Layer.provideMerge(ServerEnvironment.layerIdentity),
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-auth-header-test-" })),
-    Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+    Layer.provideMerge(
+      Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+    ),
   );
   return Effect.scoped(
     Effect.gen(function* () {
@@ -1298,7 +1488,7 @@ it.effect("accepts case-insensitive MCP bearer schemes and diagnoses rejected cr
       yield* HttpRouter.serve(
         McpHttpServer.layerMcpTransport(Layer.empty).pipe(
           Layer.provide(McpOAuth.layerMcpClientAuthenticator),
-          Layer.provide(ServerSettings.layerTest()),
+          Layer.provideMerge(ServerSettings.layerTest()),
         ),
         { disableListenLog: true, disableLogger: true },
       ).pipe(Layer.build);
@@ -1478,9 +1668,10 @@ it.effect("hides tools for links and refuses another environment while the beta 
       yield* settings.updateSettings({ linkedEnvironmentsEnabled: true });
       expect(yield* listed()).toEqual(["links", "where"]);
       // On, the call goes on to the forwarding, which this server lacks.
-      expect(yield* ranIn(elsewhere)).toMatchObject({
-        isError: true,
-        content: [{ text: expect.stringContaining("cannot reach linked environments") }],
+      const unavailable = yield* ranIn(elsewhere);
+      expect(unavailable.isError).toBe(true);
+      expect(JSON.parse(unavailable.content[0]!.text)).toMatchObject({
+        code: "orchestration_error",
       });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
@@ -1512,7 +1703,7 @@ it.effect("lists pull request watch tools only to threads that are not delegated
       const serverLayer = McpHttpServer.layerMcpTransport(
         McpHttpServer.layerPullRequestsToolkit,
       ).pipe(
-        Layer.provide(ServerSettings.layerTest()),
+        Layer.provideMerge(ServerSettings.layerTest()),
         Layer.provide(
           Layer.mock(McpSessionRegistry.McpSessionRegistry)({
             resolve: (token) => Effect.succeed(scopes.get(token)),
@@ -1525,7 +1716,7 @@ it.effect("lists pull request watch tools only to threads that are not delegated
             Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
             Layer.mock(Orchestrator.OrchestratorV2)({}),
             Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
-            NodeServices.layer,
+            Layer.merge(NodeServices.layer, NodeCrypto.layer),
             NodeCrypto.layer,
           ),
         ),
@@ -1620,7 +1811,7 @@ it.effect(
             }),
           ),
         ).pipe(
-          Layer.provide(ServerSettings.layerTest()),
+          Layer.provideMerge(ServerSettings.layerTest()),
           Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
           Layer.provide(
             Layer.mock(McpSessionRegistry.McpSessionRegistry)({
@@ -1845,4 +2036,48 @@ it.effect("lists optional tools to a deferring client only after tool_search loa
       expect(yield* other.listed).toEqual(["delegate_task", "preview_open", "schedule_task"]);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+// Fork: only a peer link may say its caller is the Promachos (toolboxmd/chromeria#532).
+it("honors the Promachos thread header from a peer link only", () => {
+  const header = { "t3-promachos-thread": " remote-promachos " };
+  const scope = (linked: boolean): McpInvocationContext.McpInvocationScope => ({
+    environmentId: EnvironmentId.make("env"),
+    capabilities: new Set(["orchestration"]),
+    issuedAt: 0,
+    requestNamespace: "request",
+    thread: undefined,
+    client: { sessionId: "client", label: "cavallo", access: "full-access", linked },
+  });
+  expect(McpHttpServer.withPromachosThread(scope(true), header)?.client?.promachosThreadId).toBe(
+    "remote-promachos",
+  );
+  expect(
+    McpHttpServer.withPromachosThread(scope(false), header)?.client?.promachosThreadId,
+  ).toBeUndefined();
+  expect(
+    McpHttpServer.withPromachosThread(scope(true), {})?.client?.promachosThreadId,
+  ).toBeUndefined();
+});
+it.effect("reviewer382-r2: confirmed PNG receipt survives renderer disconnection", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const input = { save: true, includeImage: true, clientRequestId: "reviewer382-r2-png" };
+      const receipt = yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* serveSnapshots("reviewer382-r2-renderer", snapshotResult);
+          const first = yield* callSnapshot(input);
+          expect(first.isError).toBe(false);
+          return yield* decodeSavedSnapshotReceipt(first.structuredContent);
+        }),
+      );
+      const fs = yield* FileSystem.FileSystem;
+      expect(Array.from(yield* fs.readFile(receipt.artifact.screenshotPath))).toEqual([
+        112, 110, 103,
+      ]);
+      const replay = yield* callSnapshot(input);
+      expect(replay.isError, JSON.stringify(replay)).toBe(false);
+      expect(replay.structuredContent).toEqual(receipt);
+    }),
+  ).pipe(Effect.provide(layerTest)),
 );
