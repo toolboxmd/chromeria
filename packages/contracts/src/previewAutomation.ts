@@ -1,4 +1,6 @@
 import { Schema } from "effect";
+import { PeerAttachmentReference } from "./peerAttachments.ts";
+import { NativeBrowserDownloadAssetResource } from "./assets.ts";
 
 import { EnvironmentId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
@@ -8,9 +10,11 @@ import {
   PreviewViewportPresetId,
   PreviewViewportSetting,
   PreviewViewportSize,
+  PreviewViewerResource,
 } from "./preview.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { BrowserProfileId } from "./browserProfile.ts";
+import { PreviewCredentialError } from "./previewCredential.ts";
 
 const BoundedUrl = Schema.String.check(Schema.isTrimmed())
   .check(Schema.isNonEmpty())
@@ -51,6 +55,11 @@ export const PREVIEW_AUTOMATION_SERVER_OPERATIONS = [
   "hover",
   "select",
   "drag",
+  "readPage",
+  "fillCredential",
+  "endLogin",
+  "watchStart",
+  "watchStop",
 ] as const;
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_SERVER_OPERATIONS);
 export type PreviewAutomationOperation = typeof PreviewAutomationOperation.Type;
@@ -61,6 +70,93 @@ const PreviewAutomationTabTargetFields = {
 
 export const PreviewAutomationTabTargetInput = Schema.Struct(PreviewAutomationTabTargetFields);
 export type PreviewAutomationTabTargetInput = typeof PreviewAutomationTabTargetInput.Type;
+
+// Retention and the callback bridge share these bounds. JSON is never shortened.
+export const PREVIEW_WATCH_MAX_PAYLOAD_BYTES = 1024 * 1024;
+export const PREVIEW_WATCH_MAX_EVENTS = 256;
+export const PREVIEW_WATCH_MAX_BYTES = 8 * 1024 * 1024;
+export const PREVIEW_WATCH_TOTAL_BYTES = 64 * 1024 * 1024;
+export const PREVIEW_WATCH_MAX_WATCHES = 128;
+export const PREVIEW_WATCH_MAX_RECORDS = 256;
+export const PREVIEW_WATCH_MAX_READ_EVENTS = 64;
+export const PREVIEW_WATCH_MAX_READ_BYTES = 2 * 1024 * 1024;
+const WatchId = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(128)).annotate({
+  description: "Exact watch identity returned by preview_watch_start.",
+});
+const WatchEpoch = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(128)).annotate({
+  description: "Process epoch returned by preview_watch_start; a restart requires reconciliation.",
+});
+const WatchCursor = Schema.Int.check(
+  Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+).annotate({
+  description: "Last processed event sequence. Start with zero; persist with your own transaction.",
+});
+export const PreviewWatchStartInput = Schema.Struct({
+  tabId: PreviewTabId.annotate({
+    description: "Existing owned server tab. This never opens a tab.",
+  }),
+  subscription: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(65536)).annotate({
+    description:
+      "JavaScript function (emit) => cleanup, executed once in the main page. Emit an initial baseline and JSON changes; return a synchronous cleanup function.",
+  }),
+});
+export type PreviewWatchStartInput = typeof PreviewWatchStartInput.Type;
+export const PreviewWatchStartResult = Schema.Struct({
+  watchId: WatchId,
+  epoch: WatchEpoch,
+  cursor: WatchCursor,
+});
+export type PreviewWatchStartResult = typeof PreviewWatchStartResult.Type;
+export const PreviewWatchStopInput = Schema.Struct({ watchId: WatchId, epoch: WatchEpoch });
+export type PreviewWatchStopInput = typeof PreviewWatchStopInput.Type;
+export const PreviewWatchStopResult = Schema.Struct({
+  ...PreviewWatchStopInput.fields,
+  state: Schema.Literal("stopped"),
+});
+export const PreviewWatchReadInput = Schema.Struct({
+  threadId: ThreadId.annotate({ description: "Undeleted host thread that owns this exact watch." }),
+  ...PreviewWatchStopInput.fields,
+  after: WatchCursor,
+  timeoutMs: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 30000 })).annotate({
+      description:
+        "Bounded retained-queue wait in milliseconds, default zero. Never inspects the browser.",
+    }),
+  ),
+});
+export type PreviewWatchReadInput = typeof PreviewWatchReadInput.Type;
+export const PreviewWatchReadResult = Schema.Struct({
+  epoch: WatchEpoch,
+  state: Schema.Literal("active"),
+  events: Schema.Array(Schema.Struct({ sequence: WatchCursor, value: Schema.Json })),
+  cursor: WatchCursor,
+});
+export type PreviewWatchReadResult = typeof PreviewWatchReadResult.Type;
+export class PreviewWatchError extends Schema.TaggedError<PreviewWatchError>()(
+  "PreviewWatchError",
+  {
+    reason: Schema.Literals([
+      "unknown",
+      "stale_epoch",
+      "gap",
+      "overflow",
+      "malformed_payload",
+      "stopped",
+      "navigation",
+      "closed",
+      "ownership",
+      "login",
+      "revoked",
+      "thread_deleted",
+      "capacity",
+      "subscription_failed",
+    ]),
+  },
+) {
+  override get message(): string {
+    return `Browser watch unavailable: ${this.reason}. Reconcile before registering again.`;
+  }
+}
 
 export const PreviewAutomationTabOwner = Schema.Literals(["agent", "human", "unclaimed"]);
 
@@ -83,6 +179,7 @@ export const PreviewAutomationLoadError = Schema.Struct({
 export type PreviewAutomationLoadError = typeof PreviewAutomationLoadError.Type;
 
 export const PreviewAutomationStatus = Schema.Struct({
+  resource: Schema.optional(PreviewViewerResource),
   available: Schema.Boolean,
   visible: Schema.Boolean.annotate({ description: VISIBLE_DESCRIPTION }),
   tabId: Schema.NullOr(PreviewTabId),
@@ -111,13 +208,16 @@ export const PreviewAutomationStatus = Schema.Struct({
   fileChooser: Schema.optional(
     Schema.NullOr(Schema.Struct({ multiple: Schema.Boolean, accept: Schema.String })),
   ),
+  /** A login after preview_fill_credential: URL, title and page content are withheld. */
+  loginInProgress: Schema.optional(Schema.Boolean),
   downloads: Schema.optional(
     Schema.Array(
       Schema.Struct({
         fileName: Schema.String,
-        path: Schema.String,
+        resource: Schema.optional(Schema.suspend(() => NativeBrowserDownloadAssetResource)),
+        path: Schema.optional(Schema.String),
         sizeBytes: Schema.Number,
-        url: Schema.String,
+        url: Schema.optional(Schema.String),
         completedAt: Schema.String,
       }),
     ),
@@ -127,12 +227,14 @@ export const PreviewAutomationStatus = Schema.Struct({
     Schema.Array(
       Schema.Struct({
         tabId: PreviewTabId,
+        resource: Schema.optional(PreviewViewerResource),
         url: Schema.NullOr(Schema.String),
         openerTabId: Schema.optional(PreviewTabId),
         owner: Schema.optional(PreviewAutomationTabOwner),
         ownedByCaller: Schema.optional(Schema.Boolean),
         visible: Schema.optional(Schema.Boolean.annotate({ description: VISIBLE_DESCRIPTION })),
         profileId: Schema.optional(BrowserProfileId),
+        loginInProgress: Schema.optional(Schema.Boolean),
       }),
     ),
   ),
@@ -140,6 +242,21 @@ export const PreviewAutomationStatus = Schema.Struct({
   defaultProfileId: Schema.optional(BrowserProfileId),
 });
 export type PreviewAutomationStatus = typeof PreviewAutomationStatus.Type;
+
+// Research reads target an existing tab and expose no script or account-action input.
+export const PreviewAutomationReadPageInput = Schema.Struct({
+  profileId: BrowserProfileId,
+  url: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096)),
+});
+
+export const PreviewAutomationReadPageResult = Schema.Struct({
+  tabId: PreviewTabId,
+  profileId: BrowserProfileId,
+  generation: Schema.Int,
+  finalUrl: Schema.String.check(Schema.isMaxLength(4096)),
+  httpStatus: Schema.NullOr(Schema.Int),
+  html: Schema.String.check(Schema.isMaxLength(4 * 1024 * 1024)),
+});
 
 export const PreviewAutomationDialogInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
@@ -365,7 +482,21 @@ export type PreviewAutomationDragInput = typeof PreviewAutomationDragInput.Type;
 
 export const PreviewAutomationUploadInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
-  paths: Schema.Array(TrimmedNonEmptyString).check(Schema.isMaxLength(20)),
+  paths: Schema.optionalKey(
+    Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(4096))).check(
+      Schema.isMaxLength(20),
+    ),
+  ),
+  artifacts: Schema.optionalKey(
+    Schema.Array(Schema.suspend(() => PeerAttachmentReference)).check(Schema.isMaxLength(20)),
+  ).annotate({
+    description:
+      "Qualified file references from t3_attachment_inspect, at most 20 files/100 MiB. Use instead of paths, with the exact browser resource. An empty list clears a named input or cancels its picker.",
+  }),
+  resource: Schema.optionalKey(Schema.suspend(() => PreviewViewerResource)).annotate({
+    description:
+      "Exact browser resource from preview_open or preview_status, required with artifacts. Keep its environment, thread, tab and server epoch unchanged.",
+  }),
   selector: Schema.optional(LegacySelector),
   locator: Schema.optional(Locator).annotate({
     description: "Set files on this <input type=file> instead of the open picker.",
@@ -374,8 +505,20 @@ export const PreviewAutomationUploadInput = Schema.Struct({
 }).check(
   Schema.makeFilter(
     (input) =>
-      !(input.selector !== undefined && input.locator !== undefined) ||
-      "Provide at most one of selector or locator.",
+      ((input.paths !== undefined) !== (input.artifacts !== undefined) &&
+        (input.artifacts === undefined
+          ? input.resource === undefined
+          : input.resource !== undefined &&
+            (input.tabId === undefined || input.tabId === input.resource.tabId) &&
+            new Set(
+              input.artifacts.map(
+                (reference) => `${reference.environmentId}:${reference.attachmentId}`,
+              ),
+            ).size === input.artifacts.length &&
+            input.artifacts.reduce((total, reference) => total + reference.sizeBytes, 0) <=
+              100 * 1024 * 1024) &&
+        !(input.selector !== undefined && input.locator !== undefined)) ||
+      "Provide either local paths or qualified artifacts with their exact browser resource; at most 20 files/100 MiB, unique references and one locator.",
   ),
 );
 export type PreviewAutomationUploadInput = typeof PreviewAutomationUploadInput.Type;
@@ -984,6 +1127,7 @@ export class PreviewAutomationRecordingDeadlineExpiredError extends Schema.Tagge
 }
 
 export const PreviewAutomationError = Schema.Union([
+  PreviewWatchError,
   PreviewAutomationRecordingTransferError,
   PreviewAutomationRecordingDesktopUpdateRequiredError,
   PreviewAutomationRecordingTooLargeError,
@@ -1002,6 +1146,7 @@ export const PreviewAutomationError = Schema.Union([
   PreviewAutomationRequestQueueClosedError,
   PreviewAutomationRemoteUnavailableError,
   PreviewAutomationMalformedResponseError,
+  PreviewCredentialError,
 ]);
 export type PreviewAutomationError = typeof PreviewAutomationError.Type;
 
