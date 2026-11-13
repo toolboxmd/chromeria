@@ -226,21 +226,6 @@ describe("searchSettings", () => {
     const ids = SETTINGS_SEARCH_ITEMS.map((item) => item.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
-
-  it("flags exactly the fork-added entries for the Chromeria mark", () => {
-    const flagged = SETTINGS_SEARCH_ITEMS.filter(
-      (item) => "forkAdded" in item && item.forkAdded === true,
-    )
-      .map((item) => item.id)
-      .sort();
-    expect(flagged).toEqual([
-      "auto-update-providers",
-      "prism-capacity",
-      "prism-roles",
-      "promachos-colors",
-      "spectrum-defaults",
-    ]);
-  });
 });
 
 describe("settings search targets", () => {

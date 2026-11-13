@@ -1662,7 +1662,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "newFiles": [
     "apps/web/src/components/ChromeriaFeatureMark.tsx",
     "apps/web/src/components/settings/ForkPageHeadings.browser.test.tsx",
-    "apps/web/src/components/settings/ForkSearchResultMarks.browser.test.tsx"
+    "apps/web/src/components/settings/ForkSearchResultMarks.browser.test.tsx",
+    "apps/web/src/components/settings/settingsSearchFork.test.ts"
   ],
   "upstreamFiles": [],
   "sharedFiles": ["apps/web/src/components/settings/SettingsSidebarNav.tsx"],
