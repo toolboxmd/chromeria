@@ -360,6 +360,10 @@ const cleanupFixture = (
     let fullStatusCalls = 0;
     let gitInspections = 0;
     let branchReadStderr: string | null = null;
+    let pullRequest: Pick<
+      GitManager.GitBranchPullRequest,
+      "state" | "headRef" | "baseRef" | "headSha"
+    > | null = null;
     let snapshotReads = 0;
     let terminalListener: ((event: TerminalMetadataStreamEvent) => Effect.Effect<void>) | undefined;
     let events: Stream.Stream<OrchestrationV2DomainEvent> = Stream.empty;
@@ -474,6 +478,7 @@ const cleanupFixture = (
         )) as unknown as SqlClient.SqlClient),
       Effect.provideService(GitManager.GitManager, {
         invalidateStatus: () => Effect.void,
+        branchPullRequest: () => Effect.sync(() => pullRequest),
       } as unknown as GitManager.GitManager["Service"]),
       Effect.provideService(TerminalManager.TerminalManager, {
         subscribeMetadata: (
@@ -541,6 +546,9 @@ const cleanupFixture = (
       },
       setStoredWorktreePaths: (paths: string[]) => {
         storedWorktreePaths = paths;
+      },
+      setPullRequest: (next: typeof pullRequest) => {
+        pullRequest = next;
       },
       setProjectRoots: (roots: string[]) => {
         projectRoots = roots;
@@ -3071,3 +3079,83 @@ it.live("keeps saved usage data when removing a settled checkout", () =>
     }),
   ),
 );
+
+describe("stacked pull request merge cleanup", () => {
+  const stackedFixture = Effect.gen(function* () {
+    const fixture = yield* cleanupFixture({
+      ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+      worktreeOnMerge: true,
+    });
+    const { fs, repo, worktree, command } = fixture;
+    const remote = yield* fs.makeTempDirectoryScoped({ prefix: "cleanup-remote-" });
+    yield* command(remote, ["init", "--bare", "-b", "main"]);
+    yield* command(repo, ["remote", "add", "origin", remote]);
+    yield* command(repo, ["push", "origin", "main"]);
+    yield* fs.writeFileString(`${worktree}/tracked.txt`, "stacked work\n");
+    yield* command(worktree, ["commit", "-am", "stacked work"]);
+    yield* command(worktree, ["push", "origin", "feature"]);
+    const headSha = (yield* command(worktree, ["rev-parse", "HEAD"])).stdout.trim();
+    // A PR merged into its stack parent; its commits never reach main directly.
+    fixture.setPullRequest({
+      state: "merged",
+      headRef: "feature",
+      baseRef: "stack-parent",
+      headSha,
+    });
+    return fixture;
+  });
+
+  it.live("removes a merged stacked worktree that holds only regenerable ignored files", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const { service, fs, repo, worktree, command } = yield* stackedFixture;
+        yield* fs.writeFileString(`${repo}/.git/info/exclude`, ".vite-hooks/\n.t3/\n");
+        for (const directory of ["node_modules/pkg", ".vite-hooks/_", ".t3/userdata"])
+          yield* fs.makeDirectory(`${worktree}/${directory}`, { recursive: true });
+        yield* fs.writeFileString(`${worktree}/node_modules/pkg/index.js`, "\n");
+        yield* fs.writeFileString(`${worktree}/.vite-hooks/_/pre-commit`, "\n");
+        yield* fs.writeFileString(`${worktree}/.t3/userdata/state.sqlite`, "\n");
+
+        const report = yield* service.runNow;
+        expect(report.entries[0]).toMatchObject({
+          outcome: "removed",
+          reason: "Pull request was merged",
+        });
+        expect(yield* fs.exists(worktree)).toBe(false);
+        expect(
+          (yield* command(repo, ["show-ref", "--verify", "refs/heads/feature"])).stdout,
+        ).not.toBe("");
+      }),
+    ),
+  );
+
+  it.live.each([
+    ["a tracked edit", "tracked.txt", "Has uncommitted changes (1 file)"],
+    ["an untracked file", "notes.txt", "Has uncommitted changes (1 file)"],
+  ] as const)("keeps a merged stacked worktree with %s", ([_name, file, reason]) =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const { service, fs, worktree } = yield* stackedFixture;
+        yield* fs.writeFileString(`${worktree}/${file}`, "local work\n");
+
+        const report = yield* service.runNow;
+        expect(report.entries[0]).toMatchObject({ outcome: "kept", reason });
+        expect(yield* fs.readFileString(`${worktree}/${file}`)).toBe("local work\n");
+      }),
+    ),
+  );
+
+  it.live("keeps a merged stacked worktree with a commit the pull request does not name", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const { service, fs, worktree, command } = yield* stackedFixture;
+        yield* fs.writeFileString(`${worktree}/tracked.txt`, "unpushed work\n");
+        yield* command(worktree, ["commit", "-am", "unpushed work"]);
+
+        const report = yield* service.runNow;
+        expect(report.entries[0]).toMatchObject({ outcome: "kept", reason: "Not merged" });
+        expect(yield* fs.readFileString(`${worktree}/tracked.txt`)).toBe("unpushed work\n");
+      }),
+    ),
+  );
+});

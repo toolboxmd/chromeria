@@ -299,8 +299,8 @@ files such as `.env` and build output. **Any local files** also protects ignored
 `node_modules`. **Edited tracked files** protects only tracked edits and allows untracked and
 ignored files to be deleted. Branches and thread history stay; starting another turn recreates the checkout.
 Merge cleanup requires a merged pull request whose commits are included in the remote default
-branch. A squash or rebase merge on GitHub also counts when the pull request targeted the default
-branch and the worktree is still at the pull request's last commit.
+branch. A squash or rebase merge on GitHub also counts when the worktree is still at the pull
+request's last commit, including a stacked pull request merged into its parent branch.
 
 Enable **Delete worktrees with deleted threads** to remove safe worktrees after their last
 thread is deleted, including archived threads and worktrees left by earlier deletions. The
