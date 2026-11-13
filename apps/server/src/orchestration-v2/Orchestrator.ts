@@ -2344,8 +2344,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   ) {
     if (notification?.source.kind !== "delegated_task" || notification.outcome !== "updated")
       return false;
-    // Only question wakes go stale; a linked environment's return notice shares their source.
-    if (!messageId.startsWith("message:delegated-task-question:")) return false;
     const source = notification.source;
     const threadId = projection.thread.id;
     const task =
@@ -2355,25 +2353,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         .getThreadRecords(threadId, ["subagents"], { subagentIds: source.taskIds })
         .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause }))))
         .subagents[0];
-    // An unknown task gives no evidence the question is obsolete.
-    if (task === undefined) return false;
+    // An unknown task gives no evidence the question is obsolete; a linked environment's task
+    // judges its own questions there.
+    if (task === undefined || task.remoteChild !== undefined) return false;
     const childThreadId = task.childThreadId;
     if (childThreadId === null) return true;
+    // A finished task's question stays answerable: the answer starts a follow-up run.
     const child = yield* projectionStore
-      .getThreadRecords(childThreadId, ["runtimeRequests", "runs"])
+      .getThreadRecords(childThreadId, ["runtimeRequests"])
       .pipe(
         Effect.mapError(
           (cause) => new OrchestratorProjectionError({ threadId: childThreadId, cause }),
         ),
       );
-    // A follow-up reruns the finished task on its child, so its questions stay live.
-    if (
-      ["completed", "failed", "cancelled", "interrupted"].includes(task.status) &&
-      !child.runs.some(
-        (run) => run.delegatedTaskId === task.id && (run.status === "queued" || isActiveRun(run)),
-      )
-    )
-      return true;
     return !child.runtimeRequests.some(
       (request) =>
         request.kind === "user_input" &&
@@ -18273,7 +18265,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (parentThreadId === undefined) return;
       if (
         sourceRunId === undefined &&
-        !(yield* projectionStore.hasPendingDelegatedCompletion(threadId))
+        !(yield* projectionStore.hasPendingDelegatedCompletion(threadId)) &&
+        // A follow-up reruns the finished task, whose stored result predates the run.
+        !(yield* projectionStore.getThreadRecords(threadId, ["runs"])).runs.some(
+          (run) => run.delegatedTaskId !== undefined,
+        )
       )
         return;
       yield* threadDispatch.withLock(

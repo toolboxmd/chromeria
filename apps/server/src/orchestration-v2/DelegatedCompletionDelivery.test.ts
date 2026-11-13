@@ -2661,6 +2661,10 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
           // The shape ProviderContinuationService dispatches when the provider
           // reports a background command (wire kind `background_command`) ended.
           const wakeMessageId = MessageId.make(`message:background-wake-${delivery}`);
+          // Fork: a native follow-up continues the original task, which keeps its first result.
+          const originalResult = (yield* orchestrator.getThreadProjection(
+            parentThreadId,
+          )).subagents.find((task) => task.id === child.taskId)!.result;
           yield* orchestrator.dispatch({
             type: "message.dispatch",
             createdBy: "agent",
@@ -2766,7 +2770,7 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
               const committed = (yield* orchestrator.getThreadProjection(
                 parentThreadId,
               )).subagents.find((task) => task.id === run.delegatedTaskId)!;
-              assert.equal(committed.result, "The background command finished cleanly.");
+              assert.equal(committed.result, originalResult);
               yield* worker.drain();
               assert.lengthOf(offer.mock.calls, 2);
             } else {
@@ -2795,7 +2799,8 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
             2,
           );
           assert.equal(followup.status, "completed");
-          assert.equal(followup.result, "The background command finished cleanly.");
+          // The wake's own result travels as the second transfer counted above.
+          assert.equal(followup.result, originalResult);
           assert.equal(followup.completionDelivery?.state, "claimed");
           let wake = yield* requests.take;
           while (

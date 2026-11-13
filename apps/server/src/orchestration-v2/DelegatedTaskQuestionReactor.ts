@@ -148,46 +148,6 @@ const make = Effect.gen(function* () {
         }
         return;
       }
-      if (event.type === "subagent.updated") {
-        const task = event.payload;
-        if (
-          task.origin !== "app_owned" ||
-          task.childThreadId === null ||
-          !["completed", "failed", "cancelled", "interrupted"].includes(task.status)
-        ) {
-          return;
-        }
-        // A settled task can no longer use an answer to its still-pending questions.
-        const { runtimeRequests } = yield* projections.getThreadRecords(task.childThreadId, [
-          "runtimeRequests",
-        ]);
-        const questions = runtimeRequests.filter((request) => request.kind === "user_input");
-        if (questions.length === 0) return;
-        const child = yield* projections.getThreadRecords(task.childThreadId, ["runs", "nodes"]);
-        const taskRunIds = new Set(
-          child.runs
-            .filter(
-              (run) =>
-                run.delegatedTaskId === task.id ||
-                (run.delegatedTaskId === undefined &&
-                  child.thread.forkedFrom?.type === "node" &&
-                  child.thread.forkedFrom.nodeId === task.id),
-            )
-            .map((run) => run.id),
-        );
-        const taskNodeIds = new Set(
-          child.nodes
-            .filter((node) => node.runId !== null && taskRunIds.has(node.runId))
-            .map((node) => node.id),
-        );
-        yield* cancelQueuedWakes(
-          task.threadId,
-          questions
-            .filter((request) => taskNodeIds.has(request.nodeId))
-            .map((request) => request.id),
-        );
-        return;
-      }
       if (event.type !== "runtime-request.updated" || event.payload.kind !== "user_input") {
         return;
       }

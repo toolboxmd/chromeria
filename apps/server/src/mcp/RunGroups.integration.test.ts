@@ -365,6 +365,8 @@ const withParent = <A, E>(
       ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
     >;
     readonly firstOffer: Effect.Effect<ProviderContinuationRequests.ProviderContinuationRequest>;
+    /** The first wake offered to the parent itself. */
+    readonly parentOffer: Effect.Effect<ProviderContinuationRequests.ProviderContinuationRequest>;
     readonly drain: Effect.Effect<number, EffectWorker.OrchestrationEffectWorkerError>;
   }) => Effect.Effect<A, E, Orchestrator.OrchestratorV2>,
   purposeIntent?: PurposeIntent,
@@ -388,11 +390,18 @@ const withParent = <A, E>(
       >([]);
       const firstOffer =
         yield* Deferred.make<ProviderContinuationRequests.ProviderContinuationRequest>();
+      const parentOffer =
+        yield* Deferred.make<ProviderContinuationRequests.ProviderContinuationRequest>();
       // Records each wake the parent would get instead of starting its turn.
       const layerOffers = Layer.succeed(ProviderContinuationRequests.ProviderContinuationRequests, {
         offer: (request) =>
           Ref.update(offers, (existing) => [...existing, request]).pipe(
             Effect.andThen(Deferred.succeed(firstOffer, request)),
+            Effect.andThen(
+              request.threadId === parentThreadId
+                ? Deferred.succeed(parentOffer, request)
+                : Effect.void,
+            ),
             Effect.asVoid,
           ),
         take: Effect.never,
@@ -521,6 +530,7 @@ const withParent = <A, E>(
           invoke,
           offers,
           firstOffer: Deferred.await(firstOffer),
+          parentOffer: Deferred.await(parentOffer),
           drain: worker.drain(),
         });
       }).pipe(Effect.provide(layerTest));
@@ -1096,7 +1106,7 @@ describe("Run groups", () => {
           instanceId === claude
             ? Deferred.await(refusedDone).pipe(Effect.as<TurnOutcome>("complete"))
             : Effect.succeed<TurnOutcome>("hang"),
-        ({ orchestrator, invoke, offers, drain }) =>
+        ({ orchestrator, invoke, offers, firstOffer, drain }) =>
           Effect.gen(function* () {
             const started = yield* group(
               yield* invoke("delegate_task", { task: "Attack this plan.", prismRole: "roast" }),
@@ -1133,6 +1143,8 @@ describe("Run groups", () => {
             expect(subagent(woken, refusing!.taskId)?.completionDelivery?.state).not.toBe(
               "disposed",
             );
+            // The wake follows the finished delegate's session release, after the drain.
+            yield* firstOffer;
             expect(yield* Ref.get(offers)).toHaveLength(1);
           }),
       );
@@ -1143,7 +1155,7 @@ describe("Run groups", () => {
     withParent(
       roastRun([codexColor, claudeColor], 2),
       () => Effect.succeed<TurnOutcome>("hang"),
-      ({ orchestrator, invoke, offers, drain }) =>
+      ({ orchestrator, invoke, offers, firstOffer, drain }) =>
         Effect.gen(function* () {
           const started = yield* group(
             yield* invoke("delegate_task", { task: "Attack this plan.", prismRole: "roast" }),
@@ -1179,6 +1191,8 @@ describe("Run groups", () => {
             ),
           );
           yield* drain;
+          // The wake follows the finished delegate's session release, after the drain.
+          yield* firstOffer;
           expect(yield* Ref.get(offers)).toHaveLength(1);
         }),
     ),
@@ -1305,7 +1319,7 @@ describe("Run groups", () => {
     withParent(
       roastRun([codexColor, claudeColor], 2),
       () => Effect.succeed<TurnOutcome>("hang"),
-      ({ orchestrator, invoke, offers, drain }) =>
+      ({ orchestrator, invoke, offers, firstOffer, drain }) =>
         Effect.gen(function* () {
           const task = yield* decodeTask(
             (yield* invoke("delegate_task", { task: "Review it.", role: "review" }))
@@ -1320,6 +1334,8 @@ describe("Run groups", () => {
             ["cancelled", "interrupted"].includes(subagent(projection, task.taskId)?.status ?? ""),
           );
           yield* drain;
+          // The wake follows the finished delegate's session release, after the drain.
+          yield* firstOffer;
           expect(yield* Ref.get(offers)).toHaveLength(1);
         }),
     ),
@@ -1338,7 +1354,7 @@ describe("Run groups", () => {
             : instanceId === codex && !turn.message.text.startsWith("Delegated task")
               ? Deferred.await(codexTurnDone).pipe(Effect.as<TurnOutcome>("complete"))
               : Effect.succeed<TurnOutcome>("complete"),
-        ({ orchestrator, invoke, offers, drain }) =>
+        ({ orchestrator, invoke, offers, parentOffer, drain }) =>
           Effect.gen(function* () {
             const started = yield* group(
               yield* invoke("delegate_task", { task: "Attack this plan.", prismRole: "roast" }),
@@ -1416,6 +1432,7 @@ describe("Run groups", () => {
             );
             expect(subagent(woken, nesting!.taskId)?.status).toBe("completed");
             yield* drain;
+            yield* parentOffer;
             // One offer woke the member for its nested result; one wakes the parent.
             expect(
               (yield* Ref.get(offers)).filter((offer) => offer.threadId === parentThreadId),
