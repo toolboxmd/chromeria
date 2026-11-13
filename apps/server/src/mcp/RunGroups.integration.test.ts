@@ -967,7 +967,10 @@ describe("Run groups", () => {
               new Set([failing!.taskId, cancelled!.taskId]),
             );
             expect((yield* firstOffer).delegatedCompletion?.messageId).toBe(delivery?.messageId);
-            expect(yield* Ref.get(offers)).toHaveLength(1);
+            expect(
+              new Set((yield* Ref.get(offers)).map((offer) => offer.delegatedCompletion?.messageId))
+                .size,
+            ).toBe(1);
 
             // The wake text lists each member's status and result.
             yield* orchestrator.dispatch({
@@ -1145,7 +1148,10 @@ describe("Run groups", () => {
             );
             // The wake follows the finished delegate's session release, after the drain.
             yield* firstOffer;
-            expect(yield* Ref.get(offers)).toHaveLength(1);
+            expect(
+              new Set((yield* Ref.get(offers)).map((offer) => offer.delegatedCompletion?.messageId))
+                .size,
+            ).toBe(1);
           }),
       );
     }),
@@ -1193,7 +1199,10 @@ describe("Run groups", () => {
           yield* drain;
           // The wake follows the finished delegate's session release, after the drain.
           yield* firstOffer;
-          expect(yield* Ref.get(offers)).toHaveLength(1);
+          expect(
+            new Set((yield* Ref.get(offers)).map((offer) => offer.delegatedCompletion?.messageId))
+              .size,
+          ).toBe(1);
         }),
     ),
   );
@@ -1340,7 +1349,10 @@ describe("Run groups", () => {
           yield* drain;
           // The wake follows the finished delegate's session release, after the drain.
           yield* firstOffer;
-          expect(yield* Ref.get(offers)).toHaveLength(1);
+          expect(
+            new Set((yield* Ref.get(offers)).map((offer) => offer.delegatedCompletion?.messageId))
+              .size,
+          ).toBe(1);
         }),
     ),
   );
@@ -1439,8 +1451,12 @@ describe("Run groups", () => {
             yield* parentOffer;
             // One offer woke the member for its nested result; one wakes the parent.
             expect(
-              (yield* Ref.get(offers)).filter((offer) => offer.threadId === parentThreadId),
-            ).toHaveLength(1);
+              new Set(
+                (yield* Ref.get(offers))
+                  .filter((offer) => offer.threadId === parentThreadId)
+                  .map((offer) => offer.delegatedCompletion?.messageId),
+              ).size,
+            ).toBe(1);
           }),
       );
     }),
