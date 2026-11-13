@@ -1,5 +1,6 @@
 import { isClearComposerCommand, parseSideChatCommand } from "@t3tools/shared/composerTrigger";
 import { armFreshSession, disarmFreshSession, readFreshSessionArm } from "./freshSessionArms";
+import { withPromachosStart } from "../promachos/promachosStart";
 import {
   mergeDirectPreviewAnnotation,
   resolveBackgroundDraftWorkspaceOptions,
@@ -95,6 +96,7 @@ import {
 import { environmentServerConfigsAtom } from "../../state/server";
 import { threadEnvironment } from "../../state/threads";
 import { runMobileComposerTransition } from "./draftHeroTransition";
+import { useStartTurnWithPurpose } from "./useStartTurnWithPurpose";
 import { useClientSettingsHydrated } from "../../hooks/useSettings";
 import { environmentPresentations } from "../../state/presentation";
 import {
@@ -255,6 +257,8 @@ interface ComposerSendInput {
   }) => Promise<AtomCommandResult<void, unknown>>;
   /** Links a checked-out pull request to its thread; best effort, failures only logged. */
   readonly linkCheckoutPullRequest: (threadRef: ScopedThreadRef, url: string) => void;
+  /** Fork: the Promachos role's models when this is a Promachos chat (toolboxmd/chromeria#115). */
+  readonly promachosModels?: ReadonlyArray<unknown> | null;
 }
 
 /**
@@ -335,14 +339,13 @@ export function useComposerSend(input: ComposerSendInput) {
     handleNewThreadInActiveProject,
     persistThreadSettingsForNextTurn,
     linkCheckoutPullRequest,
+    promachosModels,
   } = input;
   const linkedEnvironments = useLinkedEnvironments(environmentId);
   const handleNewThread = useNewThreadHandler();
   const navigate = useNavigate();
   const clientSettingsHydrated = useClientSettingsHydrated();
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
-    reportFailure: false,
-  });
+  const startThreadTurn = useStartTurnWithPurpose();
   const uploadThreadFeedback = useOrchestrationCommand(threadEnvironment.uploadFeedback, {
     reportFailure: false,
   });
@@ -1286,7 +1289,10 @@ export function useComposerSend(input: ComposerSendInput) {
           )
         : null;
       if (backgroundThreadRef) beginBackgroundDraftSubmissionByRef(backgroundThreadRef);
-      const startPromise = startThreadTurn({
+      const startPromise = withPromachosStart(
+        startThreadTurn,
+        promachosModels ?? null,
+      )({
         environmentId,
         input: {
           threadId: threadIdForSend,
