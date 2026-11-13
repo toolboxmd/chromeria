@@ -131,13 +131,23 @@ const handlers = {
       { refused: "schedule tasks in this environment" },
     ),
     McpToolAccess.writes(
-      ({ scheduledTaskId, prompt, title, schedule, enabled, freshSession, bindToCurrentThread }) =>
+      ({
+        scheduledTaskId,
+        purposeIntent,
+        prompt,
+        title,
+        schedule,
+        enabled,
+        freshSession,
+        bindToCurrentThread,
+      }) =>
         Effect.gen(function* () {
           if (scheduledTaskId === undefined) return yield* Effect.die("unreachable");
           const scope = yield* McpInvocationContext.McpInvocationContext;
           const service = yield* OrchestratorMcpService.OrchestratorMcpService;
           return yield* service.updateScheduledTask(scope, {
             scheduledTaskId,
+            purposeIntent,
             prompt,
             title,
             schedule,
