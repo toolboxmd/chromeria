@@ -166,7 +166,7 @@ Before fixing a bug or building a feature, search `pingdotgg/t3code` main, open 
 
 ## Pull requests
 
-- Open a PR when the work is ready; merging needs the developer's approval.
+- Open a PR when the work is ready. Standing merge authority (developer, 2026-11-13): merge it yourself with `gh pr merge --squash --match-head-commit <head>` once every exact-head check is green and the newest `review/independent` status on that head is `success`, then retire its worktree and branches. Do not ask again. Ask first only for feature deletions, destructive data migrations, Project Direction changes, or a guarded replacement of main outside the daily absorption job.
 - Do not bump versions. Package versions belong to upstream releases; a Chromeria build is identified by its embedded `t3codeCommitHash`.
 - If `origin` is git.cafe, follow [GitCafe mirror](docs/operations/development.md#gitcafe-mirror-optional): use `cafe` for existing PRs, issues, comments and labels, but push and open PRs on GitHub, where CI runs.
 - Bring a branch up to date with main by rebasing, never merging, and run `bash scripts/fork-check.sh --upstream upstream` before pushing: CI's Fork Stack Model check rejects merge commits and upstream edits not registered per [`docs/fork.md`](docs/fork.md).
