@@ -1,3 +1,6 @@
+import { SessionRenewal } from "@t3tools/client-runtime/authorization";
+import { renewalCommitment } from "@t3tools/shared/sessionRenewal";
+import { resolvePrimaryEnvironmentHttpUrl } from "./target";
 import type {
   AuthBrowserSessionResult,
   AuthClientMetadata,
@@ -18,7 +21,7 @@ import {
 } from "@t3tools/shared/remote";
 
 import { PrimaryEnvironmentHttpClient } from "./httpClient";
-import { runPrimaryHttp } from "../../lib/runtime";
+import { runPrimaryHttp, runRenewal } from "../../lib/runtime";
 
 const PrimaryEnvironmentRequestOperation = Schema.Literals([
   "fetch-session-state",
@@ -29,6 +32,7 @@ const PrimaryEnvironmentRequestOperation = Schema.Literals([
   "revoke-pairing-link",
   "list-client-sessions",
   "revoke-client-session",
+  "set-client-session-person",
   "revoke-other-client-sessions",
 ]);
 type PrimaryEnvironmentRequestOperation = typeof PrimaryEnvironmentRequestOperation.Type;
@@ -123,10 +127,13 @@ export interface ServerClientSessionRecord {
   readonly lastConnectedAt: string | null;
   readonly connected: boolean;
   readonly current: boolean;
+  /** Fork: the client's person label; unset means the default person. */
+  readonly person?: string;
 }
 
 type ServerAuthGateState =
   | { status: "authenticated" }
+  | { status: "retryable"; retryAfterMs: number }
   | {
       status: "requires-auth";
       auth: AuthSessionState["auth"];
@@ -136,6 +143,7 @@ type ServerAuthGateState =
 let bootstrapPromise: Promise<ServerAuthGateState> | null = null;
 let resolvedAuthenticatedGateState: ServerAuthGateState | null = null;
 let explicitPairingRequested = false;
+let startupRenewalRetryDelayMs = 500;
 const AUTH_SESSION_ESTABLISH_TIMEOUT_MS = 2_000;
 const AUTH_SESSION_ESTABLISH_STEP_MS = 100;
 
@@ -213,13 +221,51 @@ function readEnvironmentHttpErrorStatus(error: EnvironmentHttpCommonErrorType): 
 }
 
 async function exchangeBootstrapCredential(credential: string): Promise<AuthBrowserSessionResult> {
+  const origin = new URL(resolvePrimaryEnvironmentHttpUrl("/")).origin;
+  const key = `cookie:${origin}`;
+  const descriptor =
+    credential !== getDesktopBootstrapCredential()
+      ? await runPrimaryHttp(
+          PrimaryEnvironmentHttpClient.pipe(
+            Effect.flatMap((client) => client.metadata.descriptor()),
+          ),
+        )
+      : null;
+  const slot = descriptor
+    ? await runRenewal(
+        SessionRenewal.SessionRenewal.pipe(
+          Effect.flatMap((renewal) =>
+            renewal.stage({ key, environmentId: descriptor.environmentId, origin, kind: "cookie" }),
+          ),
+        ),
+      )
+    : null;
   return retryTransientBootstrap(async () => {
     try {
-      return await runPrimaryHttp(
+      const response = await runPrimaryHttp(
         PrimaryEnvironmentHttpClient.pipe(
-          Effect.flatMap((client) => client.auth.browserSession({ payload: { credential } })),
+          Effect.flatMap((client) =>
+            client.auth.browserSession({
+              payload: {
+                credential,
+                ...(slot ? { renewal_commitment: renewalCommitment(slot.current) } : {}),
+              },
+            }),
+          ),
         ),
       );
+      if (slot && response.renewAfter !== undefined)
+        await runRenewal(
+          SessionRenewal.SessionRenewal.pipe(
+            Effect.flatMap((renewal) =>
+              renewal.complete(key, slot.epoch, {
+                expiresAt: response.expiresAt.epochMilliseconds,
+                ...(response.renewAfter === undefined ? {} : { renewAfter: response.renewAfter }),
+              }),
+            ),
+          ),
+        ).catch(() => undefined);
+      return response;
     } catch (error) {
       if (
         isEnvironmentHttpCommonError(error) &&
@@ -309,6 +355,24 @@ async function bootstrapServerAuth(urlCredential: string | null): Promise<Server
 
   const bootstrapCredential = urlCredential ?? getDesktopBootstrapCredential();
   if (!bootstrapCredential) {
+    const origin = new URL(resolvePrimaryEnvironmentHttpUrl("/")).origin;
+    const recovered = await runRenewal(
+      SessionRenewal.SessionRenewal.pipe(
+        Effect.flatMap((renewal) => renewal.ensure(`cookie:${origin}`, origin)),
+        Effect.catchTags({
+          RenewalRejected: () => Effect.succeed({ _tag: "NotEnrolled" } as const),
+          ConnectionTransientError: () => Effect.succeed({ _tag: "Retryable" } as const),
+        }),
+      ),
+    );
+    if (recovered._tag === "Retryable") {
+      const retryAfterMs = startupRenewalRetryDelayMs;
+      startupRenewalRetryDelayMs = Math.min(retryAfterMs * 2, 5_000);
+      return { status: "retryable", retryAfterMs };
+    }
+    startupRenewalRetryDelayMs = 500;
+    if (recovered._tag === "Renewed" && (await fetchSessionState()).authenticated)
+      return { status: "authenticated" };
     return {
       status: "requires-auth",
       auth: currentSession.auth,
@@ -353,6 +417,7 @@ export async function resolveInitialServerAuthGateState(): Promise<ServerAuthGat
     explicitPairingRequested = true;
   }
   if (explicitPairingRequested) {
+    startupRenewalRetryDelayMs = 500;
     const currentSession = await fetchSessionState();
     return { status: "requires-auth", auth: currentSession.auth };
   }
@@ -382,6 +447,7 @@ export async function resolveInitialServerAuthGateState(): Promise<ServerAuthGat
   bootstrapPromise = nextPromise;
   return nextPromise
     .then((result) => {
+      if (result.status !== "retryable") startupRenewalRetryDelayMs = 500;
       if (bootstrapPromise === nextPromise && result.status === "authenticated") {
         resolvedAuthenticatedGateState = result;
       }
@@ -398,4 +464,5 @@ export function __resetServerAuthBootstrapForTests() {
   bootstrapPromise = null;
   resolvedAuthenticatedGateState = null;
   explicitPairingRequested = false;
+  startupRenewalRetryDelayMs = 500;
 }
