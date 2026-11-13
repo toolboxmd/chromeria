@@ -284,10 +284,10 @@ function makeHarness(options: HarnessOptions = {}) {
     ),
     Layer.provide(
       Layer.mergeAll(
+        layerOrchestrator,
         layerExternalServices,
         layerThreadManagement,
         layerReceipts,
-        layerOrchestrator,
         IdAllocator.layer,
       ),
     ),
