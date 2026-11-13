@@ -221,7 +221,11 @@ function resolveDeliveryIntent(
     if (canInterruptSteer(projection, targetId))
       return { type: "restart_active", targetRunId: targetId };
     const target = projection.runs.find((run) => run.id === targetId);
-    if (target?.status === "preparing" || target?.status === "starting")
+    // An explicit steer at a run still starting is deferred until the run is ready.
+    if (
+      deliveryIntent !== "steer" &&
+      (target?.status === "preparing" || target?.status === "starting")
+    )
       return { type: "queue_after_active" };
   }
   if (deliveryIntent === "steer") {

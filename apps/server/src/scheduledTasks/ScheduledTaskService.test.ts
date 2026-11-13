@@ -485,6 +485,7 @@ it.effect.each([
     yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const { task } = yield* service.upsert({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         id: ScheduledTaskId.make("task:quota"),
         title: "Quota bookkeeping",
         prompt: "Update the notes",
