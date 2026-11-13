@@ -365,6 +365,8 @@ interface ViewerState {
   readonly pause: () => Promise<void>;
   readonly resume: () => Promise<void>;
   scrolledAt: number;
+  /** Set once the viewer starts detaching; it can no longer receive a human claim. */
+  leaving: boolean;
 
   requestedSize: { width: number; height: number; order: number } | null;
 }
@@ -857,6 +859,14 @@ const make = Effect.gen(function* () {
         generation: tab.control.generation,
         dialog: dialogStatus(tab),
       });
+  };
+
+  /** A claim parked by a lost viewer goes to an operating viewer, which then offers Release control. */
+  const resumeHumanControl = (tab: ServerTab) => {
+    const viewer = [...tab.viewers].findLast(
+      (candidate) => candidate.canOperate && !candidate.leaving,
+    );
+    if (viewer && tab.control.resume(viewer.id)) pushFileChooser(tab);
   };
 
   const resolveDialog = async (tab: ServerTab, input: PreviewAutomationDialogInput) => {
@@ -3829,6 +3839,7 @@ const make = Effect.gen(function* () {
       },
       resume: () => startScreencast(screencastScale),
       scrolledAt: 0,
+      leaving: false,
       requestedSize: null,
     };
     yield* Effect.acquireRelease(
@@ -3840,6 +3851,7 @@ const make = Effect.gen(function* () {
       }),
       () =>
         Effect.promise(async () => {
+          viewer.leaving = true;
           // Terminal admission refusal retires control; transport loss retains it for reconnection.
           if (
             input.disconnectReason?.() === "inputOverload" &&
@@ -3848,6 +3860,7 @@ const make = Effect.gen(function* () {
             await tab.control.release(viewer.id, () => releaseViewerInput(viewer, session));
           else await tab.control.disconnect(viewer.id, () => releaseViewerInput(viewer, session));
           tab.viewers.delete(viewer);
+          resumeHumanControl(tab);
           broadcastControl(tab);
           reportLiveTabs();
         }),
@@ -3857,7 +3870,7 @@ const make = Effect.gen(function* () {
         try: () => tab.control.take(viewer.id, authorize),
         catch: (cause) => new ServerBrowserLaunchError({ cause }),
       });
-    }
+    } else resumeHumanControl(tab);
     broadcastControl(tab);
     pushFileChooser(tab);
     // Full scale: a scaled capture would flash in every other viewer.

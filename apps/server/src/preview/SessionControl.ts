@@ -275,6 +275,17 @@ export class SessionControl {
     }
   }
 
+  /**
+   * Hands a lost viewer's claim to another of the human's viewers so they can see and release it.
+   * The human never stopped controlling the tab, so the generation stays.
+   */
+  resume(viewerId: string) {
+    if (this.closed || this.owner !== DISCONNECTED_HUMAN) return false;
+    this.latestHuman = null;
+    this.owner = viewerId;
+    return true;
+  }
+
   async close() {
     if (!this.closed) {
       this.closed = true;

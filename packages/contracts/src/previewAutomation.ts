@@ -190,6 +190,7 @@ export const PreviewAutomationStatus = Schema.Struct({
   control: Schema.optional(
     Schema.Struct({
       owner: PreviewAutomationTabOwner,
+      /** The tab belongs to the caller's session, even while a human controls it (`owner: "human"`). */
       ownedByCaller: Schema.Boolean,
       generation: Schema.Number,
     }),
@@ -222,7 +223,7 @@ export const PreviewAutomationStatus = Schema.Struct({
       }),
     ),
   ),
-  /** Server hosts: all thread tabs are readable; actions require ownedByCaller or an unclaimed tab without human control. */
+  /** Server hosts: all thread tabs are readable. Actions need no human control, and an agent-owned tab must be ownedByCaller. */
   tabs: Schema.optional(
     Schema.Array(
       Schema.Struct({

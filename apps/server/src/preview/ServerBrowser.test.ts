@@ -3082,12 +3082,12 @@ it.live("an agent's tab stays human-controlled across viewer disconnects and pas
         .pipe(Effect.flip);
       expect(refused).toMatchObject({ reason: "humanControl" });
       expect((yield* status()).control).toMatchObject({ owner: "human", generation });
+      // Reopening the panel shows the human claim the agent is waiting on, so it can be released.
       const reconnected = yield* browser.attachViewer(viewerInput(tabId, true));
-      expect((yield* status()).control?.owner).toBe("human");
+      expect((yield* status()).control).toMatchObject({ owner: "human", generation });
       expect(yield* Queue.clear(reconnected.output)).toContainEqual(
-        expect.objectContaining({ _tag: "control", controller: "unclaimed", canOperate: true }),
+        expect.objectContaining({ _tag: "control", controller: "you", canOperate: true }),
       );
-      yield* reconnected.input({ type: "takeControl" });
       yield* reconnected.input({ type: "text", text: "human input" });
       yield* reconnected.input({ type: "releaseControl" });
       expect((yield* status()).control?.owner).toBe("agent");
@@ -3097,6 +3097,39 @@ it.live("an agent's tab stays human-controlled across viewer disconnects and pas
         operation: "navigate",
         input: { url: "https://example.com" },
       });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a human claim moves to the human's other open panel when its panel closes", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, broker, tabId } = yield* ready;
+      const status = () =>
+        broker.invoke<PreviewAutomationStatus>({ scope, tabId, operation: "status", input: {} });
+      // A thread switch can open the next panel before the previous one detaches.
+      const watcher = yield* browser.attachViewer(viewerInput(tabId, false));
+      const firstScope = yield* Scope.make();
+      const first = yield* browser
+        .attachViewer(viewerInput(tabId, true))
+        .pipe(Effect.provideService(Scope.Scope, firstScope));
+      yield* first.input({ type: "takeControl" });
+      const second = yield* browser.attachViewer(viewerInput(tabId, true));
+      expect(
+        (yield* Queue.takeAll(second.output)).findLast((item) => item._tag === "control"),
+      ).toMatchObject({ controller: "another-viewer" });
+      yield* Queue.clear(watcher.output);
+      yield* Scope.close(firstScope, Exit.void);
+      expect((yield* status()).control?.owner).toBe("human");
+      expect(
+        (yield* Queue.takeAll(second.output)).findLast((item) => item._tag === "control"),
+      ).toMatchObject({ controller: "you" });
+      // A read-only viewer never holds the claim; it only sees another viewer drive.
+      expect(
+        (yield* Queue.takeAll(watcher.output)).findLast((item) => item._tag === "control"),
+      ).toMatchObject({ controller: "another-viewer", canOperate: false });
+      yield* second.input({ type: "releaseControl" });
+      expect((yield* status()).control?.owner).toBe("agent");
     }),
   ).pipe(Effect.provide(layer)),
 );

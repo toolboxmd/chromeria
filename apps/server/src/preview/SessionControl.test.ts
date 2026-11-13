@@ -323,6 +323,28 @@ describe("SessionControl", () => {
     await expect(control.agent("agent", async () => "resumed")).resolves.toBe("resumed");
   });
 
+  it("hands only a disconnected human's claim to another viewer, keeping its generation", async () => {
+    const control = new SessionControl("agent");
+    expect(control.resume("viewer")).toBe(false);
+    await control.take("viewer");
+    expect(control.resume("other")).toBe(false);
+    await control.disconnect("viewer");
+    const generation = control.generation;
+    expect(control.resume("other")).toBe(true);
+    expect(control.controller).toBe("other");
+    expect(control.generation).toBe(generation);
+    await expect(control.human("viewer", async () => "stale")).rejects.toThrow(
+      "You do not control this browser tab.",
+    );
+    await expect(control.human("other", async () => "typed")).resolves.toBe("typed");
+    await control.release("other");
+    await expect(control.agent("agent", async () => "resumed")).resolves.toBe("resumed");
+    await control.take("viewer");
+    await control.disconnect("viewer");
+    await control.close();
+    expect(control.resume("other")).toBe(false);
+  });
+
   it("returns an action result before tracked navigation but drains it before already queued actions", async () => {
     const control = new SessionControl("agent");
     const committed = Promise.withResolvers<void>();
