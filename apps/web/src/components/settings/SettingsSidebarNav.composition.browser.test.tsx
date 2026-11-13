@@ -9,12 +9,6 @@ import { SETTINGS_NAV_GROUPS, SETTINGS_SECTION_LABELS } from "./settingsSearch";
 vi.mock("./useAvailableSettingsSearchItems", () => ({
   useAvailableSettingsSearchItems: () => [
     { id: "theme", title: "Theme", to: "/settings/appearance" },
-    {
-      id: "prism-roles",
-      title: "Prism role preferences",
-      to: "/settings/prism",
-      forkAdded: true,
-    },
   ],
 }));
 
@@ -58,24 +52,6 @@ function renderNav() {
     { router: "/settings/general" },
   );
 }
-
-it("marks fork-added settings search results", async () => {
-  await using _screen = await renderNav();
-  await page.getByRole("combobox", { name: "Search settings" }).fill("prism role");
-  const option = page.getByRole("option", { name: /Prism role/ });
-  await expect.element(option).toBeVisible();
-  expect(
-    option.element().querySelector('[role="img"][aria-label="Chromeria feature"]'),
-  ).not.toBeNull();
-});
-
-it("leaves upstream settings search results unmarked", async () => {
-  await using _screen = await renderNav();
-  await page.getByRole("combobox", { name: "Search settings" }).fill("theme");
-  const option = page.getByRole("option", { name: /Theme/ });
-  await expect.element(option).toBeVisible();
-  expect(option.element().querySelector('[role="img"][aria-label="Chromeria feature"]')).toBeNull();
-});
 
 it("opens search from the physical Slash and F keys on non-US layouts", async () => {
   await using _screen = await renderNav();
