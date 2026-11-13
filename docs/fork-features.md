@@ -3435,7 +3435,7 @@ sources and reasons.
   "id": "stacked-merge-worktree-cleanup",
   "purpose": "Merge cleanup removes a worktree whose pull request merged into a stack parent or other non-default base, when the PR names the worktree's exact head. Drop when upstream accepts merged stacked pull requests.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/197"],
-  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...fix/197-worktree-cleanup"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/688"],
   "newFiles": ["apps/server/src/fork/stackedMergeCleanup.ts"],
   "upstreamFiles": [],
   "sharedFiles": [
