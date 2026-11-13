@@ -6,6 +6,7 @@ import {
   type ProjectMutation,
   type ProjectSnapshot,
   ProjectId,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as Console from "effect/Console";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -594,7 +595,47 @@ const projectRenameCommand = Command.make("rename", {
   ),
 );
 
+const projectRestoreCommand = Command.make("restore", {
+  ...projectLocationFlags,
+  project: Argument.String("project-id").pipe(
+    Argument.withDescription("Id of the deleted project to restore."),
+  ),
+  threads: Flag.String("thread").pipe(
+    Flag.withDescription("Id of a deleted thread of the project to restore. Repeat for each."),
+    Flag.atLeast(0),
+  ),
+}).pipe(
+  Command.withDescription("Restore a deleted project and the listed threads."),
+  Command.withHandler((flags) =>
+    runProjectMutation(
+      flags,
+      Effect.fn("projectRestoreMutation")(function* ({
+        dispatch,
+      }: {
+        readonly dispatch: (
+          command: ProjectCliDispatchCommand,
+        ) => Effect.Effect<void, Error, FileSystem.FileSystem | HttpClient.HttpClient | Path.Path>;
+      }) {
+        const projectId = ProjectId.make(flags.project.trim());
+        const threadIds = [...new Set(flags.threads.map((id) => ThreadId.make(id.trim())))];
+        yield* dispatch({
+          type: "project.restore",
+          commandId: CommandId.make(yield* projectCommandUuid),
+          projectId,
+          threadIds,
+        });
+        return `Restored project ${projectId} with ${threadIds.length} thread(s).`;
+      }),
+    ),
+  ),
+);
+
 export const projectCommand = Command.make("project").pipe(
   Command.withDescription("Manage projects."),
-  Command.withSubcommands([projectAddCommand, projectRemoveCommand, projectRenameCommand]),
+  Command.withSubcommands([
+    projectAddCommand,
+    projectRemoveCommand,
+    projectRenameCommand,
+    projectRestoreCommand,
+  ]),
 );

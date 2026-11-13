@@ -255,6 +255,13 @@ export const make = Effect.gen(function* () {
           updatedAt: event.payload.deletedAt,
         }).pipe(mapError("apply"));
       }
+      if (event.type === "project.restored") {
+        return yield* upsertRow({
+          ...row,
+          deletedAt: null,
+          updatedAt: event.payload.restoredAt,
+        }).pipe(mapError("apply"));
+      }
       const payload = event.payload;
       yield* upsertRow({
         ...row,

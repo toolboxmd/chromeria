@@ -55,6 +55,12 @@ export interface ProjectDeleteInput {
   readonly force?: boolean;
 }
 
+export interface ProjectRestoreInput {
+  readonly commandId: CommandId;
+  readonly projectId: ProjectId;
+  readonly threadIds: ReadonlyArray<ThreadId>;
+}
+
 export class ProjectNotFoundError extends Schema.TaggedError<ProjectNotFoundError>()(
   "ProjectNotFoundError",
   { projectId: ProjectId },
@@ -105,6 +111,7 @@ export class ProjectOperationError extends Schema.TaggedError<ProjectOperationEr
       "list-projects",
       "list-threads",
       "delete-thread",
+      "restore-thread",
       "dispatch-project-command",
     ]),
     projectId: Schema.optional(ProjectId),
@@ -136,6 +143,8 @@ export class ProjectService extends Context.Service<
     >;
     readonly update: (input: ProjectUpdateInput) => Effect.Effect<Project, ProjectServiceError>;
     readonly delete: (input: ProjectDeleteInput) => Effect.Effect<Project, ProjectServiceError>;
+    /** Undeletes a project and the listed threads of it; a retry or an active project only restores what is still deleted. */
+    readonly restore: (input: ProjectRestoreInput) => Effect.Effect<Project, ProjectServiceError>;
     readonly getById: (
       projectId: ProjectId,
       options?: { readonly includeDeleted?: boolean },
@@ -566,6 +575,93 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  const restoreThread = Effect.fn("ProjectService.restoreThread")(function* (
+    input: ProjectRestoreInput,
+    threadId: ThreadId,
+  ) {
+    const { thread } = yield* threadProjections.getThreadRecords(threadId, []);
+    if (thread.deletedAt === null) return;
+    const commandId = CommandId.make(`${input.commandId}:restore-thread:${threadId}`);
+    const now = yield* DateTime.now;
+    const id = yield* idAllocator.allocate.event({ threadId, commandId });
+    // Lifecycle events carry the whole thread record, so every projector replays the undelete.
+    const committed = yield* eventSink.commitCommand({
+      commandId,
+      commandType: "thread.restore",
+      threadId,
+      acceptedAt: now,
+      events: [
+        {
+          id,
+          type: "thread.metadata-updated",
+          threadId,
+          providerInstanceId: thread.providerInstanceId,
+          occurredAt: now,
+          payload: { ...thread, deletedAt: null, updatedAt: now },
+        },
+      ],
+      effects: [],
+    });
+    if (committed.receipt.status === "rejected") {
+      return yield* Effect.fail(committed.receipt.error ?? "Thread restore was rejected.");
+    }
+  });
+
+  const restoreProject: ProjectService["Service"]["restore"] = Effect.fn("ProjectService.restore")(
+    function* (input) {
+      const { projectId } = input;
+      const existing = yield* readRow(projectId, { includeDeleted: true });
+      if (Option.isNone(existing)) {
+        return yield* new ProjectNotFoundError({ projectId });
+      }
+      // Check every thread first so a wrong id restores nothing.
+      yield* Effect.forEach(
+        input.threadIds,
+        (threadId) =>
+          threadProjections.getThreadRecords(threadId, []).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProjectOperationError({ operation: "restore-thread", projectId, cause }),
+            ),
+            Effect.flatMap(({ thread }) =>
+              thread.projectId === projectId
+                ? Effect.void
+                : Effect.fail(
+                    new ProjectInvalidError({
+                      projectId,
+                      detail: `Thread ${threadId} belongs to project ${thread.projectId}.`,
+                    }),
+                  ),
+            ),
+          ),
+        { discard: true },
+      );
+      if (existing.value.deletedAt !== null) {
+        yield* commit({
+          type: "project.restore",
+          commandId: input.commandId,
+          projectId,
+          workspaceRoot: existing.value.workspaceRoot,
+        });
+      }
+      yield* Effect.forEach(
+        input.threadIds,
+        (threadId) =>
+          threadCommands
+            .withLock(threadId, restoreThread(input, threadId))
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProjectOperationError({ operation: "restore-thread", projectId, cause }),
+              ),
+            ),
+        { concurrency: 1, discard: true },
+      );
+      yield* projectEnrichment.invalidate([existing.value.workspaceRoot]);
+      return yield* readCommitted(projectId);
+    },
+  );
+
   const enrichShell = (shell: OrchestrationProjectShell) =>
     projectEnrichment.getAvailable(shell.workspaceRoot).pipe(
       Effect.map((enrichment) => ({
@@ -641,6 +737,7 @@ export const make = Effect.gen(function* () {
     bootstrap,
     update,
     delete: deleteProject,
+    restore: restoreProject,
     getById,
     getByWorkspaceRoot,
     workspaceScanDirectory,

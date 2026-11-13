@@ -1397,48 +1397,115 @@ it.effect("an agent's clone is not cut off while git is still transferring", () 
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it.effect("deleting a project through MCP also discards its clone record", () =>
-  Effect.gen(function* () {
-    const discarded: Array<ProjectId> = [];
-    const harness = clientLaunchHarness({ runtimeModeCeiling: "full-access", launched: [] });
-    const dependencies = Layer.merge(
-      harness.dependencies,
-      Layer.mergeAll(
+it.effect(
+  "an agent deletes only a project where nothing but its own threads live, and discards the clone record",
+  () =>
+    Effect.gen(function* () {
+      const callerId = ThreadId.make("thread:caller");
+      const scratchId = ProjectId.make("project:scratch");
+      const sharedId = ProjectId.make("project:shared");
+      const ownId = ProjectId.make("project:own");
+      const shell = (
+        id: string,
+        options: { readonly parent?: ThreadId; readonly deleted?: true } = {},
+      ): OrchestrationV2ThreadShell => {
+        const base = liveThreadShell(ThreadId.make(id));
+        return {
+          ...base,
+          lineage: { ...base.lineage, parentThreadId: options.parent ?? null },
+          deletedAt: options.deleted ? base.createdAt : null,
+        };
+      };
+      const projectThreads: Record<string, ReadonlyArray<OrchestrationV2ThreadShell>> = {
+        [scratchId]: [],
+        // A probe's cleanup must not take a user's live thread with the shared project.
+        [sharedId]: [shell("thread:probe", { parent: callerId }), shell("thread:user")],
+        [ownId]: [
+          shell("thread:caller"),
+          shell("thread:child", { parent: callerId }),
+          shell("thread:gone", { deleted: true }),
+        ],
+      };
+      const deleted: Array<ProjectId> = [];
+      const discarded: Array<ProjectId> = [];
+      const dependencies = Layer.mergeAll(
+        ServerSettings.layerTest(),
+        NodeCrypto.layer,
+        Layer.succeed(McpInvocationContext.McpInvocationContext, {
+          environmentId: EnvironmentId.make("environment"),
+          requestNamespace: "session",
+          thread: {
+            threadId: callerId,
+            providerSessionId: "session",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+          },
+          client: undefined,
+          issuedAt: 0,
+          capabilities: new Set(["orchestration" as const]),
+        }),
+        Layer.mock(ThreadManagement.ThreadManagementService)({
+          getThreadShell: () => Effect.succeed(liveThreadShell(callerId)),
+          getShellSnapshot: (options) =>
+            Effect.succeed({
+              schemaVersion: 1,
+              snapshotSequence: 0,
+              threads: projectThreads[options?.projectId ?? ""] ?? [],
+              archivedThreads: [],
+            }),
+        }),
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+          namedProjectsRoot: "/projects",
+          isScratchProject: (projectId) => Effect.succeed(projectId === scratchId),
+        }),
         Layer.mock(Project.ProjectService)({
           delete: (input) =>
-            Effect.succeed({
-              id: input.projectId,
-              title: "client-target",
-              workspaceRoot: "/projects/client-target",
-              repositoryIdentity: null,
-              faviconPath: null,
-              defaultModelSelection: null,
-              defaultThreadEnvMode: null,
-              autoPull: false,
-              projectIcon: null,
-              scripts: [],
-              createdAt: "2026-01-01T00:00:00.000Z",
-              updatedAt: "2026-01-01T00:00:00.000Z",
-              deletedAt: "2026-01-01T00:00:00.000Z",
+            Effect.sync(() => {
+              deleted.push(input.projectId);
+              return {
+                id: input.projectId,
+                title: "own",
+                workspaceRoot: "/projects/own",
+                repositoryIdentity: null,
+                faviconPath: null,
+                defaultModelSelection: null,
+                defaultThreadEnvMode: null,
+                autoPull: false,
+                projectIcon: null,
+                scripts: [],
+                createdAt: "2026-01-01T00:00:00.000Z",
+                updatedAt: "2026-01-01T00:00:00.000Z",
+                deletedAt: "2026-01-01T00:00:00.000Z",
+              };
             }),
         }),
         Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({
           discard: (projectId) => Effect.sync(() => void discarded.push(projectId)),
         }),
-      ),
-    );
-    const toolkit = yield* ProjectToolkit.pipe(
-      Effect.provide(
-        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
-      ),
-    );
+      );
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      const remove = (projectId: ProjectId) =>
+        toolkit
+          .handle("t3_project_delete", { projectId, force: true })
+          .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
 
-    yield* toolkit
-      .handle("t3_project_delete", { projectId: harness.projectId })
-      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
-
-    expect(discarded).toEqual([harness.projectId]);
-  }),
+      expect((yield* remove(scratchId)).at(-1)?.result).toMatchObject({
+        code: "invalid_request",
+        message: expect.stringContaining("shared No project"),
+      });
+      expect((yield* remove(sharedId)).at(-1)?.result).toMatchObject({
+        code: "invalid_request",
+        message: expect.stringContaining("t3_thread_organize"),
+      });
+      expect((yield* remove(ownId)).at(-1)?.result).toMatchObject({ id: ownId });
+      expect(deleted).toEqual([ownId]);
+      expect(discarded).toEqual([ownId]);
+    }),
 );
 
 it.effect("an update the project refuses tells the agent why", () =>

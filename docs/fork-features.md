@@ -3462,3 +3462,36 @@ sources and reasons.
   "keywords": ["storageCleanupPullRequestMerged", "stack parent", "worktreeOnMerge"]
 }
 ```
+
+## project-restore-guard
+
+```json
+{
+  "id": "project-restore-guard",
+  "purpose": "Agents cannot delete the shared No project or a project holding threads they did not create, and a deleted project with chosen threads comes back through a project.restored event and thread record events that replay keeps. Drop when upstream guards agent project deletion and supports project restore.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/696"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...fix/696-restore-scratch-project"],
+  "newFiles": ["apps/server/src/fork/projectDeleteGuard.ts"],
+  "upstreamFiles": [
+    "apps/server/src/cli/project.ts",
+    "apps/server/src/orchestration-v2/ProjectCommands.ts",
+    "apps/server/src/orchestration-v2/ProjectStore.ts",
+    "apps/server/src/persistence/OrchestrationEventStore.ts",
+    "apps/server/src/project/ProjectMutation.test.ts",
+    "apps/server/src/project/ProjectMutation.ts",
+    "apps/server/src/project/ProjectService.deletion.test.ts",
+    "packages/contracts/src/applicationEvent.ts",
+    "packages/contracts/src/project.ts"
+  ],
+  "sharedFiles": [
+    "apps/server/src/mcp/toolkits/project/handlers.test.ts",
+    "apps/server/src/mcp/toolkits/project/handlers.ts",
+    "apps/server/src/mcp/toolkits/project/tools.ts",
+    "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+    "apps/server/src/project/ProjectService.ts",
+    "apps/server/src/relay/AgentAwarenessRelay.test.ts",
+    "packages/contracts/src/settings.ts"
+  ],
+  "keywords": ["project.restored", "project.restore", "assertAgentMayDeleteProject"]
+}
+```
