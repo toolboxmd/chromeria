@@ -45,6 +45,7 @@ it.effect("rejects a stale form save after deletion while preserving explicit-id
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const input = yield* decodeUpsertInput({
         purposeIntent: { version: 1, intent: { type: "unscoped" } },
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         id: "scheduled-task:edit-after-delete",
         title: "Review",
         prompt: "Review the open pull requests.",
@@ -58,6 +59,7 @@ it.effect("rejects a stale form save after deletion while preserving explicit-id
       });
       const created = yield* service.upsert(input);
       const edit = yield* decodeUpsertInput({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         purposeIntent: { version: 1, intent: { type: "unscoped" } },
         ...input,
         requireExisting: true,
@@ -106,6 +108,7 @@ it.effect("preserves a due run when a save only pads the scheduled hour", () =>
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const input = yield* decodeUpsertInput({
         purposeIntent: { version: 1, intent: { type: "unscoped" } },
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         commandId: "schedule-time-format",
         title: "Morning review",
         prompt: "Review the open pull requests.",
@@ -124,6 +127,7 @@ it.effect("preserves a due run when a save only pads the scheduled hour", () =>
 
       yield* TestClock.setTime(DateTime.toEpochMillis(dueAt) + 1_000);
       const update = yield* decodeUpsertInput({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         purposeIntent: { version: 1, intent: { type: "unscoped" } },
         ...input,
         id: created.task.id,
@@ -286,6 +290,7 @@ it.effect("keeps one queued occurrence of a recurring task while its bound threa
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const { task } = yield* service.upsert(
         yield* decodeUpsertInput({
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
           id: "scheduled-task:busy-thread",
           title: "Check progress",
           prompt: "Check progress",
@@ -341,6 +346,7 @@ it.effect("keeps one queued occurrence of a recurring task while its bound threa
       // A one-time task's only scheduled occurrence still sends behind a queued Run now.
       const { task: once } = yield* service.upsert(
         yield* decodeUpsertInput({
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
           id: "scheduled-task:busy-thread-once",
           title: "Check once",
           prompt: "Check once",
@@ -399,6 +405,7 @@ it.effect(
         // Its year-10000+ next run sorts first as text; it must not hide the task below.
         yield* service.upsert(
           yield* decodeUpsertInput({
+            purposeIntent: { version: 1, intent: { type: "unscoped" } },
             title: "Far future",
             purposeIntent: { version: 1, intent: { type: "unscoped" } },
             prompt: "Review the open pull requests.",
@@ -413,6 +420,7 @@ it.effect(
         );
         const created = yield* service.upsert(
           yield* decodeUpsertInput({
+            purposeIntent: { version: 1, intent: { type: "unscoped" } },
             title: "Idle poll",
             purposeIntent: { version: 1, intent: { type: "unscoped" } },
             prompt: "Review the open pull requests.",
@@ -481,6 +489,7 @@ it.effect("a fixed-time slot missed while the server was off shows on the task",
         const service = yield* ScheduledTaskService.ScheduledTaskService;
         const { task } = yield* service.upsert(
           yield* decodeUpsertInput({
+            purposeIntent: { version: 1, intent: { type: "unscoped" } },
             title: "Morning bookkeeping",
             prompt: "Update yesterday's notes.",
             enabled: true,
@@ -570,6 +579,7 @@ it.effect(
           const service = yield* ScheduledTaskService.ScheduledTaskService;
           const { task } = yield* service.upsert(
             yield* decodeUpsertInput({
+              purposeIntent: { version: 1, intent: { type: "unscoped" } },
               title,
               prompt: "Update the notes.",
               enabled: true,
