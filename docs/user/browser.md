@@ -58,11 +58,13 @@ of the vault item's URIs, so `www.example.com` covers `portal.example.com`.
 ## Work together
 
 On an agent tab, choose **Take control** before interacting with the page.
-The agent pauses its actions while you control it. Choose **Release control**
-to let the agent continue. Losing the connection does not return control to the
-agent. After reconnecting, take control again to continue or release it. If the
-browser rejects an input backlog, it ends that viewer's control. Wait for pending
-input to finish, then reconnect and take control again.
+Clicking inside the page does not take control. The agent pauses its actions
+while you control it. Choose **Release control** to let the agent continue.
+Losing the connection, closing the panel or switching threads does not return
+control to the agent. You keep control, and another open panel on that tab, or
+the next one you open, shows **Release control**. If the browser rejects an input backlog, it ends that
+viewer's control. Wait for pending input to finish, then reconnect and take
+control again.
 
 You can also open a tab yourself and tell the agent to “look at this”. Agents
 can read your tab, but cannot use the rbw login tool there when it is a native
