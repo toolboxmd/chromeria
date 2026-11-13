@@ -3468,7 +3468,7 @@ sources and reasons.
 ```json
 {
   "id": "project-restore-guard",
-  "purpose": "Agents cannot delete the shared No project or a project holding threads they did not create, and a deleted project with chosen threads comes back through a project.restored event and thread record events that replay keeps. Drop when upstream guards agent project deletion and supports project restore.",
+  "purpose": "Agents cannot delete the shared No project or a project holding threads they did not create, and a deleted project with chosen threads comes back through a project.restored event and thread record events that replay keeps; clients reopen a once-deleted thread from the server. Drop when upstream guards agent project deletion and supports project restore.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/696"],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/697"],
   "newFiles": ["apps/server/src/fork/projectDeleteGuard.ts"],
@@ -3480,6 +3480,8 @@ sources and reasons.
     "apps/server/src/project/ProjectMutation.test.ts",
     "apps/server/src/project/ProjectMutation.ts",
     "apps/server/src/project/ProjectService.deletion.test.ts",
+    "packages/client-runtime/src/state/threads-sync.test.ts",
+    "packages/client-runtime/src/state/threads.ts",
     "packages/contracts/src/applicationEvent.ts",
     "packages/contracts/src/project.ts"
   ],

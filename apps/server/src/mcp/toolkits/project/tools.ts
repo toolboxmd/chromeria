@@ -29,6 +29,7 @@ import {
   SourceControlCloneRepositoryResult,
 } from "@t3tools/contracts";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as DocumentText from "../../../provider/DocumentText.ts";
 import * as ServerConfig from "../../../config.ts";
 import * as ThreadLaunchService from "../../../orchestration-v2/ThreadLaunchService.ts";
@@ -115,6 +116,9 @@ const ProjectDeleteTool = Tool.make("t3_project_delete", {
     ...shared.dependencies,
     ProjectCloneTracker.ProjectCloneTracker,
     ManagedProjectFolders.ManagedProjectFolders,
+    FileSystem.FileSystem,
+    Path.Path,
+    ServerConfig.ServerConfig,
   ],
 }).annotate(Tool.Destructive, true);
 const ProjectCloneTool = Tool.make("t3_project_clone", {

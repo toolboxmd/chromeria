@@ -751,29 +751,45 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
-  it.effect("retains a deletion instead of restoring the old disk snapshot", () =>
-    Effect.gen(function* () {
-      const resumeCache: NonNullable<Parameters<typeof makeEnvironmentThreadState>[1]> = {
-        snapshot: undefined,
-        owner: undefined,
-      };
-      yield* Effect.scoped(
-        Effect.gen(function* () {
-          const first = yield* makeHarness({ cached: BASE_PROJECTION, resumeCache });
-          const update = deleted();
-          if (update.kind !== "event") return yield* Effect.die("Expected an event");
-          yield* Queue.offer(first.inputs, { ...update, sequence: 8 });
-          yield* awaitThreadState(first.observed, (value) => value.status === "deleted");
-        }),
-      );
-      const resumed = yield* makeHarness({ cached: BASE_PROJECTION, resumeCache });
-      const state = yield* awaitThreadState(
-        resumed.observed,
-        (value) => value.status === "deleted",
-      );
-      expect(Option.isNone(state.data)).toBe(true);
-      expect(yield* Ref.get(resumed.loaderCalls)).toBe(0);
-    }),
+  it.effect.each([
+    { label: "stays deleted", httpSnapshot: { _tag: "missing" as const }, status: "deleted" },
+    // A project restore undoes the deletion.
+    {
+      label: "shows a restored thread",
+      httpSnapshot: {
+        _tag: "present" as const,
+        snapshot: { snapshotSequence: CACHED_SNAPSHOT_SEQUENCE, projection: BASE_PROJECTION },
+      },
+      status: "live",
+    },
+  ])(
+    "a remount after a deletion asks the server, never the old disk snapshot: $label",
+    ({ httpSnapshot, status }) =>
+      Effect.gen(function* () {
+        const resumeCache: NonNullable<Parameters<typeof makeEnvironmentThreadState>[1]> = {
+          snapshot: undefined,
+          owner: undefined,
+        };
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const first = yield* makeHarness({ cached: BASE_PROJECTION, resumeCache });
+            const update = deleted();
+            if (update.kind !== "event") return yield* Effect.die("Expected an event");
+            yield* Queue.offer(first.inputs, { ...update, sequence: 8 });
+            yield* awaitThreadState(first.observed, (value) => value.status === "deleted");
+          }),
+        );
+        const resumed = yield* makeHarness({ cached: BASE_PROJECTION, resumeCache, httpSnapshot });
+        const seen: Array<EnvironmentThreadState> = [];
+        const state = yield* awaitThreadState(resumed.observed, (value) => {
+          seen.push(value);
+          return value.status === status;
+        });
+        expect(yield* Ref.get(resumed.loaderCalls)).toBe(1);
+        if (status === "deleted")
+          expect(seen.some((value) => Option.isSome(value.data))).toBe(false);
+        else expect(Option.getOrThrow(state.data)).toEqual(BASE_PROJECTION);
+      }),
   );
 
   it.effect("asks the server again after an HTTP miss, since the thread may not exist yet", () =>

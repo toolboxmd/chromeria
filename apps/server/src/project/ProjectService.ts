@@ -53,6 +53,8 @@ export interface ProjectDeleteInput {
   readonly commandId: CommandId;
   readonly projectId: ProjectId;
   readonly force?: boolean;
+  /** An agent may delete only the threads it is or started; a person may delete any. */
+  readonly requester?: { readonly kind: "agent"; readonly threadId: ThreadId | undefined };
 }
 
 export interface ProjectRestoreInput {
@@ -92,6 +94,15 @@ export class ProjectNotEmptyError extends Schema.TaggedError<ProjectNotEmptyErro
   }
 }
 
+export class ProjectHasOtherThreadsError extends Schema.TaggedError<ProjectHasOtherThreadsError>()(
+  "ProjectHasOtherThreadsError",
+  { projectId: ProjectId, threadCount: Schema.Number },
+) {
+  override get message(): string {
+    return `Project ${this.projectId} holds ${this.threadCount} thread(s) the requester did not create.`;
+  }
+}
+
 /** A change the project's rules refuse, such as an invalid script ID: the caller's input is wrong, nothing failed. */
 export class ProjectInvalidError extends Schema.TaggedError<ProjectInvalidError>()(
   "ProjectInvalidError",
@@ -128,6 +139,7 @@ export type ProjectServiceError =
   | ProjectNotFoundError
   | ProjectConflictError
   | ProjectNotEmptyError
+  | ProjectHasOtherThreadsError
   | ProjectInvalidError
   | ProjectOperationError;
 
@@ -524,6 +536,19 @@ export const make = Effect.gen(function* () {
     );
     if (projectThreads.length > 0 && input.force !== true) {
       return yield* new ProjectNotEmptyError({ projectId });
+    }
+    // Check the same snapshot the cascade deletes, so a thread added meanwhile is never taken.
+    const { requester } = input;
+    if (requester !== undefined) {
+      const others = projectThreads.filter(
+        (thread) =>
+          requester.threadId === undefined ||
+          (thread.id !== requester.threadId &&
+            thread.lineage.parentThreadId !== requester.threadId),
+      );
+      if (others.length > 0) {
+        return yield* new ProjectHasOtherThreadsError({ projectId, threadCount: others.length });
+      }
     }
     // Delete children durably before the project so a failed cascade can be retried.
     yield* Effect.forEach(

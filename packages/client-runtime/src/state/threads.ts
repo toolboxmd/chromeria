@@ -238,16 +238,19 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const wakeups = yield* Effect.serviceOption(ConnectionWakeups.ConnectionWakeups);
   const environmentId = supervisor.target.environmentId;
   const candidate = resumeCache?.snapshot;
+  // A project restore can undo a deletion, so a remount asks the server, never the stale disk copy.
+  const resumedDeletion = candidate?.state.status === "deleted";
   const retained =
-    candidate &&
-    Option.isSome(candidate.state.data) &&
-    hasMissingPendingQuestionCard(candidate.state.data.value)
+    resumedDeletion ||
+    (candidate &&
+      Option.isSome(candidate.state.data) &&
+      hasMissingPendingQuestionCard(candidate.state.data.value))
       ? undefined
       : candidate;
   const owner = {};
   if (resumeCache) resumeCache.owner = owner;
   const loaded =
-    retained === undefined
+    retained === undefined && !resumedDeletion
       ? yield* cache.loadThread(environmentId, threadId).pipe(
           Effect.catch((error) =>
             Effect.logWarning("Could not load cached thread.").pipe(
@@ -1198,7 +1201,7 @@ export function createEnvironmentThreadStateAtoms<R, E>(
           get.mount(resumeAtom);
           const resume = get.once(resumeAtom);
           const live = threadStateChanges(environmentId, threadId, resume);
-          return resume.snapshot === undefined
+          return resume.snapshot === undefined || resume.snapshot.state.status === "deleted"
             ? live
             : Stream.concat(Stream.succeed(cachedThreadState(resume.snapshot.state)), live);
         },

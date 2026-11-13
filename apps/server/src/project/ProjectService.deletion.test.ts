@@ -625,3 +625,73 @@ it.effect("restores a deleted project and chosen threads through events a replay
     }).pipe(Effect.provide(layerServices));
   }).pipe(Effect.provide(layerDatabase)),
 );
+
+it.effect(
+  "an agent's force delete refuses, from the cascade's own snapshot, threads it did not start",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("project:agent-delete");
+      const caller = ThreadId.make("thread:agent-caller");
+      const child = ThreadId.make("thread:agent-child");
+      const user = ThreadId.make("thread:user-owned");
+      yield* seedProject(projectId);
+      yield* TestClock.setTime(Date.parse("2026-11-13T19:22:20.000Z"));
+
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const service = yield* ProjectService.make;
+        const childCreated = nativeThreadCreated(projectId, child);
+        yield* eventSink.write({
+          events: [
+            nativeThreadCreated(projectId, caller),
+            {
+              ...childCreated,
+              payload: {
+                ...childCreated.payload,
+                lineage: {
+                  parentThreadId: caller,
+                  relationshipToParent: "subagent",
+                  rootThreadId: caller,
+                },
+              },
+            },
+            nativeThreadCreated(projectId, user),
+          ],
+        });
+        const countDeletions = sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS count FROM orchestration_events
+        WHERE event_type IN ('thread.deleted', 'project.deleted')
+      `.pipe(Effect.map((rows) => rows[0]?.count));
+        const requester = { kind: "agent" as const, threadId: caller };
+
+        const refused = yield* service
+          .delete({
+            commandId: CommandId.make("command:agent-delete"),
+            projectId,
+            force: true,
+            requester,
+          })
+          .pipe(Effect.flip);
+        assert.instanceOf(refused, ProjectService.ProjectHasOtherThreadsError);
+        assert.equal(yield* countDeletions, 0);
+        // An agent with no calling thread owns nothing here.
+        const anonymous = yield* service
+          .delete({
+            commandId: CommandId.make("command:anonymous-delete"),
+            projectId,
+            force: true,
+            requester: { kind: "agent", threadId: undefined },
+          })
+          .pipe(Effect.flip);
+        assert.instanceOf(anonymous, ProjectService.ProjectHasOtherThreadsError);
+        assert.equal(yield* countDeletions, 0);
+
+        // A person removes the user's thread; the agent may then delete its own project.
+        yield* service
+          .delete({ commandId: CommandId.make("command:person-delete"), projectId, force: true })
+          .pipe(Effect.asVoid);
+        assert.equal(yield* countDeletions, 4);
+      }).pipe(Effect.provide(layerServices));
+    }).pipe(Effect.provide(layerDatabase)),
+);

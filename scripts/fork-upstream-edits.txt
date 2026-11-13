@@ -707,3 +707,5 @@ apps/server/src/project/ProjectMutation.ts
 apps/server/src/project/ProjectService.deletion.test.ts
 packages/contracts/src/applicationEvent.ts
 packages/contracts/src/project.ts
+packages/client-runtime/src/state/threads-sync.test.ts
+packages/client-runtime/src/state/threads.ts

@@ -31,7 +31,10 @@ import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageInt
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import * as ProjectCloneTracker from "../../../project/ProjectCloneTracker.ts";
-import { assertAgentMayDeleteProject } from "../../../fork/projectDeleteGuard.ts";
+import {
+  agentProjectDeleteRequester,
+  agentThreadCleanup,
+} from "../../../fork/projectDeleteGuard.ts";
 import { mutateProjectWithClone } from "../../../project/ProjectMutation.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
@@ -90,7 +93,9 @@ function projectFailure(error: Project.ProjectServiceError) {
         ? "The project was not found."
         : error._tag === "ProjectConflictError"
           ? "The workspace is already registered to a project."
-          : "The project is not empty; force=true is required to delete it.";
+          : error._tag === "ProjectHasOtherThreadsError"
+            ? `${error.message} ${agentThreadCleanup}`
+            : "The project is not empty; force=true is required to delete it.";
   return new OrchestratorMcpFailure({ code: "invalid_request", message });
 }
 
@@ -577,10 +582,15 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   ),
   t3_project_delete: McpToolAccess.writesEnvironment((input) =>
     Effect.gen(function* () {
-      yield* assertAgentMayDeleteProject(input.projectId);
+      const requester = yield* agentProjectDeleteRequester(input.projectId);
       const projects = yield* Project.ProjectService;
       const clones = yield* ProjectCloneTracker.ProjectCloneTracker;
-      return yield* mutateProjectWithClone(projects, clones, {
+      const agentProjects = {
+        ...projects,
+        delete: (deletion: Project.ProjectDeleteInput) =>
+          projects.delete({ ...deletion, requester }),
+      };
+      return yield* mutateProjectWithClone(agentProjects, clones, {
         ...input,
         type: "project.delete",
         commandId: yield* newCommandId(),
