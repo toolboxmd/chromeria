@@ -399,8 +399,9 @@ function PreviewStreamDocumentView({
             {previewStreamControlLabel(control)}
           </AppText>
           {interactive && control?.canOperate ? (
-            <Pressable
-              accessibilityRole="button"
+            <Button
+              label={control.controller === "you" ? "Release control" : "Take control"}
+              tone="secondary"
               disabled={control.controller === "another-viewer"}
               onPress={() =>
                 command({ type: control.controller === "you" ? "releaseControl" : "takeControl" })
