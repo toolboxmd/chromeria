@@ -4,6 +4,9 @@ import {
   executionPurposeOf,
   OrchestratorMcpFailure,
   type PeerTaskLifecycleRequest,
+  type PeerSettledTasksRequest,
+  type PeerSettledTasksResult,
+  type NodeId,
   type OrchestrationV2Run,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2TurnItem,
@@ -45,6 +48,11 @@ export class PeerTaskLifecycle extends Context.Service<
       scope: Parameters<PeerAuthority.PeerAuthority["Service"]["verifyTask"]>[0],
       input: PeerTaskLifecycleRequest,
     ) => Effect.Effect<PeerTaskLifecycleResult, OrchestratorMcpFailure>;
+    /** Waits on many quiet jobs at once and names those with lifecycle activity since their snapshot. */
+    readonly settled: (
+      scope: Parameters<PeerAuthority.PeerAuthority["Service"]["verifyTask"]>[0],
+      input: PeerSettledTasksRequest,
+    ) => Effect.Effect<PeerSettledTasksResult, OrchestratorMcpFailure>;
   }
 >()("t3/peer/PeerTaskLifecycle") {}
 
@@ -773,7 +781,91 @@ const make = Effect.gen(function* () {
       ),
       Effect.mapError((error) => (error._tag === "OrchestratorMcpFailure" ? error : unavailable())),
     );
-  return PeerTaskLifecycle.of({ execute });
+  const settled: PeerTaskLifecycle["Service"]["settled"] = (scope, input) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        if (scope.client?.linked !== true)
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "An authenticated peer is required.",
+          });
+        const changes = yield* recovery.subscribe;
+        const through = yield* events.latestSequence();
+        const active = new Set<NodeId>();
+        const watched: Array<{ readonly taskId: NodeId; readonly threads: Set<string> }> = [];
+        for (const { pair, after, afterSnapshot } of input.tasks) {
+          const quietThreads = yield* Effect.gen(function* () {
+            yield* authority.verifyTask(scope, {
+              environmentId: input.environmentId,
+              generation: input.generation,
+              pair,
+              operation: { type: "observe", after: 0, wait: true },
+            });
+            // The same threads the job's snapshot sequence covers.
+            const threadsOfJob = new Set<string>([pair.childThreadId]);
+            const queue = [pair.childThreadId];
+            for (let index = 0; index < queue.length && threadsOfJob.size < 256; index++) {
+              const records = yield* threads.getThreadRecords(queue[index]!, ["subagents"]);
+              // Like `observe`, a retired descendant counts but its own work does not.
+              if (
+                index > 0 &&
+                (records.thread.archivedAt !== null || records.thread.deletedAt !== null)
+              )
+                continue;
+              for (const task of records.subagents) {
+                if (threadsOfJob.size >= 256) break;
+                if (task.childThreadId === null || threadsOfJob.has(task.childThreadId)) continue;
+                threadsOfJob.add(task.childThreadId);
+                queue.push(task.childThreadId);
+              }
+            }
+            // As `observe` would answer at once: a later root revision moves its cursor,
+            // and a later revision anywhere in the job moves its snapshot.
+            const later = yield* sql<{
+              sequence: number;
+            }>`SELECT sequence FROM orchestration_events WHERE stream_id IN ${sql.in([...threadsOfJob])} AND (sequence>${afterSnapshot} OR (stream_id=${pair.childThreadId} AND sequence>${after})) AND event_type IN ${sql.in(lifecycleTypes)} AND (event_type!='turn-item.updated' OR json_extract(payload_json,'$.type') IN ${sql.in(requestItemTypes)}) LIMIT 1`;
+            return later.length > 0 ? undefined : threadsOfJob;
+          }).pipe(
+            // A job that cannot be watched is named, so its own follower meets the refusal.
+            Effect.orElseSucceed(() => undefined),
+          );
+          if (quietThreads === undefined) active.add(pair.taskId);
+          else watched.push({ taskId: pair.taskId, threads: quietThreads });
+        }
+        if (active.size > 0 || watched.length === 0) return { active: [...active] };
+        const owners = (threadId: string) =>
+          watched.filter((job) => job.threads.has(threadId)).map((job) => job.taskId);
+        const woken = yield* threads.streamStoredEventsFrom({ afterSequence: through }).pipe(
+          Stream.filter(
+            (stored) =>
+              lifecycleTypeSet.has(stored.event.type) &&
+              (stored.event.type !== "turn-item.updated" ||
+                stored.event.payload.type === "user_input_request" ||
+                stored.event.payload.type === "approval_request") &&
+              owners(stored.event.threadId).length > 0,
+          ),
+          Stream.runHead,
+          Effect.map(Option.map((stored) => owners(stored.event.threadId))),
+          Effect.raceFirst(
+            changes.pipe(
+              Stream.filter((threadId) => owners(threadId).length > 0),
+              Stream.runHead,
+              Effect.map(Option.map(owners)),
+            ),
+          ),
+          Effect.timeoutOption("20 seconds"),
+        );
+        return { active: Option.isSome(woken) ? Option.getOrElse(woken.value, () => []) : [] };
+      }),
+    ).pipe(
+      Effect.tapError((error) =>
+        error._tag === "OrchestratorMcpFailure"
+          ? Effect.void
+          : Effect.logWarning("Settled delegated job watch failed", error),
+      ),
+      Effect.mapError((error) => (error._tag === "OrchestratorMcpFailure" ? error : unavailable())),
+    );
+  return PeerTaskLifecycle.of({ execute, settled });
 });
 export const layer = Layer.effect(PeerTaskLifecycle, make).pipe(
   Layer.provide(Layer.merge(Events.layer, Receipts.layer)),

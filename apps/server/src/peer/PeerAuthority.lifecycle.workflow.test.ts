@@ -89,6 +89,111 @@ import {
 
 const decodePeerTaskObservation = Schema.decodeUnknownEffect(PeerTaskObservation);
 
+/** Waits until the link's shared watch covers every task; a task holding a wait of its own fails it. */
+const sharedWatchOnly = (node: Node, taskIds: ReadonlyArray<NodeId>) => {
+  const uncovered = new Set<string>(taskIds);
+  return Effect.gen(function* () {
+    while (uncovered.size > 0)
+      for (const taskId of yield* Queue.take(node.settledWatches)) uncovered.delete(taskId);
+  }).pipe(
+    Effect.raceFirst(
+      Queue.take(node.quietWaitsHeld).pipe(
+        Effect.repeat({ until: (taskId) => taskIds.includes(NodeId.make(taskId)) }),
+        Effect.flatMap((taskId) => Effect.die(`Quiet job ${taskId} held a wait of its own.`)),
+      ),
+    ),
+  );
+};
+
+/** Starts and finishes a run sent straight to the child there, as a person there would. */
+const directWork = (node: Node, childId: ThreadId, label: string) =>
+  node.threads
+    .dispatch({
+      type: "message.dispatch",
+      threadId: childId,
+      commandId: CommandId.make(label),
+      messageId: MessageId.make(label),
+      text: "Later work",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "user",
+      creationSource: "web",
+    })
+    .pipe(Effect.andThen(finishLifecycleRun(node, childId, label)));
+
+const lifecycleServices = Layer.merge(
+  Layer.merge(NodeServices.layer, layerFixtureHostServices),
+  DocumentText.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
+);
+
+const quietJobs = Effect.fn("quietJobs")(function* (
+  name: string,
+  options: { readonly legacySettledWatch?: boolean } = {},
+) {
+  const b = yield* makeNode(descriptorOf(`${name}-b`, "B", { peerAuthority: 1 }));
+  const a = yield* makeNode(
+    descriptorOf(`${name}-a`, "A", { peerAuthority: 1 }),
+    "memory",
+    options,
+  );
+  yield* linkTo(a.links, b, "full-access");
+  const parentId = ThreadId.make(`${name}-parent`);
+  yield* seedParent(a, parentId);
+  const recorded = (
+    taskId: NodeId,
+    predicate: (task: import("@t3tools/contracts").OrchestrationV2Subagent) => boolean,
+  ) =>
+    a.orchestrator
+      .streamStoredEventsFrom({
+        threadId: parentId,
+        afterSequence: 0,
+        eventType: "subagent.updated",
+      })
+      .pipe(
+        Stream.filter(
+          (stored) =>
+            stored.event.type === "subagent.updated" &&
+            stored.event.payload.id === taskId &&
+            predicate(stored.event.payload),
+        ),
+        Stream.runHead,
+        Effect.flatMap(Effect.fromOption),
+      );
+  /** Reads the job's result as its parent would, so its delivery stops holding later ones back. */
+  const read = Effect.fn("quietJobs.read")(function* (taskId: NodeId) {
+    const status = yield* nativeCall(a, parentId, "task_status", { taskId });
+    expect(status.isError, json(status.content)).not.toBe(true);
+    const task = (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
+      (candidate) => candidate.id === taskId,
+    );
+    expect(["pending", "claimed"]).not.toContain(task?.completionDelivery?.state);
+  });
+  /** Delegates a job, lets its first run finish there and reads its result. */
+  const finished = Effect.fn("quietJobs.finished")(function* (label: string) {
+    const receipt = yield* nativeCall(a, parentId, "delegate_task", {
+      task: `Job ${label}`,
+      target: {
+        environmentId: b.environmentId,
+        projectId: b.project.id,
+        providerInstanceId: instanceId,
+        model: selection.model,
+      },
+      clientRequestId: label,
+    });
+    const { taskId } = yield* decodeTaskReceipt(receipt.structuredContent);
+    const childId = yield* attachedChild(a, parentId, taskId);
+    yield* finishLifecycleRun(b, childId, label);
+    yield* recorded(
+      taskId,
+      (task) =>
+        task.result === label && task.remoteChild?.snapshot?.workState === "result_available",
+    );
+    yield* read(taskId);
+    return { taskId, childId };
+  });
+  return { a, b, parentId, recorded, read, finished };
+});
+
 it.live(
   "lifecycle381: registered original plus two continuations retain exact results and replay after source restart",
   () =>
@@ -565,7 +670,7 @@ it.live("lifecycle381: a stopped job with new work there is not held back by fin
           task.remoteChild.snapshot !== undefined &&
           task.remoteChild.snapshot.workState !== "result_available",
       );
-      // As many finished jobs as there are settled permits, each holding its wait.
+      // Finished and read jobs, which share one watch there instead of holding permits.
       const finished: Array<NodeId> = [];
       for (let n = 0; n < 8; n++) {
         const taskId = yield* delegate(`finished-${n}`);
@@ -576,13 +681,14 @@ it.live("lifecycle381: a stopped job with new work there is not held back by fin
             task.result === `finished-${n}` &&
             task.remoteChild?.snapshot?.workState === "result_available",
         );
+        yield* nativeCall(a, parentId, "task_status", { taskId });
         finished.push(taskId);
       }
       yield* Ref.set(a.quietWaits, new Set(finished));
       yield* a.stopConnections;
       const reconnected = yield* a.reconnect();
       yield* Context.get(reconnected.services, RemoteDelegation.RemoteDelegation).start();
-      yield* Effect.forEach(finished, () => Queue.take(a.quietWaitsHeld), { discard: true });
+      yield* sharedWatchOnly(a, finished);
       yield* finishLifecycleRun(b, childId, "restarted-later-result");
       yield* recorded(
         stoppedId,
@@ -599,6 +705,123 @@ it.live("lifecycle381: a stopped job with new work there is not held back by fin
       ),
     ),
   ),
+);
+
+it.live(
+  "lifecycle593: a quiet job holds no wait of its own, yet direct work, a follow-up and a Stop there still reach it",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parentId, recorded, read, finished } = yield* quietJobs("watch");
+        const { taskId, childId } = yield* finished("watch-first");
+        yield* Ref.set(a.quietWaits, new Set([taskId]));
+        yield* sharedWatchOnly(a, [taskId]);
+        yield* Ref.set(a.quietWaits, new Set());
+        const rejoined = Queue.clear(a.settledWatches).pipe(
+          Effect.andThen(sharedWatchOnly(a, [taskId])),
+        );
+        const settledCursor = (yield* a.threads.getThreadRecords(parentId, [
+          "subagents",
+        ])).subagents.find((task) => task.id === taskId)!.remoteChild!.cursor!;
+
+        // A monitor message sent straight to the child there.
+        yield* b.threads.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("watch-monitor"),
+          threadId: childId,
+          messageId: MessageId.make("watch-monitor"),
+          text: "Monitor bookkeeping",
+          attachments: [],
+          notification: {
+            source: { kind: "monitor" },
+            outcome: "updated",
+            summary: "Monitor bookkeeping",
+          },
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "agent",
+          creationSource: "server",
+        });
+        yield* finishLifecycleRun(b, childId, "watch-monitor");
+        // The monitor run yields no result; its end still moves the observed cursor.
+        yield* recorded(taskId, (task) => (task.remoteChild?.cursor ?? 0) > settledCursor);
+        yield* rejoined;
+
+        // A follow-up forwarded through the link.
+        const sent = yield* nativeCall(a, parentId, "t3_thread_send", {
+          environmentId: b.environmentId,
+          threadId: childId,
+          message: "Continue",
+          clientRequestId: "watch-follow-up",
+        });
+        expect(sent.isError, json(sent.content)).not.toBe(true);
+        yield* finishLifecycleRun(b, childId, "watch-follow-up");
+        yield* recorded(
+          taskId,
+          (task) => task.remoteChild?.latestResult?.text === "watch-follow-up",
+        );
+        yield* read(taskId);
+        yield* rejoined;
+
+        // A later Stop.
+        const cancelled = yield* nativeCall(a, parentId, "task_cancel", {
+          taskId,
+          clientRequestId: "watch-stop",
+        });
+        expect(cancelled.isError, json(cancelled.content)).not.toBe(true);
+        yield* recorded(taskId, (task) => task.remoteChild?.stop?.state === "acknowledged");
+      }),
+    ).pipe(Effect.provide(lifecycleServices)),
+);
+
+it.live(
+  "lifecycle593: restart puts quiet jobs back on the shared watch, not on waits of their own",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, recorded, finished } = yield* quietJobs("restart-watch");
+        const jobs = [
+          yield* finished("restart-watch-0"),
+          yield* finished("restart-watch-1"),
+          yield* finished("restart-watch-2"),
+        ];
+        const taskIds = jobs.map((job) => job.taskId);
+        yield* Ref.set(a.quietWaits, new Set(taskIds));
+        yield* a.stopConnections;
+        yield* Queue.clear(a.settledWatches);
+        const reconnected = yield* a.reconnect();
+        yield* Context.get(reconnected.services, RemoteDelegation.RemoteDelegation).start();
+        yield* sharedWatchOnly(a, taskIds);
+        yield* Ref.set(a.quietWaits, new Set());
+        yield* directWork(b, jobs[1]!.childId, "restart-watch-later");
+        yield* recorded(
+          jobs[1]!.taskId,
+          (task) => task.remoteChild?.latestResult?.text === "restart-watch-later",
+        );
+      }),
+    ).pipe(Effect.provide(lifecycleServices)),
+);
+
+it.live(
+  "lifecycle593: a destination without the shared watch keeps following quiet jobs one by one",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, recorded, finished } = yield* quietJobs("legacy-watch", {
+          legacySettledWatch: true,
+        });
+        const { taskId, childId } = yield* finished("legacy-watch-first");
+        yield* Queue.take(a.settledWatches).pipe(
+          Effect.repeat({ until: (watched) => watched.includes(taskId) }),
+        );
+        yield* directWork(b, childId, "legacy-watch-later");
+        yield* recorded(
+          taskId,
+          (task) => task.remoteChild?.latestResult?.text === "legacy-watch-later",
+        );
+        // One refused attempt; the job then followed on its own instead of asking again.
+        expect(yield* Queue.size(a.settledWatches)).toBe(0);
+      }),
+    ).pipe(Effect.provide(lifecycleServices)),
 );
 
 it.live(

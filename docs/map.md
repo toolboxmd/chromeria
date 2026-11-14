@@ -102,7 +102,7 @@ flowchart TD
     %% PGR: #380
     XM --> PGR
     RTL["Remote delegated task lifecycle"]
-    %% RTL: #381 PR #392 PR #582 PR #641
+    %% RTL: #381 PR #392 PR #582 PR #641 PR #703
     PGR --> RTL
     DNC["Destination child discovery"]
     %% DNC: PR #546 #379 #386

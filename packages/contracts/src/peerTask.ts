@@ -165,6 +165,20 @@ export const PeerTaskLifecycleResult = Schema.Union([
   Schema.Struct({ type: Schema.Literal("view"), view: PeerTaskView }),
 ]);
 export type PeerTaskLifecycleResult = typeof PeerTaskLifecycleResult.Type;
+/**
+ * Jobs that are quiet on the destination, watched together instead of one long-poll each.
+ * The destination names those an `observe` with the same `after` and `afterSnapshot` would answer.
+ */
+export const PeerSettledTasksRequest = Schema.Struct({
+  environmentId: EnvironmentId,
+  generation: Schema.String,
+  tasks: Schema.Array(
+    Schema.Struct({ pair: PeerReturnPair, after: NonNegativeInt, afterSnapshot: NonNegativeInt }),
+  ).check(Schema.isMaxLength(256)),
+});
+export type PeerSettledTasksRequest = typeof PeerSettledTasksRequest.Type;
+export const PeerSettledTasksResult = Schema.Struct({ active: Schema.Array(NodeId) });
+export type PeerSettledTasksResult = typeof PeerSettledTasksResult.Type;
 
 /** A request remains owned by its destination; routes name only actual delegated children. */
 export const PendingRequestTarget = Schema.Struct({
