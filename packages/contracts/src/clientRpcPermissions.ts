@@ -1,3 +1,6 @@
+import { DeviceViewerOpenInput } from "./device.ts";
+import { PreviewViewerOpenInput } from "./preview.ts";
+import { PROMACHOS_HOME_WS_METHODS } from "./promachosHome.ts";
 import * as Schema from "effect/Schema";
 import { GitPreparePullRequestThreadInput, GitRunStackedActionInput } from "./git.ts";
 import {
@@ -13,6 +16,8 @@ import {
   type AuthEnvironmentScope,
 } from "./auth.ts";
 import { ORCHESTRATION_V2_WS_METHODS } from "./orchestrationV2.ts";
+import { ISSUE_WS_METHODS } from "./issues.ts";
+import { SPECTRUM_WS_METHODS } from "./spectrumRpc.ts";
 import { WS_METHODS } from "./rpc.ts";
 
 /** Incremental client enforcement; the server still authorizes every request. */
@@ -21,6 +26,13 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.previewClose]: AuthPreviewOperateScope,
   // Stopping a server signals its processes, as closing a terminal does.
   [WS_METHODS.previewStopLocalServer]: AuthTerminalOperateScope,
+  [WS_METHODS.deviceViewerOpen]: AuthOrchestrationReadScope,
+  [WS_METHODS.deviceViewerClose]: AuthOrchestrationReadScope,
+  [WS_METHODS.previewViewerOpen]: AuthOrchestrationReadScope,
+  [WS_METHODS.previewViewerClose]: AuthOrchestrationReadScope,
+  [WS_METHODS.remoteTaskRequest]: AuthOrchestrationOperateScope,
+  [WS_METHODS.remoteTaskStop]: AuthOrchestrationOperateScope,
+  [WS_METHODS.peerGrantsUpdate]: AuthAccessWriteScope,
   [WS_METHODS.serverRunStorageCleanup]: AuthSettingsWriteScope,
   // Restarts the server, as an update does.
   [WS_METHODS.serverReclaimDatabaseSpace]: AuthEnvironmentMaintainScope,
@@ -29,6 +41,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   // Listing models spends the stored API key, so only those who can choose a model may.
   [WS_METHODS.serverListTextGeneratorModels]: AuthSettingsWriteScope,
   [WS_METHODS.serverRefreshProviders]: AuthOrchestrationReadScope,
+  [PROMACHOS_HOME_WS_METHODS.create]: AuthOrchestrationOperateScope,
   [WS_METHODS.pullRequestsRunAction]: AuthSourceControlWriteScope,
   [WS_METHODS.pullRequestsUpdate]: AuthSourceControlWriteScope,
   [WS_METHODS.pullRequestsComment]: AuthSourceControlWriteScope,
@@ -43,6 +56,9 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   // Writing a guide runs a model on this environment's providers, which reading one does not.
   [WS_METHODS.pullRequestsGenerateReviewGuide]: AuthOrchestrationOperateScope,
   [WS_METHODS.projectsCreateFromThread]: AuthOrchestrationOperateScope,
+  // Fork: GitHub Issues (toolboxmd/t3code#27).
+  [ISSUE_WS_METHODS.issuesComment]: AuthSourceControlWriteScope,
+  [ISSUE_WS_METHODS.issuesSetState]: AuthSourceControlWriteScope,
   [WS_METHODS.sourceControlCloneRepository]: AuthSourceControlWriteScope,
   [WS_METHODS.sourceControlPublishRepository]: AuthSourceControlWriteScope,
   [WS_METHODS.sourceControlStar]: AuthSourceControlWriteScope,
@@ -78,9 +94,14 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.peerLinksUnlink]: AuthAccessWriteScope,
   // A link lets every agent here reach the other environment: Settings' bar.
   [WS_METHODS.peerLinksAnswerRequest]: AuthAccessWriteScope,
+  // Fork: Spectrum report abandonment (toolboxmd/chromeria#176).
+  [SPECTRUM_WS_METHODS.abandonReport]: AuthOrchestrationOperateScope,
+  [SPECTRUM_WS_METHODS.stop]: AuthOrchestrationOperateScope,
 } as const;
 export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 
+const isPreviewViewerOpenInput = Schema.is(PreviewViewerOpenInput);
+const isDeviceViewerOpenInput = Schema.is(DeviceViewerOpenInput);
 const decodePrepareThread = Schema.decodeUnknownSync(GitPreparePullRequestThreadInput);
 const decodeStackedAction = Schema.decodeUnknownSync(GitRunStackedActionInput);
 
@@ -88,6 +109,18 @@ export function clientRpcRequiredScopes(
   method: string,
   input: unknown,
 ): readonly AuthEnvironmentScope[] {
+  if (
+    method === WS_METHODS.previewViewerOpen &&
+    isPreviewViewerOpenInput(input) &&
+    input.operation === "control"
+  )
+    return [AuthOrchestrationReadScope, AuthPreviewOperateScope];
+  if (
+    method === WS_METHODS.deviceViewerOpen &&
+    isDeviceViewerOpenInput(input) &&
+    input.operation === "control"
+  )
+    return [AuthOrchestrationReadScope, AuthOrchestrationOperateScope];
   if (method === WS_METHODS.gitPreparePullRequestThread && input !== undefined) {
     const payload = decodePrepareThread(input);
     if (payload.mode === "worktree" && payload.threadId !== undefined)
