@@ -87,6 +87,7 @@ apps/server/src/policy/managedSettings.ts
 apps/server/src/vcs/GitVcsDriverCore.test.ts
 apps/server/src/ws.ts
 apps/web/index.html
+apps/web/public/manifest.webmanifest
 apps/web/src/branding.ts
 apps/web/src/bundledDev.test.ts
 apps/web/src/components/ChatMarkdown.tsx
