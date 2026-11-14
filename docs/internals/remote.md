@@ -138,6 +138,10 @@ that thread and completes the task with `delegated_task.remote.complete`. That
 internal command reuses the parent half of a local finalize, so the parent
 wakes the same way. Open remote tasks are followed again at startup, which is
 also what keeps restart recovery from treating them as abandoned provider work.
+A job that is quiet there gives up its own wait and joins one shared wait per
+link generation, and the destination names the jobs that became active again,
+whether through a follow-up, a Stop or input sent there directly. A destination
+without that route answers 404, and its quiet jobs keep one follower each.
 
 The link is routing, not isolation: an agent the link starts runs as the
 receiving environment's user. **A full-access link is therefore not fenced**:

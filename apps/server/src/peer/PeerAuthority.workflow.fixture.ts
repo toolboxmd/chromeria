@@ -511,6 +511,7 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
       viewerSocketOwner = false,
       legacyDeviceDomain = false,
       legacyAutomationPeer = false,
+      legacySettledWatch = false,
       captureReplyTransform,
       captureReplyGate,
       htmlImageReadGate,
@@ -531,6 +532,8 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
       readonly viewerSocketOwner?: boolean;
       readonly legacyDeviceDomain?: boolean;
       readonly legacyAutomationPeer?: boolean;
+      /** Peers answer the shared quiet-job watch as a destination from before it existed. */
+      readonly legacySettledWatch?: boolean;
       readonly captureReplyGate?: Effect.Effect<void>;
       readonly htmlImageReadGate?: Effect.Effect<void>;
       readonly captureReplyTransform?: (
@@ -927,6 +930,8 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
       const quietWaits = yield* Ref.make<ReadonlySet<string>>(new Set());
       /** Each task whose waiting observation started to hang. */
       const quietWaitsHeld = yield* Queue.unbounded<string>();
+      /** The tasks each shared quiet-job watch named. */
+      const settledWatches = yield* Queue.unbounded<ReadonlyArray<string>>();
       const resultPageStarted = yield* Deferred.make<void>();
       const releaseResultPage = yield* Deferred.make<void>();
       const faultablePeers = Layer.effect(
@@ -964,6 +969,11 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
           return {
             ...peers,
             call,
+            settledTasks: (...args: Parameters<NonNullable<typeof peers.settledTasks>>) =>
+              Queue.offer(
+                settledWatches,
+                args[2].map(({ pair }) => pair.taskId),
+              ).pipe(Effect.andThen(peers.settledTasks!(...args))),
             taskLifecycle: Effect.fn("PeerAuthorityFixture.taskLifecycle")(function* (
               ...args: Parameters<NonNullable<typeof peers.taskLifecycle>>
             ) {
@@ -1003,6 +1013,7 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
       const peerHttp =
         remoteSecrets ||
         legacyAutomationPeer ||
+        legacySettledWatch ||
         captureReplyTransform !== undefined ||
         captureReplyGate !== undefined
           ? Layer.effect(
@@ -1048,6 +1059,13 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
                     );
                   }),
                   (effect, request) => {
+                    if (
+                      legacySettledWatch &&
+                      request.url.endsWith("/mcp/peer-control/tasks/settled")
+                    )
+                      return Effect.succeed(
+                        HttpClientResponse.fromWeb(request, new Response(null, { status: 404 })),
+                      );
                     if (
                       !request.url.endsWith("/mcp/peer-control") ||
                       request.body._tag !== "Uint8Array"
@@ -2422,6 +2440,7 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
         holdResultPage,
         quietWaits,
         quietWaitsHeld,
+        settledWatches,
         resultPageStarted,
         releaseResultPage,
         reopenDatabase,
