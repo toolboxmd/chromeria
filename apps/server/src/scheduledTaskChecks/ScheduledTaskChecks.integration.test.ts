@@ -1763,3 +1763,56 @@ it.effect(
       }).pipe(Effect.provide(runtime(database)), Effect.scoped);
     }).pipe(Effect.scoped),
 );
+
+it.effect(
+  "an update without a purpose keeps the purpose saved after the caller read the task",
+  () =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      yield* TestClock.setTime(Date.parse(CANONICAL));
+      yield* Effect.gen(function* () {
+        yield* createThread;
+        const checks = yield* ScheduledTaskChecks.ScheduledTaskChecks;
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const purpose = (number: number) =>
+          ({
+            version: 1,
+            intent: {
+              type: "reference",
+              reference: {
+                host: "github.com",
+                repository: "toolboxmd/chromeria",
+                kind: "issue",
+                number,
+              },
+            },
+          }) as const;
+        const base = {
+          title: "Checked work",
+          prompt: "Do the scheduled work",
+          enabled: false,
+          projectId,
+          threadId: null,
+          workspaceStrategy: { type: "root" as const },
+          modelSelection: selection,
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+          schedule: { type: "interval" as const, everyMs: 3_600_000 },
+        };
+        const { task: stale } = yield* service.upsert({ ...base, purposeIntent: purpose(1) });
+        // Another caller moves the task to a new purpose after this caller read it.
+        yield* service.upsert({ ...base, id: stale.id, purposeIntent: purpose(2) });
+        const { task } = yield* checks.update(
+          {
+            input: { scheduledTaskId: stale.id, prompt: "Do the new work" },
+            existing: stale,
+            threadId: null,
+            parent: undefined,
+          },
+          service.upsert,
+        )({ ...base, id: stale.id, purposeIntent: stale.purposeIntent, prompt: "Do the new work" });
+        assert.equal(task.prompt, "Do the new work");
+        assert.deepEqual(task.purposeIntent, purpose(2));
+      }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+    }).pipe(Effect.scoped),
+);
