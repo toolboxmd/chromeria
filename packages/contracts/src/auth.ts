@@ -3,6 +3,7 @@ import * as HttpApiSchema from "effect/http-api/HttpApiSchema";
 
 import {
   AuthSessionId,
+  ProjectId,
   ForwardCompatibleArray,
   ClientSurface,
   ClientWebDeployment,
@@ -33,6 +34,7 @@ export const AuthOrchestrationOperateScope = "orchestration:operate" as const;
 export const AuthSettingsWriteScope = "settings:write" as const;
 export const AuthProvidersManageScope = "providers:manage" as const;
 export const AuthEnvironmentMaintainScope = "environment:maintain" as const;
+export const AuthCookieMirrorWriteScope = "preview:mirror-cookies" as const;
 export const AuthPreviewOperateScope = "preview:operate" as const;
 export const AuthDiagnosticsReadScope = "diagnostics:read" as const;
 export const AuthTerminalReadScope = "terminal:read" as const;
@@ -53,6 +55,7 @@ export const AuthEnvironmentScope = Schema.Literals([
   AuthProvidersManageScope,
   AuthEnvironmentMaintainScope,
   AuthPreviewOperateScope,
+  AuthCookieMirrorWriteScope,
   AuthDiagnosticsReadScope,
   AuthTerminalReadScope,
   AuthTerminalOperateScope,
@@ -112,7 +115,10 @@ const legacyParents: Partial<Record<AuthEnvironmentScope, AuthEnvironmentScope>>
 /** Keep permission denials decodable by clients with the original scope enum. */
 export function authScopeRequiredResponse(requiredPermission: AuthEnvironmentScope) {
   return {
-    requiredScope: legacyParents[requiredPermission] ?? requiredPermission,
+    requiredScope:
+      requiredPermission === AuthCookieMirrorWriteScope
+        ? AuthAccessWriteScope
+        : (legacyParents[requiredPermission] ?? requiredPermission),
     requiredPermission,
   };
 }
@@ -182,8 +188,31 @@ export const ServerAuthDescriptor = Schema.Struct({
 });
 export type ServerAuthDescriptor = typeof ServerAuthDescriptor.Type;
 
+export const AuthRenewalCommitment = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
+export const AuthRenewalSecret = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{43}$/));
+export const AuthSessionRenewRequest = Schema.Struct({
+  secret: AuthRenewalSecret,
+  next: AuthRenewalCommitment,
+});
+export const AuthSessionRenewResult = Schema.Struct({
+  outcome: Schema.Literals(["current", "rotated"]),
+  generation: Schema.Int,
+  expiresAt: Schema.Number,
+  renewAfter: Schema.Number,
+  serverTime: Schema.optionalKey(Schema.Number),
+  accessToken: Schema.optionalKey(TrimmedNonEmptyString),
+});
+export type AuthSessionRenewResult = typeof AuthSessionRenewResult.Type;
+export const AuthRenewalEnrollmentRequest = Schema.Struct({ next: AuthRenewalCommitment });
+export const AuthRenewalEnrollmentResult = Schema.Struct({
+  enrollmentId: TrimmedNonEmptyString,
+  fingerprint: TrimmedNonEmptyString,
+  state: Schema.Literals(["pending_approval", "approved"]),
+});
+
 export const AuthBrowserSessionRequest = Schema.Struct({
   credential: TrimmedNonEmptyString,
+  renewal_commitment: Schema.optionalKey(AuthRenewalCommitment),
 });
 export type AuthBrowserSessionRequest = typeof AuthBrowserSessionRequest.Type;
 
@@ -192,6 +221,7 @@ export const AuthBrowserSessionResult = Schema.Struct({
   ...authScopeResponseFields,
   sessionMethod: ServerAuthSessionMethod,
   expiresAt: Schema.DateTimeUtc,
+  renewAfter: Schema.optionalKey(Schema.Number),
 });
 export type AuthBrowserSessionResult = typeof AuthBrowserSessionResult.Type;
 
@@ -226,6 +256,7 @@ export const AuthTokenExchangeRequest = Schema.Struct({
   client_label: Schema.optionalKey(TrimmedNonEmptyString),
   client_device_type: Schema.optionalKey(AuthClientMetadataDeviceType),
   client_os: Schema.optionalKey(TrimmedNonEmptyString),
+  renewal_commitment: Schema.optionalKey(AuthRenewalCommitment),
 }).pipe(HttpApiSchema.asFormUrlEncoded());
 export type AuthTokenExchangeRequest = typeof AuthTokenExchangeRequest.Type;
 
@@ -235,6 +266,7 @@ export const AuthAccessTokenResult = Schema.Struct({
   token_type: Schema.Literals(["Bearer", "DPoP"]),
   expires_in: Schema.Number,
   scope: TrimmedNonEmptyString,
+  renewAfter: Schema.optionalKey(Schema.Number),
 });
 export type AuthAccessTokenResult = typeof AuthAccessTokenResult.Type;
 
@@ -342,6 +374,7 @@ export const AuthClientMetadata = Schema.Struct({
 export type AuthClientMetadata = typeof AuthClientMetadata.Type;
 
 export const AuthClientSession = Schema.Struct({
+  person: Schema.optionalKey(TrimmedNonEmptyString),
   sessionId: AuthSessionId,
   subject: TrimmedNonEmptyString,
   ...authScopeResponseFields,
@@ -437,6 +470,12 @@ export const AuthRevokePairingLinkInput = Schema.Struct({
 });
 export type AuthRevokePairingLinkInput = typeof AuthRevokePairingLinkInput.Type;
 
+export const AuthSetClientSessionPersonInput = Schema.Struct({
+  sessionId: AuthSessionId,
+  person: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type AuthSetClientSessionPersonInput = typeof AuthSetClientSessionPersonInput.Type;
+
 export const AuthRevokeClientSessionInput = Schema.Struct({
   sessionId: AuthSessionId,
 });
@@ -451,6 +490,7 @@ export const AuthCreatePairingCredentialInput = Schema.Struct({
 export type AuthCreatePairingCredentialInput = typeof AuthCreatePairingCredentialInput.Type;
 
 export const AuthSessionState = Schema.Struct({
+  person: Schema.optionalKey(TrimmedNonEmptyString),
   authenticated: Schema.Boolean,
   auth: ServerAuthDescriptor,
   scopes: Schema.optionalKey(AuthEnvironmentScopes),
@@ -475,7 +515,7 @@ export const AuthMcpAuthorizationServerMetadata = Schema.Struct({
   token_endpoint: Schema.String,
   registration_endpoint: Schema.String,
   response_types_supported: Schema.Array(Schema.Literal("code")),
-  grant_types_supported: Schema.Array(Schema.Literal("authorization_code")),
+  grant_types_supported: Schema.Array(Schema.Literals(["authorization_code", "refresh_token"])),
   code_challenge_methods_supported: Schema.Array(Schema.Literal("S256")),
   token_endpoint_auth_methods_supported: Schema.Array(Schema.Literal("none")),
   scopes_supported: Schema.Array(AuthEnvironmentScope),
@@ -490,6 +530,7 @@ export type AuthMcpAuthorizationServerMetadata = typeof AuthMcpAuthorizationServ
  */
 export const MCP_PEER_LINK_SOFTWARE_ID = "t3code-peer-link";
 
+/** RFC 7591 client metadata. Fields the server does not use are dropped. */
 export const AuthMcpClientRegistration = Schema.Struct({
   client_name: Schema.optionalKey(Schema.String),
   software_id: Schema.optionalKey(Schema.String),
@@ -502,7 +543,7 @@ export const AuthMcpRegisteredClient = Schema.Struct({
   client_id: Schema.String,
   client_name: Schema.String,
   redirect_uris: Schema.Array(Schema.String),
-  grant_types: Schema.Array(Schema.Literal("authorization_code")),
+  grant_types: Schema.Array(Schema.Literals(["authorization_code", "refresh_token"])),
   response_types: Schema.Array(Schema.Literal("code")),
   token_endpoint_auth_method: Schema.Literal("none"),
 }).pipe(HttpApiSchema.status(201));
@@ -555,13 +596,29 @@ export const AuthMcpApprovalRedirect = Schema.Struct({
 });
 export type AuthMcpApprovalRedirect = typeof AuthMcpApprovalRedirect.Type;
 
+export const AuthMcpOperation = Schema.Literals(["launch", "send", "read", "interrupt", "settle"]);
+export type AuthMcpOperation = typeof AuthMcpOperation.Type;
+
+export const AuthMcpGrantLimits = Schema.Struct({
+  projectId: Schema.optionalKey(ProjectId),
+  operations: Schema.Array(AuthMcpOperation),
+});
+export type AuthMcpGrantLimits = typeof AuthMcpGrantLimits.Type;
+
+const mcpApprovalOptions = {
+  duration: Schema.optionalKey(Schema.Literals(["30-days", "until-revoked"])),
+  limits: Schema.optionalKey(AuthMcpGrantLimits),
+};
+
 export const AuthMcpApprovalDecision = Schema.Union([
   Schema.TaggedStruct("deny", {}),
   Schema.TaggedStruct("pairing-code", {
+    ...mcpApprovalOptions,
     access: AuthMcpClientAccess,
     code: TrimmedNonEmptyString,
   }),
   Schema.TaggedStruct("browser-session", {
+    ...mcpApprovalOptions,
     access: AuthMcpClientAccess,
     csrfToken: Schema.String,
   }),
@@ -583,6 +640,8 @@ export class AuthMcpApprovalError extends Schema.TaggedError<AuthMcpApprovalErro
 export const AuthMcpTokenRequest = Schema.Struct({
   grant_type: Schema.optionalKey(Schema.String),
   code: Schema.optionalKey(Schema.RedactedFromValue(Schema.String)),
+  refresh_token: Schema.optionalKey(Schema.String),
+  scope: Schema.optionalKey(Schema.String),
   redirect_uri: Schema.optionalKey(Schema.String),
   client_id: Schema.optionalKey(Schema.String),
   code_verifier: Schema.optionalKey(Schema.RedactedFromValue(Schema.String)),
@@ -592,6 +651,7 @@ export type AuthMcpTokenRequest = typeof AuthMcpTokenRequest.Type;
 
 export const AuthMcpTokenResult = Schema.Struct({
   access_token: Schema.String,
+  refresh_token: Schema.optionalKey(Schema.String),
   token_type: Schema.Literal("Bearer"),
   expires_in: Schema.Number,
   scope: Schema.String,
@@ -614,3 +674,26 @@ export class AuthMcpTokenError extends Schema.Error<AuthMcpTokenError>("AuthMcpT
     return this.error_description;
   }
 }
+
+/** Durable device renewal authority is kept outside the connection catalog. */
+export const AuthRenewalLocalSlot = Schema.Struct({
+  epoch: Schema.String,
+  environmentId: Schema.String,
+  origin: Schema.String,
+  kind: Schema.Literals(["bearer", "cookie"]),
+  current: AuthRenewalSecret,
+  generation: Schema.Int,
+  pending: Schema.NullOr(
+    Schema.Struct({ secret: AuthRenewalSecret, nextHash: AuthRenewalCommitment }),
+  ),
+  accessToken: Schema.NullOr(Schema.String),
+  expiresAt: Schema.NullOr(Schema.Number),
+  renewAfter: Schema.NullOr(Schema.Number),
+});
+export type AuthRenewalLocalSlot = typeof AuthRenewalLocalSlot.Type;
+export const AuthRenewalLocalRecord = Schema.Struct({
+  revision: Schema.Int,
+  active: Schema.NullOr(AuthRenewalLocalSlot),
+  provisional: Schema.Array(AuthRenewalLocalSlot),
+});
+export type AuthRenewalLocalRecord = typeof AuthRenewalLocalRecord.Type;

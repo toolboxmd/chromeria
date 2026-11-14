@@ -22,6 +22,7 @@ import {
   type DraftSessionState,
 } from "../../composerDraftStore";
 import { draftPenClassName, draftSurfaceClassName } from "./SidebarThreadRow";
+import { useDraftInPersonView } from "../people/usePersonView";
 
 const SidebarDraftRow = memo(function SidebarDraftRow(props: {
   draftId: DraftId;
@@ -160,6 +161,7 @@ export const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
       ),
     ),
   );
+  const draftInPersonView = useDraftInPersonView();
   const [frozenActive, setFrozenActive] = useState<{
     routeDraftId: string | null;
     row: SidebarDraftRowData | null;
@@ -187,6 +189,9 @@ export const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
         props.scopedProjectKeys !== null &&
         !props.scopedProjectKeys.has(`${session.environmentId}:${session.projectId}`)
       ) {
+        continue;
+      }
+      if (!draftInPersonView(session.environmentId)) {
         continue;
       }
       if (draftKey === props.routeDraftId) {

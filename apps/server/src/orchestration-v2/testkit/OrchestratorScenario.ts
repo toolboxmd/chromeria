@@ -1,7 +1,6 @@
 import type {
   OrchestrationV2Command,
   OrchestrationV2DomainEvent,
-  OrchestrationV2RuntimeRequest,
   OrchestrationV2Run,
   OrchestrationV2ThreadShellSnapshot,
   OrchestrationV2StoredEvent,
@@ -24,6 +23,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 
+import * as EventSink from "../EventSink.ts";
 import * as Orchestrator from "../Orchestrator.ts";
 import type { RecordedCommandOutput } from "./CommandOutputRecorder.ts";
 import type { ProviderReplayGate } from "@t3tools/provider-testing/replayGate";
@@ -157,6 +157,9 @@ function commandThreadIds(command: OrchestrationV2Command): ReadonlyArray<Thread
     case "thread.tag.set":
     case "thread.visit":
     case "thread.mark-unread":
+    case "thread.share":
+    case "thread.unshare":
+    case "thread.leave":
     case "thread.metadata.update":
     case "thread.pull-request.link":
     case "thread.pull-request.unlink":
@@ -218,8 +221,17 @@ function scenarioCommands(scenario: OrchestratorV2Scenario): ReadonlyArray<Orche
   );
 }
 
-const findPendingRuntimeRequest = (projection: OrchestrationV2ThreadProjection) =>
-  projection.runtimeRequests.find((request) => request.status === "pending");
+const findPendingRuntimeRequest = (projection: OrchestrationV2ThreadProjection) => {
+  const request = projection.runtimeRequests.find((request) => request.status === "pending");
+  return request !== undefined &&
+    projection.turnItems.some(
+      (item) =>
+        (item.type === "user_input_request" || item.type === "approval_request") &&
+        item.requestId === request.id,
+    )
+    ? request
+    : undefined;
+};
 
 const hasActiveRun = (projection: OrchestrationV2ThreadProjection) =>
   projection.runs.some((run) =>
@@ -267,17 +279,18 @@ export function runOrchestratorV2Scenario(
 ): Effect.Effect<
   OrchestratorV2ScenarioResult,
   Orchestrator.OrchestratorV2Error | OrchestratorV2ScenarioStepError,
-  Orchestrator.OrchestratorV2
+  Orchestrator.OrchestratorV2 | EventSink.EventSinkV2
 > {
   return Effect.scoped(
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
       const storedEventGroups: Array<ReadonlyArray<OrchestrationV2StoredEvent>> = [];
       const observedStoredEvents = yield* Ref.make<Array<OrchestrationV2StoredEvent>>([]);
       let releaseWatch:
         | { readonly threadId: ThreadId; readonly released: Deferred.Deferred<void> }
         | undefined;
-      yield* orchestrator.streamStoredEvents.pipe(
+      yield* eventSink.stream({ afterSequence: 0 }).pipe(
         Stream.runForEach((stored) =>
           Ref.update(observedStoredEvents, (existing) => [...existing, stored]).pipe(
             Effect.andThen(
@@ -312,31 +325,35 @@ export function runOrchestratorV2Scenario(
         storedEventGroups.push(events);
       });
 
-      const waitForPendingRuntimeRequest = (
-        threadId: ThreadId,
-        attemptsRemaining = SCENARIO_WAIT_ATTEMPTS,
-        deadlineAt = scenarioWaitDeadline(),
-      ): Effect.Effect<
-        OrchestrationV2RuntimeRequest,
-        Orchestrator.OrchestratorV2Error | OrchestratorV2ScenarioStepError,
-        never
-      > =>
-        Effect.gen(function* () {
-          const projection = yield* orchestrator.getThreadProjection(threadId);
-          const request = findPendingRuntimeRequest(projection);
-          if (request !== undefined) {
-            return request;
-          }
-          if (scenarioWaitExhausted(attemptsRemaining, deadlineAt)) {
-            const runState = projection.runs.map((run) => `${run.id}:${run.status}`).join(",");
-            return yield* new OrchestratorV2ScenarioStepError({
-              scenario: scenario.name,
-              step: `respond_to_next_runtime_request:${threadId}:runs=${runState}:providerTurns=${projection.providerTurns.length}`,
-            });
-          }
-          yield* yieldToRuntime;
-          return yield* waitForPendingRuntimeRequest(threadId, attemptsRemaining - 1, deadlineAt);
+      const waitForPendingRuntimeRequest = Effect.fn(
+        "OrchestratorScenario.waitForPendingRuntimeRequest",
+      )(function* (threadId: ThreadId) {
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        const request = findPendingRuntimeRequest(projection);
+        if (request !== undefined) {
+          return request;
+        }
+        // Adapters can persist the request before its question or approval item.
+        const ready = yield* eventSink.stream({ afterSequence: 0, threadId }).pipe(
+          Stream.mapError(
+            (cause) => new Orchestrator.OrchestratorProjectionError({ threadId, cause }),
+          ),
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "runtime-request.updated" ||
+              stored.event.type === "turn-item.updated",
+          ),
+          Stream.mapEffect(() => orchestrator.getThreadProjection(threadId)),
+          Stream.map(findPendingRuntimeRequest),
+          Stream.filter((pending) => pending !== undefined),
+          Stream.runHead,
+        );
+        if (Option.isSome(ready)) return ready.value;
+        return yield* new OrchestratorV2ScenarioStepError({
+          scenario: scenario.name,
+          step: `respond_to_next_runtime_request:${threadId}`,
         });
+      });
 
       const waitForThreadIdle = (
         threadId: ThreadId,
