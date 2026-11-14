@@ -2,7 +2,7 @@ import { expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 import { Tool } from "effect/ai";
 
-import { PreviewToolkit } from "./tools.ts";
+import { PreviewToolkit, PreviewWatchToolkit } from "./tools.ts";
 
 const schemaHasMultipleAllOfDescriptions = (schema: unknown): boolean => {
   if (!schema || typeof schema !== "object") return false;
@@ -18,7 +18,7 @@ const schemaHasMultipleAllOfDescriptions = (schema: unknown): boolean => {
 };
 
 it("exports provider-compatible object schemas", () => {
-  for (const tool of Object.values(PreviewToolkit.tools)) {
+  for (const tool of Object.values({ ...PreviewToolkit.tools, ...PreviewWatchToolkit.tools })) {
     const schema = Tool.getJsonSchema(tool) as {
       readonly type?: unknown;
       readonly properties?: Readonly<Record<string, unknown>>;
@@ -31,10 +31,12 @@ it("exports provider-compatible object schemas", () => {
     if (tool.name === "preview_navigate") {
       expect(schemaHasMultipleAllOfDescriptions(schema)).toBe(false);
     }
-    expect(
-      schema.properties?.tabId,
-      `${tool.name} must allow an explicit collaborative browser tab target`,
-    ).toBeDefined();
+    if (tool.name in PreviewToolkit.tools) {
+      expect(
+        schema.properties?.tabId,
+        `${tool.name} must allow an explicit collaborative browser tab target`,
+      ).toBeDefined();
+    }
   }
 });
 
@@ -50,4 +52,11 @@ it("preview_open accepts a target while preserving open input constraints", () =
   });
   expect(() => decode({ target: { ...target, port: 0 } })).toThrow();
   expect(() => decode({ target, tabId: "tab-1", reuseExistingTab: false })).toThrow();
+});
+
+it("guides every preview tool to delegate driving beyond a quick check", () => {
+  for (const tool of Object.values(PreviewToolkit.tools)) {
+    expect(tool.description).toContain('prismRole: "computer-use"');
+    expect(tool.description).toContain("beyond a quick check");
+  }
 });
