@@ -1630,6 +1630,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           Effect.map((state) => delegatedTaskProgress(withoutParkedCompletions(records, state))),
         );
   };
+  const settlementAwaitsSubagents = (
+    runs: ReadonlyArray<OrchestrationV2Run>,
+    records: Pick<OrchestrationV2ThreadProjection, "thread" | "subagents">,
+  ) =>
+    !delegatedTaskAwaitsSubagents(runs, records.subagents)
+      ? Effect.succeed(false)
+      : retirement(records.thread.id).pipe(
+          Effect.map((state) =>
+            delegatedTaskAwaitsSubagents(runs, withoutParkedCompletions(records, state).subagents),
+          ),
+        );
   const nextTurnItemOrdinal = (
     projection: Pick<OrchestrationV2ThreadProjection, "thread"> &
       Partial<Pick<OrchestrationV2ThreadProjection, "turnItems">>,
@@ -16189,7 +16200,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // work its cancel is stopping.
       if (
         options.task.cancelledRunId !== childRun.id &&
-        delegatedTaskAwaitsSubagents(taskRuns, childControls.subagents)
+        (yield* settlementAwaitsSubagents(taskRuns, childControls))
       )
         return;
       const resultRunIds = restartResultRunIds(childControls.runs, [childRun.id]);
@@ -18583,7 +18594,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         if (
           run === undefined ||
           delegatedTaskTerminalStatus(run.status) === null ||
-          delegatedTaskAwaitsSubagents(runs, child.subagents)
+          (yield* settlementAwaitsSubagents(runs, child))
         )
           return true;
         return yield* childAwaitsRestartContinuation(runs, run);
