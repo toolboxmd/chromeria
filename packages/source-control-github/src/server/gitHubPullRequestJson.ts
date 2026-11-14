@@ -43,7 +43,8 @@ import type { ProviderChangeRequestSummary } from "@t3tools/source-control-core/
 
 import type * as GitHubSchema from "../../schema/github.graphql.ts";
 import type {
-  PullRequestSummaryRepositoryPullRequestPullRequest as SummarizedPullRequest,
+  PullRequestSummaryFields as SummarizedPullRequest,
+  PullRequestSummaryWithStacksRepositoryPullRequestPullRequest as StackedSummarizedPullRequest,
   PullRequestWatchFingerprintRepositoryPullRequestPullRequest as WatchedPullRequest,
 } from "./pullRequestBatches.graphql.ts";
 import {
@@ -51,6 +52,9 @@ import {
   PullRequestList,
   PullRequestRow,
   PullRequestSearch,
+  PullRequestSearchWithStacks,
+  PullRequestStack,
+  PullRequestStackEntry,
 } from "./pullRequestListings.graphql.ts";
 import type { PullRequestActionSummary } from "./pullRequestMutations.graphql.ts";
 import type {
@@ -808,7 +812,14 @@ function toDetail(raw: DetailFields): GitHubPullRequestDetail {
 const decodeUnknownList = decodeJsonResult(Schema.Array(Schema.Unknown));
 const decodeWorkflowRuns = decodeJsonResult(RawWorkflowRunsSchema);
 const decodeFileEntry = Schema.decodeUnknownExit(RawPullRequestFileSchema);
-const decodeRow = Schema.decodeUnknownExit(PullRequestRow);
+// Only rows from `PullRequestSearchWithStacks` carry a stack.
+const decodeRow = Schema.decodeUnknownExit(
+  Schema.Struct({
+    ...PullRequestRow.fields,
+    stack: Schema.optionalKey(Schema.NullOr(PullRequestStack)),
+    stackEntry: Schema.optionalKey(Schema.NullOr(PullRequestStackEntry)),
+  }),
+);
 
 /** Decode rows individually so one invalid node cannot blank the entire listing. */
 const LenientRows = Schema.Struct({
@@ -822,6 +833,14 @@ export const LenientPullRequestSearch = GraphQL.query(PullRequestSearch.name, {
   result: Schema.Struct({ search: LenientRows }),
 });
 
+/** The generated github.com search, with its rows decoded by `toPullRequestRows` instead. */
+export const LenientPullRequestSearchWithStacks = GraphQL.query(PullRequestSearchWithStacks.name, {
+  document: PullRequestSearchWithStacks.document,
+  variables: PullRequestSearchWithStacks.variables,
+  result: Schema.Struct({ search: LenientRows }),
+});
+
+/** The generated repository list, with its rows decoded by `toPullRequestRows` instead. */
 export const LenientPullRequestList = GraphQL.query(PullRequestList.name, {
   document: PullRequestList.document,
   variables: PullRequestList.variables,
@@ -959,7 +978,10 @@ export interface GitHubPullRequestSummary {
   readonly stack?: PullRequestStackMembership | null;
 }
 
-export function toPullRequestSummary(pr: SummarizedPullRequest): GitHubPullRequestSummary {
+/** The summary a linked thread keeps current, from one slice of the batched read. */
+export function toPullRequestSummary(
+  pr: SummarizedPullRequest | StackedSummarizedPullRequest,
+): GitHubPullRequestSummary {
   return {
     number: pr.number,
     title: pr.title,
@@ -978,7 +1000,7 @@ export function toPullRequestSummary(pr: SummarizedPullRequest): GitHubPullReque
     reviewDecision: toReviewDecisionWithReviews(pr.reviewDecision, nodesOf(pr.latestReviews)),
     checksState: rollupChecksState(rollupStates(pr.commits)),
     mergeability: toMergeability(pr.mergeable),
-    ...(pr.stack === undefined ? {} : { stack: toStackMembership(pr) ?? null }),
+    ...("stack" in pr ? { stack: toStackMembership(pr) ?? null } : {}),
   };
 }
 

@@ -4,10 +4,11 @@ import type {
   DeviceServiceState,
   DeviceSummary,
   ScopedThreadRef,
+  DeviceViewerResource,
 } from "@t3tools/contracts";
 import { ArrowUpRight, CircleAlert, Play, Smartphone, X } from "lucide-react";
 import { useAtomMount } from "@effect/atom-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
 import {
@@ -39,6 +40,7 @@ import {
   isAndroidDiscoveryUncertain,
 } from "./DeviceSetup";
 import { DeviceWorkspace } from "./DeviceWorkspace";
+import { DeviceStreamView, type DeviceStreamHandle } from "./DeviceStreamView";
 import { PreviewPanelShell, type PreviewPanelMode } from "../preview/PreviewPanelShell";
 
 const platformLabel = (platform: DevicePlatform) =>
@@ -47,13 +49,167 @@ const platformLabel = (platform: DevicePlatform) =>
 const deviceKey = (device: Pick<DeviceSummary, "hostId" | "id">) =>
   `${device.hostId}\u0000${device.id}`;
 
-export function DevicePanel(props: {
+/** Each surface owns one host/device; only the visible surface streams. */
+type DevicePanelProps = {
   readonly mode: PreviewPanelMode;
   readonly threadRef: ScopedThreadRef;
   readonly surface: Extract<RightPanelSurface, { kind: "device" }>;
   readonly visible: boolean;
   readonly onDismissSetup: () => void;
-}) {
+};
+export function DevicePanel(props: DevicePanelProps) {
+  const resource = props.surface.target?.resource;
+  return resource === undefined ? (
+    <LocalDevicePanel {...props} />
+  ) : (
+    <QualifiedDevicePanel
+      key={JSON.stringify([
+        resource.environmentId,
+        resource.threadId,
+        resource.hostId,
+        resource.deviceId,
+        resource.toolSessionId,
+        resource.platform,
+      ])}
+      {...props}
+      resource={resource}
+    />
+  );
+}
+function QualifiedDevicePanel(props: DevicePanelProps & { resource: DeviceViewerResource }) {
+  const resource = props.resource;
+  const [handle, setHandle] = useState<DeviceStreamHandle | null>(null);
+  const [captureError, setCaptureError] = useState<string | null>(null);
+  const [capturing, setCapturing] = useState(false);
+  const capture = useRef<AbortController | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Abort the screenshot operation when its owning panel unmounts.
+  useEffect(() => () => capture.current?.abort(), []);
+  const screenshot = () => {
+    if (handle === null || capture.current !== null || !props.visible) return;
+    const controller = new AbortController();
+    capture.current = controller;
+    setCapturing(true);
+    setCaptureError(null);
+    void handle
+      .screenshot(controller.signal)
+      .then((image) => {
+        if (controller.signal.aborted) return;
+        const url = URL.createObjectURL(image);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = "device.png";
+        anchor.click();
+        URL.revokeObjectURL(url);
+      })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted)
+          setCaptureError(error instanceof Error ? error.message : "Screenshot capture failed.");
+      })
+      .finally(() => {
+        if (capture.current === controller) {
+          capture.current = null;
+          setCapturing(false);
+        }
+      });
+  };
+  return (
+    <PreviewPanelShell mode={props.mode}>
+      <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
+        <span className="truncate text-sm">{props.surface.target?.name ?? "Device"}</span>
+        <Button
+          variant="outline"
+          size="xs"
+          onClick={() => {
+            usePreviewMiniPlayerStore.getState().open(props.threadRef, {
+              kind: "device",
+              hostId: resource.hostId,
+              deviceId: resource.deviceId,
+              platform: resource.platform,
+              name: props.surface.target?.name ?? "Device",
+              resource,
+            });
+            useRightPanelStore.getState().closeSurface(props.threadRef, props.surface.id);
+          }}
+        >
+          Float view
+        </Button>
+        <Button
+          variant="ghost"
+          size="xs"
+          onClick={() =>
+            useRightPanelStore.getState().closeSurface(props.threadRef, props.surface.id)
+          }
+        >
+          Close view
+        </Button>
+      </div>
+      <div className="flex flex-wrap gap-2 border-b px-3 py-2">
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={!handle?.inputConnected}
+          onClick={() => handle?.pressButton("home")}
+        >
+          Home
+        </Button>
+        {resource.platform === "android" ? (
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={!handle?.inputConnected}
+            onClick={() => handle?.pressButton("back")}
+          >
+            Back
+          </Button>
+        ) : null}
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={!handle?.inputConnected}
+          onClick={() => handle?.pressButton("appSwitcher")}
+        >
+          Apps
+        </Button>
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={!handle?.inputConnected}
+          onClick={() => handle?.rotate()}
+        >
+          Rotate
+        </Button>
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={handle === null || capturing}
+          onClick={screenshot}
+        >
+          {capturing ? "Capturing…" : "Screenshot"}
+        </Button>
+      </div>
+      {captureError ? (
+        <p role="alert" className="px-3 py-2 text-xs text-destructive">
+          {captureError}
+        </p>
+      ) : null}
+      <div className="min-h-0 flex-1">
+        <DeviceStreamView
+          onHandle={setHandle}
+          environmentId={props.threadRef.environmentId}
+          resource={resource}
+          platform={resource.platform}
+          hostId={resource.hostId}
+          deviceId={resource.deviceId}
+          {...(props.surface.target?.name === undefined
+            ? {}
+            : { deviceName: props.surface.target.name })}
+          visible={props.visible}
+        />
+      </div>
+    </PreviewPanelShell>
+  );
+}
+function LocalDevicePanel(props: DevicePanelProps) {
   const { environmentId, threadId } = props.threadRef;
   const { state, loaded, error: stateError, refresh: refreshState } = useDeviceState(environmentId);
   const list = useAtomCommand(deviceEnvironment.list, { reportFailure: false });
@@ -306,7 +462,9 @@ export function DevicePanel(props: {
                     >
                       {state.hostStatus === "failed"
                         ? (state.hostStatusDetail ?? "The device hub failed to start.")
-                        : "No simulators or emulators were found on this environment."}
+                        : isAndroidDiscoveryUncertain(state)
+                          ? "Device discovery is incomplete. Check the host warning above, then refresh devices."
+                          : "No simulators or emulators were found on this environment."}
                     </p>
                   </>
                 ) : null}
