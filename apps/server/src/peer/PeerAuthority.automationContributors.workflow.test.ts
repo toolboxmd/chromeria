@@ -1872,13 +1872,14 @@ it.live(
           inputDigest: row.input_digest,
           clientRequestId: input.clientRequestId,
         };
-        const replay = yield* owner.runNow({ id: result.taskId }, { request: identity });
-        expect(replay.manualReceipt).toEqual(result.manualReceipt);
-        expect(starts).toBe(1);
         // Drive the existing command owner after a process restart. Its unresolved
-        // external start remains needs-you, never silently executed again.
+        // external start remains needs-you, never silently executed again. Awaiting it
+        // first keeps its startup write out of the replay's admission fence.
         yield* Option.getOrThrow(Context.getOption(rebuilt, ScheduledChecks.ScheduledTaskChecks))
           .reconcile;
+        expect(starts).toBe(1);
+        const replay = yield* owner.runNow({ id: result.taskId }, { request: identity });
+        expect(replay.manualReceipt).toEqual(result.manualReceipt);
         expect(starts).toBe(1);
         const current = (yield* owner.list()).tasks.find((t) => t.id === result.taskId)!;
         expect(current.command?.run).toMatchObject({ stage: "needs-you", imported: false });
