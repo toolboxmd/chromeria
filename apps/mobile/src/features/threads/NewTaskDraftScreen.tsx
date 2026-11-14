@@ -13,6 +13,7 @@ import { AppBar } from "../../components/ui/AppBar";
 import { ThreadId } from "@t3tools/contracts";
 
 import * as Dialog from "../../components/ui/Dialog";
+import { savedPurposeIntentForScope } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
@@ -403,6 +404,10 @@ export function NewTaskDraftScreen(props: {
     props.incomingShareId,
     requestedInitialProjectAvailable,
   ]);
+  const supportsExecutionPurpose =
+    selectedEnvironmentServerConfig?.environment.capabilities.executionPurposeVersions?.includes(
+      1,
+    ) === true;
 
   const lastInitialProjectRefRef = useRef(props.initialProjectRef);
   const initialPickerRef = useRef<"open" | "dismissed" | null>(null);
@@ -662,7 +667,16 @@ export function NewTaskDraftScreen(props: {
     }
     // Persist locally before clearing or leaving the draft; server setup runs on the thread.
     flow.setSubmitting(true);
-    const queued = await settlePromise(() => enqueueThreadOutboxMessage(message));
+    const queued = await settlePromise(() =>
+      enqueueThreadOutboxMessage({
+        ...message,
+        ...(supportsExecutionPurpose
+          ? {
+              purposeIntent: savedPurposeIntentForScope({ type: "unscoped", reason: "deliberate" }),
+            }
+          : {}),
+      }),
+    );
     flow.setSubmitting(false);
     if (AsyncResult.isFailure(queued)) {
       const error = squashAtomCommandFailure(queued);
