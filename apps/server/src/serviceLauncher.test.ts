@@ -1,10 +1,11 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off - observes the children the launcher spawns with Node built-ins.
-import type * as NodeChildProcess from "node:child_process";
+import * as NodeChildProcess from "node:child_process";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - the free-space probe is a plain Promise callback.
 import * as NodeFS from "node:fs";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - models the service manager reading disk through the launcher's Promise callback.
 import * as NodeFSP from "node:fs/promises";
 import * as NodeSqlite from "node:sqlite";
+import * as NodeEvents from "node:events";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, expect, it } from "@effect/vitest";
@@ -13,7 +14,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import { vi } from "vite-plus/test";
+import { afterEach, vi } from "vite-plus/test";
 
 import {
   renderBootServicePlist,
@@ -44,7 +45,9 @@ import {
   SERVICE_STOP_MARKER_FILE,
 } from "./cloud/serviceProtocol.ts";
 
-const spawnedChildren = vi.hoisted((): Array<NodeChildProcess.ChildProcess> => []);
+const spawnedChildren = vi.hoisted(
+  (): Array<{ child: NodeChildProcess.ChildProcess; exited: Promise<void> }> => [],
+);
 const spawnHook = vi.hoisted(() => ({
   current: undefined as ((child: NodeChildProcess.ChildProcess) => void) | undefined,
 }));
@@ -64,11 +67,26 @@ vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof NodeChildProcess>();
   const spawn = (...args: Parameters<typeof actual.spawn>) => {
     const child = actual.spawn(...args);
-    spawnedChildren.push(child);
+    const exited = new Promise<void>((resolve) => {
+      child.once("exit", () => resolve());
+      child.once("error", () => {
+        if (child.pid === undefined) resolve();
+      });
+    });
+    spawnedChildren.push({ child, exited });
     spawnHook.current?.(child);
     return child;
   };
   return { ...actual, spawn: spawn as typeof actual.spawn };
+});
+
+afterEach(async () => {
+  await Promise.all(
+    spawnedChildren.splice(0).map(async ({ child, exited }) => {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      await exited;
+    }),
+  );
 });
 
 const writeSparseFile = (filePath: string, size: number) =>
@@ -156,7 +174,10 @@ const writeFakeRuntime = (
   Effect.gen(function* () {
     const entryPath = path.join(versionDir, "t3");
     yield* fs.makeDirectory(versionDir, { recursive: true });
-    yield* fs.writeFileString(entryPath, `#!${process.execPath}\n${childSource}`);
+    yield* fs.writeFileString(
+      entryPath,
+      `#!${process.execPath}\nprocess.on("disconnect", () => process.exit(0));\n${childSource}`,
+    );
     yield* fs.chmod(entryPath, 0o755);
     yield* fs.writeFileString(
       path.join(versionDir, ".install-complete"),
@@ -199,6 +220,69 @@ const fakeServiceUnit = (
     };
     return unit;
   });
+it.layer(NodeServices.layer)("launcher fixture ownership", (it) => {
+  it.effect.each(["disconnect", "SIGTERM", "SIGKILL"] as const)(
+    "exits when its runner loses ownership via %s",
+    (termination) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-launcher-owner-" });
+        const entryPath = yield* writeFakeRuntime(
+          fs,
+          path,
+          path.join(root, "1.0.0"),
+          'process.send("ready"); setInterval(() => {}, 1_000);',
+        );
+        // Use the launcher's inherited stdio plus IPC seam. The fixture inherits
+        // the runner's stdout pipe, keeping it open even if the runner is killed.
+        const runner = NodeChildProcess.spawn(
+          process.execPath,
+          [
+            "--input-type=module",
+            "--eval",
+            `import { spawn } from "node:child_process";
+const child = spawn(${JSON.stringify(entryPath)}, [], {
+  stdio: ["inherit", "inherit", "inherit", "ipc"],
+});
+child.once("message", () => process.send(child.pid));
+process.on("message", () => { child.disconnect(); process.exit(0); });
+`,
+          ],
+          { stdio: ["ignore", "pipe", "inherit", "ipc"] },
+        );
+        const output = runner.stdout!;
+        output.resume();
+        const closed = NodeEvents.EventEmitter.once(output, "close");
+        yield* Effect.promise(async () => {
+          let fixturePid: number | undefined;
+          try {
+            const [pid] = await NodeEvents.EventEmitter.once(runner, "message", {
+              signal: AbortSignal.timeout(5_000),
+            });
+            assert.isNumber(pid);
+            fixturePid = Number(pid);
+            const fixtureExited = NodeEvents.EventEmitter.once(output, "close", {
+              signal: AbortSignal.timeout(5_000),
+            });
+            if (termination === "disconnect") runner.send("disconnect");
+            else runner.kill(termination);
+            // EOF is an OS receipt: both the runner and the interval fixture must
+            // release the inherited pipe. A leaked fixture keeps this pending.
+            if (termination === "disconnect") runner.disconnect();
+            await fixtureExited;
+          } finally {
+            // On a failing regression, clean only the fixture whose PID we captured.
+            if (!output.closed && fixturePid !== undefined) {
+              process.kill(fixturePid, "SIGKILL");
+            }
+            runner.kill("SIGKILL");
+            await closed;
+          }
+        });
+      }),
+  );
+});
 
 it.layer(NodeServices.layer)("service state persistence", (it) => {
   it.effect(
@@ -1626,7 +1710,7 @@ process.send({ type: "request-update", targetVersion: "1.1.0", dbPath: paths.dat
 
       // A trial started here arms its 30-minute prepared timer, which keeps the stopped launcher alive.
       assert.deepEqual(
-        spawnedChildren.slice(childCount).map((child) => child.spawnargs.join(" ")),
+        spawnedChildren.slice(childCount).map(({ child }) => child.spawnargs.join(" ")),
         [],
       );
       assert.deepEqual(yield* Effect.promise(() => readServiceState(statePath)), pending);
@@ -1673,7 +1757,7 @@ setInterval(() => {}, 1_000);
         {
           backupSpaceProbe: {
             readFreeBytes: () => {
-              const child = spawnedChildren.at(-1)!;
+              const child = spawnedChildren.at(-1)!.child;
               return new Promise((resolve) => {
                 if (!child.connected) resolve(Number.MAX_SAFE_INTEGER);
                 else child.once("disconnect", () => resolve(Number.MAX_SAFE_INTEGER));
