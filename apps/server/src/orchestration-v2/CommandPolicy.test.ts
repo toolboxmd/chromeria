@@ -13,8 +13,10 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
+import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { CursorProviderCapabilitiesV2 } from "@t3tools/provider-cursor/testing";
+import { GrokProviderCapabilitiesV2 } from "@t3tools/provider-grok/testing";
 import * as CommandPolicy from "./CommandPolicy.ts";
 
 const commandId = CommandId.make("command-policy-test");
@@ -62,6 +64,135 @@ function dispatchProjection(
         : [{ runAttemptId: activeAttemptId, status: "running" }],
   } as unknown as OrchestrationV2ThreadProjection;
 }
+
+it.each([
+  ["Claude", ClaudeProviderCapabilitiesV2],
+  ["Codex", CodexProviderCapabilitiesV2],
+  ["Grok", GrokProviderCapabilitiesV2],
+  ["Cursor", CursorProviderCapabilitiesV2],
+] as const)(
+  "human Steer interrupts a running %s turn, including existing mobile clients",
+  (_provider, caps) => {
+    for (const [source, intent] of [
+      ["web", "steer"],
+      ["mobile", "steer"],
+      ["mobile", "auto"],
+    ] as const) {
+      assert.deepEqual(
+        CommandPolicy.resolveMessageDispatchIntent(
+          dispatchProjection(caps),
+          { type: "steer_active", targetRunId: activeRunId },
+          intent,
+          { createdBy: "user", creationSource: source },
+        ),
+        { type: "restart_active", targetRunId: activeRunId },
+      );
+    }
+  },
+);
+
+it.each(["preparing", "starting", "waiting"] as const)(
+  "retains human Claude Steer while the run is %s",
+  (status) => {
+    const projection = dispatchProjection(ClaudeProviderCapabilitiesV2);
+    assert.deepEqual(
+      CommandPolicy.resolveMessageDispatchIntent(
+        { ...projection, runs: projection.runs.map((run) => ({ ...run, status })) },
+        { type: "start_immediately" },
+        "steer",
+        { createdBy: "user", creationSource: "web" },
+      ),
+      { type: "queue_after_active" },
+    );
+  },
+);
+
+it("keeps routine agent and server updates queued on Claude", () => {
+  for (const requester of [
+    { createdBy: "agent", creationSource: "mcp" },
+    { createdBy: "user", creationSource: "server" },
+    { createdBy: "system", creationSource: "server" },
+  ] as const) {
+    for (const intent of ["auto", "steer"] as const) {
+      assert.deepEqual(
+        CommandPolicy.resolveMessageDispatchIntent(
+          dispatchProjection(ClaudeProviderCapabilitiesV2),
+          { type: "start_immediately" },
+          intent,
+          requester,
+        ),
+        { type: "queue_after_active" },
+      );
+    }
+  }
+  assert.deepEqual(
+    CommandPolicy.resolveMessageDispatchIntent(
+      dispatchProjection(ClaudeProviderCapabilitiesV2),
+      { type: "start_immediately" },
+      "auto",
+      { createdBy: "user", creationSource: "web" },
+    ),
+    { type: "queue_after_active" },
+  );
+});
+
+// Cursor's steer also cancels pending tools (upstream activeSteeringInterruptsTools), but only
+// Claude reports that cancel as a user refusal, which is what queues or restarts a steer.
+it.effect.each([
+  {
+    provider: "Claude",
+    caps: ClaudeProviderCapabilitiesV2,
+    agentSteer: { type: "queue_after_active" },
+    execution: "interrupt_restart",
+  },
+  {
+    provider: "Cursor",
+    caps: CursorProviderCapabilitiesV2,
+    agentSteer: { type: "steer_active", targetRunId: activeRunId },
+    execution: "active_steering",
+  },
+] as const)(
+  "steeringCancelReadsAsRefusal decides how a $provider steer is delivered",
+  ({ caps, agentSteer, execution }) =>
+    Effect.gen(function* () {
+      assert.isTrue(caps.turns.activeSteeringInterruptsTools);
+      assert.deepEqual(
+        CommandPolicy.resolveMessageDispatchIntent(
+          dispatchProjection(caps),
+          { type: "start_immediately" },
+          "steer",
+          { createdBy: "agent", creationSource: "mcp" },
+        ),
+        agentSteer,
+      );
+      const policy = yield* CommandPolicy.CommandPolicyV2;
+      assert.equal(
+        yield* policy.decideSteeringExecution({
+          commandId,
+          threadId,
+          providerInstanceId: ProviderInstanceId.make("steering-refusal"),
+          capabilities: caps,
+          forceRestart: execution === "interrupt_restart",
+        }),
+        execution,
+      );
+    }).pipe(Effect.provide(CommandPolicy.layer)),
+);
+
+it.effect("rejects unsafe native Claude steering even when a caller bypasses queue admission", () =>
+  Effect.gen(function* () {
+    const policy = yield* CommandPolicy.CommandPolicyV2;
+    const error = yield* policy
+      .decideSteeringExecution({
+        commandId,
+        threadId,
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        capabilities: ClaudeProviderCapabilitiesV2,
+      })
+      .pipe(Effect.flip);
+    assert.equal(error._tag, "CommandPolicyCapabilityUnsupportedError");
+  }).pipe(Effect.provide(CommandPolicy.layer)),
+);
 
 it("resolves automatic message delivery from authoritative provider capabilities", () => {
   assert.deepEqual(
@@ -113,8 +244,10 @@ it("resolves automatic message delivery from authoritative provider capabilities
       ),
       { type: "start_immediately" },
       "auto",
+      { createdBy: "system", creationSource: "server" },
     ),
-    { type: "restart_active", targetRunId: activeRunId },
+    // A routine wake may use a soft restart, but cannot become an explicit Stop.
+    { type: "steer_active", targetRunId: activeRunId },
   );
 });
 
@@ -132,6 +265,32 @@ it.each(["preparing", "starting"] as const)(
     );
   },
 );
+
+it("queues auto and steer when native steering cancels running tools", () => {
+  const claude = dispatchProjection(ClaudeProviderCapabilitiesV2);
+  assert.deepEqual(
+    CommandPolicy.resolveMessageDispatchIntent(claude, { type: "start_immediately" }, "auto"),
+    { type: "queue_after_active" },
+  );
+  assert.deepEqual(
+    CommandPolicy.resolveMessageDispatchIntent(claude, { type: "start_immediately" }, "steer"),
+    { type: "queue_after_active" },
+  );
+  assert.deepEqual(
+    CommandPolicy.resolveMessageDispatchIntent(claude, {
+      type: "steer_active",
+      targetRunId: activeRunId,
+    }),
+    { type: "queue_after_active" },
+  );
+  assert.deepEqual(
+    CommandPolicy.resolveMessageDispatchIntent(dispatchProjection(baseCapabilities), {
+      type: "steer_active",
+      targetRunId: activeRunId,
+    }),
+    { type: "steer_active", targetRunId: activeRunId },
+  );
+});
 
 it.each([
   ["has not started", []],
@@ -257,6 +416,26 @@ layer("CommandPolicyV2", (it) => {
         capabilities: CursorProviderCapabilitiesV2,
       });
       assert.equal(result, "active_steering");
+    }),
+  );
+
+  it.effect.each([
+    { provider: "claudeAgent", capabilities: ClaudeProviderCapabilitiesV2 },
+    { provider: "codex", capabilities: CodexProviderCapabilitiesV2 },
+    { provider: "grok", capabilities: GrokProviderCapabilitiesV2 },
+  ])("allows an explicit urgent restart for $provider", ({ provider, capabilities }) =>
+    Effect.gen(function* () {
+      const policy = yield* CommandPolicy.CommandPolicyV2;
+      assert.equal(
+        yield* policy.decideSteeringExecution({
+          commandId,
+          threadId,
+          providerInstanceId: ProviderInstanceId.make(provider),
+          capabilities,
+          forceRestart: true,
+        }),
+        "interrupt_restart",
+      );
     }),
   );
 
