@@ -1,3 +1,17 @@
+import { RemoteSecretHandle } from "./remoteSecret.ts";
+import { ThreadToolsRequest } from "./threadTools.ts";
+import { McpScheduledMutationReceipt } from "./mcpRequest.ts";
+import { PeerTaskResult, PeerTaskSnapshot, PeerTaskStop } from "./peerTask.ts";
+import { BareLaunchRequest, BareSupport } from "./bareLaunch.ts";
+import {
+  ExecutionPurpose,
+  ExecutionPurposeDelivery,
+  PurposeIntent,
+  PurposeSelection,
+  RemotePurposeContinuation,
+  SavedPurposeIntent,
+} from "./executionPurpose.ts";
+import { PRISM_DELEGATE_ROLE_GUIDE, PrismDelegateRoleInput, PrismLane } from "./prism.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
@@ -27,6 +41,7 @@ import {
 } from "./scheduledTask.ts";
 import { ProviderInteractionMode, ProviderRequestKind, RuntimeMode } from "./providerPolicy.ts";
 import { PullRequestState } from "./pullRequest.ts";
+import * as ScheduledTaskFork from "./scheduledTaskChecks.ts";
 import {
   ThreadLinkedPullRequest,
   ThreadPullRequestKey,
@@ -34,11 +49,14 @@ import {
 } from "./threadPullRequest.ts";
 import { secretRequestPageUrl } from "./secretRequest.ts";
 import { hasOnlyPairedSurrogates } from "./threadMetadataMcp.ts";
+import { SecretRequestField, SecretRequestFieldName } from "./secretRequest.ts";
 import { LastThreadTitleRegeneration, ThreadTitleRegeneration } from "./threadTitle.ts";
 import {
+  OrchestrationV2ThreadLaunchWorkspaceStrategy,
   OrchestrationV2Actor,
   OrchestrationV2CreationSource,
   OrchestrationV2RunStatus,
+  OrchestrationV2RestartCutView,
   OrchestrationV2TurnItemStatus,
 } from "./orchestrationV2.ts";
 import { ProviderOptionSelection, ProviderOptionSelectionValue } from "./model.ts";
@@ -167,6 +185,22 @@ export type OrchestratorMcpTerminalDelegatedTaskStatus =
   typeof OrchestratorMcpTerminalDelegatedTaskStatus.Type;
 
 export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
+  purposeIntent: Schema.optional(PurposeIntent),
+  bare: Schema.optional(BareLaunchRequest),
+  tools: Schema.optional(ThreadToolsRequest),
+  projectId: Schema.optional(ProjectId),
+  workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
+  lane: Schema.optional(
+    PrismLane.annotate({
+      description:
+        "Worker lane: easy, medium (default) or hard for difficulty, or ui for UI and frontend work. A ui task runs only on the ui lane's Colors, an explicit target must be one of them, and it fails visibly instead of falling back to another model.",
+    }),
+  ),
+  prismRole: Schema.optional(
+    PrismDelegateRoleInput.annotate({
+      description: `Prism role kit: ${PRISM_DELEGATE_ROLE_GUIDE}. Omitted, \`role\` maps review to reviewer, research to researcher, design to designer, else worker. dispatcher, retry and escalation only retry a request an older build accepted.`,
+    }),
+  ),
   task: OrchestratorMcpPrompt,
   target: Schema.optional(OrchestratorMcpTarget),
   title: Schema.optional(OrchestratorMcpTitle),
@@ -190,7 +224,7 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   runtimeMode: Schema.optional(
     OrchestratorMcpRuntimeMode.annotate({
       description:
-        "Omit unless the user asks for a supervised child. Narrow modes pause for human approval, not read-only. Above yours is rejected.",
+        "Omit unless the user asks for a supervised child. Narrow modes pause for human approval, not read-only; an ancestor thread may answer exposed descendant requests through `t3_pending_request_respond`. Above yours is rejected.",
     }),
   ),
   interactionMode: Schema.optional(OrchestratorMcpInteractionMode),
@@ -210,14 +244,31 @@ const OrchestratorMcpExecutedModel = Schema.NullOr(Schema.String).annotate({
 });
 
 export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
+  purpose: Schema.optional(ExecutionPurpose),
+  latestTerminalPurpose: Schema.optional(ExecutionPurpose),
+  warnings: Schema.optional(Schema.Array(Schema.String)),
+  remoteObservation: Schema.optional(
+    Schema.Struct({
+      availability: Schema.Literals(["current", "stale", "unsupported"]),
+      snapshot: Schema.optional(PeerTaskSnapshot),
+      originalRunId: Schema.optional(RunId),
+      latestResult: Schema.optional(PeerTaskResult),
+      stop: Schema.optional(PeerTaskStop),
+    }),
+  ),
   taskId: NodeId,
   /** Null for a task that runs in a linked environment; see `remoteChild`. */
   childThreadId: Schema.NullOr(ThreadId),
-  /** The linked environment and thread a remote task runs as. */
-  remoteChild: Schema.optional(
-    Schema.Struct({ environmentId: EnvironmentId, threadId: ThreadId, label: Schema.String }),
-  ),
   link: Schema.optional(Schema.String),
+  /** The destination environment; threadId is absent until its launch is attached. */
+  remoteChild: Schema.optional(
+    Schema.Struct({
+      environmentId: EnvironmentId,
+      threadId: Schema.optional(ThreadId),
+      label: Schema.String,
+      launchError: Schema.optional(Schema.String),
+    }),
+  ),
   childRunId: Schema.NullOr(RunId),
   childNodeId: NodeId,
   status: OrchestratorMcpDelegatedTaskStatus,
@@ -233,9 +284,13 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
   options: Schema.optional(Schema.Array(ProviderOptionSelection)),
   summary: Schema.NullOr(Schema.String),
   resultContextTransferId: Schema.NullOr(ContextTransferId),
+  hasPendingApproval: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "An eligible descendant approval ends mode=wait. Read the qualified request before answering; the task keeps its permission mode.",
+  }),
   hasPendingQuestion: Schema.Boolean.annotate({
     description:
-      "A question blocks the child and ends a wait. Answer via `t3_pending_request` on `childThreadId`, or the user does.",
+      "A question blocks the child and ends a wait. Local work: `t3_pending_request_*` on `childThreadId`. Remote work: the source parent threadId with the qualified requestTarget/requestRoute from remoteObservation. Read the current request before answering, or the user does.",
   }),
   pendingApproval: Schema.NullOr(
     Schema.Struct({ requestId: RuntimeRequestId, kind: ProviderRequestKind, runId: RunId }),
@@ -249,25 +304,67 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
 });
 export type OrchestratorMcpDelegateTaskResult = typeof OrchestratorMcpDelegateTaskResult.Type;
 
+/**
+ * A Run group: the tasks one delegation started on several Colors of a
+ * read-only role, in Color order. `taskId` reads and cancels each member;
+ * `groupId` reads and cancels them all.
+ */
+export const OrchestratorMcpRunGroupResult = Schema.Struct({
+  groupId: NodeId,
+  status: Schema.Literals(["running", "completed"]).annotate({
+    description:
+      "completed once every member and its nested work is terminal; each member's own status says how it ended.",
+  }),
+  tasks: Schema.Array(OrchestratorMcpDelegateTaskResult),
+  waitTimedOut: Schema.Boolean.annotate({
+    description:
+      "True only on that mode=wait call when timeoutMs elapsed before every member was terminal.",
+  }),
+});
+export type OrchestratorMcpRunGroupResult = typeof OrchestratorMcpRunGroupResult.Type;
+
+/** One task, or the Run group a Run N role started. */
+export const OrchestratorMcpTaskOrRunGroupResult = Schema.Union([
+  OrchestratorMcpDelegateTaskResult,
+  OrchestratorMcpRunGroupResult,
+]);
+export type OrchestratorMcpTaskOrRunGroupResult = typeof OrchestratorMcpTaskOrRunGroupResult.Type;
+
 export const OrchestratorMcpTaskStatusInput = Schema.Struct({
-  taskId: NodeId,
+  taskId: NodeId.annotate({ description: "A taskId, or a Run group's groupId." }),
 });
 export type OrchestratorMcpTaskStatusInput = typeof OrchestratorMcpTaskStatusInput.Type;
 
 export const OrchestratorMcpTaskCancelInput = Schema.Struct({
-  taskId: NodeId,
+  taskId: NodeId.annotate({ description: "A taskId, or a Run group's groupId." }),
   reason: Schema.optional(Schema.String.check(Schema.isMaxLength(2_000))),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpTaskCancelInput = typeof OrchestratorMcpTaskCancelInput.Type;
 
 export const OrchestratorMcpTaskCancelResult = Schema.Struct({
+  stopState: Schema.optional(PeerTaskStop.fields.state),
   taskId: NodeId,
   status: Schema.Literals(["cancel_requested", "completed", "failed", "cancelled", "interrupted"]),
 });
 export type OrchestratorMcpTaskCancelResult = typeof OrchestratorMcpTaskCancelResult.Type;
 
+export const OrchestratorMcpRunGroupCancelResult = Schema.Struct({
+  groupId: NodeId,
+  tasks: Schema.Array(OrchestratorMcpTaskCancelResult),
+});
+export type OrchestratorMcpRunGroupCancelResult = typeof OrchestratorMcpRunGroupCancelResult.Type;
+
+export const OrchestratorMcpTaskOrRunGroupCancelResult = Schema.Union([
+  OrchestratorMcpTaskCancelResult,
+  OrchestratorMcpRunGroupCancelResult,
+]);
+export type OrchestratorMcpTaskOrRunGroupCancelResult =
+  typeof OrchestratorMcpTaskOrRunGroupCancelResult.Type;
+
 export const OrchestratorMcpCreateThreadRequest = Schema.Struct({
+  purposeIntent: Schema.optional(PurposeIntent),
+  bare: Schema.optional(BareLaunchRequest),
   prompt: Schema.optional(OrchestratorMcpPrompt),
   title: Schema.optional(OrchestratorMcpTitle),
   target: Schema.optional(OrchestratorMcpTarget),
@@ -449,6 +546,8 @@ export const OrchestratorMcpThreadReadInput = Schema.Struct({
 export type OrchestratorMcpThreadReadInput = typeof OrchestratorMcpThreadReadInput.Type;
 
 export const OrchestratorMcpThreadDetail = Schema.Struct({
+  purposeSelection: Schema.optional(PurposeSelection),
+  purposeDeliveries: Schema.optional(Schema.Array(ExecutionPurposeDelivery)),
   threadId: ThreadId,
   projectId: ProjectId,
   title: Schema.String,
@@ -490,7 +589,23 @@ export const OrchestratorMcpThreadDetail = Schema.Struct({
 });
 export type OrchestratorMcpThreadDetail = typeof OrchestratorMcpThreadDetail.Type;
 
+const OrchestratorMcpRunRecovery = Schema.Union([
+  Schema.Struct({ state: Schema.Literal("none") }),
+  Schema.Struct({ state: Schema.Literal("waiting_on_quota"), resetAt: IsoDateTime }),
+  Schema.Struct({
+    state: Schema.Literal("recovery_scheduled"),
+    reason: Schema.Literal("retry"),
+    expectedStartAt: Schema.NullOr(IsoDateTime).annotate({
+      description:
+        "Expected start time, or null for an immediate retry with no persisted scheduled instant.",
+    }),
+  }),
+  Schema.Struct({ state: Schema.Literal("continued_by"), successorRunId: RunId }),
+  Schema.Struct({ state: Schema.Literal("given_up"), reason: Schema.String }),
+]);
+
 export const OrchestratorMcpThreadRun = Schema.Struct({
+  purpose: Schema.optional(ExecutionPurpose),
   runId: RunId,
   ordinal: PositiveInt,
   status: OrchestrationV2RunStatus,
@@ -500,6 +615,9 @@ export const OrchestratorMcpThreadRun = Schema.Struct({
   requestedAt: IsoDateTime,
   startedAt: Schema.NullOr(IsoDateTime),
   completedAt: Schema.NullOr(IsoDateTime),
+  restartCut: Schema.optional(OrchestrationV2RestartCutView),
+  // Older linked environments omit this field; absence means unknown, not no recovery.
+  recovery: Schema.optional(OrchestratorMcpRunRecovery),
 });
 export type OrchestratorMcpThreadRun = typeof OrchestratorMcpThreadRun.Type;
 
@@ -536,6 +654,9 @@ export const OrchestratorMcpThreadReadResult = Schema.Struct({
 export type OrchestratorMcpThreadReadResult = typeof OrchestratorMcpThreadReadResult.Type;
 
 export const OrchestratorMcpThreadSendInput = Schema.Struct({
+  purposeIntent: Schema.optional(PurposeIntent),
+  /** Generated by the origin; ordinary callers cannot claim a forwarded continuation. */
+  delegatedContinuation: Schema.optional(RemotePurposeContinuation),
   environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: ThreadId,
   message: OrchestratorMcpPrompt,
@@ -550,15 +671,39 @@ export const OrchestratorMcpThreadSendInput = Schema.Struct({
 });
 export type OrchestratorMcpThreadSendInput = typeof OrchestratorMcpThreadSendInput.Type;
 
-export const OrchestratorMcpThreadSendResult = Schema.Struct({
-  threadId: ThreadId,
-  link: Schema.optional(Schema.String),
-  messageId: MessageId,
-  runId: RunId,
-  taskId: Schema.optional(NodeId),
-  status: OrchestrationV2RunStatus,
-  delivery: Schema.Literals(["started", "queued", "steered", "restarted"]),
-});
+export const OrchestratorMcpThreadSendResult = Schema.Union([
+  Schema.Struct({
+    purpose: Schema.optional(ExecutionPurpose),
+    warnings: Schema.optional(Schema.Array(Schema.String)),
+    threadId: ThreadId,
+    link: Schema.optional(Schema.String),
+    messageId: MessageId,
+    runId: Schema.Null,
+    taskId: NodeId,
+    status: Schema.Literal("queued"),
+    /** Persisted on the child's environment; parent intake has not acknowledged it yet. */
+    delivery: Schema.Literal("pending"),
+  }),
+  Schema.Struct({
+    threadId: ThreadId,
+    link: Schema.optional(Schema.String),
+    messageId: MessageId,
+    runId: RunId,
+    purpose: Schema.optional(ExecutionPurpose),
+    warnings: Schema.optional(Schema.Array(Schema.String)),
+    taskId: Schema.optional(NodeId),
+    status: OrchestrationV2RunStatus,
+    delivery: Schema.Literals(["started", "queued", "steered", "restarted"]),
+  }),
+  Schema.Struct({
+    threadId: ThreadId,
+    link: Schema.optional(Schema.String),
+    messageId: MessageId,
+    runId: Schema.Null,
+    status: Schema.Literal("idle"),
+    delivery: Schema.Literal("transcript"),
+  }),
+]);
 export type OrchestratorMcpThreadSendResult = typeof OrchestratorMcpThreadSendResult.Type;
 
 export const OrchestratorMcpThreadWaitInput = Schema.Struct({
@@ -612,16 +757,6 @@ export const OrchestratorMcpThreadInterruptResult = Schema.Struct({
 });
 export type OrchestratorMcpThreadInterruptResult = typeof OrchestratorMcpThreadInterruptResult.Type;
 
-export const OrchestratorMcpCapabilitiesInput = Schema.Struct({
-  environmentId: OrchestratorMcpEnvironmentTarget,
-  search: Schema.optional(
-    TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
-      description: "Match model ids and labels. Replaces the short list.",
-    }),
-  ),
-});
-export type OrchestratorMcpCapabilitiesInput = typeof OrchestratorMcpCapabilitiesInput.Type;
-
 export const OrchestratorMcpModelOption = Schema.Struct({
   id: Schema.String,
   values: Schema.Array(ProviderOptionSelectionValue),
@@ -630,6 +765,7 @@ export const OrchestratorMcpModelOption = Schema.Struct({
 export type OrchestratorMcpModelOption = typeof OrchestratorMcpModelOption.Type;
 
 export const OrchestratorMcpProviderCapability = Schema.Struct({
+  bare: Schema.optional(BareSupport),
   providerInstanceId: ProviderInstanceId,
   driverKind: ProviderDriverKind,
   displayName: Schema.NullOr(Schema.String),
@@ -649,6 +785,16 @@ export const OrchestratorMcpProviderCapability = Schema.Struct({
   constraints: Schema.Array(Schema.String),
 });
 export type OrchestratorMcpProviderCapability = typeof OrchestratorMcpProviderCapability.Type;
+
+export const OrchestratorMcpCapabilitiesInput = Schema.Struct({
+  environmentId: OrchestratorMcpEnvironmentTarget,
+  search: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
+      description: "Match model ids and labels. Replaces the short list.",
+    }),
+  ),
+});
+export type OrchestratorMcpCapabilitiesInput = typeof OrchestratorMcpCapabilitiesInput.Type;
 
 export const OrchestratorMcpEnvironmentLink = Schema.Struct({
   environmentId: EnvironmentId,
@@ -672,6 +818,12 @@ export type OrchestratorMcpEnvironmentLinksResult =
   typeof OrchestratorMcpEnvironmentLinksResult.Type;
 
 export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
+  executionPurposeVersions: Schema.optional(Schema.Array(Schema.Literal(1))),
+  peerAttachments: Schema.optional(Schema.Literal(1)),
+  peerRequests: Schema.optional(Schema.Literal(1)),
+  bareLaunch: Schema.optional(Schema.Boolean),
+  toolAllowlist: Schema.optional(Schema.Boolean),
+  /** The calling thread, or null when the caller is not a T3 thread. */
   parentThreadId: Schema.NullOr(ThreadId),
   inheritedProviderInstanceId: Schema.NullOr(ProviderInstanceId),
   inheritedModel: Schema.NullOr(Schema.String),
@@ -694,6 +846,8 @@ export type OrchestratorMcpCapabilitiesResult = typeof OrchestratorMcpCapabiliti
 
 export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,
+  purposeIntent: Schema.optional(SavedPurposeIntent),
+  bare: Schema.optional(BareLaunchRequest),
   projectId: OrchestratorMcpProjectTarget,
   prompt: OrchestratorMcpPrompt,
   schedule: OrchestratorMcpSchedule,
@@ -702,7 +856,7 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   bindToCurrentThread: Schema.optional(
     Schema.Boolean.annotate({
       description:
-        "Post here, else new thread per run. Unset: true in own project, else false; updates keep it.",
+        "Omitted, in this thread's project: a once run within 55 minutes, an interval of 55 minutes or less, or a webhook posts here; later runs start fresh. True: here. False: new thread per run. Updates keep it.",
     }),
   ),
   freshSession: Schema.optional(
@@ -712,6 +866,7 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
     }),
   ),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
+  ...ScheduledTaskFork.ScheduledTaskOutcomeCheckCreateFields,
 });
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
 
@@ -726,6 +881,8 @@ export type OrchestratorMcpSaveScheduledTaskInput =
   typeof OrchestratorMcpSaveScheduledTaskInput.Type;
 
 export const OrchestratorMcpScheduledTask = Schema.Struct({
+  purposeIntent: Schema.optional(SavedPurposeIntent),
+  bare: Schema.optional(BareLaunchRequest),
   scheduledTaskId: ScheduledTaskId,
   title: Schema.String,
   prompt: Schema.String,
@@ -744,10 +901,14 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   blockedByPolicy: Schema.optional(Schema.String).annotate({
     description: "Present when an administrator's policy stops this task from running.",
   }),
+  ...ScheduledTaskFork.ScheduledTaskForkFields,
 });
 export type OrchestratorMcpScheduledTask = typeof OrchestratorMcpScheduledTask.Type;
 
-export const OrchestratorMcpScheduleTaskResult = OrchestratorMcpScheduledTask;
+export const OrchestratorMcpScheduleTaskResult = Schema.Union([
+  OrchestratorMcpScheduledTask,
+  McpScheduledMutationReceipt,
+]);
 export type OrchestratorMcpScheduleTaskResult = typeof OrchestratorMcpScheduleTaskResult.Type;
 
 export const OrchestratorMcpListScheduledTasksInput = Schema.Struct({
@@ -769,6 +930,8 @@ export type OrchestratorMcpListScheduledTasksResult =
 
 export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,
+  purposeIntent: Schema.optional(SavedPurposeIntent),
+  bare: Schema.optional(BareLaunchRequest),
   scheduledTaskId: ScheduledTaskId,
   prompt: Schema.optional(OrchestratorMcpPrompt),
   title: Schema.optional(OrchestratorMcpTitle),
@@ -776,6 +939,7 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   enabled: Schema.optional(Schema.Boolean),
   bindToCurrentThread: Schema.optional(Schema.Boolean),
   freshSession: Schema.optional(Schema.Boolean),
+  ...ScheduledTaskFork.ScheduledTaskOutcomeCheckUpdateFields,
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;
@@ -786,6 +950,13 @@ const PastedSecretValue = Schema.String.check(
 );
 
 export const OrchestratorMcpRequestSecretInput = Schema.Struct({
+  environmentId: Schema.optional(EnvironmentId).annotate({
+    description: "Destination for a single webhook signing value. Omit for private local files.",
+  }),
+  projectId: Schema.optional(ProjectId).annotate({
+    description:
+      "Required with a remote destination; the request can only serve a webhook in this project.",
+  }),
   label: TrimmedNonEmptyString.annotate({
     description: "Card title, such as 'GitHub webhook secret'.",
   }),
@@ -801,9 +972,25 @@ export const OrchestratorMcpRequestSecretInput = Schema.Struct({
   ).annotate({
     description: "Sign-in or setup page for the value. Shown as a button.",
   }),
-  placeholder: Schema.optional(TrimmedNonEmptyString),
+  placeholder: Schema.optional(TrimmedNonEmptyString).annotate({
+    description: "Input hint. Single-field requests only; each entry in fields has its own.",
+  }),
+  fields: Schema.optional(
+    Schema.Array(SecretRequestField).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(5),
+      Schema.makeFilter(
+        (fields) => new Set(fields.map((field) => field.name)).size === fields.length,
+        { expected: "fields with unique names" },
+      ),
+    ),
+  ).annotate({
+    description:
+      "Several values on one card, e.g. [{name:'client_id', label:'Client ID'}, {name:'client_secret', label:'Client secret'}]. 1-5 unique lowercase [a-z0-9_-] names; they key files. Omit for one value.",
+  }),
   delivery: Schema.optional(Schema.Literals(["secretRef", "file"])).annotate({
-    description: "secretRef (default) for a T3 tool; file for a command.",
+    description:
+      "Files are always written. file also returns the single value's path as file; secretRef (default) needs nothing extra.",
   }),
   value: Schema.optional(PastedSecretValue).annotate({
     description: "Pasted in this thread; no card.",
@@ -821,15 +1008,23 @@ export type OrchestratorMcpRequestSecretInput = typeof OrchestratorMcpRequestSec
 export const OrchestratorMcpRequestSecretResult = Schema.Union([
   Schema.Struct({
     status: Schema.Literal("saved"),
-    secretRef: SecretRef.annotate({
-      description: "One-use. Pass to a tool that accepts a secretRef. You never see the value.",
+    secretRequest: RemoteSecretHandle.annotate({
+      description:
+        "Destination-owned one-use request. Pass to schedule_task signature.secretRequest in the same destination and project; holds no value and grants no authority.",
     }),
   }),
   Schema.Struct({
-    status: Schema.Literal("saved").annotate({ description: "file holds the value." }),
-    file: Schema.String.annotate({
+    status: Schema.Literal("saved"),
+    files: Schema.Record(SecretRequestFieldName, TrimmedNonEmptyString).annotate({
       description:
-        "Owner-only file with the value. Read it inside commands and never print it. Deleted after 24 hours.",
+        "Private file per field name ('secret' without fields) holding exactly that value. Read it inside commands, never print it, and delete it when done. Expires after 24 hours.",
+    }),
+    file: Schema.optional(TrimmedNonEmptyString).annotate({
+      description: "With delivery file on a single-field request: files.secret.",
+    }),
+    secretRef: Schema.optional(SecretRef).annotate({
+      description:
+        "Single-field requests only. One-use; pass to a tool that accepts a secretRef (schedule_task's signature.secretRef).",
     }),
   }),
   Schema.Struct({
@@ -917,10 +1112,13 @@ export const OrchestratorMcpDeleteScheduledTaskInput = Schema.Struct({
 export type OrchestratorMcpDeleteScheduledTaskInput =
   typeof OrchestratorMcpDeleteScheduledTaskInput.Type;
 
-export const OrchestratorMcpDeleteScheduledTaskResult = Schema.Struct({
-  scheduledTaskId: ScheduledTaskId,
-  deleted: Schema.Boolean,
-});
+export const OrchestratorMcpDeleteScheduledTaskResult = Schema.Union([
+  Schema.Struct({
+    scheduledTaskId: ScheduledTaskId,
+    deleted: Schema.Boolean,
+  }),
+  McpScheduledMutationReceipt,
+]);
 export type OrchestratorMcpDeleteScheduledTaskResult =
   typeof OrchestratorMcpDeleteScheduledTaskResult.Type;
 
@@ -929,8 +1127,15 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
   {
     code: Schema.Literals([
       "capability_denied",
+      "outcome_unknown",
       "parent_not_active",
       "provider_unavailable",
+      "research_host_unavailable",
+      "research_budget_exceeded",
+      "session_unavailable",
+      "session_expired",
+      "session_in_use",
+      "session_warning",
       "model_unavailable",
       "runtime_mode_escalation_denied",
       "interaction_mode_escalation_denied",
@@ -946,5 +1151,11 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "target_required",
     ]),
     message: Schema.String,
+    requestId: Schema.optional(Schema.String),
+    lastConfirmedStage: Schema.optional(
+      Schema.Literals(["dispatch_started", "native_binding_accepted"]),
+    ),
+    /** The destination checked this launch key after admission failed and found no receipt. */
+    launchReceipt: Schema.optional(Schema.Literal("absent")),
   },
 ) {}

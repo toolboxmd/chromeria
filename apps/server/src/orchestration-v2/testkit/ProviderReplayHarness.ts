@@ -1,3 +1,6 @@
+import * as BareLaunch from "../BareLaunch.ts";
+import * as ProviderRegistry from "../../provider/ProviderRegistry.ts";
+import * as GitWorkflow from "../../git/GitWorkflowService.ts";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -10,6 +13,7 @@ import type {
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import type * as Scope from "effect/Scope";
@@ -55,6 +59,7 @@ import * as CommandOutputRecorder from "./CommandOutputRecorder.ts";
 import * as ProviderSwitchService from "../ProviderSwitchService.ts";
 import * as ProviderTurnControlService from "../ProviderTurnControlService.ts";
 import * as ProviderTurnStartService from "../ProviderTurnStartService.ts";
+import * as ContextmdServing from "../../contextmd/ContextmdServing.ts";
 import * as ProviderTurnStartServiceTestkit from "../ProviderTurnStartService.testkit.ts";
 import * as McpAppModelContext from "../../mcpApps/McpAppModelContext.ts";
 import * as PreviewAgentActivity from "../../preview/PreviewAgentActivity.ts";
@@ -280,6 +285,9 @@ export function layerWithRegistry<Error>(
       MigrationError | PlatformError.PlatformError | SqlError
     >;
     readonly runEffectWorker?: boolean;
+    readonly effectWorkerOptions?: EffectWorker.OrchestrationEffectWorkerOptions;
+    // Start continuation runs for provider wake turns, as the live runtime does.
+    // Off by default: most fixtures record no wake turn.
     readonly runContinuationWorker?: boolean;
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
@@ -294,6 +302,9 @@ export function layerWithRegistry<Error>(
   | EffectOutbox.EffectOutboxV2
   | EffectWorker.OrchestrationEffectWorkerV2
   | EventSink.EventSinkV2
+  | ProjectionStore.ProjectionStoreV2
+  | EffectOutbox.EffectOutboxV2
+  | ThreadManagementService.ThreadManagementService
   | ProviderSessionManager.ProviderSessionManagerV2
   | CommandOutputRecorder.CommandOutputRecorder
   | ThreadCommandExecutor.ThreadCommandExecutor,
@@ -317,18 +328,29 @@ export function layerWithRegistry<Error>(
     Layer.provide(Layer.merge(layerContinuationRequests, McpProviderSessions.layer)),
   );
   const layerServerSettings = Layer.unwrap(
-    Effect.map(ManagedPolicy.fromDocument("/test/policy.json", options.managedPolicy), (policy) =>
-      ServerSettings.layerTest(
+    Effect.gen(function* () {
+      const policy = yield* ManagedPolicy.fromDocument("/test/policy.json", options.managedPolicy);
+      const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
+      // Replay adapters are the fixture's configured instances. Continuations
+      // use real ThreadManagement admission, just like the live runtime.
+      const instances = yield* Effect.forEach(yield* registry.list(), (instanceId) =>
+        Effect.gen(function* () {
+          const adapter = yield* registry.get(instanceId);
+          return [instanceId, { driver: adapter.driver, enabled: true, config: {} }] as const;
+        }),
+      );
+      return ServerSettings.layerTest(
         {
+          providerInstances: Object.fromEntries(instances),
           responseStreamingMode: "turn",
           ...(options.continueThreadsAfterServerUpdate === undefined
             ? {}
             : { continueThreadsAfterServerUpdate: options.continueThreadsAfterServerUpdate }),
         },
         policy.summary,
-      ),
-    ),
-  ).pipe(Layer.orDie);
+      );
+    }),
+  ).pipe(Layer.provide(layerProvidedRegistry), Layer.orDie);
   const layerEffectOutboxProvided = EffectOutbox.layer.pipe(Layer.provide(layerDatabase));
   const wrapProjectionStore = options.wrapProjectionStore;
   const layerProjectionStore =
@@ -386,8 +408,21 @@ export function layerWithRegistry<Error>(
   const layerCheckpointServiceProvided = CheckpointService.layer.pipe(
     Layer.provide(Layer.mergeAll(layerCheckpointStore, IdAllocator.layer)),
   );
+  const layerBareLaunch = BareLaunch.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        layerProvidedRegistry,
+        Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Effect.succeed([]),
+          refreshWorkspaceSnapshot: () => Effect.succeed([]),
+        }),
+        Layer.mock(GitWorkflow.GitWorkflowService)({}),
+      ),
+    ),
+    Layer.provide(NodeServices.layer),
+  );
   const layerContextHandoffServiceProvided = ContextHandoffService.layer.pipe(
-    Layer.provide(IdAllocator.layer),
+    Layer.provide(Layer.merge(IdAllocator.layer, layerStores)),
   );
   const layerPersistence = Layer.mergeAll(
     layerStores,
@@ -434,9 +469,21 @@ export function layerWithRegistry<Error>(
       ),
     ),
   );
+  const layerContextmd = ContextmdServing.layer.pipe(
+    Layer.provide(Layer.mergeAll(layerDatabase, layerServerConfig)),
+    Layer.provide(
+      ConfigProvider.layer(
+        ConfigProvider.fromUnknown({
+          CONTEXTMD_SERVING_CONFIG: "/nonexistent/t3-contextmd-replay/serving.json",
+        }),
+      ),
+    ),
+  );
   const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
+    Layer.provide(layerContextmd),
     Layer.provide(
       Layer.mergeAll(
+        layerBareLaunch,
         layerContextHandoffServiceProvided,
         layerEventSinkProvided,
         IdAllocator.layer,
@@ -461,6 +508,7 @@ export function layerWithRegistry<Error>(
     Layer.provide(Layer.merge(layerStores, layerProviderSessionManagerProvided)),
   );
   const layerCheckpointRollbackServiceProvided = CheckpointRollbackService.layer.pipe(
+    Layer.provide(layerContextmd),
     Layer.provide(
       Layer.mergeAll(
         layerCheckpointServiceProvided,
@@ -503,6 +551,7 @@ export function layerWithRegistry<Error>(
         CommandPolicy.layer,
         layerContextHandoffServiceProvided,
         layerPersistence,
+        layerDatabase,
         layerProvidedRegistry,
         layerContinuationRequests,
         layerRuntime,
@@ -514,20 +563,16 @@ export function layerWithRegistry<Error>(
       ),
     ),
   );
-  const layerThreadManagementProvided = Layer.unwrap(
-    Effect.gen(function* () {
-      const orchestrator = yield* Orchestrator.OrchestratorV2;
-      return Layer.mock(ThreadManagementService.ThreadManagementService)({
-        dispatch: orchestrator.dispatch,
-        getThreadRecords: orchestrator.getThreadRecords,
-        getThreadProjection: orchestrator.getThreadProjection,
-        recoverDelegatedTask: orchestrator.recoverDelegatedTask,
-        cancelDelegatedTask: orchestrator.cancelDelegatedTask,
-        delegatedTaskResultPending: orchestrator.delegatedTaskResultPending,
-        streamStoredEventsFrom: orchestrator.streamStoredEventsFrom,
-      });
-    }),
-  ).pipe(Layer.provide(layerOrchestratorProvided));
+  const layerThreadManagementProvided = ThreadManagementService.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        layerOrchestratorProvided,
+        layerProviderSessionManagerProvided,
+        layerServerSettings,
+        layerStores,
+      ),
+    ),
+  );
   const layerContinuationWorkerProvided =
     options.runContinuationWorker === true
       ? ProviderContinuationService.layer.pipe(
@@ -555,11 +600,13 @@ export function layerWithRegistry<Error>(
       ),
     ),
   );
-  const layerEffectWorkerProvided = EffectWorker.layer.pipe(
+  const layerEffectWorkerProvided = EffectWorker.layerWithOptions(options.effectWorkerOptions).pipe(
     Layer.provide(Layer.merge(layerStores, layerEffectExecutorProvided)),
   );
   const layerReplayRuntime = Layer.mergeAll(
     layerEffectOutboxProvided,
+    layerStores,
+    layerThreadManagementProvided,
     layerOrchestratorProvided,
     layerProviderSessionManagerProvided,
     layerEffectWorkerProvided,
