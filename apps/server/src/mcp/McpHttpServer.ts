@@ -1,14 +1,46 @@
+import { RemoteSecretReceiptQuery } from "@t3tools/contracts";
+import {
+  RemoteSecretControl,
+  RemoteSecretRetirement,
+  RemoteSecretSupport,
+} from "@t3tools/contracts";
+import * as RemoteSecretRequests from "../secrets/RemoteSecretRequests.ts";
+import { ThreadMcpToolkit } from "./toolkits/threadMcp/tools.ts";
+import * as ThreadMcpHandlers from "./toolkits/threadMcp/handlers.ts";
+
+import { PreviewViewerOpenInput, PreviewViewerCloseInput } from "@t3tools/contracts";
+import * as ServerBrowser from "../preview/ServerBrowser.ts";
+import * as ServerBrowserStream from "../preview/ServerBrowserStream.ts";
+import { AuthSessionId } from "@t3tools/contracts";
+import { DeviceViewerCloseInput } from "@t3tools/contracts";
+import * as DeviceHubProxy from "../device/DeviceHubProxy.ts";
+import { DeviceViewerOpenInput } from "@t3tools/contracts";
+import * as AutomationAuthority from "../scheduledTasks/DestinationAutomationAuthority.ts";
+import { PendingRequests } from "../childThreads/PendingRequestService.ts";
+import { QualifiedAssetResource, PeerSavedPreviewAuthorizationRequest } from "@t3tools/contracts";
+import * as McpRouting from "./McpRouting.ts";
+import * as PeerForwarding from "../peer/PeerForwarding.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import { requestNamespace, requestGeneration } from "./requestIdentity.ts";
+import { McpSavedSnapshotReceipt } from "@t3tools/contracts";
+import { sha256 } from "@noble/hashes/sha2";
+import * as Hex from "effect/encoding/Hex";
+import * as PeerTaskLifecycle from "../peer/PeerTaskLifecycle.ts";
+import { PeerTaskLifecycleRequest } from "@t3tools/contracts";
+import * as SpectrumToolkit from "../spectrum/mcpToolkit.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
@@ -28,7 +60,6 @@ import {
 import packageJson from "../../package.json" with { type: "json" };
 import { parseBearerToken } from "../auth/EnvironmentAuth.ts";
 import * as ServerConfig from "../config.ts";
-import * as ServerSettings from "../serverSettings.ts";
 import * as DeviceService from "../device/DeviceService.ts";
 import * as HtmlRender from "../htmlRender/HtmlRender.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
@@ -45,6 +76,8 @@ import {
 } from "../telemetry/ProviderDimensions.ts";
 import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
+import { PeerAuthorityEnvelope } from "@t3tools/contracts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as McpToolExposure from "./McpToolExposure.ts";
 import { MCP_TOOL_EXPOSURE_HEADER } from "@t3tools/provider-core/server/mcpSession";
@@ -64,6 +97,8 @@ import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import * as OrchestratorHandlers from "./toolkits/orchestrator/handlers.ts";
 import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
+import * as PreviewWatchHandlers from "./toolkits/preview/watchHandlers.ts";
+import { PreviewWatchToolkit } from "./toolkits/preview/tools.ts";
 import * as PreviewHandlers from "./toolkits/preview/handlers.ts";
 import {
   PreviewSnapshotTool,
@@ -77,6 +112,8 @@ import * as PullRequestsHandlers from "./toolkits/pullRequests/handlers.ts";
 import * as ToolSearchHandlers from "./toolkits/toolSearch/handlers.ts";
 import { ToolSearchToolkit } from "./toolkits/toolSearch/tools.ts";
 import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
+import * as IssuesHandlers from "./toolkits/issues/handlers.ts";
+import { IssuesToolkit } from "./toolkits/issues/tools.ts";
 import * as DeviceHandlers from "./toolkits/device/handlers.ts";
 import {
   DeviceScreenshotTool,
@@ -88,6 +125,40 @@ import { MessageToolkit } from "./toolkits/message/tools.ts";
 import * as MessageHandlers from "./toolkits/message/handlers.ts";
 import { HtmlPreviewTool, HtmlPreviewToolkit, HtmlRenderToolkit } from "./toolkits/html/tools.ts";
 import { requestUrl } from "../requestUrl.ts";
+import * as WebResearchHandlers from "./toolkits/webResearch/handlers.ts";
+import { WebResearchToolkit } from "./toolkits/webResearch/tools.ts";
+import * as WebResearch from "../webResearch/WebResearch.ts";
+import * as ResearchHost from "../webResearch/ResearchHost.ts";
+import * as SessionRead from "../webResearch/SessionRead.ts";
+import * as PageCache from "../webResearch/PageCache.ts";
+import * as PublicHttp from "../webResearch/PublicHttp.ts";
+import * as PublicRender from "../webResearch/PublicRender.ts";
+import * as Search from "../webResearch/Search.ts";
+import * as TinyFish from "../webResearch/TinyFish.ts";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
+import * as RequestReceipts from "./McpRequestReceipts.ts";
+import * as AttachmentStaging from "../assets/AttachmentStaging.ts";
+
+// EnabledWhen is synchronous, so read the request fiber rather than capturing
+// a credential when the shared tool catalog is registered.
+const bareToolAnnotations = (tool: {
+  readonly name: string;
+  readonly annotations: Context.Context<never>;
+}) => {
+  const enabled = Context.getOrUndefined(tool.annotations, McpSchema.EnabledWhen);
+  return Context.add(tool.annotations, McpSchema.EnabledWhen, (client) => {
+    const fiber = Fiber.getCurrent();
+    const scope =
+      fiber === undefined
+        ? undefined
+        : Context.getOrUndefined(fiber.context, McpInvocationContext.McpInvocationContext);
+    return (
+      (scope?.bareToolNames === undefined || scope.bareToolNames.includes(tool.name)) &&
+      (enabled?.(client) ?? true)
+    );
+  });
+};
 
 const mcpResourceMetadataUrl = (request: HttpServerRequest.HttpServerRequest) =>
   requestUrl(request).pipe(
@@ -230,6 +301,42 @@ const linkedEnvironmentsOff = HttpServerResponse.jsonUnsafe(
   },
   { status: 403, headers: { "cache-control": "no-store" } },
 );
+/**
+ * A linked environment passes on that its caller is the Promachos there
+ * (toolboxmd/chromeria#532). Only a peer link may say so; other clients' headers are ignored.
+ */
+export const withPromachosThread = (
+  invocation: McpInvocationContext.McpInvocationScope | undefined,
+  headers: Readonly<Record<string, string | undefined>>,
+): McpInvocationContext.McpInvocationScope | undefined => {
+  const header = headers[McpInvocationContext.PROMACHOS_THREAD_HEADER]?.trim();
+  if (invocation?.client?.linked !== true || header === undefined || header.length === 0)
+    return invocation;
+  return {
+    ...invocation,
+    client: { ...invocation.client, promachosThreadId: ThreadId.make(header) },
+  };
+};
+const decodePeerSession = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(PeerAuthority.PeerSession),
+);
+const decodePeerEnvelope = Schema.decodeUnknownEffect(Schema.fromJsonString(PeerAuthorityEnvelope));
+const decodeTaskLifecycle = Schema.decodeUnknownEffect(PeerTaskLifecycleRequest);
+const decodePeerExchange = Schema.decodeUnknownEffect(PeerAuthority.Exchange);
+const isPeerFailure = Schema.is(OrchestratorMcpFailure);
+const peerAuthorityFailure = (error: unknown) =>
+  HttpServerResponse.jsonUnsafe(
+    {
+      code: isPeerFailure(error) ? error.code : "invalid_request",
+      message: isPeerFailure(error) ? error.message : "Invalid peer authority envelope.",
+    },
+    { status: isPeerFailure(error) && error.code === "orchestration_error" ? 503 : 403 },
+  );
+
+const decodeSecretRetirement = Schema.decodeUnknownEffect(RemoteSecretRetirement);
+const decodeSecretControl = Schema.decodeUnknownEffect(RemoteSecretControl);
+const decodeSecretReceiptQuery = Schema.decodeUnknownEffect(RemoteSecretReceiptQuery);
+const decodeAutomationDisable = Schema.decodeUnknownEffect(AutomationAuthority.AutomationDisable);
 
 const makeMcpAuthMiddleware = Effect.gen(function* () {
   const registry = yield* McpSessionRegistry.McpSessionRegistry;
@@ -240,11 +347,43 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
     Effect.map((settings) => settings.linkedEnvironmentsEnabled),
     Effect.orElseSucceed(() => false),
   );
+  const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+  const remoteSecrets = yield* Effect.serviceOption(RemoteSecretRequests.RemoteSecretRequests);
   const authenticateRequest = Effect.fn("McpHttpServer.authenticateRequest")(function* (
     request: HttpServerRequest.HttpServerRequest,
   ) {
     const authorization = request.headers.authorization;
     const token = parseBearerToken(request) ?? "";
+    if (request.url.split("?")[0] === "/mcp/peer-control/secrets/retire") {
+      if (request.method !== "POST" || Option.isNone(remoteSecrets) || token.length === 0)
+        return HttpServerResponse.empty({ status: 403 });
+      const retired = yield* Effect.gen(function* () {
+        const input = yield* decodeSecretRetirement(yield* request.json);
+        return yield* remoteSecrets.value.retire(
+          input,
+          Hex.encode(sha256(new TextEncoder().encode(token))),
+        );
+      }).pipe(Effect.result);
+      return retired._tag === "Success"
+        ? HttpServerResponse.jsonUnsafe(retired.success)
+        : HttpServerResponse.empty({ status: 403 });
+    }
+    if (request.url.split("?")[0] === "/mcp/peer-control/automation-disable") {
+      if (request.method !== "POST" || Option.isNone(authority) || token.length === 0)
+        return HttpServerResponse.empty({ status: 403 });
+      const result = yield* Effect.gen(function* () {
+        const input = yield* decodeAutomationDisable(yield* request.json);
+        return yield* authority.value.receiveAutomationDisable(
+          input,
+          Hex.encode(sha256(new TextEncoder().encode(token))),
+        );
+      }).pipe(Effect.result);
+      return result._tag === "Failure"
+        ? HttpServerResponse.empty({ status: 403 })
+        : result.success === undefined
+          ? HttpServerResponse.empty({ status: 202 })
+          : HttpServerResponse.jsonUnsafe(result.success);
+    }
     const invocation =
       (yield* registry.resolve(token)) ??
       (Option.isSome(clients) && token.length > 0
@@ -267,12 +406,61 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
         offerOAuth: Option.isSome(clients) && !looksLikeProviderToken(token),
       });
     }
-    const asked = withModeLimit(withSenderThread(invocation, request), request);
+    const asked = withPromachosThread(
+      withModeLimit(withSenderThread(invocation, request), request),
+      request.headers,
+    );
     if (asked === undefined) return invalidModeLimit;
     const limited = McpInvocationContext.withRuntimeModeCeiling(asked, runtimeModeCeiling);
     const linkedEnvironments = yield* linksEnabled;
     if (limited.client?.linked === true && !linkedEnvironments) return linkedEnvironmentsOff;
-    return { ...limited, linkedEnvironments };
+    const peerHeader = request.headers[PeerAuthority.LINK_HEADER];
+    const envelopeHeader = request.headers[PeerAuthority.AUTHORITY_HEADER];
+    let bound = limited;
+    if (limited.thread !== undefined && Option.isSome(authority)) {
+      const checked = yield* authority.value.forThread(limited.thread.threadId).pipe(Effect.result);
+      if (checked._tag === "Failure") return peerAuthorityFailure(checked.failure);
+      const frozen = checked.success;
+      if (frozen !== undefined)
+        bound = {
+          ...limited,
+          authority: frozen,
+          capabilities: new Set(
+            [...limited.capabilities].filter((capability) =>
+              frozen.ceiling.capabilities.includes(capability),
+            ),
+          ),
+        };
+    }
+    if (peerHeader !== undefined || envelopeHeader !== undefined) {
+      if (Option.isNone(authority))
+        return HttpServerResponse.jsonUnsafe(
+          { error: "unsupported_peer_authority" },
+          { status: 409 },
+        );
+      const verified = yield* Effect.gen(function* () {
+        if (peerHeader !== undefined) {
+          const peer = yield* decodePeerSession(peerHeader);
+          yield* authority.value.enroll(
+            limited,
+            peer,
+            Hex.encode(sha256(new TextEncoder().encode(token))),
+          );
+        }
+        if (envelopeHeader === undefined) return limited;
+        const envelope = yield* decodePeerEnvelope(envelopeHeader);
+        const record = yield* authority.value.accept(limited, envelope);
+        return {
+          ...limited,
+          authority: record,
+          requestNamespace: record.envelope.requestOwner?.namespace ?? limited.requestNamespace,
+          capabilities: new Set(record.ceiling.capabilities),
+        };
+      }).pipe(Effect.result);
+      if (verified._tag === "Failure") return peerAuthorityFailure(verified.failure);
+      bound = verified.success;
+    }
+    return { ...bound, linkedEnvironments };
   });
   // Untraced: a span here would wrap the tool call; the HTTP server span already covers it.
   return Effect.fnUntraced(function* (httpEffect) {
@@ -281,6 +469,11 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
     return yield* httpEffect.pipe(
       Effect.provideService(McpInvocationContext.McpInvocationContext, admitted),
       Effect.map(normalizeMcpHttpResponse),
+      Effect.map((response) =>
+        Option.isSome(authority)
+          ? HttpServerResponse.setHeader(response, PeerAuthority.AUTHORITY_HEADER, "1")
+          : response,
+      ),
     );
   }) satisfies McpAuthMiddleware;
 }).pipe(Effect.withSpan("McpHttpServer.makeAuthMiddleware"));
@@ -491,17 +684,24 @@ const screenshotSiteSlug = (rawUrl: string): string => {
 const saveScreenshot = Effect.fn("McpHttpServer.saveScreenshot")(function* (
   pageUrl: string,
   data: Uint8Array,
+  operationId?: string,
 ) {
   const config = yield* ServerConfig.ServerConfig;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const millis = yield* Clock.currentTimeMillis;
   const random = yield* SecureRandom.SecureRandom;
-  const unique = (yield* random.uuidV4()).slice(0, 8);
+  const unique = operationId ?? (yield* random.uuidV4()).slice(0, 8);
   const fileName = `browser-screenshot-${screenshotSiteSlug(pageUrl)}-${millis.toString(36)}-${unique}.png`;
   const screenshotPath = path.join(config.browserArtifactsDir, fileName);
   yield* fileSystem.makeDirectory(config.browserArtifactsDir, { recursive: true }).pipe(
-    Effect.andThen(fileSystem.writeFile(screenshotPath, data)),
+    Effect.andThen(
+      fileSystem.writeFile(
+        screenshotPath,
+        data,
+        operationId === undefined ? undefined : { flag: "wx" },
+      ),
+    ),
     Effect.mapError((cause) => new PreviewScreenshotSaveError({ screenshotPath, cause })),
   );
   return screenshotPath;
@@ -545,6 +745,10 @@ const decodeAsAdvertised = <Tools extends Record<string, Tool.Any>>(
       ),
     ),
   ) as unknown as Toolkit.Toolkit<Tools>;
+const decodeSavedSnapshotParameters = Schema.decodeUnknownEffect(
+  PreviewSnapshotTool.parametersSchema,
+);
+const decodeSavedSnapshotReceipt = Schema.decodeUnknownEffect(McpSavedSnapshotReceipt);
 
 const parameterValidationMessage = (error: unknown) =>
   AiError.isAiError(error) && error.reason._tag === "ToolParameterValidationError"
@@ -562,6 +766,16 @@ const previewSnapshotFailure = Effect.fn("previewSnapshotFailure")(function <E>(
   }
   const failures = cause.reasons.filter(Cause.isFailReason);
   const firstFailure = failures[0]?.error;
+  if (isOrchestratorMcpFailure(firstFailure))
+    return Effect.succeed(
+      new McpSchema.CallToolResult({
+        isError: true,
+        structuredContent: encodeOrchestratorMcpFailure(firstFailure),
+        content: [
+          { type: "text", text: encodeJsonText(encodeOrchestratorMcpFailure(firstFailure)) },
+        ],
+      }),
+    );
   const errorTag =
     typeof firstFailure === "object" &&
     firstFailure !== null &&
@@ -601,8 +815,75 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
   const saveServices = yield* Effect.context<
     ServerConfig.ServerConfig | FileSystem.FileSystem | Path.Path | SecureRandom.SecureRandom
   >();
+  const requestOwner = yield* Effect.serviceOption(RequestReceipts.McpRequestReceipts);
+  const authorityOwner = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
   const built = yield* decodeAsAdvertised(PreviewSnapshotToolkit);
   const tool = PreviewSnapshotTool;
+  const forwarding = yield* Effect.serviceOption(PeerForwarding.PeerForwarding);
+  const checkSavedSnapshot = (invocation: McpInvocationContext.McpInvocationScope) => {
+    const checked = PreviewHandlers.authorizeSnapshot.pipe(
+      Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+      Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+    );
+    return Option.isSome(authorityOwner)
+      ? checked.pipe(Effect.provideService(PeerAuthority.PeerAuthority, authorityOwner.value))
+      : checked;
+  };
+  const formatSavedSnapshot = Effect.fn("McpHttpServer.formatSavedSnapshot")(function* (
+    receipt: unknown,
+    identity: RequestReceipts.RequestIdentity,
+    invocation: McpInvocationContext.McpInvocationScope,
+    includeImage: boolean,
+  ) {
+    const saved = yield* decodeSavedSnapshotReceipt(receipt).pipe(
+      Effect.mapError(
+        () =>
+          new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: "The saved snapshot receipt is invalid.",
+          }),
+      ),
+    );
+    const config = yield* ServerConfig.ServerConfig;
+    const path = yield* Path.Path;
+    if (
+      saved.operationId !== identity.id ||
+      saved.requestId !== identity.clientRequestId ||
+      saved.artifact.environmentId !== invocation.environmentId ||
+      saved.artifact.owner !==
+        RequestReceipts.requestDigest([
+          requestNamespace(invocation),
+          requestGeneration(invocation),
+        ]) ||
+      path.resolve(path.dirname(saved.artifact.screenshotPath)) !==
+        path.resolve(config.browserArtifactsDir) ||
+      !path.basename(saved.artifact.screenshotPath).endsWith(`-${identity.id}.png`)
+    )
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "The saved snapshot does not belong to this verified operation.",
+      });
+    // Replays describe the original artifact. A later independent file
+    // edit must neither be overwritten nor shown as that original PNG.
+    const original = yield* FileSystem.FileSystem.pipe(
+      Effect.flatMap((fs) => fs.readFile(saved.artifact.screenshotPath)),
+      Effect.orElseSucceed(() => undefined),
+    );
+    const unchanged =
+      original !== undefined &&
+      original.byteLength === saved.artifact.sizeBytes &&
+      Hex.encode(sha256(original)) === saved.artifact.digest;
+    return new McpSchema.CallToolResult({
+      isError: false,
+      structuredContent: saved,
+      content: [
+        { type: "text", text: encodeJsonText(saved) },
+        ...(includeImage && unchanged
+          ? [{ type: "image" as const, data: original, mimeType: "image/png" }]
+          : []),
+      ],
+    });
+  });
   yield* server.addTool({
     tool: new McpSchema.Tool({
       name: tool.name,
@@ -619,95 +900,199 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
         openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
       },
     }),
-    annotations: tool.annotations,
+    annotations: bareToolAnnotations(tool),
     handle: (payload) =>
       Effect.withFiber((fiber) => {
         const invocation = Context.getUnsafe(
           fiber.context,
           McpInvocationContext.McpInvocationContext,
         );
-        return built.handle("preview_snapshot", payload).pipe(
-          Stream.unwrap,
-          Stream.run(Sink.last()),
-          Effect.flatMap(Effect.fromOption),
-          Effect.provideService(PreviewAutomationBroker.PreviewAutomationBroker, broker),
-          Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
-          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
-          Effect.flatMap(({ encodedResult }) =>
-            Effect.gen(function* () {
-              const snapshot = encodedResult as SnapshotMetadata & {
-                readonly url: string;
-                readonly screenshot: {
-                  readonly mimeType: "image/png";
-                  readonly data: string;
-                  readonly width: number;
-                  readonly height: number;
-                };
-                readonly fullScreenshot?: { readonly data: string };
-              };
-              const { screenshot, fullScreenshot, ...page } = snapshot;
-              const png = new Uint8Array(Buffer.from(screenshot.data, "base64"));
-              const screenshotPath =
-                payload?.save === true
-                  ? yield* saveScreenshot(
-                      snapshot.url,
-                      fullScreenshot
-                        ? new Uint8Array(Buffer.from(fullScreenshot.data, "base64"))
-                        : png,
-                    )
-                  : undefined;
-              // Providers replay images on later requests, and some reject them; include images only when requested.
-              const includeImage = payload?.includeImage === true;
-              if (screenshotPath !== undefined && !includeImage) {
-                const saved = {
-                  url: cutText(snapshot.url, MAX_SNAPSHOT_IDENTIFIER_CHARS),
-                  screenshotPath,
-                };
-                return new McpSchema.CallToolResult({
-                  isError: false,
-                  structuredContent: saved,
-                  content: [{ type: "text", text: encodeJsonText(saved) }],
-                });
-              }
-              const metadata = {
-                ...page,
-                screenshot: {
-                  mimeType: screenshot.mimeType,
-                  width: screenshot.width,
-                  height: screenshot.height,
-                },
-                ...(screenshotPath === undefined ? {} : { screenshotPath }),
-              };
-              const bounded = boundSnapshotMetadata(metadata);
-              return new McpSchema.CallToolResult({
-                isError: false,
-                structuredContent:
-                  bounded.omitted.length === 0
-                    ? bounded.value
-                    : { ...bounded.value, omitted: bounded.omitted },
-                content: [
-                  {
-                    type: "text",
-                    text: encodeJsonText({
-                      url: cutText(snapshot.url, MAX_SNAPSHOT_IDENTIFIER_CHARS),
-                    }),
+        return Effect.gen(function* () {
+          const savedRequest =
+            payload?.save === true &&
+            typeof payload.clientRequestId === "string" &&
+            invocation.client?.linked !== true &&
+            Option.isSome(requestOwner)
+              ? yield* Effect.gen(function* () {
+                  const parameters = yield* decodeSavedSnapshotParameters(payload).pipe(
+                    Effect.mapError(
+                      () =>
+                        new OrchestratorMcpFailure({
+                          code: "invalid_request",
+                          message: "Invalid saved snapshot request.",
+                        }),
+                    ),
+                  );
+                  const check = checkSavedSnapshot(invocation);
+                  yield* check;
+                  const identity = yield* requestOwner.value.identify(
+                    invocation,
+                    "preview_snapshot:save",
+                    parameters,
+                    parameters.clientRequestId,
+                  );
+                  const checkRemote =
+                    parameters.environmentId === undefined ||
+                    parameters.environmentId === invocation.environmentId
+                      ? Effect.void
+                      : Option.isSome(forwarding)
+                        ? forwarding.value.authorizeSavedPreview(
+                            invocation,
+                            parameters.environmentId,
+                            parameters,
+                            identity,
+                          )
+                        : Effect.fail(
+                            new OrchestratorMcpFailure({
+                              code: "capability_denied",
+                              message: "The saved-preview forwarding authority is unavailable.",
+                            }),
+                          );
+                  return { identity, check, checkRemote, owner: requestOwner.value };
+                })
+              : undefined;
+          if (savedRequest !== undefined) {
+            const prior = yield* savedRequest.owner.replay(savedRequest.identity);
+            yield* savedRequest.checkRemote;
+            if (Option.isSome(prior))
+              return yield* formatSavedSnapshot(
+                prior.value,
+                savedRequest.identity,
+                invocation,
+                payload.includeImage === true,
+              );
+          }
+          const { encodedResult } = yield* built
+            .handle("preview_snapshot", payload)
+            .pipe(
+              Stream.unwrap,
+              Stream.run(Sink.last()),
+              Effect.flatMap(Effect.fromOption),
+              Effect.provideService(PreviewAutomationBroker.PreviewAutomationBroker, broker),
+              Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+              Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+            );
+          const snapshot = encodedResult as SnapshotMetadata & {
+            readonly url: string;
+            readonly screenshot: {
+              readonly mimeType: "image/png";
+              readonly data: string;
+              readonly width: number;
+              readonly height: number;
+            };
+            readonly fullScreenshot?: { readonly data: string };
+          };
+          // A peer needs the schema-complete result, not the client presentation's
+          // bounded text or optional image. Its own registration formats it once.
+          if (invocation.client?.linked === true) {
+            // The full-resolution capture only travels when the caller saves it.
+            const { fullScreenshot: _fullScreenshot, ...withoutFull } = snapshot;
+            return new McpSchema.CallToolResult({
+              isError: false,
+              structuredContent: payload?.save === true ? encodedResult : withoutFull,
+              content: [{ type: "text", text: "Peer snapshot." }],
+            });
+          }
+          const { screenshot, fullScreenshot, ...page } = snapshot;
+          const png = new Uint8Array(Buffer.from(screenshot.data, "base64"));
+          // The saved file keeps the resolution the agent's image is capped below.
+          const savedPng = fullScreenshot
+            ? new Uint8Array(Buffer.from(fullScreenshot.data, "base64"))
+            : png;
+          if (savedRequest !== undefined) {
+            yield* savedRequest.check;
+            yield* savedRequest.checkRemote;
+            const receipt = yield* savedRequest.owner.external(
+              savedRequest.identity,
+              Effect.gen(function* () {
+                const screenshotPath = yield* saveScreenshot(
+                  snapshot.url,
+                  savedPng,
+                  savedRequest.identity.id,
+                );
+                return {
+                  type: "confirmed-operation" as const,
+                  applied: true as const,
+                  requestId: savedRequest.identity.clientRequestId,
+                  operationId: savedRequest.identity.id,
+                  stage: "confirmed" as const,
+                  artifact: {
+                    environmentId: invocation.environmentId,
+                    owner: RequestReceipts.requestDigest([
+                      requestNamespace(invocation),
+                      requestGeneration(invocation),
+                    ]),
+                    screenshotPath,
+                    mimeType: "image/png" as const,
+                    sizeBytes: savedPng.byteLength,
+                    digest: Hex.encode(sha256(savedPng)),
                   },
-                  { type: "text", text: bounded.text },
-                  ...(bounded.omitted.length === 0
-                    ? []
-                    : [
-                        {
-                          type: "text" as const,
-                          text: `Snapshot text was bounded. Omitted: ${bounded.omitted.join("; ")}.`,
-                        },
-                      ]),
-                  ...(includeImage
-                    ? [{ type: "image" as const, data: png, mimeType: screenshot.mimeType }]
-                    : []),
-                ],
-              });
-            }),
-          ),
+                };
+              }),
+            );
+            return yield* formatSavedSnapshot(
+              receipt,
+              savedRequest.identity,
+              invocation,
+              payload.includeImage === true,
+            );
+          }
+          const screenshotPath =
+            payload?.save === true ? yield* saveScreenshot(snapshot.url, savedPng) : undefined;
+          // Images stay out of tool history unless asked for: providers replay them on every
+          // later request, and some reject inline images outright.
+          const includeImage = payload?.includeImage === true;
+          if (screenshotPath !== undefined && !includeImage) {
+            // The agent only wants a file to show the user. The url keeps the site icon on the tool row.
+            const saved = {
+              url: cutText(snapshot.url, MAX_SNAPSHOT_IDENTIFIER_CHARS),
+              screenshotPath,
+            };
+            return new McpSchema.CallToolResult({
+              isError: false,
+              structuredContent: saved,
+              content: [{ type: "text", text: encodeJsonText(saved) }],
+            });
+          }
+          const metadata = {
+            ...page,
+            screenshot: {
+              mimeType: screenshot.mimeType,
+              width: screenshot.width,
+              height: screenshot.height,
+            },
+            ...(screenshotPath === undefined ? {} : { screenshotPath }),
+          };
+          const bounded = boundSnapshotMetadata(metadata);
+          return new McpSchema.CallToolResult({
+            isError: false,
+            structuredContent:
+              bounded.omitted.length === 0
+                ? bounded.value
+                : { ...bounded.value, omitted: bounded.omitted },
+            content: [
+              // Keep the page identity readable even if a provider truncates the snapshot.
+              {
+                type: "text",
+                text: encodeJsonText({
+                  url: cutText(snapshot.url, MAX_SNAPSHOT_IDENTIFIER_CHARS),
+                }),
+              },
+              { type: "text", text: bounded.text },
+              ...(bounded.omitted.length === 0
+                ? []
+                : [
+                    {
+                      type: "text" as const,
+                      text: `Snapshot text was bounded. Omitted: ${bounded.omitted.join("; ")}.`,
+                    },
+                  ]),
+              ...(includeImage
+                ? [{ type: "image" as const, data: png, mimeType: screenshot.mimeType }]
+                : []),
+            ],
+          });
+        }).pipe(
           Effect.provide(saveServices),
           Effect.matchCauseEffect({
             onFailure: previewSnapshotFailure,
@@ -811,7 +1196,7 @@ const registerImageTool = Effect.fn("McpHttpServer.registerImageTool")(function*
         openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
       },
     }),
-    annotations: tool.annotations,
+    annotations: bareToolAnnotations(tool),
     handle: (payload) =>
       Effect.withFiber((fiber) => {
         const invocation = Context.getUnsafe(
@@ -823,6 +1208,14 @@ const registerImageTool = Effect.fn("McpHttpServer.registerImageTool")(function*
           Effect.matchCauseEffect({
             onFailure: imageToolFailure(tool.name, operation, failureText),
             onSuccess: ({ encodedResult }) => {
+              if (invocation.client?.linked === true)
+                return Effect.succeed(
+                  new McpSchema.CallToolResult({
+                    isError: false,
+                    structuredContent: encodedResult,
+                    content: [{ type: "text", text: "Peer image result." }],
+                  }),
+                );
               const { screenshot, ...rest } = encodedResult as ImageToolResult;
               const metadata = {
                 ...rest,
@@ -854,6 +1247,7 @@ const registerImageTool = Effect.fn("McpHttpServer.registerImageTool")(function*
 });
 
 const registerDeviceScreenshot = Effect.fn("McpHttpServer.registerDeviceScreenshot")(function* () {
+  const settings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
   const devices = yield* DeviceService.DeviceService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const built = yield* decodeAsAdvertised(DeviceScreenshotToolkit);
@@ -865,6 +1259,10 @@ const registerDeviceScreenshot = Effect.fn("McpHttpServer.registerDeviceScreensh
         .pipe(Stream.unwrap, Stream.run(Sink.last()), Effect.flatMap(Effect.fromOption)),
     (effect) =>
       effect.pipe(
+        (effect) =>
+          Option.isSome(settings)
+            ? Effect.provideService(effect, ServerSettings.ServerSettingsService, settings.value)
+            : effect,
         Effect.provideService(DeviceService.DeviceService, devices),
         Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
       ),
@@ -884,6 +1282,7 @@ const registerDeviceScreenshot = Effect.fn("McpHttpServer.registerDeviceScreensh
 
 const isOrchestratorMcpFailure = Schema.is(OrchestratorMcpFailure);
 const isDeviceToolError = Schema.is(DeviceToolError);
+const encodeOrchestratorMcpFailure = Schema.encodeSync(OrchestratorMcpFailure);
 
 const registerHtmlPreview = Effect.fn("McpHttpServer.registerHtmlPreview")(function* () {
   const htmlRender = yield* HtmlRender.HtmlRender;
@@ -908,6 +1307,44 @@ const registerHtmlPreview = Effect.fn("McpHttpServer.registerHtmlPreview")(funct
         : "HTML preview failed.",
   );
 });
+
+type WireTool<T> =
+  T extends Tool.Tool<infer Name, infer Config, infer Requirements>
+    ? Tool.Tool<
+        Name,
+        {
+          readonly parameters: Config["parameters"];
+          readonly success: Config["success"];
+          readonly failure: Schema.Codec<Config["failure"]["Type"], unknown>;
+          readonly failureMode: "return";
+        },
+        Requirements
+      >
+    : never;
+
+const wireToolkit = <Tools extends Record<string, Tool.Any>>(toolkit: Toolkit.Toolkit<Tools>) =>
+  // Object.values erases key/schema/dependency correlations; the wire schema preserves declared failure types and scrubs internal fields.
+  Toolkit.make(
+    ...Object.values(toolkit.tools).map((tool) =>
+      Tool.make(tool.name, {
+        description: Tool.getDescription(tool),
+        parameters: tool.parametersSchema,
+        success: tool.successSchema,
+        failure: Schema.toType(tool.failureSchema).pipe(
+          Schema.encodeTo(Schema.Unknown, {
+            decode: SchemaGetter.forbidden(() => "Tool failures are output-only."),
+            encode: SchemaGetter.transform((error) =>
+              isOrchestratorMcpFailure(error)
+                ? encodeOrchestratorMcpFailure(error)
+                : { message: error instanceof Error ? error.message : "Tool execution failed." },
+            ),
+          }),
+        ),
+        failureMode: "return",
+        needsApproval: tool.needsApproval,
+      }).annotateMerge(bareToolAnnotations(tool)),
+    ),
+  ) as unknown as Toolkit.Toolkit<{ readonly [K in keyof Tools]: WireTool<Tools[K]> }>;
 
 /**
  * Tools that hand work to another thread's agent: they create it, message it,
@@ -942,8 +1379,15 @@ const hasAction = (
   actions[tool]?.has(String((args as { readonly action?: unknown } | null | undefined)?.action)) ===
   true;
 
+// Fork: the split queue and pending-request tools hand work over like those actions.
+const INPUT_TARGET_TOOLS: ReadonlySet<string> = new Set([
+  "t3_queue_edit",
+  "t3_queue_promote_to_steer",
+  "t3_pending_request_respond",
+]);
+
 const isInputTargetHandoff = (tool: string, args: unknown) =>
-  hasAction(INPUT_TARGET_ACTIONS, tool, args);
+  INPUT_TARGET_TOOLS.has(tool) || hasAction(INPUT_TARGET_ACTIONS, tool, args);
 
 const resultThreadKeys = ["childThreadId", "targetThreadId", "boundThreadId", "threadId"] as const;
 
@@ -1193,7 +1637,10 @@ export const toolkitRegistration = <Tools extends Record<string, Tool.Any>, EX, 
   Layer.effectDiscard(
     withToolAnalytics(
       withToolSpans(
-        withAdvertisedSchemas(toolkit, McpServer.registerToolkit(decodeAsAdvertised(toolkit))),
+        withAdvertisedSchemas(
+          wireToolkit(toolkit),
+          McpServer.registerToolkit(decodeAsAdvertised(wireToolkit(toolkit))),
+        ),
       ),
     ),
   ).pipe(
@@ -1219,6 +1666,111 @@ export const layerHtmlToolkit = Layer.mergeAll(
   imageToolRegistration(registerHtmlPreview(), HtmlHandlers.layerPreview),
 ).pipe(Layer.provide(HtmlRender.layer));
 
+// Effect's generic registration displays Error.message instead of encoding the
+// declared error schema. Research peers need the code as well as the message.
+const registerWebResearch = Effect.fn("McpHttpServer.registerWebResearch")(function* () {
+  const server = yield* McpServer.McpServer;
+  const research = yield* ResearchHost.ResearchHost;
+  const threads = yield* ThreadManagementService.ThreadManagementService;
+  const built = yield* WebResearchToolkit;
+  for (const name of ["web_read", "web_search"] as const) {
+    const tool = WebResearchToolkit.tools[name];
+    yield* server.addTool({
+      tool: new McpSchema.Tool({
+        name: tool.name,
+        description: Tool.getDescription(tool),
+        inputSchema: Tool.getJsonSchema(tool),
+        outputSchema: Tool.getJsonSchemaFromSchema(tool.successSchema),
+        annotations: {
+          ...Context.getOption(tool.annotations, Tool.Title).pipe(
+            Option.map((title) => ({ title })),
+            Option.getOrUndefined,
+          ),
+          readOnlyHint: Context.get(tool.annotations, Tool.Readonly),
+          destructiveHint: Context.get(tool.annotations, Tool.Destructive),
+          idempotentHint: Context.get(tool.annotations, Tool.Idempotent),
+          openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
+        },
+      }),
+      annotations: bareToolAnnotations(tool),
+      handle: (payload) =>
+        Effect.withFiber((fiber) =>
+          built.handle(name, payload).pipe(
+            Stream.unwrap,
+            Stream.run(Sink.last()),
+            Effect.flatMap(Effect.fromOption),
+            Effect.provideService(ResearchHost.ResearchHost, research),
+            Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+            Effect.provideService(
+              McpInvocationContext.McpInvocationContext,
+              Context.getUnsafe(fiber.context, McpInvocationContext.McpInvocationContext),
+            ),
+            Effect.map(
+              ({ encodedResult }) =>
+                new McpSchema.CallToolResult({
+                  structuredContent: encodedResult,
+                  content: [{ type: "text", text: encodeJsonText(encodedResult) }],
+                }),
+            ),
+            Effect.catchTags({
+              AiError: (error) =>
+                Effect.fail(
+                  error.reason._tag === "ToolParameterValidationError"
+                    ? new McpSchema.InvalidParams({ message: error.reason.message })
+                    : new McpSchema.InternalError({ message: "The research request failed." }),
+                ),
+              NoSuchElementError: () =>
+                Effect.fail(
+                  new McpSchema.InternalError({
+                    message: "The research request returned no result.",
+                  }),
+                ),
+              OrchestratorMcpFailure: (error) => {
+                const failure = { code: error.code, message: error.message };
+                // outputSchema describes success. SDK clients also validate error structuredContent.
+                return Effect.succeed(
+                  new McpSchema.CallToolResult({
+                    isError: true,
+                    content: [{ type: "text", text: encodeJsonText(failure) }],
+                  }),
+                );
+              },
+            }),
+          ),
+        ),
+    });
+  }
+});
+
+// One environment-owned reader/cache/limiter is shared by all MCP sessions.
+export const layerWebResearchToolkit = Layer.effectDiscard(registerWebResearch()).pipe(
+  Layer.provide(McpToolAccess.HandlersLayer.layer(WebResearchHandlers.layer)),
+  Layer.provide(ResearchHost.layer),
+);
+
+const layerWebResearch = layerWebResearchToolkit.pipe(
+  Layer.provide(SessionRead.layer),
+  Layer.provide(
+    WebResearch.layer.pipe(
+      Layer.provide(
+        Search.layer.pipe(
+          Layer.provide(NodeHttpClient.layerNodeHttp),
+          Layer.provide(ServerSecretStore.layer),
+        ),
+      ),
+      Layer.provide(PageCache.layer),
+      Layer.provide(PublicHttp.layer),
+      Layer.provide(PublicRender.layer),
+      Layer.provide(
+        TinyFish.layer.pipe(
+          Layer.provide(NodeHttpClient.layerNodeHttp),
+          Layer.provide(ServerSecretStore.layer),
+        ),
+      ),
+    ),
+  ),
+);
+
 const layerPreviewStandardToolkitRegistration = toolkitRegistration(
   PreviewStandardToolkit,
   PreviewHandlers.layerStandard,
@@ -1229,8 +1781,162 @@ const layerPreviewSnapshotRegistration = imageToolRegistration(
   PreviewHandlers.layerSnapshot,
 );
 
+const decodeSavedPreviewAuthorization = Schema.decodeUnknownEffect(
+  PeerSavedPreviewAuthorizationRequest,
+);
+const layerSavedPreviewAuthorization = Layer.unwrap(
+  Effect.gen(function* () {
+    const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+    const threads = yield* Effect.serviceOption(ThreadManagementService.ThreadManagementService);
+    const settings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
+    const requests = yield* Effect.serviceOption(RequestReceipts.McpRequestReceipts);
+    const registry = yield* Effect.serviceOption(McpSessionRegistry.McpSessionRegistry);
+    const router = yield* Effect.serviceOption(HttpRouter.HttpRouter);
+    if (
+      Option.isNone(authority) ||
+      Option.isNone(threads) ||
+      Option.isNone(settings) ||
+      Option.isNone(requests) ||
+      Option.isNone(registry) ||
+      Option.isNone(router)
+    )
+      return Layer.empty;
+    const support = HttpRouter.add(
+      "GET",
+      "/mcp/peer-control/saved-preview",
+      Effect.succeed(
+        HttpServerResponse.jsonUnsafe({ version: 1, purpose: "saved-preview-authorization" }),
+      ),
+    );
+    const authorize = HttpRouter.add(
+      "POST",
+      "/mcp/peer-control/saved-preview",
+      Effect.gen(function* () {
+        if (
+          Option.isNone(authority) ||
+          Option.isNone(threads) ||
+          Option.isNone(settings) ||
+          Option.isNone(requests)
+        )
+          return HttpServerResponse.empty({ status: 409 });
+        const http = yield* HttpServerRequest.HttpServerRequest;
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        return yield* Effect.gen(function* () {
+          const input = yield* decodeSavedPreviewAuthorization(yield* http.json).pipe(
+            Effect.mapError(
+              () =>
+                new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message: "Invalid saved-preview authorization context.",
+                }),
+            ),
+          );
+          if (
+            scope.client?.linked !== true ||
+            scope.authority === undefined ||
+            !("envelope" in scope.authority) ||
+            input.environmentId !== scope.environmentId ||
+            input.generation !== scope.authority.peer.generation
+          )
+            return yield* new OrchestratorMcpFailure({
+              code: "capability_denied",
+              message:
+                "Saved-preview authorization needs its authenticated original destination generation.",
+            });
+          yield* McpRouting.withContext(input, PreviewHandlers.authorizeSnapshot).pipe(
+            Effect.catchTags({
+              PreviewAutomationUnavailableError: (error) =>
+                Effect.fail(
+                  new OrchestratorMcpFailure({ code: "capability_denied", message: error.message }),
+                ),
+            }),
+            Effect.provideService(McpRouting.CurrentTool, PreviewSnapshotTool),
+            Effect.provideService(ThreadManagementService.ThreadManagementService, threads.value),
+            Effect.provideService(PeerAuthority.PeerAuthority, authority.value),
+            Effect.provideService(ServerSettings.ServerSettingsService, settings.value),
+          );
+          return HttpServerResponse.jsonUnsafe({ ...input, authorized: true });
+        }).pipe(Effect.orElseSucceed((error) => peerAuthorityFailure(error)));
+      }),
+    );
+    return Layer.merge(support, authorize).pipe(
+      Layer.provide(
+        layerMcpAuthMiddleware.pipe(
+          Layer.provide(Layer.succeed(McpSessionRegistry.McpSessionRegistry, registry.value)),
+          Layer.provide(Layer.succeed(PeerAuthority.PeerAuthority, authority.value)),
+        ),
+      ),
+      Layer.provide(Layer.succeed(HttpRouter.HttpRouter, router.value)),
+    );
+  }),
+);
+
+const decodePreviewViewerInput = Schema.decodeUnknownEffect(PreviewViewerOpenInput);
+const decodePreviewViewerClose = Schema.decodeUnknownEffect(PreviewViewerCloseInput);
+const layerPreviewViewerAuthorization = Layer.unwrap(
+  Effect.gen(function* () {
+    const viewers = yield* Effect.serviceOption(ServerBrowserStream.PreviewViewers);
+    const registry = yield* Effect.serviceOption(McpSessionRegistry.McpSessionRegistry);
+    const router = yield* Effect.serviceOption(HttpRouter.HttpRouter);
+    if (Option.isNone(viewers) || Option.isNone(registry) || Option.isNone(router))
+      return Layer.empty;
+    return Layer.mergeAll(
+      HttpRouter.add(
+        "GET",
+        "/mcp/peer-control/preview-viewer",
+        Effect.gen(function* () {
+          const scope = yield* McpInvocationContext.McpInvocationContext;
+          return scope.client?.linked === true
+            ? HttpServerResponse.jsonUnsafe({ version: 1, purpose: "preview-viewer" })
+            : HttpServerResponse.empty({ status: 403 });
+        }),
+      ),
+      HttpRouter.add(
+        "POST",
+        "/mcp/peer-control/preview-viewer",
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const scope = yield* McpInvocationContext.McpInvocationContext;
+          return yield* Effect.gen(function* () {
+            const input = yield* decodePreviewViewerInput(yield* request.json).pipe(
+              Effect.mapError(
+                () =>
+                  new OrchestratorMcpFailure({
+                    code: "invalid_request",
+                    message: "Invalid browser viewer resource.",
+                  }),
+              ),
+            );
+            return HttpServerResponse.jsonUnsafe(yield* viewers.value.accept(scope, input));
+          }).pipe(Effect.orElseSucceed((error) => peerAuthorityFailure(error)));
+        }),
+      ),
+      HttpRouter.add(
+        "POST",
+        "/mcp/peer-control/preview-viewer/close",
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const scope = yield* McpInvocationContext.McpInvocationContext;
+          if (scope.client?.linked !== true) return HttpServerResponse.empty({ status: 403 });
+          const input = yield* decodePreviewViewerClose(yield* request.json);
+          return HttpServerResponse.jsonUnsafe(
+            yield* viewers.value.close(AuthSessionId.make(scope.client.sessionId), input.viewerId),
+          );
+        }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
+      ),
+    ).pipe(
+      Layer.provide(layerMcpAuthMiddleware),
+      Layer.provide(Layer.succeed(McpSessionRegistry.McpSessionRegistry, registry.value)),
+      Layer.provide(Layer.succeed(HttpRouter.HttpRouter, router.value)),
+    );
+  }),
+);
+
 export const layerPreviewToolkit = Layer.mergeAll(
+  layerPreviewViewerAuthorization,
+  layerSavedPreviewAuthorization,
   layerPreviewStandardToolkitRegistration,
+  toolkitRegistration(PreviewWatchToolkit, PreviewWatchHandlers.layer),
   layerPreviewSnapshotRegistration,
 );
 
@@ -1253,7 +1959,7 @@ const layerPreviewControlsRegistration = toolkitRegistration(
   PreviewControlsHandlers.layer,
 );
 
-const layerEnvironmentToolkit = toolkitRegistration(
+export const layerEnvironmentToolkit = toolkitRegistration(
   EnvironmentToolkit,
   EnvironmentHandlers.layer,
 ).pipe(Layer.provide(ThreadCommandExecutor.layer));
@@ -1270,6 +1976,9 @@ export const layerPullRequestsToolkit = toolkitRegistration(
   PullRequestsHandlers.layer,
 ).pipe(Layer.provide(PullRequestWatchService.layer));
 
+// Fork: Issue links (toolboxmd/t3code#28).
+const layerIssuesToolkitRegistration = toolkitRegistration(IssuesToolkit, IssuesHandlers.layer);
+
 const layerDeviceStandardToolkitRegistration = toolkitRegistration(
   DeviceStandardToolkit,
   DeviceHandlers.layerStandard,
@@ -1280,9 +1989,341 @@ const layerDeviceScreenshotRegistration = imageToolRegistration(
   DeviceHandlers.layerScreenshot,
 );
 
+const decodeQualifiedAssetResource = Schema.decodeUnknownEffect(QualifiedAssetResource);
+const decodeDeviceViewerInput = Schema.decodeUnknownEffect(DeviceViewerOpenInput);
+const layerDeviceViewerAuthorization = Layer.unwrap(
+  Effect.gen(function* () {
+    const viewers = yield* Effect.serviceOption(DeviceHubProxy.DeviceViewers);
+    const registry = yield* Effect.serviceOption(McpSessionRegistry.McpSessionRegistry);
+    const router = yield* Effect.serviceOption(HttpRouter.HttpRouter);
+    if (Option.isNone(viewers) || Option.isNone(registry) || Option.isNone(router))
+      return Layer.empty;
+    return Layer.mergeAll(
+      HttpRouter.add(
+        "GET",
+        "/mcp/peer-control/device-viewer",
+        Effect.gen(function* () {
+          const scope = yield* McpInvocationContext.McpInvocationContext;
+          return scope.client?.linked === true
+            ? HttpServerResponse.jsonUnsafe({ version: 1, purpose: "device-viewer" })
+            : HttpServerResponse.empty({ status: 403 });
+        }),
+      ),
+      HttpRouter.add(
+        "POST",
+        "/mcp/peer-control/device-viewer",
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const scope = yield* McpInvocationContext.McpInvocationContext;
+          return yield* Effect.gen(function* () {
+            const input = yield* decodeDeviceViewerInput(yield* request.json).pipe(
+              Effect.mapError(
+                () =>
+                  new OrchestratorMcpFailure({
+                    code: "invalid_request",
+                    message: "Invalid device viewer resource.",
+                  }),
+              ),
+            );
+            return HttpServerResponse.jsonUnsafe(yield* viewers.value.accept(scope, input));
+          }).pipe(Effect.orElseSucceed((error) => peerAuthorityFailure(error)));
+        }),
+      ),
+      HttpRouter.add(
+        "POST",
+        "/mcp/peer-control/device-viewer/close",
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const scope = yield* McpInvocationContext.McpInvocationContext;
+          if (scope.client?.linked !== true) return HttpServerResponse.empty({ status: 403 });
+          const input = yield* decodeDeviceViewerCloseInput(yield* request.json);
+          return HttpServerResponse.jsonUnsafe(
+            yield* viewers.value.close(AuthSessionId.make(scope.client.sessionId), input.viewerId),
+          );
+        }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
+      ),
+    ).pipe(
+      Layer.provide(layerMcpAuthMiddleware),
+      Layer.provide(Layer.succeed(McpSessionRegistry.McpSessionRegistry, registry.value)),
+      Layer.provide(Layer.succeed(HttpRouter.HttpRouter, router.value)),
+    );
+  }),
+);
+
 export const layerDeviceToolkit = Layer.mergeAll(
+  layerDeviceViewerAuthorization,
   layerDeviceStandardToolkitRegistration,
   layerDeviceScreenshotRegistration,
+);
+
+const layerPeerControl = Layer.unwrap(
+  Effect.gen(function* () {
+    const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+    const secrets = yield* Effect.serviceOption(RemoteSecretRequests.RemoteSecretRequests);
+    const secretSupport = HttpRouter.add(
+      "GET",
+      "/mcp/peer-control/secrets",
+      Effect.succeed(
+        Option.isSome(secrets)
+          ? HttpServerResponse.jsonUnsafe({
+              version: 1,
+              families: ["schedule.webhook-signature"],
+              consumers: ["schedule_task"],
+            } satisfies typeof RemoteSecretSupport.Type)
+          : HttpServerResponse.empty({ status: 409 }),
+      ),
+    );
+    const secretControl = HttpRouter.add(
+      "POST",
+      "/mcp/peer-control/secrets",
+      Effect.gen(function* () {
+        if (Option.isNone(secrets)) return HttpServerResponse.empty({ status: 409 });
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const result = yield* secrets.value.control(
+          scope,
+          yield* decodeSecretControl(yield* request.json),
+        );
+        return HttpServerResponse.jsonUnsafe(result);
+      }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 403 }))),
+    );
+    const secretReceipt = HttpRouter.add(
+      "POST",
+      "/mcp/peer-control/secrets/receipt",
+      Effect.gen(function* () {
+        if (Option.isNone(secrets)) return HttpServerResponse.empty({ status: 409 });
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const receipt = yield* secrets.value.receipt(
+          scope,
+          yield* decodeSecretReceiptQuery(yield* request.json),
+        );
+        return Option.isSome(receipt)
+          ? HttpServerResponse.jsonUnsafe(receipt.value)
+          : HttpServerResponse.empty({ status: 204 });
+      }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 403 }))),
+    );
+    const secretRetirement = HttpRouter.add(
+      "POST",
+      "/mcp/peer-control/secrets/retire",
+      Effect.succeed(HttpServerResponse.empty({ status: 403 })),
+    );
+    const automationSupport = HttpRouter.add(
+      "GET",
+      "/mcp/peer-control/automation",
+      Effect.succeed(
+        Option.isSome(authority)
+          ? HttpServerResponse.jsonUnsafe({ version: 1 })
+          : HttpServerResponse.empty({ status: 409 }),
+      ),
+    );
+    const automationDisable = HttpRouter.add(
+      "POST",
+      "/mcp/peer-control/automation-disable",
+      Effect.succeed(HttpServerResponse.empty({ status: 403 })),
+    );
+    const post = HttpRouter.add(
+      "POST",
+      "/mcp/peer-control",
+      Effect.gen(function* () {
+        if (Option.isNone(authority)) return HttpServerResponse.empty({ status: 409 });
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const result = yield* Effect.gen(function* () {
+          const input = yield* decodePeerExchange(yield* request.json);
+          return yield* authority.value.exchange(scope, input);
+        }).pipe(Effect.result);
+        return result._tag === "Success"
+          ? HttpServerResponse.jsonUnsafe(result.success)
+          : HttpServerResponse.empty({ status: 403 });
+      }),
+    );
+    const streaming = HttpRouter.add(
+      "GET",
+      "/mcp/peer-control/stream",
+      Effect.gen(function* () {
+        if (Option.isNone(authority)) return HttpServerResponse.empty({ status: 409 });
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const peer = yield* decodePeerSession(request.headers[PeerAuthority.LINK_HEADER]);
+        yield* authority.value.enroll(scope, peer);
+        const encoder = new TextEncoder();
+        const updates = Stream.unfold(0, (cursor) =>
+          authority.value
+            .exchange(scope, { ...peer, answers: [], after: cursor })
+            .pipe(
+              Effect.map(
+                (batch) =>
+                  [encoder.encode(`data: ${encodeJsonText(batch)}\n\n`), batch.cursor] as const,
+              ),
+            ),
+        );
+        return HttpServerResponse.stream(
+          Stream.concat(Stream.make(encoder.encode(": peer-control\n\n")), updates),
+          {
+            headers: {
+              "content-type": "text/event-stream",
+              "cache-control": "no-store, no-transform",
+              "x-accel-buffering": "no",
+            },
+          },
+        );
+      }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 403 }))),
+    );
+    const lifecycle = yield* Effect.serviceOption(PeerTaskLifecycle.PeerTaskLifecycle);
+    const pendingRequests = yield* Effect.serviceOption(PendingRequests);
+    const requests = yield* Effect.serviceOption(RequestReceipts.McpRequestReceipts);
+    const attachments = yield* Effect.serviceOption(AttachmentStaging.AttachmentStaging);
+    const downloadBrowser = yield* Effect.serviceOption(ServerBrowser.ServerBrowser);
+    if (Option.isNone(authority)) return Layer.merge(post, streaming);
+    const pendingRequestProtocol = HttpRouter.add(
+      "GET",
+      "/mcp/peer-control/pending-requests",
+      Effect.succeed(
+        Option.isSome(pendingRequests)
+          ? HttpServerResponse.jsonUnsafe({ version: 1 })
+          : HttpServerResponse.empty({ status: 409 }),
+      ),
+    );
+    const tasks = Layer.merge(
+      HttpRouter.add(
+        "GET",
+        "/mcp/peer-control/tasks",
+        Effect.succeed(
+          Option.isSome(lifecycle)
+            ? HttpServerResponse.jsonUnsafe({ version: 1 })
+            : HttpServerResponse.empty({ status: 409 }),
+        ),
+      ),
+      HttpRouter.add(
+        "POST",
+        "/mcp/peer-control/tasks",
+        Effect.gen(function* () {
+          if (Option.isNone(lifecycle)) return HttpServerResponse.empty({ status: 409 });
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const scope = yield* McpInvocationContext.McpInvocationContext;
+          return yield* Effect.gen(function* () {
+            const input = yield* decodeTaskLifecycle(yield* request.json);
+            return HttpServerResponse.jsonUnsafe(yield* lifecycle.value.execute(scope, input));
+          }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 403 })));
+        }),
+      ),
+    );
+    const requestProtocol = HttpRouter.add(
+      "GET",
+      "/mcp/peer-control/requests",
+      Effect.succeed(
+        Option.isSome(requests)
+          ? HttpServerResponse.jsonUnsafe({ version: 1, attachments: Option.isSome(attachments) })
+          : HttpServerResponse.empty({ status: 409 }),
+      ),
+    );
+    const attachmentAccess = Layer.merge(
+      HttpRouter.add(
+        "GET",
+        "/mcp/peer-control/attachment",
+        Effect.gen(function* () {
+          const scope = yield* McpInvocationContext.McpInvocationContext;
+          return Option.isSome(attachments) && scope.client?.linked === true
+            ? HttpServerResponse.jsonUnsafe({
+                version: 1,
+                purpose: "attachment-read",
+                nativeBrowserDownloads:
+                  Option.isSome(downloadBrowser) &&
+                  downloadBrowser.value.inspectDownload !== undefined &&
+                  downloadBrowser.value.readDownloadBlock !== undefined
+                    ? 1
+                    : undefined,
+              })
+            : HttpServerResponse.empty({ status: 409 });
+        }),
+      ),
+      HttpRouter.add(
+        "POST",
+        "/mcp/peer-control/attachment",
+        Effect.gen(function* () {
+          if (Option.isNone(attachments)) return HttpServerResponse.empty({ status: 409 });
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const scope = yield* McpInvocationContext.McpInvocationContext;
+          if (
+            request.url !== "/mcp/peer-control/attachment" ||
+            (request.headers["t3-attachment-check-only"] !== undefined &&
+              request.headers["t3-attachment-check-only"] !== "1")
+          )
+            return HttpServerResponse.empty({ status: 400 });
+          const resource = yield* decodeQualifiedAssetResource(yield* request.json);
+          if (resource._tag === "native-browser-download") {
+            if (
+              Option.isNone(downloadBrowser) ||
+              downloadBrowser.value.inspectDownload === undefined ||
+              downloadBrowser.value.readDownloadBlock === undefined
+            )
+              return HttpServerResponse.empty({ status: 409 });
+            const authorize = authority.value.recheckAttachmentRead(scope, resource, "preview");
+            yield* downloadBrowser.value.inspectDownload(resource, authorize);
+            const headers = {
+              "cache-control": "no-store",
+              "t3-attachment-producer": "preview",
+              "t3-download-digest": resource.digest,
+              "t3-download-size": String(resource.sizeBytes),
+            };
+            if (request.headers["t3-attachment-check-only"] === "1")
+              return HttpServerResponse.empty({ status: 204, headers });
+            const offsetText = request.headers["t3-download-offset"];
+            if (offsetText === undefined || !/^(0|[1-9][0-9]{0,9})$/.test(offsetText))
+              return HttpServerResponse.empty({ status: 400 });
+            const bytes = yield* downloadBrowser.value.readDownloadBlock(
+              resource,
+              Number(offsetText),
+              authorize,
+            );
+            yield* authorize;
+            return HttpServerResponse.uint8Array(bytes, {
+              headers: {
+                ...headers,
+                "content-type": "application/octet-stream",
+                "x-content-type-options": "nosniff",
+                "t3-download-block-digest": Hex.encode(sha256(bytes)),
+              },
+            });
+          }
+          const authorize = (capability: "device" | "preview") =>
+            authority.value.recheckAttachmentRead(scope, resource, capability);
+          if (request.headers["t3-attachment-check-only"] === "1") {
+            const producer = yield* attachments.value.authorizeReference(resource, authorize);
+            return HttpServerResponse.empty({
+              status: 204,
+              headers: { "cache-control": "no-store", "t3-attachment-producer": producer },
+            });
+          }
+          const bytes = yield* attachments.value.readReference(resource, authorize);
+          const producer = yield* attachments.value.authorizeReference(resource, authorize);
+          return HttpServerResponse.uint8Array(bytes, {
+            headers: {
+              "t3-attachment-producer": producer,
+              "cache-control": "no-store",
+              "content-type": "application/octet-stream",
+              "x-content-type-options": "nosniff",
+            },
+          });
+        }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 403 }))),
+      ),
+    );
+    return Layer.mergeAll(
+      secretSupport,
+      secretControl,
+      secretRetirement,
+      secretReceipt,
+      automationSupport,
+      automationDisable,
+      post,
+      streaming,
+      tasks,
+      requestProtocol,
+      pendingRequestProtocol,
+      attachmentAccess,
+    );
+  }),
 );
 
 /**
@@ -1305,30 +2346,37 @@ export const layerInProcessMcpServer = McpServer.middleware<{
 ).pipe(Layer.provideMerge(McpServer.McpServer.layer));
 
 export const layerMcpTransport = <RA, RE, RR>(registrations: Layer.Layer<RA, RE, RR>) =>
-  McpServer.layerHttp({
-    name: "T3 Code",
-    version: packageJson.version,
-    path: "/mcp",
-    // The first protocol is the fallback for clients that offer an unknown version.
-    protocols: [McpProtocol.v2025_06_18, McpProtocol.v2026_07_28],
-    allowSessionTermination: true,
-    registrations,
-  }).pipe(Layer.provide(layerMcpAuthMiddleware));
+  Layer.merge(
+    McpServer.layerHttp({
+      name: "T3 Code",
+      version: packageJson.version,
+      path: "/mcp",
+      // The first protocol is the fallback for clients that offer an unknown version.
+      protocols: [McpProtocol.v2025_06_18, McpProtocol.v2026_07_28],
+      allowSessionTermination: true,
+      registrations,
+    }),
+    layerPeerControl,
+  ).pipe(Layer.provide(layerMcpAuthMiddleware));
 
 /** Every tool the T3 MCP server advertises. AgentContextBudget.test.ts measures this set. */
 export const layerTools = Layer.mergeAll(
   layerPreviewToolkit,
   layerOrchestratorToolkit,
   layerThreadToolkit,
+  toolkitRegistration(ThreadMcpToolkit, ThreadMcpHandlers.layer),
   layerAttachmentToolkit,
   layerProjectRegistration,
   layerEnvironmentToolkit,
   layerPreviewControlsRegistration,
   layerWorktreeToolkitRegistration,
   layerPullRequestsToolkit,
+  layerIssuesToolkitRegistration,
   layerDeviceToolkit,
+  toolkitRegistration(SpectrumToolkit.SpectrumToolkit, SpectrumToolkit.layer),
   layerHtmlToolkit,
   layerMessageToolkit,
+  layerWebResearch,
 );
 
 const layerToolExposure = Layer.effect(
@@ -1372,3 +2420,5 @@ export const layerToolSearch = Layer.mergeAll(
 ).pipe(Layer.provide(layerToolExposure));
 
 export const layer = layerMcpTransport(Layer.mergeAll(layerTools, layerToolSearch));
+
+const decodeDeviceViewerCloseInput = Schema.decodeUnknownEffect(DeviceViewerCloseInput);
