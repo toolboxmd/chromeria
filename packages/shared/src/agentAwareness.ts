@@ -95,6 +95,7 @@ export interface ProjectThreadAwarenessV2Input {
     | "pendingBackgroundTasks"
     | "pendingRuntimeRequest"
     | "settledOverride"
+    | "remotePendingRequest"
     | "status"
     | "title"
     | "updatedAt"
@@ -167,6 +168,8 @@ function resolveThreadAwarenessPhaseV2(
   if (subagentRequest !== null) {
     return subagentRequest.waitsForInput === true ? "waiting_for_input" : "waiting_for_approval";
   }
+  if (thread.remotePendingRequest === "approval") return "waiting_for_approval";
+  if (thread.remotePendingRequest === "user_input") return "waiting_for_input";
   switch (thread.activityRunStatus ?? thread.status) {
     case "preparing":
     case "starting":

@@ -35,11 +35,13 @@ export type T3McpToolSummaryAction =
   | "queue-read"
   | "queue-edit"
   | "queue-cancel"
+  | "queue-resume"
   | "queue-reorder"
   | "queue-steer"
   | "question-list"
   | "question-read"
   | "question-respond"
+  | "question-dismiss"
   | "secret-request"
   | "worktree-handoff"
   | "worktree-list"
@@ -55,6 +57,8 @@ export type T3McpToolSummaryAction =
   | "environment-link"
   | "environment-unlink"
   | "environment-update"
+  | "attachment-inspect"
+  | "attachment-acquire"
   | "attachment-prepare"
   | "attachment-discard"
   | "attachment-send"
@@ -235,6 +239,12 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     "browser",
     "browser",
   ),
+  preview_fill_credential: tool(
+    ["Fill", "Filling", "Filled", "a vault credential in the preview browser"],
+    "browser",
+    "browser",
+  ),
+  preview_end_login: tool(["End", "Ending", "Ended", "a browser login"], "browser", "browser"),
   preview_upload: tool(
     ["Upload", "Uploading", "Uploaded", "files to the preview browser"],
     "browser",
@@ -252,6 +262,21 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
   ),
   preview_evaluate: tool(
     ["Evaluate", "Evaluating", "Evaluated", "script in the preview browser"],
+    "browser",
+    "browser",
+  ),
+  preview_watch_start: tool(
+    ["Subscribe", "Subscribing", "Subscribed", "to preview page changes"],
+    "browser",
+    "browser",
+  ),
+  preview_watch_read: tool(
+    ["Read", "Reading", "Read", "retained preview page changes"],
+    "browser",
+    "browser",
+  ),
+  preview_watch_stop: tool(
+    ["Stop", "Stopping", "Stopped", "a preview page subscription"],
     "browser",
     "browser",
   ),
@@ -276,6 +301,16 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     "browser",
   ),
   device_list: tool(["List", "Listing", "Listed", "simulators and emulators"], "device", "device"),
+  device_commands: tool(
+    ["Discover", "Discovering", "Discovered", "supported device commands"],
+    "device",
+    "device",
+  ),
+  device_execute: tool(
+    ["Execute", "Executing", "Executed", "a device command"],
+    "device",
+    "device",
+  ),
   device_open: tool(
     ["Open", "Opening", "Opened", "a device in the Device panel"],
     "device",
@@ -298,6 +333,7 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
   ),
   t3_queue_list: tool(["List", "Listing", "Listed", "queued messages"], "queue-list"),
   t3_queue_read: tool(["Read", "Reading", "Read", "a queued message"], "queue-read"),
+  t3_queue_resume: tool(["Resume", "Resuming", "Resumed", "a held queue"], "queue-resume"),
   t3_queue_edit: tool(["Edit", "Editing", "Edited", "a queued message"], "queue-edit"),
   t3_queue_cancel: tool(
     ["Cancel", "Canceling", "Requested cancellation of", "a queued run"],
@@ -316,6 +352,10 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
   t3_pending_request_respond: tool(
     ["Answer", "Answering", "Answered", "pending questions"],
     "question-respond",
+  ),
+  t3_pending_request_dismiss: tool(
+    ["Dismiss", "Dismissing", "Dismissed", "a pending question"],
+    "question-dismiss",
   ),
   t3_thread_configuration: tool(
     ["Read", "Reading", "Read", "thread configuration"],
@@ -362,6 +402,14 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
   t3_project_update: tool(["Update", "Updating", "Updated", "a project"], "project-update"),
   t3_project_delete: tool(["Delete", "Deleting", "Deleted", "a project"], "project-delete"),
   t3_project_clone: tool(["Clone", "Cloning", "Cloned", "a repository"], "project-clone"),
+  t3_attachment_inspect: tool(
+    ["Inspect", "Inspecting", "Inspected", "an attachment upload"],
+    "attachment-inspect",
+  ),
+  t3_attachment_acquire: tool(
+    ["Acquire", "Acquiring", "Recorded acquisition of", "an attachment"],
+    "attachment-acquire",
+  ),
   t3_attachment_prepare_upload: tool(
     ["Prepare", "Preparing", "Prepared", "an attachment upload"],
     "attachment-prepare",

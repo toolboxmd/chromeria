@@ -4,6 +4,7 @@ import {
   DeviceBootError,
   DeviceError,
   DeviceId,
+  EnvironmentId,
   DeviceOperationError,
   LOCAL_DEVICE_HOST_ID,
   ThreadId,
@@ -352,6 +353,60 @@ const fixture = Effect.fn("fixture")(function* (
 });
 
 describe("device setup consent", () => {
+  it.effect(
+    "viewer checks retain the exact opening without preparing a host or closing later work",
+    () =>
+      Effect.gen(function* () {
+        const { service, settings, starts, requests } = yield* fixture();
+        yield* service.configure({ enabled: true });
+        const input = {
+          threadId: ThreadId.make("viewer-thread"),
+          hostId: LOCAL_DEVICE_HOST_ID,
+          deviceId: DeviceId.make("Pixel_API_35"),
+          platform: "android" as const,
+        };
+        const opening = yield* service.open(input);
+        if (!opening.toolSessionId) return yield* Effect.die("Opening has no exact identity");
+        const resource = {
+          type: "device" as const,
+          environmentId: EnvironmentId.make("local-env"),
+          ...input,
+          deviceId: opening.deviceId,
+          toolSessionId: opening.toolSessionId,
+        };
+        const footprint = { starts: starts.length, requests: requests.length };
+        expect((yield* service.authorizeViewer(resource)).hostId).toBe(LOCAL_DEVICE_HOST_ID);
+        expect({ starts: starts.length, requests: requests.length }).toEqual(footprint);
+        for (const replacement of [
+          { ...resource, threadId: ThreadId.make("rival-thread") },
+          { ...resource, hostId: "rival-host" },
+          { ...resource, deviceId: "rival-device" },
+          { ...resource, platform: "ios" as const },
+          { ...resource, toolSessionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+        ])
+          expect((yield* service.authorizeViewer(replacement).pipe(Effect.result))._tag).toBe(
+            "Failure",
+          );
+        yield* service.close({ ...input, deviceId: opening.deviceId });
+        const later = yield* service.open({ ...input, deviceId: opening.deviceId });
+        expect(later.toolSessionId).not.toBe(opening.toolSessionId);
+        const afterReopen = { starts: starts.length, requests: requests.length };
+        expect((yield* service.authorizeViewer(resource).pipe(Effect.result))._tag).toBe("Failure");
+        expect((yield* service.sessionsForThread(input.threadId))[0]?.toolSessionId).toBe(
+          later.toolSessionId,
+        );
+        expect({ starts: starts.length, requests: requests.length }).toEqual(afterReopen);
+        yield* Ref.update(settings, (current) => ({ ...current, enableDeviceSupport: false }));
+        if (!later.toolSessionId) return yield* Effect.die("Reopening has no exact identity");
+        expect(
+          (yield* service
+            .authorizeViewer({ ...resource, toolSessionId: later.toolSessionId })
+            .pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        expect({ starts: starts.length, requests: requests.length }).toEqual(afterReopen);
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("exposes daemon startup diagnostics through agent readiness and host status", () =>
     Effect.gen(function* () {
       const startupError = new DeviceHost.AgentDeviceStartError({
@@ -1981,8 +2036,8 @@ describe("agent session release on close", () => {
 
   it.effect("publishes a reopened session only after the old claim is released and removed", () =>
     Effect.gen(function* () {
-      const entered = yield* Queue.unbounded<void>();
       const releasing = yield* Deferred.make<void>();
+      const reopening = yield* Deferred.make<void>();
       const finish = yield* Deferred.make<void>();
       const { service } = yield* fixture(
         Effect.void,
@@ -1997,18 +2052,19 @@ describe("agent session release on close", () => {
             yield* Deferred.await(finish);
             return "ok" as const;
           }),
-          onPlatformAvailability: Queue.offer(entered, undefined),
         },
       );
       yield* service.configure({ enabled: true, agentAccessEnabled: true });
       const threadId = ThreadId.make("reopen");
       const session = yield* openClaim(service, threadId);
-      yield* Queue.take(entered);
       const publications = yield* service.subscribe;
       const closing = yield* service.close({ threadId }).pipe(Effect.forkChild);
       yield* Deferred.await(releasing);
-      const opening = yield* openClaim(service, threadId, session.deviceId).pipe(Effect.forkChild);
-      yield* Queue.take(entered);
+      const opening = yield* Deferred.succeed(reopening, undefined).pipe(
+        Effect.andThen(openClaim(service, threadId, session.deviceId)),
+        Effect.forkChild,
+      );
+      yield* Deferred.await(reopening);
       yield* Deferred.succeed(finish, undefined);
       yield* Fiber.join(closing);
       const reopened = yield* Fiber.join(opening);

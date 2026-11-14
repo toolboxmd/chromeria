@@ -4,7 +4,7 @@ import { expect, it, vi } from "vite-plus/test";
 const mocks = vi.hoisted(() => ({ readAccess: vi.fn() }));
 
 vi.mock(import("~/state/previewStream"), () => ({
-  readPreviewStreamAccess: mocks.readAccess,
+  mountPreviewStreamAccess: () => ({ release: () => {}, read: mocks.readAccess }),
 }));
 
 import { closeServerPictureInPicture, openServerPictureInPicture } from "./serverPictureInPicture";

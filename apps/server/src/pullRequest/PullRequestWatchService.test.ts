@@ -1,4 +1,5 @@
 import {
+  CommandId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -156,6 +157,7 @@ const makeHarness = Effect.fn("makePullRequestWatchHarness")(function* (
   );
   return {
     commands,
+    service,
     setWatching: (watching: boolean, target: PullRequestTarget) =>
       service.setWatching({ threadId: THREAD_ID, target, watching }),
   };
@@ -187,6 +189,29 @@ describe("PullRequestWatchService", () => {
           },
         ]);
       }
+    }),
+  );
+
+  it.effect("a watch keeps the caller's command id and purpose", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const purposeIntent = { version: 1, intent: { type: "unscoped" } } as const;
+      yield* harness.service.setWatching({
+        threadId: THREAD_ID,
+        target: { repository: "t3tools/t3code", number: 9 },
+        watching: true,
+        commandId: CommandId.make("server:mcp-pr-watch:request-1"),
+        purposeIntent,
+      });
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        {
+          type: "thread.pull-request.watch",
+          commandId: "server:mcp-pr-watch:request-1",
+          purposeIntent,
+          number: 9,
+          watching: true,
+        },
+      ]);
     }),
   );
 

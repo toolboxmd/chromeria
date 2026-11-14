@@ -29,14 +29,24 @@ import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 import { PreviewControlRequiredError } from "@t3tools/contracts";
 
+/** Internal effect context. Never included in public preview events or snapshots. */
+export type Authorize = () => Promise<void>;
+export interface ServerEvent {
+  readonly event: PreviewEvent;
+  readonly authorize?: Authorize;
+}
+
 export class PreviewManager extends Context.Service<
   PreviewManager,
   {
     readonly open: (
       input: PreviewOpenInput & {
         readonly automationOwner?: string;
+        /** A page already in the server browser, such as a popup a person opened from one. */
+        readonly serverPage?: boolean;
         /** Runs before the `opened` event publishes, so subscribers find state keyed by the tab. */
         readonly beforePublish?: (snapshot: PreviewSessionSnapshot) => void;
+        readonly authorize?: Authorize;
       },
     ) => Effect.Effect<PreviewSessionSnapshot, PreviewError>;
     readonly reportStatus: (
@@ -55,13 +65,16 @@ export class PreviewManager extends Context.Service<
     ) => Effect.Effect<void, PreviewError>;
     readonly resize: (
       input: PreviewResizeInput,
+      authorize?: Authorize,
     ) => Effect.Effect<PreviewSessionSnapshot, PreviewError>;
     readonly adjust: (
       input: PreviewAdjustInput,
+      authorize?: Authorize,
     ) => Effect.Effect<PreviewSessionSnapshot, PreviewError>;
     readonly close: (input: PreviewCloseInput) => Effect.Effect<void, PreviewError>;
     readonly list: (input: PreviewListInput) => Effect.Effect<PreviewListResult>;
     readonly events: Stream.Stream<PreviewEvent>;
+    readonly serverEvents: Stream.Stream<ServerEvent>;
     readonly subscribeEvents: Effect.Effect<PubSub.Subscription<PreviewEvent>, never, Scope.Scope>;
   }
 >()("t3/preview/Manager/PreviewManager") {}
@@ -127,7 +140,18 @@ export const make = Effect.gen(function* PreviewManagerMake() {
   const serverEpoch = yield* random.uuidV4();
   const stateRef = yield* SynchronizedRef.make<ManagerState>(initialState);
   const eventsPubSub = yield* PubSub.unbounded<PreviewEvent>();
+  const serverEventsPubSub = yield* PubSub.unbounded<ServerEvent>();
   const events: Stream.Stream<PreviewEvent> = Stream.fromPubSub(eventsPubSub);
+  const publish = Effect.fn("Manager.publish")(function* (
+    event: PreviewEvent,
+    authorize?: Authorize,
+  ) {
+    yield* PubSub.publish(eventsPubSub, event);
+    yield* PubSub.publish(serverEventsPubSub, {
+      event,
+      ...(authorize === undefined ? {} : { authorize }),
+    });
+  });
 
   /** Publish inside the lock to preserve state-transition order. */
   const mutateExistingSession = <R, E>(
@@ -136,6 +160,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     mutator: (
       session: PreviewSessionState,
     ) => Effect.Effect<{ next: PreviewSessionState; emit: PreviewEventDraft | null; result: R }, E>,
+    authorize?: Authorize,
   ): Effect.Effect<R, E | PreviewSessionLookupError> => {
     type ModifyResult =
       | { kind: "fail"; error: PreviewSessionLookupError }
@@ -154,11 +179,14 @@ export const make = Effect.gen(function* PreviewManagerMake() {
           Effect.fn("PreviewManager.commitMutation")(function* ({ next, emit, result }) {
             const revision = emit ? state.revision + 1 : state.revision;
             if (emit) {
-              yield* PubSub.publish(eventsPubSub, {
-                ...emit,
-                revision,
-                serverEpoch,
-              } as PreviewEvent);
+              yield* publish(
+                {
+                  ...emit,
+                  revision,
+                  serverEpoch,
+                } as PreviewEvent,
+                authorize,
+              );
             }
             const sessions = new Map(state.sessions);
             sessions.set(compositeKey(threadId, tabId), next);
@@ -198,6 +226,10 @@ export const make = Effect.gen(function* PreviewManagerMake() {
         ...(runtime === "server" && input.automationOwner !== undefined
           ? { automationOwner: input.automationOwner }
           : {}),
+        // Agents' tabs and pages that already exist there run in the server browser.
+        ...(runtime === "server" && (input.automationOwner !== undefined || input.serverPage)
+          ? { serverPage: true }
+          : {}),
         ...(input.reveal === undefined ? {} : { reveal: input.reveal }),
         updatedAt,
       };
@@ -211,15 +243,18 @@ export const make = Effect.gen(function* PreviewManagerMake() {
             snapshot,
           });
           input.beforePublish?.(snapshot);
-          yield* PubSub.publish(eventsPubSub, {
-            type: "opened",
-            threadId: input.threadId,
-            tabId,
-            createdAt: snapshot.updatedAt,
-            serverEpoch,
-            revision,
-            snapshot,
-          });
+          yield* publish(
+            {
+              type: "opened",
+              threadId: input.threadId,
+              tabId,
+              createdAt: snapshot.updatedAt,
+              serverEpoch,
+              revision,
+              snapshot,
+            },
+            input.authorize,
+          );
           return [snapshot, { sessions, revision }] as const;
         }),
       );
@@ -327,7 +362,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
   );
 
   const resize: PreviewManager["Service"]["resize"] = Effect.fn("PreviewManager.resize")(
-    function* (input) {
+    function* (input, authorize) {
       return yield* mutateExistingSession(
         input.threadId,
         input.tabId,
@@ -350,12 +385,13 @@ export const make = Effect.gen(function* PreviewManagerMake() {
             result: snapshot,
           };
         }),
+        authorize,
       );
     },
   );
 
   const adjust: PreviewManager["Service"]["adjust"] = Effect.fn("PreviewManager.adjust")(
-    function* (input) {
+    function* (input, authorize) {
       return yield* mutateExistingSession(
         input.threadId,
         input.tabId,
@@ -389,6 +425,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
             result: snapshot,
           };
         }),
+        authorize,
       );
     },
   );
@@ -421,7 +458,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
           return Effect.succeed([undefined, state] as const);
         }
         return Effect.as(
-          Effect.forEach(eventsToEmit, (event) => PubSub.publish(eventsPubSub, event), {
+          Effect.forEach(eventsToEmit, (event) => publish(event), {
             discard: true,
           }),
           [undefined, { sessions, revision }] as const,
@@ -486,6 +523,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     close,
     list,
     events,
+    serverEvents: Stream.fromPubSub(serverEventsPubSub),
     subscribeEvents: PubSub.subscribe(eventsPubSub),
   });
 }).pipe(Effect.withSpan("PreviewManager.make"));

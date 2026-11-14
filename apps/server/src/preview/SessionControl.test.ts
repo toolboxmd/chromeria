@@ -190,6 +190,161 @@ describe("SessionControl", () => {
     expect(events).toEqual(["navigation committed", "latest"]);
   });
 
+  it("bounds tab-wide pending input while reserving independent unblocking capacity", async () => {
+    const control = new SessionControl("agent");
+    await control.take("viewer");
+    const actions = Array.from({ length: 64 }, () => control.reserveInput(1, "action"));
+    expect(actions.every((release) => release !== null)).toBe(true);
+    expect(control.reserveInput(1, "action")).toBeNull();
+    const unblocking = Array.from({ length: 8 }, () => control.reserveInput(1, "control"));
+    expect(unblocking.every((release) => release !== null)).toBe(true);
+    expect(control.reserveInput(1, "control")).toBeNull();
+    const dialog = control.reserveInput(64 * 1024, "dialog");
+    expect(dialog).not.toBeNull();
+    expect(control.reserveInput(1, "dialog")).toBeNull();
+    dialog?.();
+    const dialogs = Array.from({ length: 8 }, () => control.reserveInput(1, "dialog"));
+    expect(dialogs.every((release) => release !== null)).toBe(true);
+    expect(control.reserveInput(1, "dialog")).toBeNull();
+    for (const release of dialogs) release?.();
+    await control.disconnect("viewer");
+    await control.take("replacement");
+    expect(control.reserveInput(1, "action")).toBeNull();
+    expect(control.reserveInput(1, "control")).toBeNull();
+    for (const release of [...actions, ...unblocking]) {
+      release?.();
+      release?.();
+    }
+    const recovered = control.reserveInput(256 * 1024, "action");
+    expect(recovered).not.toBeNull();
+    expect(control.reserveInput(1, "action")).toBeNull();
+    recovered?.();
+    expect(control.reserveInput(1, "action")).not.toBeNull();
+  });
+
+  it("enforces exact input byte ceilings and does not expand them after repeated release", () => {
+    const control = new SessionControl(null);
+    for (const [lane, maximum] of [
+      ["action", 256 * 1024],
+      ["control", 64 * 1024],
+      ["dialog", 64 * 1024],
+    ] as const) {
+      expect(control.reserveInput(maximum + 1, lane)).toBeNull();
+      expect(control.reserveInput(-1, lane)).toBeNull();
+      expect(control.reserveInput(Number.NaN, lane)).toBeNull();
+      const release = control.reserveInput(maximum, lane);
+      expect(release).not.toBeNull();
+      expect(control.reserveInput(1, lane)).toBeNull();
+      release?.();
+      release?.();
+      const one = control.reserveInput(1, lane);
+      expect(one).not.toBeNull();
+      expect(control.reserveInput(maximum, lane)).toBeNull();
+      one?.();
+    }
+  });
+
+  it("checks action authorization after draining earlier navigation", async () => {
+    const control = new SessionControl("agent");
+    const drained = Promise.withResolvers<void>();
+    const effects: string[] = [];
+    await control.agent("agent", async () => control.track(drained.promise));
+    let current = true;
+    const action = control.agent(
+      "agent",
+      async () => effects.push("click"),
+      undefined,
+      async () => {
+        if (!current) throw new BrowserControlInterrupted({ message: "Invocation retired" });
+      },
+    );
+    const refused = expect(action).rejects.toThrow("Invocation retired");
+    current = false;
+    drained.resolve();
+    await refused;
+    expect(effects).toEqual([]);
+    await expect(
+      control.agent(
+        "agent",
+        async () => "lawful",
+        undefined,
+        async () => {},
+      ),
+    ).resolves.toBe("lawful");
+  });
+
+  it("retired takeover releases only its own reservation after drain", async () => {
+    const control = new SessionControl("agent");
+    const drained = Promise.withResolvers<void>();
+    await control.agent("agent", async () => control.track(drained.promise));
+    let checks = 0;
+    const takeover = control.take("viewer", async () => {
+      if (++checks === 1) return;
+      throw new BrowserControlInterrupted({ message: "Invocation retired during drain" });
+    });
+    const refused = expect(takeover).rejects.toThrow("Invocation retired during drain");
+    drained.resolve();
+    await refused;
+    expect(control.controller).toBe(null);
+    await expect(control.take("later", async () => {})).resolves.toBeUndefined();
+    expect(control.controller).toBe("later");
+  });
+
+  it("refuses takeover before changing the existing control generation", async () => {
+    const control = new SessionControl("agent");
+    const generation = control.generation;
+    await expect(
+      control.take("viewer", async () => {
+        throw new BrowserControlInterrupted({ message: "Invocation retired" });
+      }),
+    ).rejects.toThrow("Invocation retired");
+    expect(control.controller).toBe(null);
+    expect(control.generation).toBe(generation);
+    await control.take("lawful");
+    expect(control.controller).toBe("lawful");
+  });
+
+  it("keeps disconnected human control when a replacement takeover fails authorization", async () => {
+    const control = new SessionControl("agent");
+    await control.take("viewer");
+    await control.disconnect("viewer");
+    let checks = 0;
+    await expect(
+      control.take("replacement", async () => {
+        if (++checks > 1) throw new Error("authorization retired");
+      }),
+    ).rejects.toThrow("authorization retired");
+    expect(control.humanDisconnected).toBe(true);
+    await expect(control.agent("agent", async () => "resumed")).rejects.toMatchObject({
+      reason: "humanControl",
+    });
+    await control.take("human");
+    await control.release("human");
+    await expect(control.agent("agent", async () => "resumed")).resolves.toBe("resumed");
+  });
+
+  it("hands only a disconnected human's claim to another viewer, keeping its generation", async () => {
+    const control = new SessionControl("agent");
+    expect(control.resume("viewer")).toBe(false);
+    await control.take("viewer");
+    expect(control.resume("other")).toBe(false);
+    await control.disconnect("viewer");
+    const generation = control.generation;
+    expect(control.resume("other")).toBe(true);
+    expect(control.controller).toBe("other");
+    expect(control.generation).toBe(generation);
+    await expect(control.human("viewer", async () => "stale")).rejects.toThrow(
+      "You do not control this browser tab.",
+    );
+    await expect(control.human("other", async () => "typed")).resolves.toBe("typed");
+    await control.release("other");
+    await expect(control.agent("agent", async () => "resumed")).resolves.toBe("resumed");
+    await control.take("viewer");
+    await control.disconnect("viewer");
+    await control.close();
+    expect(control.resume("other")).toBe(false);
+  });
+
   it("returns an action result before tracked navigation but drains it before already queued actions", async () => {
     const control = new SessionControl("agent");
     const committed = Promise.withResolvers<void>();
@@ -281,6 +436,12 @@ describe("SessionControl", () => {
     const started = Promise.withResolvers<void>();
     const finish = Promise.withResolvers<void>();
     const events: string[] = [];
+    const navigation = Promise.withResolvers<void>();
+    control.trackUntilHandoff(
+      navigation.promise.then(() => {
+        events.push("navigation committed");
+      }),
+    );
     const running = control.human("viewer", async () => {
       started.resolve();
       await finish.promise;
@@ -290,13 +451,30 @@ describe("SessionControl", () => {
     const queued = expect(
       control.human("viewer", async () => events.push("stale human action")),
     ).rejects.toThrow(BrowserControlInterrupted);
-    const disconnected = control.disconnect("viewer");
-    const resumed = control.agent("agent", async () => events.push("agent resumed"));
+    const disconnected = control.disconnect("viewer", async () => {
+      events.push("inputs released");
+    });
+    const refused = expect(
+      control.agent("agent", async () => events.push("agent resumed")),
+    ).rejects.toMatchObject({ reason: "humanControl" });
     expect(control.generation).toBe(2);
     expect(invalidations).toBe(2);
     finish.resolve();
-    await Promise.all([running, queued, disconnected, resumed]);
-    expect(events).toEqual(["human finished", "agent resumed"]);
+    await Promise.all([running, queued]);
+    navigation.resolve();
+    await Promise.all([running, queued, disconnected, refused]);
+    expect(events).toEqual(["human finished", "navigation committed", "inputs released"]);
+    await control.take("reconnected");
+    await control.human("reconnected", async () => events.push("human reconnected"));
+    await control.release("reconnected");
+    await control.agent("agent", async () => events.push("agent resumed"));
+    expect(events).toEqual([
+      "human finished",
+      "navigation committed",
+      "inputs released",
+      "human reconnected",
+      "agent resumed",
+    ]);
   });
 
   it("does not revive stale actions when takeover is released before running work finishes", async () => {

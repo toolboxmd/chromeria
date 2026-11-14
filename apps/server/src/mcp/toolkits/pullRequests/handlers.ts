@@ -1,5 +1,9 @@
+import { interactiveAuthority } from "../../../peer/PeerAuthorityRecord.ts";
+import { CurrentRequest } from "../../McpRequestReceipts.ts";
 import {
   CommandId,
+  normalizeTrackingReference,
+  type McpConfirmedOperation,
   type OrchestrationProjectShell,
   type PullRequestState,
   type OrchestrationV2ThreadShell,
@@ -84,7 +88,7 @@ function pullRequestListPosition(link: ThreadPullRequestLink): string {
 }
 
 export function listThreadPullRequests(
-  thread: Pick<OrchestrationV2ThreadShell, "pullRequests">,
+  thread: Pick<OrchestrationV2ThreadShell, "pullRequests" | "purposeDeliveries">,
   cursor?: string,
   states?: ReadonlyArray<PullRequestState>,
 ): ListThreadPullRequestsResult {
@@ -97,6 +101,9 @@ export function listThreadPullRequests(
   const page = after.slice(0, PULL_REQUEST_LIST_PAGE_SIZE);
   const pageKeys = new Set(page.map(({ link }) => threadPullRequestKeyOf(link)));
   return {
+    ...(thread.purposeDeliveries === undefined
+      ? {}
+      : { purposeDeliveries: thread.purposeDeliveries }),
     pullRequests: page.map(({ link }) => entryOf(link, chains)),
     // Stacks with a pull request on this page, whole.
     chains: chains
@@ -151,11 +158,35 @@ const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const random = yield* SecureRandom.SecureRandom;
 
-  const commandId = (tag: string, threadId: ThreadId) =>
-    random.uuidV4().pipe(
+  const commandId = Effect.fn("PullRequestToolHandlers.commandId")(function* (
+    tag: string,
+    threadId: ThreadId,
+  ) {
+    const request = yield* CurrentRequest;
+    if (request !== undefined) return CommandId.make(`server:${tag}:${threadId}:${request.id}`);
+    return yield* random.uuidV4().pipe(
       Effect.orDie,
       Effect.map((uuid) => CommandId.make(`server:${tag}:${threadId}:${uuid}`)),
     );
+  });
+
+  const negotiatedRequest = Effect.gen(function* () {
+    const request = yield* CurrentRequest;
+    const scope = yield* McpInvocationContext.McpInvocationContext;
+    return scope.client?.linked === true &&
+      interactiveAuthority(scope.authority)?.envelope.requestOwner === undefined
+      ? undefined
+      : request;
+  });
+  const confirmed = (
+    request: NonNullable<Effect.Success<typeof negotiatedRequest>>,
+  ): McpConfirmedOperation => ({
+    type: "confirmed-operation",
+    applied: true,
+    stage: "confirmed",
+    requestId: request.clientRequestId,
+    operationId: request.id,
+  });
 
   const requireThread = Effect.fn("PullRequestsToolkit.requireThread")(function* (
     Failure:
@@ -199,18 +230,28 @@ const make = Effect.gen(function* () {
 
   // The domain service owns the registration span.
   const setWatching = Effect.fnUntraced(function* (
-    input: PullRequestTargetInput,
+    input: PullRequestTargetInput & {
+      readonly purposeIntent?: import("@t3tools/contracts").SavedPurposeIntent | undefined;
+    },
     watching: boolean,
   ) {
     const scope = yield* McpInvocationContext.requireMcpCapability("pull-requests");
     const threadId = input.threadId ?? scope.thread?.threadId;
     if (threadId === undefined) return yield* new PullRequestThreadRequiredError();
-    return yield* watches.setWatching({ threadId, target: input, watching }).pipe(
-      Effect.catchTags({
-        PullRequestWatchThreadNotFoundError: (error) =>
-          threadNotFound(engine, error.threadId, error.message),
-      }),
-    );
+    return yield* watches
+      .setWatching({
+        threadId,
+        target: input,
+        watching,
+        commandId: yield* commandId("mcp-pr-watch", threadId),
+        purposeIntent: input.purposeIntent,
+      })
+      .pipe(
+        Effect.catchTags({
+          PullRequestWatchThreadNotFoundError: (error) =>
+            threadNotFound(engine, error.threadId, error.message),
+        }),
+      );
   });
 
   const locateAll = Effect.fn("PullRequestsToolkit.locateAll")(function* (
@@ -280,11 +321,13 @@ const make = Effect.gen(function* () {
             : {};
         const project = yield* projectOf(thread, PullRequestLinkFailedError);
         const target = yield* resolveTarget(input, project);
+        const request = yield* negotiatedRequest;
         const existing = threadPullRequestsOf(thread).find((link) =>
           threadPullRequestKeysEqual(link, target),
         );
-        if (existing && existing.source !== "stack-dismissed")
-          return { ...target, alreadyLinked: true, ...next };
+        const wasLinked = existing !== undefined && existing.source !== "stack-dismissed";
+        if (request === undefined && wasLinked && input.purposeDelivery === undefined)
+          return { ...target, ...next, alreadyLinked: true };
         const alreadyLinked = yield* engine
           .dispatch({
             type: "thread.pull-request.link",
@@ -295,13 +338,29 @@ const make = Effect.gen(function* () {
             number: target.number,
             url: target.url,
             source: "agent",
+            ...(input.purposeDelivery === undefined
+              ? {}
+              : { purposeDelivery: input.purposeDelivery }),
           })
           .pipe(
-            Effect.as(false),
-
+            Effect.as(wasLinked),
             Effect.catchCause(dispatchFailure(PullRequestLinkFailedError)),
           );
-        return { ...target, alreadyLinked, ...next };
+        return request === undefined
+          ? {
+              ...target,
+              ...next,
+              alreadyLinked,
+              ...(input.purposeDelivery === undefined
+                ? {}
+                : {
+                    purposeDelivery: {
+                      version: 1 as const,
+                      purpose: normalizeTrackingReference(input.purposeDelivery.purpose),
+                    },
+                  }),
+            }
+          : confirmed(request);
       }),
     ),
     link_pull_requests: writesThread((input) =>
@@ -358,7 +417,9 @@ const make = Effect.gen(function* () {
         const thread = yield* requireThread(PullRequestUnlinkFailedError, input.threadId);
         const project = yield* projectOf(thread, PullRequestUnlinkFailedError);
         const target = yield* resolveTarget(input, project);
+        const request = yield* negotiatedRequest;
         if (
+          request === undefined &&
           !threadPullRequestsOf(thread).some(
             (link) => link.source !== "stack-dismissed" && threadPullRequestKeysEqual(link, target),
           )
@@ -383,12 +444,14 @@ const make = Effect.gen(function* () {
 
             Effect.catchCause(dispatchFailure(PullRequestUnlinkFailedError)),
           );
-        return {
-          host: target.host,
-          repository: target.repository,
-          number: target.number,
-          wasLinked,
-        };
+        return request === undefined
+          ? {
+              host: target.host,
+              repository: target.repository,
+              number: target.number,
+              wasLinked,
+            }
+          : confirmed(request);
       }),
     ),
     unlink_pull_requests: writesThread((input) =>
@@ -434,57 +497,66 @@ const make = Effect.gen(function* () {
     ),
     watch_pull_request: writesThread((input) => setWatching(input, true)),
     unwatch_pull_request: writesThread((input) => setWatching(input, false)),
-    write_pull_request_guides: McpToolAccess.writesWithCapability((input) =>
-      Effect.gen(function* () {
-        const located = yield* locateAll(input.pullRequests);
-        const guides = yield* Effect.forEach(
-          located,
-          (entry) =>
-            Effect.gen(function* () {
-              if (entry.target === null) {
-                return {
-                  host: entry.input.host ?? "",
-                  repository: entry.input.repository ?? "",
-                  number: entry.input.number ?? 0,
-                  url: entry.input.url ?? "",
-                  outcome: "failed" as const,
-                  detail: entry.failure,
+    write_pull_request_guides: McpToolAccess.writesWithCapability(
+      (input) =>
+        Effect.gen(function* () {
+          const located = yield* locateAll(input.pullRequests);
+          // One pull request that cannot be guided does not stop the rest; it reports why.
+          const guides = yield* Effect.forEach(
+            located,
+            (entry) =>
+              Effect.gen(function* () {
+                if (entry.target === null) {
+                  return {
+                    host: entry.input.host ?? "",
+                    repository: entry.input.repository ?? "",
+                    number: entry.input.number ?? 0,
+                    url: entry.input.url ?? "",
+                    outcome: "failed" as const,
+                    detail: entry.failure,
+                  };
+                }
+                const identity = {
+                  host: entry.target.host,
+                  repository: entry.target.repository,
+                  number: entry.target.number,
+                  url: entry.target.url,
                 };
-              }
-              const identity = {
-                host: entry.target.host,
-                repository: entry.target.repository,
-                number: entry.target.number,
-                url: entry.target.url,
-              };
-              if (entry.project === undefined) {
-                return {
-                  ...identity,
-                  outcome: "failed" as const,
-                  detail: new PullRequestProjectNotFoundError({
-                    repository: entry.target.repository,
-                  }).message,
-                };
-              }
-              return yield* reviewGuides.generate(guideReference(entry.project, entry.target)).pipe(
-                Effect.map((result) => ({
-                  ...identity,
-                  outcome: result.started ? ("started" as const) : ("running" as const),
-                  detail: null,
-                })),
-                Effect.catch((error) =>
-                  Effect.succeed({
+                if (entry.project === undefined) {
+                  return {
                     ...identity,
                     outcome: "failed" as const,
-                    detail: guideFailureDetail(error),
-                  }),
-                ),
-              );
-            }),
-          { concurrency: 4 },
-        );
-        return { guides };
-      }),
+                    detail: new PullRequestProjectNotFoundError({
+                      repository: entry.target.repository,
+                    }).message,
+                  };
+                }
+                return yield* externalDispatch(
+                  reviewGuides.generate(guideReference(entry.project, entry.target)),
+                  identity,
+                ).pipe(
+                  Effect.map((result) => ({
+                    ...identity,
+                    outcome: result.started ? ("started" as const) : ("running" as const),
+                    detail: null,
+                  })),
+                  Effect.catchIf(
+                    (error) => error._tag !== "OrchestratorMcpFailure",
+                    (error) =>
+                      Effect.succeed({
+                        ...identity,
+                        outcome: "failed" as const,
+                        detail: guideFailureDetail(error),
+                      }),
+                  ),
+                );
+              }),
+            { concurrency: 4 },
+          );
+          return { guides };
+        }),
+      "external-unknown",
+      { linkedCallers: "allowed" },
     ),
     read_pull_request_guide: McpToolAccess.reads((input) =>
       Effect.gen(function* () {
@@ -525,3 +597,4 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = McpToolAccess.toLayer(PullRequestsToolkit, make);
+import { externalDispatch } from "../../McpRequestReceipts.ts";
