@@ -146,6 +146,15 @@ function RootRouteBranch() {
   const primaryEnvironmentAuthenticated = authGateState.status === "authenticated";
   // A sync IPC read; the setting only changes across a relaunch.
   const [localEnvironmentDisabled] = useState(isLocalEnvironmentDisabled);
+  const router = useRouter();
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retries route authentication after the server-provided delay
+  useEffect(() => {
+    if (authGateState.status !== "retryable") return;
+    const timer = window.setTimeout(() => {
+      void router.invalidate();
+    }, authGateState.retryAfterMs);
+    return () => window.clearTimeout(timer);
+  }, [authGateState, router]);
   // Once true, stays true: a visit to /welcome means the bootstrap already chose a route.
   const [returningFromWelcome, setReturningFromWelcome] = useState(pathname === "/welcome");
   if (pathname === "/welcome" && !returningFromWelcome) setReturningFromWelcome(true);
@@ -154,6 +163,17 @@ function RootRouteBranch() {
   );
 
   if (pathname === GUEST_PAGE_PATH) return <Outlet />;
+  if (authGateState.status === "retryable") {
+    return (
+      <StandalonePage>
+        <StandalonePageHeader
+          context={APP_DISPLAY_NAME}
+          title="Reconnecting to this environment"
+          description="Your session is temporarily unavailable. Retrying automatically."
+        />
+      </StandalonePage>
+    );
+  }
 
   if (
     pathname === "/pair" ||
