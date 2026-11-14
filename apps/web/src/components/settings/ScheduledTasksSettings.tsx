@@ -1,3 +1,6 @@
+import { savedPurposeIntentForScope } from "@t3tools/contracts";
+import { ExecutionPurposeControl } from "../chat/ExecutionPurposeControl";
+import { ChromeriaFeatureMark } from "../ChromeriaFeatureMark";
 import { useAtomValue } from "@effect/atom-react";
 import { connectionStatusTitle } from "@t3tools/client-runtime/connection";
 import { AsyncResult } from "effect/reactivity";
@@ -26,6 +29,7 @@ import type {
   ScheduledTaskWebhookDeliverySummary,
   ThreadId,
 } from "@t3tools/contracts";
+import * as ScheduledTaskFork from "./scheduledTaskFork";
 import {
   DEFAULT_WEBHOOK_PROMPT,
   emptyWebhookFilterDraft,
@@ -166,6 +170,7 @@ const WORKSPACE_MODE_LABELS: Record<WorkspaceMode, string> = {
 };
 
 const EMPTY_DRAFT: DraftState = {
+  purposeScope: { type: "unscoped", reason: "deliberate" },
   editingId: null,
   title: "",
   prompt: "",
@@ -196,6 +201,7 @@ const EMPTY_DRAFT: DraftState = {
   coalesceWindowSeconds: "",
   filters: [],
   savedFilters: [],
+  preservedSchedule: null,
 };
 
 function WebhookFiltersField({
@@ -800,6 +806,7 @@ function ScheduledTaskRow({
             <ScheduledTaskThreadLink environmentId={environmentId} threadId={task.threadId} />
           ) : null}
           {task.lastRunError ? <span className="text-destructive">{task.lastRunError}</span> : null}
+          <ScheduledTaskFork.ForkTaskSummary environmentId={environmentId} task={task} />
         </div>
       }
       control={
@@ -1448,6 +1455,16 @@ function ScheduledTaskEditorForm({
       tasksQuery.data === null
     )
       return;
+    if (
+      draft.purposeScope?.type === "unscoped" &&
+      draft.purposeScope.reason === "legacy_no_intent"
+    ) {
+      reportFailure(
+        "Choose this task's purpose",
+        "Select an Issue or PR, or clear the purpose to choose unscoped work.",
+      );
+      return;
+    }
     const selection = activeSelection;
     if (
       !draft.title.trim() ||
@@ -1513,6 +1530,9 @@ function ScheduledTaskEditorForm({
               startFromOrigin: draft.startFromOrigin,
             };
     const input: ScheduledTaskUpsertInput = {
+      purposeIntent: savedPurposeIntentForScope(
+        draft.purposeScope ?? { type: "unscoped", reason: "deliberate" },
+      ),
       ...(draft.editingId ? { id: draft.editingId as ScheduledTaskId, requireExisting: true } : {}),
       title: draft.title.trim(),
       prompt: draft.prompt.trim(),
@@ -1754,6 +1774,22 @@ function ScheduledTaskEditorForm({
             </Field>
           ) : null}
 
+          <div className="flex items-start gap-1.5">
+            <div className="min-w-0 flex-1">
+              <ExecutionPurposeControl
+                scope={draft.purposeScope ?? { type: "unscoped", reason: "deliberate" }}
+                runs={[]}
+                disabled={saving || !canOperate}
+                onChange={async (scope) => {
+                  setDraft((current) => ({ ...current, purposeScope: scope }));
+                  return true;
+                }}
+              />
+            </div>
+            <span className="mt-3 inline-flex shrink-0">
+              <ChromeriaFeatureMark />
+            </span>
+          </div>
           <Field label="Prompt" htmlFor="scheduled-task-prompt">
             <Textarea
               id="scheduled-task-prompt"
@@ -1796,7 +1832,9 @@ function ScheduledTaskEditorForm({
             {/* Wraps the toggle below the label when both don't fit, as on phones. */}
             <div className="flex flex-wrap items-center justify-between gap-2">
               <Label>Schedule</Label>
+              <ScheduledTaskFork.PreservedScheduleNote schedule={draft.preservedSchedule} />
               <ToggleGroup
+                disabled={draft.preservedSchedule !== null}
                 aria-label="Schedule type"
                 value={[draft.scheduleMode]}
                 onValueChange={(values) => {
@@ -1852,9 +1890,9 @@ function ScheduledTaskEditorForm({
               </ManagedNotice>
             ) : null}
             {/* A disabled task still saves, so keep its fields reachable for fixing. */}
-            {draft.scheduleMode === "webhook" &&
-            webhookDenial !== undefined &&
-            draft.enabled ? null : draft.scheduleMode === "webhook" ? (
+            {draft.scheduleMode === "preserved" ? null : draft.scheduleMode === "webhook" &&
+              webhookDenial !== undefined &&
+              draft.enabled ? null : draft.scheduleMode === "webhook" ? (
               <div className="space-y-4">
                 <WebhookEndpointField environmentId={environmentId} task={liveTask} />
                 <p className="text-xs text-muted-foreground">
