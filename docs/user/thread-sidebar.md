@@ -58,6 +58,37 @@ in a new thread's model picker to add or remove them. A regular click returns to
 single model. Choose a base branch and send. Each selection starts a separate thread
 and worktree while you stay in the new thread composer. This requires a Git project.
 
+## Track an Issue or PR outcome
+
+Each run records the GitHub Issue or PR it works toward. Agents set it when
+they launch or delegate work; there is no composer control. **Steer** and
+**Restart** continue the running purpose. A message already queued keeps the
+purpose admitted when it was sent.
+
+A parent's continuation of its original delegated work keeps that launch's
+purpose. Your own follow-up in the child uses the child's stored purpose while
+the original parent still receives the result. When linking a PR, an agent can
+declare the outcome it delivers. Linking or unlinking a PR never reassigns
+runs. Legacy callers and saved schedules without a purpose
+are recorded as unscoped; choose a purpose before editing a legacy schedule.
+
+## Keep a thread working with Wight mode
+
+On web or desktop, open Wight mode in a thread's chat header and turn it on.
+It sends “continue” with the current time whenever the thread becomes idle.
+Leave the hours timer empty to run until turned off. To change the timer, turn
+Wight off and on again. Time spent paused counts toward the timer; expiry and
+turning off let the current turn finish.
+
+Set **Wight usage limit** for each instance in **Settings > Providers**. Any
+reported usage window at or above that percentage pauses new Wight turns until
+it drops below. The default is 80%; 0% pauses them. Providers without reported
+usage windows run without an enforceable quota limit, which the control shows.
+Approvals, unanswered questions, plans, interrupts and other errors wait for your
+input. Existing user messages, child reports and answers keep their normal delivery.
+Usage-limit failures wait for reset recovery; Wight never resumes them early.
+Native mobile has no Wight controls yet.
+
 ## Pin and reorder threads
 
 Pin a thread from its menu to keep it above your active work.
@@ -276,9 +307,17 @@ fill the screen; close the full-screen view to return to the parent and inspecto
 Stop on a thread also stops the subagents it delegated to.
 Before archiving the parent, wait for its delegated tasks to finish or cancel them.
 
-Subagent threads started by the agent can't take messages; message the parent
-thread instead. When such a subagent needs an approval or an answer, the parent
-thread asks for it.
+Threads belonging to a harness's native subagents can't take direct messages;
+message their parent instead. App-owned delegated child threads accept
+follow-ups. When a child needs an approval or an answer, its parent asks for it.
+
+For a task delegated to a linked environment, open the task from its original
+conversation to read and answer its questions or approvals. Web, desktop and
+mobile use your original connection; you do not need to save a separate
+connection to the destination. Both environments must remain reachable. If a
+request changed or a response was not confirmed, refresh it before changing your
+answer. Questions whose provider callback is no longer available explain that
+limitation instead of accepting an answer.
 
 Expand a tool call in the conversation to see its full command and output.
 Summaries shorten shell wrappers and can still describe the latest call after it
