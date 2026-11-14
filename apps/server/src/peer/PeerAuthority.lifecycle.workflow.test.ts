@@ -818,6 +818,8 @@ it.live(
           taskId,
           (task) => task.remoteChild?.latestResult?.text === "legacy-watch-later",
         );
+        // One refused attempt; the job then followed on its own instead of asking again.
+        expect(yield* Queue.size(a.settledWatches)).toBe(0);
       }),
     ).pipe(Effect.provide(lifecycleServices)),
 );

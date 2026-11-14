@@ -805,8 +805,15 @@ const make = Effect.gen(function* () {
             const threadsOfJob = new Set<string>([pair.childThreadId]);
             const queue = [pair.childThreadId];
             for (let index = 0; index < queue.length && threadsOfJob.size < 256; index++) {
-              const { subagents } = yield* threads.getThreadRecords(queue[index]!, ["subagents"]);
-              for (const task of subagents) {
+              const records = yield* threads.getThreadRecords(queue[index]!, ["subagents"]);
+              // Like `observe`, a retired descendant counts but its own work does not.
+              if (
+                index > 0 &&
+                (records.thread.archivedAt !== null || records.thread.deletedAt !== null)
+              )
+                continue;
+              for (const task of records.subagents) {
+                if (threadsOfJob.size >= 256) break;
                 if (task.childThreadId === null || threadsOfJob.has(task.childThreadId)) continue;
                 threadsOfJob.add(task.childThreadId);
                 queue.push(task.childThreadId);

@@ -969,11 +969,15 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
           return {
             ...peers,
             call,
-            settledTasks: (...args: Parameters<NonNullable<typeof peers.settledTasks>>) =>
-              Queue.offer(
+            settledTasks: Effect.fn("PeerAuthorityFixture.settledTasks")(function* (
+              ...args: Parameters<NonNullable<typeof peers.settledTasks>>
+            ) {
+              yield* Queue.offer(
                 settledWatches,
                 args[2].map(({ pair }) => pair.taskId),
-              ).pipe(Effect.andThen(peers.settledTasks!(...args))),
+              );
+              return yield* peers.settledTasks!(...args);
+            }),
             taskLifecycle: Effect.fn("PeerAuthorityFixture.taskLifecycle")(function* (
               ...args: Parameters<NonNullable<typeof peers.taskLifecycle>>
             ) {
