@@ -12,7 +12,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
+  EnvironmentId,
   EventId,
+  GitCommandError,
   MessageId,
   ProjectId,
   ProviderDriverKind,
@@ -55,6 +57,12 @@ import * as RecoveryStore from "../prism/RecoveryStore.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as Harness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as OrchestratorMcpService from "../mcp/OrchestratorMcpService.ts";
+import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
+import * as ProjectService from "../project/ProjectService.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { ProcessRunner } from "../processRunner.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
@@ -173,6 +181,7 @@ const runtime = (
     options.launch === undefined
       ? Layer.mock(ThreadLaunchService.ThreadLaunchService)({
           launch: () => Effect.die("These tasks post to a bound thread"),
+          isNonGitProject: () => Effect.succeed(false),
         })
       : Layer.unwrap(
           Effect.gen(function* () {
@@ -1064,6 +1073,81 @@ it.effect(
           [{ requested: "09:00", offsetMinutes: 0 }],
         );
       }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+    }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "schedule_task creates a monthly command task whose next run list_scheduled_tasks reports",
+  () =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      yield* TestClock.setTime(Date.parse(CANONICAL));
+      const scope = {
+        environmentId: EnvironmentId.make("environment:monthly"),
+        requestNamespace: "client:monthly",
+        thread: undefined,
+        client: undefined,
+        capabilities: new Set(["orchestration"] as const),
+        issuedAt: 1,
+      };
+      const mcp = OrchestratorMcpService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            runtime(database),
+            ServerSettings.layerTest(),
+            Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+            Layer.mock(ProjectService.ProjectService)({
+              getById: (id) =>
+                Effect.succeedSome({
+                  id,
+                  title: "Invoices",
+                  workspaceRoot: "/projects/invoices",
+                  defaultModelSelection: selection,
+                  scripts: [],
+                  createdAt: CANONICAL,
+                  updatedAt: CANONICAL,
+                  deletedAt: null,
+                }),
+            }),
+            Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+            Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+            Layer.mock(BareLaunch.BareLaunch)({}),
+            Layer.mock(GitVcsDriver.GitVcsDriver)({
+              resolvePrimaryRemoteName: (cwd) =>
+                Effect.fail(
+                  new GitCommandError({
+                    operation: "fixture",
+                    command: "git",
+                    cwd,
+                    detail: "No remote configured",
+                  }),
+                ),
+              resolveCommit: () => Effect.succeed({ commitSha: "fixture-commit" }),
+            }),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        yield* service.scheduleTask(scope, {
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
+          projectId,
+          prompt: "Send the invoices",
+          command: "echo invoices",
+          schedule: { type: "monthly", day: 31, times: ["09:00"], timeZone: "Europe/Warsaw" },
+        });
+        const listed = yield* service.listScheduledTasks(scope, { projectId });
+        const task = listed.tasks.find((entry) => entry.prompt === "Send the invoices");
+        assert.deepEqual(task?.schedule, {
+          type: "monthly",
+          day: 31,
+          times: ["09:00"],
+          timeZone: "Europe/Warsaw",
+        });
+        assert.equal(task?.command?.command, "echo invoices");
+        // October 31, after the clocks went back to UTC+1.
+        assert.equal(task?.nextRunAt, "2026-10-31T08:00:00.000Z");
+      }).pipe(Effect.provide(mcp), Effect.scoped);
     }).pipe(Effect.scoped),
 );
 

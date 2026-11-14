@@ -12,6 +12,7 @@ import * as DateTime from "effect/DateTime";
  * upstream, so the hook cannot form a cycle.
  */
 type Weekly = Extract<ScheduledTaskForkSchedule, { readonly type: "weekly" }>;
+type Monthly = Extract<ScheduledTaskForkSchedule, { readonly type: "monthly" }>;
 
 const MINUTE_MS = 60_000;
 const DAY_MS = 86_400_000;
@@ -20,6 +21,27 @@ const minuteOf = (time: string) => Number(time.slice(0, 2)) * 60 + Number(time.s
 
 /** The canonical instant of an ISO timestamp, so equivalent offsets compare equal. */
 export const canonicalInstant = (value: string) => iso(Date.parse(value));
+
+/** The instant a wall-clock minute of a calendar day has in the time zone, by the weekly rule. */
+const wallClockMs = (
+  timeZone: string,
+  date: { readonly year: number; readonly month: number; readonly day: number },
+  minute: number,
+) =>
+  DateTime.toEpochMillis(
+    DateTime.makeZonedUnsafe(
+      {
+        year: date.year,
+        month: date.month,
+        day: date.day,
+        hour: Math.floor(minute / 60),
+        minute: minute % 60,
+        second: 0,
+        millisecond: 0,
+      },
+      { timeZone, adjustForTimeZone: true },
+    ),
+  );
 
 /** Offsets per requested time; times the server has not placed yet run on the exact minute. */
 const offsets = (schedule: Weekly) =>
@@ -47,20 +69,46 @@ export function weeklySlots(
     const date = DateTime.toParts(DateTime.add(first, { days: day }));
     if (!weekdays.has(date.weekDay)) continue;
     for (const { time, offset } of placed) {
-      const minute = minuteOf(time);
-      const base = DateTime.makeZonedUnsafe(
-        {
-          year: date.year,
-          month: date.month,
-          day: date.day,
-          hour: Math.floor(minute / 60),
-          minute: minute % 60,
-          second: 0,
-          millisecond: 0,
-        },
-        { timeZone: schedule.timeZone, adjustForTimeZone: true },
-      );
-      const slot = DateTime.toEpochMillis(base) + offset * MINUTE_MS;
+      const slot = wallClockMs(schedule.timeZone, date, minuteOf(time)) + offset * MINUTE_MS;
+      if (slot >= startMs && slot <= endMs) slots.push(slot);
+    }
+  }
+  return [...new Set(slots)].toSorted((a, b) => a - b);
+}
+
+const daysInMonth = (year: number, month: number) =>
+  month === 2
+    ? (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0
+      ? 29
+      : 28
+    : [4, 6, 9, 11].includes(month)
+      ? 30
+      : 31;
+
+/**
+ * Monthly instants in [startMs, endMs], read in the schedule's time zone. A
+ * month without the chosen day runs on its last day, so no month is skipped.
+ */
+export function monthlySlots(
+  schedule: Monthly,
+  startMs: number,
+  endMs: number,
+): ReadonlyArray<number> {
+  const monthIndex = (ms: number) => {
+    const parts = DateTime.toParts(
+      DateTime.setZoneNamedUnsafe(DateTime.makeUnsafe(ms), schedule.timeZone),
+    );
+    return parts.year * 12 + parts.month - 1;
+  };
+  const slots: number[] = [];
+  // A wall-clock time is at most a day from its UTC instant, so one extra day on each side covers it.
+  for (let index = monthIndex(startMs - DAY_MS); index <= monthIndex(endMs + DAY_MS); index += 1) {
+    const year = Math.floor(index / 12);
+    const month = (index % 12) + 1;
+    const lastDay = daysInMonth(year, month);
+    const day = schedule.day === "last" ? lastDay : Math.min(schedule.day, lastDay);
+    for (const time of new Set(schedule.times)) {
+      const slot = wallClockMs(schedule.timeZone, { year, month, day }, minuteOf(time));
       if (slot >= startMs && slot <= endMs) slots.push(slot);
     }
   }
@@ -77,7 +125,12 @@ export function forkNextScheduledRunAt(
     const at = Date.parse(schedule.at);
     return Number.isFinite(at) && at > fromMs ? DateTime.makeUnsafe(at) : null;
   }
-  const next = weeklySlots(schedule, fromMs + 1, fromMs + 8 * DAY_MS).at(0);
+  const next = (
+    schedule.type === "weekly"
+      ? weeklySlots(schedule, fromMs + 1, fromMs + 8 * DAY_MS)
+      : // The longest gap between monthly runs is 31 days plus a daylight saving hour.
+        monthlySlots(schedule, fromMs + 1, fromMs + 33 * DAY_MS)
+  ).at(0);
   return next === undefined ? null : DateTime.makeUnsafe(next);
 }
 
@@ -99,6 +152,8 @@ export function forkSameSchedule(a: ScheduledTaskSchedule, b: ScheduledTaskSched
       (a.windowMinutes ?? DEFAULT_WEEKLY_WINDOW_MINUTES) ===
         (b.windowMinutes ?? DEFAULT_WEEKLY_WINDOW_MINUTES)
     );
+  if (a.type === "monthly" && b.type === "monthly")
+    return a.day === b.day && sameSet(a.times, b.times) && a.timeZone === b.timeZone;
   return false;
 }
 
@@ -113,7 +168,10 @@ export function forkScheduledSlot(
   if (trigger !== "scheduled") return null;
   if (task.schedule.type === "once")
     return canonicalInstant("at" in task.schedule ? task.schedule.at : task.schedule.runAt);
-  if (task.schedule.type === "weekly" && task.nextRunAt !== null)
+  if (
+    (task.schedule.type === "weekly" || task.schedule.type === "monthly") &&
+    task.nextRunAt !== null
+  )
     return canonicalInstant(task.nextRunAt);
   return null;
 }
@@ -174,5 +232,9 @@ export function occupiedMinutes(
     const at = Date.parse(schedule.at);
     return at >= nowMs && at <= end ? [Math.floor(at / MINUTE_MS)] : [];
   }
-  return weeklySlots(schedule, nowMs, end).map((slot) => Math.floor(slot / MINUTE_MS));
+  return (
+    schedule.type === "weekly"
+      ? weeklySlots(schedule, nowMs, end)
+      : monthlySlots(schedule, nowMs, end)
+  ).map((slot) => Math.floor(slot / MINUTE_MS));
 }

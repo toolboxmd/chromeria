@@ -12,11 +12,13 @@ import {
   forkFireKey,
   forkNextScheduledRunAt,
   forkSameSchedule,
+  monthlySlots,
   occupiedMinutes,
   weeklySlots,
 } from "./schedules.ts";
 
 type Weekly = Extract<ScheduledTaskForkSchedule, { readonly type: "weekly" }>;
+type Monthly = Extract<ScheduledTaskForkSchedule, { readonly type: "monthly" }>;
 
 const weekly = (overrides: Partial<Weekly> = {}): Weekly => ({
   type: "weekly",
@@ -82,6 +84,87 @@ describe("weekly slots", () => {
   });
 });
 
+const monthly = (overrides: Partial<Monthly> = {}): Monthly => ({
+  type: "monthly",
+  day: 31,
+  times: ["09:00"],
+  timeZone: "UTC",
+  ...overrides,
+});
+/** The next `count` fires after `from`, each asked from the one before. */
+const nextRuns = (schedule: ScheduledTaskForkSchedule, from: string, count: number) => {
+  const runs: string[] = [];
+  let at: DateTime.DateTime = DateTime.makeUnsafe(ms(from));
+  for (let step = 0; step < count; step += 1) {
+    const next = forkNextScheduledRunAt(schedule, at);
+    if (next === null) break;
+    runs.push(DateTime.formatIso(next));
+    at = next;
+  }
+  return runs;
+};
+
+describe("monthly schedules", () => {
+  it("run a missing day on the month's last day, never skipping a month or entering the next", () => {
+    // December to January, a leap February, then April.
+    assert.deepEqual(nextRuns(monthly(), "2027-12-01T00:00:00Z", 5), [
+      "2027-12-31T09:00:00.000Z",
+      "2028-01-31T09:00:00.000Z",
+      "2028-02-29T09:00:00.000Z",
+      "2028-03-31T09:00:00.000Z",
+      "2028-04-30T09:00:00.000Z",
+    ]);
+    // A non-leap February.
+    assert.deepEqual(nextRuns(monthly({ day: 30 }), "2027-01-30T09:00:00Z", 2), [
+      "2027-02-28T09:00:00.000Z",
+      "2027-03-30T09:00:00.000Z",
+    ]);
+  });
+
+  it("run 'last' on the last day of every month", () => {
+    assert.deepEqual(nextRuns(monthly({ day: "last" }), "2028-01-15T00:00:00Z", 4), [
+      "2028-01-31T09:00:00.000Z",
+      "2028-02-29T09:00:00.000Z",
+      "2028-03-31T09:00:00.000Z",
+      "2028-04-30T09:00:00.000Z",
+    ]);
+    assert.deepEqual(nextRuns(monthly({ day: "last" }), "2027-02-01T00:00:00Z", 1), [
+      "2027-02-28T09:00:00.000Z",
+    ]);
+  });
+
+  it("run every time of the day, in order, strictly after the instant asked from", () => {
+    const schedule = monthly({ day: 3, times: ["18:00", "09:00"] });
+    assert.deepEqual(nextRuns(schedule, "2026-11-03T09:00:00Z", 3), [
+      "2026-11-03T18:00:00.000Z",
+      "2026-12-03T09:00:00.000Z",
+      "2026-12-03T18:00:00.000Z",
+    ]);
+  });
+
+  it("read times in the time zone and treat daylight saving like the weekly schedule", () => {
+    const warsaw = monthly({ day: 29, timeZone: "Europe/Warsaw" });
+    // 2026 has no February 29; March 29 is the spring-forward Sunday.
+    assert.deepEqual(nextRuns(warsaw, "2026-02-01T00:00:00Z", 2), [
+      "2026-02-28T08:00:00.000Z",
+      "2026-03-29T07:00:00.000Z",
+    ]);
+    // 02:30 does not exist on 2026-03-29 and happens twice on 2026-10-25, both Sundays.
+    const times = ["02:30"];
+    for (const [day, from, to] of [
+      [29, "2026-03-28T00:00:00Z", "2026-03-30T00:00:00Z"],
+      [25, "2026-10-24T00:00:00Z", "2026-10-26T00:00:00Z"],
+    ] as const) {
+      const slots = monthlySlots({ ...warsaw, day, times }, ms(from), ms(to));
+      assert.lengthOf(slots, 1);
+      assert.deepEqual(
+        slots,
+        weeklySlots(weekly({ weekdays: [0], times, timeZone: "Europe/Warsaw" }), ms(from), ms(to)),
+      );
+    }
+  });
+});
+
 describe("one-shot schedules", () => {
   it("fire once, at an instant that does not depend on the written offset", () => {
     const once = { type: "once", at: "2026-10-08T14:00:00+02:00" } as const;
@@ -124,6 +207,10 @@ describe("schedule identity", () => {
     assert.isFalse(same(base, { ...base, timeZone: "Europe/Warsaw" }));
     assert.isFalse(same(base, { ...base, windowMinutes: 10 }));
     assert.isFalse(same(base, { type: "once", at: "2026-10-08T12:00:00Z" }));
+    const month = monthly({ day: 3, times: ["09:00", "17:00"] });
+    assert.isTrue(same(month, { ...month, times: ["17:00", "09:00"] }));
+    assert.isFalse(same(month, { ...month, day: "last" }));
+    assert.isFalse(same(month, { ...month, timeZone: "Europe/Warsaw" }));
   });
 
   it("keys a scheduled fire by its canonical slot, and leaves other fires to upstream", () => {
@@ -145,6 +232,13 @@ describe("schedule identity", () => {
       "task:a:weekly:2026-10-12T09:00:00.000Z",
     );
     assert.isNull(forkFireKey(weeklyTask(null), "scheduled"));
+    assert.equal(
+      forkFireKey(
+        { id, schedule: monthly({ day: 3 }), nextRunAt: "2026-12-03T10:00:00+01:00" },
+        "scheduled",
+      ),
+      "task:a:monthly:2026-12-03T09:00:00.000Z",
+    );
     assert.isNull(
       forkFireKey(
         { id, schedule: { type: "interval", everyMs: 3_600_000 }, nextRunAt: null },

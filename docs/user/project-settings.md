@@ -113,6 +113,12 @@ Chromeria may move a weekly time by up to 30 minutes and shows the move, such
 as `09:00 (+4 min)`. These schedules appear in **Settings → Scheduled tasks**,
 but only an agent can change them.
 
+A task can also run **Monthly**: on one day of the month, or the last day, at
+one or more times in a named time zone. Pick it in the task form or ask an
+agent. When a month does not have the chosen day, such as the 31st in April or
+the 30th in February, the task runs on that month's last day, so no month is
+skipped.
+
 A task can carry an **outcome check**: a shell command that proves the work is
 done. The agent keeps working in the same thread until the check passes. If it
 still fails after a few retries, the task shows **Needs you**, and **Run now**

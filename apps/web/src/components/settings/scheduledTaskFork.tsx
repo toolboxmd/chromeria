@@ -11,12 +11,16 @@ import { useEnvironmentQuery } from "../../state/query";
 import { ChromeriaFeatureMark } from "../ChromeriaFeatureMark";
 import { serverEnvironment } from "../../state/server";
 import { Button } from "../ui/button";
+import { Input } from "../ui/input";
+import { Label } from "../ui/label";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { MONTHLY_DAYS, monthlyDayLabel, type MonthlyDraft } from "./scheduledTaskFork.logic";
 import { AbandonReportAction } from "./spectrumReportAction";
 
 /**
  * Fork (toolboxmd/chromeria#174): the web scheduled task screens' view of
- * one-shot and weekly triggers, outcome checks and command tasks. They are
- * read-only here and edited through agent tools.
+ * one-shot, weekly and monthly triggers, outcome checks and command tasks.
+ * Monthly triggers are edited here; the rest only through agent tools.
  */
 /** A fork task's one-line state: its check verdict or its command's last result. */
 export function ForkTaskSummary({
@@ -118,5 +122,66 @@ export function PreservedScheduleNote({
       <ChromeriaFeatureMark />
       <span>{forkScheduleLabel(schedule)} · change it through an agent</span>
     </span>
+  );
+}
+
+/** A monthly trigger's day, times and time zone. A day a month lacks runs on its last day. */
+export function MonthlyScheduleFields({
+  draft,
+  onChange,
+}: {
+  readonly draft: MonthlyDraft;
+  readonly onChange: (draft: MonthlyDraft) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-2">
+          <Label htmlFor="scheduled-task-month-day">On day</Label>
+          <Select
+            value={draft.day}
+            onValueChange={(day) => {
+              if (typeof day === "string") onChange({ ...draft, day });
+            }}
+          >
+            <SelectTrigger size="sm" id="scheduled-task-month-day">
+              <SelectValue>{monthlyDayLabel(draft.day)}</SelectValue>
+            </SelectTrigger>
+            <SelectPopup>
+              {MONTHLY_DAYS.map((day) => (
+                <SelectItem key={day} value={day}>
+                  {monthlyDayLabel(day)}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        </div>
+        <div className="flex items-center gap-2">
+          <Label htmlFor="scheduled-task-month-times">at</Label>
+          <Input
+            id="scheduled-task-month-times"
+            nativeInput
+            className="w-40"
+            placeholder="09:00, 18:00"
+            value={draft.times}
+            onChange={(event) => onChange({ ...draft, times: event.target.value })}
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <Label htmlFor="scheduled-task-month-zone">in</Label>
+          <Input
+            id="scheduled-task-month-zone"
+            nativeInput
+            className="w-44"
+            placeholder="Europe/Warsaw"
+            value={draft.timeZone}
+            onChange={(event) => onChange({ ...draft, timeZone: event.target.value })}
+          />
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        A month without that day, such as the 31st in April, runs on its last day.
+      </p>
+    </div>
   );
 }

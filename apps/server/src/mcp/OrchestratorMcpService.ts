@@ -388,6 +388,7 @@ function scheduleBindsToCallerByDefault(
       );
     case "fixed_time":
     case "weekly":
+    case "monthly":
       return false;
   }
 }
