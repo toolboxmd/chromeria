@@ -873,6 +873,7 @@ const checksLayer = Layer.effect(
                   fields.bindToCurrentThread === undefined ? current.threadId : threadId;
                 const updated: ScheduledTaskUpsertInput = {
                   ...input,
+                  purposeIntent: fields.purposeIntent ?? current.purposeIntent,
                   bare: fields.bare ?? current.bare,
                   title: fields.title ?? current.title,
                   prompt: fields.prompt ?? current.prompt,
