@@ -22,20 +22,38 @@ function connectedEnvironment(
   };
 }
 
-function cloudEnvironment(environmentId: string): RelayClientEnvironmentRecord {
+function cloudEnvironment(
+  environmentId: string,
+  providerKind: RelayClientEnvironmentRecord["endpoint"]["providerKind"] = "cloudflare_tunnel",
+): RelayClientEnvironmentRecord {
   return {
     environmentId: EnvironmentId.make(environmentId),
     label: environmentId,
     endpoint: {
       httpBaseUrl: `https://${environmentId}.cloud.example.test/`,
       wsBaseUrl: `wss://${environmentId}.cloud.example.test/ws`,
-      providerKind: "cloudflare_tunnel",
+      providerKind,
     },
     linkedAt: "2026-01-01T00:00:00.000Z",
   };
 }
 
 describe("mobile environment settings sections", () => {
+  it("offers only managed tunnels while preserving already saved connections", () => {
+    const saved = connectedEnvironment({ environmentId: "saved", isRelayManaged: true });
+    const managed = cloudEnvironment("managed");
+    const manual = cloudEnvironment("manual", "manual");
+    const relay = cloudEnvironment("relay", "t3_relay");
+
+    const sections = splitEnvironmentSections({
+      connectedEnvironments: [saved],
+      cloudEnvironments: [cloudEnvironment("saved", "manual"), manual, managed, relay],
+    });
+
+    expect(sections.availableCloudEnvironments).toEqual([managed]);
+    expect(sections.connectedCloudEnvironments).toEqual([saved]);
+  });
+
   it("keeps saved relay-managed connections under T3 Connect", () => {
     const local = connectedEnvironment({
       environmentId: "environment-local",

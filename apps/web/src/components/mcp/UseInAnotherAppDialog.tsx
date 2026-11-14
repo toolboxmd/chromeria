@@ -270,7 +270,7 @@ function useGate(environment: EnvironmentPresentation) {
     relay:
       !discovery.refreshing && (discovery.offline || Option.isSome(discovery.error))
         ? { status: "failed" }
-        : discovery.listed
+        : Option.isSome(discovery.listedSession)
           ? {
               status: "listed",
               endpoint: relayEntry?.environment.endpoint,
@@ -318,7 +318,8 @@ function useGate(environment: EnvironmentPresentation) {
   }, [canCheck]);
   // T3 Connect lists machines only once something asks, and a saved machine's gate reads that list.
   const discoverIfUnasked = useEffectEvent(() => {
-    if (!thisMachine && !discovery.listed && !discovery.refreshing) void refreshDiscovery();
+    if (!thisMachine && Option.isNone(discovery.listedSession) && !discovery.refreshing)
+      void refreshDiscovery();
   });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- asks T3 Connect for its machine list once the wizard opens signed in
   useEffect(() => {
