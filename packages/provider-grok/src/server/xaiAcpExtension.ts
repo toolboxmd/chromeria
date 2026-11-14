@@ -114,6 +114,8 @@ export interface XAiAcpSubagentEndNotice {
 }
 
 const XAI_UUID_RE = "[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}";
+// Fork: Grok names a command it backgrounds after its timeout `call-<uuid>-<n>`.
+const XAI_TASK_ID_RE = `(?:${XAI_UUID_RE}|call-${XAI_UUID_RE}-\\d+)`;
 
 function unknownRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -207,12 +209,12 @@ function isXAiSpawnOrTaskTool(
   toolCall: AcpToolCallState,
   rawInput: Record<string, unknown> | undefined,
 ): boolean {
-  const title = titleKey(toolCall);
-  if (title === "task" || title === "spawn_subagent" || title.includes("spawn subagent")) {
-    return true;
-  }
   const variant = nonEmptyString(rawInput?.variant)?.toLowerCase();
-  if (variant === "cursortask" || variant === "task" || variant === "spawn_subagent") {
+  if (variant !== undefined) {
+    return variant === "cursortask" || variant === "task" || variant === "spawn_subagent";
+  }
+  const title = titleKey(toolCall);
+  if (title === "task" || title === "spawn_subagent" || /^spawn subagents?\b/.test(title)) {
     return true;
   }
   if (nonEmptyString(rawInput?.subagent_type) !== undefined) return true;
@@ -292,7 +294,7 @@ export function extractXAiMonitorTaskId(toolCall: AcpToolCallState): string | un
 }
 
 /** Persistent monitors must not hold root-turn deferred finalize. */
-export function isXAiPersistentMonitor(toolCall: AcpToolCallState): boolean {
+function isXAiPersistentMonitor(toolCall: AcpToolCallState): boolean {
   if (!isXAiMonitorTool(toolCall)) return false;
   const rawOutput = unknownRecord(toolCall.data.rawOutput);
   if (rawOutput !== undefined && nonEmptyString(rawOutput.type)?.toLowerCase() === "monitor") {
@@ -302,6 +304,11 @@ export function isXAiPersistentMonitor(toolCall: AcpToolCallState): boolean {
   return rawInput?.persistent === true;
 }
 
+/** Background shells can be servers: their lifetime must not hold a finished reply open. */
+export function isXAiNonBlockingBackgroundTool(toolCall: AcpToolCallState): boolean {
+  return xAiBackgroundShellTaskId(toolCall) !== undefined || isXAiPersistentMonitor(toolCall);
+}
+
 export function extractXAiBackgroundTaskCompletion(toolCall: AcpToolCallState): ReadonlyArray<{
   readonly taskId: string;
   readonly status: "running" | "completed" | "failed";
@@ -309,6 +316,23 @@ export function extractXAiBackgroundTaskCompletion(toolCall: AcpToolCallState): 
 }> {
   const rawInput = unknownRecord(toolCall.data.rawInput);
   if (!isXAiGetSubagentOutputTool(toolCall, rawInput)) return [];
+  // Fork: a poll of several tasks reports each one in `MultiResult.results`.
+  const multiResults = unknownRecord(unknownRecord(toolCall.data.rawOutput)?.MultiResult)?.results;
+  if (Array.isArray(multiResults)) {
+    return multiResults.flatMap((value) => {
+      const result = unknownRecord(value);
+      const taskId = nonEmptyString(result?.task_id) ?? nonEmptyString(result?.taskId);
+      if (result === undefined || taskId === undefined) return [];
+      if (!new RegExp(`^${XAI_TASK_ID_RE}$`, "i").test(taskId)) return [];
+      return [
+        {
+          taskId,
+          status: statusFromGetOutputTool(toolCall, undefined, result),
+          appendOutput: resultFromGetOutputTool(toolCall, undefined, result) ?? "",
+        },
+      ];
+    });
+  }
   const text = xAiToolOutputText(toolCall);
   const status = statusFromGetOutputTool(toolCall, text);
   const appendOutput = resultFromGetOutputTool(toolCall, text) ?? "";
@@ -363,11 +387,21 @@ export function extractXAiKilledBackgroundTasks(toolCall: AcpToolCallState): Rea
     const id = nonEmptyString(value);
     if (id !== undefined) taskIds.push(id);
   };
-  if (Array.isArray(rawInput?.task_ids)) {
-    for (const entry of rawInput.task_ids) push(entry);
+  // Fork: a multi-task kill names each outcome; only confirmed ends count.
+  const multiResults = unknownRecord(rawOutput?.MultiResult)?.results;
+  if (Array.isArray(multiResults)) {
+    for (const value of multiResults) {
+      const result = unknownRecord(value);
+      const resultOutcome = nonEmptyString(result?.outcome)?.toLowerCase();
+      if (resultOutcome === "killed" || resultOutcome === "already_exited") push(result?.task_id);
+    }
+  } else {
+    if (Array.isArray(rawInput?.task_ids)) {
+      for (const entry of rawInput.task_ids) push(entry);
+    }
+    push(rawInput?.task_id);
+    push(rawInput?.taskId);
   }
-  push(rawInput?.task_id);
-  push(rawInput?.taskId);
   return [...new Set(taskIds)].map((taskId) => ({
     taskId,
     status: "completed" as const,
@@ -478,6 +512,23 @@ export const registerXAiBackgroundTaskTracking = (
         return mutation === null ? Effect.void : apply(mutation);
       }),
     { discard: true },
+  ).pipe(
+    Effect.andThen(
+      Effect.forEach(
+        xAiSessionNotificationMethods,
+        (method) =>
+          runtime.handleExtNotification(method, XAiTaskLifecycleNotification, (notification) => {
+            const kind = notification.update.sessionUpdate;
+            if (kind !== "task_backgrounded" && kind !== "task_completed") return Effect.void;
+            const mutation = xAiBackgroundTaskLifecycleMutation(
+              notification,
+              kind === "task_completed" ? "completed" : "running",
+            );
+            return mutation === null ? Effect.void : apply(mutation);
+          }),
+        { discard: true },
+      ),
+    ),
   );
 
 /** Sent on the parent session; will_wake means a subagent-completed-<id> turn follows. */
@@ -786,9 +837,8 @@ function resultTaskIdFromGetOutputTool(
 function resultFromGetOutputTool(
   toolCall: AcpToolCallState,
   output: string | undefined,
+  result = getOutputResult(toolCall),
 ): string | null {
-  const rawOutput = unknownRecord(toolCall.data.rawOutput);
-  const result = unknownRecord(rawOutput?.Result) ?? unknownRecord(rawOutput?.result);
   const structured =
     nonEmptyString(result?.output) ??
     nonEmptyString(result?.text) ??
@@ -807,13 +857,17 @@ function resultFromGetOutputTool(
   return body.length > 0 ? body : null;
 }
 
+function getOutputResult(toolCall: AcpToolCallState): Record<string, unknown> | undefined {
+  const rawOutput = unknownRecord(toolCall.data.rawOutput);
+  return unknownRecord(rawOutput?.Result) ?? unknownRecord(rawOutput?.result);
+}
+
 function statusFromGetOutputTool(
   toolCall: AcpToolCallState,
   output: string | undefined,
+  result = getOutputResult(toolCall),
 ): "running" | "completed" | "failed" {
   if (toolCall.status === "failed") return "failed";
-  const rawOutput = unknownRecord(toolCall.data.rawOutput);
-  const result = unknownRecord(rawOutput?.Result) ?? unknownRecord(rawOutput?.result);
   const structuredStatus = nonEmptyString(result?.status)?.toLowerCase();
   if (structuredStatus === "completed" || structuredStatus === "success") return "completed";
   if (structuredStatus === "failed" || structuredStatus === "error") return "failed";
@@ -1474,10 +1528,13 @@ const rememberCompletedXAiPromptId = (
 
 export const makeXAiPromptCompletionRuntime = Effect.fn("makeXAiPromptCompletionRuntime")(
   function* (runtime: AcpSessionRuntime.AcpSessionRuntime["Service"]) {
-    // Grok multiplexes session updates on extension methods that permit only one handler.
+    // Grok sends turn completion and other session updates (subagent_finished)
+    // on the same extension methods, and the client keeps one handler per
+    // method. This wrapper owns those methods: it settles prompts itself, then
+    // passes each notification to the lifecycle handlers registered on the wrapper.
     const sessionNotificationHandlers = new Map<
       string,
-      (params: unknown) => Effect.Effect<void, EffectAcpErrors.AcpError>
+      ReadonlyArray<(params: unknown) => Effect.Effect<boolean, EffectAcpErrors.AcpError>>
     >();
     let nextPromptFallbackId = 0;
     const allocatePromptFallbackId = Effect.sync(() => {
@@ -1511,18 +1568,23 @@ export const makeXAiPromptCompletionRuntime = Effect.fn("makeXAiPromptCompletion
       xAiSessionNotificationMethods,
       (method) =>
         runtime.handleExtNotification(method, Schema.Unknown, (params) =>
-          decodeXAiSessionUpdateNotification(params).pipe(
-            Effect.flatMap((notification) => {
-              const complete = xAiPromptCompleteFromSessionUpdate(notification);
-              return complete === null ? Effect.void : settleFromPromptComplete(complete);
-            }),
-            Effect.ignore,
-            Effect.andThen(
-              Effect.suspend(
-                () => sessionNotificationHandlers.get(method)?.(params) ?? Effect.void,
-              ),
-            ),
-          ),
+          Effect.gen(function* () {
+            const complete = yield* decodeXAiSessionUpdateNotification(params).pipe(
+              Effect.map(xAiPromptCompleteFromSessionUpdate),
+              Effect.orElseSucceed(() => null),
+            );
+            if (complete !== null) yield* settleFromPromptComplete(complete);
+            const accepted = yield* Effect.forEach(
+              sessionNotificationHandlers.get(method) ?? [],
+              (handler) => handler(params),
+              { concurrency: 1 },
+            );
+            if (complete === null && !accepted.some(Boolean)) {
+              yield* Effect.logDebug("Grok shared session notification rejected by all consumers", {
+                method,
+              });
+            }
+          }),
         ),
       { discard: true },
     );
@@ -1532,18 +1594,17 @@ export const makeXAiPromptCompletionRuntime = Effect.fn("makeXAiPromptCompletion
       handleExtNotification: (method, payload, handler) =>
         xAiSessionNotificationMethods.some((owned) => owned === method)
           ? Effect.sync(() => {
-              sessionNotificationHandlers.set(method, (params) =>
-                Schema.decodeUnknownEffect(payload)(params).pipe(
-                  Effect.mapError((error) =>
-                    EffectAcpErrors.AcpProtocolParseError.fromSchemaError(
-                      "decode-notification-payload",
-                      method,
-                      error,
-                    ),
+              sessionNotificationHandlers.set(method, [
+                ...(sessionNotificationHandlers.get(method) ?? []),
+                (params) =>
+                  Schema.decodeUnknownEffect(payload)(params).pipe(
+                    Effect.matchEffect({
+                      // A different consumer may accept this shared-method payload.
+                      onFailure: () => Effect.succeed(false),
+                      onSuccess: (value) => handler(value).pipe(Effect.as(true)),
+                    }),
                   ),
-                  Effect.flatMap(handler),
-                ),
-              );
+              ]);
             })
           : runtime.handleExtNotification(method, payload, handler),
       prompt: Effect.fn("xaiAcpExtension.prompt")(function* (payload, promptOptions?) {
