@@ -3605,7 +3605,11 @@ it.effect.each(["finishes after Stop", "was claimed before Stop and startup repa
           grandchildId,
           grandchildRun.id,
           `retired-settle-grandchild:${before}`,
-        ).pipe(Effect.andThen(orchestrator.recoverDelegatedTask(grandchildId, grandchildRun.id)));
+        ).pipe(
+          Effect.andThen(
+            orchestrator.recoverDelegatedTask(grandchildId, { sourceRunId: grandchildRun.id }),
+          ),
+        );
         // The claimed wake was never dispatched before the server restarted.
         if (before) yield* finishGrandchild.pipe(Effect.andThen(Queue.take(offers)));
         yield* orchestrator.dispatch({
@@ -3613,7 +3617,7 @@ it.effect.each(["finishes after Stop", "was claimed before Stop and startup repa
           threadId: childId,
           commandId: CommandId.make(`retired-settle-stop:${before}`),
         });
-        yield* orchestrator.recoverDelegatedTask(childId, childRun.id);
+        yield* orchestrator.recoverDelegatedTask(childId, { sourceRunId: childRun.id });
         if (before) yield* orchestrator.recoverDelegatedTasks;
         else {
           // A grandchild that is still working keeps the Stopped child's task open.
