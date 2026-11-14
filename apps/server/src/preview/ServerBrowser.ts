@@ -5,6 +5,15 @@ import {
   BrowserProfile,
   BrowserProfileId,
   BUILT_IN_BROWSER_PROFILES,
+  PreviewWatchError,
+  PreviewWatchStartInput,
+  PreviewWatchStopInput,
+  type PreviewWatchReadInput,
+  type PreviewWatchReadResult,
+  CookieMirrorError,
+  type CookieMirrorBatch,
+  OrchestratorMcpFailure,
+  type NativeBrowserDownloadAssetResource,
   DEFAULT_BROWSER_PROFILE_ID,
   DEFAULT_BROWSER_RECORDING_FRAME_RATE,
   FILL_PREVIEW_VIEWPORT,
@@ -22,11 +31,13 @@ import {
   type PreviewAutomationConsoleEntry,
   type PreviewAutomationDragInput,
   type PreviewAutomationEvaluateInput,
+  type PreviewAutomationFillCredentialInput,
   type PreviewAutomationHoverInput,
   type PreviewAutomationLoadError,
   type PreviewAutomationNavigateInput,
   type PreviewAutomationNetworkEntry,
   type PreviewAutomationOpenInput,
+  PreviewAutomationReadPageInput,
   type PreviewAutomationPressInput,
   type PreviewAutomationRequest,
   type PreviewAutomationResizeInput,
@@ -39,13 +50,13 @@ import {
   type PreviewAutomationUploadInput,
   type PreviewAutomationWaitForInput,
   PreviewClearProfileError,
-  type PreviewEvent,
   type PreviewNavStatus,
   type PreviewSessionSnapshot,
   type PreviewViewportSetting,
   ThreadId,
   SERVER_BROWSER_AUTOMATION_CLIENT_ID,
   type PreviewAppearancePreference,
+  type PreviewViewerResource,
 } from "@t3tools/contracts";
 import { AgentScope, agentScopeLauncherScript } from "@t3tools/shared/AgentScope";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
@@ -54,6 +65,7 @@ import { normalizePreviewUrl } from "@t3tools/shared/preview";
 import { resolvePreviewViewport } from "@t3tools/shared/previewViewport";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
+import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -62,6 +74,7 @@ import { constVoid } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import type * as Path from "effect/Path";
+import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
@@ -85,13 +98,25 @@ import * as ServerConfig from "../config.ts";
 import { resolveRootCliCommand } from "../cli/invocation.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import {
+  fillCredential,
+  loginInProgress,
+  LOGIN_OPERATIONS,
+  serverBrowserOnly,
+} from "./CredentialFill.ts";
+import { CredentialVault } from "./CredentialVault.ts";
 import * as DesktopBrowserChannel from "./DesktopBrowserChannel.ts";
 import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
 import * as PreviewManager from "./Manager.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
+import { ServerCookieMirrorProfiles } from "./ServerCookieMirrorProfiles.ts";
+import { ServerCookieMirror } from "./ServerCookieMirror.ts";
 import { presentAsChrome, ServerBrowserContexts } from "./ServerBrowserContexts.ts";
+import { PageWatchStore } from "./PageWatchStore.ts";
+import { installPageWatch } from "./ServerBrowserWatch.ts";
 import { BrowserControlInterrupted, SessionControl } from "./SessionControl.ts";
 import { installPdfDocumentNavigation, isPdfAssetUrl } from "./PdfDocumentNavigation.ts";
 
@@ -118,6 +143,11 @@ const RECORDING_SCREENCAST = { format: "jpeg", quality: 90, everyNthFrame: 1 } a
 const RECORDING_BINARY_EXPORT_MIN_BYTES = 8 * 1024 * 1024;
 const RECORDING_DOWNLOAD_TIMEOUT_MS = 5_000;
 const decodeViewportSetting = Schema.decodeUnknownSync(PreviewViewportSettingSchema);
+const decodeReadPage = Schema.decodeUnknownSync(PreviewAutomationReadPageInput);
+const decodeWatchStart = Schema.decodeUnknownSync(PreviewWatchStartInput);
+const decodeWatchStop = Schema.decodeUnknownSync(PreviewWatchStopInput);
+const isWatchReadFailure = Schema.is(Schema.Union([PreviewWatchError, OrchestratorMcpFailure]));
+const encodeInputJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const AGENT_CURSOR_MOVE_MS = 160;
 const AGENT_CURSOR_CLICK_LEAD_MS = 40;
 /** A dialog blocks page script, so a desktop size read gives up after this. */
@@ -174,6 +204,7 @@ export class ServerBrowserTabNotFoundError extends Schema.TaggedError<ServerBrow
   }
 }
 
+const isBrowserControlInterrupted = Schema.is(BrowserControlInterrupted);
 const isTabNotFound = Schema.is(ServerBrowserTabNotFoundError);
 const isHostSetupError = Schema.is(
   Schema.Union([
@@ -240,7 +271,8 @@ export type ServerBrowserViewerOutput =
       readonly accept: string;
     }
   | { readonly _tag: "fileChooserClosed"; readonly id: string }
-  | { readonly _tag: "popup"; readonly tabId: string }
+  /** The page this viewer controls opened a new tab; the viewer shows it, as a browser would. */
+  | { readonly _tag: "popup"; readonly tabId: string; readonly resource?: PreviewViewerResource }
   | {
       readonly _tag: "download";
       readonly id: string;
@@ -250,9 +282,21 @@ export type ServerBrowserViewerOutput =
   | { readonly _tag: "gone" }
   | { readonly _tag: "reconnect" };
 
+class BrowserInputOverloaded extends Schema.TaggedError<BrowserInputOverloaded>()(
+  "BrowserInputOverloaded",
+  {},
+) {
+  override get message() {
+    return "Browser input backlog is full. Reconnect after pending input drains.";
+  }
+}
+
 export interface ServerBrowserViewer {
   readonly output: Queue.Dequeue<ServerBrowserViewerOutput>;
-  readonly input: (message: unknown) => Effect.Effect<void>;
+  readonly input: (message: unknown) => Effect.Effect<void, BrowserInputOverloaded>;
+  readonly enqueueInput: (
+    message: unknown,
+  ) => Effect.Effect<void, BrowserInputOverloaded, Scope.Scope>;
 }
 
 export type ProfileReporter = (input: PreviewReportProfilesInput) => Effect.Effect<void>;
@@ -260,6 +304,11 @@ export type ProfileReporter = (input: PreviewReportProfilesInput) => Effect.Effe
 export class ServerBrowser extends Context.Service<
   ServerBrowser,
   {
+    /** Retained queue only, including while the host thread is settled. */
+    readonly readWatch?: <R>(
+      input: PreviewWatchReadInput,
+      authorizeReader: Effect.Effect<void, OrchestratorMcpFailure, R>,
+    ) => Effect.Effect<PreviewWatchReadResult, PreviewWatchError | OrchestratorMcpFailure, R>;
     readonly attachViewer: (input: {
       readonly threadId: string;
       readonly tabId: string;
@@ -267,6 +316,10 @@ export class ServerBrowser extends Context.Service<
       readonly maxHeight: number;
       readonly quality: number;
       readonly canOperate: boolean;
+      readonly disconnectReason?: () => "transport" | "inputOverload";
+      readonly authorize?: () => Promise<void>;
+      /** The authenticated admission, distinct from this connection's control id. */
+      readonly resourceViewerId?: string;
     }) => Effect.Effect<
       ServerBrowserViewer,
       ServerBrowserTabNotFoundError | ServerBrowserLaunchError,
@@ -277,6 +330,8 @@ export class ServerBrowser extends Context.Service<
       readonly threadId: string;
       readonly tabId: string;
       readonly chooserId: string;
+      readonly authorize?: () => Promise<void>;
+      readonly resourceViewerId?: string;
       readonly files: ReadonlyArray<{
         readonly name: string;
         readonly mimeType: string;
@@ -287,16 +342,40 @@ export class ServerBrowser extends Context.Service<
       readonly threadId: string;
       readonly tabId: string;
       readonly downloadId: string;
-    }) => Effect.Effect<Option.Option<{ readonly path: string; readonly fileName: string }>>;
-
+    }) => Effect.Effect<
+      Option.Option<{
+        readonly path: string;
+        readonly fileName: string;
+        readonly resource?: NativeBrowserDownloadAssetResource;
+      }>
+    >;
+    /** Exact native file only; each read is bounded and independently reauthorized. */
+    readonly inspectDownload?: (
+      resource: NativeBrowserDownloadAssetResource,
+      authorize: Effect.Effect<void, OrchestratorMcpFailure>,
+    ) => Effect.Effect<void, OrchestratorMcpFailure>;
+    readonly readDownloadBlock?: (
+      resource: NativeBrowserDownloadAssetResource,
+      offset: number,
+      authorize: Effect.Effect<void, OrchestratorMcpFailure>,
+    ) => Effect.Effect<Uint8Array, OrchestratorMcpFailure>;
+    /** Deletes a human profile's server-side storage, closing its open tabs first. */
     readonly clearProfile: (profileId: string) => Effect.Effect<void, PreviewClearProfileError>;
 
     readonly profileReporter: Effect.Effect<ProfileReporter, never, Scope.Scope>;
+    readonly mirrorResets: Stream.Stream<string>;
+    readonly mirrorCookies: (input: CookieMirrorBatch) => Effect.Effect<void, CookieMirrorError>;
+
+    readonly authorizeViewer?: (
+      resource: PreviewViewerResource,
+    ) => Effect.Effect<void, ServerBrowserTabNotFoundError>;
   }
 >()("t3/preview/ServerBrowser") {}
 
 interface ViewerState {
+  readonly authorize: () => Promise<void>;
   readonly id: string;
+  readonly resourceViewerId: string | undefined;
   readonly canOperate: boolean;
   readonly pressedKeys: Map<string, { key: string; code: string }>;
   readonly pressedButtons: Map<"left" | "middle" | "right", { x: number; y: number }>;
@@ -304,6 +383,8 @@ interface ViewerState {
   readonly pause: () => Promise<void>;
   readonly resume: () => Promise<void>;
   scrolledAt: number;
+  /** Set once the viewer starts detaching; it can no longer receive a human claim. */
+  leaving: boolean;
 
   requestedSize: { width: number; height: number; order: number } | null;
 }
@@ -323,9 +404,11 @@ interface Recording {
   readonly session: CDPSession;
   readonly startedAt: string;
   readonly framesInFlight: Set<Promise<void>>;
+  readonly authorize: () => Promise<void>;
 }
 
 interface ServerTab {
+  readonly authorize: () => Promise<void>;
   readonly threadId: ThreadId;
   readonly tabId: string;
   readonly page: Page;
@@ -346,6 +429,13 @@ interface ServerTab {
   agentOperating: boolean;
   fileChooserIntercepted: boolean;
   readonly onFileChooser: (chooser: FileChooser) => void;
+  readonly watches: Set<string>;
+  /**
+   * The browser profile whose storage the tab shares: a server profile id, its own
+   * context for an isolated tab and its popups, or a desktop tab of its own. A login
+   * covers a whole profile.
+   */
+  readonly profileKey: string;
 
   readonly isolatedContext: boolean;
 
@@ -400,6 +490,9 @@ interface ServerTab {
 }
 
 interface ServerDownload {
+  readonly digest: string;
+  readonly blockDigests: ReadonlyArray<string>;
+  readonly fingerprint: string;
   readonly id: string;
   readonly fileName: string;
   readonly path: string;
@@ -408,11 +501,33 @@ interface ServerDownload {
   readonly completedAt: string;
 }
 
-/** Read-only operations remain available during human control; evaluate requires control because scripts can mutate the page. */
+/**
+ * Operations an agent may run on any tab in its thread, even while a human
+ * drives it. Evaluate is not one: page script can change anything, so it needs
+ * the same control as clicking.
+ */
 const READ_OPERATIONS: ReadonlySet<PreviewAutomationRequest["operation"]> = new Set([
   "status",
   "snapshot",
   "waitFor",
+]);
+
+// Results that are a tab's status, taken again when a login began meanwhile.
+const STATUS_RESULTS: ReadonlySet<PreviewAutomationRequest["operation"]> = new Set([
+  "status",
+  "open",
+  "navigate",
+  "dialog",
+]);
+// Results that carry no page content whenever they finish.
+const CONTENT_FREE_RESULTS: ReadonlySet<PreviewAutomationRequest["operation"]> = new Set([
+  "click",
+  "press",
+  "type",
+  "waitFor",
+  "fillCredential",
+  "endLogin",
+  "close",
 ]);
 
 const AGENT_TAB_LIMIT = 8;
@@ -424,6 +539,19 @@ const DOWNLOAD_LIMIT = 20;
 const ABORTED_NAVIGATION_DOWNLOAD_WAIT_MS = 5_000;
 const PAGE_CLOSE_GRACE_MS = 5_000;
 const DOWNLOAD_MAX_BYTES = 1024 * 1024 * 1024;
+export const DOWNLOAD_BLOCK_BYTES = 1024 * 1024;
+const fileFingerprint = (stat: Awaited<ReturnType<NodeFSP.FileHandle["stat"]>>) =>
+  `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+const readDownloadBlockBytes = async (file: NodeFSP.FileHandle, offset: number, size: number) => {
+  const bytes = new Uint8Array(Math.min(DOWNLOAD_BLOCK_BYTES, size - offset));
+  let read = 0;
+  while (read < bytes.byteLength) {
+    const result = await file.read(bytes, read, bytes.byteLength - read, offset + read);
+    if (result.bytesRead === 0) throw new Error("Native download was truncated.");
+    read += result.bytesRead;
+  }
+  return bytes;
+};
 
 const tabKey = (threadId: string, tabId: string) => `${threadId}\u0000${tabId}`;
 
@@ -447,6 +575,68 @@ const fixedViewportSize = (setting: PreviewViewportSetting) =>
 const asRecord = (value: unknown): Record<string, unknown> | null =>
   typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
 
+// Retain only native-consumed fields, including the existing paste clamp,
+// before charging queued work. Legacy local viewers send whole clipboards.
+const viewerInputFields = new Map<string, readonly string[]>([
+  ["takeControl", []],
+  ["releaseControl", []],
+  ["dialog", ["accept", "promptText"]],
+  ["mouse", ["action", "button", "x", "y", "buttons", "clickCount", "modifiers"]],
+  ["wheel", ["x", "y", "deltaX", "deltaY", "modifiers"]],
+  ["key", ["action", "key", "code", "text", "keyCode", "modifiers"]],
+  ["text", ["text"]],
+  ["resize", ["width", "height"]],
+  ["viewport", []],
+  ["navigate", ["url"]],
+  ["history", ["delta"]],
+  ["reload", ["ignoreCache"]],
+  ["stopLoading", []],
+  ["probe", ["x", "y"]],
+]);
+const normalizeViewerInput = (raw: unknown): Record<string, unknown> | null => {
+  const source = asRecord(raw);
+  if (!source || typeof source.type !== "string") return null;
+  const fields = viewerInputFields.get(source.type);
+  if (!fields) return null;
+  const message: Record<string, unknown> = { type: source.type };
+  for (const field of fields) {
+    const value = source[field];
+    if (["accept", "ignoreCache"].includes(field)) {
+      if (typeof value === "boolean") message[field] = value;
+    } else if (["action", "button", "key", "code", "text", "url", "promptText"].includes(field)) {
+      if (typeof value === "string") message[field] = value;
+    } else if (typeof value === "number" && Number.isFinite(value)) message[field] = value;
+  }
+  if (source.type === "mouse") {
+    message.action = source.action === "down" || source.action === "up" ? source.action : "move";
+    try {
+      const button = String(source.button);
+      if (["none", "left", "middle", "right"].includes(button)) message.button = button;
+      else delete message.button;
+    } catch {
+      return null;
+    }
+  }
+  if (source.type === "key") {
+    message.action = source.action === "up" ? "up" : "down";
+    if (message.action === "up") {
+      delete message.text;
+      delete message.keyCode;
+    }
+  }
+  if (source.type === "dialog" && message.accept !== true) delete message.promptText;
+  if (source.type === "text" && typeof message.text === "string")
+    message.text = message.text.slice(0, 10_000);
+  if (source.type === "viewport") {
+    try {
+      message.setting = decodeViewportSetting(source.setting);
+    } catch {
+      return null;
+    }
+  }
+  return message;
+};
+
 const num = (value: unknown, fallback = 0) =>
   typeof value === "number" && Number.isFinite(value) ? value : fallback;
 
@@ -455,7 +645,9 @@ const modifiersOf = (message: Record<string, unknown>) => {
   return Number.isInteger(value) && value >= 0 && value < 16 ? value : 0;
 };
 
-// Linux/headless Chromium needs commands for Cmd editing shortcuts and Ctrl copy/cut.
+// Cmd shortcuts from Apple viewers are no editing shortcut for Linux or headless
+// Chromium, so they carry the command. Ctrl already works natively on Linux,
+// except copy and cut, which headless Chromium only runs as commands.
 const editingCommand = (key: string, modifiers: number) => {
   const modifier = modifiers & 0b0111;
   if (modifier !== 2 && modifier !== 4) return null;
@@ -479,7 +671,10 @@ const editingCommand = (key: string, modifiers: number) => {
 
 const CLIPBOARD_TEXT_LIMIT = 1024 * 1024;
 const CLIPBOARD_WORLD = "t3-preview-clipboard";
-// Chromium shares its clipboard across contexts; capture real copy/cut keys in a page-inaccessible world instead.
+// Headless Chromium shares one clipboard between every context, so the copy
+// a viewer's copy or cut key makes is read from this world instead of the
+// clipboard. Page scripts cannot see the world, and only a copy made while a
+// real key is handled counts.
 const CLIPBOARD_SCRIPT = `(() => {
   let keying = false;
   // One entry per copy or cut key, oldest first, so a later key cannot overwrite an unread copy.
@@ -528,11 +723,14 @@ const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const host = { platform: yield* HostProcess.Platform, arch: yield* HostProcess.Architecture };
   const manager = yield* PreviewManager.PreviewManager;
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   const environment = yield* ServerEnvironment.ServerEnvironment;
+  const environmentId = yield* environment.getEnvironmentId;
   const previewBrowser = yield* PreviewBrowser.PreviewBrowser;
   const desktopChannel = yield* DesktopBrowserChannel.DesktopBrowserChannel;
   const agentTurns = yield* (yield* PreviewAgentActivity.PreviewAgentActivity).changes;
+  const vault = yield* CredentialVault;
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
   const runSyncExit = Effect.runSyncExitWith(yield* Effect.context<never>());
@@ -546,17 +744,75 @@ const make = Effect.gen(function* () {
   const launchersDir = NodePath.join(config.stateDir, "server-browser", "launchers");
 
   const tabs = new Map<string, ServerTab>();
+  const watches = new PageWatchStore(NodeCrypto.randomUUID());
+  const stopTabWatches = (tab: ServerTab, reason: PreviewWatchError["reason"]) => {
+    for (const id of tab.watches) void watches.terminate(id, reason).catch(constVoid);
+  };
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      for (const tab of tabs.values()) stopTabWatches(tab, "closed");
+    }),
+  );
   const pendingTabs = new Map<
     string,
-    { readonly agentId: string | null; promise?: Promise<ServerTab> }
+    {
+      readonly agentId: string | null;
+      readonly threadId?: string;
+      promise?: Promise<ServerTab>;
+      settled?: boolean;
+    }
+  >();
+  // Retain the original invocation across a failed launch or a desktop reconnect.
+  // These are current checks, never cached grant results.
+  const tabAuthorizations = new Map<string, () => Promise<void>>();
+  /** Sessions closed while their tab was still opening; the open discards its page. */
+  const closedPendingTabs = new Set<string>();
+  const adoptedPages = new Map<
+    string,
+    { readonly page: Page; readonly openerTabId: string; readonly profileKey: string }
   >();
 
-  const closedPendingTabs = new Set<string>();
-  const adoptedPages = new Map<string, { readonly page: Page; readonly openerTabId: string }>();
+  /**
+   * Logins, one per server browser profile. While one lasts no tab of the profile can be read and new
+   * tabs start in it; it ends only when the profile's context closes. Pages and attachments are not
+   * counted. `loginEpoch` counts each change so results can be rechecked as they leave.
+   */
+  const profileLogins = new Map<string, { ending: boolean; context: BrowserContext }>();
+  let loginEpoch = 0;
+  const inLogin = (tab: ServerTab) => profileLogins.has(tab.profileKey);
+  const mayCloseSettledTab = (tab: ServerTab) =>
+    tab.control.agentId !== null &&
+    tab.control.controller === null &&
+    tab.viewers.size === 0 &&
+    tab.watches.size === 0 &&
+    // Quarantine ends only after the whole profile context closes.
+    !inLogin(tab);
+  const profileTabs = (profileKey: string) =>
+    [...tabs.values()].filter((tab) => tab.profileKey === profileKey);
+  const endLoginsOf = (context: BrowserContext) => {
+    for (const [profileKey, login] of profileLogins)
+      if (login.context === context) {
+        profileLogins.delete(profileKey);
+        loginEpoch++;
+      }
+  };
   const closedSessions = new Set<string>();
   let hostConnectionId: string | null = null;
   let viewerResizeOrder = 0;
 
+  const mirrorResets = yield* PubSub.unbounded<string>();
+  const mirroredContexts = new WeakMap<BrowserContext, string>();
+  const catalog = new ServerCookieMirrorProfiles(
+    NodePath.join(config.stateDir, "server-browser", "mirrored-profiles.json"),
+  );
+  const catalogRead = yield* Effect.tryPromise({
+    try: () => catalog.read(),
+    catch: () => new CookieMirrorError({ reason: "unavailable" }),
+  }).pipe(Effect.result);
+  if (catalogRead._tag === "Failure")
+    yield* Effect.logWarning(
+      "Mirrored browser profile catalog unavailable; cookie mirroring stopped.",
+    );
   const contexts = new ServerBrowserContexts({
     profilesDir: NodePath.join(config.stateDir, "server-browser", "profiles"),
     idleBrowserMs: 5 * 60_000,
@@ -572,6 +828,9 @@ const make = Effect.gen(function* () {
       await NodeFSP.writeFile(launcher, agentScopeLauncherScript(launch), { mode: 0o700 });
       return { path: launcher, release: () => NodeFSP.rm(launcher, { force: true }) };
     },
+    // An unsupported host never launches: its executable fails first.
+    version: PreviewBrowser.previewBrowserRelease(host.platform, host.arch)?.version ?? "",
+    host,
     // Playwright's launch error drops Chrome's own output; its sandbox note survives.
     diagnose: (executable, cause) =>
       Effect.runPromiseWith(launchServices)(
@@ -584,11 +843,15 @@ const make = Effect.gen(function* () {
         }),
       ),
     onContextClose: (context) => {
+      endLoginsOf(context);
+      const profileId = mirroredContexts.get(context);
+      if (profileId !== undefined) runFork(PubSub.publish(mirrorResets, profileId));
       for (const tab of tabs.values()) {
         if (tab.page.context() === context) dropTab(tab, true);
       }
     },
   });
+  const cookieMirror = new ServerCookieMirror(contexts);
 
   // Playwright cannot reload a crashed page, so a fresh page takes over its tab.
   const reopenCrashedTab = async (tab: ServerTab) => {
@@ -625,7 +888,7 @@ const make = Effect.gen(function* () {
       if (!snapshot) {
         throw new ServerBrowserTabNotFoundError({ threadId: tab.threadId, tabId: tab.tabId });
       }
-      return createTab(snapshot, tab.page.url());
+      return createTab(snapshot, tabAuthorizations.get(key) ?? (async () => {}), tab.page.url());
     })().finally(() => {
       pendingTabs.delete(key);
       closedPendingTabs.delete(key);
@@ -662,14 +925,24 @@ const make = Effect.gen(function* () {
         controller:
           tab.control.controller === viewer.id
             ? "you"
-            : tab.control.controller !== null
-              ? "another-viewer"
-              : tab.control.agentId !== null
-                ? "agent"
-                : "unclaimed",
+            : tab.control.humanDisconnected
+              ? "unclaimed"
+              : tab.control.controller !== null
+                ? "another-viewer"
+                : tab.control.agentId !== null
+                  ? "agent"
+                  : "unclaimed",
         generation: tab.control.generation,
         dialog: dialogStatus(tab),
       });
+  };
+
+  /** A claim parked by a lost viewer goes to an operating viewer, which then offers Release control. */
+  const resumeHumanControl = (tab: ServerTab) => {
+    const viewer = [...tab.viewers].findLast(
+      (candidate) => candidate.canOperate && !candidate.leaving,
+    );
+    if (viewer && tab.control.resume(viewer.id)) pushFileChooser(tab);
   };
 
   const resolveDialog = async (tab: ServerTab, input: PreviewAutomationDialogInput) => {
@@ -682,7 +955,11 @@ const make = Effect.gen(function* () {
     broadcastControl(tab);
   };
 
-  const report = (tab: ServerTab, navStatus: PreviewNavStatus) => {
+  const report = (tab: ServerTab, status: PreviewNavStatus) => {
+    // Session state reaches every client; a login page's URL or title can hold a value.
+    const navStatus: PreviewNavStatus = inLogin(tab)
+      ? { _tag: "Success", url: "about:blank", title: "Login in progress" }
+      : status;
     void tab.cdp
       .send("Page.getNavigationHistory")
       .catch(() => null)
@@ -829,7 +1106,12 @@ const make = Effect.gen(function* () {
     for (const viewer of tab.viewers) viewer.push({ _tag: "viewport", ...size });
   };
 
-  const applySetting = async (tab: ServerTab, setting: PreviewViewportSetting) => {
+  const applySetting = async (
+    tab: ServerTab,
+    setting: PreviewViewportSetting,
+    authorize = async () => {},
+  ) => {
+    await authorize();
     tab.setting = setting;
 
     if (tab.desktop) return;
@@ -841,11 +1123,18 @@ const make = Effect.gen(function* () {
         .sort((left, right) => right.order - left.order)[0] ??
       UNATTACHED_FILL_VIEWPORT;
     await tab.page.setViewportSize({ width: size.width, height: size.height });
+    await authorize();
     await applyZoom(tab);
     await broadcastViewport(tab);
   };
 
-  const applyRendering = async (tab: ServerTab, snapshot: PreviewSessionSnapshot) => {
+  /** Applies a tab's published appearance and, for headless tabs, zoom. */
+  const applyRendering = async (
+    tab: ServerTab,
+    snapshot: PreviewSessionSnapshot,
+    authorize = async () => {},
+  ) => {
+    await authorize();
     const colorScheme = snapshot.colorScheme ?? "system";
     if (colorScheme !== tab.colorScheme) {
       tab.colorScheme = colorScheme;
@@ -853,6 +1142,7 @@ const make = Effect.gen(function* () {
     }
     const zoomFactor = snapshot.zoomFactor ?? 1;
     if (zoomFactor !== tab.zoomFactor && !tab.desktop) {
+      await authorize();
       tab.zoomFactor = zoomFactor;
       await applyZoom(tab);
       await broadcastViewport(tab);
@@ -884,6 +1174,7 @@ const make = Effect.gen(function* () {
   };
 
   const dropTab = (tab: ServerTab, closeSession: boolean, reopening = false) => {
+    stopTabWatches(tab, "closed");
     const key = tabKey(tab.threadId, tab.tabId);
     if (tabs.get(key) !== tab) return;
     tabs.delete(key);
@@ -922,7 +1213,7 @@ const make = Effect.gen(function* () {
   };
 
   const desktopRenders = (snapshot: PreviewSessionSnapshot) =>
-    desktopChannel.available && !snapshot.headless
+    desktopChannel.available && !snapshot.headless && snapshot.serverPage !== true
       ? runPromise(
           Effect.gen(function* () {
             const key = { threadId: snapshot.threadId, tabId: snapshot.tabId };
@@ -962,304 +1253,347 @@ const make = Effect.gen(function* () {
 
   const createTab = async (
     snapshot: PreviewSessionSnapshot,
+    authorize: () => Promise<void>,
     crashedUrl?: string,
   ): Promise<ServerTab> => {
-    const opened: Array<() => Promise<void>> = [];
-    try {
-      return await setUpTab(snapshot, opened, crashedUrl);
-    } catch (cause) {
-      // An unpublished tab is in no list, so nothing else would ever close it.
-      for (const close of opened.reverse()) await close().catch(constVoid);
-      throw cause;
-    }
-  };
-
-  const setUpTab = async (
-    snapshot: PreviewSessionSnapshot,
-    opened: Array<() => Promise<void>>,
-    crashedUrl: string | undefined,
-  ): Promise<ServerTab> => {
+    await authorize();
     const adopted = adoptedPages.get(tabKey(snapshot.threadId, snapshot.tabId));
     adoptedPages.delete(tabKey(snapshot.threadId, snapshot.tabId));
-    const desktop =
-      adopted === undefined && (await desktopRenders(snapshot))
-        ? await connectDesktop(snapshot)
-        : null;
-    if (desktop) opened.push(desktop.close);
-    // Attaching over CDP emulates a light scheme; a tab on System follows the desktop's.
-    if (desktop) await desktop.page.emulateMedia({ colorScheme: null });
-    // Otherwise a desktop that attaches late, or has no channel to draw it, shows its own page.
-    if (!desktop) {
-      await runPromise(
-        manager
-          .markHeadless({ threadId: ThreadId.make(snapshot.threadId), tabId: snapshot.tabId })
-          .pipe(Effect.ignore),
-      );
-    }
-    const isolatedContext =
-      adopted === undefined &&
-      desktop === null &&
-      ((snapshot.automationOwner !== undefined && snapshot.profileId === undefined) ||
-        snapshot.profileId === INCOGNITO_BROWSER_PROFILE_ID);
-    const context =
-      adopted?.page.context() ??
-      desktop?.page.context() ??
-      (await contexts.contextFor(
-        snapshot.profileId ?? "default",
-        isolatedContext ? tabKey(snapshot.threadId, snapshot.tabId) : undefined,
-      ));
-    if (isolatedContext) opened.push(() => context.close());
-    if (adopted?.page.isClosed()) throw new Error("The popup closed before it opened.");
-    if (!desktop) await prepareContext(context);
-    const page = adopted?.page ?? desktop?.page ?? (await context.newPage());
-    if (!desktop) opened.push(() => page.close());
-    const cdp = await context.newCDPSession(page);
-    await installPdfDocumentNavigation(cdp);
-    // The desktop's page is already a normal browser. A popup's first request
-    // went out before it became a tab; everything after presents as Chrome.
-    if (!desktop) await presentAsChrome(cdp, host);
-    if (!desktop) await recordCopies(cdp);
-    page.setDefaultTimeout(NAVIGATION_TIMEOUT_MS);
-    page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
-    const control = new SessionControl(snapshot.automationOwner ?? null, () =>
-      ServerBrowserPage.invalidateRefs(page),
-    );
-    let pendingFileChooserOffer = Promise.resolve();
-    const tab: ServerTab = {
-      threadId: ThreadId.make(snapshot.threadId),
-      tabId: snapshot.tabId,
-      page,
-      cdp,
-      frameSessions: new Map(),
-      copyReads: Promise.resolve(),
-      copyKeyedUntil: 0,
-      createdAt: Date.now(),
-      usedAt: Date.now(),
-      viewers: new Set(),
-      viewerAttached: null,
-      consoleEntries: [],
-      networkEntries: [],
-      actionTimeline: [],
-      control,
-      agentOperating: false,
-      fileChooserIntercepted: false,
-      onFileChooser: (chooser) => {
-        pendingFileChooserOffer = pendingFileChooserOffer
-          .then(() => offerFileChooser(tab, chooser))
-          .catch(constVoid);
-      },
-      isolatedContext,
-      desktop: desktop === null ? null : { close: desktop.close },
-      profileId: snapshot.profileId,
-      openerTabId: adopted?.openerTabId,
-      downloads: [],
-      fileChooser: null,
-      dialog: null,
-      setting: snapshot.viewport ?? FILL_PREVIEW_VIEWPORT,
-      colorScheme: "system",
-      zoomFactor: 1,
-      desktopViewport: null,
-      desktopViewportRead: Promise.resolve(null),
-      desktopViewportNext: null,
-      desktopViewportStale: true,
-      desktopViewportChanges: 0,
-      desktopResize: Promise.withResolvers<void>(),
-      loading: false,
-      loadError: undefined,
-      // The page a crash left behind is blank; the session still names what crashed.
-      crash:
-        !desktop && !adopted && snapshot.navStatus._tag === "LoadFailed"
-          ? {
-              url: snapshot.navStatus.url,
-              code: snapshot.navStatus.code,
-              description: snapshot.navStatus.description,
-            }
-          : undefined,
-      crashedUrl,
-      closing: false,
-      recording: null,
-      recordingStart: null,
-      initialNavigation: null,
-      pendingInitialRequestUrl: null,
-      navigationGeneration: 0,
-      stoppedGeneration: null,
-      abortedNavigation: null,
-      captureLock: Promise.resolve(),
-      capturing: 0,
-    };
-    if (!desktop) {
-      await page.setViewportSize(fixedViewportSize(tab.setting) ?? UNATTACHED_FILL_VIEWPORT);
-    }
-    await applyRendering(tab, snapshot);
-    if (desktop) {
-      // The desktop resizes and zooms its webview itself; viewers map input with the new size.
-      const remeasure = () => {
-        tab.desktopViewportStale = true;
-        tab.desktopViewportChanges += 1;
-        if (tab.viewers.size > 0) return broadcastViewport(tab).catch(constVoid);
-      };
-      cdp.on("Page.frameResized", () => {
-        const drawn = tab.desktopResize;
-        tab.desktopResize = Promise.withResolvers();
-        drawn.resolve();
-        return remeasure();
-      });
-      // A read a navigation broke has a fresh page to measure.
-      cdp.on("Page.loadEventFired", remeasure);
-      // Closing a dialog resizes nothing, and the host can close it without us.
-      cdp.on("Page.javascriptDialogClosed", () => {
-        tab.dialog = null;
-        return remeasure();
-      });
-      await cdp.send("Page.enable");
-    }
-    const isMainNavigation = (request: { isNavigationRequest(): boolean; frame(): unknown }) =>
-      request.isNavigationRequest() && request.frame() === page.mainFrame();
-    const navigationGenerations = new WeakMap<object, number>();
-    page.on("request", (request) => {
-      if (!isMainNavigation(request)) return;
-      // Playwright can deliver the first request after Stop has already settled its navigation.
-      const stoppedInitialRequest =
-        request.url() === tab.pendingInitialRequestUrl &&
-        tab.stoppedGeneration === tab.navigationGeneration;
-      tab.pendingInitialRequestUrl = null;
-      navigationGenerations.set(request, ++tab.navigationGeneration);
-      clearAbortedNavigation(tab);
-      tab.loading = true;
-      tab.loadError = undefined;
-      tab.crash = undefined;
-      tab.crashedUrl = undefined;
-      if (stoppedInitialRequest) {
-        tab.stoppedGeneration = tab.navigationGeneration;
-        settleStoppedNavigation(tab, tab.navigationGeneration);
-        return;
+    let desktop: Awaited<ReturnType<typeof connectDesktop>> | null = null;
+    let context: BrowserContext | undefined;
+    let isolatedContext = false;
+    let pendingPage: Page | undefined = adopted?.page;
+    let pendingCdp: CDPSession | undefined;
+    let createdTab: ServerTab | undefined;
+    try {
+      desktop =
+        adopted === undefined && (await desktopRenders(snapshot))
+          ? await connectDesktop(snapshot)
+          : null;
+      // Attaching over CDP emulates a light scheme; a tab on System follows the desktop's.
+      if (desktop) await desktop.page.emulateMedia({ colorScheme: null });
+      // Otherwise a desktop that attaches late, or has no channel to draw it, shows its own page.
+      if (!desktop) {
+        await runPromise(
+          manager
+            .markHeadless({ threadId: ThreadId.make(snapshot.threadId), tabId: snapshot.tabId })
+            .pipe(Effect.ignore),
+        );
       }
-      report(tab, {
-        _tag: "Loading",
-        url: ServerBrowserPage.withoutDataPayload(request.url()).slice(0, 2048),
-        title: "",
+      isolatedContext =
+        adopted === undefined &&
+        desktop === null &&
+        ((snapshot.automationOwner !== undefined && snapshot.profileId === undefined) ||
+          snapshot.profileId === INCOGNITO_BROWSER_PROFILE_ID);
+      await authorize();
+      context =
+        adopted?.page.context() ??
+        desktop?.page.context() ??
+        (await contexts.contextFor(
+          snapshot.profileId ?? "default",
+          isolatedContext ? tabKey(snapshot.threadId, snapshot.tabId) : undefined,
+        ));
+      await authorize();
+      if (adopted?.page.isClosed()) throw new Error("The popup closed before it opened.");
+      // The desktop page already has its own clipboard.
+      if (!desktop) await prepareContext(context);
+      await authorize();
+      const page = (pendingPage = adopted?.page ?? desktop?.page ?? (await context.newPage()));
+      await authorize();
+      const cdp = (pendingCdp = await context.newCDPSession(page));
+      await installPdfDocumentNavigation(cdp);
+      await authorize();
+      // The desktop's page is already a normal browser. A popup's first request
+      // went out before it became a tab; everything after presents as Chrome.
+      if (!desktop) await presentAsChrome(cdp, contexts.identity);
+      await authorize();
+      if (!desktop) await recordCopies(cdp, authorize);
+      page.setDefaultTimeout(NAVIGATION_TIMEOUT_MS);
+      page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
+      const control = new SessionControl(snapshot.automationOwner ?? null, () => {
+        ServerBrowserPage.invalidateRefs(page);
+        if (createdTab) stopTabWatches(createdTab, "ownership");
       });
-    });
-    page.on("load", () => {
-      tab.pendingInitialRequestUrl = null;
-      tab.loading = false;
-      void reportLoaded(tab);
-    });
-    page.on("framenavigated", (frame) => {
-      const open = tab.fileChooser;
-      if (open) {
-        void isFileChooserCurrent(open.chooser).then((current) => {
-          if (!current && tab.fileChooser?.chooser === open.chooser) closeFileChooser(tab);
+      let pendingFileChooserOffer = Promise.resolve();
+      const tab: ServerTab = (createdTab = {
+        authorize,
+        threadId: ThreadId.make(snapshot.threadId),
+        tabId: snapshot.tabId,
+        page,
+        cdp,
+        frameSessions: new Map(),
+        copyReads: Promise.resolve(),
+        copyKeyedUntil: 0,
+        createdAt: Date.now(),
+        usedAt: Date.now(),
+        viewers: new Set(),
+        viewerAttached: null,
+        consoleEntries: [],
+        networkEntries: [],
+        actionTimeline: [],
+        control,
+        agentOperating: false,
+        fileChooserIntercepted: false,
+        onFileChooser: (chooser) => {
+          pendingFileChooserOffer = pendingFileChooserOffer
+            .then(() => offerFileChooser(tab, chooser))
+            .catch(constVoid);
+        },
+        watches: new Set(),
+        profileKey:
+          adopted?.profileKey ??
+          (desktop
+            ? `desktop:${tabKey(snapshot.threadId, snapshot.tabId)}`
+            : isolatedContext
+              ? `isolated:${tabKey(snapshot.threadId, snapshot.tabId)}`
+              : `profile:${snapshot.profileId ?? DEFAULT_BROWSER_PROFILE_ID}`),
+        isolatedContext,
+        desktop: desktop === null ? null : { close: desktop.close },
+        profileId: snapshot.profileId,
+        openerTabId: adopted?.openerTabId,
+        downloads: [],
+        fileChooser: null,
+        dialog: null,
+        setting: snapshot.viewport ?? FILL_PREVIEW_VIEWPORT,
+        colorScheme: "system",
+        zoomFactor: 1,
+        desktopViewport: null,
+        desktopViewportRead: Promise.resolve(null),
+        desktopViewportNext: null,
+        desktopViewportStale: true,
+        desktopViewportChanges: 0,
+        desktopResize: Promise.withResolvers<void>(),
+        loading: false,
+        loadError: undefined,
+        // The page a crash left behind is blank; the session still names what crashed.
+        crash:
+          !desktop && !adopted && snapshot.navStatus._tag === "LoadFailed"
+            ? {
+                url: snapshot.navStatus.url,
+                code: snapshot.navStatus.code,
+                description: snapshot.navStatus.description,
+              }
+            : undefined,
+        crashedUrl,
+        closing: false,
+        recording: null,
+        recordingStart: null,
+        initialNavigation: null,
+        pendingInitialRequestUrl: null,
+        navigationGeneration: 0,
+        stoppedGeneration: null,
+        abortedNavigation: null,
+        captureLock: Promise.resolve(),
+        capturing: 0,
+      });
+      if (!desktop) {
+        await authorize();
+        await page.setViewportSize(fixedViewportSize(tab.setting) ?? UNATTACHED_FILL_VIEWPORT);
+      }
+      await applyRendering(tab, snapshot, authorize);
+      if (desktop) {
+        // The desktop resizes and zooms its webview itself; viewers map input with the new size.
+        const remeasure = () => {
+          tab.desktopViewportStale = true;
+          tab.desktopViewportChanges += 1;
+          if (tab.viewers.size > 0) return broadcastViewport(tab).catch(constVoid);
+        };
+        cdp.on("Page.frameResized", () => {
+          const drawn = tab.desktopResize;
+          tab.desktopResize = Promise.withResolvers();
+          drawn.resolve();
+          return remeasure();
         });
+        // A read a navigation broke has a fresh page to measure.
+        cdp.on("Page.loadEventFired", remeasure);
+        // Closing a dialog resizes nothing, and the host can close it without us.
+        cdp.on("Page.javascriptDialogClosed", () => {
+          tab.dialog = null;
+          return remeasure();
+        });
+        await cdp.send("Page.enable");
       }
-      // Same-document navigations (SPA routes) fire no load event.
-      if (frame === page.mainFrame() && !tab.loading) void reportLoaded(tab);
-      if (!desktop) void recordFrameCopies(tab, frame);
-    });
-    // An adopted popup's frames may have loaded before the tab listened.
-    if (adopted) for (const frame of page.frames()) void recordFrameCopies(tab, frame);
-    page.on("requestfailed", (request) => {
-      const errorText = request.failure()?.errorText ?? "";
-      pushBounded(tab.networkEntries, {
-        url: ServerBrowserPage.withoutDataPayload(request.url()),
-        method: request.method(),
-        status: null,
-        failed: true,
-        errorText,
-        timestamp: new Date().toISOString(),
-      });
-      if (!isMainNavigation(request)) return;
-      // Newer navigations own status; untracked initial popup requests yield to any tracked navigation.
-      const generation = navigationGenerations.get(request) ?? 0;
-      if (generation !== tab.navigationGeneration) return;
-      // An aborted navigation is usually a download; its `download` event settles the status.
-      if (errorText.includes("ERR_ABORTED")) {
-        if (tab.stoppedGeneration === generation) {
-          settleStoppedNavigation(tab, generation);
+      const isMainNavigation = (request: { isNavigationRequest(): boolean; frame(): unknown }) =>
+        request.isNavigationRequest() && request.frame() === page.mainFrame();
+      const navigationGenerations = new WeakMap<object, number>();
+      page.on("request", (request) => {
+        if (!isMainNavigation(request)) return;
+        stopTabWatches(tab, "navigation");
+        // Playwright can deliver the first request after Stop has already settled its navigation.
+        const stoppedInitialRequest =
+          request.url() === tab.pendingInitialRequestUrl &&
+          tab.stoppedGeneration === tab.navigationGeneration;
+        tab.pendingInitialRequestUrl = null;
+        navigationGenerations.set(request, ++tab.navigationGeneration);
+        clearAbortedNavigation(tab);
+        tab.loading = true;
+        tab.loadError = undefined;
+        tab.crash = undefined;
+        tab.crashedUrl = undefined;
+        if (stoppedInitialRequest) {
+          tab.stoppedGeneration = tab.navigationGeneration;
+          settleStoppedNavigation(tab, tab.navigationGeneration);
           return;
         }
-        const url = request.url();
-        const navigationGeneration = tab.navigationGeneration;
-        clearAbortedNavigation(tab);
-        tab.abortedNavigation = {
-          url,
-          generation: navigationGeneration,
-          timer: setTimeout(() => {
-            if (tab.abortedNavigation?.generation !== navigationGeneration) return;
-            tab.abortedNavigation = null;
-            if (!tab.closing) settleAbortedNavigation(tab, navigationGeneration, url, undefined);
-          }, ABORTED_NAVIGATION_DOWNLOAD_WAIT_MS),
-        };
-        return;
+        report(tab, {
+          _tag: "Loading",
+          url: ServerBrowserPage.withoutDataPayload(request.url()).slice(0, 2048),
+          title: "",
+        });
+      });
+      page.on("load", () => {
+        tab.pendingInitialRequestUrl = null;
+        tab.loading = false;
+        void reportLoaded(tab);
+      });
+      page.on("framenavigated", (frame) => {
+        const open = tab.fileChooser;
+        if (open)
+          void isFileChooserCurrent(open.chooser).then((current) => {
+            if (!current && tab.fileChooser?.chooser === open.chooser) closeFileChooser(tab);
+          });
+        if (frame === page.mainFrame()) stopTabWatches(tab, "navigation");
+        // Same-document navigations (SPA routes) fire no load event.
+        if (frame === page.mainFrame() && !tab.loading) void reportLoaded(tab);
+        if (!desktop) void recordFrameCopies(tab, frame);
+      });
+      // An adopted popup's frames may have loaded before the tab listened.
+      if (adopted) for (const frame of page.frames()) void recordFrameCopies(tab, frame);
+      page.on("requestfailed", (request) => {
+        const errorText = request.failure()?.errorText ?? "";
+        pushBounded(tab.networkEntries, {
+          url: ServerBrowserPage.withoutDataPayload(request.url()),
+          method: request.method(),
+          status: null,
+          failed: true,
+          errorText,
+          timestamp: new Date().toISOString(),
+        });
+        if (!isMainNavigation(request)) return;
+        // A navigation a newer one replaced leaves the status to the newer one. A
+        // popup's first request can predate the listener, so it is untracked and
+        // superseded by any tracked one.
+        const generation = navigationGenerations.get(request) ?? 0;
+        if (generation !== tab.navigationGeneration) return;
+        // An aborted navigation is usually a download; its `download` event settles the status.
+        if (errorText.includes("ERR_ABORTED")) {
+          if (tab.stoppedGeneration === generation) {
+            settleStoppedNavigation(tab, generation);
+            return;
+          }
+          const url = request.url();
+          const navigationGeneration = tab.navigationGeneration;
+          clearAbortedNavigation(tab);
+          tab.abortedNavigation = {
+            url,
+            generation: navigationGeneration,
+            timer: setTimeout(() => {
+              if (tab.abortedNavigation?.generation !== navigationGeneration) return;
+              tab.abortedNavigation = null;
+              if (!tab.closing) settleAbortedNavigation(tab, navigationGeneration, url, undefined);
+            }, ABORTED_NAVIGATION_DOWNLOAD_WAIT_MS),
+          };
+          return;
+        }
+        tab.loading = false;
+        const { code, description } = ServerBrowserPage.parseNetError(errorText);
+        const url = ServerBrowserPage.withoutDataPayload(request.url()).slice(0, 2048);
+        tab.loadError = { url, code, description };
+        report(tab, { _tag: "LoadFailed", url, title: "", code, description });
+      });
+      page.on("response", (response) => {
+        pushBounded(tab.networkEntries, {
+          url: ServerBrowserPage.withoutDataPayload(response.url()),
+          method: response.request().method(),
+          status: response.status(),
+          failed: false,
+          timestamp: new Date().toISOString(),
+        });
+      });
+      page.on("console", (message) => {
+        pushBounded(tab.consoleEntries, {
+          level: message.type(),
+          text: ServerBrowserPage.consoleText(message).slice(0, 2_000),
+          timestamp: new Date().toISOString(),
+        });
+      });
+      page.on("dialog", (dialog) => {
+        // Closing is already decided, so an unsaved-changes guard must not keep the page open.
+        if (tab.closing && dialog.type() === "beforeunload") {
+          void dialog.accept().catch(constVoid);
+          return;
+        }
+        tab.dialog = dialog;
+        broadcastControl(tab);
+      });
+      page.on("download", (download) => saveDownload(tab, download));
+      updateFileChooserInterception(tab);
+      // Popups become tabs and keep `window.opener`, so sign-in popups can report back.
+      page.on("popup", (popup) => void adoptPopup(tab, popup));
+      const key = tabKey(tab.threadId, tab.tabId);
+      if (closedPendingTabs.delete(key)) {
+        await control.close().catch(constVoid);
+        if (desktop) await desktop.close().catch(constVoid);
+        else await page.close().catch(constVoid);
+        if (isolatedContext) await context.close().catch(constVoid);
+        throw new ServerBrowserTabNotFoundError({ threadId: tab.threadId, tabId: tab.tabId });
       }
-      tab.loading = false;
-      const { code, description } = ServerBrowserPage.parseNetError(errorText);
-      const url = ServerBrowserPage.withoutDataPayload(request.url()).slice(0, 2048);
-      tab.loadError = { url, code, description };
-      report(tab, { _tag: "LoadFailed", url, title: "", code, description });
-    });
-    page.on("response", (response) => {
-      pushBounded(tab.networkEntries, {
-        url: ServerBrowserPage.withoutDataPayload(response.url()),
-        method: response.request().method(),
-        status: response.status(),
-        failed: false,
-        timestamp: new Date().toISOString(),
-      });
-    });
-    page.on("console", (message) => {
-      pushBounded(tab.consoleEntries, {
-        level: message.type(),
-        text: ServerBrowserPage.consoleText(message).slice(0, 2_000),
-        timestamp: new Date().toISOString(),
-      });
-    });
-    page.on("dialog", (dialog) => {
-      // Closing is already decided, so an unsaved-changes guard must not keep the page open.
-      if (tab.closing && dialog.type() === "beforeunload") {
-        void dialog.accept().catch(constVoid);
-        return;
+      page.on("close", () => dropTab(tab, true));
+      page.on("crash", () => void reopenCrashedTab(tab));
+      if (page.isClosed() || profileLogins.get(tab.profileKey)?.ending) {
+        await control.close().catch(constVoid);
+        await page.close().catch(constVoid);
+        if (isolatedContext) await context.close().catch(constVoid);
+        await runPromise(
+          manager.close({ threadId: tab.threadId, tabId: tab.tabId }).pipe(Effect.ignore),
+        );
+        throw new ServerBrowserTabNotFoundError({ threadId: tab.threadId, tabId: tab.tabId });
       }
-      tab.dialog = dialog;
-      broadcastControl(tab);
-    });
-    page.on("download", (download) => void saveDownload(tab, download));
-    updateFileChooserInterception(tab);
-    // Popups become tabs and keep `window.opener`, so sign-in popups can report back.
-    page.on("popup", (popup) => void adoptPopup(tab, popup));
-    const key = tabKey(tab.threadId, tab.tabId);
-    if (closedPendingTabs.delete(key)) {
-      await control.close().catch(constVoid);
-      throw new ServerBrowserTabNotFoundError({ threadId: tab.threadId, tabId: tab.tabId });
+      tabs.set(key, tab);
+      if (pendingTabs.get(key)?.settled && mayCloseSettledTab(tab)) {
+        dropTab(tab, true);
+        throw new ServerBrowserTabNotFoundError({ threadId: tab.threadId, tabId: tab.tabId });
+      }
+      if (inLogin(tab)) report(tab, { _tag: "Idle" });
+      reportLiveTabs();
+      if (desktop) void page.waitForLoadState("load").then(() => reportLoaded(tab), constVoid);
+      // Existing desktop and popup PDFs can start loading before interception attaches.
+      if (
+        snapshot.navStatus._tag === "Loading" &&
+        ((!adopted && !desktop) || isPdfAssetUrl(snapshot.navStatus.url))
+      ) {
+        await authorize();
+        tab.loading = true;
+        const initialUrl = URL.parse(snapshot.navStatus.url);
+        if (initialUrl) initialUrl.hash = "";
+        tab.pendingInitialRequestUrl = initialUrl?.href ?? null;
+        const options = { waitUntil: "commit", timeout: NAVIGATION_TIMEOUT_MS } as const;
+        tab.initialNavigation = (
+          (desktop || adopted) && page.url() === snapshot.navStatus.url
+            ? page.reload(options)
+            : page.goto(snapshot.navStatus.url, options)
+        ).then(constVoid, (cause: unknown) => {
+          throw ServerBrowserPage.toOperationError(cause, NAVIGATION_TIMEOUT_MS);
+        });
+        // Background creation keeps the failed tab; automation awaits the original error.
+        if (tab.control.agentId !== null) tab.control.track(tab.initialNavigation);
+        else void tab.initialNavigation.catch(constVoid);
+      }
+      return tab;
+    } catch (cause) {
+      if (
+        createdTab !== undefined &&
+        tabs.get(tabKey(createdTab.threadId, createdTab.tabId)) === createdTab
+      ) {
+        dropTab(createdTab, true);
+      } else {
+        await pendingCdp?.detach().catch(constVoid);
+        if (desktop) await desktop.close().catch(constVoid);
+        else await pendingPage?.close().catch(constVoid);
+        if (isolatedContext) await context?.close().catch(constVoid);
+      }
+      throw cause;
     }
-    page.on("close", () => dropTab(tab, true));
-    page.on("crash", () => reopenCrashedTab(tab));
-    tabs.set(key, tab);
-    reportLiveTabs();
-    // A desktop page navigates on its own and can finish loading before these listeners attach.
-    if (desktop) void page.waitForLoadState("load").then(() => reportLoaded(tab), constVoid);
-    // Existing desktop and popup PDFs can start loading before interception attaches.
-    if (
-      snapshot.navStatus._tag === "Loading" &&
-      ((!adopted && !desktop) || isPdfAssetUrl(snapshot.navStatus.url))
-    ) {
-      tab.loading = true;
-      const initialUrl = URL.parse(snapshot.navStatus.url);
-      if (initialUrl) initialUrl.hash = "";
-      tab.pendingInitialRequestUrl = initialUrl?.href ?? null;
-      const options = { waitUntil: "commit", timeout: NAVIGATION_TIMEOUT_MS } as const;
-      tab.initialNavigation = (
-        (desktop || adopted) && page.url() === snapshot.navStatus.url
-          ? page.reload(options)
-          : page.goto(snapshot.navStatus.url, options)
-      ).then(constVoid, (cause: unknown) => {
-        throw ServerBrowserPage.toOperationError(cause, NAVIGATION_TIMEOUT_MS);
-      });
-
-      if (tab.control.agentId !== null) tab.control.track(tab.initialNavigation);
-      else void tab.initialNavigation.catch(constVoid);
-    }
-    return tab;
   };
 
   const downloadsRoot = NodePath.join(config.stateDir, "server-browser", "downloads");
@@ -1315,6 +1649,22 @@ const make = Effect.gen(function* () {
   };
 
   const saveDownload = async (tab: ServerTab, download: Download) => {
+    const controller = [...tab.viewers].find((viewer) => viewer.id === tab.control.controller);
+    const generation = tab.control.generation;
+    const agentId = tab.control.agentId;
+    const authorize = async () => {
+      if (controller === undefined) await tab.authorize();
+      else await controller.authorize();
+      if (
+        tab.closing ||
+        tabs.get(tabKey(tab.threadId, tab.tabId)) !== tab ||
+        tab.control.generation !== generation ||
+        tab.control.agentId !== agentId ||
+        tab.control.controller !== (controller?.id ?? null) ||
+        (controller !== undefined && !controller.canOperate)
+      )
+        throw new BrowserControlInterrupted();
+    };
     const id = NodeCrypto.randomUUID();
     const path = NodePath.join(downloadDir(tab), id);
     const navigation =
@@ -1322,21 +1672,60 @@ const make = Effect.gen(function* () {
     if (navigation !== null) clearAbortedNavigation(tab);
     let offered: { readonly id: string; readonly fileName: string } | undefined;
     try {
+      await authorize();
       if (await download.failure()) return;
+      await authorize();
       await NodeFSP.mkdir(downloadDir(tab), { recursive: true, mode: 0o700 });
       // mkdir leaves the mode of a folder that already exists, such as one an older build made.
       await NodeFSP.chmod(downloadDir(tab), 0o700);
+      await authorize();
       await download.saveAs(path);
       // saveAs copies with the process umask; a download should stay readable by its owner only.
       await NodeFSP.chmod(path, 0o600);
+      await authorize();
       const { size } = await NodeFSP.stat(path);
+      await authorize();
       if (tab.closing || size > DOWNLOAD_MAX_BYTES) {
         await NodeFSP.rm(path, { force: true });
         return;
       }
+      const file = await NodeFSP.open(
+        path,
+        NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
+      );
+      let digest: string;
+      let fingerprint: string;
+      const blockDigests: Array<string> = [];
+      try {
+        const initial = await file.stat();
+        if (!initial.isFile() || initial.size !== size)
+          throw new Error("Native download identity changed.");
+        fingerprint = fileFingerprint(initial);
+        const hash = NodeCrypto.createHash("sha256");
+        for (let offset = 0; offset < size; offset += DOWNLOAD_BLOCK_BYTES) {
+          await authorize();
+          const block = await readDownloadBlockBytes(file, offset, size);
+          await authorize();
+          hash.update(block);
+          blockDigests.push(NodeCrypto.createHash("sha256").update(block).digest("hex"));
+        }
+        if (fileFingerprint(await file.stat()) !== fingerprint)
+          throw new Error("Native download changed during verification.");
+        digest = hash.digest("hex");
+        await authorize();
+      } finally {
+        await file.close();
+      }
       const saved: ServerDownload = {
+        digest,
+        fingerprint,
+        blockDigests,
         id,
-        fileName: download.suggestedFilename().slice(0, 255) || "download",
+        fileName:
+          NodePath.basename(download.suggestedFilename())
+            .replace(/[\x00-\x1f\x7f/\\]/g, "_")
+            .slice(0, 255)
+            .trim() || "download",
         path,
         sizeBytes: size,
         url: ServerBrowserPage.withoutDataPayload(download.url()).slice(0, 2048),
@@ -1346,11 +1735,13 @@ const make = Effect.gen(function* () {
       for (const evicted of tab.downloads.splice(0, tab.downloads.length - DOWNLOAD_LIMIT)) {
         await NodeFSP.rm(evicted.path, { force: true }).catch(constVoid);
       }
+      await authorize();
       offered = { id, fileName: saved.fileName };
       const shownInTab =
         navigation === tab.navigationGeneration && tab.page.url() === "about:blank";
       if (shownInTab) return;
-      const controller = [...tab.viewers].find((viewer) => viewer.id === tab.control.controller);
+      // Only the person driving the page gets the file offered; agents read it from status.
+      await authorize();
       controller?.push({
         _tag: "download",
         id,
@@ -1358,6 +1749,8 @@ const make = Effect.gen(function* () {
         sizeBytes: saved.sizeBytes,
       });
     } catch (cause) {
+      const savedIndex = tab.downloads.findIndex((saved) => saved.id === id);
+      if (savedIndex !== -1) tab.downloads.splice(savedIndex, 1);
       await NodeFSP.rm(path, { force: true }).catch(constVoid);
       runFork(Effect.logWarning("server preview download failed", { cause }));
     } finally {
@@ -1413,6 +1806,7 @@ const make = Effect.gen(function* () {
     const controller = [...tab.viewers].find((viewer) => viewer.id === tab.control.controller);
     if (!open || !controller) return;
     if (open.offeredTo !== controller.id) {
+      // A new controller gets a fresh id; the previous one can no longer answer.
       tab.fileChooser = { ...open, id: NodeCrypto.randomUUID(), offeredTo: controller.id };
       if (open.offeredTo !== null)
         for (const viewer of tab.viewers) viewer.push({ _tag: "fileChooserClosed", id: open.id });
@@ -1431,6 +1825,8 @@ const make = Effect.gen(function* () {
   const setChooserFiles = async (
     input: Parameters<ServerBrowser["Service"]["answerFileChooser"]>[0],
   ) => {
+    const authorize = input.authorize ?? (async () => {});
+    await authorize();
     const tab = tabs.get(tabKey(input.threadId, input.tabId));
     const open = tab?.fileChooser;
     if (
@@ -1441,22 +1837,42 @@ const make = Effect.gen(function* () {
       open.offeredTo !== tab.control.controller
     )
       return false;
-    if (input.files.length > 0) {
-      await open.chooser.setFiles(
-        open.chooser.isMultiple() ? [...input.files] : input.files.slice(0, 1),
-      );
-    }
-    if (tab.fileChooser === open) closeFileChooser(tab);
-    return true;
+    const controller = [...tab.viewers].find((viewer) => viewer.id === open.offeredTo);
+    if (controller?.resourceViewerId !== input.resourceViewerId) return false;
+    return tab.control.human(
+      open.offeredTo,
+      async () => {
+        if (tab.fileChooser !== open) return false;
+        if (input.files.length > 0) {
+          await open.chooser.setFiles(
+            open.chooser.isMultiple() ? [...input.files] : input.files.slice(0, 1),
+          );
+        }
+        if (tab.fileChooser === open) closeFileChooser(tab);
+        return true;
+      },
+      authorize,
+    );
   };
-  const uploadFiles = async (tab: ServerTab, input: PreviewAutomationUploadInput) => {
+  /** The agent's files go to a named file input, or else to the page's open picker. */
+  const uploadFiles = async (
+    tab: ServerTab,
+    input: PreviewAutomationUploadInput,
+    authorize: () => Promise<void>,
+  ) => {
+    if (input.paths === undefined || input.artifacts !== undefined || input.resource !== undefined)
+      throw new ServerBrowserPage.ServerBrowserOperationError({
+        tag: "PreviewAutomationExecutionError",
+        message: "Browser files must be resolved by their native staging owner before dispatch.",
+      });
+    const resolved = { ...input, paths: input.paths };
     const relative = input.paths.find((path) => !NodePath.isAbsolute(path));
     if (relative !== undefined)
       throw new ServerBrowserPage.ServerBrowserOperationError({
         tag: "PreviewAutomationExecutionError",
         message: `Upload paths must be absolute: ${relative}`,
       });
-    if (await ServerBrowserPage.setInputFiles(tab.page, input)) return undefined;
+    if (await ServerBrowserPage.setInputFiles(tab.page, resolved)) return undefined;
     const open = tab.fileChooser;
     if (!open)
       throw new ServerBrowserPage.ServerBrowserOperationError({
@@ -1469,10 +1885,12 @@ const make = Effect.gen(function* () {
         tag: "PreviewAutomationExecutionError",
         message: "This file picker accepts one file.",
       });
-    if (input.paths.length > 0)
+    if (input.paths.length > 0) {
+      await authorize();
       await open.chooser.setFiles([...input.paths], {
         timeout: input.timeoutMs ?? NAVIGATION_TIMEOUT_MS,
       });
+    }
     if (tab.fileChooser === open) closeFileChooser(tab);
     return undefined;
   };
@@ -1480,15 +1898,102 @@ const make = Effect.gen(function* () {
   const answerFileChooser: ServerBrowser["Service"]["answerFileChooser"] = (input) =>
     Effect.promise(() => setChooserFiles(input).catch(() => false));
 
-  const openDownload: ServerBrowser["Service"]["openDownload"] = (input) =>
-    Effect.sync(() => {
-      const download = tabs
-        .get(tabKey(input.threadId, input.tabId))
-        ?.downloads.find((candidate) => candidate.id === input.downloadId);
-      return download === undefined
-        ? Option.none()
-        : Option.some({ path: download.path, fileName: download.fileName });
+  const openDownload: ServerBrowser["Service"]["openDownload"] = Effect.fn(
+    "ServerBrowser.openDownload",
+  )(function* (input) {
+    const tab = tabs.get(tabKey(input.threadId, input.tabId));
+    const download = tab?.downloads.find((candidate) => candidate.id === input.downloadId);
+    if (tab === undefined || tab.closing || download === undefined) return Option.none();
+    const { serverEpoch } = yield* manager.list({ threadId: tab.threadId });
+    return Option.some({
+      path: download.path,
+      fileName: download.fileName,
+      resource: {
+        _tag: "native-browser-download" as const,
+        resource: {
+          type: "preview" as const,
+          environmentId,
+          threadId: tab.threadId,
+          tabId: tab.tabId,
+          serverEpoch,
+        },
+        downloadId: download.id,
+        name: download.fileName,
+        mimeType: "application/octet-stream" as const,
+        sizeBytes: download.sizeBytes,
+        digest: download.digest,
+      },
     });
+  });
+
+  const nativeDownload = Effect.fn("ServerBrowser.nativeDownload")(function* (
+    resource: NativeBrowserDownloadAssetResource,
+    authorize: Effect.Effect<void, OrchestratorMcpFailure>,
+    offset?: number,
+  ) {
+    const refused = () =>
+      new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "The native browser download is no longer available to its current reader.",
+      });
+    const current = Effect.gen(function* () {
+      yield* authorize;
+      const { serverEpoch } = yield* manager.list({ threadId: resource.resource.threadId });
+      const tab = tabs.get(tabKey(resource.resource.threadId, resource.resource.tabId));
+      const download = tab?.downloads.find((candidate) => candidate.id === resource.downloadId);
+      if (
+        resource.resource.environmentId !== environmentId ||
+        resource.resource.serverEpoch !== serverEpoch ||
+        tab === undefined ||
+        tab.closing ||
+        download === undefined ||
+        download.digest !== resource.digest ||
+        download.sizeBytes !== resource.sizeBytes ||
+        download.fileName !== resource.name ||
+        resource.mimeType !== "application/octet-stream"
+      )
+        return yield* refused();
+      return download;
+    });
+    const download = yield* current;
+    return yield* Effect.acquireUseRelease(
+      Effect.tryPromise({
+        try: () =>
+          NodeFSP.open(download.path, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW),
+        catch: refused,
+      }),
+      (file) =>
+        Effect.gen(function* () {
+          const check = Effect.gen(function* () {
+            if ((yield* current) !== download) return yield* refused();
+            const info = yield* Effect.tryPromise({ try: () => file.stat(), catch: refused });
+            if (!info.isFile() || fileFingerprint(info) !== download.fingerprint)
+              return yield* refused();
+          });
+          yield* check;
+          if (offset === undefined) return new Uint8Array(0);
+          if (
+            !Number.isSafeInteger(offset) ||
+            offset < 0 ||
+            offset >= download.sizeBytes ||
+            offset % DOWNLOAD_BLOCK_BYTES !== 0
+          )
+            return yield* refused();
+          const block = yield* Effect.tryPromise({
+            try: () => readDownloadBlockBytes(file, offset, download.sizeBytes),
+            catch: refused,
+          });
+          if (
+            NodeCrypto.createHash("sha256").update(block).digest("hex") !==
+            download.blockDigests[offset / DOWNLOAD_BLOCK_BYTES]
+          )
+            return yield* refused();
+          yield* check;
+          return block;
+        }),
+      (file) => Effect.promise(() => file.close()).pipe(Effect.orDie),
+    );
+  });
 
   const preparedContexts = new WeakSet<BrowserContext>();
   const prepareContext = async (context: BrowserContext) => {
@@ -1497,9 +2002,12 @@ const make = Effect.gen(function* () {
     await context.grantPermissions(["clipboard-write"]);
   };
 
-  const recordCopies = async (cdp: CDPSession) => {
+  /** Records the copies made in each frame a session reaches. */
+  const recordCopies = async (cdp: CDPSession, authorize = async () => {}) => {
     // Scripts for new documents run only while this session's Page domain is on.
+    await authorize();
     await cdp.send("Page.enable");
+    await authorize();
     await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
       source: CLIPBOARD_SCRIPT,
       worldName: CLIPBOARD_WORLD,
@@ -1507,7 +2015,11 @@ const make = Effect.gen(function* () {
     });
   };
 
-  /** Out-of-process frames need their own copy-recording session until target closure. */
+  /**
+   * A frame in its own process, such as one with an `Origin-Agent-Cluster`
+   * header, is out of the page session's reach, so it records copies through
+   * its own session until that target closes.
+   */
   const recordFrameCopies = async (tab: ServerTab, frame: Frame) => {
     if (frame === tab.page.mainFrame() || tab.frameSessions.has(frame)) return;
 
@@ -1527,7 +2039,7 @@ const make = Effect.gen(function* () {
 
       if (!frame.isDetached()) void recordFrameCopies(tab, frame);
     });
-    await recordCopies(cdp).catch(constVoid);
+    await recordCopies(cdp, tab.authorize).catch(constVoid);
   };
 
   const takeSessionCopies = async (cdp: CDPSession, since: number, until: number) => {
@@ -1564,33 +2076,80 @@ const make = Effect.gen(function* () {
   };
 
   const adoptPopup = async (opener: ServerTab, popup: Page) => {
-    if (opener.closing) {
-      await popup.close().catch(constVoid);
-      return;
-    }
-    const url = popup.url();
-
+    // The current controller owns a human popup, even when an agent opened its parent.
     const controller = [...opener.viewers].find(
       (viewer) => viewer.id === opener.control.controller,
     );
+    const generation = opener.control.generation;
+    const agentId = controller === undefined ? opener.control.agentId : null;
+    const authorize = async () => {
+      if (controller === undefined) return opener.authorize();
+      await controller.authorize();
+      if (
+        opener.closing ||
+        opener.control.controller !== controller.id ||
+        opener.control.generation !== generation ||
+        !controller.canOperate
+      )
+        throw new BrowserControlInterrupted();
+    };
+    // A popup past an agent's limit closes; its page sees window.open return a closed window.
+    if (opener.closing || (agentId !== null && atTabLimit(agentId))) {
+      await popup.close().catch(constVoid);
+      return;
+    }
+    try {
+      await authorize();
+    } catch {
+      await popup.close().catch(constVoid);
+      return;
+    }
+    // A popup in a profile with a login publishes no URL.
+    const url = profileLogins.has(opener.profileKey) ? "" : popup.url();
+
     await runPromise(
       openTab({
         threadId: opener.threadId,
         ...(/^https?:/i.test(url) ? { url } : {}),
         runtime: "server",
+        authorize,
         ...(opener.profileId === undefined ? {} : { profileId: opener.profileId }),
-        ...(opener.control.agentId === null
-          ? {}
-          : { automationOwner: opener.control.agentId, reveal: false }),
+        // Agent popups stay with the agent and only float when it asks, like its own opens.
+        ...(agentId === null ? {} : { automationOwner: agentId, reveal: false }),
+        // A person's popup from a server page is still that page's popup, not a desktop one.
+        ...(opener.desktop === null ? { serverPage: true } : {}),
         beforePublish: (snapshot) =>
           adoptedPages.set(tabKey(snapshot.threadId, snapshot.tabId), {
             page: popup,
             openerTabId: opener.tabId,
+            profileKey: opener.profileKey,
           }),
       }),
     ).then(
-      (tab) => {
-        if (opener.control.agentId === null) controller?.push({ _tag: "popup", tabId: tab.tabId });
+      async (snapshot) => {
+        // The opener stays open behind it, so `window.opener` can still report back.
+        if (controller !== undefined) {
+          try {
+            await authorize();
+            const { serverEpoch } = await runPromise(
+              manager.list({ threadId: ThreadId.make(snapshot.threadId) }),
+            );
+            await authorize();
+            controller.push({
+              _tag: "popup",
+              tabId: snapshot.tabId,
+              resource: {
+                type: "preview",
+                environmentId,
+                threadId: ThreadId.make(snapshot.threadId),
+                tabId: snapshot.tabId,
+                serverEpoch,
+              },
+            });
+          } catch {
+            await popup.close().catch(constVoid);
+          }
+        }
       },
       async () => {
         await popup.close().catch(constVoid);
@@ -1598,13 +2157,20 @@ const make = Effect.gen(function* () {
     );
   };
 
-  const ensureTab = (snapshot: PreviewSessionSnapshot): Promise<ServerTab> => {
+  const ensureTab = (
+    snapshot: PreviewSessionSnapshot,
+    authorize?: () => Promise<void>,
+  ): Promise<ServerTab> => {
     const key = tabKey(snapshot.threadId, snapshot.tabId);
+    if (authorize !== undefined && !tabAuthorizations.has(key))
+      tabAuthorizations.set(key, authorize);
     const pending = pendingTabs.get(key);
     if (pending?.promise) return pending.promise;
     const existing = tabs.get(key);
     if (existing) return Promise.resolve(existing);
-    const opening = createTab(snapshot)
+    if (snapshot.automationOwner !== undefined && pending === undefined)
+      assertTabCapacity(snapshot.automationOwner);
+    const opening = createTab(snapshot, tabAuthorizations.get(key) ?? (async () => {}))
       .catch((cause: unknown) => {
         runFork(
           Effect.logWarning(
@@ -1618,7 +2184,12 @@ const make = Effect.gen(function* () {
         pendingTabs.delete(key);
         closedPendingTabs.delete(key);
       });
-    pendingTabs.set(key, { agentId: snapshot.automationOwner ?? null, promise: opening });
+    pendingTabs.set(key, {
+      agentId: snapshot.automationOwner ?? null,
+      threadId: snapshot.threadId,
+      promise: opening,
+      settled: false,
+    });
     return opening;
   };
 
@@ -1654,14 +2225,16 @@ const make = Effect.gen(function* () {
       });
   };
 
-  // The desktop draws its tabs in its own webview, so they never get a streamed viewer.
-  const isVisible = (tab: ServerTab) =>
-    tab.viewers.size > 0 || (tab.desktop !== null && desktopChannel.isShown(tab));
+  const isVisible = (tab: ServerTab) => tab.viewers.size > 0 || desktopChannel.isShown(tab);
 
   const idleAgentTabs = () => {
     const cutoff = Date.now() - AGENT_TAB_IDLE_MS;
     return [...tabs.values()].filter(
-      (tab) => tab.control.agentId !== null && !isVisible(tab) && tab.usedAt < cutoff,
+      (tab) =>
+        tab.control.agentId !== null &&
+        !isVisible(tab) &&
+        tab.watches.size === 0 &&
+        tab.usedAt < cutoff,
     );
   };
 
@@ -1706,7 +2279,7 @@ const make = Effect.gen(function* () {
           .pipe(
             Effect.flatMap((snapshot) =>
               Effect.tryPromise({
-                try: () => ensureTab(snapshot),
+                try: () => ensureTab(snapshot, input.authorize),
                 catch: ServerBrowserPage.toOperationError,
               }).pipe(
                 Effect.onError(() =>
@@ -1781,6 +2354,16 @@ const make = Effect.gen(function* () {
   );
   const reportsByClient = new Map<number, PreviewReportProfilesInput>();
   let nextClient = 0;
+  const mirroredProfiles = new Map<string, BrowserProfile>(
+    catalogRead._tag === "Success"
+      ? catalogRead.success.map((profile) => [profile.id, profile])
+      : [],
+  );
+  const availableProfiles = () =>
+    resolveBrowserProfiles([
+      ...mirroredProfiles.values(),
+      ...(reportedProfiles?.profiles ?? BUILT_IN_BROWSER_PROFILES),
+    ]);
   let reportedProfiles: {
     readonly profiles: ReadonlyArray<BrowserProfile>;
     readonly defaultProfileId: string;
@@ -1799,6 +2382,7 @@ const make = Effect.gen(function* () {
   // Only reports change what is saved, so the order clients disconnect in at shutdown,
   // even while a save waits for the lock, cannot shrink the saved catalog.
   let catalogToSave = reportedProfiles;
+
   // Agent recordings encode here, so they need the client's Browser recording frame rate. The
   // last report outlives the client, which lets agents record while no client is connected.
   let recordingFrameRate = DEFAULT_BROWSER_RECORDING_FRAME_RATE;
@@ -1868,20 +2452,28 @@ const make = Effect.gen(function* () {
   );
 
   const profileStatus = () => {
-    const profiles = reportedProfiles?.profiles ?? BUILT_IN_BROWSER_PROFILES;
+    const profiles = availableProfiles();
     return {
       profiles: profiles.map((profile) => ({
         id: profile.id,
         name: profile.name,
         ...(profile.kind === "incognito" ? { incognito: true } : {}),
       })),
-      ...(reportedProfiles ? { defaultProfileId: reportedProfiles.defaultProfileId } : {}),
+      ...(reportedProfiles
+        ? { defaultProfileId: reportedProfiles.defaultProfileId }
+        : mirroredProfiles.has(DEFAULT_BROWSER_PROFILE_ID)
+          ? { defaultProfileId: DEFAULT_BROWSER_PROFILE_ID }
+          : {}),
     };
   };
 
   const resolveOpenProfile = (requested: string | undefined): string | undefined => {
-    if (requested === undefined) return reportedProfiles?.defaultProfileId;
-    const profiles = reportedProfiles?.profiles ?? BUILT_IN_BROWSER_PROFILES;
+    if (requested === undefined)
+      return (
+        reportedProfiles?.defaultProfileId ??
+        (mirroredProfiles.has(DEFAULT_BROWSER_PROFILE_ID) ? DEFAULT_BROWSER_PROFILE_ID : undefined)
+      );
+    const profiles = availableProfiles();
     const wanted = requested.toLowerCase();
     const match =
       findBrowserProfile(profiles, requested) ??
@@ -1949,6 +2541,14 @@ const make = Effect.gen(function* () {
       };
     }
     const url = ServerBrowserPage.withoutDataPayload(tab.page.url());
+    const { serverEpoch } = await runPromise(manager.list({ threadId: tab.threadId }));
+    const resource = (candidate: ServerTab): PreviewViewerResource => ({
+      type: "preview",
+      environmentId,
+      threadId: candidate.threadId,
+      tabId: candidate.tabId,
+      serverEpoch,
+    });
     const loadError = loadErrorOf(tab);
     const statusUrl = loadError?.url ?? (url === "about:blank" ? null : url);
     const [viewport, title] = await Promise.all([
@@ -1956,14 +2556,15 @@ const make = Effect.gen(function* () {
       tab.desktop
         ? withinStatusDeadline(desktopStatusViewport(tab), () => tab.desktopViewport)
         : tab.page.viewportSize(),
-      statusUrl === null || tab.dialog
+      statusUrl === null || tab.dialog || inLogin(tab)
         ? null
         : withinStatusDeadline(
             tab.page.title().catch(() => ""),
             () => "",
           ).then((title) => title || null),
     ]);
-    return {
+    const status = {
+      resource: resource(tab),
       available: true,
       visible: isVisible(tab),
       tabId: tab.tabId,
@@ -1986,6 +2587,7 @@ const make = Effect.gen(function* () {
         .filter((candidate) => candidate.threadId === tab.threadId)
         .map((candidate) => ({
           tabId: candidate.tabId,
+          resource: resource(candidate),
           url:
             candidate.page.url() === "about:blank"
               ? null
@@ -1996,16 +2598,38 @@ const make = Effect.gen(function* () {
           ownedByCaller: candidate.control.agentId === agentSessionId,
           visible: isVisible(candidate),
           ...(candidate.profileId === undefined ? {} : { profileId: candidate.profileId }),
+          ...(inLogin(candidate) ? { url: null, loginInProgress: true } : {}),
         })),
       ...profileStatus(),
-      downloads: tab.downloads.map(({ fileName, path, sizeBytes, url, completedAt }) => ({
-        fileName,
-        path,
-        sizeBytes,
-        url,
-        completedAt,
-      })),
+      downloads: tab.downloads.map(
+        ({ id, fileName, path, sizeBytes, url, completedAt, digest }) => ({
+          resource: {
+            _tag: "native-browser-download" as const,
+            resource: resource(tab),
+            downloadId: id,
+            name: fileName,
+            mimeType: "application/octet-stream" as const,
+            sizeBytes,
+            digest,
+          },
+          fileName,
+          path,
+          sizeBytes,
+          url,
+          completedAt,
+        }),
+      ),
     };
+    if (inLogin(tab))
+      return {
+        ...status,
+        url: null,
+        dialog: status.dialog === null ? null : { type: "", message: "", defaultValue: "" },
+        fileChooser: null,
+        downloads: [],
+        loginInProgress: true,
+      };
+    return status;
   };
 
   const resolveNavigationUrl = (input: PreviewAutomationNavigateInput) => {
@@ -2067,14 +2691,21 @@ const make = Effect.gen(function* () {
     return run;
   };
 
-  const startRecording = (tab: ServerTab): Promise<Recording> => {
+  const startRecording = (
+    tab: ServerTab,
+    authorize: () => Promise<void>,
+    resourceAuthorization: () => Promise<void>,
+  ): Promise<Recording> => {
     const started = withCaptureLock(tab, async () => {
+      await authorize();
       if (tab.recording) return tab.recording;
       const encoder = await contexts.scratchPage();
       let session: CDPSession | null = null;
       try {
+        await authorize();
         await encoder.evaluate(ServerBrowserPage.recordingEncoderScript(recordingFrameRate));
         // Seed idle pages before returning so an immediate stop has a frame to encode.
+        await authorize();
         const firstFrame = await ServerBrowserPage.captureViewport(tab.cdp, {
           format: "jpeg",
           quality: RECORDING_SCREENCAST.quality,
@@ -2084,6 +2715,7 @@ const make = Effect.gen(function* () {
             (globalThis as unknown as EncoderWindow).__t3Recorder.frame(data, width),
           [firstFrame, tab.page.viewportSize()?.width ?? UNATTACHED_FILL_VIEWPORT.width] as const,
         );
+        await authorize();
         const opened = await tab.page.context().newCDPSession(tab.page);
         session = opened;
         const framesInFlight = new Set<Promise<void>>();
@@ -2094,13 +2726,16 @@ const make = Effect.gen(function* () {
           while (pendingFrame) {
             const next = pendingFrame;
             pendingFrame = null;
-            const accepted = await encoder
-              .evaluate(
-                ([data, width]) =>
-                  (globalThis as unknown as EncoderWindow).__t3Recorder.frame(data, width),
-                next,
+            const accepted = await resourceAuthorization()
+              .then(() =>
+                encoder.evaluate(
+                  ([data, width]) =>
+                    (globalThis as unknown as EncoderWindow).__t3Recorder.frame(data, width),
+                  next,
+                ),
               )
-              .catch(() => true);
+              // Stop a retired producer; cleanup never consumes more private media.
+              .catch(() => false);
             if (!accepted) {
               pendingFrame = null;
               await opened.send("Page.stopScreencast").catch(constVoid);
@@ -2120,6 +2755,7 @@ const make = Effect.gen(function* () {
           );
           framesInFlight.add(delivered);
         });
+        await authorize();
         await opened.send("Page.startScreencast", RECORDING_SCREENCAST);
         if (tab.closing) throw new Error("The tab closed while the recording started.");
         const recording: Recording = {
@@ -2127,6 +2763,7 @@ const make = Effect.gen(function* () {
           session: opened,
           startedAt: new Date().toISOString(),
           framesInFlight,
+          authorize: resourceAuthorization,
         };
         tab.recording = recording;
         return recording;
@@ -2142,8 +2779,14 @@ const make = Effect.gen(function* () {
     return started;
   };
 
-  const withScreencastsPaused = <A>(tab: ServerTab, capture: () => Promise<A>): Promise<A> =>
+  // Scaled captures repaint every screencast; pause them to avoid leaking that frame.
+  const withScreencastsPaused = <A>(
+    tab: ServerTab,
+    capture: () => Promise<A>,
+    authorize: () => Promise<void>,
+  ): Promise<A> =>
     withCaptureLock(tab, async () => {
+      await authorize();
       tab.capturing += 1;
       const recording = tab.recording;
       try {
@@ -2164,8 +2807,9 @@ const make = Effect.gen(function* () {
       }
     });
 
-  const stopRecording = (tab: ServerTab) =>
+  const stopRecording = (tab: ServerTab, authorize: () => Promise<void>) =>
     withCaptureLock(tab, async () => {
+      await authorize();
       const recording = tab.recording;
       if (!recording) {
         throw new ServerBrowserPage.ServerBrowserOperationError({
@@ -2174,6 +2818,7 @@ const make = Effect.gen(function* () {
         });
       }
       try {
+        await recording.authorize();
         await recording.session.send("Page.stopScreencast").catch(constVoid);
         await Promise.all(recording.framesInFlight);
         await recording.session.detach().catch(constVoid);
@@ -2196,6 +2841,8 @@ const make = Effect.gen(function* () {
               .catch(constVoid);
           }
         }
+        await authorize();
+        await recording.authorize();
         const { mimeType, count, bytes } = await recording.encoder.evaluate(() =>
           (globalThis as unknown as EncoderWindow).__t3Recorder.stop(),
         );
@@ -2215,7 +2862,11 @@ const make = Effect.gen(function* () {
         const extension = mimeType.startsWith("video/mp4") ? "mp4" : "webm";
         const pendingId = `${PENDING_ATTACHMENT_THREAD_SEGMENT}-${NodeCrypto.randomUUID()}-${extension}`;
         const path = NodePath.join(config.attachmentsDir, `${pendingId}.${extension}`);
+        await authorize();
+        await recording.authorize();
         await NodeFSP.mkdir(config.attachmentsDir, { recursive: true });
+        await authorize();
+        await recording.authorize();
         if (bytes >= RECORDING_BINARY_EXPORT_MIN_BYTES) {
           const stagedPath = `${path}.partial`;
           try {
@@ -2238,6 +2889,8 @@ const make = Effect.gen(function* () {
         } else {
           const chunks: Array<Buffer> = [];
           for (let index = 0; index < count; index += 1) {
+            await authorize();
+            await recording.authorize();
             const chunk = await recording.encoder.evaluate(
               (chunkIndex) =>
                 (globalThis as unknown as EncoderWindow).__t3Recorder.chunk(chunkIndex),
@@ -2266,7 +2919,10 @@ const make = Effect.gen(function* () {
 
   let pointerSequence = 0;
   const pointerFor =
-    (tab: ServerTab): ServerBrowserPage.PointerReporter =>
+    (
+      tab: ServerTab,
+      authorize: () => Promise<void> = async () => {},
+    ): ServerBrowserPage.PointerReporter =>
     async ({ x, y }, phase) => {
       const encoder = tab.recording?.encoder;
 
@@ -2290,9 +2946,11 @@ const make = Effect.gen(function* () {
           )
           .catch(constVoid);
       };
+      await authorize();
       show("move");
       await sleepUntil(Date.now() + AGENT_CURSOR_MOVE_MS);
       if (phase !== "click") return;
+      await authorize();
       show("click");
       await sleepUntil(Date.now() + AGENT_CURSOR_CLICK_LEAD_MS);
     };
@@ -2370,10 +3028,23 @@ const make = Effect.gen(function* () {
 
   const runOperation = async (
     request: PreviewAutomationRequest,
+    authorize: () => Promise<void>,
+    resourceAuthorization: () => Promise<void>,
     deadlineMs: number,
   ): Promise<unknown> => {
+    await authorize();
     const input = request.input;
     switch (request.operation) {
+      case "watchStop": {
+        const input = decodeWatchStop(request.input);
+        return watches.stop({
+          ...input,
+          threadId: request.threadId,
+          ...(request.agentSessionId === undefined
+            ? {}
+            : { agentSessionId: request.agentSessionId }),
+        });
+      }
       case "status":
         return statusWithTitle(
           request.tabId === undefined
@@ -2426,14 +3097,15 @@ const make = Effect.gen(function* () {
               : "The requested server preview tab does not exist.",
           });
         }
-        // Reusing another session's tab requires explicit tabId; reading it grants no implicit takeover.
+        // Only an explicit tabId reuses a tab this session did not open; a tab
+        // it last read (such as the user's) is not taken over implicitly.
         const existing =
           found && (request.tabIdExplicit || found.control.agentId === request.agentSessionId)
             ? found
             : undefined;
         const navigationTimeout = Math.min(request.timeoutMs, NAVIGATION_TIMEOUT_MS);
         const profileId = existing ? undefined : resolveOpenProfile(open.profileId);
-        if (!existing) closeIdleAgentTabs();
+        if (!existing) await authorize();
         const tab =
           existing ??
           (await runPromise(
@@ -2445,10 +3117,12 @@ const make = Effect.gen(function* () {
                 runtime: "server",
                 reveal: false,
                 automationOwner: request.agentSessionId,
+                authorize: resourceAuthorization,
               },
               { reclaimIdleSlot: true },
             ),
           ));
+        if (existing && inLogin(existing)) throw loginInProgress();
         if (existing?.dialog)
           throw new BrowserControlInterrupted({
             message:
@@ -2490,6 +3164,7 @@ const make = Effect.gen(function* () {
             const reveal = open.open ?? open.show;
             let shown: Promise<void> | undefined;
             if (reveal !== false) {
+              await authorize();
               await runPromise(
                 manager.requestReveal({
                   threadId: tab.threadId,
@@ -2508,6 +3183,7 @@ const make = Effect.gen(function* () {
             return statusWithTitle(tab, request.agentSessionId);
           },
           deadlineMs,
+          authorize,
         );
       }
       case "recordingStop": {
@@ -2541,14 +3217,25 @@ const make = Effect.gen(function* () {
             message: "No recording is active for this thread.",
           });
         }
-        // A stop cannot act twice (a retry finds no recording);
-        // dropping a late one would leave capture running.
-        return tab.control.agent(request.agentSessionId ?? "", () => stopRecording(tab));
+        return tab.control.agent(
+          request.agentSessionId ?? "",
+          // A stop cannot act twice (a retry finds no recording); dropping a late one would
+          // leave capture running, so it takes no deadline.
+          () => stopRecording(tab, authorize),
+          undefined,
+          authorize,
+        );
       }
     }
+    if (
+      request.operation === "watchStart" &&
+      (!request.tabIdExplicit || !tabs.has(tabKey(request.threadId, request.tabId ?? "")))
+    )
+      throw new PreviewWatchError({ reason: "unknown" });
     const tab = await requireTab(request);
     // Closing must unblock an action waiting on a dialog, without queueing behind it.
     if (request.operation === "close") {
+      await authorize();
       if (tab.control.agentId === null)
         throw new BrowserControlInterrupted({
           message: "This tab has no agent owner. Ask the user to close it in the browser panel.",
@@ -2559,6 +3246,7 @@ const make = Effect.gen(function* () {
           message: "A human controls this tab.",
           reason: "humanControl",
         });
+      stopTabWatches(tab, "closed");
       void tab.control.close().catch(constVoid);
       if (tab.desktop && tab.dialog === null) {
         tab.closing = true;
@@ -2568,8 +3256,33 @@ const make = Effect.gen(function* () {
       dropTab(tab, false);
       return {};
     }
-    // Resolve dialogs outside the queue, with ownership checked, to unblock waiting clicks.
+    if (request.operation === "endLogin") {
+      const login = profileLogins.get(tab.profileKey);
+      if (login === undefined) return { closed: [] };
+      const members = profileTabs(tab.profileKey);
+      if (members.some((member) => member.control.controller !== null))
+        throw new BrowserControlInterrupted({
+          message: "A human controls a tab in this login.",
+          reason: "humanControl",
+        });
+      // The whole context closes, and the login lifts only once that close has
+      // finished: every page and every tab still attaching goes with it. Cookies
+      // with an expiry stay in the profile directory for the next context.
+      login.ending = true;
+      for (const member of members) {
+        void member.control.close().catch(constVoid);
+        await runPromise(
+          manager.close({ threadId: member.threadId, tabId: member.tabId }).pipe(Effect.ignore),
+        );
+      }
+      await contexts.closeContext(login.context);
+      endLoginsOf(login.context);
+      return { closed: members.map((member) => member.tabId) };
+    }
+    // A click can be waiting for its dialog. Resolve it outside the serial queue,
+    // with the same owner check, so the operation can finish and control can drain.
     if (request.operation === "dialog") {
+      await authorize();
       if (tab.control.controller !== null)
         throw new BrowserControlInterrupted({
           message: "A human controls this tab.",
@@ -2580,18 +3293,15 @@ const make = Effect.gen(function* () {
     }
     const agentSessionId = request.agentSessionId!;
 
-    if (
-      READ_OPERATIONS.has(request.operation) &&
-      tab.control.agentId !== agentSessionId &&
-      !tab.control.agentCanActNow(agentSessionId)
-    ) {
+    if (READ_OPERATIONS.has(request.operation) && !tab.control.agentCanActNow(agentSessionId)) {
       return tab.control.observe(async () => {
+        await authorize();
         if (tab.dialog)
           throw new BrowserControlInterrupted({
             message: "A browser dialog is pending. Read preview_status.",
             reason: "dialogPending",
           });
-        return executeTabOperation(tab, request, deadlineMs);
+        return executeTabOperation(tab, request, authorize, resourceAuthorization, deadlineMs);
       });
     }
     return tab.control.agent(
@@ -2607,7 +3317,13 @@ const make = Effect.gen(function* () {
         tab.agentOperating = !READ_OPERATIONS.has(request.operation);
         updateFileChooserInterception(tab);
         try {
-          return await executeTabOperation(tab, request, deadlineMs);
+          return await executeTabOperation(
+            tab,
+            request,
+            authorize,
+            resourceAuthorization,
+            deadlineMs,
+          );
         } finally {
           tab.agentOperating = false;
           updateFileChooserInterception(tab);
@@ -2615,16 +3331,156 @@ const make = Effect.gen(function* () {
         }
       },
       deadlineMs,
+      authorize,
     );
   };
+
+  // Operations running inside a tab's queue. A fill waits for its profile's before it
+  // types, so nothing that began before the login can see the value.
+  const running = new Map<ServerTab, Set<Promise<unknown>>>();
 
   const executeTabOperation = async (
     tab: ServerTab,
     request: PreviewAutomationRequest,
+    authorize: () => Promise<void>,
+    resourceAuthorization: () => Promise<void>,
     deadlineMs: number,
   ) => {
+    await authorize();
+    // Checked inside the tab's queue, so it holds for what this operation does.
+    if (inLogin(tab) && !LOGIN_OPERATIONS.has(request.operation)) throw loginInProgress();
+    if (
+      inLogin(tab) &&
+      request.operation === "click" &&
+      (request.input as PreviewAutomationClickInput).locator === undefined &&
+      (request.input as PreviewAutomationClickInput).selector === undefined
+    )
+      throw loginInProgress();
+    const operation = runTabOperation(
+      tab,
+      request,
+      authorize,
+      resourceAuthorization,
+      deadlineMs,
+    ).catch((cause: unknown) => {
+      // Playwright's errors can quote the page; a login tab reports only what failed.
+      if (!inLogin(tab) || isBrowserControlInterrupted(cause)) throw cause;
+      const error = ServerBrowserPage.toOperationError(cause);
+      if (error.tag === "PreviewCredentialError") throw error;
+      throw new ServerBrowserPage.ServerBrowserOperationError({
+        tag: error.tag,
+        message: `Preview automation ${request.operation} failed in a login tab.`,
+      });
+    });
+    if (request.operation !== "fillCredential") {
+      const set = running.get(tab) ?? new Set();
+      running.set(tab, set);
+      set.add(operation);
+      void operation.finally(() => set.delete(operation)).catch(constVoid);
+    }
+    return operation;
+  };
+
+  /**
+   * Starts a login on the tab's whole server browser profile as the fill starts,
+   * before the vault is read, or joins the one it has. Nothing lifts it but
+   * preview_end_login or the profile's tabs closing, not even a failed fill.
+   */
+  const fillInLogin = async (
+    tab: ServerTab,
+    input: PreviewAutomationFillCredentialInput,
+    authorize: () => Promise<void>,
+  ) => {
+    if (tab.desktop) throw serverBrowserOnly();
+    if (profileLogins.get(tab.profileKey)?.ending) throw loginInProgress();
+    const recordingIn = (members: ReadonlyArray<ServerTab>) =>
+      members.some((member) => member.recording || member.recordingStart);
+    const recordingRunning = () =>
+      new ServerBrowserPage.ServerBrowserOperationError({
+        tag: "PreviewAutomationExecutionError",
+        message:
+          "A recording is running in this browser profile. Stop it before filling a credential.",
+      });
+    if (recordingIn(profileTabs(tab.profileKey))) throw recordingRunning();
+    if (!profileLogins.has(tab.profileKey)) {
+      profileLogins.set(tab.profileKey, { ending: false, context: tab.page.context() });
+      loginEpoch++;
+      // What every tab of the profile already showed is replaced at once.
+      for (const member of profileTabs(tab.profileKey)) {
+        stopTabWatches(member, "login");
+        report(member, { _tag: "Idle" });
+      }
+    }
+    return recordAction(tab, "fillCredential", () =>
+      fillCredential({
+        tabId: tab.tabId,
+        vault,
+        request: input,
+        locate: (locator) => ServerBrowserPage.targetLocator(tab.page, { locator })!,
+        beforeTyping: async () => {
+          const members = profileTabs(tab.profileKey);
+          await Promise.allSettled(members.flatMap((member) => [...(running.get(member) ?? [])]));
+          if (recordingIn(members)) throw recordingRunning();
+          await authorize();
+        },
+      }),
+    );
+  };
+
+  const runTabOperation = async (
+    tab: ServerTab,
+    request: PreviewAutomationRequest,
+    authorize: () => Promise<void>,
+    resourceAuthorization: () => Promise<void>,
+    deadlineMs: number,
+  ) => {
+    await authorize();
     const input = request.input;
     switch (request.operation) {
+      case "readPage": {
+        const read = decodeReadPage(input);
+        const generation = tab.control.generation;
+        if (
+          !request.tabIdExplicit ||
+          tab.isolatedContext ||
+          (tab.profileId ?? DEFAULT_BROWSER_PROFILE_ID) !== read.profileId ||
+          read.profileId === INCOGNITO_BROWSER_PROFILE_ID
+        )
+          throw new ServerBrowserPage.ServerBrowserOperationError({
+            tag: "PreviewAutomationExecutionError",
+            message: "Select an existing tab in the requested persistent browser profile.",
+          });
+        const response = await tab.page.goto(normalizePreviewUrl(read.url), {
+          waitUntil: "domcontentloaded",
+          timeout: request.timeoutMs,
+        });
+        // A human may reserve control while navigation is in flight.
+        if (!tab.control.agentCanActNow(request.agentSessionId!))
+          throw new BrowserControlInterrupted({
+            message: "Browser control changed during the read.",
+          });
+        const html = await tab.page.content();
+        if (
+          generation !== tab.control.generation ||
+          !tab.control.agentCanActNow(request.agentSessionId!)
+        )
+          throw new BrowserControlInterrupted({
+            message: "Browser control changed during the read.",
+          });
+        if (Buffer.byteLength(html, "utf8") > 4 * 1024 * 1024)
+          throw new ServerBrowserPage.ServerBrowserOperationError({
+            tag: "PreviewAutomationResultTooLargeError",
+            message: "The session page exceeds the research extraction limit.",
+          });
+        return {
+          tabId: tab.tabId,
+          profileId: read.profileId,
+          generation: tab.control.generation,
+          finalUrl: tab.page.url(),
+          httpStatus: response?.status() ?? null,
+          html,
+        };
+      }
       case "navigate": {
         const navigateInput = input as PreviewAutomationNavigateInput;
         await recordAction(tab, "navigate", () =>
@@ -2643,9 +3499,13 @@ const make = Effect.gen(function* () {
         const to = fixedViewportSize(setting);
         const drawn = tab.desktopResize.promise;
         await runPromise(
-          manager.resize({ threadId: tab.threadId, tabId: tab.tabId, viewport: setting }),
+          manager.resize(
+            { threadId: tab.threadId, tabId: tab.tabId, viewport: setting },
+            resourceAuthorization,
+          ),
         );
-        await applySetting(tab, setting);
+        await authorize();
+        await applySetting(tab, setting, authorize);
         if (!tab.desktop) {
           return {
             tabId: tab.tabId,
@@ -2678,18 +3538,29 @@ const make = Effect.gen(function* () {
       case "setColorScheme": {
         const { colorScheme } = input as PreviewAutomationSetColorSchemeInput;
         const snapshot = await runPromise(
-          manager.adjust({ threadId: tab.threadId, tabId: tab.tabId, colorScheme }),
+          manager.adjust(
+            { threadId: tab.threadId, tabId: tab.tabId, colorScheme },
+            resourceAuthorization,
+          ),
         );
-        await applyRendering(tab, snapshot);
+        await authorize();
+        await applyRendering(tab, snapshot, authorize);
         return { tabId: tab.tabId, colorScheme };
       }
       case "snapshot": {
-        const snapshot = await withScreencastsPaused(tab, () =>
-          ServerBrowserPage.snapshot({
-            ...tab,
-            renderScale: tab.desktop ? "display" : RENDER_SCALE,
-            fullScreenshot: (input as PreviewAutomationSnapshotInput | undefined)?.fullScreenshot,
-          }),
+        const snapshot = await withScreencastsPaused(
+          tab,
+          () =>
+            ServerBrowserPage.snapshot(
+              {
+                ...tab,
+                renderScale: tab.desktop ? "display" : RENDER_SCALE,
+                fullScreenshot: (input as PreviewAutomationSnapshotInput | undefined)
+                  ?.fullScreenshot,
+              },
+              authorize,
+            ),
+          authorize,
         );
         const loadError = loadErrorOf(tab);
         return loadError ? { ...snapshot, url: loadError.url, loadError } : snapshot;
@@ -2701,94 +3572,264 @@ const make = Effect.gen(function* () {
           timeoutMs: Math.max(1, Math.floor(deadlineMs - performance.now())),
         };
         await recordAction(tab, "click", () =>
-          ServerBrowserPage.click(tab.page, clickInput, pointerFor(tab)),
+          ServerBrowserPage.click(tab.page, clickInput, pointerFor(tab, authorize), authorize),
         );
         return undefined;
       }
       case "hover":
         return recordAction(tab, "hover", () =>
-          ServerBrowserPage.hover(tab.page, input as PreviewAutomationHoverInput, pointerFor(tab)),
+          ServerBrowserPage.hover(
+            tab.page,
+            input as PreviewAutomationHoverInput,
+            pointerFor(tab, authorize),
+            authorize,
+          ),
         );
       case "select":
         return recordAction(tab, "select", () =>
-          ServerBrowserPage.select(tab.page, input as PreviewAutomationSelectInput),
+          ServerBrowserPage.select(tab.page, input as PreviewAutomationSelectInput, authorize),
         );
       case "drag":
         return recordAction(tab, "drag", () =>
-          ServerBrowserPage.drag(tab.page, input as PreviewAutomationDragInput, pointerFor(tab)),
+          ServerBrowserPage.drag(
+            tab.page,
+            input as PreviewAutomationDragInput,
+            pointerFor(tab, authorize),
+            authorize,
+          ),
         );
       case "upload":
         return recordAction(tab, "upload", () =>
-          uploadFiles(tab, input as PreviewAutomationUploadInput),
+          uploadFiles(tab, input as PreviewAutomationUploadInput, authorize),
         );
       case "type":
         return recordAction(tab, "type", () =>
-          ServerBrowserPage.type(tab.page, input as PreviewAutomationTypeInput),
+          ServerBrowserPage.type(tab.page, input as PreviewAutomationTypeInput, authorize),
         );
       case "press":
         return recordAction(tab, "press", () =>
-          ServerBrowserPage.press(tab.page, input as PreviewAutomationPressInput),
+          ServerBrowserPage.press(tab.page, input as PreviewAutomationPressInput, authorize),
         );
       case "scroll":
         return recordAction(tab, "scroll", () =>
-          ServerBrowserPage.scroll(tab.page, input as PreviewAutomationScrollInput),
+          ServerBrowserPage.scroll(tab.page, input as PreviewAutomationScrollInput, authorize),
         );
+      case "fillCredential":
+        return fillInLogin(tab, input as PreviewAutomationFillCredentialInput, authorize);
+      case "watchStart": {
+        const input = decodeWatchStart({
+          ...(request.input as object),
+          tabId: tab.tabId,
+        });
+        if (tab.control.agentId !== request.agentSessionId)
+          throw new PreviewWatchError({ reason: "ownership" });
+        const generation = tab.control.generation;
+        const navigation = tab.navigationGeneration;
+        const fence = (): PreviewWatchError["reason"] | undefined => {
+          if (tabs.get(tabKey(tab.threadId, tab.tabId)) !== tab || tab.closing) return "closed";
+          if (inLogin(tab)) return "login";
+          if (tab.navigationGeneration !== navigation) return "navigation";
+          if (
+            tab.control.generation !== generation ||
+            !tab.control.agentCanActNow(request.agentSessionId ?? "")
+          )
+            return "ownership";
+          return undefined;
+        };
+        await resourceAuthorization();
+        const cdp = await tab.page.context().newCDPSession(tab.page);
+        const watchId = NodeCrypto.randomUUID();
+        let cleanup: (() => Promise<void>) | undefined;
+        const installed = Promise.withResolvers<void>();
+        let cleanupTask: Promise<void> | undefined;
+        const dispose = () =>
+          (cleanupTask ??= (async () => {
+            // A synchronous baseline can terminate before registration returns its disposer.
+            await installed.promise;
+            try {
+              await cleanup?.();
+            } finally {
+              tab.watches.delete(watchId);
+              await cdp.detach().catch(constVoid);
+            }
+          })());
+        let started: ReturnType<PageWatchStore["register"]>;
+        try {
+          started = watches.register(
+            watchId,
+            tab.threadId,
+            {
+              authorize: resourceAuthorization,
+              fence,
+              cleanup: dispose,
+            },
+            request.agentSessionId,
+          );
+        } catch (cause) {
+          await cdp.detach().catch(constVoid);
+          throw cause;
+        }
+        tab.watches.add(watchId);
+        try {
+          try {
+            cleanup = await installPageWatch({
+              cdp,
+              watchId,
+              subscription: input.subscription,
+              store: watches,
+              authorize: resourceAuthorization,
+            });
+          } finally {
+            installed.resolve();
+          }
+          await authorize();
+          await watches.flush(watchId);
+          return started;
+        } catch (cause) {
+          await watches.terminate(watchId, "subscription_failed").catch(constVoid);
+          await dispose().catch(constVoid);
+          throw cause;
+        }
+      }
       case "evaluate":
         return ServerBrowserPage.evaluate(
           tab.cdp,
           input as PreviewAutomationEvaluateInput,
           request.timeoutMs,
+          authorize,
         );
       case "waitFor":
-        return ServerBrowserPage.waitFor(tab.page, input as PreviewAutomationWaitForInput);
+        return ServerBrowserPage.waitFor(
+          tab.page,
+          input as PreviewAutomationWaitForInput,
+          authorize,
+        );
       case "recordingStart": {
-        const recording = await startRecording(tab);
+        const recording = await startRecording(tab, authorize, resourceAuthorization);
         return { tabId: tab.tabId, recording: true, startedAt: recording.startedAt };
       }
     }
   };
 
-  const handleRequest = (connectionId: string, request: PreviewAutomationRequest) =>
-    Effect.tryPromise({
-      try: () =>
-        runOperation(request, performance.now() + request.timeoutMs).finally(() =>
-          markUsed(request),
-        ),
-      catch: ServerBrowserPage.toOperationError,
-    }).pipe(
-      Effect.match({
-        onSuccess: (result) => ({ ok: true as const, result }),
-        onFailure: (error) => ({
-          ok: false as const,
-          error: {
-            _tag: error.tag,
-            message: error.message,
-            ...(error.detail === undefined ? {} : { detail: error.detail }),
-          },
-        }),
-      }),
-      Effect.flatMap((outcome) =>
-        broker.respond({
+  /**
+   * Checks a result once more as it leaves: a read that began before a fill, such
+   * as status, which runs outside the tab's queue, cannot return what the fill put
+   * in the page. Status-shaped results are taken again; other reads of a tab now in
+   * a login are refused.
+   */
+  const checkedOperation = async (
+    request: PreviewAutomationRequest,
+    authorize: () => Promise<void>,
+    resourceAuthorization: () => Promise<void>,
+    deadlineMs: number,
+  ) => {
+    let epoch = loginEpoch;
+    let result = await runOperation(request, authorize, resourceAuthorization, deadlineMs);
+    while (epoch !== loginEpoch) {
+      epoch = loginEpoch;
+      if (STATUS_RESULTS.has(request.operation)) {
+        const tabId =
+          typeof result === "object" && result !== null && "tabId" in result
+            ? (result.tabId as string | null)
+            : null;
+        result = await statusWithTitle(
+          tabId === null ? undefined : tabs.get(tabKey(request.threadId, tabId)),
+          request.agentSessionId,
+        );
+        continue;
+      }
+      if (CONTENT_FREE_RESULTS.has(request.operation)) break;
+      const target =
+        request.tabId === undefined
+          ? latestThreadTab(request.threadId, request.agentSessionId)
+          : tabs.get(tabKey(request.threadId, request.tabId));
+      if (target && inLogin(target)) throw loginInProgress();
+    }
+    await authorize();
+    return result;
+  };
+
+  const handleRequest = Effect.fn("ServerBrowser.handleRequest")(
+    function* (connectionId: string, request: PreviewAutomationRequest) {
+      if (broker.requestAuthorization === undefined)
+        return yield* new ServerBrowserPage.ServerBrowserOperationError({
+          tag: "PreviewAutomationUnsupportedClientError",
+          message: "Current preview invocation checks are unsupported.",
+        });
+      const authorization = yield* broker
+        .requestAuthorization({
           clientId: SERVER_HOST_CLIENT_ID,
           connectionId,
           requestId: request.requestId,
-          ...outcome,
+        })
+        .pipe(Effect.mapError(ServerBrowserPage.toOperationError));
+      return yield* Effect.tryPromise({
+        try: () =>
+          checkedOperation(
+            request,
+            () => runPromise(authorization.dispatch),
+            () =>
+              runPromise(
+                request.operation === "watchStart"
+                  ? (authorization.watch ??
+                      Effect.fail(
+                        new OrchestratorMcpFailure({
+                          code: "capability_denied",
+                          message: "Watch continuation authority is unavailable.",
+                        }),
+                      ))
+                  : authorization.resource,
+              ),
+            performance.now() + request.timeoutMs,
+          ).finally(() => markUsed(request)),
+        catch: ServerBrowserPage.toOperationError,
+      });
+    },
+    (effect, connectionId, request) =>
+      effect.pipe(
+        Effect.match({
+          onSuccess: (result) => ({ ok: true as const, result }),
+          onFailure: (error) => ({
+            ok: false as const,
+            error: {
+              _tag: error.tag,
+              message: error.message,
+              ...(error.detail === undefined ? {} : { detail: error.detail }),
+            },
+          }),
         }),
+        Effect.flatMap((outcome) =>
+          broker.respond({
+            clientId: SERVER_HOST_CLIENT_ID,
+            connectionId,
+            requestId: request.requestId,
+            ...outcome,
+          }),
+        ),
+        Effect.ignore,
       ),
-      Effect.ignore,
-    );
+  );
 
-  const mirrorManagerEvent = (event: PreviewEvent) =>
+  const mirrorManagerEvent = ({ event, authorize = async () => {} }: PreviewManager.ServerEvent) =>
     Effect.promise(async () => {
       if (event.type === "opened" && event.snapshot.runtime === "server") {
-        const key = tabKey(event.snapshot.threadId, event.snapshot.tabId);
-        if (event.snapshot.automationOwner === undefined || pendingTabs.has(key) || tabs.has(key))
-          await ensureTab(event.snapshot).catch(constVoid);
+        try {
+          await ensureTab(event.snapshot, authorize);
+        } catch {
+          if (event.snapshot.automationOwner !== undefined)
+            await runPromise(
+              manager
+                .close({ threadId: ThreadId.make(event.threadId), tabId: event.tabId })
+                .pipe(Effect.ignore),
+            );
+        }
         return;
       }
       const key = tabKey(event.threadId, event.tabId);
       const tab = tabs.get(key);
+      // A closed session is a closed page; a detached desktop page is not.
       if (event.type === "closed" && !tab && pendingTabs.has(key)) closedPendingTabs.add(key);
+      if (event.type === "closed") tabAuthorizations.delete(key);
       if (!tab) return;
       if (event.type === "closed") {
         closedSessions.add(key);
@@ -2801,15 +3842,19 @@ const make = Effect.gen(function* () {
         if (tab.desktop) tab.setting = event.snapshot.viewport ?? FILL_PREVIEW_VIEWPORT;
         await tab.control
           .system(async () => {
+            await authorize();
             if (
               !viewportSettingsEqual(event.snapshot.viewport ?? FILL_PREVIEW_VIEWPORT, tab.setting)
             ) {
-              await applySetting(tab, event.snapshot.viewport ?? FILL_PREVIEW_VIEWPORT);
+              await applySetting(tab, event.snapshot.viewport ?? FILL_PREVIEW_VIEWPORT, authorize);
             }
-            await applyRendering(tab, event.snapshot);
+            await applyRendering(tab, event.snapshot, authorize);
             const request = event.request;
+            await authorize();
             if (request?.clear === "cookies") await tab.cdp.send("Network.clearBrowserCookies");
+            await authorize();
             if (request?.clear === "cache") await tab.cdp.send("Network.clearBrowserCache");
+            await authorize();
             if (request?.hardReload) {
               tab.pendingInitialRequestUrl = null;
               await tab.cdp.send("Page.reload", { ignoreCache: true });
@@ -2846,7 +3891,9 @@ const make = Effect.gen(function* () {
     session: CDPSession,
     viewer: ViewerState,
     raw: unknown,
+    authorize: () => Promise<void>,
   ) => {
+    await authorize();
     const message = asRecord(raw);
     if (!message) return;
     const modifiers = modifiersOf(message);
@@ -2902,6 +3949,7 @@ const make = Effect.gen(function* () {
         if (copying)
           while (Date.now() <= tab.copyKeyedUntil) await sleepUntil(tab.copyKeyedUntil + 1);
         const since = Date.now();
+        await authorize();
         await session.send("Input.dispatchKeyEvent", {
           type: text ? "keyDown" : "rawKeyDown",
           key,
@@ -2920,10 +3968,12 @@ const make = Effect.gen(function* () {
         tab.copyKeyedUntil = until;
         // A busy frame answers late; its read must not hold later input.
         const read = tab.copyReads.then(async () => {
+          await authorize();
           const copied = await takeCopiedText(tab, since, until);
+          await authorize();
           if (copied) viewer.push({ _tag: "clipboard", text: copied });
         });
-        tab.copyReads = read;
+        tab.copyReads = read.catch(constVoid);
         return () => read;
       }
       case "text":
@@ -2946,9 +3996,12 @@ const make = Effect.gen(function* () {
       case "viewport": {
         const setting = decodeViewportSetting(message.setting);
         await runPromise(
-          manager.resize({ threadId: tab.threadId, tabId: tab.tabId, viewport: setting }),
+          manager.resize(
+            { threadId: tab.threadId, tabId: tab.tabId, viewport: setting },
+            authorize,
+          ),
         );
-        await applySetting(tab, setting);
+        await applySetting(tab, setting, authorize);
         return;
       }
       // A stalled navigation must not block a corrected URL or further viewer input.
@@ -2996,6 +4049,7 @@ const make = Effect.gen(function* () {
           expression: `(${EDITABLE_AT_POINT_SCRIPT})(${x}, ${y})`,
           returnByValue: true,
         });
+        await authorize();
         viewer.push({ _tag: "probe", x, y, editable: result.result.value === true });
         return;
       }
@@ -3005,7 +4059,14 @@ const make = Effect.gen(function* () {
   const attachViewer: ServerBrowser["Service"]["attachViewer"] = Effect.fn(
     "ServerBrowser.attachViewer",
   )(function* (input) {
+    const authorize = input.authorize ?? (async () => {});
+    const recheck = Effect.tryPromise({
+      try: authorize,
+      catch: (cause) => new ServerBrowserLaunchError({ cause }),
+    });
+    yield* recheck;
     const tab = yield* findTab(input.threadId, input.tabId);
+    yield* recheck;
     const output = yield* Queue.make<ServerBrowserViewerOutput>({
       capacity: VIEWER_OUTPUT_LIMIT,
       strategy: "dropping",
@@ -3024,6 +4085,7 @@ const make = Effect.gen(function* () {
             .catch(constVoid),
         ),
     );
+    yield* recheck;
     const quality = Math.min(100, Math.max(1, Math.round(input.quality)));
     // Chromium may drop the final frame during a burst; send a still when it settles.
     let framesInFlight = 0;
@@ -3036,7 +4098,9 @@ const make = Effect.gen(function* () {
       screencastScale = scale;
       screencastParams = screencastParams.then(async () => {
         if (tab.capturing > 0) return;
+        await authorize();
         await session.send("Page.stopScreencast").catch(constVoid);
+        await authorize();
         await session
           .send("Page.startScreencast", {
             format: "jpeg",
@@ -3049,7 +4113,9 @@ const make = Effect.gen(function* () {
       return screencastParams;
     };
     const viewer: ViewerState = {
+      authorize,
       id: NodeCrypto.randomUUID(),
+      resourceViewerId: input.resourceViewerId,
       canOperate: input.canOperate,
       pressedKeys: new Map(),
       pressedButtons: new Map(),
@@ -3084,6 +4150,7 @@ const make = Effect.gen(function* () {
       },
       resume: () => startScreencast(screencastScale),
       scrolledAt: 0,
+      leaving: false,
       requestedSize: null,
     };
     yield* Effect.acquireRelease(
@@ -3095,23 +4162,35 @@ const make = Effect.gen(function* () {
       }),
       () =>
         Effect.promise(async () => {
-          await tab.control.disconnect(viewer.id, () => releaseViewerInput(viewer, session));
+          viewer.leaving = true;
+          // Terminal admission refusal retires control; transport loss retains it for reconnection.
+          if (
+            input.disconnectReason?.() === "inputOverload" &&
+            tab.control.controller === viewer.id
+          )
+            await tab.control.release(viewer.id, () => releaseViewerInput(viewer, session));
+          else await tab.control.disconnect(viewer.id, () => releaseViewerInput(viewer, session));
           tab.viewers.delete(viewer);
+          resumeHumanControl(tab);
           broadcastControl(tab);
           reportLiveTabs();
         }),
     );
     if (input.canOperate && tab.control.agentId === null && tab.control.controller === null) {
-      yield* Effect.promise(() => tab.control.take(viewer.id));
-    }
+      yield* Effect.tryPromise({
+        try: () => tab.control.take(viewer.id, authorize),
+        catch: (cause) => new ServerBrowserLaunchError({ cause }),
+      });
+    } else resumeHumanControl(tab);
     broadcastControl(tab);
     pushFileChooser(tab);
+    // Full scale: a scaled capture would flash in every other viewer.
     const pushStill = async () => {
       const data = await withCaptureLock(tab, async () => {
         let timer: ReturnType<typeof setTimeout> | undefined;
         try {
           return await Promise.race([
-            ServerBrowserPage.captureViewport(session, { format: "jpeg", quality }),
+            ServerBrowserPage.captureViewport(session, { format: "jpeg", quality }, authorize),
             new Promise<null>((resolve) => {
               timer = setTimeout(() => resolve(null), VIEWER_STILL_TIMEOUT_MS);
             }),
@@ -3142,11 +4221,11 @@ const make = Effect.gen(function* () {
         arrivedAt - viewer.scrolledAt < SCREENCAST_MOTION_WINDOW_MS
       ) {
         motion = true;
-        void startScreencast(0.5);
+        void startScreencast(0.5).catch(() => viewer.push({ _tag: "reconnect" }));
       } else if (motion && arrivedAt - viewer.scrolledAt > SCREENCAST_SETTLE_MS) {
         motion = false;
         recentFrames.length = 0;
-        void startScreencast(1);
+        void startScreencast(1).catch(() => viewer.push({ _tag: "reconnect" }));
       }
       if (settleTimer !== null) clearTimeout(settleTimer);
       settleTimer = setTimeout(() => {
@@ -3156,7 +4235,7 @@ const make = Effect.gen(function* () {
         if (motion) {
           motion = false;
           recentFrames.length = 0;
-          void startScreencast(1);
+          void startScreencast(1).catch(() => viewer.push({ _tag: "reconnect" }));
         }
         void pushStill();
       }, SCREENCAST_SETTLE_MS);
@@ -3173,85 +4252,168 @@ const make = Effect.gen(function* () {
         ),
       });
     });
-    void broadcastViewport(tab).catch(constVoid);
-    yield* Effect.promise(() => startScreencast(1));
+    broadcastViewport(tab);
+    yield* Effect.tryPromise({
+      try: () => startScreencast(1),
+      catch: (cause) => new ServerBrowserLaunchError({ cause }),
+    });
     // An idle page does not repaint for a new screencast, so the viewer
     // starts from a still unless a live frame beat it.
     if (!screencastStarted) yield* Effect.forkScoped(Effect.promise(pushStill));
+    const prepareInput = Effect.fnUntraced(function* (raw: unknown) {
+      const message = normalizeViewerInput(raw);
+      if (!viewer.canOperate || !message) return Effect.void;
+      const lane =
+        message.type === "dialog"
+          ? "dialog"
+          : message.type === "takeControl" || message.type === "releaseControl"
+            ? "control"
+            : "action";
+      const release = tab.control.reserveInput(Buffer.byteLength(encodeInputJson(message)), lane);
+      if (release === null) return yield* new BrowserInputOverloaded({});
+      const controlGeneration = lane === "control" ? tab.control.generation : null;
+      const inputAdmission =
+        lane === "control"
+          ? null
+          : {
+              dialog: message.type === "dialog" ? tab.dialog : null,
+              controller: tab.control.controller,
+              generation: tab.control.generation,
+            };
+      const assertCurrentInput = () => {
+        if (
+          !inputAdmission ||
+          inputAdmission.controller !== viewer.id ||
+          tab.control.controller !== viewer.id ||
+          tab.control.generation !== inputAdmission.generation ||
+          (message.type === "dialog" &&
+            (!inputAdmission.dialog || tab.dialog !== inputAdmission.dialog))
+        ) {
+          throw new BrowserControlInterrupted();
+        }
+      };
+      // The promise owns the reservation even if its observing Effect is
+      // interrupted: native work and queued closures may still be draining.
+      const work = (async () => {
+        try {
+          if (lane === "action") {
+            const authorizeInput = async () => {
+              await authorize();
+              assertCurrentInput();
+            };
+            const dispatch = async (input: Record<string, unknown>) => {
+              await dispatchViewerInput(tab, session, viewer, input, authorizeInput);
+            };
+            if (
+              message.type === "mouse" &&
+              message.action === "move" &&
+              message.button === "none" &&
+              message.buttons === 0
+            ) {
+              await tab.control.humanLatest(
+                viewer.id,
+                `hover:${modifiersOf(message)}`,
+                message,
+                dispatch,
+              );
+            } else if (message.type === "wheel") {
+              // Keep reversals separate so scrolling at an edge behaves as if unmerged.
+              await tab.control.humanLatest(
+                viewer.id,
+                `wheel:${num(message.x)}:${num(message.y)}:${modifiersOf(message)}:${Math.sign(num(message.deltaX))}:${Math.sign(num(message.deltaY))}`,
+                message,
+                dispatch,
+                (waiting, next) => ({
+                  ...next,
+                  deltaX: num(waiting.deltaX) + num(next.deltaX),
+                  deltaY: num(waiting.deltaY) + num(next.deltaY),
+                }),
+              );
+            } else {
+              const copyRead = await tab.control.human(
+                viewer.id,
+                () => dispatchViewerInput(tab, session, viewer, message, authorize),
+                async () => {
+                  await authorize();
+                  assertCurrentInput();
+                  await authorize();
+                },
+              );
+              await copyRead?.();
+            }
+            return;
+          }
+          await authorize();
+          if (controlGeneration !== null && tab.control.generation !== controlGeneration)
+            throw new BrowserControlInterrupted();
+          if (inputAdmission) assertCurrentInput();
+          if (message.type === "takeControl") {
+            const taking = tab.control.take(viewer.id, authorize, () => broadcastControl(tab));
+            await taking;
+            pushFileChooser(tab);
+          } else if (message.type === "releaseControl") {
+            const releasing = tab.control.release(viewer.id, () =>
+              releaseViewerInput(viewer, session),
+            );
+            broadcastControl(tab);
+            await releasing;
+          } else if (
+            message.type === "dialog" &&
+            tab.control.controller === viewer.id &&
+            typeof message.accept === "boolean"
+          ) {
+            await authorize();
+            assertCurrentInput();
+            await resolveDialog(tab, {
+              accept: message.accept,
+              ...(typeof message.promptText === "string" ? { promptText: message.promptText } : {}),
+            });
+          } else {
+            const copyRead = await tab.control.human(
+              viewer.id,
+              () => dispatchViewerInput(tab, session, viewer, message, authorize),
+              authorize,
+            );
+            await copyRead?.();
+          }
+        } catch {
+          broadcastControl(tab);
+        } finally {
+          release();
+        }
+      })();
+      return Effect.promise(() => work);
+    });
     return {
       output,
-      input: (raw: unknown) =>
-        Effect.promise(async () => {
-          if (!viewer.canOperate) return;
-          const message = asRecord(raw);
-          if (!message) return;
-          try {
-            if (message.type === "takeControl") {
-              const taking = tab.control.take(viewer.id);
-              broadcastControl(tab);
-              await taking;
-              pushFileChooser(tab);
-            } else if (message.type === "releaseControl") {
-              const releasing = tab.control.release(viewer.id, () =>
-                releaseViewerInput(viewer, session),
-              );
-              broadcastControl(tab);
-              await releasing;
-            } else if (
-              message.type === "dialog" &&
-              tab.control.controller === viewer.id &&
-              typeof message.accept === "boolean"
-            ) {
-              await resolveDialog(tab, {
-                accept: message.accept,
-                ...(typeof message.promptText === "string"
-                  ? { promptText: message.promptText }
-                  : {}),
-              });
-            } else {
-              const dispatch = async (input: Record<string, unknown>) => {
-                await dispatchViewerInput(tab, session, viewer, input);
-              };
-              if (
-                message.type === "mouse" &&
-                message.action === "move" &&
-                message.button === "none" &&
-                message.buttons === 0
-              ) {
-                await tab.control.humanLatest(
-                  viewer.id,
-                  `hover:${modifiersOf(message)}`,
-                  message,
-                  dispatch,
-                );
-              } else if (message.type === "wheel") {
-                // A reversal stays separate so scrolling clamped at an edge behaves as if unmerged.
-                await tab.control.humanLatest(
-                  viewer.id,
-                  `wheel:${num(message.x)}:${num(message.y)}:${modifiersOf(message)}:${Math.sign(num(message.deltaX))}:${Math.sign(num(message.deltaY))}`,
-                  message,
-                  dispatch,
-                  (waiting, next) => ({
-                    ...next,
-                    deltaX: num(waiting.deltaX) + num(next.deltaX),
-                    deltaY: num(waiting.deltaY) + num(next.deltaY),
-                  }),
-                );
-              } else {
-                const copyRead = await tab.control.human(viewer.id, () =>
-                  dispatchViewerInput(tab, session, viewer, message),
-                );
-                await copyRead?.();
-              }
-            }
-          } catch {
-            broadcastControl(tab);
-          }
-        }),
+      input: (raw: unknown) => prepareInput(raw).pipe(Effect.flatten),
+      enqueueInput: (raw: unknown) =>
+        prepareInput(raw).pipe(
+          Effect.flatMap((work) => work.pipe(Effect.forkScoped, Effect.asVoid)),
+        ),
     } satisfies ServerBrowserViewer;
   });
 
-  yield* manager.events.pipe(Stream.runForEach(mirrorManagerEvent), Effect.forkScoped);
+  yield* manager.serverEvents.pipe(Stream.runForEach(mirrorManagerEvent), Effect.forkScoped);
+  yield* orchestrator.streamDomainEvents.pipe(
+    Stream.runForEach((event) =>
+      Effect.sync(() => {
+        if (event.type === "thread.deleted" || event.type === "thread.archived") {
+          watches.terminateThread(event.threadId, "thread_deleted");
+          return;
+        }
+        if (event.type !== "thread.settled") return;
+        for (const pending of pendingTabs.values()) {
+          if (pending.threadId === event.threadId) pending.settled = true;
+        }
+        for (const tab of tabs.values()) {
+          if (tab.threadId === event.threadId && mayCloseSettledTab(tab)) dropTab(tab, true);
+        }
+      }),
+    ),
+    Effect.forkScoped,
+  );
+  // Whoever runs the server learns the fix before anyone opens a tab.
   if (
     !PreviewBrowserHost.sandboxDisabled(yield* HostProcess.Environment) &&
     (yield* PreviewBrowserHost.sandboxBlocked)
@@ -3293,7 +4455,6 @@ const make = Effect.gen(function* () {
     Effect.repeat(Schedule.spaced(IDLE_SWEEP_INTERVAL)),
     Effect.forkScoped,
   );
-  const environmentId = yield* environment.getEnvironmentId;
   const hostSession = broker
     .connect(
       {
@@ -3339,10 +4500,64 @@ const make = Effect.gen(function* () {
     });
 
   return ServerBrowser.of({
+    readWatch: Effect.fn("ServerBrowser.readWatch")(function* (input, authorizeReader) {
+      const context = yield* Effect.context<Effect.Services<typeof authorizeReader>>();
+      return yield* Effect.tryPromise({
+        try: (signal) =>
+          watches.read(
+            input,
+            async () => {
+              const result = await Effect.runPromiseWith(context)(Effect.result(authorizeReader));
+              if (result._tag === "Failure") throw result.failure;
+            },
+            signal,
+          ),
+        catch: (cause) =>
+          isWatchReadFailure(cause)
+            ? cause
+            : new PreviewWatchError({ reason: "subscription_failed" }),
+      });
+    }),
+    mirrorResets: Stream.fromPubSub(mirrorResets),
+    mirrorCookies: Effect.fn("ServerBrowser.mirrorCookies")((batch) =>
+      Effect.tryPromise({
+        try: async () => {
+          if (catalogRead._tag === "Failure")
+            throw new Error("Mirrored profile catalog unavailable.");
+          if (batch.mutations.length > 0) {
+            const context = await cookieMirror.apply(batch);
+            mirroredContexts.set(context, batch.profile.id);
+          }
+          await catalog.put(batch.profile);
+          mirroredProfiles.set(batch.profile.id, batch.profile);
+        },
+        catch: () => new CookieMirrorError({ reason: "unavailable" }),
+      }),
+    ),
+    authorizeViewer: Effect.fn("ServerBrowser.authorizeViewer")(function* (resource) {
+      const current = yield* manager.list({ threadId: resource.threadId });
+      if (
+        resource.environmentId !== environmentId ||
+        resource.serverEpoch !== current.serverEpoch ||
+        !current.sessions.some(
+          (session) => session.tabId === resource.tabId && session.runtime === "server",
+        )
+      )
+        return yield* new ServerBrowserTabNotFoundError({
+          threadId: resource.threadId,
+          tabId: resource.tabId,
+        });
+    }),
     attachViewer,
     clearProfile,
     profileReporter,
     openDownload,
+    inspectDownload: Effect.fn("ServerBrowser.inspectDownload")((resource, authorize) =>
+      nativeDownload(resource, authorize).pipe(Effect.asVoid),
+    ),
+    readDownloadBlock: Effect.fn("ServerBrowser.readDownloadBlock")((resource, offset, authorize) =>
+      nativeDownload(resource, authorize, offset),
+    ),
     answerFileChooser,
   });
 });

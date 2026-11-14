@@ -1,4 +1,5 @@
 import {
+  ChromeCookieKeyCommand,
   DesktopServerExposureModeSchema,
   DesktopUpdateChannelSchema,
   type DesktopServerExposureMode,
@@ -28,6 +29,7 @@ import { desktopUpdateChannelOf } from "@t3tools/shared/cliRelease";
 import { isValidDistroName } from "../wsl/wslPathParsing.ts";
 
 export interface DesktopSettings {
+  readonly chromeCookieKeyCommand?: ChromeCookieKeyCommand;
   readonly localEnvironmentEnabled: boolean;
   readonly linuxPasswordStore: LinuxPasswordStorePreference;
   readonly mainWindowBounds: DesktopWindowBounds | null;
@@ -95,7 +97,9 @@ const DesktopWindowBoundsDocument = Schema.Struct({
 const optionalReadableKey = <S extends Schema.Top>(schema: S) =>
   Schema.optionalKey(schema.pipe(Schema.catchDecoding(() => Effect.succeedNone)));
 
+const isChromeCookieKeyCommand = Schema.is(ChromeCookieKeyCommand);
 const DesktopSettingsDocument = Schema.Struct({
+  chromeCookieKeyCommand: optionalReadableKey(Schema.Unknown),
   localEnvironmentEnabled: optionalReadableKey(Schema.Boolean),
   linuxPasswordStore: optionalReadableKey(Schema.Unknown),
   mainWindowBounds: optionalReadableKey(Schema.NullOr(DesktopWindowBoundsDocument)),
@@ -225,6 +229,14 @@ function normalizeDesktopSettingsDocument(
     (parsed.wslBackendEnabled === undefined && parsed.wslMode === "wsl");
 
   return {
+    // A configured but invalid command must not silently select Keychain.
+    ...(parsed.chromeCookieKeyCommand === undefined
+      ? {}
+      : {
+          chromeCookieKeyCommand: isChromeCookieKeyCommand(parsed.chromeCookieKeyCommand)
+            ? parsed.chromeCookieKeyCommand
+            : [],
+        }),
     localEnvironmentEnabled: parsed.localEnvironmentEnabled !== false,
     linuxPasswordStore: normalizeLinuxPasswordStorePreference(parsed.linuxPasswordStore),
     mainWindowBounds,
@@ -248,6 +260,8 @@ function toDesktopSettingsDocument(
   defaults: DesktopSettings,
 ): DesktopSettingsDocument {
   const document: Mutable<DesktopSettingsDocument> = {};
+  if (settings.chromeCookieKeyCommand !== undefined)
+    document.chromeCookieKeyCommand = settings.chromeCookieKeyCommand;
 
   if (settings.localEnvironmentEnabled !== defaults.localEnvironmentEnabled) {
     document.localEnvironmentEnabled = settings.localEnvironmentEnabled;
