@@ -8,6 +8,7 @@ import {
   EnvironmentId,
   type EnvironmentId as EnvironmentIdType,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -544,28 +545,32 @@ const refreshOnSignalWhileRead =
 
 const refreshEveryUntilFinal =
   <V>(intervalMs: number, isFinal: (value: V) => boolean) =>
-  <A extends V>(self: Atom.Atom<A>): Atom.Atom<A> =>
-    Atom.transform(
+  <A extends V>(self: Atom.Atom<A>): Atom.Atom<A> => {
+    const refreshing = Atom.withRefresh(self, intervalMs);
+    return Atom.transform(
       self,
       (get) => {
         const value = get(self);
-        if (!isFinal(value)) {
-          // @effect-diagnostics-next-line globalTimers:off - Mirrors `Atom.withRefresh`, outside an Effect runtime.
-          const handle = setTimeout(() => get.refresh(self), intervalMs);
-          get.addFinalizer(() => clearTimeout(handle));
-        }
-        return value;
+        return isFinal(value) ? value : get(refreshing);
       },
       { initialValueTarget: self },
     );
+  };
+/**
+ * Fork (toolboxmd/t3code#52): an atom never observes its own cancellation, so an interrupt-only
+ * failure is the server's. A read that joins a shared lookup another request's cancellation is
+ * tearing down comes back interrupted; it is read once more instead of shown as an error.
+ */
+function retryInterruptedRead<A, E, R>(read: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> {
+  return read.pipe(Effect.catchCauseIf(Cause.hasInterruptsOnly, () => read));
+}
 
 const isStale = (result: AsyncResult.AsyncResult<unknown, unknown>, staleTimeMs: number) => {
   if (result.waiting) return false;
   const success =
     result._tag === "Failure" ? Option.getOrUndefined(result.previousSuccess) : result;
   if (success?._tag !== "Success") return result._tag === "Failure";
-  // @effect-diagnostics-next-line globalDate:off - `AsyncResult` timestamps come from `Date.now`.
-  return Date.now() - success.timestamp >= staleTimeMs;
+  return DateTime.toEpochMillis(DateTime.nowUnsafe()) - success.timestamp >= staleTimeMs;
 };
 
 /**
@@ -766,18 +771,20 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
           switch (connectionState.phase) {
             case "connected":
               return Option.isSome(session)
-                ? runInEnvironment(
-                    target.environmentId,
-                    options
-                      .execute(
-                        target.input,
-                        emit,
-                        Option.flatMap(
-                          get.self<AsyncResult.AsyncResult<A, unknown>>(),
-                          AsyncResult.value,
-                        ),
-                      )
-                      .pipe(pendingOnceSessionReplaced(session.value)),
+                ? retryInterruptedRead(
+                    runInEnvironment(
+                      target.environmentId,
+                      options
+                        .execute(
+                          target.input,
+                          emit,
+                          Option.flatMap(
+                            get.self<AsyncResult.AsyncResult<A, unknown>>(),
+                            AsyncResult.value,
+                          ),
+                        )
+                        .pipe(pendingOnceSessionReplaced(session.value)),
+                    ),
                   )
                 : Effect.never;
             case "connecting":
