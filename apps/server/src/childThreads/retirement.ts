@@ -1,9 +1,11 @@
-import type {
-  CommandId,
-  OrchestrationV2AppThread,
-  OrchestrationV2Command,
-  RunId,
-  ThreadId,
+import {
+  isOrchestrationV2WorkActive,
+  type CommandId,
+  type OrchestrationV2AppThread,
+  type OrchestrationV2Command,
+  type OrchestrationV2Subagent,
+  type RunId,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Effect from "effect/Effect";
@@ -78,6 +80,20 @@ const readRetirementChain = Effect.fn("childThreads.readRetirementChain")(functi
   }
   return { thread, ancestors };
 });
+
+/** A retired thread parks its children's completion wakes until resume, so
+ * only their live work, not the parked wake, keeps its own task open. */
+export function withoutParkedCompletions<
+  T extends {
+    readonly subagents: ReadonlyArray<Pick<OrchestrationV2Subagent, "status">>;
+  },
+>(records: T, state: RetirementState): T {
+  if (!state.retired && state.complete) return records;
+  return {
+    ...records,
+    subagents: records.subagents.filter((task) => isOrchestrationV2WorkActive(task.status)),
+  };
+}
 
 export const readRetirementState = Effect.fn("childThreads.readRetirementState")(function* (
   threadId: ThreadId,
