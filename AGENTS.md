@@ -168,6 +168,7 @@ Before fixing a bug or building a feature, search `pingdotgg/t3code` main, open 
 ## Pull requests
 
 - Open a PR when the work is ready. Standing merge authority (developer, 2026-11-13): merge it yourself with `gh pr merge --squash --match-head-commit <head>` once every exact-head check is green and the newest `review/independent` status on that head is `success`, then retire its worktree and branches. Do not ask again. Ask first only for feature deletions, destructive data migrations, Project Direction changes, or a guarded replacement of main outside the daily absorption job.
+- Standing install authority (developer, 2026-10-14, confirmed 2026-11-14): after a merge to `main`, stage that build on bestia, rocky and cavallo and restart Chromeria to swap it in, the same rollout the daily absorption job runs. It covers merged `main` only, never a branch. A restart cuts every running turn, so before staging read `~/dev/runbook/cavallo/CHROMERIA.md` in full, plus `~/dev/runbook/rocky/CHROMERIA.md` for rocky or `~/dev/runbook/bestia/README.md` for bestia, and follow them: they own the restart tool, the pre-check that must pass first, the post-check, deployment retention and the `CHANGES.md` record.
 - Do not bump versions. Package versions belong to upstream releases; a Chromeria build is identified by its embedded `t3codeCommitHash`.
 - `origin` is not always GitHub. Check `git remote get-url origin` before your first forge command; push and open PRs on GitHub, where CI runs. See [Forge mirror](docs/operations/development.md#forge-mirror-optional).
 - Bring a branch up to date with main by rebasing, never merging, and run `bash scripts/fork-check.sh --upstream upstream` before pushing: CI's Fork Stack Model check rejects merge commits and upstream edits not registered per [`docs/fork.md`](docs/fork.md).
@@ -178,15 +179,6 @@ Before fixing a bug or building a feature, search `pingdotgg/t3code` main, open 
 - One request is one PR. Split it only when the maintainer asks. Outside contributions follow the stricter [one problem per PR](CONTRIBUTING.md#one-problem) rule.
 - A PR that adds, splits, merges or removes a part of [`docs/map.md`](docs/map.md), or that ships work for a part, updates the map in the same PR. Add a secondary `PR #N` ref only for an open PR that does not close the primary Issue, so failing checks can mark the part broken. The Map tab colours parts from GitHub, so closing an Issue needs no map edit.
 - When babysitting: call `watch_pull_request` and end your turn. T3 Code wakes you on checks, comments, or conflicts. Do not poll or sleep. Verify each bot finding against the source, fix real ones, dismiss false positives with a written reason. Stay quiet when nothing is new. Stop when the bots are green on the latest commit.
-
-## Installing merged builds
-
-Chromeria is the user's daily app on bestia, rocky and cavallo. Once a PR merges to `main`, you may stage that build on any of them, then quit and restart the running app to swap it in, without asking (user decision 2026-10-14). A restart cuts every running turn, and Chromeria continues only some of them ([#264](https://github.com/toolboxmd/chromeria/issues/264)). Before staging or restarting, read `~/dev/runbook/cavallo/CHROMERIA.md` in full, plus `~/dev/runbook/rocky/CHROMERIA.md` for rocky or `~/dev/runbook/bestia/README.md` for bestia:
-
-- Restart only with that machine's tool: `chromeria-restart-and-resume` on rocky and cavallo, `chromeria-server-update` on bestia.
-- Before restarting, run the runbook's pre-check of running threads and wait while it says work would be lost.
-- After the restart, run its post-check: confirm the build, and wake each cut top-level thread Chromeria did not continue. Leave delegated children to their coordinator, which gets their `cancelled` result and decides whether to wake them. Tell the user about held queues; agents cannot resume them.
-- Record each stage and restart in that machine's runbook `CHANGES.md`.
 
 ## Documentation
 
