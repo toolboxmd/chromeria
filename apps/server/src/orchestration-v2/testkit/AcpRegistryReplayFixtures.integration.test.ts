@@ -144,7 +144,7 @@ describe("ACP registry replay fixtures", () => {
           );
           if (isFirstTurn) {
             // Wait for the committed terminal event before switching models.
-            yield* orchestrator.streamStoredEvents.pipe(
+            yield* orchestrator.streamStoredEventsFrom({ afterSequence: 0 }).pipe(
               Stream.filter(
                 ({ event }) => event.type === "run.updated" && event.payload.status === "completed",
               ),
@@ -153,7 +153,7 @@ describe("ACP registry replay fixtures", () => {
           }
         }
         if (testCase.firstTurn) {
-          yield* orchestrator.streamStoredEvents.pipe(
+          yield* orchestrator.streamStoredEventsFrom({ afterSequence: 0 }).pipe(
             Stream.filter(
               ({ event }) => event.type === "run.updated" && event.payload.status === "failed",
             ),
