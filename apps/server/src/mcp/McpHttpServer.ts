@@ -26,7 +26,7 @@ import { McpSavedSnapshotReceipt } from "@t3tools/contracts";
 import { sha256 } from "@noble/hashes/sha2";
 import * as Hex from "effect/encoding/Hex";
 import * as PeerTaskLifecycle from "../peer/PeerTaskLifecycle.ts";
-import { PeerTaskLifecycleRequest } from "@t3tools/contracts";
+import { PeerSettledTasksRequest, PeerTaskLifecycleRequest } from "@t3tools/contracts";
 import * as SpectrumToolkit from "../spectrum/mcpToolkit.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -322,6 +322,7 @@ const decodePeerSession = Schema.decodeUnknownEffect(
 );
 const decodePeerEnvelope = Schema.decodeUnknownEffect(Schema.fromJsonString(PeerAuthorityEnvelope));
 const decodeTaskLifecycle = Schema.decodeUnknownEffect(PeerTaskLifecycleRequest);
+const decodeSettledTasks = Schema.decodeUnknownEffect(PeerSettledTasksRequest);
 const decodePeerExchange = Schema.decodeUnknownEffect(PeerAuthority.Exchange);
 const isPeerFailure = Schema.is(OrchestratorMcpFailure);
 const peerAuthorityFailure = (error: unknown) =>
@@ -2185,7 +2186,7 @@ const layerPeerControl = Layer.unwrap(
           : HttpServerResponse.empty({ status: 409 }),
       ),
     );
-    const tasks = Layer.merge(
+    const tasks = Layer.mergeAll(
       HttpRouter.add(
         "GET",
         "/mcp/peer-control/tasks",
@@ -2205,6 +2206,19 @@ const layerPeerControl = Layer.unwrap(
           return yield* Effect.gen(function* () {
             const input = yield* decodeTaskLifecycle(yield* request.json);
             return HttpServerResponse.jsonUnsafe(yield* lifecycle.value.execute(scope, input));
+          }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 403 })));
+        }),
+      ),
+      HttpRouter.add(
+        "POST",
+        "/mcp/peer-control/tasks/settled",
+        Effect.gen(function* () {
+          if (Option.isNone(lifecycle)) return HttpServerResponse.empty({ status: 409 });
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const scope = yield* McpInvocationContext.McpInvocationContext;
+          return yield* Effect.gen(function* () {
+            const input = yield* decodeSettledTasks(yield* request.json);
+            return HttpServerResponse.jsonUnsafe(yield* lifecycle.value.settled(scope, input));
           }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 403 })));
         }),
       ),

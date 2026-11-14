@@ -25,7 +25,12 @@ import {
   PeerSavedPreviewAuthorizationResult,
   PeerSavedPreviewAuthorizationSupport,
 } from "@t3tools/contracts";
-import { PeerTaskLifecycleRequest, PeerTaskLifecycleResult } from "@t3tools/contracts";
+import {
+  PeerSettledTasksResult,
+  PeerTaskLifecycleRequest,
+  PeerTaskLifecycleResult,
+  type PeerSettledTasksRequest,
+} from "@t3tools/contracts";
 import * as PeerLinkEvents from "./PeerLinkEvents.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as Stream from "effect/Stream";
@@ -239,6 +244,12 @@ export class PeerMcpClient extends Context.Service<
       generation: string,
       input: Omit<PeerTaskLifecycleRequest, "environmentId" | "generation">,
     ) => Effect.Effect<PeerTaskLifecycleResult, OrchestratorMcpFailure>;
+    /** One shared wait on a link for its quiet jobs; a destination without it answers `invalid_request`. */
+    readonly settledTasks?: (
+      environmentId: EnvironmentId,
+      generation: string,
+      tasks: PeerSettledTasksRequest["tasks"],
+    ) => Effect.Effect<PeerSettledTasksResult, OrchestratorMcpFailure>;
     /** Calls `tool` on the peer and decodes its structured result with `success`. */
     readonly call: <S extends Schema.Decoder<unknown>>(input: {
       readonly environmentId: EnvironmentId;
@@ -1048,7 +1059,9 @@ const make = Effect.gen(function* () {
     function* (
       environmentId: EnvironmentId,
       generation?: string,
-      input?: Omit<PeerTaskLifecycleRequest, "environmentId" | "generation">,
+      input?:
+        | Omit<PeerTaskLifecycleRequest, "environmentId" | "generation">
+        | Pick<PeerSettledTasksRequest, "tasks">,
       pendingRequests = false,
     ) {
       const resolved = yield* links.resolve(environmentId).pipe(Effect.mapError(fromLinkError));
@@ -1066,13 +1079,16 @@ const make = Effect.gen(function* () {
       const peer = { environmentId: self, generation: resolved.link.launchIdentity };
       // Stop validates the durable source obligation over this same authenticated
       // channel, including a first control operation after source restart.
-      if (input?.operation.type === "stop") yield* ensureChannel(resolved, self);
+      if (input !== undefined && "operation" in input && input.operation.type === "stop")
+        yield* ensureChannel(resolved, self);
       const request =
         input === undefined
           ? HttpClientRequest.get(
               `${resolved.url}/mcp/peer-control/${pendingRequests ? "pending-requests" : "tasks"}`,
             )
-          : HttpClientRequest.post(`${resolved.url}/mcp/peer-control/tasks`).pipe(
+          : HttpClientRequest.post(
+              `${resolved.url}/mcp/peer-control/${"tasks" in input ? "tasks/settled" : "tasks"}`,
+            ).pipe(
               HttpClientRequest.setBody(
                 HttpBody.text(json({ ...peer, ...input }), "application/json"),
               ),
@@ -1159,6 +1175,23 @@ const make = Effect.gen(function* () {
           : new OrchestratorMcpFailure({
               code: "orchestration_error",
               message: "The destination lifecycle response is incompatible.",
+            }),
+      ),
+    );
+  const decodeSettled = Schema.decodeUnknownEffect(Schema.fromJsonString(PeerSettledTasksResult));
+  const settledTasks: NonNullable<PeerMcpClient["Service"]["settledTasks"]> = (
+    environmentId,
+    generation,
+    tasks,
+  ) =>
+    lifecycleRequest(environmentId, generation, { tasks }).pipe(
+      Effect.flatMap(decodeSettled),
+      Effect.mapError((error) =>
+        error._tag === "OrchestratorMcpFailure"
+          ? error
+          : new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: "The destination settled-job response is incompatible.",
             }),
       ),
     );
@@ -1927,6 +1960,7 @@ const make = Effect.gen(function* () {
     ),
     requireTaskLifecycle,
     taskLifecycle,
+    settledTasks,
     uploadAttachment,
     requireRequestProtocol,
     authorizeSavedPreview,

@@ -41,10 +41,12 @@ import {
   admitDelegateRole,
   PRISM_DELEGATE_ROLE_ERROR,
 } from "@t3tools/contracts";
+import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -932,18 +934,28 @@ const make = Effect.gen(function* () {
    * fails the task with nothing left to stop; repeated defects here fail it too. Anything else
    * (the other machine asleep, a dropped route) is retried with back-off, and so is completing.
    */
-  const follow = (parentThreadId: ThreadId, taskId: NodeId): Effect.Effect<void> =>
+  const follow = (parentThreadId: ThreadId, taskId: NodeId, woken = false): Effect.Effect<void> =>
     Effect.suspend(() => {
+      quiet.delete(taskId);
       if (activeFollowers.has(taskId)) return Effect.void;
       activeFollowers.add(taskId);
       let defects = 0;
+      // Woken by the shared watch, it looks there once before it may rejoin it.
+      let mayRetire = !woken;
+      let retired: Quiet | undefined;
       const noDefect = Effect.sync(() => {
         defects = 0;
       });
-      return followOnce(parentThreadId, taskId).pipe(
+      return Effect.suspend(() => followOnce(parentThreadId, taskId, mayRetire)).pipe(
+        Effect.tap((done) =>
+          Effect.sync(() => {
+            mayRetire = true;
+            if (typeof done === "object") retired = done;
+          }),
+        ),
         Effect.tap(noDefect),
         // `false` means it is still running there: follow again straight away.
-        Effect.repeat({ while: (done) => !done }),
+        Effect.repeat({ while: (done) => done === false }),
         Effect.catchTags({
           OrchestratorMcpFailure: Effect.fn("OrchestratorMcpFailure")(function* (error) {
             const current = (yield* threads.getThreadRecords(parentThreadId, [
@@ -987,13 +999,153 @@ const make = Effect.gen(function* () {
         ),
         Effect.ignoreCause({ log: true }),
         Effect.ensuring(
-          Effect.sync(() => {
+          Effect.suspend(() => {
             activeFollowers.delete(taskId);
             acknowledgedCursors.delete(taskId);
+            return retired === undefined ? Effect.void : retire(retired);
           }),
         ),
       );
     });
+
+  /** A job with nothing left to do there, waiting with its link's other quiet jobs for later work. */
+  type Quiet = {
+    readonly parentThreadId: ThreadId;
+    readonly environmentId: EnvironmentId;
+    readonly generation: string;
+    readonly pair: PeerReturnPair;
+    readonly after: number;
+    readonly afterSnapshot: number;
+  };
+  const quiet = new Map<NodeId, Quiet>();
+  // Link generations whose destination cannot watch quiet jobs keep one follower per job.
+  const unwatched = new Set<string>();
+  // Each watched link generation's signal that a job joined it.
+  const joined = new Map<string, Deferred.Deferred<void>>();
+  const watchKey = (job: { readonly environmentId: EnvironmentId; readonly generation: string }) =>
+    `${job.environmentId}\n${job.generation}`;
+  const quietEntry = (
+    parentThreadId: ThreadId,
+    task: OrchestrationV2Subagent,
+  ): Quiet | undefined => {
+    const remote = task.remoteChild;
+    if (
+      peers.settledTasks === undefined ||
+      remote?.launch?.lifecycleVersion !== 1 ||
+      remote.threadId === undefined ||
+      remote.snapshot === undefined ||
+      remote.availability !== "current" ||
+      !quietThere(task) ||
+      // An undelivered result holds later ones back there, so its follower watches delivery here.
+      task.completionDelivery?.state === "pending" ||
+      task.completionDelivery?.state === "claimed"
+    )
+      return undefined;
+    const job = {
+      parentThreadId,
+      environmentId: remote.environmentId,
+      generation: remote.launch.linkIdentity,
+      pair: pairFor(parentThreadId, task),
+      after: remote.cursor ?? 0,
+      afterSnapshot: remote.snapshot.sequence,
+    };
+    return unwatched.has(watchKey(job)) ? undefined : job;
+  };
+  /** Joins `job` to its link's shared watch at once, starting the watch if none runs. */
+  const retire = (job: Quiet): Effect.Effect<void> => {
+    quiet.set(job.pair.taskId, job);
+    const key = watchKey(job);
+    const signal = joined.get(key);
+    if (signal !== undefined) return Deferred.succeed(signal, undefined).pipe(Effect.asVoid);
+    joined.set(key, Deferred.makeUnsafe<void>());
+    return watchQuiet(key, job.environmentId, job.generation).pipe(
+      Effect.forkIn(followers),
+      Effect.asVoid,
+    );
+  };
+  /**
+   * One wait on the destination for all of a link's quiet jobs. A job active there again, or no
+   * longer quiet here, goes back to its own follower; so do all of them when the destination
+   * cannot answer (an older peer), and they then keep one follower each.
+   */
+  const watchQuiet = (
+    key: string,
+    environmentId: EnvironmentId,
+    generation: string,
+  ): Effect.Effect<void> => {
+    const members = () => [...quiet.values()].filter((job) => watchKey(job) === key);
+    const handBack = (taskIds: Iterable<NodeId>, woken: boolean) =>
+      Effect.forEach(
+        taskIds,
+        (taskId) => {
+          const job = quiet.get(taskId);
+          if (job === undefined || watchKey(job) !== key) return Effect.void;
+          return follow(job.parentThreadId, taskId, woken).pipe(Effect.forkIn(followers));
+        },
+        { discard: true },
+      );
+    let signal = joined.get(key)!;
+    const round = Effect.gen(function* () {
+      for (const jobs of Object.values(Arr.groupBy(members(), (job) => job.parentThreadId))) {
+        const records = yield* threads
+          .getThreadRecords(jobs[0].parentThreadId, ["subagents"])
+          .pipe(Effect.option);
+        for (const job of jobs) {
+          const task = Option.getOrUndefined(records)?.subagents.find(
+            (candidate) => candidate.id === job.pair.taskId,
+          );
+          const current =
+            task === undefined ||
+            Option.isNone(records) ||
+            records.value.thread.deletedAt !== null ||
+            records.value.thread.archivedAt !== null
+              ? undefined
+              : quietEntry(job.parentThreadId, task);
+          if (current === undefined) yield* handBack([job.pair.taskId], false);
+          else quiet.set(job.pair.taskId, current);
+        }
+      }
+      signal = Deferred.makeUnsafe<void>();
+      joined.set(key, signal);
+      const watched = members();
+      if (watched.length === 0) return false;
+      const answer = yield* Effect.raceAllFirst(
+        Arr.chunksOf(watched, 256).map((chunk) =>
+          peers.settledTasks!(
+            environmentId,
+            generation,
+            chunk.map(({ pair, after, afterSnapshot }) => ({ pair, after, afterSnapshot })),
+          ),
+        ),
+      ).pipe(
+        Effect.retry({
+          schedule: followRetry,
+          while: (error) => error.code === "orchestration_error",
+        }),
+        Effect.raceFirst(Deferred.await(signal).pipe(Effect.as(undefined))),
+        Effect.result,
+      );
+      if (answer._tag === "Failure") {
+        unwatched.add(key);
+        return false;
+      }
+      if (answer.success !== undefined) yield* handBack(answer.success.active, true);
+      return true;
+    });
+    return round.pipe(
+      Effect.repeat({ while: (more) => more }),
+      Effect.ignoreCause({ log: true }),
+      Effect.ensuring(
+        Effect.suspend(() => {
+          if (joined.get(key) === signal) joined.delete(key);
+          return handBack(
+            members().map((job) => job.pair.taskId),
+            false,
+          );
+        }),
+      ),
+    );
+  };
 
   const lifecycleIn =
     (
@@ -1052,6 +1204,7 @@ const make = Effect.gen(function* () {
       task: OrchestrationV2Subagent,
       scope: ThreadScope,
       afterSequence: number,
+      mayRetire: boolean,
     ) {
       const remote = task.remoteChild!;
       const launch = remote.launch!;
@@ -1121,15 +1274,9 @@ const make = Effect.gen(function* () {
         task.result !== null &&
         (task.completionDelivery?.state === "pending" ||
           task.completionDelivery?.state === "claimed");
-      // Only the latest snapshot says a job is quiet there: a confirmed Stop
-      // does not, since later direct input there is independent work.
-      const settledThere =
-        remote.snapshot?.workState === "result_available" &&
-        remote.snapshot.queuedRuns === 0 &&
-        remote.snapshot.pendingQuestions === 0 &&
-        !remote.snapshot.recoveryWaiting &&
-        (remote.stop?.state === "confirmed" || (remote.stop === undefined && task.result !== null));
-      const watch = lifecycleIn(settledThere ? settledSlots : networkSlots);
+      const retiring = mayRetire ? quietEntry(parentThreadId, task) : undefined;
+      if (retiring !== undefined) return retiring;
+      const watch = lifecycleIn(quietThere(task) ? settledSlots : networkSlots);
       const stopObservation =
         remote.stop?.destinationCommandId === undefined
           ? {}
@@ -1373,6 +1520,7 @@ const make = Effect.gen(function* () {
   const followOnce = Effect.fn("RemoteDelegation.followOnce")(function* (
     parentThreadId: ThreadId,
     taskId: NodeId,
+    mayRetire: boolean,
   ) {
     yield* launchPending(parentThreadId, taskId);
     const sequence = yield* threads.getThreadEventSequence(parentThreadId);
@@ -1399,7 +1547,7 @@ const make = Effect.gen(function* () {
       remote,
     );
     if (remote.launch?.lifecycleVersion === 1)
-      return yield* modernFollow(parentThreadId, task, scope, sequence);
+      return yield* modernFollow(parentThreadId, task, scope, sequence, mayRetire);
     // Imported remote launches retain their original read/wait behavior. A new
     // explicit Stop may use pair control only after the actual peer negotiates it.
     if (remote.launch !== undefined && remote.stop !== undefined) {
@@ -1408,7 +1556,7 @@ const make = Effect.gen(function* () {
         remote.launch.linkIdentity,
       ).pipe(Effect.result);
       if (support._tag === "Success")
-        return yield* modernFollow(parentThreadId, task, scope, sequence);
+        return yield* modernFollow(parentThreadId, task, scope, sequence, mayRetire);
       yield* observe(parentThreadId, task.id, {
         stop: { ...remote.stop, state: "unconfirmed" },
         availability: support.failure.code === "invalid_request" ? "unsupported" : "stale",
@@ -1576,7 +1724,25 @@ const make = Effect.gen(function* () {
         yield* Effect.forEach(
           open,
           ({ parentThreadId, taskId }) =>
-            follow(parentThreadId, taskId).pipe(Effect.forkIn(followers)),
+            Effect.gen(function* () {
+              // Jobs quiet there before the restart rejoin the shared watch without a request each.
+              const records = yield* threads
+                .getThreadRecords(parentThreadId, ["subagents"])
+                .pipe(Effect.option);
+              const task = Option.getOrUndefined(records)?.subagents.find(
+                (candidate) => candidate.id === taskId,
+              );
+              const job =
+                task === undefined ||
+                Option.isNone(records) ||
+                records.value.thread.deletedAt !== null ||
+                records.value.thread.archivedAt !== null
+                  ? undefined
+                  : quietEntry(parentThreadId, task);
+              yield* job === undefined
+                ? follow(parentThreadId, taskId).pipe(Effect.forkIn(followers), Effect.asVoid)
+                : retire(job);
+            }),
           {
             concurrency: "unbounded",
             discard: true,
@@ -1595,6 +1761,22 @@ const failOnDefect = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       Effect.andThen(Effect.fail(new Cause.UnknownError(defect, "A follower hit a defect."))),
     ),
   );
+
+/**
+ * Whether the latest snapshot says the job is quiet there. A confirmed Stop alone does not,
+ * since later direct input there is independent work.
+ */
+const quietThere = (task: OrchestrationV2Subagent) => {
+  const snapshot = task.remoteChild?.snapshot;
+  const stop = task.remoteChild?.stop;
+  return (
+    snapshot?.workState === "result_available" &&
+    snapshot.queuedRuns === 0 &&
+    snapshot.pendingQuestions === 0 &&
+    !snapshot.recoveryWaiting &&
+    (stop?.state === "confirmed" || (stop === undefined && task.result !== null))
+  );
+};
 
 const isTerminal = (status: string) =>
   status === "completed" ||
