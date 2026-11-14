@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import { type ProjectCloneTracker } from "./ProjectCloneTracker.ts";
 import { type ProjectService } from "./ProjectService.ts";
 
-type ProjectMutations = Pick<ProjectService["Service"], "create" | "delete" | "update">;
+type ProjectMutations = Pick<ProjectService["Service"], "create" | "delete" | "restore" | "update">;
 
 export const projectMutationOperation = Effect.fn("projectMutationOperation")(function* (
   projects: ProjectMutations,
@@ -51,6 +51,13 @@ export const projectMutationOperation = Effect.fn("projectMutationOperation")(fu
         commandId: mutation.commandId,
         projectId: mutation.projectId,
         ...(mutation.force === undefined ? {} : { force: mutation.force }),
+      });
+
+    case "project.restore":
+      return yield* projects.restore({
+        commandId: mutation.commandId,
+        projectId: mutation.projectId,
+        threadIds: mutation.threadIds,
       });
   }
 });

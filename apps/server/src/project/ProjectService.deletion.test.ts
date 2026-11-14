@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
+  ApplicationProjectEvent,
   CommandId,
   EventId,
   type OrchestrationV2AppThread,
@@ -71,6 +72,7 @@ const layerDatabase = SqlitePersistence.layerMemory.pipe(
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "project-deletion-test-" })),
   Layer.provideMerge(NodeServices.layer),
 );
+const decodeProjectEvent = Schema.decodeUnknownEffect(ApplicationProjectEvent);
 const decodeEffectRequest = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationEffectRequestV2),
 );
@@ -525,6 +527,171 @@ it.effect(
 
         const settingsAfterDelete = yield* serverSettings.getSettings;
         assert.isUndefined(settingsAfterDelete.projectSettingsOverrides[projectId]);
+      }).pipe(Effect.provide(layerServices));
+    }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect("restores a deleted project and chosen threads through events a replay keeps", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const projectId = ProjectId.make("project:restore");
+    const kept = ThreadId.make("thread:restore-kept");
+    const probe = ThreadId.make("thread:restore-probe");
+    yield* TestClock.setTime(Date.parse("2026-11-13T19:22:20.000Z"));
+
+    yield* Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const projects = yield* ProjectStore.ProjectStoreV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const maintenance = yield* ProjectionReplay.ProjectionReplay;
+      const service = yield* ProjectService.make;
+      yield* service.create({
+        commandId: CommandId.make("command:restore-create"),
+        projectId,
+        title: "No project",
+        workspaceRoot: "/work/scratch",
+      });
+      yield* eventSink.write({
+        events: [kept, probe].map((threadId) => nativeThreadCreated(projectId, threadId)),
+      });
+      yield* service.delete({
+        commandId: CommandId.make("command:restore-delete"),
+        projectId,
+        force: true,
+      });
+      assert.isTrue(Option.isNone(yield* service.getById(projectId)));
+
+      // Bring back the project and the user's thread, but not the probe.
+      const input = {
+        commandId: CommandId.make("command:restore"),
+        projectId,
+        threadIds: [kept],
+      };
+      const restored = yield* service.restore(input);
+      assert.isNull(restored.deletedAt);
+      const isDeleted = (threadId: ThreadId) =>
+        projections
+          .getThreadProjection(threadId)
+          .pipe(Effect.map(({ thread }) => thread.deletedAt !== null));
+      assert.isFalse(yield* isDeleted(kept));
+      assert.isTrue(yield* isDeleted(probe));
+
+      const countEvents = sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS count FROM orchestration_events
+      `.pipe(Effect.map((rows) => rows[0]?.count));
+      const eventCount = yield* countEvents;
+      yield* service.restore(input);
+      yield* service.restore({ ...input, commandId: CommandId.make("command:restore-again") });
+      assert.equal(yield* countEvents, eventCount);
+
+      assert.isTrue((yield* maintenance.rebuild).valid);
+      assert.isFalse(yield* isDeleted(kept));
+      assert.isTrue(yield* isDeleted(probe));
+      const projectEvents = yield* sql<{
+        readonly sequence: number;
+        readonly eventId: string;
+        readonly type: string;
+        readonly aggregateId: string;
+        readonly occurredAt: string;
+        readonly commandId: string | null;
+        readonly payload: string;
+        readonly metadata: string;
+      }>`
+        SELECT sequence, event_id AS "eventId", event_type AS "type", stream_id AS "aggregateId",
+          occurred_at AS "occurredAt", command_id AS "commandId", payload_json AS "payload",
+          metadata_json AS "metadata"
+        FROM orchestration_events
+        WHERE aggregate_kind = 'project' AND stream_id = ${projectId}
+        ORDER BY sequence ASC
+      `;
+      assert.deepEqual(
+        projectEvents.map((event) => event.type),
+        ["project.created", "project.deleted", "project.restored"],
+      );
+      yield* sql`DELETE FROM projection_projects WHERE project_id = ${projectId}`;
+      for (const event of projectEvents) {
+        yield* projects.apply(
+          yield* decodeProjectEvent({
+            ...event,
+            aggregateKind: "project",
+            causationEventId: null,
+            correlationId: event.commandId,
+            payload: JSON.parse(event.payload),
+            metadata: JSON.parse(event.metadata),
+          }),
+        );
+      }
+      assert.isTrue(Option.isSome(yield* service.getById(projectId)));
+    }).pipe(Effect.provide(layerServices));
+  }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect(
+  "an agent's force delete refuses, from the cascade's own snapshot, threads it did not start",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("project:agent-delete");
+      const caller = ThreadId.make("thread:agent-caller");
+      const child = ThreadId.make("thread:agent-child");
+      const user = ThreadId.make("thread:user-owned");
+      yield* seedProject(projectId);
+      yield* TestClock.setTime(Date.parse("2026-11-13T19:22:20.000Z"));
+
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const service = yield* ProjectService.make;
+        const childCreated = nativeThreadCreated(projectId, child);
+        yield* eventSink.write({
+          events: [
+            nativeThreadCreated(projectId, caller),
+            {
+              ...childCreated,
+              payload: {
+                ...childCreated.payload,
+                lineage: {
+                  parentThreadId: caller,
+                  relationshipToParent: "subagent",
+                  rootThreadId: caller,
+                },
+              },
+            },
+            nativeThreadCreated(projectId, user),
+          ],
+        });
+        const countDeletions = sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS count FROM orchestration_events
+        WHERE event_type IN ('thread.deleted', 'project.deleted')
+      `.pipe(Effect.map((rows) => rows[0]?.count));
+        const requester = { kind: "agent" as const, threadId: caller };
+
+        const refused = yield* service
+          .delete({
+            commandId: CommandId.make("command:agent-delete"),
+            projectId,
+            force: true,
+            requester,
+          })
+          .pipe(Effect.flip);
+        assert.instanceOf(refused, ProjectService.ProjectHasOtherThreadsError);
+        assert.equal(yield* countDeletions, 0);
+        // An agent with no calling thread owns nothing here.
+        const anonymous = yield* service
+          .delete({
+            commandId: CommandId.make("command:anonymous-delete"),
+            projectId,
+            force: true,
+            requester: { kind: "agent", threadId: undefined },
+          })
+          .pipe(Effect.flip);
+        assert.instanceOf(anonymous, ProjectService.ProjectHasOtherThreadsError);
+        assert.equal(yield* countDeletions, 0);
+
+        // A person removes the user's thread; the agent may then delete its own project.
+        yield* service
+          .delete({ commandId: CommandId.make("command:person-delete"), projectId, force: true })
+          .pipe(Effect.asVoid);
+        assert.equal(yield* countDeletions, 4);
       }).pipe(Effect.provide(layerServices));
     }).pipe(Effect.provide(layerDatabase)),
 );
