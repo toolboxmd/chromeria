@@ -150,11 +150,14 @@ const startFailureMessage = (error: Error): string => {
 };
 
 export interface ProviderTurnStartServiceV2Shape {
-  /** Fails only the current starting attempt after cancellation exhausted retries. */
+  /** Fails only the current starting attempt once its delivery can no longer happen. */
   readonly settleUnstartedRun: (input: {
     readonly threadId: ThreadId;
     readonly runId: RunId;
     readonly cause: unknown;
+    readonly reason:
+      | { readonly type: "stop-unconfirmed" }
+      | { readonly type: "refused"; readonly message: string };
   }) => Effect.Effect<void, ProviderTurnStartError>;
 
   /**
@@ -2210,7 +2213,8 @@ export const layer: Layer.Layer<
             rootNode,
             attempt,
             turnItems: projection.turnItems,
-            signal: "cut-in-cancellation-failure",
+            signal:
+              input.reason.type === "refused" ? "authority-refusal" : "cut-in-cancellation-failure",
             status: "failed",
             now: yield* DateTime.now,
             providerInstanceId: run.providerInstanceId,
@@ -2221,8 +2225,10 @@ export const layer: Layer.Layer<
               failure: makeProviderFailure({
                 cause: input.cause,
                 message:
-                  "T3 Code could not stop the running work, so this message was not delivered. Stop ends what can still be stopped.",
-                class: "provider_error",
+                  input.reason.type === "refused"
+                    ? input.reason.message
+                    : "T3 Code could not stop the running work, so this message was not delivered. Stop ends what can still be stopped.",
+                class: input.reason.type === "refused" ? "permission_error" : "provider_error",
               }),
             },
           });

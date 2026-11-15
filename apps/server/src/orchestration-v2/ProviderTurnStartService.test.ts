@@ -23,6 +23,7 @@ import {
   ProjectId,
   type OrchestrationV2ThreadProjection,
   OrchestrationV2DomainEvent,
+  OrchestratorMcpFailure,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
@@ -81,6 +82,7 @@ import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts"
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import * as ContextmdServing from "../contextmd/ContextmdServing.ts";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -1464,6 +1466,7 @@ function makeLocalCommandHarness(input: {
         threadId,
         runId,
         cause: "ProviderAdapterInterruptTimeoutError: stop unconfirmed",
+        reason: { type: "stop-unconfirmed" },
       });
     }).pipe(Effect.provide(layer)),
     startWithRetry: Effect.gen(function* () {
@@ -1616,6 +1619,55 @@ effectIt.effect("retries a failed settlement past the start budget until it is p
     expect(harness.projection().turnItems).toHaveLength(1);
   }).pipe(Effect.provide(layerStartEffectWorker(harness)));
 });
+
+effectIt.effect.each(["provider-turn.start", "provider-turn.restart"] as const)(
+  "#730: a %s refused before execution fails its run with the refusal",
+  (type) => {
+    const harness = makeLocalCommandHarness({ text: "Continue" });
+    const projection = harness.projection();
+    const run = projection.runs.at(-1)!;
+    const refusal = "The originating run is no longer active.";
+    return Effect.gen(function* () {
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      const { storedEffect } = yield* enqueueStart(
+        projection,
+        type === "provider-turn.start"
+          ? undefined
+          : {
+              type,
+              runId: run.id,
+              providerSessionId: ProviderSessionId.make("refused-restart-session"),
+              providerThreadId: projection.providerThreads[0]!.id,
+              providerTurnId: ProviderTurnId.make("refused-restart-turn"),
+              interruptedAttemptId: RunAttemptId.make("refused-restart-attempt"),
+            },
+      );
+      yield* worker.drain();
+      expect(harness.projection().runs.at(-1)?.status).toBe("starting");
+      yield* TestClock.adjust("100 millis");
+      expect(yield* worker.drain()).toBe(1);
+      expect(yield* storedEffect).toMatchObject({ status: "failed", attemptCount: 2 });
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+      expect(harness.projection().turnItems).toMatchObject([
+        { type: "error", title: "Message not delivered", failure: { message: refusal } },
+      ]);
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+    }).pipe(
+      Effect.provide(
+        layerStartEffectWorker(harness).pipe(
+          Layer.provide(
+            Layer.mock(PeerAuthority.PeerAuthority)({
+              checkEffect: () =>
+                Effect.fail(
+                  new OrchestratorMcpFailure({ code: "capability_denied", message: refusal }),
+                ),
+            }),
+          ),
+        ),
+      ),
+    );
+  },
+);
 
 effectIt.effect.each(["interrupt", "start"] as const)(
   "keeps a failed restart %s separate from starting-run settlement",
