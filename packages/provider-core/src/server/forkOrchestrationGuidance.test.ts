@@ -21,7 +21,10 @@ describe("fork orchestration guidance", () => {
       'Delegate browser/desktop driving to `prismRole: "computer-use"` by default, including checks you start yourself',
     );
     expect(T3_CODE_ORCHESTRATION_INSTRUCTIONS).toContain(
-      "opening a page or one snapshot or read of it stays inline",
+      "opening a page and taking one snapshot, read or screenshot of it stays inline",
+    );
+    expect(T3_CODE_ORCHESTRATION_INSTRUCTIONS).toContain(
+      "unless the user chose another browser or tool",
     );
   });
 

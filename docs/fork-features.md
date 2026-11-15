@@ -1409,7 +1409,6 @@ Child creation paths are owned by child-threads and shared with thread-people.
   ],
   "upstreamFiles": [
     "apps/server/src/mcp/toolkits/preview/tools.test.ts",
-    "evals/mcp-tool-use/run.ts",
     "packages/shared/package.json",
     "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
     "packages/provider-core/src/server/runtimeInstructions.ts",
@@ -1419,7 +1418,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
   ],
   "sharedFiles": [
     "apps/server/src/mcp/toolkits/project/tools.ts",
-    "packages/contracts/src/orchestratorMcp.ts"
+    "packages/contracts/src/orchestratorMcp.ts",
+    "evals/mcp-tool-use/run.ts"
   ],
   "keywords": [
     "t3_code_tool_use",

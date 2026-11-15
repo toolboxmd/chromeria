@@ -10,7 +10,9 @@ describe("fork orchestrator tool guidance", () => {
     const description = OrchestratorToolkit.tools.delegate_task.description ?? "";
     for (const role of PRISM_DELEGATE_ROLES) expect(description).toContain(role);
     expect(description).toContain('prismRole: "computer-use"');
-    expect(description).toContain("opening a page or one snapshot or read of it stays inline");
+    expect(description).toContain(
+      "opening a page and taking one snapshot, read or screenshot of it stays inline",
+    );
   });
 
   it("tells a computer-use child it is the driver, so it does not delegate again", () => {

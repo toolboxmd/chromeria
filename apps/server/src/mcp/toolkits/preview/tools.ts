@@ -52,7 +52,7 @@ import * as ServerConfig from "../../../config.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 
 const COMPUTER_USE_HINT =
-  ' Delegate browser or desktop driving to delegate_task with prismRole: "computer-use" unless your own delegated task is that driving; opening a page or one snapshot or read of it stays inline.';
+  ' Browser or desktop driving goes to delegate_task with prismRole: "computer-use"; that role lists the exceptions.';
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
