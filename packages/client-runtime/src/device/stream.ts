@@ -266,38 +266,52 @@ const AVCC_TAGS: Record<number, AvccChunk["type"] | undefined> = {
   7: "end",
 };
 
+// Bound the retained envelope at a 4K BGRA image scale; the producer has no
+// encoded-byte ceiling. This includes the tag, not the header or a whole read.
+const MAX_AVCC_ENVELOPE_BYTES = 64 * 1024 * 1024;
+
 export class AvccDemuxer {
   private buffer = new Uint8Array(64 * 1024);
   private length = 0;
 
   push(bytes: Uint8Array): AvccChunk[] {
-    if (this.length + bytes.length > this.buffer.length) {
-      let capacity = this.buffer.length;
-      while (capacity < this.length + bytes.length) capacity *= 2;
-      const grown = new Uint8Array(capacity);
-      grown.set(this.buffer.subarray(0, this.length));
-      this.buffer = grown;
-    }
-    this.buffer.set(bytes, this.length);
-    this.length += bytes.length;
-
     const chunks: AvccChunk[] = [];
     let offset = 0;
-    while (this.length - offset >= 4) {
-      const view = new DataView(this.buffer.buffer, this.buffer.byteOffset + offset, 4);
-      const frameLength = view.getUint32(0, false);
-      if (this.length - offset - 4 < frameLength) break;
-      if (frameLength >= 1) {
-        const type = AVCC_TAGS[this.buffer[offset + 4]!];
-        if (type) {
-          chunks.push({ type, payload: this.buffer.slice(offset + 5, offset + 4 + frameLength) });
-        }
+    while (offset < bytes.length) {
+      if (this.length < 4) {
+        const count = Math.min(4 - this.length, bytes.length - offset);
+        this.buffer.set(bytes.subarray(offset, offset + count), this.length);
+        this.length += count;
+        offset += count;
+        if (this.length < 4) break;
       }
-      offset += 4 + frameLength;
-    }
-    if (offset > 0) {
-      this.buffer.copyWithin(0, offset, this.length);
-      this.length -= offset;
+      const frameLength = new DataView(this.buffer.buffer, this.buffer.byteOffset, 4).getUint32(
+        0,
+        false,
+      );
+      if (frameLength > MAX_AVCC_ENVELOPE_BYTES) {
+        this.reset();
+        throw new RangeError("AVCC envelope exceeds the 64 MiB client limit.");
+      }
+      const frameBytes = 4 + frameLength;
+      const count = Math.min(frameBytes - this.length, bytes.length - offset);
+      const required = this.length + count;
+      if (required > this.buffer.length) {
+        let capacity = this.buffer.length;
+        while (capacity < required) capacity = Math.min(capacity * 2, MAX_AVCC_ENVELOPE_BYTES + 4);
+        const grown = new Uint8Array(capacity);
+        grown.set(this.buffer.subarray(0, this.length));
+        this.buffer = grown;
+      }
+      this.buffer.set(bytes.subarray(offset, offset + count), this.length);
+      this.length = required;
+      offset += count;
+      if (this.length < frameBytes) break;
+      if (frameLength >= 1) {
+        const type = AVCC_TAGS[this.buffer[4]!];
+        if (type) chunks.push({ type, payload: this.buffer.slice(5, frameBytes) });
+      }
+      this.length = 0;
     }
     return chunks;
   }
@@ -455,6 +469,7 @@ export function createDeviceStreamClient(
   const duoControl = createDuoControl({
     send(request) {
       if (
+        access.canOperate === false ||
         !iosInputAdmitted ||
         iosInputUnavailable ||
         socket?.readyState !== WebSocket.OPEN ||
@@ -1186,7 +1201,7 @@ export function createDeviceStreamClient(
       if (
         event.code === 1008 ||
         event.code === 4401 ||
-        (event.code === 1006 && access.query.wsTicket)
+        (event.code === 1006 && (access.query.wsTicket || access.query.viewerTicket))
       )
         return handleUnauthorized();
       scheduleRetry("input", () => void connectIosInput());
@@ -1205,7 +1220,10 @@ export function createDeviceStreamClient(
     ws.onopen = () => {
       if (stopped || socket !== ws) return;
       if (!inputOnly) connecting();
-      events.onInputConnected(true);
+      events.onInputConnected(
+        access.canOperate !== false,
+        access.canOperate === false ? "View only" : undefined,
+      );
     };
     ws.onmessage = (event) => {
       if (stopped || socket !== ws || inputOnly) return;
@@ -1257,7 +1275,7 @@ export function createDeviceStreamClient(
       if (
         event.code === 1008 ||
         event.code === 4401 ||
-        (event.code === 1006 && access.query.wsTicket)
+        (event.code === 1006 && (access.query.wsTicket || access.query.viewerTicket))
       )
         return handleUnauthorized();
       if (!inputOnly) {
@@ -1290,13 +1308,14 @@ export function createDeviceStreamClient(
     configuring = false;
     iosInputAdmitted = false;
     iosInputUnavailable = false;
+    if (access.canOperate === false) events.onInputConnected(false, "View only");
     connecting();
     if (serveSimOnly) {
-      if (!target.videoOnly) void connectIosInput();
+      if (!target.videoOnly && access.canOperate !== false) void connectIosInput();
       if (useWebCodecs) void readIosVideo();
       else fail("This browser cannot decode this device's stream (WebCodecs unavailable).");
     } else if (platform === "ios") {
-      if (!target.videoOnly) void connectIosInput();
+      if (!target.videoOnly && access.canOperate !== false) void connectIosInput();
       if (useWebCodecs) void readIosVideo();
       else fallBackToMjpeg();
     } else void startAndroid();
@@ -1335,6 +1354,7 @@ export function createDeviceStreamClient(
   const send = (payload: Uint8Array<ArrayBuffer> | string) => {
     if (
       !stopped &&
+      access.canOperate !== false &&
       (!avcc || (iosInputAdmitted && !iosInputUnavailable)) &&
       socket?.readyState === WebSocket.OPEN
     )

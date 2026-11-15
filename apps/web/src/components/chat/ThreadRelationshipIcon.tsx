@@ -1,3 +1,4 @@
+import { threadRelationshipLiveStatusLabel } from "@t3tools/client-runtime/state/thread-relationships";
 import type { ProviderDriverKind, ServerProvider } from "@t3tools/contracts";
 import { BotIcon, type LucideIcon } from "lucide-react";
 import { cn } from "../../lib/utils";
@@ -5,6 +6,8 @@ import { shouldShowInstanceBadge, type ProviderInstanceEntry } from "../../provi
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 
 export function threadRelationshipStatusLabel(status: string | null): string {
+  const liveLabel = threadRelationshipLiveStatusLabel(status);
+  if (liveLabel !== null) return liveLabel;
   switch (status) {
     case "preparing":
     case "starting":
@@ -82,16 +85,20 @@ export function ThreadRelationshipIcon({
         className={cn(
           "absolute size-2 rounded-full border-2 border-card",
           showInstanceBadge ? "-left-1 -top-1" : "-bottom-1 -right-1",
-          status === "running" ||
-            status === "in_progress" ||
-            status === "pending" ||
-            status === "waiting"
-            ? "bg-info"
-            : status === "failed" || status === "error"
-              ? "bg-destructive"
-              : status === "completed"
-                ? "bg-success"
-                : "bg-muted-foreground/45",
+          threadRelationshipLiveStatusLabel(status) !== null
+            ? status === "background_active"
+              ? "bg-info"
+              : "bg-warning"
+            : status === "running" ||
+                status === "in_progress" ||
+                status === "pending" ||
+                status === "waiting"
+              ? "bg-info"
+              : status === "failed" || status === "error"
+                ? "bg-destructive"
+                : status === "completed"
+                  ? "bg-success"
+                  : "bg-muted-foreground/45",
         )}
         aria-hidden="true"
       />
