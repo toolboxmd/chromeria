@@ -1392,7 +1392,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/169",
     "https://github.com/toolboxmd/chromeria/issues/203",
-    "https://github.com/toolboxmd/chromeria/issues/716"
+    "https://github.com/toolboxmd/chromeria/issues/716",
+    "https://github.com/toolboxmd/chromeria/issues/718"
   ],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/183"],
   "newFiles": [
@@ -1401,7 +1402,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/prism/ReplayInstructions.test.ts",
     "packages/provider-core/src/server/forkOrchestrationGuidance.test.ts",
     "apps/server/src/mcp/toolkits/orchestrator/forkToolGuidance.test.ts",
-    "evals/mcp-tool-use/cases/thread-follow-ups.ndjson"
+    "evals/mcp-tool-use/cases/thread-follow-ups.ndjson",
+    "evals/mcp-tool-use/cases/thread-links.ndjson"
   ],
   "upstreamFiles": [
     "apps/server/src/mcp/toolkits/preview/tools.test.ts",
