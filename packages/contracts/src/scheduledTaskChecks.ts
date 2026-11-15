@@ -161,7 +161,7 @@ export const ScheduledTaskForkFields = {
 // TrimmedNonEmptyString decodes, so a description on it never reaches the tool's JSON schema.
 const CheckCommand = TrimmedNonEmptyString.check(Schema.isMaxLength(8_000));
 const CHECK_COMMAND =
-  "Shell command that judges a run after it ends, never a gate before it: exit code 0 in the task's workspace means done. On failure the same thread continues, up to 5 times 30s to 1h apart; then the run needs the user and scheduled fires skip until it finishes. The judged thread cannot change or delete its task, so test external state, like a host being up, in the prompt. Creation is refused if it already passes.";
+  "Shell command that judges a run after it ends, never a gate before it: exit code 0 in the task's workspace means done. On failure the same thread continues, up to 5 times 30s to 1h apart, then the run needs the user. Scheduled fires skip until it finishes. The judged thread cannot change or delete its task, so test external state, like a host being up, in the prompt. Creation is refused if it already passes.";
 const CheckReason = TrimmedNonEmptyString.check(Schema.isMaxLength(2_000));
 const CHECK_REASON =
   "Why passing this check proves the task is done. Required with checkCommand or revertCheckVersion.";
