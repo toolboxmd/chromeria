@@ -5,7 +5,7 @@ import { PrismLane, PrismRole } from "./prism.ts";
 
 /**
  * Fork scheduled task extensions, reached from upstream's contracts through one spread per union or
- * struct: `once` and `weekly` triggers, outcome checks that keep an agent working until its check
+ * struct: `once`, `weekly` and `monthly` triggers, outcome checks that keep an agent working until its check
  * passes, and command tasks. Only agent tools edit these fields; clients show them.
  */
 
@@ -39,6 +39,12 @@ const isTimeZone = (value: string) => {
   }
 };
 
+const TimeZone = TrimmedNonEmptyString.check(
+  Schema.makeFilter(isTimeZone, { expected: "an IANA time zone such as Europe/Warsaw" }),
+).annotate({ description: "IANA time zone the times are read in, such as Europe/Warsaw." });
+
+const ClockTimes = Schema.Array(ClockTime).check(Schema.isMinLength(1), Schema.isMaxLength(24));
+
 /** Minutes a weekly time may move to its least busy minute; 0 keeps the exact minute. */
 export const DEFAULT_WEEKLY_WINDOW_MINUTES = 30;
 
@@ -49,10 +55,8 @@ export const ScheduledTaskWeeklySchedule = Schema.Struct({
   weekdays: Schema.Array(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 6 })))
     .check(Schema.isMinLength(1))
     .annotate({ description: "Weekday numbers where 0 is Sunday and 6 is Saturday." }),
-  times: Schema.Array(ClockTime).check(Schema.isMinLength(1), Schema.isMaxLength(24)),
-  timeZone: TrimmedNonEmptyString.check(
-    Schema.makeFilter(isTimeZone, { expected: "an IANA time zone such as Europe/Warsaw" }),
-  ).annotate({ description: "IANA time zone the times are read in, such as Europe/Warsaw." }),
+  times: ClockTimes,
+  timeZone: TimeZone,
   windowMinutes: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 720 })),
   ).annotate({
@@ -73,19 +77,40 @@ export const ScheduledTaskWeeklySchedule = Schema.Struct({
     "Run at each time on each selected weekday in the time zone. The server spreads times within the window and reports its pick in chosen.",
 });
 
+export const ScheduledTaskMonthlySchedule = Schema.Struct({
+  type: Schema.Literal("monthly").annotate({
+    description: "Run at wall-clock times on one day of every month in a time zone.",
+  }),
+  day: Schema.Union([
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 31 })),
+    Schema.Literal("last"),
+  ]).annotate({
+    description:
+      "Day of the month, 1 to 31, or 'last'. A month without that day, such as 31 in April, runs on its last day.",
+  }),
+  times: ClockTimes,
+  timeZone: TimeZone,
+}).annotate({
+  description: "Run at each time on the chosen day of every month in the time zone.",
+});
+
 /** Fork triggers, spread into upstream's read and write schedule unions. */
 export const ScheduledTaskForkSchedules = [
   ScheduledTaskOnceSchedule,
   ScheduledTaskWeeklySchedule,
+  ScheduledTaskMonthlySchedule,
 ] as const;
 export type ScheduledTaskForkSchedule =
   | typeof ScheduledTaskOnceSchedule.Type
-  | typeof ScheduledTaskWeeklySchedule.Type;
+  | typeof ScheduledTaskWeeklySchedule.Type
+  | typeof ScheduledTaskMonthlySchedule.Type;
 
 export const isForkScheduledTaskSchedule = <S extends { readonly type: string }>(
   schedule: S,
 ): schedule is S & ScheduledTaskForkSchedule =>
-  (schedule.type === "once" && "at" in schedule) || schedule.type === "weekly";
+  (schedule.type === "once" && "at" in schedule) ||
+  schedule.type === "weekly" ||
+  schedule.type === "monthly";
 
 export const ScheduledTaskRunStage = Schema.Literals([
   "running",

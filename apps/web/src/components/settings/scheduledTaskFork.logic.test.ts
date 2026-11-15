@@ -6,7 +6,11 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { scheduleFromDraft, taskToDraft } from "./scheduledTasksSettings.logic";
+import {
+  scheduleDraftErrors,
+  scheduleFromDraft,
+  taskToDraft,
+} from "./scheduledTasksSettings.logic";
 
 /** Fork (toolboxmd/chromeria#174): the settings dialog never edits or converts a fork trigger. */
 const task = (schedule: ScheduledTask["schedule"]): ScheduledTask => ({
@@ -51,5 +55,33 @@ describe("fork scheduled triggers", () => {
     expect(scheduleFromDraft({ ...draft, title: "Renamed", intervalMinutes: "5" })).toEqual(
       schedule,
     );
+  });
+
+  it("edits a monthly trigger, keeping the last day and normalizing typed times", () => {
+    const schedule = {
+      type: "monthly",
+      day: "last",
+      times: ["09:00", "18:30"],
+      timeZone: "Europe/Warsaw",
+    } as const;
+    const draft = taskToDraft(task(schedule));
+    expect(draft.scheduleMode).toBe("monthly");
+    expect(draft.preservedSchedule).toBeNull();
+    expect(scheduleFromDraft(draft)).toEqual(schedule);
+    expect(
+      scheduleFromDraft({
+        ...draft,
+        monthly: { day: "31", times: "9:05,  18:30 9:05", timeZone: "UTC" },
+      }),
+    ).toEqual({ type: "monthly", day: 31, times: ["09:05", "18:30"], timeZone: "UTC" });
+    for (const monthly of [
+      { day: "3", times: "25:00", timeZone: "UTC" },
+      { day: "3", times: "", timeZone: "UTC" },
+      { day: "3", times: "09:00", timeZone: "Mars/Olympus" },
+    ]) {
+      const invalid = { ...draft, monthly };
+      expect(scheduleFromDraft(invalid)).toBeNull();
+      expect(scheduleDraftErrors(invalid)).toHaveLength(1);
+    }
   });
 });

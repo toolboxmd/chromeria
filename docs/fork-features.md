@@ -1585,8 +1585,11 @@ Child creation paths are owned by child-threads and shared with thread-people.
 ```json
 {
   "id": "scheduled-tasks",
-  "purpose": "Extend upstream's single scheduler with outcome checks that keep one thread working until a pinned check passes, one-shot and weekly triggers, Prism roles, shell command tasks with failure alerts, the Spectrum report completion fence, and the Chromeria v1 task import.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/174"],
+  "purpose": "Extend upstream's single scheduler with outcome checks that keep one thread working until a pinned check passes, one-shot, weekly and monthly triggers, Prism roles, shell command tasks with failure alerts, the Spectrum report completion fence, and the Chromeria v1 task import.",
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/174",
+    "https://github.com/toolboxmd/chromeria/issues/707"
+  ],
   "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/174-scheduled-tasks-v2"],
   "newFiles": [
     "apps/mobile/src/features/settings/scheduledTaskDraftFork.test.ts",
@@ -1612,6 +1615,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/web/src/components/ScheduledCommandNotifications.browser.test.tsx",
     "apps/web/src/components/ScheduledCommandNotifications.tsx",
     "apps/web/src/components/settings/scheduledTaskFork.logic.test.ts",
+    "apps/web/src/components/settings/scheduledTaskFork.logic.ts",
     "apps/web/src/components/settings/scheduledTaskFork.tsx",
     "evals/mcp-tool-use/cases/scheduled-checks.ndjson",
     "packages/client-runtime/src/scheduledTaskFork.test.ts",

@@ -24,7 +24,7 @@ const placedTime = (time: string, offsetMinutes: number) =>
     ? time
     : `${time} (${offsetMinutes > 0 ? "+" : "-"}${Math.abs(offsetMinutes)} min)`;
 
-/** A one-shot's instant, or a weekly schedule's days, requested times with any move, and time zone. */
+/** A one-shot's instant, a weekly schedule's days, requested times with any move, and time zone, or a monthly schedule's day, times and time zone. */
 export function forkScheduleLabel(
   schedule: ScheduledTaskForkSchedule,
   options: { readonly locale?: string; readonly timeZone?: string } = {},
@@ -38,6 +38,10 @@ export function forkScheduleLabel(
       ...(options.timeZone === undefined ? {} : { timeZone: options.timeZone }),
     }).format(DateTime.toEpochMillis(instant.value));
     return `Once at ${formatted}`;
+  }
+  if (schedule.type === "monthly") {
+    const day = schedule.day === "last" ? "the last day" : `day ${schedule.day}`;
+    return `Monthly on ${day} at ${[...new Set(schedule.times)].join(", ")} (${schedule.timeZone})`;
   }
   // Hermes lacks Array#toSorted; the spread is already a copy.
   const days = [...new Set(schedule.weekdays)]

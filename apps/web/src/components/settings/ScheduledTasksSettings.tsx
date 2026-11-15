@@ -30,6 +30,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import * as ScheduledTaskFork from "./scheduledTaskFork";
+import { monthlyDraft } from "./scheduledTaskFork.logic";
 import {
   DEFAULT_WEBHOOK_PROMPT,
   emptyWebhookFilterDraft,
@@ -202,6 +203,7 @@ const EMPTY_DRAFT: DraftState = {
   filters: [],
   savedFilters: [],
   preservedSchedule: null,
+  monthly: monthlyDraft(null),
 };
 
 function WebhookFiltersField({
@@ -1866,7 +1868,8 @@ function ScheduledTaskEditorForm({
                     mode === "fixed" ||
                     mode === "once" ||
                     mode === "interval" ||
-                    mode === "webhook"
+                    mode === "webhook" ||
+                    mode === "monthly"
                   )
                     setDraft((current) => {
                       const suggested =
@@ -1896,6 +1899,10 @@ function ScheduledTaskEditorForm({
                   <Toggle value="once">Once</Toggle>
                 ) : null}
                 <Toggle value="interval">Every interval</Toggle>
+                <Toggle value="monthly">
+                  <ChromeriaFeatureMark focusable={false} />
+                  Monthly
+                </Toggle>
                 <Toggle
                   value="webhook"
                   disabled={webhookDenial !== undefined && draft.scheduleMode !== "webhook"}
@@ -2101,6 +2108,11 @@ function ScheduledTaskEditorForm({
                   }
                 />
               </div>
+            ) : draft.scheduleMode === "monthly" ? (
+              <ScheduledTaskFork.MonthlyScheduleFields
+                draft={draft.monthly}
+                onChange={(monthly) => setDraft((current) => ({ ...current, monthly }))}
+              />
             ) : draft.scheduleMode === "fixed" ? (
               <div className="flex flex-wrap items-center gap-3">
                 <div className="flex items-center gap-2">
