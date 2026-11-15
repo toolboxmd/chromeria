@@ -19,12 +19,13 @@ describe("fork schedule labels", () => {
     expect(label.replace(/\u202f/g, " ")).toBe("Once at Oct 8, 2026, 2:00 PM");
   });
 
-  it("show weekly days from Monday, each requested time with the server's move either way", () => {
+  it("show an extended fixed_time's days from Monday, each time with the server's move, and its zone", () => {
     expect(
       forkScheduleLabel({
-        type: "weekly",
+        type: "fixed_time",
+        timeOfDay: "09:00",
+        extraTimes: ["23:58", "12:00", "9:00"],
         weekdays: [0, 3, 1],
-        times: ["09:00", "23:58", "12:00"],
         timeZone: "Europe/Warsaw",
         chosen: [
           { requested: "09:00", offsetMinutes: 7 },
@@ -33,6 +34,22 @@ describe("fork schedule labels", () => {
         ],
       }),
     ).toBe("Mon, Wed, Sun at 09:00 (+7 min), 23:58 (-5 min), 12:00 (Europe/Warsaw)");
+    expect(
+      forkScheduleLabel({
+        type: "fixed_time",
+        timeOfDay: "08:30",
+        weekdays: [0, 1, 2, 3, 4, 5, 6],
+        timeZone: "UTC",
+      }),
+    ).toBe("Daily at 08:30 (UTC)");
+    expect(
+      forkScheduleLabel({
+        type: "fixed_time",
+        timeOfDay: "09:00",
+        monthDays: [31, 5],
+        timeZone: "Europe/Warsaw",
+      }),
+    ).toBe("Monthly on day 5, the last day at 09:00 (Europe/Warsaw)");
   });
 });
 

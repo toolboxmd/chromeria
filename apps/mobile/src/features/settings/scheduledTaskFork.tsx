@@ -3,9 +3,9 @@ import { forkScheduleLabel, forkTaskSummary } from "@t3tools/client-runtime/sche
 import { Text } from "react-native";
 
 /**
- * Fork (toolboxmd/chromeria#174): the mobile scheduled task screens' view of
- * one-shot and weekly triggers, outcome checks and command tasks. They are
- * read-only here and edited through agent tools.
+ * Fork: the mobile scheduled task screens' view of
+ * one-shot triggers, fixed_time's fork fields, outcome checks and command tasks.
+ * They are read-only here.
  */
 export { forkScheduleLabel };
 export { useAbandonReport } from "./spectrumReportAction";
@@ -28,7 +28,8 @@ export function PreservedScheduleText({
 }) {
   return schedule === null ? null : (
     <Text className="px-4 py-3 text-base text-foreground-muted">
-      {forkScheduleLabel(schedule)} · change it through an agent
+      {forkScheduleLabel(schedule)} · change it{" "}
+      {schedule.type === "fixed_time" ? "on desktop or the web" : "through an agent"}
     </Text>
   );
 }

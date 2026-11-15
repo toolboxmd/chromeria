@@ -87,6 +87,7 @@ export function isMissedFixedTimeRun(
   dueAt: DateTime.DateTime,
   now: DateTime.DateTime,
 ): boolean {
-  if (schedule.type !== "fixed_time") return false;
+  // Fork: an extended fixed_time catches up once for its latest slot (toolboxmd/chromeria#719).
+  if (schedule.type !== "fixed_time" || isForkScheduledTaskSchedule(schedule)) return false;
   return DateTime.toEpochMillis(now) - DateTime.toEpochMillis(dueAt) > MISSED_FIXED_TIME_GRACE_MS;
 }

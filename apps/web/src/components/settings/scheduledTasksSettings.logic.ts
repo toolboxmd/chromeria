@@ -96,7 +96,7 @@ export function validateScheduledTasksSearch(raw: Record<string, unknown>) {
   };
 }
 
-export type ScheduleMode = "fixed" | "once" | "interval" | "webhook" | "monthly" | "preserved";
+export type ScheduleMode = "fixed" | "once" | "interval" | "webhook" | "preserved";
 export type WorkspaceMode = "root" | "worktree" | "existing_worktree";
 
 export interface DraftState {
@@ -140,8 +140,8 @@ export interface DraftState {
   readonly savedFilters: ReadonlyArray<WebhookFilterDraft>;
   /** A fork trigger saved back exactly as loaded. */
   readonly preservedSchedule: ScheduledTaskUpsertSchedule | null;
-  /** Chromeria (toolboxmd fork): the monthly schedule fields. */
-  readonly monthly: ScheduledTaskForkLogic.MonthlyDraft;
+  /** Chromeria (toolboxmd fork): fixed_time's zone, extra times, month days and spreading. */
+  readonly fixedTimeFork: ScheduledTaskForkLogic.FixedTimeForkDraft;
 }
 
 export const WEBHOOK_SIGNATURE_DEFAULTS = {
@@ -157,16 +157,6 @@ export function toDateTimeLocalValue(date: Date): string {
 }
 
 export function scheduleDraftErrors(draft: DraftState) {
-  if (draft.scheduleMode === "monthly")
-    return ScheduledTaskForkLogic.monthlyScheduleFromDraft(draft.monthly) === null
-      ? [
-          {
-            title: "Invalid monthly schedule",
-            description:
-              "Enter times as HH:MM separated by commas, and a time zone such as Europe/Warsaw.",
-          },
-        ]
-      : [];
   if (draft.scheduleMode === "once") {
     const runAt = new Date(draft.runAt);
     if (Number.isNaN(runAt.getTime()))
@@ -180,6 +170,8 @@ export function scheduleDraftErrors(draft: DraftState) {
   }
   if (draft.scheduleMode === "fixed" && !draft.timeOfDay)
     return [{ title: "Invalid run time", description: "Pick a time." }];
+  if (draft.scheduleMode === "fixed")
+    return ScheduledTaskForkLogic.fixedTimeForkErrors(draft.fixedTimeFork);
   if (draft.scheduleMode !== "webhook") return [];
   if (parseMaxDeliveryAge(draft.maxDeliveryAgeMinutes) === undefined)
     return [
@@ -228,8 +220,6 @@ export function webhookDeliveryLabel(delivery: {
 
 export function scheduleFromDraft(draft: DraftState): ScheduledTaskUpsertSchedule | null {
   if (draft.scheduleMode === "preserved") return draft.preservedSchedule;
-  if (draft.scheduleMode === "monthly")
-    return ScheduledTaskForkLogic.monthlyScheduleFromDraft(draft.monthly);
   if (scheduleDraftErrors(draft).length > 0) return null;
   if (draft.scheduleMode === "once") {
     const saved = draft.savedRunAt ? new Date(draft.savedRunAt) : null;
@@ -295,6 +285,7 @@ export function scheduleFromDraft(draft: DraftState): ScheduledTaskUpsertSchedul
     type: "fixed_time",
     timeOfDay: draft.timeOfDay,
     ...(selectedEveryDay ? {} : { weekdays: [...draft.weekdays].toSorted() }),
+    ...ScheduledTaskForkLogic.fixedTimeForkFields(draft.fixedTimeFork),
   };
 }
 
@@ -311,18 +302,16 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     title: task.title,
     prompt: task.prompt,
     enabled: task.enabled,
-    // Chromeria (toolboxmd fork): the form edits monthly triggers and keeps other fork triggers.
+    // Chromeria (toolboxmd fork): the form edits fixed_time's fork fields and keeps a fork one-shot.
     scheduleMode:
-      schedule.type === "monthly"
-        ? "monthly"
+      schedule.type === "fixed_time"
+        ? "fixed"
         : isForkScheduledTaskSchedule(schedule)
           ? "preserved"
-          : schedule.type === "fixed_time"
-            ? "fixed"
-            : schedule.type,
+          : schedule.type,
     preservedSchedule:
-      isForkScheduledTaskSchedule(schedule) && schedule.type !== "monthly" ? schedule : null,
-    monthly: ScheduledTaskForkLogic.monthlyDraft(schedule.type === "monthly" ? schedule : null),
+      schedule.type !== "fixed_time" && isForkScheduledTaskSchedule(schedule) ? schedule : null,
+    fixedTimeFork: ScheduledTaskForkLogic.fixedTimeForkDraft(schedule),
     intervalMinutes:
       schedule.type === "interval" ? String(Math.max(1, schedule.everyMs / 60_000)) : "15",
     // A time input shows nothing for an unpadded hour such as 9:05, which agents may save.

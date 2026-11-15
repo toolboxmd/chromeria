@@ -5597,11 +5597,7 @@ describe("schedule task thread binding", () => {
     prompt: input.prompt,
     enabled: input.enabled,
     schedule:
-      input.schedule.type === "webhook"
-        ? { type: "webhook", signature: null }
-        : input.schedule.type === "weekly"
-          ? { ...input.schedule, chosen: input.schedule.chosen ?? [] }
-          : input.schedule,
+      input.schedule.type === "webhook" ? { type: "webhook", signature: null } : input.schedule,
     projectId: input.projectId,
     threadId: input.threadId ?? null,
     workspaceStrategy: input.workspaceStrategy,
@@ -5714,11 +5710,11 @@ describe("schedule task thread binding", () => {
           bound: false,
         },
         {
-          name: "weekly",
+          name: "fixed time in a zone",
           schedule: {
-            type: "weekly",
+            type: "fixed_time",
+            timeOfDay: "09:00",
             weekdays: [1],
-            times: ["09:00"],
             timeZone: "Europe/Warsaw",
           },
           bound: false,

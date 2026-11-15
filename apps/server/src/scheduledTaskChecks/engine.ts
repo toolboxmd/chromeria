@@ -655,7 +655,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
                   );
             }
             // A scheduled fork trigger is identified by its slot, so a replayed fire is the same run.
-            const slot = forkScheduledSlot(task, trigger) ?? iso(now);
+            const slot = forkScheduledSlot(task, trigger, input.startedAt) ?? iso(now);
             if (state.runs.some((run) => run.id === `${task.id}:${slot}`)) {
               if (trigger === "scheduled") {
                 yield* consumeSlot(task, input.startedAt);

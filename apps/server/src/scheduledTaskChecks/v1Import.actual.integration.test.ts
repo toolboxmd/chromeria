@@ -120,12 +120,15 @@ const expectedSchedule = (v1: V1) => {
     return { type: "interval", everyMs: Math.round((schedule.minutes ?? 0) * 60_000) };
   if (schedule.kind === "once")
     return { type: "once", at: DateTime.formatIso(DateTime.makeUnsafe(Date.parse(schedule.at!))) };
+  const [timeOfDay, ...extraTimes] = [...new Set(schedule.times)];
   return {
-    type: "weekly",
+    type: "fixed_time",
+    timeOfDay,
+    ...(extraTimes.length === 0 ? {} : { extraTimes }),
     weekdays: schedule.weekdays,
-    times: schedule.times,
     timeZone: schedule.timeZone,
-    ...(schedule.windowMinutes === undefined ? {} : { windowMinutes: schedule.windowMinutes }),
+    // v1's window defaulted to 30 minutes; fixed_time's defaults to none.
+    windowMinutes: schedule.windowMinutes ?? 30,
     ...(v1.choices === undefined ? {} : { chosen: v1.choices }),
   };
 };

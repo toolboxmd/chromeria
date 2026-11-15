@@ -12,6 +12,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { fixedTimeFromLegacy } from "./fixedTimeMigration.ts";
 import { CheckState, type CheckedRun } from "./state.ts";
 import { ensureCheckSchema } from "./store.ts";
 
@@ -230,7 +231,7 @@ const record = (
     ON CONFLICT (task_id) DO NOTHING
   `.pipe(Effect.as(outcome));
 
-/** The v1 schedule as a v2 trigger, validated by the task schema; weekly keeps its minutes. */
+/** The v1 schedule as a v2 trigger, validated by the task schema; weekly keeps its minutes as `fixed_time`. */
 const scheduleOf = (task: V1Task): unknown => {
   const schedule = task.definition.schedule;
   if (schedule.kind === "interval" && schedule.minutes !== undefined)
@@ -242,7 +243,7 @@ const scheduleOf = (task: V1Task): unknown => {
   )
     return { type: "once", at: DateTime.formatIso(DateTime.makeUnsafe(Date.parse(schedule.at))) };
   if (schedule.kind === "weekly")
-    return {
+    return fixedTimeFromLegacy({
       type: "weekly",
       weekdays: schedule.weekdays,
       times: schedule.times,
@@ -256,7 +257,7 @@ const scheduleOf = (task: V1Task): unknown => {
               offsetMinutes: choice.offsetMinutes,
             })),
           }),
-    };
+    });
   return null;
 };
 
