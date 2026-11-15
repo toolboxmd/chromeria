@@ -109,6 +109,65 @@ function layerTest(input: {
 }
 
 describe("ProviderContinuationService", () => {
+  it.effect("rechecks producer eligibility before a retry reads or dispatches", () =>
+    Effect.gen(function* () {
+      const attempted = yield* Deferred.make<void>();
+      const skipped = yield* Deferred.make<void>();
+      const eligible = yield* Ref.make(true);
+      let reads = 0;
+      let dispatches = 0;
+      const layerThreads = Layer.mock(ThreadManagementService.ThreadManagementService)({
+        getThreadRecords: () =>
+          Effect.sync(() => {
+            reads++;
+            return delegatedProjection();
+          }),
+        dispatch: () =>
+          Effect.sync(() => {
+            dispatches++;
+          }).pipe(
+            Effect.andThen(Deferred.succeed(attempted, undefined)),
+            Effect.andThen(Effect.fail(new Error("transient delivery failure") as never)),
+          ),
+      });
+      const worker = ProviderContinuationService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(IdAllocator.layer, ProviderContinuationRequests.layer, layerThreads),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+        yield* requests.offer({
+          threadId,
+          providerThreadId,
+          driver,
+          detail: null,
+          delegatedCompletion: { parentRunId, generation: 1, messageId: delegatedMessageId },
+          dispatchIfCurrent: (effect) =>
+            Effect.gen(function* () {
+              if (!(yield* Ref.get(eligible))) {
+                yield* Deferred.succeed(skipped, undefined);
+                return Option.none();
+              }
+              return Option.some(yield* effect);
+            }),
+        });
+        yield* Deferred.await(attempted);
+        yield* Ref.set(eligible, false);
+        yield* TestClock.adjust("100 millis");
+        yield* Deferred.await(skipped);
+        assert.equal(reads, 1);
+        assert.equal(dispatches, 1);
+        yield* TestClock.adjust("1 hour");
+        assert.equal(reads, 1);
+        assert.equal(dispatches, 1);
+      }).pipe(
+        Effect.provide(Layer.merge(ProviderContinuationRequests.layer, worker)),
+        Effect.scoped,
+      );
+    }),
+  );
+
   it.effect("recovers an unaccepted persisted steer using the same delivery identity", () =>
     Effect.gen(function* () {
       const dispatched = yield* Queue.unbounded<unknown>();
@@ -618,4 +677,59 @@ describe("ProviderContinuationService", () => {
       );
     });
   });
+
+  it.effect(
+    "keeps earlier native causes for output that began before ingestion and preserves mixed or missing causes",
+    () =>
+      Effect.gen(function* () {
+        const dispatched = yield* Queue.unbounded<unknown>();
+        yield* Effect.gen(function* () {
+          const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+          const a = {
+            version: 1,
+            scope: {
+              type: "single",
+              reference: {
+                host: "github.com",
+                repository: "example/repo",
+                kind: "issue",
+                number: 11,
+              },
+            },
+            provenance: { type: "declared" },
+          } as const;
+          const b = {
+            ...a,
+            scope: { ...a.scope, reference: { ...a.scope.reference, number: 12 } },
+          } as const;
+          for (const [nativeCauses, expected] of [
+            [[{ operationId: "native:earlier-a", purpose: a }], a.scope],
+            [
+              [
+                { operationId: "native:earlier-a", purpose: a },
+                { operationId: "native:earlier-b", purpose: b },
+              ],
+              { type: "unscoped", reason: "mixed" },
+            ],
+            [
+              [{ operationId: "native:earlier-a", purpose: a }, { operationId: "native:missing" }],
+              { type: "unscoped", reason: "unknown_cause" },
+            ],
+          ] as const) {
+            yield* requests.offer({ ...request(), nativeCauses });
+            const command = (yield* Queue.take(dispatched)) as {
+              readonly purposeSource: { readonly scope: unknown };
+              readonly creationSource: string;
+            };
+            assert.deepEqual(command.purposeSource.scope, expected);
+            assert.equal(command.creationSource, "provider");
+          }
+        }).pipe(
+          Effect.provide(
+            layerTest({ dispatched, getThreadRecords: () => Effect.succeed(projection) }),
+          ),
+          Effect.scoped,
+        );
+      }),
+  );
 });
