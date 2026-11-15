@@ -93,7 +93,7 @@ export const validateDestination = (url: URL) =>
 
 const make = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;
-  const send = Effect.fn("PublicHttp.send")(function* (request: {
+  const exchange = Effect.fnUntraced(function* (request: {
     readonly url: URL;
     readonly method: "GET" | "POST";
     readonly headers: Readonly<Record<string, string>>;
@@ -139,15 +139,28 @@ const make = Effect.gen(function* () {
       },
       catch: (cause) => new PublicHttpError({ host: url.hostname, stage: "decode", cause }),
     });
+    return { response, body };
+  });
+  const send = Effect.fn("PublicHttp.send")(function* (
+    request: Parameters<PublicHttp["Service"]["send"]>[0],
+  ) {
+    const { response, body } = yield* exchange(request);
     return {
       status: response.status,
       headers: response.headers,
-      setCookies: Cookies.toSetCookieHeaders(response.cookies),
+      // Effect's serializer rejects some cookies its parser accepts; the browser gets the rest.
+      setCookies: Object.values(response.cookies.cookies).flatMap((cookie) => {
+        try {
+          return Cookies.toSetCookieHeaders(Cookies.fromIterable([cookie]));
+        } catch {
+          return [];
+        }
+      }),
       body,
     };
   });
   const get = Effect.fn("PublicHttp.get")(function* (url: URL) {
-    const response = yield* send({
+    const { response, body: bytes } = yield* exchange({
       url,
       method: "GET",
       headers: { accept: "text/html, text/plain;q=0.9, application/xhtml+xml;q=0.8" },
@@ -155,7 +168,7 @@ const make = Effect.gen(function* () {
     const charset =
       /charset\s*=\s*["']?([\w-]+)/i.exec(response.headers["content-type"] ?? "")?.[1] ?? "utf-8";
     const body = yield* Effect.try({
-      try: () => new TextDecoder(charset).decode(response.body),
+      try: () => new TextDecoder(charset).decode(bytes),
       catch: (cause) => new PublicHttpError({ host: url.hostname, stage: "decode", cause }),
     });
     return { status: response.status, headers: response.headers, body };
@@ -176,6 +189,7 @@ const agents = NodeHttpClient.layerAgentOptions({
     );
   },
 });
-export const layer = Layer.effect(PublicHttp, make).pipe(
+export const layerWithClient = Layer.effect(PublicHttp, make);
+export const layer = layerWithClient.pipe(
   Layer.provide(NodeHttpClient.layerNodeHttpNoAgent.pipe(Layer.provide(agents))),
 );
