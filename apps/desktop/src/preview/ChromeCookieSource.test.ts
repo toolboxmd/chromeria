@@ -99,6 +99,8 @@ describe("Chrome snapshot observation", () => {
       const { database, layer } = yield* fixture;
       yield* Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
+        // Chrome keeps this database open in exclusive locking mode while the profile runs.
+        yield* sql`pragma locking_mode = EXCLUSIVE`;
         yield* sql`create table dbsc_session_tbl (key text primary key, proto blob)`;
         yield* sql`insert into dbsc_session_tbl values ('https://google.com', ${Buffer.from("synthetic-private-binding")}), ('https://work.example.test', ${Buffer.from("invalid-protobuf")})`;
         expect((yield* readChromeDeviceBoundSites(database)).sort()).toEqual([
@@ -119,6 +121,7 @@ describe("Chrome snapshot observation", () => {
           yield* schema;
           yield* sql`insert into cookies values ('login.example.test', '__Host-session', '', ${encrypted("login.example.test", "synthetic-session")}, '/', 0, 1, 1, -1, '', 0, 0)`;
           yield* sql`insert into cookies values ('.example.test', 'partitioned', '', ${encrypted(".example.test", "synthetic-partitioned")}, '/account', 13644473600123456, 1, 1, 0, 'https://top.test', 0, 1)`;
+          yield* sql`insert into cookies values ('.example.test', 'extension', '', ${encrypted(".example.test", "synthetic-extension")}, '/', 0, 1, 1, 0, 'chrome-extension://synthetic', 1, 0)`;
           expect(yield* fs.exists(`${database}-wal`)).toBe(true);
           const result = yield* readChromeCookieSnapshot(database, { cbcV10: key });
           expect(result.complete).toBe(true);

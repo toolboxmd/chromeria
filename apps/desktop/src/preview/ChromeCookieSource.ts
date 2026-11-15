@@ -1,4 +1,4 @@
-import { CookieMirrorError, MirrorCookie } from "@t3tools/contracts";
+import { CookieMirrorError, CookieMirrorPartitionKey, MirrorCookie } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
@@ -33,6 +33,7 @@ const decodeVersion = Schema.decodeUnknownEffect(
   Schema.Array(Schema.Struct({ value: Schema.Union([Schema.Number, Schema.FiniteFromString]) })),
 );
 const decodeCookies = Schema.decodeUnknownEffect(Schema.Array(MirrorCookie));
+const isMirrorPartitionSite = Schema.is(CookieMirrorPartitionKey.fields.topLevelSite);
 
 /** PID plus start time distinguishes a live Chrome logout from relaunch cleanup. */
 export const readChromeProcessIdentity = Effect.fnUntraced(
@@ -60,6 +61,13 @@ export const readChromeProcessIdentity = Effect.fnUntraced(
 
 /** Chrome stores the site in the key; never select the credential protobuf. */
 export const readChromeDeviceBoundSites = Effect.fnUntraced(function* (source: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  // Chrome holds this database in exclusive locking mode while its profile runs.
+  // A copy torn by a concurrent write changes the source fingerprint, so it is read again.
+  const directory = yield* fs.makeTempDirectoryScoped({ prefix: "chromeria-cookie-mirror-" });
+  const copy = path.join(directory, path.basename(source));
+  yield* fs.copyFile(source, copy);
   return yield* Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const rows = yield* sql`select key from dbsc_session_tbl`.pipe(
@@ -85,8 +93,8 @@ export const readChromeDeviceBoundSites = Effect.fnUntraced(function* (source: s
       sites.add(site.hostname);
     }
     return [...sites];
-  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: source, readonly: true })));
-});
+  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: copy, readonly: true })));
+}, Effect.scoped);
 
 /** Unreadable rows protect their identities while unrelated absence stays observable. */
 export const readChromeCookieSnapshot = Effect.fnUntraced(function* (
@@ -116,6 +124,8 @@ export const readChromeCookieSnapshot = Effect.fnUntraced(function* (
     >[number][] = [];
     let complete = true;
     for (const row of rows) {
+      // Extension and chrome:// partitions have no web destination to hold them.
+      if (row.top_frame_site_key !== "" && !isMirrorPartitionSite(row.top_frame_site_key)) continue;
       // Older databases cannot distinguish ancestor siblings; protect that family.
       if (row.top_frame_site_key !== "" && !hasAncestor) {
         unresolvedPartitions.push({
