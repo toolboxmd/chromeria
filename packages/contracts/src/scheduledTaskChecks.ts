@@ -158,14 +158,13 @@ export const ScheduledTaskForkFields = {
   command: Schema.optional(ScheduledTaskCommand),
 };
 
-const CheckCommand = TrimmedNonEmptyString.check(Schema.isMaxLength(8_000)).annotate({
-  description:
-    "Shell command run in the task's workspace after each run; exit code 0 means the task is done. Until it passes, runs continue in the same thread. Creation is refused if it already passes.",
-});
-const CheckReason = TrimmedNonEmptyString.check(Schema.isMaxLength(2_000)).annotate({
-  description:
-    "Why passing this check proves the task is done. Required with checkCommand or revertCheckVersion.",
-});
+// TrimmedNonEmptyString decodes, so a description on it never reaches the tool's JSON schema.
+const CheckCommand = TrimmedNonEmptyString.check(Schema.isMaxLength(8_000));
+const CHECK_COMMAND =
+  "Shell command that judges a run after it ends, never a gate before it: exit code 0 in the task's workspace means done. On failure the same thread continues, up to 5 times 30s to 1h apart; then the run needs the user and scheduled fires skip until it finishes. The judged thread cannot change or delete its task, so test external state, like a host being up, in the prompt. Creation is refused if it already passes.";
+const CheckReason = TrimmedNonEmptyString.check(Schema.isMaxLength(2_000));
+const CHECK_REASON =
+  "Why passing this check proves the task is done. Required with checkCommand or revertCheckVersion.";
 const Role = PrismRole.annotate({
   description:
     "Prism role whose kit and model list start each run, such as planner or worker. A role that Prism cannot place makes the run retry; it never falls back to another model.",
@@ -174,18 +173,17 @@ const Lane = PrismLane.annotate({
   description:
     "Lane for the worker role: easy, medium (default) or hard for difficulty, or ui for UI and frontend work, which runs only on the ui lane's Colors and so needs bindToCurrentThread false.",
 });
-const ShellCommand = TrimmedNonEmptyString.check(Schema.isMaxLength(8_000)).annotate({
-  description:
-    "Run this shell command once per run with /bin/sh in the project root instead of starting an agent. Exit code 0 passes; anything else notifies. {date}, {run_id} and {task_id} are filled in. Cannot be combined with checkCommand or role.",
-});
+const ShellCommand = TrimmedNonEmptyString.check(Schema.isMaxLength(8_000));
+const SHELL_COMMAND =
+  "Run this shell command once per run with /bin/sh in the project root instead of starting an agent. Exit code 0 passes; anything else notifies. {date}, {run_id} and {task_id} are filled in. Cannot be combined with checkCommand or role.";
 
 /** Optional fields on `schedule_task`. Webhook tasks cannot have them. */
 export const ScheduledTaskOutcomeCheckCreateFields = {
-  checkCommand: Schema.optional(CheckCommand),
-  checkReason: Schema.optional(CheckReason),
+  checkCommand: Schema.optional(CheckCommand).annotateKey({ description: CHECK_COMMAND }),
+  checkReason: Schema.optional(CheckReason).annotateKey({ description: CHECK_REASON }),
   role: Schema.optional(Role),
   lane: Schema.optional(Lane),
-  command: Schema.optional(ShellCommand),
+  command: Schema.optional(ShellCommand).annotateKey({ description: SHELL_COMMAND }),
 };
 
 /** Optional fields on `update_scheduled_task`. A task's kind never changes. */
