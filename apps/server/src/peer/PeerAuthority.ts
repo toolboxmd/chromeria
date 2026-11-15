@@ -3310,7 +3310,9 @@ const make = Effect.gen(function* () {
         ? undefined
         : yield* threads.getRun(threadId, RunId.make(runId));
     // A continuation carries its source run's input, as its peer owner does.
-    for (let hops = 0; hops < 16 && run !== undefined; hops++) {
+    const visited = new Set<RunId>();
+    while (run !== undefined && !visited.has(run.id)) {
+      visited.add(run.id);
       const source = run.restartContinuationOfRunId ?? run.forkPrismContinuationSourceRunId;
       if (source === undefined) break;
       run = yield* threads.getRun(threadId, source);

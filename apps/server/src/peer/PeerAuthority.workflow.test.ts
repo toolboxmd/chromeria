@@ -3221,39 +3221,45 @@ it.live("#730: the owner's message starts in launched work after the launching r
       yield* worker.drain();
       expect(yield* Ref.get(executed)).toContain(owner.effectId);
       expect(yield* Ref.get(executed)).not.toContain(agent.effectId);
-      // A server continuation carries the owner's input through its source run.
+      // Server continuations carry the owner's input through any chain of source runs.
       const ownerRun = (yield* b.threads.getThreadRecords(target, ["runs"])).runs.at(-1)!;
-      const continuation = RunId.make("owner-turn-continuation");
-      yield* b.sink.writeWithEffects({
-        events: [
-          {
-            id: EventId.make("owner-turn-continuation"),
-            type: "run.created",
-            threadId: target,
-            runId: continuation,
-            providerInstanceId: instanceId,
-            occurredAt: yield* DateTime.now,
-            payload: {
-              ...ownerRun,
-              id: continuation,
-              ordinal: ownerRun.ordinal + 1,
-              userMessageId: MessageId.make("owner-turn-agent"),
-              restartContinuationOfRunId: owner.runId,
-              status: "starting",
-              queuePosition: null,
+      let previous = owner.runId;
+      for (let hop = 1; hop <= 20; hop++) {
+        const continuation = RunId.make(`owner-turn-continuation-${hop}`);
+        yield* b.sink.writeWithEffects({
+          events: [
+            {
+              id: EventId.make(`owner-turn-continuation-${hop}`),
+              type: "run.created",
+              threadId: target,
+              runId: continuation,
+              providerInstanceId: instanceId,
+              occurredAt: yield* DateTime.now,
+              payload: {
+                ...ownerRun,
+                id: continuation,
+                ordinal: ownerRun.ordinal + hop,
+                userMessageId: MessageId.make("owner-turn-agent"),
+                ...(hop % 2 === 0
+                  ? { forkPrismContinuationSourceRunId: previous }
+                  : { restartContinuationOfRunId: previous }),
+                status: "completed",
+                queuePosition: null,
+              },
             },
-          },
-        ],
-        effects: [
-          {
-            id: "effect:owner-turn-continuation",
-            commandId: CommandId.make("owner-turn-continuation"),
-            threadId: target,
-            request: { type: "provider-turn.start", runId: continuation },
-          },
-        ],
-      });
-      yield* b.authority.checkEffect("effect:owner-turn-continuation", target);
+          ],
+          effects: [
+            {
+              id: `effect:owner-turn-continuation-${hop}`,
+              commandId: CommandId.make(`owner-turn-continuation-${hop}`),
+              threadId: target,
+              request: { type: "provider-turn.start", runId: continuation },
+            },
+          ],
+        });
+        previous = continuation;
+      }
+      yield* b.authority.checkEffect("effect:owner-turn-continuation-20", target);
     }),
   ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
