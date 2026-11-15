@@ -182,14 +182,16 @@ mode without explicit authority for its repo-wide checks. Do not run it while
 preparing a pinned integration foundation: it fetches and rebases onto newer
 upstream `main`.
 
-Absorptions do not run the full paired model evals. Upstream evals its own
-model-facing text. Select only the [eval](../evals/README.md) cases whose
-instructions, MCP tool descriptions, schemas, results or guidance are fork-owned
-and changed in this absorption, comparing the candidate with the current `main`.
-No such change means no eval run; record the empty diff. Run those on
-the candidate, three samples each; a case fails when half or more fail. Compare a
-failing case with earlier baseline rows before calling it a regression. Record the
-selection and results in the owning Issue.
+Absorptions and fork feature PRs do not run the full paired model evals; for
+fork PRs this replaces the full run per model in
+[`evals/README.md`](../evals/README.md). Upstream evals its own model-facing
+text. Select only the eval cases whose instructions, MCP tool descriptions,
+schemas, results or guidance are fork-owned and changed in this absorption or
+PR, comparing the candidate with the current `main`. No such change means no
+eval run; record the empty diff. Run those on the candidate, three samples each;
+a case fails when half or more fail. Compare a failing case with earlier baseline
+rows before calling it a regression. Record the selection and
+results in the owning Issue or PR.
 
 ## CI and delivery
 
