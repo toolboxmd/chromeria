@@ -1015,6 +1015,60 @@ it.effect(
 );
 
 it.effect(
+  "an extended fixed_time late after downtime fires once for its latest slot, and a restart sends nothing more",
+  () =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      const id = "scheduled-task:hourly";
+      // Down from before 09:00 until 11:40: the 09, 10 and 11 slots passed, more than ten minutes ago.
+      yield* TestClock.setTime(Date.parse("2026-10-08T11:40:00.000Z"));
+      yield* createThread.pipe(Effect.provide(runtime(database)), Effect.scoped);
+      const schedule = {
+        type: "fixed_time",
+        timeOfDay: "09:00",
+        extraTimes: ["10:00", "11:00", "12:00"],
+        timeZone: "UTC",
+      };
+      yield* insertTask({ id, schedule, next: "2026-10-08T09:00:00.000Z" }).pipe(
+        Effect.provide(database),
+      );
+      const latest = `scheduled-task-message:${id}:weekly:2026-10-08T11:00:00.000Z`;
+      const nextRunAt = Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const [row] = yield* sql<{ next_run_at: string | null }>`
+          SELECT next_run_at FROM scheduled_tasks WHERE task_id = ${id}`;
+        return row?.next_run_at ?? null;
+      });
+      yield* Effect.gen(function* () {
+        const fired = yield* awaitTask(id, settled).pipe(Effect.forkScoped);
+        yield* TestClock.adjust("6 seconds");
+        assert.deepEqual(
+          Option.map(yield* Fiber.join(fired), (entry) => [entry.lastRunStatus, entry.runCount]),
+          Option.some(["succeeded", 1]),
+        );
+        assert.deepEqual(yield* messagesOf, [latest]);
+        // The next run is after now, so the missed 09 and 10 slots never replay.
+        assert.equal(yield* nextRunAt, "2026-10-08T12:00:00.000Z");
+      }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+      // A lost completion leaves the old pending slot; the restart admits the same latest slot again.
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE scheduled_tasks
+          SET next_run_at = ${"2026-10-08T09:00:00.000Z"}, last_run_status = 'never'
+          WHERE task_id = ${id}`;
+      }).pipe(Effect.provide(database));
+      yield* Effect.gen(function* () {
+        const replayed = yield* awaitTask(id, (entry) => entry.runCount === 2).pipe(
+          Effect.forkScoped,
+        );
+        yield* TestClock.adjust("6 seconds");
+        yield* Fiber.join(replayed);
+        assert.deepEqual(yield* messagesOf, [latest]);
+      }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+    }).pipe(Effect.scoped),
+);
+
+it.effect(
   "a direct upsert never turns a checked task into a webhook, refuses a past one-shot, and places spread times",
   () =>
     Effect.gen(function* () {

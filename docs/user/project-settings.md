@@ -113,7 +113,8 @@ On desktop and web, an **At a time** schedule has more options under its time
 and days. Ask an agent for the same options, or set them in the task form:
 
 - **Time zone**: read the times in a named zone, such as `Europe/Warsaw`,
-  instead of the environment's zone.
+  instead of the environment's zone. Once set, the zone can be changed but not
+  cleared.
 - **Also at**: more times on each day the task runs.
 - **Days of the month**: run on chosen days of the month instead of weekdays.
   When a month does not have a chosen day, such as the 31st in April or the

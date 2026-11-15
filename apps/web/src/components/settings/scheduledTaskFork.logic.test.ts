@@ -100,6 +100,8 @@ describe("fork scheduled triggers", () => {
     for (const fixedTimeFork of [
       { ...draft.fixedTimeFork, extraTimes: "25:00" },
       { ...draft.fixedTimeFork, timeZone: "Mars/Olympus" },
+      // Blank would save the stored zone while the form shows the server's.
+      { ...draft.fixedTimeFork, timeZone: " " },
       { ...draft.fixedTimeFork, monthDays: new Set<number>() },
       { ...draft.fixedTimeFork, windowMinutes: "721" },
     ]) {

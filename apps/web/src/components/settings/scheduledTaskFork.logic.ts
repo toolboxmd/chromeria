@@ -75,6 +75,12 @@ export function fixedTimeForkErrors(
   const errors: Array<{ readonly title: string; readonly description: string }> = [];
   if (fields.timeZone !== "" && !isTimeZone(fields.timeZone))
     errors.push({ title: "Unknown time zone", description: "Use a zone such as Europe/Warsaw." });
+  // A saved zone cannot be cleared: a blank would keep it while the form shows the server's.
+  if (fields.timeZone === "" && draft.extended)
+    errors.push({
+      title: "Enter a time zone",
+      description: "This schedule keeps a named zone. Enter one, such as the server's.",
+    });
   if (fields.extraTimes.includes(null))
     errors.push({
       title: "Invalid extra times",
