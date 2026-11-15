@@ -16,7 +16,7 @@ Write or run an eval when a change affects what a model sees or does: agent inst
 
 1. Run `vp i` at the repo root.
 2. Put the API keys the eval needs in the repo root `.env`. It is gitignored, and the eval scripts load it. Never print or commit a key.
-3. From `evals/`, run `pnpm <eval> --out runs/<name>`. `runs/` is gitignored.
+3. From `evals/`, run `pnpm <eval> --out runs/<name>`. `runs/` is gitignored. Scope with `--case`; a run above the sample cap refuses until you raise it.
 
 Each eval's README lists its models, flags, and cost. Start with one case and one sample to check the setup.
 

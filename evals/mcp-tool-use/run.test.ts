@@ -3211,6 +3211,7 @@ it("refuses a run that plans more samples than the cap", () => {
   const message = sampleCapMessage(696, undefined);
   assert.include(message ?? "", "696");
   assert.include(message ?? "", "--max-samples");
+  assert.include(sampleCapMessage(31, undefined) ?? "", "31");
   assert.isUndefined(sampleCapMessage(30, undefined));
   assert.isUndefined(sampleCapMessage(696, 1000));
 });

@@ -304,4 +304,4 @@ After the change, the first reference to a file is an absolute link. The remaini
 1. Capture one T3 Code turn through CLIProxyAPI, with T3's MCP server connected.
 2. From `evals/`, run `pnpm mcp-tool-use:trim-capture <claude|codex> <capture.json> mcp-tool-use/templates/<claude|codex>.json.gz`. It keeps only what `run.ts` reads, and removes user instructions, the user's own skills and agents, account ids, and home paths.
 3. Read the output for user data before you commit it: `zcat <file> | less`.
-4. Run the full eval on the old and new templates, and compare.
+4. Run the full eval on the old and new templates, and compare (pass `--max-samples <n>` for the planned count).
