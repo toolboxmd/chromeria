@@ -75,7 +75,8 @@ identified by their embedded commit SHA; upstream package versions are unchanged
 There is no Chromeria desktop update feed.
 
 The continuous macOS Chrome source is off by default on each machine. To enable it, set `chromeCookieKeyCommand` in
-`desktop-settings.json` in the desktop state directory:
+`desktop-settings.json` in the desktop state directory. Quit Chromeria first:
+the app rewrites the file from memory, so an edit made while it runs can be lost.
 
 ```json
 {
@@ -89,8 +90,7 @@ macOS v10 key and caches successful reads only in memory. Remove the
 setting to stop Chrome observation. An empty or invalid command leaves the source
 off; a failed command never falls back to Keychain. One-time imports still use
 Keychain, with native reads isolated from Electron main in a worker. Failed reads retry with bounded
-backoff. Command changes take effect on the next scan, within about 30 seconds,
-and discard the cached key. Ad-hoc signed builds lose Keychain's
+backoff. A changed command discards the cached key. Ad-hoc signed builds lose Keychain's
 "Always Allow" grant after rebuilds, so the command avoids repeated prompts.
 
 Remote pairings need the explicit **Mirror desktop browser logins** permission
