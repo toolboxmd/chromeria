@@ -714,3 +714,6 @@ packages/contracts/src/applicationEvent.ts
 packages/contracts/src/project.ts
 packages/client-runtime/src/state/threads-sync.test.ts
 packages/client-runtime/src/state/threads.ts
+
+# gh default-repo guard (#724), owned by fork-maintenance.
+scripts/setup-worktree.ts
