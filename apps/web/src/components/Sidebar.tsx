@@ -1,5 +1,6 @@
 import { attachSidebarTree } from "../lib/sidebarTree";
 import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
+import type { SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import {
   dropThreadContext,
@@ -363,6 +364,8 @@ interface SidebarThreadPartitionInput {
   readonly workingShelfEnabled: boolean;
   /** Boring mode: folders list active threads by the user's latest message. */
   readonly sortActiveBySend: boolean;
+  /** Orders Active and No-project threads the user has not dragged. */
+  readonly threadSortOrder: SidebarThreadSortOrder;
   // Snooze wakes, the queued-turn grace and the Working shelf's exit grace depend
   // on the clock, so the minute tick, the precise snooze-wake tick and the inbox
   // tracker's expiry version are inputs: a new key repartitions.
@@ -434,6 +437,7 @@ function useSidebarThreads(input: {
   readonly folderGroups: readonly SidebarProjectSnapshot[] | null;
   // Keeps folders with no active threads, so a project the user filtered to or pinned can start one.
   readonly keepEmptyFolders: (group: SidebarProjectSnapshot) => boolean;
+  readonly threadSortOrder: SidebarThreadSortOrder;
 }) {
   const {
     projectScopeKey,
@@ -446,6 +450,7 @@ function useSidebarThreads(input: {
     routeRowThreadKey,
     folderGroups,
     keepEmptyFolders: keepEmpty,
+    threadSortOrder,
   } = input;
   // Folders already separate the work, so boring mode has no Working shelf.
   const workingShelfEnabled =
@@ -505,6 +510,7 @@ function useSidebarThreads(input: {
     optimisticDrop,
     workingShelfEnabled,
     sortActiveBySend: folderGroups !== null,
+    threadSortOrder,
     clockKey: `${nowMinute}:${snoozeWakeClock}:${inboxReturnsVersion}`,
     noProjectKeys,
   });
@@ -665,6 +671,7 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     optimisticDrop,
     workingShelfEnabled,
     sortActiveBySend,
+    threadSortOrder,
     noProjectKeys,
   } = input;
   const preciseNow = new Date().toISOString();
@@ -733,7 +740,7 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     ? sortWorkingThreadsBySend(active)
     : workingShelfEnabled
       ? sortInboxThreadsByReturn(active, inboxObservation.returnedAt)
-      : sortThreadsForSidebar(active);
+      : sortThreadsForSidebar(active, threadSortOrder);
   return {
     pinnedThreads:
       optimisticDrop?.section !== "pinned" || optimisticDrop.order === null
@@ -754,7 +761,7 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
             getId: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
           }),
     workingThreads: sortWorkingThreadsBySend(working),
-    noProjectThreads: sortThreadsForSidebar(noProject),
+    noProjectThreads: sortThreadsForSidebar(noProject, threadSortOrder),
     snoozedThreads: snoozed.toSorted(
       (left, right) =>
         firstValidTimestampMs(left.snoozedUntil ?? null) -
@@ -969,6 +976,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const confirmThreadArchive = useClientSettings((s) => s.confirmThreadArchive);
   const timestampFormat = useClientSettings((s) => s.timestampFormat);
+  const threadSortOrder = useClientSettings((s) => s.sidebarThreadSortOrder);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const {
     settleThread,
@@ -1405,6 +1413,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       : null,
     keepEmptyFolders: (group) =>
       scopedProjectGroups.length > 0 || (group.pinned && !group.archived),
+    threadSortOrder,
   });
 
   // Ranked across environments as the palette ranks them, so one
@@ -2115,10 +2124,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         });
   const draggedNoProjectOrder =
     draggingScratch && dragState !== null && draggedScratchThread !== undefined
-      ? sortThreadsForSidebar([
-          ...noProjectThreads,
-          applySidebarThreadDrop(draggedScratchThread, "active", dragState.occurredAt),
-        ]).map(threadShellKey)
+      ? sortThreadsForSidebar(
+          [
+            ...noProjectThreads,
+            applySidebarThreadDrop(draggedScratchThread, "active", dragState.occurredAt),
+          ],
+          threadSortOrder,
+        ).map(threadShellKey)
       : undefined;
   const sidebarSortingStrategy = createSidebarSortingStrategy({
     items: sidebarListItems,

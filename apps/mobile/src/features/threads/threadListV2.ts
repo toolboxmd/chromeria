@@ -322,6 +322,7 @@ function sortThreadsForListV2<
   T extends {
     readonly id: string;
     readonly createdAt: string;
+    readonly updatedAt: string;
     readonly unsettledAt?: string | null | undefined;
     readonly activeOrderKey?: string | null | undefined;
     readonly environmentId?: string | undefined;

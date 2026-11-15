@@ -3544,3 +3544,25 @@ sources and reasons.
   "keywords": ["max-samples", "sample cap", "DEFAULT_MAX_SAMPLES"]
 }
 ```
+
+## sidebar-thread-sort-order
+
+```json
+{
+  "id": "sidebar-thread-sort-order",
+  "purpose": "The web sidebar orders undragged Active and No-project threads by the Thread sort order setting instead of creation. Drop when upstream sorts the Active section by sidebarThreadSortOrder.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/733"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/735"],
+  "newFiles": [],
+  "upstreamFiles": [
+    "packages/client-runtime/src/state/threadSort.ts",
+    "packages/client-runtime/src/state/threadSort.test.ts"
+  ],
+  "sharedFiles": [
+    "apps/web/src/components/Sidebar.tsx",
+    "apps/web/src/components/Sidebar.logic.test.ts",
+    "apps/mobile/src/features/threads/threadListV2.ts"
+  ],
+  "keywords": ["sortActiveThreadsByOrderKey", "activeThreadAnchorTimestampMs"]
+}
+```
