@@ -6,7 +6,6 @@ import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Cookies from "effect/http/Cookies";
 import * as NodeHttp from "node:http";
 import { vi } from "vite-plus/test";
 
@@ -436,7 +435,7 @@ it.live(
 );
 
 it.live(
-  "a challenge clears with cookies forwarded through the bounded client, refusing redirected answers",
+  "a challenge clears through the bounded client, refusing redirected answers and keeping cookie rules",
   (ctx) =>
     Effect.gen(function* () {
       const executable = testChromium;
@@ -465,27 +464,41 @@ it.live(
                   status: number,
                   body: string,
                   headers: Record<string, string> = { "content-type": "text/html" },
-                  cookies: ReadonlyArray<Cookies.Cookie> = [],
-                ) => ({ status, headers, cookies, body: new TextEncoder().encode(body) });
+                  setCookies: ReadonlyArray<string> = [],
+                ) => ({ status, headers, setCookies, body: new TextEncoder().encode(body) });
                 if (request.url.pathname === "/cdn-cgi/challenge-platform/moved")
                   return reply(307, "", { location: "http://elsewhere.invalid/collect" });
                 if (request.url.pathname === "/cdn-cgi/challenge-platform/answer")
                   return reply(200, "ok", { "content-type": "text/plain" }, [
-                    Cookies.makeCookieUnsafe("cf_clearance", "granted", { path: "/" }),
+                    "cf_clearance=granted; Path=/",
+                    "stale=; Max-Age=0; Path=/",
+                    "scoped=1; Path=/cdn-cgi/challenge-platform",
+                    "foreign=1; Domain=elsewhere.invalid; Path=/",
                   ]);
                 return request.headers.cookie?.includes("cf_clearance=granted")
                   ? reply(200, `<title>Cleared page</title><p>${"Readable text. ".repeat(20)}</p>`)
-                  : reply(403, challengePage);
+                  : reply(403, challengePage, { "content-type": "text/html" }, ["stale=1; Path=/"]);
               }),
           },
         }),
       ).pipe(Effect.provide(layer(executable)));
       expect(result).toMatchObject({ httpStatus: 200, finalUrl: "http://research.invalid/" });
       expect(result.body).toContain("Cleared page");
+      // The browser applies returned cookies itself: a deletion, path scope and foreign domain hold.
       expect(sent).toEqual([
         { method: "GET", path: "/" },
-        { method: "POST", path: "/cdn-cgi/challenge-platform/moved", body: "first" },
-        { method: "POST", path: "/cdn-cgi/challenge-platform/answer", body: "solved" },
+        {
+          method: "POST",
+          path: "/cdn-cgi/challenge-platform/moved",
+          cookie: "stale=1",
+          body: "first",
+        },
+        {
+          method: "POST",
+          path: "/cdn-cgi/challenge-platform/answer",
+          cookie: "stale=1",
+          body: "solved",
+        },
         { method: "GET", path: "/", cookie: "cf_clearance=granted" },
       ]);
     }),

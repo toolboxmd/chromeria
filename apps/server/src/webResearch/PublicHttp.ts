@@ -62,7 +62,7 @@ export class PublicHttp extends Context.Service<
       {
         readonly status: number;
         readonly headers: Readonly<Record<string, string>>;
-        readonly cookies: ReadonlyArray<Cookies.Cookie>;
+        readonly setCookies: ReadonlyArray<string>;
         readonly body: Uint8Array;
       },
       PublicNetworkBlockedError | PublicHttpError
@@ -142,7 +142,7 @@ const make = Effect.gen(function* () {
     return {
       status: response.status,
       headers: response.headers,
-      cookies: Object.values(response.cookies.cookies),
+      setCookies: Cookies.toSetCookieHeaders(response.cookies),
       body,
     };
   });

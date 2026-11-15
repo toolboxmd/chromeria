@@ -5,7 +5,6 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type { BrowserContext, Page, Route } from "playwright-core";
-import type * as Cookies from "effect/http/Cookies";
 
 import { publicProxy } from "../htmlRender/publicProxy.ts";
 import * as PreviewBrowser from "../preview/PreviewBrowser.ts";
@@ -60,7 +59,7 @@ interface RenderInput {
       {
         readonly status: number;
         readonly headers: Readonly<Record<string, string>>;
-        readonly cookies: ReadonlyArray<Cookies.Cookie>;
+        readonly setCookies: ReadonlyArray<string>;
         readonly body: Uint8Array;
       },
       PublicRenderError
@@ -173,6 +172,8 @@ const routeDocuments = (
     });
   // Browser networking would follow redirects unrouted and buffer nothing for us, so the
   // challenge's traffic is replayed through the core client with the context's cookies.
+  // Its Set-Cookie values return on the fulfilled response, so the browser applies its own
+  // domain, path, Secure and expiry rules to them.
   const forward = async (request: ReturnType<Route["request"]>) => {
     if (input.challenge === undefined) throw new Error("Only a challenge render forwards.");
     const { send } = input.challenge;
@@ -195,26 +196,11 @@ const routeDocuments = (
       }),
       { signal },
     );
-    if (response.cookies.length > 0)
-      await context.addCookies(
-        response.cookies.map(({ name, valueEncoded, options }) => ({
-          name,
-          value: valueEncoded,
-          ...(options?.domain
-            ? { domain: options.domain, path: options.path ?? "/" }
-            : { url: url.origin + (options?.path ?? "/") }),
-          httpOnly: options?.httpOnly ?? false,
-          secure: options?.secure ?? false,
-          ...(options?.sameSite
-            ? {
-                sameSite: ({ lax: "Lax", strict: "Strict", none: "None" } as const)[
-                  options.sameSite
-                ],
-              }
-            : {}),
-        })),
-      );
-    return response;
+    return {
+      ...response,
+      setCookie:
+        response.setCookies.length > 0 ? { "set-cookie": response.setCookies.join("\n") } : {},
+    };
   };
   const route = async (route: Route) => {
     const request = route.request();
@@ -225,7 +211,7 @@ const routeDocuments = (
         await route
           .fulfill({
             status: response.status,
-            headers: withoutTransferHeaders(response.headers),
+            headers: { ...withoutTransferHeaders(response.headers), ...response.setCookie },
             body: Buffer.from(response.body),
           })
           .catch(() => {});
@@ -251,15 +237,17 @@ const routeDocuments = (
       return;
     }
     try {
-      const loaded = challenged(request)
+      const forwarded = challenged(request) ? await forward(request) : undefined;
+      const setCookie = forwarded?.setCookie ?? {};
+      const loaded = forwarded
         ? {
-            response: await forward(request).then((response) => ({
-              ...response,
+            response: {
+              ...forwarded,
               body: new TextDecoder(
-                /charset\s*=\s*["']?([\w-]+)/i.exec(response.headers["content-type"] ?? "")?.[1] ??
+                /charset\s*=\s*["']?([\w-]+)/i.exec(forwarded.headers["content-type"] ?? "")?.[1] ??
                   "utf-8",
-              ).decode(response.body),
-            })),
+              ).decode(forwarded.body),
+            },
           }
         : first && request.url() === input.url.href && inMainFrame(request)
           ? { response: input.initial }
@@ -303,16 +291,18 @@ const routeDocuments = (
         await route.fulfill({
           status: 200,
           contentType: "text/html; charset=utf-8",
+          headers: setCookie,
           body: `<!doctype html><meta http-equiv="refresh" content="0;url=${escaped}">`,
         });
         return;
       }
-      // Public HTTP decoded/decompressed the body; do not replay its cookies into browser storage.
+      // Public HTTP decoded/decompressed the body. Only a challenge's own cookies reach the browser.
       const headers = withoutTransferHeaders(response.headers, ["content-type"]);
       await route.fulfill({
         status: response.status,
         headers: {
           ...headers,
+          ...setCookie,
           "content-type":
             response.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase() ===
             "text/plain"
