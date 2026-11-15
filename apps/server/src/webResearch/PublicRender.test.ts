@@ -353,6 +353,67 @@ it.live(
     }),
 );
 
+it("a challenge render admits only Cloudflare's own traffic past the core's document policy", () => {
+  const challenged = new URL("https://site.example/page?x=1");
+  const admits = (url: string, method: string, navigation: boolean, mainFrame = true) =>
+    PublicRender.challengeTraffic(challenged, { url, method, navigation, mainFrame });
+  expect(admits("https://site.example/page", "GET", true)).toBe(true);
+  expect(admits("https://site.example/page?__cf_chl_tk=1", "POST", true)).toBe(true);
+  expect(admits("https://site.example/other", "GET", true)).toBe(false);
+  expect(admits("https://elsewhere.example/page", "POST", true)).toBe(false);
+  expect(admits("https://site.example/page", "PUT", true)).toBe(false);
+  expect(
+    admits("https://challenges.cloudflare.com/cdn-cgi/challenge-platform/f", "GET", true, false),
+  ).toBe(true);
+  expect(admits("https://site.example/page", "GET", true, false)).toBe(false);
+  expect(admits("https://ads.example/frame", "GET", true, false)).toBe(false);
+  expect(admits("https://site.example/cdn-cgi/challenge-platform/h/b/fo/1", "POST", false)).toBe(
+    true,
+  );
+  expect(admits("https://challenges.cloudflare.com/cdn-cgi/flow", "POST", false)).toBe(true);
+  expect(admits("https://site.example/api/comment", "POST", false)).toBe(false);
+  expect(admits("https://elsewhere.example/cdn-cgi/challenge-platform/x", "POST", false)).toBe(
+    false,
+  );
+  expect(admits("blob:https://challenges.cloudflare.com/1", "GET", true, false)).toBe(false);
+});
+
+it.live(
+  "challenge documents fetched with the browser's cookies still cannot reach private addresses",
+  (ctx) =>
+    Effect.gen(function* () {
+      const executable = testChromium;
+      if (!executable) return ctx.skip(SKIP_WITHOUT_CHROMIUM);
+      const requests: string[] = [];
+      const server = yield* Effect.acquireRelease(
+        Effect.callback<NodeHttp.Server>((resume) => {
+          const listener = NodeHttp.createServer((request, response) => {
+            requests.push(request.url ?? "");
+            response.end("<title>LOCAL_SECRET</title>");
+          });
+          listener.listen(0, "127.0.0.1", () => resume(Effect.succeed(listener)));
+        }),
+        (listener) =>
+          Effect.callback<void>((resume) => {
+            listener.close(() => resume(Effect.void));
+          }),
+      );
+      const address = server.address();
+      if (!address || typeof address === "string")
+        return yield* Effect.die("Fixture did not bind a TCP port.");
+      const result = yield* PublicRender.PublicRender.use((renderer) =>
+        renderer.render({
+          url: new URL(`http://127.0.0.1:${address.port}/`),
+          initial: initial("<title>Just a moment...</title>", 403),
+          loadDocument: unusedDocument,
+          challenge: true,
+        }),
+      ).pipe(Effect.result, Effect.provide(layer(executable)));
+      expect(result._tag).toBe("Failure");
+      expect(requests).toEqual([]);
+    }),
+);
+
 it("extract preserves line boundaries and inline spaces", () => {
   const page = extract(
     "<h2> Rooms </h2><p> alpha <i> </i> beta <br> <span> gamma </span></p><p> delta </p>",

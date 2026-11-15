@@ -46,8 +46,8 @@ interface RenderInput {
   /** Every later document, including redirects and frames, uses the core's HTTP policy. */
   readonly loadDocument: (url: URL) => Effect.Effect<DocumentResponse, PublicRenderError>;
   /**
-   * The initial document is a JavaScript challenge. Its clearance cookie lives in the
-   * browser, so the browser fetches the challenged page itself and waits for it to clear.
+   * The initial document is a JavaScript challenge. The challenge's own documents and
+   * answers use the browser context's cookies instead, and the render waits for it to clear.
    */
   readonly challenge?: boolean;
 }
@@ -71,6 +71,37 @@ const MAX_DOM_CHARS = 4 * 1024 * 1024;
 const CHALLENGE_CLEAR_MS = 10_000;
 const CHALLENGE_SETTLE_MS = 5_000;
 
+/**
+ * Cloudflare's challenge talks only to its own platform and reloads or POSTs its own page.
+ * Only these requests of a challenge render skip the core's document policy.
+ */
+export const challengeTraffic = (
+  challenged: URL,
+  request: {
+    readonly url: string;
+    readonly method: string;
+    readonly navigation: boolean;
+    readonly mainFrame: boolean;
+  },
+) => {
+  if (!/^https?:/.test(request.url)) return false;
+  const target = new URL(request.url);
+  const platform = target.hostname === "challenges.cloudflare.com";
+  if (!request.navigation)
+    return (
+      request.method === "POST" &&
+      (platform ||
+        (target.origin === challenged.origin &&
+          target.pathname.startsWith("/cdn-cgi/challenge-platform/")))
+    );
+  if (!request.mainFrame) return platform && request.method === "GET";
+  return (
+    ["GET", "POST"].includes(request.method) &&
+    target.origin === challenged.origin &&
+    target.pathname === challenged.pathname
+  );
+};
+
 /** Playwright callback boundary: document I/O stays owned by the Effect reader. */
 const routeDocuments = (
   context: BrowserContext,
@@ -91,41 +122,34 @@ const routeDocuments = (
       return false;
     }
   };
-  const challenged = (request: ReturnType<Route["request"]>) => {
-    if (!input.challenge || !/^https?:/.test(request.url())) return false;
-    const target = new URL(request.url());
-    // Cloudflare's challenge posts its answers to its own platform, never to the site.
-    if (!request.isNavigationRequest())
-      return (
-        request.method() === "POST" &&
-        (target.hostname === "challenges.cloudflare.com" ||
-          (target.origin === input.url.origin &&
-            target.pathname.startsWith("/cdn-cgi/challenge-platform/")))
-      );
-    if (!inMainFrame(request)) return request.method() === "GET";
-    // The challenge reloads or POSTs its own page; any other document keeps the core's policy.
-    return (
-      ["GET", "POST"].includes(request.method()) &&
-      target.origin === input.url.origin &&
-      target.pathname === input.url.pathname
-    );
-  };
-  if (input.challenge)
-    page.on("response", (response) => {
-      const request = response.request();
-      if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
-        httpStatus = response.status();
-        responseHeaders = response.headers();
-      }
+  const challenged = (request: ReturnType<Route["request"]>) =>
+    input.challenge === true &&
+    challengeTraffic(input.url, {
+      url: request.url(),
+      method: request.method(),
+      navigation: request.isNavigationRequest(),
+      mainFrame: inMainFrame(request),
     });
+  // The clearance cookie lives in the context, so these go through its request client.
+  // Playwright follows a continued request's redirects unrouted; maxRedirects 0 returns each
+  // hop here, where a document redirect is policed below and any other is refused.
+  const fetchChallenged = async (route: Route) => {
+    const response = await route.fetch({ maxRedirects: 0 });
+    return { status: response.status(), headers: response.headers(), body: await response.text() };
+  };
   const route = async (route: Route) => {
     const request = route.request();
-    if (challenged(request)) {
-      // The browser's SOCKS proxy checks and pins these connections like subresources.
-      await route.continue().catch(() => {});
+    if (challenged(request) && !request.isNavigationRequest()) {
+      const response = await route.fetch({ maxRedirects: 0 }).catch(() => undefined);
+      if (response && (response.status() < 300 || response.status() >= 400))
+        await route.fulfill({ response }).catch(() => {});
+      else await route.abort("blockedbyclient").catch(() => {});
       return;
     }
-    if (!/^https?:/.test(request.url()) || !["GET", "HEAD"].includes(request.method())) {
+    if (
+      !challenged(request) &&
+      (!/^https?:/.test(request.url()) || !["GET", "HEAD"].includes(request.method()))
+    ) {
       if (request.isNavigationRequest() && inMainFrame(request))
         failure = new PublicRenderError({
           status: "unsupported",
@@ -141,8 +165,9 @@ const routeDocuments = (
       return;
     }
     try {
-      const loaded =
-        first && request.url() === input.url.href && inMainFrame(request)
+      const loaded = challenged(request)
+        ? { response: await fetchChallenged(route) }
+        : first && request.url() === input.url.href && inMainFrame(request)
           ? { response: input.initial }
           : await Effect.runPromise(
               input.loadDocument(new URL(request.url())).pipe(
@@ -267,11 +292,7 @@ const renderBrowser = async (context: BrowserContext, input: RenderInput, signal
             .catch(() => {});
       } else await page.goto(input.url.href, { waitUntil: "networkidle", timeout: 0 });
       const finalUrl = page.url();
-      // Browser-followed redirects skip routing, so a cleared page may not leave its origin.
-      if (
-        !/^https?:/.test(finalUrl) ||
-        (input.challenge && new URL(finalUrl).origin !== input.url.origin)
-      )
+      if (!/^https?:/.test(finalUrl))
         throw new PublicRenderError({
           status: "unsupported",
           httpStatus: null,
