@@ -15,7 +15,9 @@ import {
   BearerConnectionProfile,
   BearerConnectionTarget,
   BearerConnectionCredential,
+  RelayConnectionTarget,
 } from "@t3tools/client-runtime/connection";
+import { TokenStore } from "@t3tools/client-runtime/authorization";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -114,6 +116,67 @@ describe("main-owned mirror destination", () => {
           }),
         );
       }),
+  );
+
+  it.effect("skips earlier routes without the mirror scope and uses the mirror pairing", () =>
+    Effect.gen(function* () {
+      const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+        if (!url.endsWith("/api/auth/session")) return Response.json(descriptor);
+        const headers = new Headers(init?.headers);
+        const authorization = headers.get("authorization");
+        return Response.json(
+          session(
+            authorization === "Bearer synthetic-mirror-token"
+              ? [AuthAccessWriteScope, AuthCookieMirrorWriteScope]
+              : [AuthAccessWriteScope],
+          ),
+        );
+      });
+      vi.stubGlobal("fetch", fetch);
+      const resolve = yield* fixture({
+        ...document,
+        targets: [
+          new RelayConnectionTarget({ environmentId, label: "Saved" }),
+          ...document.targets,
+          new BearerConnectionTarget({ environmentId, label: "Saved", connectionId: "mirror" }),
+        ],
+        profiles: [
+          ...document.profiles,
+          new BearerConnectionProfile({
+            environmentId,
+            label: "Saved",
+            connectionId: "mirror",
+            httpBaseUrl: "https://mirror.test",
+            wsBaseUrl: "wss://mirror.test/ws",
+          }),
+        ],
+        credentials: [
+          ...document.credentials,
+          {
+            connectionId: "mirror",
+            credential: new BearerConnectionCredential({ token: "synthetic-mirror-token" }),
+          },
+        ],
+        remoteDpopTokens: [
+          new TokenStore.RemoteDpopAccessToken({
+            environmentId,
+            label: "Saved",
+            endpoint: {
+              httpBaseUrl: "https://relay.test",
+              wsBaseUrl: "wss://relay.test/ws",
+              providerKind: "t3_relay",
+            },
+            accessToken: "synthetic-relay-token",
+            expiresAtEpochMs: Number.MAX_SAFE_INTEGER,
+            dpopThumbprint: "synthetic-thumbprint",
+          }),
+        ],
+      });
+      expect(yield* Effect.promise(() => resolve(environmentId))).toEqual({
+        httpBaseUrl: "https://mirror.test",
+        headers: { authorization: "Bearer synthetic-mirror-token" },
+      });
+    }),
   );
 
   it.effect("accepts an expiring session whose expiresAt arrives as a JSON string", () =>

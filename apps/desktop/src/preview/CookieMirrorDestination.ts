@@ -48,12 +48,61 @@ export const makeCookieMirrorDestinationResolver = Effect.gen(function* () {
   const context = yield* Effect.context<Mac.Mac>();
   const run = Effect.runPromiseWith(context);
 
+  const authorizeRoute = Effect.fn("CookieMirrorDestination.authorizeRoute")(function* (
+    environmentId: string,
+    httpBaseUrl: string,
+    bearer: string | undefined,
+    dpop: ConnectionCatalogDocument["remoteDpopTokens"][number] | undefined,
+  ) {
+    const base = httpBaseUrl;
+    const authorize = async (
+      method: string,
+      url: string,
+    ): Promise<CookieMirrorDestination["headers"]> => {
+      if (bearer) return { authorization: `Bearer ${bearer}` };
+      if (!dpop) throw new Error("Missing authenticated connection.");
+      const window = await run(windows.main);
+      if (Option.isNone(window)) throw new Error("Desktop window unavailable.");
+      const proof = await cookieMirrorDpopProof({
+        execute: (script) => window.value.webContents.executeJavaScript(script),
+        method,
+        url,
+        token: dpop.accessToken,
+        thumbprint: dpop.dpopThumbprint,
+        nowEpochSeconds: (await run(Clock.currentTimeMillis)) / 1000,
+      });
+      return { authorization: `DPoP ${dpop.accessToken}`, dpop: proof };
+    };
+    const descriptor = decodeDescriptor(
+      yield* Effect.tryPromise({
+        try: () => readJson(environmentEndpointUrl(base, "/.well-known/t3/environment")),
+        catch: () => new CookieMirrorError({ reason: "forbidden" }),
+      }),
+    );
+    if (descriptor.environmentId !== environmentId)
+      return yield* new CookieMirrorError({ reason: "forbidden" });
+    const sessionUrl = environmentEndpointUrl(base, "/api/auth/session");
+    const session = decodeSession(
+      yield* Effect.tryPromise({
+        try: async () => readJson(sessionUrl, await authorize("GET", sessionUrl)),
+        catch: () => new CookieMirrorError({ reason: "forbidden" }),
+      }),
+    );
+    const scopes = session.permissions ?? session.scopes ?? [];
+    if (!session.authenticated || !scopes.includes(AuthCookieMirrorWriteScope))
+      return yield* new CookieMirrorError({ reason: "forbidden" });
+    return {
+      httpBaseUrl: base,
+      headers: yield* Effect.tryPromise({
+        try: () => authorize("POST", environmentEndpointUrl(base, COOKIE_MIRROR_GRANT_PATH)),
+        catch: () => new CookieMirrorError({ reason: "forbidden" }),
+      }),
+    } satisfies CookieMirrorDestination;
+  });
+
   const resolve = Effect.fn("CookieMirrorDestination.resolve")(
     function* (environmentId: string) {
       const now = yield* Clock.currentTimeMillis;
-      let httpBaseUrl: string | undefined;
-      let bearer: string | undefined;
-      let dpop: ConnectionCatalogDocument["remoteDpopTokens"][number] | undefined;
       for (const instance of yield* pool.list) {
         const config = yield* instance.currentConfig;
         if (Option.isNone(config)) continue;
@@ -65,7 +114,7 @@ export const makeCookieMirrorDestinationResolver = Effect.gen(function* () {
           catch: () => new CookieMirrorError({ reason: "forbidden" }),
         }).pipe(Effect.map(decodeDescriptor), Effect.option);
         if (Option.isNone(descriptor) || descriptor.value.environmentId !== environmentId) continue;
-        httpBaseUrl = config.value.httpBaseUrl.href;
+        const httpBaseUrl = config.value.httpBaseUrl.href;
         const bootstrap = config.value.bootstrap;
         const credential = bootstrap.desktopBootstrapSecret
           ? yield* currentDesktopBootstrapToken(
@@ -75,28 +124,31 @@ export const makeCookieMirrorDestinationResolver = Effect.gen(function* () {
             )
           : undefined;
         if (!credential) return yield* new CookieMirrorError({ reason: "forbidden" });
-        bearer = (yield* bootstrapRemoteBearerSession({
+        const bearer = (yield* bootstrapRemoteBearerSession({
           httpBaseUrl,
           credential,
           scopes: [AuthCookieMirrorWriteScope],
           clientMetadata: { deviceType: "desktop", label: "Desktop browser cookie mirror" },
         }).pipe(Effect.provideService(HttpClient.HttpClient, http))).access_token;
-        break;
+        return yield* authorizeRoute(environmentId, httpBaseUrl, bearer, undefined);
       }
-      if (!httpBaseUrl) {
-        const saved = yield* catalogStore.get;
-        if (Option.isNone(saved)) return yield* new CookieMirrorError({ reason: "forbidden" });
-        const catalog = yield* Effect.try({
-          try: () => decodeCatalog(saved.value),
-          catch: () => new CookieMirrorError({ reason: "forbidden" }),
-        });
-        if (catalog.disabledEnvironmentIds.some((id) => id === environmentId))
-          return yield* new CookieMirrorError({ reason: "forbidden" });
-        const target = catalog.targets.find((target) => target.environmentId === environmentId);
-        if (!target) return yield* new CookieMirrorError({ reason: "forbidden" });
-        dpop = catalog.remoteDpopTokens.find(
-          (token) => token.environmentId === environmentId && token.expiresAtEpochMs > now,
-        );
+      const saved = yield* catalogStore.get;
+      if (Option.isNone(saved)) return yield* new CookieMirrorError({ reason: "forbidden" });
+      const catalog = yield* Effect.try({
+        try: () => decodeCatalog(saved.value),
+        catch: () => new CookieMirrorError({ reason: "forbidden" }),
+      });
+      if (catalog.disabledEnvironmentIds.some((id) => id === environmentId))
+        return yield* new CookieMirrorError({ reason: "forbidden" });
+      const dpop = catalog.remoteDpopTokens.find(
+        (token) => token.environmentId === environmentId && token.expiresAtEpochMs > now,
+      );
+      // One environment can keep several routes, such as T3 Connect and a direct pairing;
+      // only a pairing that granted the mirror scope can write, so try each in order.
+      for (const target of catalog.targets) {
+        if (target.environmentId !== environmentId) continue;
+        let httpBaseUrl: string | undefined;
+        let bearer: string | undefined;
         if (target._tag === "RelayConnectionTarget") {
           httpBaseUrl = dpop?.endpoint.httpBaseUrl;
         } else {
@@ -114,53 +166,14 @@ export const makeCookieMirrorDestinationResolver = Effect.gen(function* () {
               issuePairingToken: false,
             })).httpBaseUrl;
         }
+        if (!httpBaseUrl || (!bearer && !dpop)) continue;
+        const destination = yield* authorizeRoute(environmentId, httpBaseUrl, bearer, dpop).pipe(
+          Effect.asSome,
+          Effect.catchCause(() => Effect.succeedNone),
+        );
+        if (Option.isSome(destination)) return destination.value;
       }
-      if (!httpBaseUrl || (!bearer && !dpop))
-        return yield* new CookieMirrorError({ reason: "forbidden" });
-      const base = httpBaseUrl;
-      const authorize = async (
-        method: string,
-        url: string,
-      ): Promise<CookieMirrorDestination["headers"]> => {
-        if (bearer) return { authorization: `Bearer ${bearer}` };
-        if (!dpop) throw new Error("Missing authenticated connection.");
-        const window = await run(windows.main);
-        if (Option.isNone(window)) throw new Error("Desktop window unavailable.");
-        const proof = await cookieMirrorDpopProof({
-          execute: (script) => window.value.webContents.executeJavaScript(script),
-          method,
-          url,
-          token: dpop.accessToken,
-          thumbprint: dpop.dpopThumbprint,
-          nowEpochSeconds: (await run(Clock.currentTimeMillis)) / 1000,
-        });
-        return { authorization: `DPoP ${dpop.accessToken}`, dpop: proof };
-      };
-      const descriptor = decodeDescriptor(
-        yield* Effect.tryPromise({
-          try: () => readJson(environmentEndpointUrl(base, "/.well-known/t3/environment")),
-          catch: () => new CookieMirrorError({ reason: "forbidden" }),
-        }),
-      );
-      if (descriptor.environmentId !== environmentId)
-        return yield* new CookieMirrorError({ reason: "forbidden" });
-      const sessionUrl = environmentEndpointUrl(base, "/api/auth/session");
-      const session = decodeSession(
-        yield* Effect.tryPromise({
-          try: async () => readJson(sessionUrl, await authorize("GET", sessionUrl)),
-          catch: () => new CookieMirrorError({ reason: "forbidden" }),
-        }),
-      );
-      const scopes = session.permissions ?? session.scopes ?? [];
-      if (!session.authenticated || !scopes.includes(AuthCookieMirrorWriteScope))
-        return yield* new CookieMirrorError({ reason: "forbidden" });
-      return {
-        httpBaseUrl: base,
-        headers: yield* Effect.tryPromise({
-          try: () => authorize("POST", environmentEndpointUrl(base, COOKIE_MIRROR_GRANT_PATH)),
-          catch: () => new CookieMirrorError({ reason: "forbidden" }),
-        }),
-      } satisfies CookieMirrorDestination;
+      return yield* new CookieMirrorError({ reason: "forbidden" });
     },
     Effect.catchCause(() => new CookieMirrorError({ reason: "forbidden" })),
   );
