@@ -39,8 +39,8 @@ The native panel and agent browser have separate login stores, even for the
 same profile name. Mirroring can copy supported cookies from the desktop panel
 to the environment's agent browser. To reuse logins from another browser:
 
-- On macOS, continuous Chrome mirroring is off by default. Set
-  `chromeCookieKeyCommand` on the source Mac to enable it. Chrome's `Default`
+- On macOS, continuous Chrome mirroring is off by default. Quit Chromeria,
+  then set `chromeCookieKeyCommand` on the source Mac to enable it. Chrome's `Default`
   profile folder maps to Chromeria's `default` profile.
 - Sending mirrored logins to another environment requires **Mirror desktop
   browser logins** permission on that connection.
