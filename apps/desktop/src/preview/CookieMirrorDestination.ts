@@ -162,9 +162,12 @@ export const makeCookieMirrorDestinationResolver = Effect.gen(function* () {
           )?.credential.token;
           if (profile?._tag === "BearerConnectionProfile") httpBaseUrl = profile.httpBaseUrl;
           else if (profile?._tag === "SshConnectionProfile")
-            httpBaseUrl = (yield* ssh.ensureEnvironment(profile.target, {
-              issuePairingToken: false,
-            })).httpBaseUrl;
+            httpBaseUrl = yield* ssh
+              .ensureEnvironment(profile.target, { issuePairingToken: false })
+              .pipe(
+                Effect.map((environment) => environment.httpBaseUrl),
+                Effect.catchCause(() => Effect.undefined),
+              );
         }
         if (!httpBaseUrl || (!bearer && !dpop)) continue;
         const destination = yield* authorizeRoute(environmentId, httpBaseUrl, bearer, dpop).pipe(

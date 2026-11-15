@@ -16,6 +16,8 @@ import {
   BearerConnectionTarget,
   BearerConnectionCredential,
   RelayConnectionTarget,
+  SshConnectionProfile,
+  SshConnectionTarget,
 } from "@t3tools/client-runtime/connection";
 import { TokenStore } from "@t3tools/client-runtime/authorization";
 import * as Effect from "effect/Effect";
@@ -76,7 +78,9 @@ const fixture = (catalog = document) =>
           get: Effect.succeedSome(encodeCatalog(catalog)),
         }),
         Layer.mock(DesktopBackendPool.DesktopBackendPool, { list: Effect.succeed([]) }),
-        Layer.mock(DesktopSshEnvironment.DesktopSshEnvironment, {}),
+        Layer.mock(DesktopSshEnvironment.DesktopSshEnvironment, {
+          ensureEnvironment: () => Effect.die("Synthetic SSH host unreachable"),
+        }),
         Layer.mock(ElectronWindow.ElectronWindow, { main: Effect.succeedNone }),
         Layer.succeed(
           HttpClient.HttpClient,
@@ -138,10 +142,17 @@ describe("main-owned mirror destination", () => {
         targets: [
           new RelayConnectionTarget({ environmentId, label: "Saved" }),
           ...document.targets,
+          new SshConnectionTarget({ environmentId, label: "Saved", connectionId: "ssh" }),
           new BearerConnectionTarget({ environmentId, label: "Saved", connectionId: "mirror" }),
         ],
         profiles: [
           ...document.profiles,
+          new SshConnectionProfile({
+            environmentId,
+            label: "Saved",
+            connectionId: "ssh",
+            target: { alias: "saved", hostname: "saved.test", username: null, port: null },
+          }),
           new BearerConnectionProfile({
             environmentId,
             label: "Saved",
@@ -152,6 +163,10 @@ describe("main-owned mirror destination", () => {
         ],
         credentials: [
           ...document.credentials,
+          {
+            connectionId: "ssh",
+            credential: new BearerConnectionCredential({ token: "synthetic-ssh-token" }),
+          },
           {
             connectionId: "mirror",
             credential: new BearerConnectionCredential({ token: "synthetic-mirror-token" }),
