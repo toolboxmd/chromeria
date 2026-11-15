@@ -167,7 +167,7 @@ export const PRISM_ROLE_DESCRIPTIONS: Record<PrismRole, string> = {
   worker:
     "Implements the task and commits as it goes. Use optional lane for difficulty: easy, medium, hard; or ui for UI and frontend work, which runs only on the ui lane's Colors.",
   "computer-use":
-    'Drives the browser (preview_* tools) and, where available, the desktop through computer-use tools. Reports what it saw and did. For browser or desktop driving beyond a quick check, delegate with delegate_task using prismRole: "computer-use".',
+    'Drives the browser (preview_* tools) and, where available, the desktop through computer-use tools. Reports what it saw and did. Delegate browser or desktop driving to it with delegate_task using prismRole: "computer-use", including checks you start yourself; opening a page or one snapshot or read of it stays inline, and a child whose task is that driving does it itself.',
   roast:
     "Attacks a plan or idea before work starts: weak assumptions, missing cases, cheaper alternatives.",
   reviewer:

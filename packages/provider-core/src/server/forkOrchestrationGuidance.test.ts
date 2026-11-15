@@ -15,10 +15,13 @@ describe("fork orchestration guidance", () => {
       expect(T3_CODE_TOOL_USE_INSTRUCTIONS).toContain(role);
     }
     expect(T3_CODE_ORCHESTRATION_INSTRUCTIONS).toContain(
-      "When the user assigns research, design, review, judging, roasting or browser/desktop driving as a task",
+      "When the user assigns research, design, review, judging or roasting as a task",
     );
     expect(T3_CODE_ORCHESTRATION_INSTRUCTIONS).toContain(
-      'For browser or desktop driving beyond a quick check, delegate with delegate_task using prismRole: "computer-use".',
+      'Delegate browser/desktop driving to `prismRole: "computer-use"` by default, including checks you start yourself',
+    );
+    expect(T3_CODE_ORCHESTRATION_INSTRUCTIONS).toContain(
+      "opening a page or one snapshot or read of it stays inline",
     );
   });
 

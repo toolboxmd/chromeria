@@ -89,7 +89,9 @@ export function resolveInteractionMode(
 
 /** The task as its child receives it, with the role the caller asked for. */
 export function taskPrompt(input: OrchestratorMcpDelegateTaskInput): string {
-  return input.bare !== undefined || input.role === undefined || input.role === "general"
+  // Fork: browser guidance delegates driving by default, so the computer-use child must know it is the driver.
+  const role = input.prismRole === "computer-use" ? input.prismRole : input.role;
+  return input.bare !== undefined || role === undefined || role === "general"
     ? input.task
-    : `Act as the ${input.role} sub-agent for this task.\n\n${input.task}`;
+    : `Act as the ${role} sub-agent for this task.\n\n${input.task}`;
 }
