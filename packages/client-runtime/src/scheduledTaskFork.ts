@@ -1,16 +1,16 @@
-import type {
-  ScheduledTask,
-  ScheduledTaskCommand,
-  ScheduledTaskForkSchedule,
-  ScheduledTaskOutcomeCheck,
+import {
+  isEveryWeekday,
+  type ScheduledTask,
+  type ScheduledTaskCommand,
+  type ScheduledTaskForkSchedule,
+  type ScheduledTaskOutcomeCheck,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
 /**
- * Fork (toolboxmd/chromeria#174): what web and mobile show for the fork's
- * scheduled task extensions. Upstream screens reach this through one call per
- * label; the fork triggers are read-only there and edited through agent tools.
+ * Fork: what web and mobile show for the fork's
+ * scheduled task extensions. Upstream screens reach this through one call per label.
  */
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
@@ -24,7 +24,7 @@ const placedTime = (time: string, offsetMinutes: number) =>
     ? time
     : `${time} (${offsetMinutes > 0 ? "+" : "-"}${Math.abs(offsetMinutes)} min)`;
 
-/** A one-shot's instant, a weekly schedule's days, requested times with any move, and time zone, or a monthly schedule's day, times and time zone. */
+/** A one-shot's instant, or an extended `fixed_time`'s days, requested times with any move, and time zone. */
 export function forkScheduleLabel(
   schedule: ScheduledTaskForkSchedule,
   options: { readonly locale?: string; readonly timeZone?: string } = {},
@@ -39,21 +39,31 @@ export function forkScheduleLabel(
     }).format(DateTime.toEpochMillis(instant.value));
     return `Once at ${formatted}`;
   }
-  if (schedule.type === "monthly") {
-    const day = schedule.day === "last" ? "the last day" : `day ${schedule.day}`;
-    return `Monthly on ${day} at ${[...new Set(schedule.times)].join(", ")} (${schedule.timeZone})`;
-  }
-  // Hermes lacks Array#toSorted; the spread is already a copy.
-  const days = [...new Set(schedule.weekdays)]
-    .sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7))
-    .map((day) => WEEKDAYS[day] ?? String(day))
-    .join(", ");
+  // Hermes lacks Array#toSorted; the spreads are already copies.
+  const monthDays = [...new Set(schedule.monthDays ?? [])].sort((a, b) => a - b);
+  const days =
+    monthDays.length > 0
+      ? `Monthly on ${monthDays.map((day) => (day === 31 ? "the last day" : `day ${day}`)).join(", ")}`
+      : isEveryWeekday(schedule.weekdays)
+        ? "Daily"
+        : [...new Set(schedule.weekdays)]
+            .sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7))
+            .map((day) => WEEKDAYS[day] ?? String(day))
+            .join(", ");
+  const minuteOf = (time: string) => {
+    const [hour, minute] = time.split(":");
+    return Number(hour) * 60 + Number(minute);
+  };
+  const requested = [schedule.timeOfDay, ...(schedule.extraTimes ?? [])].filter(
+    (time, index, all) => all.findIndex((other) => minuteOf(other) === minuteOf(time)) === index,
+  );
   // The server may move each time within its window; show by how much.
-  const times = [...new Set(schedule.times)]
+  const times = requested
     .map((time) =>
       placedTime(
         time,
-        schedule.chosen?.find((choice) => choice.requested === time)?.offsetMinutes ?? 0,
+        schedule.chosen?.find((choice) => minuteOf(choice.requested) === minuteOf(time))
+          ?.offsetMinutes ?? 0,
       ),
     )
     .join(", ");

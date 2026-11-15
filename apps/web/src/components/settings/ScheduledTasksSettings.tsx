@@ -30,7 +30,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import * as ScheduledTaskFork from "./scheduledTaskFork";
-import { monthlyDraft } from "./scheduledTaskFork.logic";
+import { fixedTimeForkDraft, fixedTimeZone } from "./scheduledTaskFork.logic";
 import {
   DEFAULT_WEBHOOK_PROMPT,
   emptyWebhookFilterDraft,
@@ -203,7 +203,7 @@ const EMPTY_DRAFT: DraftState = {
   filters: [],
   savedFilters: [],
   preservedSchedule: null,
-  monthly: monthlyDraft(null),
+  fixedTimeFork: fixedTimeForkDraft(null),
 };
 
 function WebhookFiltersField({
@@ -1868,8 +1868,7 @@ function ScheduledTaskEditorForm({
                     mode === "fixed" ||
                     mode === "once" ||
                     mode === "interval" ||
-                    mode === "webhook" ||
-                    mode === "monthly"
+                    mode === "webhook"
                   )
                     setDraft((current) => {
                       const suggested =
@@ -1899,10 +1898,6 @@ function ScheduledTaskEditorForm({
                   <Toggle value="once">Once</Toggle>
                 ) : null}
                 <Toggle value="interval">Every interval</Toggle>
-                <Toggle value="monthly">
-                  <ChromeriaFeatureMark focusable={false} />
-                  Monthly
-                </Toggle>
                 <Toggle
                   value="webhook"
                   disabled={webhookDenial !== undefined && draft.scheduleMode !== "webhook"}
@@ -2108,11 +2103,6 @@ function ScheduledTaskEditorForm({
                   }
                 />
               </div>
-            ) : draft.scheduleMode === "monthly" ? (
-              <ScheduledTaskFork.MonthlyScheduleFields
-                draft={draft.monthly}
-                onChange={(monthly) => setDraft((current) => ({ ...current, monthly }))}
-              />
             ) : draft.scheduleMode === "fixed" ? (
               <div className="flex flex-wrap items-center gap-3">
                 <div className="flex items-center gap-2">
@@ -2132,12 +2122,13 @@ function ScheduledTaskEditorForm({
                   />
                   {runAtZone === undefined ? null : (
                     <span id="scheduled-task-time-zone" className="text-xs text-muted-foreground">
-                      {runAtZone}
+                      {fixedTimeZone(draft.fixedTimeFork) ?? runAtZone}
                     </span>
                   )}
                   <span className="text-xs text-muted-foreground">on</span>
                 </div>
                 <ToggleGroup
+                  hidden={draft.fixedTimeFork.dayMode === "month"}
                   multiple
                   variant="outline"
                   size="sm"
@@ -2157,6 +2148,13 @@ function ScheduledTaskEditorForm({
                     </Toggle>
                   ))}
                 </ToggleGroup>
+                <ScheduledTaskFork.FixedTimeForkFields
+                  draft={draft.fixedTimeFork}
+                  serverTimeZone={tasksQuery.data?.timeZone}
+                  onChange={(fixedTimeFork) =>
+                    setDraft((current) => ({ ...current, fixedTimeFork }))
+                  }
+                />
               </div>
             ) : (
               <div className="flex items-center gap-2">

@@ -1592,10 +1592,11 @@ Child creation paths are owned by child-threads and shared with thread-people.
 ```json
 {
   "id": "scheduled-tasks",
-  "purpose": "Extend upstream's single scheduler with outcome checks that keep one thread working until a pinned check passes, one-shot, weekly and monthly triggers, Prism roles, shell command tasks with failure alerts, the Spectrum report completion fence, and the Chromeria v1 task import.",
+  "purpose": "Extend upstream's single scheduler with outcome checks that keep one thread working until a pinned check passes, a one-shot trigger, fixed_time time zones, extra times, month days and minute spreading with catch-up after downtime (stored weekly and monthly triggers migrate to fixed_time before recovery), Prism roles, shell command tasks with failure alerts, the Spectrum report completion fence, and the Chromeria v1 task import. Upstream PR pingdotgg/t3code#35192 shares monthDays and its last-day rule but forbids any weekdays with it and clears omitted month days; absorbing it needs reconciliation and equivalence proof, and its ten-minute missed-run skip cannot replace the fork's catch-up.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/174",
-    "https://github.com/toolboxmd/chromeria/issues/707"
+    "https://github.com/toolboxmd/chromeria/issues/707",
+    "https://github.com/toolboxmd/chromeria/issues/719"
   ],
   "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/174-scheduled-tasks-v2"],
   "newFiles": [
@@ -1608,6 +1609,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/scheduledTaskChecks/commandRunner.ts",
     "apps/server/src/scheduledTaskChecks/engine.test.ts",
     "apps/server/src/scheduledTaskChecks/engine.ts",
+    "apps/server/src/scheduledTaskChecks/fixedTimeMigration.test.ts",
+    "apps/server/src/scheduledTaskChecks/fixedTimeMigration.ts",
     "apps/server/src/scheduledTaskChecks/handoff.integration.test.ts",
     "apps/server/src/scheduledTaskChecks/handoff.test.ts",
     "apps/server/src/scheduledTaskChecks/handoff.ts",
@@ -1658,7 +1661,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "ScheduledTaskDispatchPolicy",
     "fork_scheduled_task_checks",
     "scheduler.state-set",
-    "reportsFence"
+    "reportsFence",
+    "monthDays"
   ]
 }
 ```

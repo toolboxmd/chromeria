@@ -13,14 +13,15 @@ import { serverEnvironment } from "../../state/server";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
-import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
-import { MONTHLY_DAYS, monthlyDayLabel, type MonthlyDraft } from "./scheduledTaskFork.logic";
+import { Toggle as DayToggleBase } from "../ui/toggle";
+import { Toggle, ToggleGroup } from "../ui/toggle-group";
+import { MONTH_DAYS, type FixedTimeForkDraft } from "./scheduledTaskFork.logic";
 import { AbandonReportAction } from "./spectrumReportAction";
 
 /**
- * Fork (toolboxmd/chromeria#174): the web scheduled task screens' view of
- * one-shot, weekly and monthly triggers, outcome checks and command tasks.
- * Monthly triggers are edited here; the rest only through agent tools.
+ * Fork: the web scheduled task screens' view of
+ * one-shot triggers, fixed_time's fork fields, outcome checks and command tasks.
+ * fixed_time's fields are edited here; the rest only through agent tools.
  */
 /** A fork task's one-line state: its check verdict or its command's last result. */
 export function ForkTaskSummary({
@@ -125,63 +126,112 @@ export function PreservedScheduleNote({
   );
 }
 
-/** A monthly trigger's day, times and time zone. A day a month lacks runs on its last day. */
-export function MonthlyScheduleFields({
+/** fixed_time's fork fields under upstream's time and weekdays. */
+export function FixedTimeForkFields({
   draft,
+  serverTimeZone,
   onChange,
 }: {
-  readonly draft: MonthlyDraft;
-  readonly onChange: (draft: MonthlyDraft) => void;
+  readonly draft: FixedTimeForkDraft;
+  readonly serverTimeZone: string | undefined;
+  readonly onChange: (draft: FixedTimeForkDraft) => void;
 }) {
   return (
-    <div className="space-y-2">
+    <div className="w-full space-y-3">
       <div className="flex flex-wrap items-center gap-3">
+        <ChromeriaFeatureMark />
         <div className="flex items-center gap-2">
-          <Label htmlFor="scheduled-task-month-day">On day</Label>
-          <Select
-            value={draft.day}
-            onValueChange={(day) => {
-              if (typeof day === "string") onChange({ ...draft, day });
-            }}
-          >
-            <SelectTrigger size="sm" id="scheduled-task-month-day">
-              <SelectValue>{monthlyDayLabel(draft.day)}</SelectValue>
-            </SelectTrigger>
-            <SelectPopup>
-              {MONTHLY_DAYS.map((day) => (
-                <SelectItem key={day} value={day}>
-                  {monthlyDayLabel(day)}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
-        </div>
-        <div className="flex items-center gap-2">
-          <Label htmlFor="scheduled-task-month-times">at</Label>
+          <Label htmlFor="scheduled-task-time-zone-name">Time zone</Label>
           <Input
-            id="scheduled-task-month-times"
-            nativeInput
-            className="w-40"
-            placeholder="09:00, 18:00"
-            value={draft.times}
-            onChange={(event) => onChange({ ...draft, times: event.target.value })}
-          />
-        </div>
-        <div className="flex items-center gap-2">
-          <Label htmlFor="scheduled-task-month-zone">in</Label>
-          <Input
-            id="scheduled-task-month-zone"
+            id="scheduled-task-time-zone-name"
             nativeInput
             className="w-44"
-            placeholder="Europe/Warsaw"
+            placeholder={serverTimeZone ?? "Server's zone"}
             value={draft.timeZone}
             onChange={(event) => onChange({ ...draft, timeZone: event.target.value })}
           />
         </div>
+        <div className="flex items-center gap-2">
+          <Label htmlFor="scheduled-task-extra-times">Also at</Label>
+          <Input
+            id="scheduled-task-extra-times"
+            nativeInput
+            className="w-40"
+            placeholder="13:00, 18:00"
+            value={draft.extraTimes}
+            onChange={(event) => onChange({ ...draft, extraTimes: event.target.value })}
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <Label htmlFor="scheduled-task-spread">Spread up to</Label>
+          <Input
+            type="number"
+            id="scheduled-task-spread"
+            nativeInput
+            min={0}
+            max={720}
+            className="w-20"
+            value={draft.windowMinutes}
+            onChange={(event) => onChange({ ...draft, windowMinutes: event.target.value })}
+          />
+          <span className="text-xs text-muted-foreground">min</span>
+        </div>
       </div>
-      <p className="text-xs text-muted-foreground">
-        A month without that day, such as the 31st in April, runs on its last day.
-      </p>
+      <div className="flex flex-wrap items-center gap-3">
+        <ToggleGroup
+          variant="outline"
+          size="sm"
+          aria-label="Run on"
+          value={[draft.dayMode]}
+          onValueChange={(values) => {
+            const mode = values[0];
+            if (mode === "week" || mode === "month") onChange({ ...draft, dayMode: mode });
+          }}
+        >
+          <Toggle value="week">Days of the week</Toggle>
+          <Toggle value="month">Days of the month</Toggle>
+        </ToggleGroup>
+        {draft.dayMode === "month" ? (
+          <div role="group" aria-label="Days of the month" className="grid w-fit grid-cols-7 gap-1">
+            {MONTH_DAYS.map((day) => (
+              <DayToggle
+                key={day}
+                day={day}
+                pressed={draft.monthDays.has(day)}
+                onPressedChange={(pressed) => {
+                  const monthDays = new Set(draft.monthDays);
+                  if (pressed) monthDays.add(day);
+                  else monthDays.delete(day);
+                  onChange({ ...draft, monthDays });
+                }}
+              />
+            ))}
+          </div>
+        ) : null}
+      </div>
+      {draft.dayMode === "month" ? (
+        <p className="text-xs text-muted-foreground">
+          A month without a chosen day, such as the 31st in April, runs on its last day.
+        </p>
+      ) : null}
     </div>
+  );
+}
+
+function DayToggle(props: {
+  readonly day: number;
+  readonly pressed: boolean;
+  readonly onPressedChange: (pressed: boolean) => void;
+}) {
+  return (
+    <DayToggleBase
+      variant="outline"
+      size="sm"
+      aria-label={props.day === 31 ? "Day 31 or the last day" : `Day ${props.day}`}
+      pressed={props.pressed}
+      onPressedChange={props.onPressedChange}
+    >
+      {props.day}
+    </DayToggleBase>
   );
 }

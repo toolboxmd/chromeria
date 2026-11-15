@@ -245,11 +245,11 @@ it.effect(
         at: "2026-10-09T08:00:00.000Z",
       });
       assert.deepEqual(fromJson(byId.get("task:once")!.model_selection_json), selection);
-      // A weekly task keeps its window and v1's minute picks.
+      // A weekly task becomes fixed_time and keeps its window and v1's minute picks.
       assert.deepEqual(fromJson(byId.get("task:weekly")!.schedule_json), {
-        type: "weekly",
+        type: "fixed_time",
+        timeOfDay: "09:00",
         weekdays: [1, 4],
-        times: ["09:00"],
         timeZone: "Europe/Warsaw",
         windowMinutes: 20,
         chosen: [{ requested: "09:00", offsetMinutes: -3 }],

@@ -387,8 +387,6 @@ function scheduleBindsToCallerByDefault(
         SCHEDULE_BIND_WINDOW_MS
       );
     case "fixed_time":
-    case "weekly":
-    case "monthly":
       return false;
   }
 }

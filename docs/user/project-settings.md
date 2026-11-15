@@ -107,17 +107,24 @@ Leaving an edited form asks before discarding unsaved changes.
 ## Agent-managed scheduled tasks
 
 Agents can schedule work for you with the scheduled task tools. Besides the
-schedules above, an agent can set a task to run once at a set time, or weekly
-on chosen days at one or more times in a named time zone. To spread load,
-Chromeria may move a weekly time by up to 30 minutes and shows the move, such
-as `09:00 (+4 min)`. These schedules appear in **Settings → Scheduled tasks**,
-but only an agent can change them.
+schedules above, an agent can set a task to run once at a set time.
 
-A task can also run **Monthly**: on one day of the month, or the last day, at
-one or more times in a named time zone. Pick it in the task form or ask an
-agent. When a month does not have the chosen day, such as the 31st in April or
-the 30th in February, the task runs on that month's last day, so no month is
-skipped.
+On desktop and web, an **At a time** schedule has more options under its time
+and days. Ask an agent for the same options, or set them in the task form:
+
+- **Time zone**: read the times in a named zone, such as `Europe/Warsaw`,
+  instead of the environment's zone.
+- **Also at**: more times on each day the task runs.
+- **Days of the month**: run on chosen days of the month instead of weekdays.
+  When a month does not have a chosen day, such as the 31st in April or the
+  30th in February, the task runs on that month's last day, so no month is
+  skipped.
+- **Spread up to**: let Chromeria move each time by up to that many minutes to
+  a quieter minute. The list shows the move, such as `09:00 (+4 min)`.
+
+If the environment was off when a task with these options was due, the task
+runs once when it is back, for the latest missed time. Mobile shows these tasks
+but cannot edit their schedule.
 
 A task can carry an **outcome check**: a shell command that proves the work is
 done. The agent keeps working in the same thread until the check passes. If it

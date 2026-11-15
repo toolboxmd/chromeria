@@ -76,6 +76,7 @@ import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import { dispatchVia, ScheduledTaskDispatchPolicy } from "../scheduledTaskChecks/DispatchPolicy.ts";
 import { forkFireKey } from "../scheduledTaskChecks/schedules.ts";
+import { migrateLegacyCalendarSchedules } from "../scheduledTaskChecks/fixedTimeMigration.ts";
 import * as Metrics from "../observability/Metrics.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
@@ -592,6 +593,8 @@ export const layer = Layer.effect(
         : task;
     // Fork: outcome checks and command tasks (toolboxmd/chromeria#174).
     const dispatchPolicy = yield* ScheduledTaskDispatchPolicy;
+    // Fork: legacy weekly and monthly rows become fixed_time before recovery decodes them.
+    yield* migrateLegacyCalendarSchedules();
     // Webhook deliveries for one task dispatch in arrival order rather than
     // being dropped while an earlier delivery is still dispatching.
     const webhookPermits = yield* Ref.make<ReadonlyMap<ScheduledTaskId, Semaphore.Semaphore>>(
@@ -1447,7 +1450,7 @@ export const layer = Layer.effect(
 
         const fireKey =
           webhook === undefined
-            ? (forkFireKey(active, trigger) ??
+            ? (forkFireKey(active, trigger, startedAt) ??
               `${active.id}:${DateTime.toEpochMillis(startedAt)}:${trigger}`)
             : `${active.id}:webhook:${webhook.deliveryId}`;
         const commandId = CommandId.make(`scheduled-task:${fireKey}`);

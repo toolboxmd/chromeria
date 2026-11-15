@@ -5,8 +5,8 @@ import { PrismLane, PrismRole } from "./prism.ts";
 
 /**
  * Fork scheduled task extensions, reached from upstream's contracts through one spread per union or
- * struct: `once`, `weekly` and `monthly` triggers, outcome checks that keep an agent working until its check
- * passes, and command tasks. Only agent tools edit these fields; clients show them.
+ * struct: the `once` trigger, `fixed_time` zones, extra times, month days and minute spreading,
+ * outcome checks that keep an agent working until its check passes, and command tasks.
  */
 
 // An offset is required so the instant never depends on the server's time zone.
@@ -26,10 +26,6 @@ export const ScheduledTaskOnceSchedule = Schema.Struct({
   description: "Run once at an absolute time, or as soon as the environment is back if it was off.",
 });
 
-const ClockTime = Schema.String.check(Schema.isPattern(/^([01]\d|2[0-3]):[0-5]\d$/)).annotate({
-  description: "Wall-clock time in 24-hour HH:MM form, such as 09:30.",
-});
-
 const isTimeZone = (value: string) => {
   try {
     // Intl throws a RangeError for a zone it does not know.
@@ -41,76 +37,90 @@ const isTimeZone = (value: string) => {
 
 const TimeZone = TrimmedNonEmptyString.check(
   Schema.makeFilter(isTimeZone, { expected: "an IANA time zone such as Europe/Warsaw" }),
-).annotate({ description: "IANA time zone the times are read in, such as Europe/Warsaw." });
+);
 
-const ClockTimes = Schema.Array(ClockTime).check(Schema.isMinLength(1), Schema.isMaxLength(24));
+// Upstream's `fixed_time` pattern, so 9:05 and 09:05 mean the same minute.
+const TimeOfDay = TrimmedNonEmptyString.check(Schema.isPattern(/^([01]?\d|2[0-3]):([0-5]\d)$/));
 
-/** Minutes a weekly time may move to its least busy minute; 0 keeps the exact minute. */
-export const DEFAULT_WEEKLY_WINDOW_MINUTES = 30;
-
-export const ScheduledTaskWeeklySchedule = Schema.Struct({
-  type: Schema.Literal("weekly").annotate({
-    description: "Run at wall-clock times on selected weekdays in a time zone.",
+/**
+ * Fork fields spread into upstream's `fixed_time`. A task with `timeZone` is fork-extended; the
+ * server stores its own zone when another field needs one. Omitted fields keep their stored values
+ * and `[]` clears; upstream's open month-day PR differs there (see the scheduled-tasks registry).
+ */
+export const ScheduledTaskFixedTimeForkFields = {
+  timeZone: Schema.optional(TimeZone).annotateKey({
+    description: "IANA zone for the times, such as Europe/Warsaw. Default: the server's.",
   }),
-  weekdays: Schema.Array(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 6 })))
-    .check(Schema.isMinLength(1))
-    .annotate({ description: "Weekday numbers where 0 is Sunday and 6 is Saturday." }),
-  times: ClockTimes,
-  timeZone: TimeZone,
+  extraTimes: Schema.optional(Schema.Array(TimeOfDay).check(Schema.isMaxLength(23))).annotateKey({
+    description: "More HH:MM times each day.",
+  }),
+  monthDays: Schema.optional(
+    Schema.Array(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 31 }))).check(
+      Schema.isMaxLength(31),
+    ),
+  ).annotateKey({
+    description:
+      "Days of the month instead of weekdays; 31 is the last day. Short months run on their last day.",
+  }),
   windowMinutes: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 720 })),
-  ).annotate({
-    description:
-      "Each time may move up to this many minutes either way to the least busy minute. Defaults to 30; 0 keeps the exact minute.",
+  ).annotateKey({
+    description: "Move each time up to this many minutes to the least busy minute. Default 0.",
   }),
-  /** The server's pick for each time, recomputed when the schedule changes. */
+  /** The server's pick for each requested time; input is ignored. */
   chosen: Schema.optional(
     Schema.Array(
       Schema.Struct({
-        requested: ClockTime,
+        requested: TimeOfDay,
         offsetMinutes: Schema.Int.check(Schema.isBetween({ minimum: -720, maximum: 720 })),
       }),
     ),
-  ),
-}).annotate({
-  description:
-    "Run at each time on each selected weekday in the time zone. The server spreads times within the window and reports its pick in chosen.",
-});
+  ).annotateKey({ description: "Set by the server." }),
+};
 
-export const ScheduledTaskMonthlySchedule = Schema.Struct({
-  type: Schema.Literal("monthly").annotate({
-    description: "Run at wall-clock times on one day of every month in a time zone.",
-  }),
-  day: Schema.Union([
-    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 31 })),
-    Schema.Literal("last"),
-  ]).annotate({
-    description:
-      "Day of the month, 1 to 31, or 'last'. A month without that day, such as 31 in April, runs on its last day.",
-  }),
-  times: ClockTimes,
-  timeZone: TimeZone,
-}).annotate({
-  description: "Run at each time on the chosen day of every month in the time zone.",
-});
+const ForkFixedTimeFields = Schema.Struct(ScheduledTaskFixedTimeForkFields);
+
+/** All seven weekdays, none, or no list at all mean every day. */
+export const isEveryWeekday = (weekdays: ReadonlyArray<number> | undefined) => {
+  const unique = new Set(weekdays ?? []);
+  return unique.size === 0 || unique.size === 7;
+};
+
+export const FIXED_TIME_MONTH_DAYS_WITH_WEEKDAYS =
+  "monthDays cannot be combined with a subset of weekdays; omit weekdays, or send monthDays: [] to run on weekdays.";
+
+/** Checked on upstream's `fixed_time`: month days and a weekday subset cannot both pick the days. */
+export const fixedTimeForkCheck = Schema.makeFilter(
+  (schedule: {
+    readonly weekdays?: ReadonlyArray<number> | undefined;
+    readonly monthDays?: ReadonlyArray<number> | undefined;
+  }) =>
+    (schedule.monthDays ?? []).length === 0 ||
+    isEveryWeekday(schedule.weekdays) ||
+    FIXED_TIME_MONTH_DAYS_WITH_WEEKDAYS,
+);
+
+/** A stored fork-extended `fixed_time`: it always carries its zone. */
+export type ScheduledTaskFixedTimeForkSchedule = {
+  readonly type: "fixed_time";
+  readonly timeOfDay: string;
+  readonly weekdays?: ReadonlyArray<number> | undefined;
+} & Omit<typeof ForkFixedTimeFields.Type, "timeZone"> & { readonly timeZone: string };
 
 /** Fork triggers, spread into upstream's read and write schedule unions. */
-export const ScheduledTaskForkSchedules = [
-  ScheduledTaskOnceSchedule,
-  ScheduledTaskWeeklySchedule,
-  ScheduledTaskMonthlySchedule,
-] as const;
+export const ScheduledTaskForkSchedules = [ScheduledTaskOnceSchedule] as const;
 export type ScheduledTaskForkSchedule =
   | typeof ScheduledTaskOnceSchedule.Type
-  | typeof ScheduledTaskWeeklySchedule.Type
-  | typeof ScheduledTaskMonthlySchedule.Type;
+  | ScheduledTaskFixedTimeForkSchedule;
 
+/** Fork triggers and fork-extended `fixed_time`; the rest is upstream's own. */
 export const isForkScheduledTaskSchedule = <S extends { readonly type: string }>(
   schedule: S,
 ): schedule is S & ScheduledTaskForkSchedule =>
   (schedule.type === "once" && "at" in schedule) ||
-  schedule.type === "weekly" ||
-  schedule.type === "monthly";
+  (schedule.type === "fixed_time" &&
+    "timeZone" in schedule &&
+    typeof schedule.timeZone === "string");
 
 export const ScheduledTaskRunStage = Schema.Literals([
   "running",

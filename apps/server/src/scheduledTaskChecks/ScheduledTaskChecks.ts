@@ -49,7 +49,12 @@ import { COMMAND_TIMEOUT_MS, startShellCommand } from "./commandRunner.ts";
 import { ScheduledTaskDispatchPolicy } from "./DispatchPolicy.ts";
 import { makeCheckedRuns, ScheduledTaskCheckError, type CheckedRuns } from "./engine.ts";
 import { followSend, reportsFence, ScheduledTaskSpectra } from "./handoff.ts";
-import { chooseWeeklyMinutes, forkSameSchedule, occupiedMinutes } from "./schedules.ts";
+import {
+  chooseMinutes,
+  effectiveFixedTime,
+  forkSameSchedule,
+  occupiedMinutes,
+} from "./schedules.ts";
 import {
   CHECK_OUTPUT_BYTES,
   checkedRunStatus,
@@ -567,7 +572,7 @@ function withForkState(task: ScheduledTask, state: CheckState | undefined): Sche
 const DAY_MS = 86_400_000;
 const MINUTE_MS = 60_000;
 
-/** Minutes other enabled tasks fire in the next nine days, for weekly minute spreading. */
+/** Minutes other enabled tasks fire in the next nine days, for minute spreading. */
 function busyMinutes(
   tasks: ReadonlyArray<ScheduledTask>,
   exceptId: string | undefined,
@@ -618,6 +623,12 @@ const decoratedLayer = Layer.effect(
           tasks: result.tasks.map((task) => withForkState(task, byId.get(task.id))),
         })),
         Effect.mapError(toTaskError(undefined)),
+      );
+    const storedScheduleJson = (taskId: ScheduledTaskId) =>
+      sql<{ readonly schedule_json: string }>`
+        SELECT schedule_json FROM scheduled_tasks WHERE task_id = ${taskId}`.pipe(
+        Effect.map((rows) => rows[0]?.schedule_json ?? null),
+        Effect.mapError(toTaskError(taskId)),
       );
     const refused = (message: string, taskId: ScheduledTaskId | undefined) =>
       new ScheduledTaskError({ message, ...(taskId === undefined ? {} : { taskId }) });
@@ -672,6 +683,8 @@ const decoratedLayer = Layer.effect(
           )
             return yield* inner.upsert(input, options);
           const now = yield* Clock.currentTimeMillis;
+          // Read before the task: a save landing after this read fails the guard below.
+          const before = input.id === undefined ? null : yield* storedScheduleJson(input.id);
           const { tasks } = yield* inner.list();
           const existing =
             input.id === undefined ? undefined : tasks.find((task) => task.id === input.id);
@@ -689,30 +702,68 @@ const decoratedLayer = Layer.effect(
               "A ui lane task must launch its own thread on the ui lane's Colors, so it cannot be bound to a thread.",
               input.id,
             );
+          let schedule = input.schedule;
+          if (schedule.type === "fixed_time") {
+            const effective = effectiveFixedTime(
+              schedule,
+              existing?.schedule,
+              DateTime.zoneToString(DateTime.zoneMakeLocal()),
+            );
+            if ("error" in effective) return yield* refused(effective.error, input.id);
+            schedule = effective.schedule;
+          }
           // Only fork triggers need this; upstream handles its own schedule changes.
           const changed =
             existing === undefined ||
-            !isForkScheduledTaskSchedule(input.schedule) ||
-            !forkSameSchedule(existing.schedule, input.schedule);
+            !isForkScheduledTaskSchedule(schedule) ||
+            !forkSameSchedule(existing.schedule, schedule);
           if (
-            input.schedule.type === "once" &&
+            schedule.type === "once" &&
             changed &&
-            Date.parse("at" in input.schedule ? input.schedule.at : input.schedule.runAt) <= now
+            Date.parse("at" in schedule ? schedule.at : schedule.runAt) <= now
           )
             return yield* refused("The one-shot time is in the past.", input.id);
-          let schedule = input.schedule;
-          if (schedule.type === "weekly") {
+          if (schedule.type === "fixed_time" && isForkScheduledTaskSchedule(schedule)) {
             // The server places each time; an unchanged schedule keeps its earlier picks.
-            const previous = existing?.schedule.type === "weekly" ? existing.schedule : undefined;
-            schedule = {
-              ...schedule,
-              chosen:
-                !changed && previous?.chosen !== undefined
-                  ? previous.chosen
-                  : chooseWeeklyMinutes(schedule, busyMinutes(tasks, input.id, now), now),
-            };
+            const previous =
+              existing !== undefined &&
+              existing.schedule.type === "fixed_time" &&
+              isForkScheduledTaskSchedule(existing.schedule)
+                ? existing.schedule.chosen
+                : undefined;
+            const { chosen: _ignored, ...requested } = schedule;
+            const chosen =
+              (schedule.windowMinutes ?? 0) === 0
+                ? undefined
+                : !changed && previous !== undefined
+                  ? previous
+                  : chooseMinutes(schedule, busyMinutes(tasks, input.id, now), now);
+            schedule = chosen === undefined ? requested : { ...requested, chosen };
           }
-          const result = yield* inner.upsert({ ...input, schedule }, options);
+          const save = inner.upsert({ ...input, schedule }, options);
+          if (input.id === undefined || input.schedule.type !== "fixed_time")
+            return { task: yield* attach((yield* save).task) };
+          // The merge read the stored task outside upstream's transaction; inside it, a newer
+          // save refuses this one instead of overwriting fields it left out.
+          const taskId = input.id;
+          const unchanged = storedScheduleJson(taskId).pipe(
+            Effect.flatMap((current) =>
+              current === before
+                ? Effect.void
+                : Effect.fail(refused("The task changed while saving; try again.", taskId)),
+            ),
+          );
+          const outer = yield* MutationReceipts.DefinitionExtension;
+          const result = yield* save.pipe(
+            Effect.provideService(MutationReceipts.DefinitionExtension, {
+              definition: outer?.definition,
+              prepare:
+                outer === undefined
+                  ? Effect.succeed(unchanged)
+                  : outer.prepare.pipe(Effect.map((commit) => Effect.andThen(unchanged, commit))),
+              ...(outer?.accepted === undefined ? {} : { accepted: outer.accepted }),
+            }),
+          );
           return { task: yield* attach(result.task) };
         },
         Effect.catchTags({

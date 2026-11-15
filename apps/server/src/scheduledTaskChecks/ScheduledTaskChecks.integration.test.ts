@@ -65,6 +65,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { ProcessRunner } from "../processRunner.ts";
+import * as MutationReceipts from "../scheduledTasks/mutationReceipts.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
@@ -1014,7 +1015,7 @@ it.effect(
 );
 
 it.effect(
-  "a direct upsert never turns a checked task into a webhook, refuses a past one-shot, and places weekly times",
+  "a direct upsert never turns a checked task into a webhook, refuses a past one-shot, and places spread times",
   () =>
     Effect.gen(function* () {
       const database = yield* tempDatabase;
@@ -1063,13 +1064,19 @@ it.effect(
         });
         assert.equal(future.task.schedule.type, "once");
         assert.equal(future.task.nextRunAt, "2026-10-09T07:00:00.000Z");
-        // The server places each weekly time and reports its pick.
-        const weekly = yield* service.upsert({
+        // The server places each spread time and reports its pick.
+        const spread = yield* service.upsert({
           ...input,
-          schedule: { type: "weekly", weekdays: [1], times: ["09:00"], timeZone: "UTC" },
+          schedule: {
+            type: "fixed_time",
+            timeOfDay: "09:00",
+            weekdays: [1],
+            timeZone: "UTC",
+            windowMinutes: 30,
+          },
         });
         assert.deepEqual(
-          weekly.task.schedule.type === "weekly" ? weekly.task.schedule.chosen : undefined,
+          spread.task.schedule.type === "fixed_time" ? spread.task.schedule.chosen : undefined,
           [{ requested: "09:00", offsetMinutes: 0 }],
         );
       }).pipe(Effect.provide(runtime(database)), Effect.scoped);
@@ -1077,7 +1084,7 @@ it.effect(
 );
 
 it.effect(
-  "schedule_task creates a monthly command task whose next run list_scheduled_tasks reports",
+  "schedule_task creates a monthly command task as fixed_time, and updates keep fields left out",
   () =>
     Effect.gen(function* () {
       const database = yield* tempDatabase;
@@ -1134,20 +1141,211 @@ it.effect(
           projectId,
           prompt: "Send the invoices",
           command: "echo invoices",
-          schedule: { type: "monthly", day: 31, times: ["09:00"], timeZone: "Europe/Warsaw" },
+          schedule: {
+            type: "fixed_time",
+            timeOfDay: "09:00",
+            monthDays: [31],
+            timeZone: "Europe/Warsaw",
+          },
         });
         const listed = yield* service.listScheduledTasks(scope, { projectId });
         const task = listed.tasks.find((entry) => entry.prompt === "Send the invoices");
         assert.deepEqual(task?.schedule, {
-          type: "monthly",
-          day: 31,
-          times: ["09:00"],
+          type: "fixed_time",
+          timeOfDay: "09:00",
+          monthDays: [31],
           timeZone: "Europe/Warsaw",
         });
         assert.equal(task?.command?.command, "echo invoices");
         // October 31, after the clocks went back to UTC+1.
         assert.equal(task?.nextRunAt, "2026-10-31T08:00:00.000Z");
+        // An edit that leaves the fork fields out keeps them; [] clears them.
+        const moved = yield* service.updateScheduledTask(scope, {
+          scheduledTaskId: task!.scheduledTaskId,
+          schedule: { type: "fixed_time", timeOfDay: "10:00" },
+        });
+        assert.deepEqual("schedule" in moved ? moved.schedule : moved, {
+          type: "fixed_time",
+          timeOfDay: "10:00",
+          monthDays: [31],
+          timeZone: "Europe/Warsaw",
+        });
+        const daily = yield* service.updateScheduledTask(scope, {
+          scheduledTaskId: task!.scheduledTaskId,
+          schedule: {
+            type: "fixed_time",
+            timeOfDay: "10:00",
+            monthDays: [],
+            extraTimes: ["18:00"],
+          },
+        });
+        assert.deepEqual("schedule" in daily ? daily.schedule : daily, {
+          type: "fixed_time",
+          timeOfDay: "10:00",
+          extraTimes: ["18:00"],
+          timeZone: "Europe/Warsaw",
+        });
+        assert.equal("nextRunAt" in daily ? daily.nextRunAt : null, "2026-10-08T16:00:00.000Z");
       }).pipe(Effect.provide(mcp), Effect.scoped);
+    }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "saves merge left-out fork fields with the stored task and refuse conflicts and stale merges",
+  () =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      yield* TestClock.setTime(Date.parse(CANONICAL));
+      const id = ScheduledTaskId.make("scheduled-task:merge");
+      yield* Effect.gen(function* () {
+        yield* createThread;
+        yield* insertTask({ id, schedule: { type: "interval", everyMs: 3_600_000 }, next: null });
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const sql = yield* SqlClient.SqlClient;
+        const stored = sql<{ readonly schedule_json: string; readonly next_run_at: string }>`
+          SELECT schedule_json, next_run_at FROM scheduled_tasks WHERE task_id = ${id}`.pipe(
+          Effect.map((rows) => rows[0]!),
+        );
+        const input = {
+          purposeIntent: { version: 1, intent: { type: "unscoped" } } as const,
+          id,
+          title: "Checked work",
+          prompt: "Do the scheduled work",
+          enabled: true,
+          projectId,
+          threadId,
+          workspaceStrategy: { type: "root" as const },
+          modelSelection: selection,
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+        };
+        const plain = { type: "fixed_time", timeOfDay: "09:00" } as const;
+        // A plain save with neutral fork values stays upstream's own task.
+        yield* service.upsert({
+          ...input,
+          schedule: { ...plain, extraTimes: [], monthDays: [], windowMinutes: 0 },
+        });
+        assert.deepEqual(JSON.parse((yield* stored).schedule_json), plain);
+        const created = yield* service.upsert({
+          ...input,
+          schedule: {
+            ...plain,
+            extraTimes: ["17:00"],
+            monthDays: [5],
+            windowMinutes: 20,
+            timeZone: "Europe/Warsaw",
+          },
+        });
+        const picks =
+          created.task.schedule.type === "fixed_time" ? created.task.schedule.chosen : [];
+        assert.lengthOf(picks ?? [], 2);
+        // The form of a client that predates the fork fields: they stay, with the picks.
+        const kept = yield* service.upsert({ ...input, title: "Renamed", schedule: plain });
+        assert.deepEqual(kept.task.schedule, { ...created.task.schedule });
+        assert.equal(kept.task.title, "Renamed");
+        // A weekday subset over stored month days is refused and changes nothing.
+        const before = yield* stored;
+        const conflict = yield* Effect.exit(
+          service.upsert({ ...input, schedule: { ...plain, weekdays: [1] } }),
+        );
+        assert.isTrue(Exit.isFailure(conflict));
+        assert.include(String(conflict), "monthDays cannot be combined");
+        assert.deepEqual(yield* stored, before);
+        const weekdays = yield* service.upsert({
+          ...input,
+          schedule: { ...plain, weekdays: [1], monthDays: [] },
+        });
+        assert.notProperty(weekdays.task.schedule, "monthDays");
+        assert.equal(weekdays.task.nextRunAt?.slice(0, 10), "2026-10-12");
+
+        // A save that lands after this one read the task wins: the stale merge is refused.
+        const current = JSON.parse((yield* stored).schedule_json);
+        const newer = JSON.stringify({ ...current, extraTimes: ["18:00"] });
+        const late = yield* Effect.exit(
+          service.upsert({ ...input, schedule: { ...plain, weekdays: [1] } }).pipe(
+            Effect.provideService(MutationReceipts.DefinitionExtension, {
+              definition: undefined,
+              prepare:
+                sql`UPDATE scheduled_tasks SET schedule_json = ${newer} WHERE task_id = ${id}`.pipe(
+                  Effect.as(Effect.void),
+                  Effect.orDie,
+                ),
+            }),
+          ),
+        );
+        assert.isTrue(Exit.isFailure(late));
+        assert.include(String(late), "The task changed while saving");
+        assert.deepEqual(JSON.parse((yield* stored).schedule_json).extraTimes, ["18:00"]);
+      }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+    }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "startup converts interrupted weekly and monthly rows before recovery reschedules them",
+  () =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      yield* TestClock.setTime(Date.parse(CANONICAL));
+      const weekly = {
+        type: "weekly",
+        weekdays: [1],
+        times: ["09:00"],
+        timeZone: "Europe/Warsaw",
+        windowMinutes: 0,
+      };
+      const monthly = { type: "monthly", day: "last", times: ["09:00"], timeZone: "Europe/Warsaw" };
+      yield* Effect.gen(function* () {
+        yield* insertTask({
+          id: "scheduled-task:weekly",
+          schedule: weekly,
+          next: "2026-10-05T07:00:00.000Z",
+          status: "running",
+        });
+        yield* insertTask({
+          id: "scheduled-task:monthly",
+          schedule: {
+            type: "destination-automation-v1",
+            certificateId: "certificate:monthly",
+            schedule: monthly,
+          },
+          next: "2026-09-30T07:00:00.000Z",
+          status: "running",
+        });
+      }).pipe(Effect.provide(database));
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{
+          readonly task_id: string;
+          readonly schedule_json: string;
+          readonly next_run_at: string | null;
+          readonly last_run_status: string;
+        }>`SELECT task_id, schedule_json, next_run_at, last_run_status FROM scheduled_tasks ORDER BY task_id`;
+        // Recovery decoded both rows, so each moved on to its next slot instead of staying stuck.
+        assert.deepEqual(
+          rows.map((row) => [row.task_id, row.last_run_status, row.next_run_at]),
+          [
+            ["scheduled-task:monthly", "failed", "2026-10-31T08:00:00.000Z"],
+            ["scheduled-task:weekly", "failed", "2026-10-12T07:00:00.000Z"],
+          ],
+        );
+        assert.deepEqual(JSON.parse(rows[0]!.schedule_json), {
+          type: "destination-automation-v1",
+          certificateId: "certificate:monthly",
+          schedule: {
+            type: "fixed_time",
+            timeOfDay: "09:00",
+            timeZone: "Europe/Warsaw",
+            monthDays: [31],
+          },
+        });
+        assert.deepEqual(JSON.parse(rows[1]!.schedule_json), {
+          type: "fixed_time",
+          timeOfDay: "09:00",
+          weekdays: [1],
+          timeZone: "Europe/Warsaw",
+          windowMinutes: 0,
+        });
+      }).pipe(Effect.provide(runtime(database)), Effect.scoped);
     }).pipe(Effect.scoped),
 );
 
