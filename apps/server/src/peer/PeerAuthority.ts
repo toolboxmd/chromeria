@@ -43,6 +43,7 @@ import {
   type PeerTaskLifecycleRequest,
   ThreadId,
   RunId,
+  RuntimeRequestId,
   ScheduledTaskId,
   OrchestrationV2LinkOrigin,
   type OrchestrationV2ThreadShell,
@@ -3277,6 +3278,55 @@ const make = Effect.gen(function* () {
       }
     },
   );
+  // A person reaches a run as a `user` message from web or mobile;
+  // agents and the server stamp their own provenance.
+  const isOwnerInput = Effect.fn("PeerAuthority.isOwnerInput")(function* (
+    effectId: string,
+    threadId: ThreadId,
+  ) {
+    const effects = yield* sql<{
+      effect_type: string;
+      run_id: string | null;
+      message_id: string | null;
+      request_id: string | null;
+    }>`SELECT effect_type,
+        COALESCE(json_extract(payload_json, '$.runId'), json_extract(payload_json, '$.sourceRunId')) AS run_id,
+        json_extract(payload_json, '$.messageId') AS message_id,
+        json_extract(payload_json, '$.requestId') AS request_id
+      FROM orchestration_v2_effect_outbox WHERE effect_id=${effectId}`;
+    const effect = effects[0];
+    if (effect === undefined) return false;
+    let runId = effect.run_id;
+    if (effect.effect_type === "runtime-request.respond" && effect.request_id !== null) {
+      const request = yield* threads.getRuntimeRequest(
+        threadId,
+        RuntimeRequestId.make(effect.request_id),
+      );
+      const { nodes } = yield* threads.getThreadRecords(threadId, ["nodes"]);
+      runId = nodes.find((node) => node.id === request?.nodeId)?.runId ?? null;
+    }
+    let run =
+      effect.effect_type === "provider-turn.steer" || runId === null
+        ? undefined
+        : yield* threads.getRun(threadId, RunId.make(runId));
+    // A continuation carries its source run's input, as its peer owner does.
+    for (let hops = 0; hops < 16 && run !== undefined; hops++) {
+      const source = run.restartContinuationOfRunId ?? run.forkPrismContinuationSourceRunId;
+      if (source === undefined) break;
+      run = yield* threads.getRun(threadId, source);
+    }
+    const messageId =
+      effect.effect_type === "provider-turn.steer" ? effect.message_id : run?.userMessageId;
+    if (messageId == null) return false;
+    const message = (yield* threads.getMessagesById(threadId, [MessageId.make(messageId)])).get(
+      MessageId.make(messageId),
+    );
+    return (
+      message?.role === "user" &&
+      message.createdBy === "user" &&
+      (message.creationSource === "web" || message.creationSource === "mobile")
+    );
+  }, Effect.mapError(unavailable));
   const checkEffect: PeerAuthority["Service"]["checkEffect"] = Effect.fn(
     "PeerAuthority.checkEffect",
   )(function* (effectId, threadId) {
@@ -3286,9 +3336,27 @@ const make = Effect.gen(function* () {
       Effect.mapError(unavailable),
     );
     const created = yield* permanentForThread(threadId);
+    const migrated = created === undefined ? yield* legacy(threadId) : undefined;
+    // Bounded agent and peer input always maps an effect row, so unmapped input
+    // a person sent is the owner's own work: it keeps the creation ceiling but
+    // not the creator's live origin checks.
+    if (
+      rows[0] === undefined &&
+      (created !== undefined || migrated !== undefined) &&
+      (yield* isOwnerInput(effectId, threadId))
+    ) {
+      const target = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
+      if (target === null || target.deletedAt !== null)
+        return yield* denied("The destination thread is no longer available.");
+      const bound = created?.ceiling ?? migrated?.ceiling;
+      if (bound !== undefined && exceededDispatchModeLimit(bound, target) !== undefined)
+        return yield* denied(
+          "The destination effect exceeds the current originating authority ceiling.",
+        );
+      return undefined;
+    }
     const record = rows[0] === undefined ? created : yield* read(rows[0].record_id);
     const coverage = record === undefined ? undefined : yield* coverageFor(record);
-    const migrated = created === undefined ? yield* legacy(threadId) : undefined;
     if (record?.context?.type === "task-stop") {
       const effects = yield* sql<{
         effect_type: string;

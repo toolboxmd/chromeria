@@ -3129,6 +3129,135 @@ it.live.each([{ retired: "source-run" }, { retired: "link" }] as const)(
     ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
+it.live("#730: the owner's message starts in launched work after the launching run ends", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const b = yield* makeNode(descriptorOf("owner-turn-b", "B", { peerAuthority: 1 }));
+      const a = yield* makeNode(descriptorOf("owner-turn-a", "A", { peerAuthority: 1 }));
+      yield* linkTo(a.links, b, "full-access");
+      const parent = ThreadId.make("owner-turn-parent");
+      yield* seedParent(a, parent);
+      yield* a.forwarding.call(
+        caller(a, parent),
+        ProjectToolkit.tools.t3_project_list,
+        b.environmentId,
+        {},
+      );
+      const launch = yield* nativeCall(a, parent, "t3_thread_launch", {
+        environmentId: b.environmentId,
+        projectId: b.project.id,
+        modelSelection: selection,
+        title: "Launched work",
+        message: "Work",
+        clientRequestId: "owner-turn-launch",
+      });
+      expect(launch.isError, json(launch.content)).not.toBe(true);
+      const target = (yield* decodeLaunchReceipt(launch.structuredContent)).threadId;
+      const sql = Context.get(b.database, SqlClient.SqlClient);
+      const end = (runId: RunId) =>
+        b.threads.dispatch({
+          type: "run.interrupt",
+          commandId: CommandId.make(`end:${runId}`),
+          threadId: target,
+          runId,
+          holdQueue: true,
+        });
+      yield* end(yield* activate(b, target));
+      const source = (yield* a.threads.getThreadRecords(parent, ["runs"])).runs[0]!;
+      const endedAt = yield* DateTime.now;
+      yield* a.sink.write({
+        events: [
+          {
+            id: EventId.make("owner-turn-source-ended"),
+            type: "run.updated",
+            threadId: parent,
+            runId: source.id,
+            providerInstanceId: instanceId,
+            occurredAt: endedAt,
+            payload: { ...source, status: "completed", completedAt: endedAt },
+          },
+        ],
+      });
+      const send = Effect.fn("send")(function* (author: "agent" | "owner") {
+        yield* b.threads.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`owner-turn-${author}`),
+          threadId: target,
+          messageId: MessageId.make(`owner-turn-${author}`),
+          text: `Message from the ${author}`,
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          ...(author === "owner"
+            ? { createdBy: "user" as const, creationSource: "web" as const }
+            : { createdBy: "agent" as const, creationSource: "mcp" as const }),
+        });
+        const run = (yield* b.threads.getThreadRecords(target, ["runs"])).runs.at(-1)!;
+        const effects = yield* sql<{
+          effect_id: string;
+        }>`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id=${target} AND effect_type='provider-turn.start' AND json_extract(payload_json, '$.runId')=${run.id}`;
+        expect(effects).toHaveLength(1);
+        return { runId: run.id, effectId: effects[0]!.effect_id };
+      });
+      // An unattributed local agent still answers to the launched work's creation.
+      const agent = yield* send("agent");
+      const agentCheck = yield* Effect.result(b.authority.checkEffect(agent.effectId, target));
+      expect(agentCheck._tag).toBe("Failure");
+      yield* end(agent.runId);
+      const owner = yield* send("owner");
+      const executed = yield* Ref.make<ReadonlyArray<string>>([]);
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
+        Effect.provide(
+          EffectWorker.layerWithOptions({ maxAttempts: 1 }).pipe(
+            Layer.provide(
+              Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, {
+                execute: (effect) => Ref.update(executed, (ids) => [...ids, effect.id]),
+              }),
+            ),
+            Layer.provide(Layer.succeed(PeerAuthority.PeerAuthority, b.authority)),
+            Layer.provide(Layer.succeedContext(b.runtime)),
+          ),
+        ),
+      );
+      yield* worker.drain();
+      expect(yield* Ref.get(executed)).toContain(owner.effectId);
+      expect(yield* Ref.get(executed)).not.toContain(agent.effectId);
+      // A server continuation carries the owner's input through its source run.
+      const ownerRun = (yield* b.threads.getThreadRecords(target, ["runs"])).runs.at(-1)!;
+      const continuation = RunId.make("owner-turn-continuation");
+      yield* b.sink.writeWithEffects({
+        events: [
+          {
+            id: EventId.make("owner-turn-continuation"),
+            type: "run.created",
+            threadId: target,
+            runId: continuation,
+            providerInstanceId: instanceId,
+            occurredAt: yield* DateTime.now,
+            payload: {
+              ...ownerRun,
+              id: continuation,
+              ordinal: ownerRun.ordinal + 1,
+              userMessageId: MessageId.make("owner-turn-agent"),
+              restartContinuationOfRunId: owner.runId,
+              status: "starting",
+              queuePosition: null,
+            },
+          },
+        ],
+        effects: [
+          {
+            id: "effect:owner-turn-continuation",
+            commandId: CommandId.make("owner-turn-continuation"),
+            threadId: target,
+            request: { type: "provider-turn.start", runId: continuation },
+          },
+        ],
+      });
+      yield* b.authority.checkEffect("effect:owner-turn-continuation", target);
+    }),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
+);
+
 it.live(
   "round7: private webhook URLs retain the frozen runtime ceiling after destination mode increase",
   () =>

@@ -91,6 +91,11 @@ export interface OrchestrationEffectExecutorV2Shape {
     effect: EffectOutbox.OrchestrationEffectV2,
     options?: { readonly willRetry: boolean },
   ) => Effect.Effect<void, OrchestrationEffectExecutionError>;
+  /** Fails the run a start would have begun once peer authority refused it for good. */
+  readonly settleRefusedRun?: (
+    effect: EffectOutbox.OrchestrationEffectV2,
+    refusal: string,
+  ) => Effect.Effect<void, OrchestrationEffectExecutionError>;
 }
 
 export class OrchestrationEffectExecutorV2 extends Context.Service<
@@ -164,6 +169,32 @@ export const layerExecutor: Layer.Layer<
         ),
       );
     return OrchestrationEffectExecutorV2.of({
+      settleRefusedRun: Effect.fn("OrchestrationEffectExecutorV2.settleRefusedRun")(
+        function* (effect, refusal) {
+          if (
+            effect.request.type !== "provider-turn.start" &&
+            effect.request.type !== "provider-turn.restart"
+          )
+            return;
+          yield* providerTurnStart.settleUnstartedRun({
+            threadId: effect.threadId,
+            runId: effect.request.runId,
+            cause: refusal,
+            reason: { type: "refused", message: refusal },
+          });
+        },
+        (self, effect) =>
+          self.pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestrationEffectExecutionError({
+                  effectId: effect.id,
+                  effectType: effect.request.type,
+                  cause,
+                }),
+            ),
+          ),
+      ),
       execute: Effect.fn("OrchestrationEffectExecutorV2.execute")(function (effect, options) {
         const willRetry = options?.willRetry ?? false;
         switch (effect.request.type) {
@@ -506,6 +537,7 @@ export const layerExecutor: Layer.Layer<
                         threadId: effect.threadId,
                         runId: restartRequest.runId,
                         cause,
+                        reason: { type: "stop-unconfirmed" },
                       }),
                 ),
                 Effect.andThen(
@@ -982,14 +1014,21 @@ export const layerWithOptions = (
             ].includes(effect.request.type)
               ? authority.value.checkEffect(effect.id, effect.threadId).pipe(
                   Effect.map((record) => record?.id),
-                  Effect.mapError(
-                    (cause) =>
-                      new OrchestrationEffectExecutionError({
-                        effectId: effect.id,
-                        effectType: effect.request.type,
-                        cause,
-                        deniedBeforeExecution: true,
-                      }),
+                  // A failed settlement keeps retry ownership of the starting run.
+                  Effect.tapError((refusal) =>
+                    effect.attemptCount < maxAttempts || executor.settleRefusedRun === undefined
+                      ? Effect.void
+                      : executor.settleRefusedRun(effect, refusal.message),
+                  ),
+                  Effect.mapError((cause) =>
+                    isOrchestrationEffectExecutionError(cause)
+                      ? cause
+                      : new OrchestrationEffectExecutionError({
+                          effectId: effect.id,
+                          effectType: effect.request.type,
+                          cause,
+                          deniedBeforeExecution: true,
+                        }),
                   ),
                 )
               : Effect.undefined;
