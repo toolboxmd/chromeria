@@ -1412,13 +1412,17 @@ describe("Working shelf (beta)", () => {
         id: string,
         environmentId = onlineEnvironmentId,
         key: string | null = null,
-      ) => ({
-        id: ThreadId.make(id),
-        environmentId,
-        createdAt: `2026-03-09T${id === "offline" ? "12" : id === "online" ? "11" : "10"}:00:00.000Z`,
-        activeOrderKey: key,
-        pinOrderKey: key,
-      });
+      ) => {
+        const createdAt = `2026-03-09T${id === "offline" ? "12" : id === "online" ? "11" : "10"}:00:00.000Z`;
+        return {
+          id: ThreadId.make(id),
+          environmentId,
+          createdAt,
+          updatedAt: createdAt,
+          activeOrderKey: key,
+          pinOrderKey: key,
+        };
+      };
       const keyOf = (entry: ReturnType<typeof thread>) =>
         scopedThreadKey(scopeThreadRef(entry.environmentId, entry.id));
       const online = thread("online");
