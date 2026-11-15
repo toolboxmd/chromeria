@@ -3520,3 +3520,23 @@ sources and reasons.
   "keywords": ["project.restored", "project.restore", "assertAgentMayDeleteProject"]
 }
 ```
+
+## eval-spend-cap
+
+```json
+{
+  "id": "eval-spend-cap",
+  "purpose": "Paid eval runs above a small sample cap refuse without an explicit flag, and fork eval docs point at affected-cases-only proof.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/731"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...zero-cost-eval-cap"],
+  "newFiles": [],
+  "upstreamFiles": [
+    "evals/README.md",
+    "evals/mcp-tool-use/README.md",
+    "evals/mcp-tool-use/run.ts",
+    "evals/mcp-tool-use/run.test.ts"
+  ],
+  "sharedFiles": [],
+  "keywords": ["max-samples", "sample cap", "DEFAULT_MAX_SAMPLES"]
+}
+```

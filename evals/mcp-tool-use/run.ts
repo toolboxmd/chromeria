@@ -2421,6 +2421,19 @@ export const summarize = (
   ].join("\n");
 };
 
+/** Largest planned samples without an explicit --max-samples. */
+export const DEFAULT_MAX_SAMPLES = 30;
+/** Worst case without --samples: a case whose 2 samples disagree gets a 3rd. */
+export const plannedSamples = (caseCount: number, samples: number | undefined) =>
+  caseCount * (samples ?? 3);
+/** Refusal message when a run plans more samples than the cap, else undefined. */
+export const sampleCapMessage = (planned: number, maxSamples: number | undefined) => {
+  const max = maxSamples ?? DEFAULT_MAX_SAMPLES;
+  return planned > max
+    ? `Planned ${planned} samples exceeds the cap of ${max}. Pass --max-samples <n> to raise it for an approved run.`
+    : undefined;
+};
+
 const PositiveInt = Schema.FiniteFromString.check(Schema.isInt(), Schema.isGreaterThan(0));
 const PositiveIntOrZero = Schema.FiniteFromString.check(
   Schema.isInt(),
@@ -2436,6 +2449,7 @@ const Flags = Schema.Struct({
   samples: Schema.optional(PositiveInt),
   concurrency: PositiveInt,
   "max-steps": Schema.optional(PositiveInt),
+  "max-samples": Schema.optional(PositiveInt),
   effort: Schema.optional(Schema.Literals(EFFORTS)),
   "shell-model": Schema.Literals([
     ...(Object.keys(PRICES) as Array<PricedModel>),
@@ -2478,6 +2492,8 @@ const main = Effect.gen(function* () {
       concurrency: { ...string, default: "8" },
       // Unset: 6 for Claude, 10 for Codex, whose code-mode cells take more steps.
       "max-steps": string,
+      // Unset: 30.
+      "max-samples": string,
       effort: string,
       "shell-model": { ...string, default: "claude-haiku-5-5" },
       // T3's text must work for every user, so the captured CLAUDE.md is dropped by default.
@@ -2521,6 +2537,14 @@ const main = Effect.gen(function* () {
       (setup.harness === undefined || setup.harness === harness),
   );
   if (selectedCases.length === 0) return yield* Effect.die(new Error("No case matches --case."));
+  // Dry runs make no model calls, so the cap does not apply.
+  if (!flags["dry-run"]) {
+    const overCap = sampleCapMessage(
+      plannedSamples(selectedCases.length, flags.samples),
+      flags["max-samples"],
+    );
+    if (overCap !== undefined) return yield* Effect.die(new Error(overCap));
+  }
   const selected = yield* Effect.forEach(selectedCases, (testCase) =>
     Effect.gen(function* () {
       const priorTurns = yield* Effect.forEach(testCase.setup.priorTurns ?? [], (turn) =>

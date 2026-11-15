@@ -46,7 +46,7 @@ Every eval follows the same shape, so a new one is easy to write and an old one 
 
 ## Cost
 
-Run only the cases your change touches until they pass. Then do one full run per model before the PR merges. Each eval's summary records what the run cost.
+Run only the cases your change touches until they pass. Fork PRs follow [the fork guide](../docs/fork.md#proof-and-upstream-overlap): affected fork-owned cases only, never a full run. Each eval's summary records what the run cost. A run above the sample cap needs the user's approval of the cost; raise the cap only for an approved run.
 
 ## Add an eval
 
