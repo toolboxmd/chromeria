@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off - Models the native worker transport without touching Keychain.
+import * as NodeEvents from "node:events";
 import { describe, expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
@@ -23,14 +25,23 @@ const { getPassword } = vi.hoisted(() => ({
   getPassword: vi.fn<() => Promise<string | undefined>>(),
 }));
 
-vi.mock("@napi-rs/keyring", () => ({
-  Entry: class {
-    getPassword() {
-      throw new Error("synchronous keychain read");
+vi.mock("node:worker_threads", () => ({
+  Worker: class extends NodeEvents.EventEmitter {
+    constructor() {
+      super();
+      queueMicrotask(async () => {
+        try {
+          const secret = await getPassword();
+          this.emit("message", secret ? { secret } : { reason: "keychainItemMissing" });
+        } catch {
+          this.emit("message", { reason: "needsKeychainApproval" });
+        }
+      });
     }
-  },
-  AsyncEntry: class {
-    getPassword = getPassword;
+    unref() {}
+    async terminate() {
+      return 0;
+    }
   },
 }));
 
@@ -118,7 +129,7 @@ describe("macOS Chromium secrets", () => {
       getPassword.mockRejectedValue(denied);
       const error = yield* resolveChromiumKeys(request).pipe(Effect.flip);
       expect(error.reason).toBe("needsKeychainApproval");
-      expect(error.cause).toBe(denied);
+      expect(error.cause).toBeUndefined();
     }).pipe(Effect.provide(layerNoProcesses)),
   );
 });
