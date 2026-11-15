@@ -1069,7 +1069,13 @@ describe("web_read at the registered MCP seam", () => {
       yield* Effect.gen(function* () {
         const first = yield* finish(read({ url: "https://wall.example/" }), f.requests);
         expect(first).toMatchObject({ status, text: "", totalChars: 0, nextOffset: null });
-        expect(first.nextAction).toBe(status === "login" ? "needs_session" : undefined);
+        expect(first.nextAction).toBe(
+          status === "login"
+            ? "needs_session"
+            : status === "challenge"
+              ? "preview_open"
+              : undefined,
+        );
         expect(yield* read({ url: "https://wall.example/" })).toMatchObject({
           status,
           rung: "cache",

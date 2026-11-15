@@ -235,51 +235,100 @@ it.effect.each([
     }),
 );
 
-it.effect("renders only thin/consent pages, preserving explicit HTTP walls and failures", () =>
-  Effect.gen(function* () {
-    const cases = [
-      { body: article, status: 200, expected: "ok" },
-      { body: "<h1>Sign in</h1><input type='password'>", status: 200, expected: "login" },
-      {
-        body: "<title>Just a moment</title>Checking your browser",
-        status: 200,
-        expected: "challenge",
-      },
-      {
-        body: "<title>502 Bad Gateway</title>Origin is down",
-        status: 200,
-        expected: "origin_error",
-      },
-      { body: shell, status: 500, expected: "origin_error" },
-    ];
-    let renders = 0;
-    const f = yield* fixture(
-      () =>
-        Effect.sync(() => {
-          renders++;
-          return {
-            body: article,
-            finalUrl: "https://unexpected.example/",
-            httpStatus: 200,
-            headers: {},
-          };
-        }),
-      (url) => {
-        const c = cases[Number(url.pathname.slice(1))]!;
-        return Effect.succeed(response(c.body, c.status));
-      },
-    );
-    yield* Effect.gen(function* () {
-      yield* f.setup;
-      for (const [i, c] of cases.entries()) {
-        const result = yield* Fiber.join(yield* f.start(`https://case${i}.example/${i}`));
-        expect(result).toMatchObject({ status: c.expected, rung: "http", sourceRung: "http" });
-        if (c.expected !== "ok") expect(result.text).toBe("");
-        if (c.expected === "login") expect(result.nextAction).toBe("needs_session");
-      }
-      expect(renders).toBe(0);
-    }).pipe(Effect.provide(f.layer));
-  }),
+it.effect(
+  "renders only thin/consent/challenge pages, preserving explicit HTTP walls and failures",
+  () =>
+    Effect.gen(function* () {
+      const cases = [
+        { body: article, status: 200, expected: "ok" },
+        { body: "<h1>Sign in</h1><input type='password'>", status: 200, expected: "login" },
+        // Rate limiting is never retried in the browser, nor offered for interactive opening.
+        { body: "<title>Too many requests</title>", status: 429, expected: "challenge" },
+        {
+          body: "<title>502 Bad Gateway</title>Origin is down",
+          status: 200,
+          expected: "origin_error",
+        },
+        { body: shell, status: 500, expected: "origin_error" },
+      ];
+      let renders = 0;
+      const f = yield* fixture(
+        () =>
+          Effect.sync(() => {
+            renders++;
+            return {
+              body: article,
+              finalUrl: "https://unexpected.example/",
+              httpStatus: 200,
+              headers: {},
+            };
+          }),
+        (url) => {
+          const c = cases[Number(url.pathname.slice(1))]!;
+          return Effect.succeed(response(c.body, c.status));
+        },
+      );
+      yield* Effect.gen(function* () {
+        yield* f.setup;
+        for (const [i, c] of cases.entries()) {
+          const result = yield* Fiber.join(yield* f.start(`https://case${i}.example/${i}`));
+          expect(result).toMatchObject({ status: c.expected, rung: "http", sourceRung: "http" });
+          if (c.expected !== "ok") expect(result.text).toBe("");
+          expect(result.nextAction).toBe(c.expected === "login" ? "needs_session" : undefined);
+        }
+        expect(renders).toBe(0);
+      }).pipe(Effect.provide(f.layer));
+    }),
+);
+
+it.effect(
+  "retries a page challenge once in the isolated browser and names preview_open when it never clears",
+  () =>
+    Effect.gen(function* () {
+      const challenge = "<html><head><title>Just a moment...</title></head><body></body></html>";
+      const renders: Array<{ url: string; challenge: boolean | undefined; status: number }> = [];
+      const f = yield* fixture(
+        (input) =>
+          Effect.sync(() => {
+            renders.push({
+              url: input.url.href,
+              challenge: input.challenge,
+              status: input.initial.status,
+            });
+            return input.url.hostname === "cleared.example"
+              ? { body: article, finalUrl: input.url.href, httpStatus: 200, headers: {} }
+              : { body: challenge, finalUrl: input.url.href, httpStatus: 403, headers: {} };
+          }),
+        () => Effect.succeed(response(challenge, 403)),
+      );
+      yield* Effect.gen(function* () {
+        yield* f.setup;
+        const cleared = yield* Fiber.join(yield* f.start("https://cleared.example/"));
+        expect(cleared).toMatchObject({
+          status: "ok",
+          rung: "render",
+          sourceRung: "render",
+          httpStatus: 200,
+          title: "Rendered rooms",
+        });
+        expect(cleared.nextAction).toBeUndefined();
+        expect(cleared.text).toContain("Eight guest rooms");
+        const stuck = yield* Fiber.join(yield* f.start("https://stuck.example/"));
+        expect(stuck).toMatchObject({
+          status: "challenge",
+          rung: "render",
+          sourceRung: "render",
+          httpStatus: 403,
+          nextAction: "preview_open",
+          text: "",
+        });
+        expect(renders).toEqual([
+          { url: "https://cleared.example/", challenge: true, status: 403 },
+          { url: "https://stuck.example/", challenge: true, status: 403 },
+        ]);
+        expect(f.fallbacks).toEqual([]);
+      }).pipe(Effect.provide(f.layer));
+    }),
 );
 
 it.effect(

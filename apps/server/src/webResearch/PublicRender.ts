@@ -9,6 +9,7 @@ import type { BrowserContext, Page, Route } from "playwright-core";
 import { publicProxy } from "../htmlRender/publicProxy.ts";
 import * as PreviewBrowser from "../preview/PreviewBrowser.ts";
 import { ServerBrowserContexts } from "../preview/ServerBrowserContexts.ts";
+import { CHALLENGE_TITLE } from "./extract.ts";
 
 export class PublicRenderError extends Schema.TaggedError<PublicRenderError>()(
   "PublicRenderError",
@@ -44,6 +45,11 @@ interface RenderInput {
   readonly initial: DocumentResponse;
   /** Every later document, including redirects and frames, uses the core's HTTP policy. */
   readonly loadDocument: (url: URL) => Effect.Effect<DocumentResponse, PublicRenderError>;
+  /**
+   * The initial document is a JavaScript challenge. Its clearance cookie lives in the
+   * browser, so the browser fetches the challenged page itself and waits for it to clear.
+   */
+  readonly challenge?: boolean;
 }
 
 export class PublicRender extends Context.Service<
@@ -62,6 +68,8 @@ export class PublicRender extends Context.Service<
 >()("t3/webResearch/PublicRender") {}
 
 const MAX_DOM_CHARS = 4 * 1024 * 1024;
+const CHALLENGE_CLEAR_MS = 10_000;
+const CHALLENGE_SETTLE_MS = 5_000;
 
 /** Playwright callback boundary: document I/O stays owned by the Effect reader. */
 const routeDocuments = (
@@ -83,8 +91,40 @@ const routeDocuments = (
       return false;
     }
   };
+  const challenged = (request: ReturnType<Route["request"]>) => {
+    if (!input.challenge || !/^https?:/.test(request.url())) return false;
+    const target = new URL(request.url());
+    // Cloudflare's challenge posts its answers to its own platform, never to the site.
+    if (!request.isNavigationRequest())
+      return (
+        request.method() === "POST" &&
+        (target.hostname === "challenges.cloudflare.com" ||
+          (target.origin === input.url.origin &&
+            target.pathname.startsWith("/cdn-cgi/challenge-platform/")))
+      );
+    if (!inMainFrame(request)) return request.method() === "GET";
+    // The challenge reloads or POSTs its own page; any other document keeps the core's policy.
+    return (
+      ["GET", "POST"].includes(request.method()) &&
+      target.origin === input.url.origin &&
+      target.pathname === input.url.pathname
+    );
+  };
+  if (input.challenge)
+    page.on("response", (response) => {
+      const request = response.request();
+      if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+        httpStatus = response.status();
+        responseHeaders = response.headers();
+      }
+    });
   const route = async (route: Route) => {
     const request = route.request();
+    if (challenged(request)) {
+      // The browser's SOCKS proxy checks and pins these connections like subresources.
+      await route.continue().catch(() => {});
+      return;
+    }
     if (!/^https?:/.test(request.url()) || !["GET", "HEAD"].includes(request.method())) {
       if (request.isNavigationRequest() && inMainFrame(request))
         failure = new PublicRenderError({
@@ -206,9 +246,32 @@ const renderBrowser = async (context: BrowserContext, input: RenderInput, signal
     const documents = routeDocuments(context, page, input, documentsController.signal);
     await documents.install();
     try {
-      await page.goto(input.url.href, { waitUntil: "networkidle", timeout: 0 });
+      if (input.challenge) {
+        await page.goto(input.url.href, { waitUntil: "domcontentloaded", timeout: 0 });
+        // A challenge that never clears is still read, so it classifies as a challenge.
+        const cleared = await page
+          .waitForFunction(
+            `!new RegExp(${JSON.stringify(CHALLENGE_TITLE.source)}, "i").test(document.title)`,
+            undefined,
+            {
+              timeout: CHALLENGE_CLEAR_MS,
+            },
+          )
+          .then(
+            () => true,
+            () => false,
+          );
+        if (cleared)
+          await page
+            .waitForLoadState("networkidle", { timeout: CHALLENGE_SETTLE_MS })
+            .catch(() => {});
+      } else await page.goto(input.url.href, { waitUntil: "networkidle", timeout: 0 });
       const finalUrl = page.url();
-      if (!/^https?:/.test(finalUrl))
+      // Browser-followed redirects skip routing, so a cleared page may not leave its origin.
+      if (
+        !/^https?:/.test(finalUrl) ||
+        (input.challenge && new URL(finalUrl).origin !== input.url.origin)
+      )
         throw new PublicRenderError({
           status: "unsupported",
           httpStatus: null,

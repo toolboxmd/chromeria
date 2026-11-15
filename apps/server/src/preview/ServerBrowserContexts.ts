@@ -150,7 +150,10 @@ export class ServerBrowserContexts {
       chromiumSandbox: !sandboxDisabled(input.env),
       timeout: 10_000,
       proxy: { server: `socks5://127.0.0.1:${input.proxyPort}`, bypass: "<-loopback>" },
+      // Challenge pages refuse a browser that announces automation; the preview browser drops it too.
+      ignoreDefaultArgs: ["--enable-automation"],
       args: [
+        "--disable-blink-features=AutomationControlled",
         "--disable-gpu",
         "--disable-quic",
         "--block-new-web-contents",
