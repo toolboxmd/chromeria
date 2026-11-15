@@ -128,7 +128,7 @@ const fixture = Effect.fnUntraced(function* (
   const reader = WebResearch.layer.pipe(
     Layer.provide(Layer.mock(Search.Search)({})),
     Layer.provide(
-      Layer.succeed(PublicHttp.PublicHttp, {
+      Layer.mock(PublicHttp.PublicHttp)({
         get: (url) =>
           Effect.gen(function* () {
             order.push(url.pathname === "/robots.txt" ? "robots" : "http");

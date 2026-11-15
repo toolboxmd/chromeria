@@ -90,7 +90,7 @@ const fixture = Effect.fnUntraced(function* (
       }),
     ),
     Layer.provide(
-      Layer.succeed(PublicHttp.PublicHttp, {
+      Layer.mock(PublicHttp.PublicHttp)({
         get: (url) =>
           Effect.gen(function* () {
             yield* Queue.offer(requests, { url: url.href, at: yield* Clock.currentTimeMillis });

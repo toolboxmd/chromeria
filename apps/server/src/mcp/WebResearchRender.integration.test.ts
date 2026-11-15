@@ -123,7 +123,7 @@ const fixture = Effect.fnUntraced(function* (
     Layer.provide(PageCache.layer),
     Layer.provide(Layer.succeed(PublicRender.PublicRender, { render })),
     Layer.provide(
-      Layer.succeed(PublicHttp.PublicHttp, {
+      Layer.mock(PublicHttp.PublicHttp)({
         get: (url) =>
           Effect.gen(function* () {
             yield* Queue.offer(requests, { url: url.href, at: yield* Clock.currentTimeMillis });
@@ -292,7 +292,7 @@ it.effect(
           Effect.sync(() => {
             renders.push({
               url: input.url.href,
-              challenge: input.challenge,
+              challenge: input.challenge !== undefined,
               status: input.initial.status,
             });
             return input.url.hostname === "cleared.example"

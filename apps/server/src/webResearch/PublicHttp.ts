@@ -9,7 +9,9 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Cookies from "effect/http/Cookies";
 import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as HttpIncomingMessage from "effect/http/HttpIncomingMessage";
 
 import { isLocalAddress } from "../htmlRender/publicProxy.ts";
@@ -50,6 +52,21 @@ export class PublicHttp extends Context.Service<
       },
       PublicNetworkBlockedError | PublicHttpError
     >;
+    /** A browser request forwarded with the same address checks and body bounds. */
+    readonly send: (request: {
+      readonly url: URL;
+      readonly method: "GET" | "POST";
+      readonly headers: Readonly<Record<string, string>>;
+      readonly body?: Uint8Array;
+    }) => Effect.Effect<
+      {
+        readonly status: number;
+        readonly headers: Readonly<Record<string, string>>;
+        readonly cookies: ReadonlyArray<Cookies.Cookie>;
+        readonly body: Uint8Array;
+      },
+      PublicNetworkBlockedError | PublicHttpError
+    >;
   }
 >()("t3/webResearch/PublicHttp") {}
 
@@ -76,17 +93,28 @@ export const validateDestination = (url: URL) =>
 
 const make = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;
-  const get = Effect.fn("PublicHttp.get")(function* (url: URL) {
+  const send = Effect.fn("PublicHttp.send")(function* (request: {
+    readonly url: URL;
+    readonly method: "GET" | "POST";
+    readonly headers: Readonly<Record<string, string>>;
+    readonly body?: Uint8Array;
+  }) {
+    const { url } = request;
     // Literal IPs bypass an agent's DNS lookup, so validate them here too.
     yield* validateDestination(url);
+    const outgoing = HttpClientRequest.make(request.method)(url.href, {
+      headers: { ...request.headers, "user-agent": USER_AGENT, "accept-encoding": "identity" },
+    });
     const response = yield* client
-      .get(url.href, {
-        headers: {
-          "user-agent": USER_AGENT,
-          accept: "text/html, text/plain;q=0.9, application/xhtml+xml;q=0.8",
-          "accept-encoding": "identity",
-        },
-      })
+      .execute(
+        request.body === undefined
+          ? outgoing
+          : HttpClientRequest.bodyUint8Array(
+              outgoing,
+              request.body,
+              request.headers["content-type"],
+            ),
+      )
       .pipe(
         Effect.mapError((cause) =>
           isNetworkBlocked(cause.reason.cause)
@@ -103,22 +131,36 @@ const make = Effect.gen(function* () {
     const body = yield* Effect.tryPromise({
       try: async () => {
         const encoding = response.headers["content-encoding"]?.toLowerCase();
-        const bytes =
-          encoding === "gzip" || encoding === "deflate"
-            ? await unzip(Buffer.from(raw), { maxOutputLength: MAX_BYTES })
-            : encoding === "br"
-              ? await brotli(Buffer.from(raw), { maxOutputLength: MAX_BYTES })
-              : new Uint8Array(raw);
-        const charset =
-          /charset\s*=\s*["']?([\w-]+)/i.exec(response.headers["content-type"] ?? "")?.[1] ??
-          "utf-8";
-        return new TextDecoder(charset).decode(bytes);
+        return encoding === "gzip" || encoding === "deflate"
+          ? new Uint8Array(await unzip(Buffer.from(raw), { maxOutputLength: MAX_BYTES }))
+          : encoding === "br"
+            ? new Uint8Array(await brotli(Buffer.from(raw), { maxOutputLength: MAX_BYTES }))
+            : new Uint8Array(raw);
       },
+      catch: (cause) => new PublicHttpError({ host: url.hostname, stage: "decode", cause }),
+    });
+    return {
+      status: response.status,
+      headers: response.headers,
+      cookies: Object.values(response.cookies.cookies),
+      body,
+    };
+  });
+  const get = Effect.fn("PublicHttp.get")(function* (url: URL) {
+    const response = yield* send({
+      url,
+      method: "GET",
+      headers: { accept: "text/html, text/plain;q=0.9, application/xhtml+xml;q=0.8" },
+    });
+    const charset =
+      /charset\s*=\s*["']?([\w-]+)/i.exec(response.headers["content-type"] ?? "")?.[1] ?? "utf-8";
+    const body = yield* Effect.try({
+      try: () => new TextDecoder(charset).decode(response.body),
       catch: (cause) => new PublicHttpError({ host: url.hostname, stage: "decode", cause }),
     });
     return { status: response.status, headers: response.headers, body };
   });
-  return PublicHttp.of({ get });
+  return PublicHttp.of({ get, send });
 });
 
 // Every actual connection receives only checked addresses. A DNS preflight alone permits rebinding.

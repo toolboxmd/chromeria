@@ -5,6 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type { BrowserContext, Page, Route } from "playwright-core";
+import type * as Cookies from "effect/http/Cookies";
 
 import { publicProxy } from "../htmlRender/publicProxy.ts";
 import * as PreviewBrowser from "../preview/PreviewBrowser.ts";
@@ -43,13 +44,28 @@ interface DocumentResponse {
 interface RenderInput {
   readonly url: URL;
   readonly initial: DocumentResponse;
-  /** Every later document, including redirects and frames, uses the core's HTTP policy. */
+  /** Every later document, including redirects and frames, uses the core's HTTP policy unless `challenge` admits it. */
   readonly loadDocument: (url: URL) => Effect.Effect<DocumentResponse, PublicRenderError>;
   /**
-   * The initial document is a JavaScript challenge. The challenge's own documents and
-   * answers use the browser context's cookies instead, and the render waits for it to clear.
+   * The initial document is a JavaScript challenge. Its own traffic carries the browser
+   * context's cookies through `send`, which keeps the core's address checks and body bounds.
    */
-  readonly challenge?: boolean;
+  readonly challenge?: {
+    readonly send: (request: {
+      readonly url: URL;
+      readonly method: "GET" | "POST";
+      readonly headers: Readonly<Record<string, string>>;
+      readonly body?: Uint8Array;
+    }) => Effect.Effect<
+      {
+        readonly status: number;
+        readonly headers: Readonly<Record<string, string>>;
+        readonly cookies: ReadonlyArray<Cookies.Cookie>;
+        readonly body: Uint8Array;
+      },
+      PublicRenderError
+    >;
+  };
 }
 
 export class PublicRender extends Context.Service<
@@ -68,6 +84,31 @@ export class PublicRender extends Context.Service<
 >()("t3/webResearch/PublicRender") {}
 
 const MAX_DOM_CHARS = 4 * 1024 * 1024;
+const FORWARD_DROPPED = new Set([
+  "host",
+  "cookie",
+  "user-agent",
+  "accept-encoding",
+  "content-length",
+  "connection",
+  "transfer-encoding",
+]);
+const withoutTransferHeaders = (
+  headers: Readonly<Record<string, string>>,
+  dropped: ReadonlyArray<string> = [],
+) =>
+  Object.fromEntries(
+    Object.entries(headers).filter(
+      ([name]) =>
+        ![
+          "content-encoding",
+          "content-length",
+          "transfer-encoding",
+          "set-cookie",
+          ...dropped,
+        ].includes(name.toLowerCase()),
+    ),
+  );
 const CHALLENGE_CLEAR_MS = 10_000;
 const CHALLENGE_SETTLE_MS = 5_000;
 
@@ -123,26 +164,71 @@ const routeDocuments = (
     }
   };
   const challenged = (request: ReturnType<Route["request"]>) =>
-    input.challenge === true &&
+    input.challenge !== undefined &&
     challengeTraffic(input.url, {
       url: request.url(),
       method: request.method(),
       navigation: request.isNavigationRequest(),
       mainFrame: inMainFrame(request),
     });
-  // The clearance cookie lives in the context, so these go through its request client.
-  // Playwright follows a continued request's redirects unrouted; maxRedirects 0 returns each
-  // hop here, where a document redirect is policed below and any other is refused.
-  const fetchChallenged = async (route: Route) => {
-    const response = await route.fetch({ maxRedirects: 0 });
-    return { status: response.status(), headers: response.headers(), body: await response.text() };
+  // Browser networking would follow redirects unrouted and buffer nothing for us, so the
+  // challenge's traffic is replayed through the core client with the context's cookies.
+  const forward = async (request: ReturnType<Route["request"]>) => {
+    if (input.challenge === undefined) throw new Error("Only a challenge render forwards.");
+    const { send } = input.challenge;
+    const url = new URL(request.url());
+    const headers = Object.fromEntries(
+      Object.entries(await request.allHeaders()).filter(
+        ([name]) => !name.startsWith(":") && !FORWARD_DROPPED.has(name.toLowerCase()),
+      ),
+    );
+    const cookies = await context.cookies(url.href);
+    if (cookies.length > 0)
+      headers.cookie = cookies.map(({ name, value }) => `${name}=${value}`).join("; ");
+    const body = request.postDataBuffer();
+    const response = await Effect.runPromise(
+      send({
+        url,
+        method: request.method() === "POST" ? "POST" : "GET",
+        headers,
+        ...(body ? { body: new Uint8Array(body) } : {}),
+      }),
+      { signal },
+    );
+    if (response.cookies.length > 0)
+      await context.addCookies(
+        response.cookies.map(({ name, valueEncoded, options }) => ({
+          name,
+          value: valueEncoded,
+          ...(options?.domain
+            ? { domain: options.domain, path: options.path ?? "/" }
+            : { url: url.origin + (options?.path ?? "/") }),
+          httpOnly: options?.httpOnly ?? false,
+          secure: options?.secure ?? false,
+          ...(options?.sameSite
+            ? {
+                sameSite: ({ lax: "Lax", strict: "Strict", none: "None" } as const)[
+                  options.sameSite
+                ],
+              }
+            : {}),
+        })),
+      );
+    return response;
   };
   const route = async (route: Route) => {
     const request = route.request();
     if (challenged(request) && !request.isNavigationRequest()) {
-      const response = await route.fetch({ maxRedirects: 0 }).catch(() => undefined);
-      if (response && (response.status() < 300 || response.status() >= 400))
-        await route.fulfill({ response }).catch(() => {});
+      // A redirected challenge answer would leave the allowed endpoints, so it is refused.
+      const response = await forward(request).catch(() => undefined);
+      if (response && (response.status < 300 || response.status >= 400))
+        await route
+          .fulfill({
+            status: response.status,
+            headers: withoutTransferHeaders(response.headers),
+            body: Buffer.from(response.body),
+          })
+          .catch(() => {});
       else await route.abort("blockedbyclient").catch(() => {});
       return;
     }
@@ -166,7 +252,15 @@ const routeDocuments = (
     }
     try {
       const loaded = challenged(request)
-        ? { response: await fetchChallenged(route) }
+        ? {
+            response: await forward(request).then((response) => ({
+              ...response,
+              body: new TextDecoder(
+                /charset\s*=\s*["']?([\w-]+)/i.exec(response.headers["content-type"] ?? "")?.[1] ??
+                  "utf-8",
+              ).decode(response.body),
+            })),
+          }
         : first && request.url() === input.url.href && inMainFrame(request)
           ? { response: input.initial }
           : await Effect.runPromise(
@@ -204,8 +298,8 @@ const routeDocuments = (
           .replaceAll("&", "&amp;")
           .replaceAll('"', "&quot;")
           .replaceAll("<", "&lt;");
-        // Playwright skips routing HTTP redirect hops. A new document navigation keeps
-        // every hop in loadDocument and preserves the target URL for relative links.
+        // Playwright skips routing HTTP redirect hops. A new document navigation routes every
+        // hop again and preserves the target URL for relative links.
         await route.fulfill({
           status: 200,
           contentType: "text/html; charset=utf-8",
@@ -214,18 +308,7 @@ const routeDocuments = (
         return;
       }
       // Public HTTP decoded/decompressed the body; do not replay its cookies into browser storage.
-      const headers = Object.fromEntries(
-        Object.entries(response.headers).filter(
-          ([name]) =>
-            ![
-              "content-encoding",
-              "content-length",
-              "transfer-encoding",
-              "set-cookie",
-              "content-type",
-            ].includes(name.toLowerCase()),
-        ),
-      );
+      const headers = withoutTransferHeaders(response.headers, ["content-type"]);
       await route.fulfill({
         status: response.status,
         headers: {

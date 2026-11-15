@@ -416,6 +416,25 @@ const make = Effect.gen(function* () {
           ),
       }),
     );
+    // The challenge's own traffic skips robots and origin pacing but keeps the core's bounds.
+    const sendChallenge = (request: Parameters<typeof http.send>[0]) =>
+      http.send(request).pipe(
+        Effect.timeout("10 seconds"),
+        Effect.mapError(
+          (cause) =>
+            new PublicRender.PublicRenderError({
+              status:
+                cause._tag === "PublicNetworkBlockedError"
+                  ? "blocked_local"
+                  : cause._tag === "TimeoutError"
+                    ? "timeout"
+                    : "provider_error",
+              httpStatus: null,
+              retryAfterMs: null,
+              cause,
+            }),
+        ),
+      );
     const fetch = Effect.gen(function* () {
       let url = original;
       const visited = new Set<string>();
@@ -495,7 +514,12 @@ const make = Effect.gen(function* () {
           const rendered = yield* Effect.gen(function* () {
             const enteredAt = yield* Clock.currentTimeMillis;
             yield* Ref.update(delay, (ms) => ms + enteredAt - queuedAt);
-            return yield* renderer.render({ url, initial: response, loadDocument, challenge });
+            return yield* renderer.render({
+              url,
+              initial: response,
+              loadDocument,
+              ...(challenge ? { challenge: { send: sendChallenge } } : {}),
+            });
           }).pipe(
             renders.withPermits(1),
             // Includes the permit wait; HTTP retains the core's separate active-time budget.

@@ -85,8 +85,8 @@ const fixture = Effect.fnUntraced(function* (
   const requests = yield* Queue.unbounded<{ url: string; at: number }>();
   const fallbacks: Array<string> = [];
   const observed: Array<{ url: string; at: number }> = [];
-  const http = PublicHttp.PublicHttp.of({
-    get: (url) =>
+  const http = {
+    get: (url: URL) =>
       Effect.gen(function* () {
         const request = { url: url.href, at: yield* Clock.currentTimeMillis };
         observed.push(request);
@@ -97,7 +97,7 @@ const fixture = Effect.fnUntraced(function* (
             : yield* robots(url)
           : yield* respond(url);
       }),
-  });
+  };
   const config = ServerConfig.layerTest(
     process.cwd(),
     directory ?? { prefix: "chromeria-research-" },
@@ -127,7 +127,7 @@ const fixture = Effect.fnUntraced(function* (
           }),
       }),
     ),
-    Layer.provide(Layer.succeed(PublicHttp.PublicHttp, http)),
+    Layer.provide(Layer.mock(PublicHttp.PublicHttp)(http)),
     Layer.provide(resources),
   );
   const layer = McpHttpServer.layerWebResearchToolkit.pipe(

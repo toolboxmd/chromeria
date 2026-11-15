@@ -122,7 +122,7 @@ const reader = (requests: Queue.Queue<string>) =>
       }),
     ),
     Layer.provide(
-      Layer.succeed(PublicHttp.PublicHttp, {
+      Layer.mock(PublicHttp.PublicHttp)({
         get: (target) =>
           Effect.gen(function* () {
             yield* Queue.offer(requests, target.pathname);

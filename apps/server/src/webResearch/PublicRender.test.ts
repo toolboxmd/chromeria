@@ -6,6 +6,7 @@ import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Cookies from "effect/http/Cookies";
 import * as NodeHttp from "node:http";
 import { vi } from "vite-plus/test";
 
@@ -379,7 +380,7 @@ it("a challenge render admits only Cloudflare's own traffic past the core's docu
 });
 
 it.live(
-  "challenge documents fetched with the browser's cookies still cannot reach private addresses",
+  "challenge traffic forwarded with the browser's cookies still cannot reach private addresses",
   (ctx) =>
     Effect.gen(function* () {
       const executable = testChromium;
@@ -401,16 +402,92 @@ it.live(
       const address = server.address();
       if (!address || typeof address === "string")
         return yield* Effect.die("Fixture did not bind a TCP port.");
+      const result = yield* Effect.gen(function* () {
+        const http = yield* PublicHttp.PublicHttp;
+        return yield* PublicRender.PublicRender.use((renderer) =>
+          renderer.render({
+            url: new URL(`http://127.0.0.1:${address.port}/`),
+            initial: initial("<title>Just a moment...</title>", 403),
+            loadDocument: unusedDocument,
+            challenge: {
+              send: (request) =>
+                http.send(request).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new PublicRender.PublicRenderError({
+                        status:
+                          cause._tag === "PublicNetworkBlockedError"
+                            ? "blocked_local"
+                            : "provider_error",
+                        httpStatus: null,
+                        retryAfterMs: null,
+                        cause,
+                      }),
+                  ),
+                ),
+            },
+          }),
+        );
+      }).pipe(Effect.result, Effect.provide(Layer.mergeAll(layer(executable), PublicHttp.layer)));
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") expect(result.failure.status).toBe("blocked_local");
+      expect(requests).toEqual([]);
+    }),
+);
+
+it.live(
+  "a challenge clears with cookies forwarded through the bounded client, refusing redirected answers",
+  (ctx) =>
+    Effect.gen(function* () {
+      const executable = testChromium;
+      if (!executable) return ctx.skip(SKIP_WITHOUT_CHROMIUM);
+      const sent: Array<{ method: string; path: string; cookie?: string; body?: string }> = [];
+      const challengePage = `<title>Just a moment...</title><script>
+        fetch('/cdn-cgi/challenge-platform/moved', { method: 'POST', body: 'first' }).catch(() => {})
+          .then(() => fetch('/cdn-cgi/challenge-platform/answer', { method: 'POST', body: 'solved' }))
+          .then(() => location.reload());
+      </script>`;
       const result = yield* PublicRender.PublicRender.use((renderer) =>
         renderer.render({
-          url: new URL(`http://127.0.0.1:${address.port}/`),
-          initial: initial("<title>Just a moment...</title>", 403),
-          loadDocument: unusedDocument,
-          challenge: true,
+          url: new URL("http://research.invalid/"),
+          initial: initial(challengePage, 403),
+          loadDocument: (url) => Effect.die(`Unexpected core document ${url.href}`),
+          challenge: {
+            send: (request) =>
+              Effect.sync(() => {
+                sent.push({
+                  method: request.method,
+                  path: request.url.pathname,
+                  ...(request.headers.cookie ? { cookie: request.headers.cookie } : {}),
+                  ...(request.body ? { body: new TextDecoder().decode(request.body) } : {}),
+                });
+                const reply = (
+                  status: number,
+                  body: string,
+                  headers: Record<string, string> = { "content-type": "text/html" },
+                  cookies: ReadonlyArray<Cookies.Cookie> = [],
+                ) => ({ status, headers, cookies, body: new TextEncoder().encode(body) });
+                if (request.url.pathname === "/cdn-cgi/challenge-platform/moved")
+                  return reply(307, "", { location: "http://elsewhere.invalid/collect" });
+                if (request.url.pathname === "/cdn-cgi/challenge-platform/answer")
+                  return reply(200, "ok", { "content-type": "text/plain" }, [
+                    Cookies.makeCookieUnsafe("cf_clearance", "granted", { path: "/" }),
+                  ]);
+                return request.headers.cookie?.includes("cf_clearance=granted")
+                  ? reply(200, `<title>Cleared page</title><p>${"Readable text. ".repeat(20)}</p>`)
+                  : reply(403, challengePage);
+              }),
+          },
         }),
-      ).pipe(Effect.result, Effect.provide(layer(executable)));
-      expect(result._tag).toBe("Failure");
-      expect(requests).toEqual([]);
+      ).pipe(Effect.provide(layer(executable)));
+      expect(result).toMatchObject({ httpStatus: 200, finalUrl: "http://research.invalid/" });
+      expect(result.body).toContain("Cleared page");
+      expect(sent).toEqual([
+        { method: "GET", path: "/" },
+        { method: "POST", path: "/cdn-cgi/challenge-platform/moved", body: "first" },
+        { method: "POST", path: "/cdn-cgi/challenge-platform/answer", body: "solved" },
+        { method: "GET", path: "/", cookie: "cf_clearance=granted" },
+      ]);
     }),
 );
 
