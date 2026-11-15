@@ -1399,7 +1399,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/prism/ReplayInstructions.test.ts",
     "packages/provider-core/src/server/forkOrchestrationGuidance.test.ts",
     "apps/server/src/mcp/toolkits/orchestrator/forkToolGuidance.test.ts",
-    "evals/mcp-tool-use/cases/thread-follow-ups.ndjson"
+    "evals/mcp-tool-use/cases/thread-follow-ups.ndjson",
+    "evals/mcp-tool-use/cases/thread-links.ndjson"
   ],
   "upstreamFiles": [
     "apps/server/src/mcp/toolkits/preview/tools.test.ts",
