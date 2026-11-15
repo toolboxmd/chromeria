@@ -1393,7 +1393,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "https://github.com/toolboxmd/chromeria/issues/169",
     "https://github.com/toolboxmd/chromeria/issues/203",
     "https://github.com/toolboxmd/chromeria/issues/716",
-    "https://github.com/toolboxmd/chromeria/issues/718"
+    "https://github.com/toolboxmd/chromeria/issues/718",
+    "https://github.com/toolboxmd/chromeria/issues/723"
   ],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/183"],
   "newFiles": [
@@ -1403,7 +1404,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "packages/provider-core/src/server/forkOrchestrationGuidance.test.ts",
     "apps/server/src/mcp/toolkits/orchestrator/forkToolGuidance.test.ts",
     "evals/mcp-tool-use/cases/thread-follow-ups.ndjson",
-    "evals/mcp-tool-use/cases/thread-links.ndjson"
+    "evals/mcp-tool-use/cases/thread-links.ndjson",
+    "evals/mcp-tool-use/cases/computer-use.ndjson"
   ],
   "upstreamFiles": [
     "apps/server/src/mcp/toolkits/preview/tools.test.ts",
@@ -1416,7 +1418,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
   ],
   "sharedFiles": [
     "apps/server/src/mcp/toolkits/project/tools.ts",
-    "packages/contracts/src/orchestratorMcp.ts"
+    "packages/contracts/src/orchestratorMcp.ts",
+    "evals/mcp-tool-use/run.ts"
   ],
   "keywords": [
     "t3_code_tool_use",

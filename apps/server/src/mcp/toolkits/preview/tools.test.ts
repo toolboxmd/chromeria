@@ -54,9 +54,8 @@ it("preview_open accepts a target while preserving open input constraints", () =
   expect(() => decode({ target, tabId: "tab-1", reuseExistingTab: false })).toThrow();
 });
 
-it("guides every preview tool to delegate driving beyond a quick check", () => {
+it("guides every preview tool to delegate driving to computer-use", () => {
   for (const tool of Object.values(PreviewToolkit.tools)) {
     expect(tool.description).toContain('prismRole: "computer-use"');
-    expect(tool.description).toContain("beyond a quick check");
   }
 });
