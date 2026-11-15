@@ -1389,7 +1389,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/169",
     "https://github.com/toolboxmd/chromeria/issues/203",
-    "https://github.com/toolboxmd/chromeria/issues/716"
+    "https://github.com/toolboxmd/chromeria/issues/716",
+    "https://github.com/toolboxmd/chromeria/issues/718"
   ],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/183"],
   "newFiles": [
