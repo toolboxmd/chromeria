@@ -295,7 +295,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/chromeria/issues/411",
     "https://github.com/toolboxmd/chromeria/issues/380",
     "https://github.com/toolboxmd/chromeria/issues/589",
-    "https://github.com/toolboxmd/chromeria/issues/633"
+    "https://github.com/toolboxmd/chromeria/issues/633",
+    "https://github.com/toolboxmd/chromeria/issues/724"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/9",
@@ -307,7 +308,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/chromeria/pull/391",
     "https://github.com/toolboxmd/chromeria/pull/591",
     "https://github.com/toolboxmd/chromeria/pull/603",
-    "https://github.com/toolboxmd/chromeria/pull/632"
+    "https://github.com/toolboxmd/chromeria/pull/632",
+    "https://github.com/toolboxmd/chromeria/pull/725"
   ],
   "newFiles": [
     ".github/workflows/fork.yml",
@@ -365,7 +367,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "evals/mcp-tool-use/devices.test.ts",
     "apps/server/src/storageCleanup.ts",
     "apps/server/src/storageCleanup.test.ts",
-    "apps/server/src/orchestration-v2/ProjectionMaintenance.test.ts"
+    "apps/server/src/orchestration-v2/ProjectionMaintenance.test.ts",
+    "scripts/setup-worktree.ts"
   ],
   "sharedFiles": [],
   "keywords": [
