@@ -1,7 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it as effectIt } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { CommandAvailability, WindowsShellEnvironment } from "@t3tools/shared/shell";
+import {
+  CommandAvailability,
+  LOGIN_SHELL_CAPTURE_TIMEOUT_MS,
+  WindowsShellEnvironment,
+} from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Observe the existing synchronous shell probe without launching the user's login shell.
 import * as NodeChildProcess from "node:child_process";
@@ -71,8 +75,8 @@ effectIt.effect("waits longer for a login shell that times out at startup", () =
   Effect.acquireUseRelease(
     Effect.sync(() =>
       vi.spyOn(NodeChildProcess, "execFileSync").mockImplementation((file, _args, options) => {
-        // This profile takes 8 seconds while the machine is under load.
-        if ((options?.timeout ?? 0) < 8_000) throw timedOut(String(file));
+        // This profile takes about 15 seconds while the machine is under load.
+        if ((options?.timeout ?? 0) <= LOGIN_SHELL_CAPTURE_TIMEOUT_MS) throw timedOut(String(file));
         return "__T3CODE_ENV_PATH_START__\n/opt/tools/bin\n__T3CODE_ENV_PATH_END__\n";
       }),
     ),
@@ -110,8 +114,35 @@ effectIt.effect("waits longer for only one hung login shell", () =>
         );
 
         const timeouts = probe.mock.calls.map(([, , options]) => options?.timeout);
-        assert.equal(timeouts.filter((timeout) => (timeout ?? 0) > 5_000).length, 1);
+        assert.equal(
+          timeouts.filter((timeout) => (timeout ?? 0) > LOGIN_SHELL_CAPTURE_TIMEOUT_MS).length,
+          1,
+        );
         assert.equal(env.PATH, "/usr/bin");
+      }),
+    (probe) => Effect.sync(() => probe.mockRestore()),
+  ),
+);
+
+effectIt.effect("hydrates PATH when desktop preparation failed", () =>
+  Effect.acquireUseRelease(
+    Effect.sync(() =>
+      vi
+        .spyOn(NodeChildProcess, "execFileSync")
+        .mockReturnValue("__T3CODE_ENV_PATH_START__\n/opt/tools/bin\n__T3CODE_ENV_PATH_END__\n"),
+    ),
+    (probe) =>
+      Effect.gen(function* () {
+        const env: NodeJS.ProcessEnv = { SHELL: "/bin/bash", PATH: "/usr/bin" };
+
+        yield* fixPath({ shellEnvironmentPrepared: false }).pipe(
+          Effect.provideService(HostProcess.Platform, "linux"),
+          Effect.provideService(HostProcess.Environment, env),
+          Effect.provide(NodeServices.layer),
+        );
+
+        assert.equal(probe.mock.calls.length, 1);
+        assert.equal(env.PATH, "/opt/tools/bin:/usr/bin");
       }),
     (probe) => Effect.sync(() => probe.mockRestore()),
   ),
