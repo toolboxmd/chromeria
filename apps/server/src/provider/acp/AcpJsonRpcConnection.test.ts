@@ -178,6 +178,42 @@ const promptThenCancel = (input: {
   }).pipe(Effect.scoped);
 
 describe("AcpSessionRuntime", () => {
+  it.effect.each([false, true])("sends creation rules only on session/new, resume=%s", (resume) => {
+    const events: Array<AcpSessionRuntime.AcpSessionRequestLogEvent> = [];
+    return Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
+      const started = yield* runtime.start();
+      const requests = events.filter((event) => event.status === "started");
+      expect(requests[0]?.method).toBe("initialize");
+      expect(requests[0]?.payload).not.toHaveProperty("_meta.rules");
+      const setup = requests.find(
+        (event) => event.method === (resume ? "session/load" : "session/new"),
+      );
+      if (resume) {
+        expect(setup?.payload).not.toHaveProperty("_meta.rules");
+        expect(started.newSessionRules).toBeUndefined();
+      } else {
+        expect(setup?.payload).toHaveProperty("_meta.rules", "immutable application rules");
+        expect(setup?.payload).toHaveProperty("_meta.nativeIdentity", "preserved");
+        expect(started.newSessionRules).toBe("immutable application rules");
+      }
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          ...mockRuntimeOptions,
+          newSessionRules: "immutable application rules",
+          sessionMeta: { nativeIdentity: "preserved" },
+          ...(resume ? { resumeSessionId: "mock-session-1" } : {}),
+          requestLogger: (event) =>
+            Effect.sync(() => {
+              events.push(event);
+            }),
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+    );
+  });
   it.effect.each(["session/new", "session/resume"] as const)(
     "buffers root metadata while %s startup is still pending",
     (setupMethod) =>
@@ -236,7 +272,12 @@ describe("AcpSessionRuntime", () => {
         expect(
           (yield* runtime.getConfigOptions).find((option) => option.category === "model"),
         ).toMatchObject({ currentValue: "gpt-5.4" });
-      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+        ),
+      ),
   );
 
   it.effect("publishes model changes returned by a config request and live notifications", () =>
@@ -250,7 +291,12 @@ describe("AcpSessionRuntime", () => {
       expect((yield* updates)[0]?.configOptions).toEqual(selected.configOptions);
       yield* runtime.request("_test/startup-metadata", {});
       expect((yield* updates)[0]?.configOptions).toEqual(yield* runtime.getConfigOptions);
-    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
+    ),
   );
 
   it.effect("waits for native cancellation and drains final updates before another prompt", () =>
@@ -335,7 +381,12 @@ describe("AcpSessionRuntime", () => {
       }
       expect(yield* Fiber.join(replacement)).toMatchObject({ stopReason: "end_turn" });
       expect(promptRequests).toBe(2);
-    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
+    ),
   );
 
   it.effect("reports an idle child exit and rejects later prompts", () =>
@@ -393,7 +444,12 @@ describe("AcpSessionRuntime", () => {
         ),
       ).toBe(event.error);
       expect(yield* runtime.notify("_test/exit", {}).pipe(Effect.flip)).toBe(event.error);
-    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
+    ),
   );
 
   it.effect("retires a native runtime when its prompt caller is interrupted", () =>
@@ -433,7 +489,12 @@ describe("AcpSessionRuntime", () => {
           })
           .pipe(Effect.flip),
       ).toBe(events[0]?.error);
-    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
+    ),
   );
 
   it.effect("fails a pending request when the stderr handler rejects the runtime", () =>
@@ -455,7 +516,12 @@ describe("AcpSessionRuntime", () => {
       );
       expect(events[0]?.error).toBe(failure);
       expect(yield* runtime.initialize().pipe(Effect.flip)).toBe(failure);
-    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
+    ),
   );
 
   it.effect.each([
@@ -503,7 +569,12 @@ describe("AcpSessionRuntime", () => {
           },
         });
       }
-    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
+    ),
   );
 
   it.effect("drains large stderr output and keeps auth-sized logging chunks", () =>
@@ -529,7 +600,11 @@ describe("AcpSessionRuntime", () => {
       expect(lengths.length).toBeGreaterThan(0);
       expect(Math.max(...lengths)).toBeGreaterThanOrEqual(16_384);
       expect(Math.max(...lengths)).toBeLessThanOrEqual(32_768);
-    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
+    ),
   );
 
   it.effect("releases a queued event drain when its runtime scope closes", () =>
@@ -559,7 +634,12 @@ describe("AcpSessionRuntime", () => {
         _tag: "AcpTransportError",
         detail: "The ACP session runtime is closed.",
       });
-    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
+    ),
   );
 
   it.effect("does not restore ambient variables to a sanitized child environment", () =>
@@ -582,7 +662,12 @@ describe("AcpSessionRuntime", () => {
         inherited: false,
         explicit: true,
       });
-    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
+    ),
   );
 
   it("selects explicit or agent-managed authentication without choosing terminal auth", () => {
@@ -628,7 +713,9 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
     );
   });
 
@@ -680,7 +767,9 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
     );
   });
 
@@ -724,7 +813,9 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
     );
   });
 
@@ -766,7 +857,9 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
     );
   });
 
@@ -823,7 +916,9 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
     ),
   );
 
@@ -861,7 +956,11 @@ describe("AcpSessionRuntime", () => {
       const afterRestart = yield* collectFirstAssistantItemId;
 
       expect(afterRestart).not.toBe(beforeRestart);
-    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
+    );
   });
 
   it.effect("drops session updates emitted for a child ACP session", () =>
@@ -904,7 +1003,9 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
     ),
   );
 
@@ -965,7 +1066,9 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
     ),
   );
 
@@ -1011,7 +1114,9 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
     ),
   );
 
@@ -1058,7 +1163,9 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
     ),
   );
 
@@ -1137,7 +1244,9 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
     );
   });
 
@@ -1186,7 +1295,9 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
     ),
   );
 
@@ -1214,7 +1325,9 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
     ),
   );
 
@@ -1245,7 +1358,9 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
     ),
   );
 
@@ -1282,7 +1397,9 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
     ),
   );
 
@@ -1397,7 +1514,9 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
       Effect.ensuring(Effect.sync(() => NodeFS.rmSync(tempDir, { recursive: true, force: true }))),
     );
   });
@@ -1434,7 +1553,9 @@ describe("AcpSessionRuntime", () => {
         }),
       ),
       Effect.scoped,
-      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      Effect.provide(
+        Layer.mergeAll(Layer.merge(NodeServices.layer, NodeCrypto.layer), NodeCrypto.layer),
+      ),
       Effect.ensuring(Effect.sync(() => NodeFS.rmSync(tempDir, { recursive: true, force: true }))),
     );
   });
