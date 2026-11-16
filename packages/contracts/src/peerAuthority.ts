@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { AuthSessionId, EnvironmentId, ThreadId, RunId, NodeId } from "./baseSchemas.ts";
 import { RuntimeMode, ProviderInteractionMode } from "./providerPolicy.ts";
@@ -9,6 +10,8 @@ export const PeerGrant = Schema.Struct({
   onward: Schema.Boolean,
   preview: Schema.Boolean,
   device: Schema.Boolean,
+  /** "Share browser logins": copying this environment's cookies out, separate from driving its browser. */
+  browserExport: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
 });
 export type PeerGrant = typeof PeerGrant.Type;
 export const PeerGrantSummary = Schema.Struct({

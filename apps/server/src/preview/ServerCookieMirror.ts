@@ -1,4 +1,9 @@
-import { cookieMirrorKey, type CookieMirrorBatch } from "@t3tools/contracts";
+import {
+  cookieMirrorKey,
+  type CookieMirrorBatch,
+  type CookieMirrorMutation,
+  type MirrorCookie,
+} from "@t3tools/contracts";
 import {
   cdpCookieMirrorStore,
   cdpMirrorCookies,
@@ -8,6 +13,9 @@ import {
 import type { ServerBrowserContexts } from "./ServerBrowserContexts.ts";
 import type { BrowserContext, CDPSession } from "playwright-core";
 import type { CookieMirrorStore } from "@t3tools/shared/browserCookieMirror";
+
+/** A stored signature no real cookie has: the profile removed this desktop cookie itself. */
+const REMOVED_HERE = "\u0000removed-here";
 
 /**
  * Borrows each persistent context's reserved page: it owns only its CDP
@@ -27,23 +35,102 @@ export class ServerCookieMirror {
     Map<string, { readonly sent: string; readonly stored: string | undefined }>
   >();
   private readonly contexts: ServerBrowserContexts;
+  /** Mirror batches and login imports touch the same jars, so they run one at a time. */
+  private queue: Promise<unknown> = Promise.resolve();
   constructor(contexts: ServerBrowserContexts) {
     this.contexts = contexts;
   }
 
-  async apply(batch: CookieMirrorBatch) {
-    const context = await this.contexts.contextFor(batch.profile.id);
-    let attached = this.stores.get(context);
-    if (!attached) {
-      const page = await this.contexts.reservedPage(context);
-      const cdp = await context.newCDPSession(page);
-      const current = { cdp, store: cdpCookieMirrorStore(cdp) };
-      cdp.on("close", () => {
-        if (this.stores.get(context) === current) this.stores.delete(context);
-      });
-      this.stores.set(context, current);
-      attached = current;
+  private serialized<A>(run: () => Promise<A>): Promise<A> {
+    const next = this.queue.then(run, run);
+    this.queue = next.catch(() => undefined);
+    return next;
+  }
+
+  private async attach(context: BrowserContext) {
+    const existing = this.stores.get(context);
+    if (existing) return existing;
+    const page = await this.contexts.reservedPage(context);
+    const cdp = await context.newCDPSession(page);
+    const current = { cdp, store: cdpCookieMirrorStore(cdp) };
+    cdp.on("close", () => {
+      if (this.stores.get(context) === current) this.stores.delete(context);
+    });
+    this.stores.set(context, current);
+    return current;
+  }
+
+  private async detachAfter(context: BrowserContext, cdp: CDPSession) {
+    this.stores.delete(context);
+    await cdp.detach().catch(() => undefined);
+  }
+
+  private async readAttached(context: BrowserContext, cdp: CDPSession) {
+    try {
+      return cdpMirrorCookies(await cdp.send("Storage.getCookies"), "skip");
+    } catch {
+      await this.detachAfter(context, cdp);
+      // Protocol and schema errors may embed cookie values.
+      throw new Error("Could not read browser profile cookies.");
     }
+  }
+
+  /**
+   * The profile's cookies, opaque partitions left out. Callers check the profile id
+   * first; `guard` runs again once the context is attached, before and after the read.
+   */
+  readProfile(profileId: string, guard: () => void): Promise<ReadonlyArray<MirrorCookie>> {
+    return this.serialized(async () => {
+      const context = await this.contexts.contextFor(profileId);
+      const attached = await this.attach(context);
+      guard();
+      const cookies = await this.readAttached(context, attached.cdp);
+      guard();
+      return cookies;
+    });
+  }
+
+  /**
+   * Writes a login import computed from `plan(current)`. The desktop's last-sent
+   * signatures stay as they were, so the replay guard treats the import as a
+   * change the profile made itself: a replay keeps it, a new desktop value wins.
+   */
+  writeProfile<A>(
+    profileId: string,
+    plan: (current: ReadonlyArray<MirrorCookie>) => {
+      readonly mutations: ReadonlyArray<CookieMirrorMutation>;
+      readonly result: A;
+    },
+  ): Promise<A> {
+    return this.serialized(async () => {
+      const context = await this.contexts.contextFor(profileId);
+      const attached = await this.attach(context);
+      const { mutations, result } = plan(await this.readAttached(context, attached.cdp));
+      try {
+        await attached.store.apply(mutations);
+      } catch (error) {
+        await this.detachAfter(context, attached.cdp);
+        throw error;
+      }
+      // An absent cookie normally lets a replay restore it; one the import deleted must stay gone.
+      const mirrored = this.mirrored.get(profileId);
+      for (const mutation of mutations) {
+        if (mutation.type !== "remove") continue;
+        const key = cookieMirrorKey(mutation.key);
+        const last = mirrored?.get(key);
+        if (last !== undefined) mirrored!.set(key, { sent: last.sent, stored: REMOVED_HERE });
+      }
+      return result;
+    });
+  }
+
+  apply(batch: CookieMirrorBatch) {
+    return this.serialized(() => this.applyBatch(batch));
+  }
+
+  private async applyBatch(batch: CookieMirrorBatch) {
+    const context = await this.contexts.contextFor(batch.profile.id);
+    const attached = await this.attach(context);
     let mirrored = this.mirrored.get(batch.profile.id);
     if (!mirrored) {
       mirrored = new Map();
@@ -64,7 +151,8 @@ export class ServerCookieMirror {
         const key = cookieMirrorKey(mutation.type === "set" ? mutation.cookie : mutation.key);
         const last = mirrored.get(key);
         const changedHere =
-          last !== undefined && current.has(key) && current.get(key) !== last.stored;
+          last !== undefined &&
+          (current.has(key) ? current.get(key) !== last.stored : last.stored === REMOVED_HERE);
         return (
           !changedHere ||
           (mutation.type === "set" && mirrorCookieSignature(mutation.cookie) !== last.sent)
@@ -81,8 +169,7 @@ export class ServerCookieMirror {
           });
         } else mirrored.delete(cookieMirrorKey(mutation.key));
     } catch (error) {
-      this.stores.delete(context);
-      await attached.cdp.detach().catch(() => undefined);
+      await this.detachAfter(context, attached.cdp);
       throw error;
     }
     return context;

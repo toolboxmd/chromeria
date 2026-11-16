@@ -102,6 +102,9 @@ import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
 import * as PreviewWatchHandlers from "./toolkits/preview/watchHandlers.ts";
 import { PreviewWatchToolkit } from "./toolkits/preview/tools.ts";
 import * as PreviewHandlers from "./toolkits/preview/handlers.ts";
+import * as LoginImportHandlers from "./toolkits/loginImport/handlers.ts";
+import { LoginExportToolkit, LoginImportToolkit } from "./toolkits/loginImport/tools.ts";
+import * as BrowserLoginImport from "../preview/BrowserLoginImport.ts";
 import {
   PreviewSnapshotTool,
   PreviewSnapshotToolkit,
@@ -1962,6 +1965,12 @@ export const layerPreviewToolkit = Layer.mergeAll(
   layerPreviewSnapshotRegistration,
 );
 
+/** Fork: one-snapshot browser login copies between linked environments. */
+const layerLoginImportToolkit = Layer.mergeAll(
+  toolkitRegistration(LoginImportToolkit, LoginImportHandlers.layerImport),
+  toolkitRegistration(LoginExportToolkit, LoginImportHandlers.layerExport),
+).pipe(Layer.provide(BrowserLoginImport.layer));
+
 export const layerOrchestratorToolkit = toolkitRegistration(
   OrchestratorToolkit,
   OrchestratorHandlers.layer,
@@ -2410,6 +2419,7 @@ export const layerMcpTransport = <RA, RE, RR>(registrations: Layer.Layer<RA, RE,
 /** Every tool the T3 MCP server advertises. AgentContextBudget.test.ts measures this set. */
 export const layerTools = Layer.mergeAll(
   layerPreviewToolkit,
+  layerLoginImportToolkit,
   layerOrchestratorToolkit,
   layerThreadToolkit,
   toolkitRegistration(ThreadMcpToolkit, ThreadMcpHandlers.layer),

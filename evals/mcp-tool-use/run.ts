@@ -59,6 +59,7 @@ import { HtmlToolkit } from "../../apps/server/src/mcp/toolkits/html/tools.ts";
 import { MessageToolkit } from "../../apps/server/src/mcp/toolkits/message/tools.ts";
 import { OrchestratorToolkit } from "../../apps/server/src/mcp/toolkits/orchestrator/tools.ts";
 import { PreviewToolkit } from "../../apps/server/src/mcp/toolkits/preview/tools.ts";
+import { LoginImportToolkit } from "../../apps/server/src/mcp/toolkits/loginImport/tools.ts";
 import { PreviewControlsToolkit } from "../../apps/server/src/mcp/toolkits/previewControls/tools.ts";
 import { ProjectToolkit } from "../../apps/server/src/mcp/toolkits/project/tools.ts";
 import {
@@ -459,6 +460,7 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   WorktreeToolkit,
   PullRequestsToolkit,
   PreviewToolkit,
+  LoginImportToolkit,
   DeviceToolkit,
   HtmlToolkit,
   MessageToolkit,
@@ -479,7 +481,7 @@ const t3Tools: ReadonlyArray<ApiTool> = t3SourceTools.map((tool) => ({
 }));
 // T3 gates these on the `preview` capability, which agent browser access decides.
 const PREVIEW_TOOLS = new Set(
-  [PreviewToolkit, PreviewControlsToolkit].flatMap((toolkit) =>
+  [PreviewToolkit, PreviewControlsToolkit, LoginImportToolkit].flatMap((toolkit) =>
     Object.values(toolkit.tools).map((tool: Tool.Any) => tool.name),
   ),
 );

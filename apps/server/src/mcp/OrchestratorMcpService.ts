@@ -3489,6 +3489,10 @@ const make = Effect.gen(function* () {
         executionPurposeVersions: [1],
         ...(Option.isSome(attachmentStaging) ? { peerAttachments: 1 as const } : {}),
         ...(Option.isSome(requestReceipts) ? { peerRequests: 1 as const } : {}),
+        // Fork: tells a linked environment where to import logins from; export checks again.
+        ...(Option.isSome(peerAuthority) && scope.client?.linked === true
+          ? { browserExport: yield* peerAuthority.value.browserExportGranted(scope) }
+          : {}),
         parentThreadId: parent?.thread.id ?? null,
         inheritedProviderInstanceId: inherited?.instanceId ?? null,
         inheritedModel: inherited?.model ?? null,
