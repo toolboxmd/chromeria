@@ -3569,3 +3569,22 @@ sources and reasons.
   "keywords": ["sortActiveThreadsByOrderKey", "activeThreadAnchorTimestampMs"]
 }
 ```
+
+## eval-local-shell
+
+```json
+{
+  "id": "eval-local-shell",
+  "purpose": "The mcp-tool-use shell simulator can run on a local OpenAI-compatible server (--shell-url), so a run pays only for the tested model. Drop when upstream supports a local shell model.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/747"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...local-gemma-shell-eval"],
+  "newFiles": [],
+  "upstreamFiles": [],
+  "sharedFiles": [
+    "evals/mcp-tool-use/README.md",
+    "evals/mcp-tool-use/run.ts",
+    "evals/mcp-tool-use/run.test.ts"
+  ],
+  "keywords": ["shell-url", "shellChatRequest"]
+}
+```

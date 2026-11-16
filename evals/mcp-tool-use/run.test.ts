@@ -35,6 +35,7 @@ import {
   namedPathsLine,
   plannedSamples,
   sampleCapMessage,
+  shellChatRequest,
   shellRequest,
   shellResponsesRequest,
   summarize,
@@ -880,7 +881,7 @@ it("tells the simulator that paths the case names exist, whatever the template's
   );
 });
 
-it("sends a GPT shell model the same simulator request, with a strict JSON reply", () => {
+it("sends a GPT or local shell model the same simulator request, with a strict JSON reply", () => {
   const sample = makeSample(
     McpToolUseCase.make({
       id: "shell-gpt",
@@ -907,6 +908,10 @@ it("sends a GPT shell model the same simulator request, with a strict JSON reply
     request.input[0]?.content.map((part) => part.text),
     body.messages[0]?.content.map((block) => block.text),
   );
+  const chat = shellChatRequest(body);
+  assert.isTrue(chat.response_format.json_schema.strict);
+  assert.deepEqual(chat.messages[0], { role: "system", content: body.system });
+  assert.deepEqual(chat.messages[1]?.content, body.messages[0]?.content);
 });
 
 it("links a PR a shell command created, as T3 does, but not one it only read", () => {

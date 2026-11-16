@@ -115,8 +115,7 @@ const PRICES = {
 type PricedModel = keyof typeof PRICES;
 /** GPT models that can play the shell through CLIProxyAPI, when no Anthropic key is at hand. */
 const PROXY_SHELL_MODELS = ["gpt-6-luna", "gpt-6.1-terra"] as const;
-type ShellModel = PricedModel | (typeof PROXY_SHELL_MODELS)[number];
-const isPricedModel = (model: ShellModel): model is PricedModel => model in PRICES;
+const isPricedModel = (model: string): model is PricedModel => model in PRICES;
 const T3_PREFIX = "mcp__t3-code__";
 const RUNTIME_MARKER = "<runtime_info>";
 const TOOL_LOADED = "Tool loaded.";
@@ -1569,6 +1568,25 @@ export const shellResponsesRequest = (body: ReturnType<typeof shellRequest>) => 
   })),
 });
 
+/**
+ * The same simulator request as Chat Completions, for a model on a local OpenAI-compatible server
+ * (`--shell-url`). Thinking is off: reasoning tokens would count against `max_tokens`.
+ */
+export const shellChatRequest = (body: ReturnType<typeof shellRequest>) => ({
+  model: body.model,
+  max_tokens: body.max_tokens,
+  temperature: 0,
+  chat_template_kwargs: { enable_thinking: false },
+  response_format: {
+    type: "json_schema",
+    json_schema: { name: "shell_reply", schema: SHELL_REPLY_SCHEMA, strict: true },
+  },
+  messages: [
+    { role: "system", content: body.system },
+    ...body.messages.map((message) => ({ role: message.role, content: message.content })),
+  ],
+});
+
 /** The tool output in the simulator's JSON reply, or its raw text if that is not JSON. */
 export const shellOutput = (content: ReadonlyArray<Block>) => {
   const reply = content.flatMap((block) => (isText(block) ? [block.text] : [])).join("");
@@ -1591,7 +1609,8 @@ type Config = {
   readonly proxy?: { readonly url: string; readonly headers: Readonly<Record<string, string>> };
   readonly effort: string;
   readonly maxSteps: number;
-  readonly shellModel: ShellModel;
+  readonly shellModel: string;
+  readonly shellUrl?: string;
 };
 
 /**
@@ -1613,9 +1632,11 @@ const simulate = Effect.fn("evaluateMcpToolUse.simulate")(function* (
   let output = typeof command === "string" ? cannedOutput(sample, command) : undefined;
   if (output === undefined) {
     const body = shellRequest(sample, call, config.shellModel);
-    const response = isPricedModel(config.shellModel)
-      ? yield* callModel(config.apiKey, body, config.apiKey ? undefined : config.proxy)
-      : yield* callCodex(config, shellResponsesRequest(body));
+    const response = config.shellUrl
+      ? yield* callChat(config.shellUrl, shellChatRequest(body))
+      : isPricedModel(config.shellModel)
+        ? yield* callModel(config.apiKey, body, config.apiKey ? undefined : config.proxy)
+        : yield* callCodex(config, shellResponsesRequest(body));
     addUsage(sample.shellUsage, response.usage);
     output = shellOutput(response.content);
   }
@@ -2066,7 +2087,7 @@ const callCodex = Effect.fn("evaluateMcpToolUse.callCodex")(function* (
   config: Config,
   body: unknown,
 ) {
-  const raw = yield* postModel("", body, config.proxy, true);
+  const raw = yield* postModel("", body, config.proxy, "responses");
   const completed = raw
     .split("\n")
     .filter((line) => line.startsWith("data: "))
@@ -2115,7 +2136,7 @@ const postModel = Effect.fn("evaluateMcpToolUse.postModel")(function* (
   apiKey: string,
   body: unknown,
   proxy?: Config["proxy"],
-  responses = false,
+  endpoint: "messages" | "responses" | "chat/completions" = "messages",
 ) {
   const client = (yield* HttpClient.HttpClient).pipe(
     // Anthropic answers 529 when it is overloaded; retryTransient already retries 429 and 5xx.
@@ -2129,7 +2150,7 @@ const postModel = Effect.fn("evaluateMcpToolUse.postModel")(function* (
     }),
   );
   const response = yield* HttpClientRequest.post(
-    `${proxy?.url ?? "https://api.anthropic.com/v1"}/${responses ? "responses" : "messages"}`,
+    `${proxy?.url ?? "https://api.anthropic.com/v1"}/${endpoint}`,
   ).pipe(
     HttpClientRequest.setHeaders({
       ...(apiKey ? { "x-api-key": apiKey } : {}),
@@ -2150,6 +2171,21 @@ const postModel = Effect.fn("evaluateMcpToolUse.postModel")(function* (
 const callModel = (apiKey: string, body: unknown, proxy?: Config["proxy"]) =>
   postModel(apiKey, body, proxy).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(ApiResponse))),
+  );
+
+const ChatResponse = Schema.Struct({
+  choices: Schema.NonEmptyArray(
+    Schema.Struct({ message: Schema.Struct({ content: Schema.String }) }),
+  ),
+  usage: Schema.Struct({ prompt_tokens: Schema.Number, completion_tokens: Schema.Number }),
+});
+const callChat = (url: string, body: unknown) =>
+  postModel("", body, { url, headers: {} }, "chat/completions").pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(ChatResponse))),
+    Effect.map(({ choices, usage }) => ({
+      content: [text(choices[0].message.content)],
+      usage: { input_tokens: usage.prompt_tokens, output_tokens: usage.completion_tokens },
+    })),
   );
 
 /** A tool call as graded. Claude Code runs an `Agent` in the background unless told otherwise. */
@@ -2352,7 +2388,7 @@ const groups = <A>(rows: ReadonlyArray<A>, key: (row: A) => string) =>
 
 const USAGE_KEYS = ["input", "output", "cacheWrite", "cacheRead"] as const;
 /** Token totals and their cost in USD at one model's prices. Proxy runs have no price. */
-const spend = (usages: ReadonlyArray<Usage>, model: ShellModel | undefined) => {
+const spend = (usages: ReadonlyArray<Usage>, model: string | undefined) => {
   const total = (key: keyof Usage) => usages.reduce((sum, usage) => sum + usage[key], 0);
   const price = (key: keyof Usage) => (model && isPricedModel(model) ? PRICES[model][key] : 0);
   const cost = USAGE_KEYS.reduce((sum, key) => sum + total(key) * price(key), 0) / 1e6;
@@ -2362,7 +2398,7 @@ const spend = (usages: ReadonlyArray<Usage>, model: ShellModel | undefined) => {
 /** Markdown report. With a baseline, each case shows its earlier pass rate and the change. */
 export const summarize = (
   rows: Array<ResultRow>,
-  options: { readonly header: string; readonly shellModel: ShellModel; readonly model: Model },
+  options: { readonly header: string; readonly shellModel: string; readonly model: Model },
   before?: Map<string, number>,
 ) => {
   const codex = isCodex(options.model);
@@ -2454,10 +2490,8 @@ const Flags = Schema.Struct({
   "max-steps": Schema.optional(PositiveInt),
   "max-samples": Schema.optional(PositiveInt),
   effort: Schema.optional(Schema.Literals(EFFORTS)),
-  "shell-model": Schema.Literals([
-    ...(Object.keys(PRICES) as Array<PricedModel>),
-    ...PROXY_SHELL_MODELS,
-  ]),
+  "shell-model": Schema.String,
+  "shell-url": Schema.optional(Schema.String),
   "user-instructions": Schema.Literals(["keep", "drop"]),
   "dry-run": Schema.Boolean,
   "stop-on-regression": Schema.Boolean,
@@ -2499,6 +2533,8 @@ const main = Effect.gen(function* () {
       "max-samples": string,
       effort: string,
       "shell-model": { ...string, default: "claude-haiku-5-5" },
+      // An OpenAI-compatible server, such as http://127.0.0.1:8000/v1, that serves --shell-model.
+      "shell-url": string,
       // T3's text must work for every user, so the captured CLAUDE.md is dropped by default.
       "user-instructions": { ...string, default: "drop" },
       "dry-run": { type: "boolean", default: false },
@@ -2509,6 +2545,17 @@ const main = Effect.gen(function* () {
     },
   });
   const flags = yield* decodeFlags({ template: "", ...values });
+  const { "shell-model": shellModel, "shell-url": shellUrl } = flags;
+  if (
+    !shellUrl &&
+    !isPricedModel(shellModel) &&
+    !PROXY_SHELL_MODELS.some((m) => m === shellModel)
+  ) {
+    const known = [...Object.keys(PRICES), ...PROXY_SHELL_MODELS].join(", ");
+    return yield* Effect.die(
+      new Error(`--shell-model is one of ${known}, or any with --shell-url.`),
+    );
+  }
   if (flags.context) {
     process.stdout.write(`${t3ContextReport(flags.model)}\n`);
     return;
@@ -2660,10 +2707,11 @@ const main = Effect.gen(function* () {
   const config: Config = {
     apiKey,
     model: flags.model,
-    ...(codex || !isPricedModel(flags["shell-model"]) ? { proxy: proxyConfig() } : {}),
+    ...(codex || (!shellUrl && !isPricedModel(shellModel)) ? { proxy: proxyConfig() } : {}),
     effort,
     maxSteps: flags["max-steps"] ?? (codex ? 10 : 6),
-    shellModel: flags["shell-model"],
+    shellModel,
+    ...(shellUrl ? { shellUrl } : {}),
   };
   const previous =
     flags.baseline === undefined ? [] : yield* readNdjson(flags.baseline, decodeBaselineRow);
