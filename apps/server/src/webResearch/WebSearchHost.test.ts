@@ -86,7 +86,7 @@ const reader = (http: HttpClient.HttpClient) =>
       Layer.succeed(TinyFish.TinyFish, { fetch: () => Effect.die("Search must not use fetch.") }),
     ),
     Layer.provide(
-      Layer.succeed(PublicHttp.PublicHttp, {
+      Layer.mock(PublicHttp.PublicHttp)({
         get: () => Effect.die("Search must not read pages."),
       }),
     ),

@@ -167,7 +167,7 @@ const fixture = Effect.fnUntraced(function* (
     Layer.provide(Search.layer),
     Layer.provide(PageCache.layer),
     Layer.provide(
-      Layer.succeed(PublicHttp.PublicHttp, {
+      Layer.mock(PublicHttp.PublicHttp)({
         get: () => Effect.die("Search must never fetch public pages."),
       }),
     ),

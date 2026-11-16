@@ -89,7 +89,7 @@ const readerLayer = (
       Layer.succeed(TinyFish.TinyFish, { fetch: () => Effect.die("Unused TinyFish fetch") }),
     ),
     Layer.provide(PageCache.layer),
-    Layer.provide(Layer.succeed(PublicHttp.PublicHttp, { get })),
+    Layer.provide(Layer.mock(PublicHttp.PublicHttp)({ get })),
     Layer.provide(Layer.succeed(PublicRender.PublicRender, { render })),
     Layer.provide(Config.layerTest(process.cwd(), { prefix: "research-host-cache-" })),
     Layer.provide(NodeServices.layer),

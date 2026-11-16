@@ -353,6 +353,157 @@ it.live(
     }),
 );
 
+it("a challenge render admits only Cloudflare's own traffic past the core's document policy", () => {
+  const challenged = new URL("https://site.example/page?x=1");
+  const admits = (url: string, method: string, navigation: boolean, mainFrame = true) =>
+    PublicRender.challengeTraffic(challenged, { url, method, navigation, mainFrame });
+  expect(admits("https://site.example/page", "GET", true)).toBe(true);
+  expect(admits("https://site.example/page?__cf_chl_tk=1", "POST", true)).toBe(true);
+  expect(admits("https://site.example/other", "GET", true)).toBe(false);
+  expect(admits("https://elsewhere.example/page", "POST", true)).toBe(false);
+  expect(admits("https://site.example/page", "PUT", true)).toBe(false);
+  expect(
+    admits("https://challenges.cloudflare.com/cdn-cgi/challenge-platform/f", "GET", true, false),
+  ).toBe(true);
+  expect(admits("https://site.example/page", "GET", true, false)).toBe(false);
+  expect(admits("https://ads.example/frame", "GET", true, false)).toBe(false);
+  expect(admits("https://site.example/cdn-cgi/challenge-platform/h/b/fo/1", "POST", false)).toBe(
+    true,
+  );
+  expect(admits("https://challenges.cloudflare.com/cdn-cgi/flow", "POST", false)).toBe(true);
+  expect(admits("https://site.example/api/comment", "POST", false)).toBe(false);
+  expect(admits("https://elsewhere.example/cdn-cgi/challenge-platform/x", "POST", false)).toBe(
+    false,
+  );
+  expect(admits("blob:https://challenges.cloudflare.com/1", "GET", true, false)).toBe(false);
+});
+
+it.live(
+  "challenge traffic forwarded with the browser's cookies still cannot reach private addresses",
+  (ctx) =>
+    Effect.gen(function* () {
+      const executable = testChromium;
+      if (!executable) return ctx.skip(SKIP_WITHOUT_CHROMIUM);
+      const requests: string[] = [];
+      const server = yield* Effect.acquireRelease(
+        Effect.callback<NodeHttp.Server>((resume) => {
+          const listener = NodeHttp.createServer((request, response) => {
+            requests.push(request.url ?? "");
+            response.end("<title>LOCAL_SECRET</title>");
+          });
+          listener.listen(0, "127.0.0.1", () => resume(Effect.succeed(listener)));
+        }),
+        (listener) =>
+          Effect.callback<void>((resume) => {
+            listener.close(() => resume(Effect.void));
+          }),
+      );
+      const address = server.address();
+      if (!address || typeof address === "string")
+        return yield* Effect.die("Fixture did not bind a TCP port.");
+      const result = yield* Effect.gen(function* () {
+        const http = yield* PublicHttp.PublicHttp;
+        return yield* PublicRender.PublicRender.use((renderer) =>
+          renderer.render({
+            url: new URL(`http://127.0.0.1:${address.port}/`),
+            initial: initial("<title>Just a moment...</title>", 403),
+            loadDocument: unusedDocument,
+            challenge: {
+              send: (request) =>
+                http.send(request).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new PublicRender.PublicRenderError({
+                        status:
+                          cause._tag === "PublicNetworkBlockedError"
+                            ? "blocked_local"
+                            : "provider_error",
+                        httpStatus: null,
+                        retryAfterMs: null,
+                        cause,
+                      }),
+                  ),
+                ),
+            },
+          }),
+        );
+      }).pipe(Effect.result, Effect.provide(Layer.mergeAll(layer(executable), PublicHttp.layer)));
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") expect(result.failure.status).toBe("blocked_local");
+      expect(requests).toEqual([]);
+    }),
+);
+
+it.live(
+  "a challenge clears through the bounded client, refusing redirected answers and keeping cookie rules",
+  (ctx) =>
+    Effect.gen(function* () {
+      const executable = testChromium;
+      if (!executable) return ctx.skip(SKIP_WITHOUT_CHROMIUM);
+      const sent: Array<{ method: string; path: string; cookie?: string; body?: string }> = [];
+      const challengePage = `<title>Just a moment...</title><script>
+        fetch('/cdn-cgi/challenge-platform/moved', { method: 'POST', body: 'first' }).catch(() => {})
+          .then(() => fetch('/cdn-cgi/challenge-platform/answer', { method: 'POST', body: 'solved' }))
+          .then(() => location.reload());
+      </script>`;
+      const result = yield* PublicRender.PublicRender.use((renderer) =>
+        renderer.render({
+          url: new URL("http://research.invalid/"),
+          initial: initial(challengePage, 403),
+          loadDocument: (url) => Effect.die(`Unexpected core document ${url.href}`),
+          challenge: {
+            send: (request) =>
+              Effect.sync(() => {
+                sent.push({
+                  method: request.method,
+                  path: request.url.pathname,
+                  ...(request.headers.cookie ? { cookie: request.headers.cookie } : {}),
+                  ...(request.body ? { body: new TextDecoder().decode(request.body) } : {}),
+                });
+                const reply = (
+                  status: number,
+                  body: string,
+                  headers: Record<string, string> = { "content-type": "text/html" },
+                  setCookies: ReadonlyArray<string> = [],
+                ) => ({ status, headers, setCookies, body: new TextEncoder().encode(body) });
+                if (request.url.pathname === "/cdn-cgi/challenge-platform/moved")
+                  return reply(307, "", { location: "http://elsewhere.invalid/collect" });
+                if (request.url.pathname === "/cdn-cgi/challenge-platform/answer")
+                  return reply(200, "ok", { "content-type": "text/plain" }, [
+                    "cf_clearance=granted; Path=/",
+                    "stale=; Max-Age=0; Path=/",
+                    "scoped=1; Path=/cdn-cgi/challenge-platform",
+                    "foreign=1; Domain=elsewhere.invalid; Path=/",
+                  ]);
+                return request.headers.cookie?.includes("cf_clearance=granted")
+                  ? reply(200, `<title>Cleared page</title><p>${"Readable text. ".repeat(20)}</p>`)
+                  : reply(403, challengePage, { "content-type": "text/html" }, ["stale=1; Path=/"]);
+              }),
+          },
+        }),
+      ).pipe(Effect.provide(layer(executable)));
+      expect(result).toMatchObject({ httpStatus: 200, finalUrl: "http://research.invalid/" });
+      expect(result.body).toContain("Cleared page");
+      // The browser applies returned cookies itself: a deletion, path scope and foreign domain hold.
+      expect(sent).toEqual([
+        { method: "GET", path: "/" },
+        {
+          method: "POST",
+          path: "/cdn-cgi/challenge-platform/moved",
+          cookie: "stale=1",
+          body: "first",
+        },
+        {
+          method: "POST",
+          path: "/cdn-cgi/challenge-platform/answer",
+          cookie: "stale=1",
+          body: "solved",
+        },
+        { method: "GET", path: "/", cookie: "cf_clearance=granted" },
+      ]);
+    }),
+);
+
 it("extract preserves line boundaries and inline spaces", () => {
   const page = extract(
     "<h2> Rooms </h2><p> alpha <i> </i> beta <br> <span> gamma </span></p><p> delta </p>",

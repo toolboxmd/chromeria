@@ -1,6 +1,9 @@
 import { afterEach, vi } from "vite-plus/test";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as Schema from "effect/Schema";
 
 import * as PublicHttp from "./PublicHttp.ts";
@@ -58,4 +61,40 @@ it.effect("checks DNS again at connection time and blocks a rebound private addr
     if (result._tag === "Failure") expect(isNetworkBlocked(result.failure)).toBe(true);
     expect(dns.lookup).toHaveBeenCalledTimes(2);
   }).pipe(Effect.provide(PublicHttp.layer)),
+);
+
+it.effect("a cookie Effect cannot serialize never costs a readable page or the other cookies", () =>
+  Effect.gen(function* () {
+    dns.lookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+    const http = yield* PublicHttp.PublicHttp;
+    const url = new URL("http://cookies.example/");
+    const page = yield* http.get(url);
+    expect(page).toMatchObject({ status: 200, body: "<p>Readable</p>" });
+    const sent = yield* http.send({ url, method: "GET", headers: {} });
+    expect(sent.setCookies).toEqual(["good=1; Path=/"]);
+  }).pipe(
+    Effect.provide(
+      PublicHttp.layerWithClient.pipe(
+        Layer.provide(
+          Layer.succeed(
+            HttpClient.HttpClient,
+            HttpClient.make((request) =>
+              Effect.succeed(
+                HttpClientResponse.fromWeb(
+                  request,
+                  new Response("<p>Readable</p>", {
+                    headers: [
+                      ["content-type", "text/html"],
+                      ["set-cookie", "bad=1; Path=/bad\tpath"],
+                      ["set-cookie", "good=1; Path=/"],
+                    ],
+                  }),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  ),
 );

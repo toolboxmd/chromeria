@@ -85,8 +85,8 @@ const fixture = Effect.fnUntraced(function* (
   const requests = yield* Queue.unbounded<{ url: string; at: number }>();
   const fallbacks: Array<string> = [];
   const observed: Array<{ url: string; at: number }> = [];
-  const http = PublicHttp.PublicHttp.of({
-    get: (url) =>
+  const http = {
+    get: (url: URL) =>
       Effect.gen(function* () {
         const request = { url: url.href, at: yield* Clock.currentTimeMillis };
         observed.push(request);
@@ -97,7 +97,7 @@ const fixture = Effect.fnUntraced(function* (
             : yield* robots(url)
           : yield* respond(url);
       }),
-  });
+  };
   const config = ServerConfig.layerTest(
     process.cwd(),
     directory ?? { prefix: "chromeria-research-" },
@@ -127,7 +127,7 @@ const fixture = Effect.fnUntraced(function* (
           }),
       }),
     ),
-    Layer.provide(Layer.succeed(PublicHttp.PublicHttp, http)),
+    Layer.provide(Layer.mock(PublicHttp.PublicHttp)(http)),
     Layer.provide(resources),
   );
   const layer = McpHttpServer.layerWebResearchToolkit.pipe(
@@ -1069,7 +1069,13 @@ describe("web_read at the registered MCP seam", () => {
       yield* Effect.gen(function* () {
         const first = yield* finish(read({ url: "https://wall.example/" }), f.requests);
         expect(first).toMatchObject({ status, text: "", totalChars: 0, nextOffset: null });
-        expect(first.nextAction).toBe(status === "login" ? "needs_session" : undefined);
+        expect(first.nextAction).toBe(
+          status === "login"
+            ? "needs_session"
+            : status === "challenge"
+              ? "preview_open"
+              : undefined,
+        );
         expect(yield* read({ url: "https://wall.example/" })).toMatchObject({
           status,
           rung: "cache",

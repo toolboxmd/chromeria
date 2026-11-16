@@ -152,6 +152,9 @@ const instructionalJavascriptShell = (text: string) => {
   return instruction;
 };
 
+export const CHALLENGE_TITLE =
+  /just a moment|attention required|security check|verify (?:that )?you are human|access denied|robot check/;
+
 /** Classify the document itself, so a footer's login link is not mistaken for a wall. */
 export const classify = (
   page: ReturnType<typeof extract>,
@@ -162,9 +165,7 @@ export const classify = (
   const short = page.visibleText.length < 4000;
   if (
     status === 429 ||
-    /just a moment|attention required|security check|verify (?:that )?you are human|access denied|robot check/.test(
-      title,
-    ) ||
+    CHALLENGE_TITLE.test(title) ||
     (short &&
       /checking your browser|verify (?:that )?you are human|complete the (?:security )?captcha|cf-chl-|unusual traffic|suspected automated|try again later/.test(
         lead,

@@ -128,7 +128,7 @@ const fixture = Effect.fnUntraced(function* (
   const reader = WebResearch.layer.pipe(
     Layer.provide(Layer.mock(Search.Search)({})),
     Layer.provide(
-      Layer.succeed(PublicHttp.PublicHttp, {
+      Layer.mock(PublicHttp.PublicHttp)({
         get: (url) =>
           Effect.gen(function* () {
             order.push(url.pathname === "/robots.txt" ? "robots" : "http");
@@ -323,7 +323,12 @@ it.effect.each(["http", "render", "http_wall", "render_login", "blocked_render"]
                 }),
               )
             : Effect.succeed({
-                body: kind === "render_login" ? "<h1>Sign in</h1><input type='password'>" : article,
+                body:
+                  kind === "render_login"
+                    ? "<h1>Sign in</h1><input type='password'>"
+                    : kind === "http_wall"
+                      ? wall
+                      : article,
                 finalUrl: input.url.href,
                 httpStatus: 200,
                 headers: {},
@@ -334,7 +339,7 @@ it.effect.each(["http", "render", "http_wall", "render_login", "blocked_render"]
         const result = yield* Fiber.join(yield* f.start());
         expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
         const page = yield* decodeResult(result.structuredContent);
-        expect(page.sourceRung).toBe(kind.startsWith("http") ? "http" : "render");
+        expect(page.sourceRung).toBe(kind === "http" ? "http" : "render");
         expect(page.status).toBe(
           kind === "http_wall"
             ? "challenge"
