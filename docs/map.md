@@ -48,7 +48,7 @@ flowchart TD
     T3C --> BLM --> T3R
     BLM --> PBI
     PLI["Peer login import"]
-    %% PLI: #522
+    %% PLI: #522 PR #752
     BLM --> PLI
 
     VCF["Vault sign-in for agents"]
