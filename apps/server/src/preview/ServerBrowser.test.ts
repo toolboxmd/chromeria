@@ -1783,6 +1783,11 @@ it.effect("tells the viewer when taking or releasing control fails", () =>
       authorized = false;
       yield* viewer.input({ type: "releaseControl" });
       yield* failure("release");
+      // A stalled viewer whose queue is full of frames still learns of the failure.
+      const acked = stallViewer(viewer);
+      yield* viewer.input({ type: "releaseControl" });
+      yield* failure("release");
+      yield* acked;
     }),
   ).pipe(Effect.provide(layer)),
 );
