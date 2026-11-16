@@ -11,6 +11,10 @@
       "types": "./src/pullRequestAnchor.ts",
       "import": "./src/pullRequestAnchor.ts"
     },
+    "./sessionRenewal": {
+      "types": "./src/sessionRenewal.ts",
+      "import": "./src/sessionRenewal.ts"
+    },
     "./changedFileKind": {
       "types": "./src/changedFileKind.ts",
       "import": "./src/changedFileKind.ts"
@@ -582,6 +586,18 @@
     "./pinOrderKey": {
       "types": "./src/pinOrderKey.ts",
       "import": "./src/pinOrderKey.ts"
+    },
+    "./restartCut": {
+      "types": "./src/restartCut.ts",
+      "import": "./src/restartCut.ts"
+    },
+    "./forkToolInstructions": {
+      "types": "./src/forkToolInstructions.ts",
+      "import": "./src/forkToolInstructions.ts"
+    },
+    "./browserCookieMirror": {
+      "types": "./src/browserCookieMirror.ts",
+      "import": "./src/browserCookieMirror.ts"
     }
   },
   "scripts": {
