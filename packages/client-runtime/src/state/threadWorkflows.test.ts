@@ -4,6 +4,7 @@ import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts";
 import {
   canForkProjectedAssistantItem,
   deriveThreadQueueWorkflowState,
+  getUserQueuedThreadRuns,
   resolveLatestMergeBackRun,
   threadSupportsProviderHandoff,
 } from "./threadWorkflows.ts";
@@ -30,6 +31,39 @@ const capabilities = (input?: {
   }) as never;
 
 describe("thread workflows", () => {
+  it("keeps a historical child silence notice out of the user's queue", () => {
+    const projection = {
+      thread: { id: "parent", activeProviderThreadId: null },
+      runs: [
+        { id: "notice", status: "queued", userMessageId: "stale-notice", ordinal: 1 },
+        { id: "user", status: "queued", userMessageId: "user-message", ordinal: 2 },
+      ],
+      messages: [
+        {
+          id: "stale-notice",
+          role: "user",
+          createdBy: "agent",
+          creationSource: "server",
+          senderThreadId: "child",
+          text: "Silence observed at an earlier time on child thread child.",
+          notification: {
+            source: { kind: "subagent", childThreadId: "child" },
+            outcome: "updated",
+            summary: 'Silence observed: "Child" had no output for 151 s',
+            detail: "The child may have resumed or finished since.",
+          },
+        },
+        { id: "user-message", text: "Please continue", attachments: [] },
+      ],
+      providerThreads: [],
+      providerTurns: [],
+      providerSessions: [],
+    } as unknown as OrchestrationV2ThreadProjection;
+    expect(getUserQueuedThreadRuns(projection).map((run) => run.id)).toEqual(["user"]);
+    expect(deriveThreadQueueWorkflowState(projection).queuedRuns.map(({ text }) => text)).toEqual([
+      "Please continue",
+    ]);
+  });
   it("allows a completed thread to switch providers after its session detaches", () => {
     const projection = {
       thread: {
