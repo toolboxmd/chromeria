@@ -60,6 +60,7 @@ import { HtmlToolkit } from "../../apps/server/src/mcp/toolkits/html/tools.ts";
 import { MessageToolkit } from "../../apps/server/src/mcp/toolkits/message/tools.ts";
 import { OrchestratorToolkit } from "../../apps/server/src/mcp/toolkits/orchestrator/tools.ts";
 import { PreviewToolkit } from "../../apps/server/src/mcp/toolkits/preview/tools.ts";
+import { LoginImportToolkit } from "../../apps/server/src/mcp/toolkits/loginImport/tools.ts";
 import { PreviewControlsToolkit } from "../../apps/server/src/mcp/toolkits/previewControls/tools.ts";
 import { ProjectToolkit } from "../../apps/server/src/mcp/toolkits/project/tools.ts";
 import {
@@ -312,6 +313,8 @@ export const McpToolUseCase = Schema.Struct({
     linkedEnvironments: Schema.optional(Schema.Boolean),
     /** delegate_task `role` for a delegated child. T3 builds the child's first message from it. */
     delegateRole: Schema.optional(OrchestratorMcpTaskRole),
+    /** delegate_task `prismRole` for a delegated child, which can also shape its first message. */
+    delegatePrismRole: Schema.optional(Contracts.PrismDelegateRoleInput),
     context: Schema.optional(Schema.String),
     priorTurns: Schema.optional(
       Schema.Array(
@@ -458,6 +461,7 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   WorktreeToolkit,
   PullRequestsToolkit,
   PreviewToolkit,
+  LoginImportToolkit,
   DeviceToolkit,
   HtmlToolkit,
   MessageToolkit,
@@ -478,7 +482,7 @@ const t3Tools: ReadonlyArray<ApiTool> = t3SourceTools.map((tool) => ({
 }));
 // T3 gates these on the `preview` capability, which agent browser access decides.
 const PREVIEW_TOOLS = new Set(
-  [PreviewToolkit, PreviewControlsToolkit].flatMap((toolkit) =>
+  [PreviewToolkit, PreviewControlsToolkit, LoginImportToolkit].flatMap((toolkit) =>
     Object.values(toolkit.tools).map((tool: Tool.Any) => tool.name),
   ),
 );
@@ -1033,7 +1037,7 @@ export const buildMessages = (sample: Sample) => {
     if (last?.role !== role) messages.push({ role, content: blocks });
     else messages[messages.length - 1] = { role, content: [...last.content, ...blocks] };
   };
-  const { role, context, delegateRole, priorTurns = [] } = testCase.setup;
+  const { role, context, delegateRole, delegatePrismRole, priorTurns = [] } = testCase.setup;
   const sideChat = testCase.setup.sideChat;
   if (testCase.prompt === "" && (role !== "top" || sideChat !== undefined)) {
     throw new Error(
@@ -1101,7 +1105,8 @@ export const buildMessages = (sample: Sample) => {
       : projectComposerContextForProvider({ text: testCase.prompt, ...testCase.promptContext });
   const prompt =
     sideChatContext === undefined ? userText : withInlineContext(sideChatContext, userText);
-  const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });
+  const childPrompt = () =>
+    taskPrompt({ task: prompt, role: delegateRole, prismRole: delegatePrismRole });
   if (testCase.prompt !== "")
     push("user", text(role === "delegated-child" ? childPrompt() : prompt));
   // Claude Code gives a subagent its SubagentStart hooks' context as a reminder after the task.
@@ -2424,6 +2429,19 @@ export const summarize = (
   ].join("\n");
 };
 
+/** Largest planned samples without an explicit --max-samples. */
+export const DEFAULT_MAX_SAMPLES = 30;
+/** Worst case without --samples: a case whose 2 samples disagree gets a 3rd. */
+export const plannedSamples = (caseCount: number, samples: number | undefined) =>
+  caseCount * (samples ?? 3);
+/** Refusal message when a run plans more samples than the cap, else undefined. */
+export const sampleCapMessage = (planned: number, maxSamples: number | undefined) => {
+  const max = maxSamples ?? DEFAULT_MAX_SAMPLES;
+  return planned > max
+    ? `Planned ${planned} samples exceeds the cap of ${max}. Pass --max-samples <n> to raise it for an approved run.`
+    : undefined;
+};
+
 const PositiveInt = Schema.FiniteFromString.check(Schema.isInt(), Schema.isGreaterThan(0));
 const PositiveIntOrZero = Schema.FiniteFromString.check(
   Schema.isInt(),
@@ -2439,6 +2457,7 @@ const Flags = Schema.Struct({
   samples: Schema.optional(PositiveInt),
   concurrency: PositiveInt,
   "max-steps": Schema.optional(PositiveInt),
+  "max-samples": Schema.optional(PositiveInt),
   effort: Schema.optional(Schema.Literals(EFFORTS)),
   "shell-model": Schema.Literals([
     ...(Object.keys(PRICES) as Array<PricedModel>),
@@ -2481,6 +2500,8 @@ const main = Effect.gen(function* () {
       concurrency: { ...string, default: "8" },
       // Unset: 6 for Claude, 10 for Codex, whose code-mode cells take more steps.
       "max-steps": string,
+      // Unset: 30.
+      "max-samples": string,
       effort: string,
       "shell-model": { ...string, default: "claude-haiku-5-5" },
       // T3's text must work for every user, so the captured CLAUDE.md is dropped by default.
@@ -2524,6 +2545,14 @@ const main = Effect.gen(function* () {
       (setup.harness === undefined || setup.harness === harness),
   );
   if (selectedCases.length === 0) return yield* Effect.die(new Error("No case matches --case."));
+  // Dry runs make no model calls, so the cap does not apply.
+  if (!flags["dry-run"]) {
+    const overCap = sampleCapMessage(
+      plannedSamples(selectedCases.length, flags.samples),
+      flags["max-samples"],
+    );
+    if (overCap !== undefined) return yield* Effect.die(new Error(overCap));
+  }
   const selected = yield* Effect.forEach(selectedCases, (testCase) =>
     Effect.gen(function* () {
       const priorTurns = yield* Effect.forEach(testCase.setup.priorTurns ?? [], (turn) =>

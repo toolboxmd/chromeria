@@ -33,6 +33,8 @@ import {
   type SampleRun,
   shellOutput,
   namedPathsLine,
+  plannedSamples,
+  sampleCapMessage,
   shellRequest,
   shellResponsesRequest,
   summarize,
@@ -3201,6 +3203,17 @@ it("leaves errored samples out of pass rates and lists them in the summary", () 
   assert.include(summary, "| B | - of 0, 1 errored | new | |");
   // Errored samples' tokens still count: 3 rows of 10 input tokens each.
   assert.include(summary, "input 30");
+});
+
+it("refuses a run that plans more samples than the cap", () => {
+  assert.equal(plannedSamples(10, undefined), 30);
+  assert.equal(plannedSamples(10, 1), 10);
+  const message = sampleCapMessage(696, undefined);
+  assert.include(message ?? "", "696");
+  assert.include(message ?? "", "--max-samples");
+  assert.include(sampleCapMessage(31, undefined) ?? "", "31");
+  assert.isUndefined(sampleCapMessage(30, undefined));
+  assert.isUndefined(sampleCapMessage(696, 1000));
 });
 
 it.each(["couldn't", "couldn’t", "can’t"])(

@@ -9,13 +9,13 @@ The model sees what it sees in T3 Code. A trimmed capture of a real harness turn
 ```sh
 cd evals
 pnpm mcp-tool-use --case review-round-uses-thread-send --samples 1 --out runs/check
-pnpm mcp-tool-use --model claude-opus-5-5 --out runs/opus
+pnpm mcp-tool-use --model claude-opus-5-5 --max-samples 696 --out runs/opus
 ```
 
 - `ANTHROPIC_API_KEY` in the repo root `.env` pays for Claude models and the Haiku shell simulator.
 - Codex models (`gpt-*` in `MODELS` in `run.ts`) go through a CLIProxyAPI server, set up as the `vibeproxy` model provider in `~/.codex/config.toml`. Keep the proxy under about 12 samples in flight across all runs.
 - `--shell-model` picks the model that plays the shell: `claude-haiku-5-5` by default, or `gpt-6.1-terra` / `gpt-6-luna` through the same proxy, so Codex runs need no Anthropic key. Prefer Terra: Luna often contradicts the case's world (it calls named checkouts missing or files empty). Compare runs only when they used the same shell model.
-- Flags: `--case <ids>`, `--cases <file.ndjson>`, `--samples <n>` (default 2, and a 3rd when the first 2 disagree), `--concurrency <n>` (samples in flight, default 8), `--max-steps <n>`, `--effort <level>`, `--dry-run` (prints request bodies, no model calls), and `--context` (prints the size of T3's text and schemas, no key needed).
+- Flags: `--case <ids>`, `--cases <file.ndjson>`, `--samples <n>` (default 2, and a 3rd when the first 2 disagree), `--max-samples <n>` (default 30: a run planning more samples refuses), `--concurrency <n>` (samples in flight, default 8), `--max-steps <n>`, `--effort <level>`, `--dry-run` (prints request bodies, no model calls), and `--context` (prints the size of T3's text and schemas, no key needed).
 - `--baseline <results.jsonl> --stop-on-regression` stops as soon as a case that passed every baseline sample fails. Use it to test one copy change against a baseline run.
 - Cost: a full run of all cases at 3 samples cost $25 on Sonnet and $45 on Opus on 2026-11-10. The 16 device cases at 3 samples each cost about $5.70–5.90 on Opus and $2.90–3.40 on Sonnet (main's text–#25661), including the Haiku shell simulator; dry runs cost $0. Results record token costs for the agent and shell simulator. Codex proxy charges are outside that total; only its shell simulator is priced here, about $0.60–0.70 for the device cases.
 - A rate limit or overload (429, 529 or another 5xx) is retried with backoff for up to about 4 minutes. A sample that still fails gets an `error` in `results.jsonl`, is left out of every pass rate, and is listed in the summary; the tokens it spent still count toward the cost.
@@ -119,7 +119,7 @@ This API replay measures routing and recovery decisions. Screenshots return prod
 From `evals/`:
 
 ```sh
-pnpm mcp-tool-use --cases mcp-tool-use/cases/threads-vs-tasks.ndjson --samples 3 --out runs/threads-vs-tasks
+pnpm mcp-tool-use --cases mcp-tool-use/cases/threads-vs-tasks.ndjson --samples 3 --max-samples 81 --out runs/threads-vs-tasks
 ```
 
 These cases measure routing decisions with simulated tools, not delivered child work. The original PR's paid baseline found Sonnet starting a background native Agent for `tt-background-agent`; the routing fix is stacked separately in #27139. Historical model results and the unresolved top-level reviewer re-check wording are recorded in #27138.
@@ -166,7 +166,7 @@ Every control also checks `noCardDemand`: prose that makes a private card a prec
 From `evals/`:
 
 ```sh
-pnpm mcp-tool-use --cases mcp-tool-use/cases/secrets.ndjson --model claude-sonnet-5-5 --shell-model gpt-6.1-terra --samples 3 --out runs/secrets
+pnpm mcp-tool-use --cases mcp-tool-use/cases/secrets.ndjson --model claude-sonnet-5-5 --shell-model gpt-6.1-terra --samples 3 --max-samples 99 --out runs/secrets
 ```
 
 A secrets case is a line in `cases/secrets.ndjson`: cite its finding in `source.finding`, set `expect.secret.chatAsk`, and give consume cases their `consumers` and controls `noCardDemand`. A Sonnet arm of the 5 failing cases at 6 samples and the rest at 3 costs about $3.30 with a GPT shell; GPT models go through the CLIProxyAPI provider and aren't priced here.
@@ -224,6 +224,23 @@ Passes per case, main's text → the request_secret guidance change stacked on t
 | ctrl-oauth (guard)           | 3/3 → 3/3                   | 6/6 → 6/6           | 6/6 → 6/6                             |
 | other guards and controls    | all pass → all pass         | all pass → all pass | all pass → all pass (prod-config 5/6) |
 
+## Login import cases
+
+`cases/login-import.ndjson` checks when a computer-use child on a machine without the user's session copies it with `preview_import_login` ([#522](https://github.com/toolboxmd/chromeria/issues/522)). Prompts, worlds and pages are authored Acme data. These cases have not run yet; the user decides how a run is paid.
+
+| Case                         | Kind    | What it checks                                                                                               |
+| ---------------------------- | ------- | ------------------------------------------------------------------------------------------------------------ |
+| li-logged-out-imports        | bad     | A logged-out admin page: one import of the site's own host, no Google host, then `preview_open` again.       |
+| li-still-logged-out-uses-rbw | guard   | The import copied nothing usable and the page stays logged out: no second import, `preview_fill_credential`. |
+| li-control-already-signed-in | control | The page is already signed in: no import and no fill.                                                        |
+| li-control-local-dev-login   | control | A local dev app with a local-auth link: no import.                                                           |
+
+`li-logged-out-imports` fails on text without the tool, which cannot be called. From `evals/`:
+
+```sh
+pnpm mcp-tool-use --cases mcp-tool-use/cases/login-import.ndjson --model claude-sonnet-5-5 --shell-model gpt-6.1-terra --samples 3 --max-samples 12 --out runs/login-import
+```
+
 ## Browser routing cases
 
 `cases/browser-routing.ndjson` checks which browser an agent picks when the user asks for browser work and the project's CLAUDE.md names a browser CLI that is not installed. It also guards against over-reach. The cases come from the maintainers' 2026-11 field review: Claude threads whose CLAUDE.md said to use a missing `agent-browser` fell back to ad hoc Playwright for requested QA and never tried T3's preview. Prompts, files and prior turns are authored Acme data.
@@ -259,7 +276,7 @@ Runner support:
 From `evals/`:
 
 ```sh
-pnpm mcp-tool-use --cases mcp-tool-use/cases/browser-routing.ndjson --model claude-sonnet-5-5 --shell-model gpt-6.1-terra --samples 6 --out runs/browser-routing
+pnpm mcp-tool-use --cases mcp-tool-use/cases/browser-routing.ndjson --model claude-sonnet-5-5 --shell-model gpt-6.1-terra --samples 6 --max-samples 78 --out runs/browser-routing
 ```
 
 Fidelity limits:
@@ -304,4 +321,4 @@ After the change, the first reference to a file is an absolute link. The remaini
 1. Capture one T3 Code turn through CLIProxyAPI, with T3's MCP server connected.
 2. From `evals/`, run `pnpm mcp-tool-use:trim-capture <claude|codex> <capture.json> mcp-tool-use/templates/<claude|codex>.json.gz`. It keeps only what `run.ts` reads, and removes user instructions, the user's own skills and agents, account ids, and home paths.
 3. Read the output for user data before you commit it: `zcat <file> | less`.
-4. Run the full eval on the old and new templates, and compare.
+4. Run the full eval on the old and new templates, and compare (pass `--max-samples <n>` for the planned count).
