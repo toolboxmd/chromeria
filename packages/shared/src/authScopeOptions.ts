@@ -9,6 +9,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthPreviewOperateScope,
+  AuthCookieMirrorWriteScope,
   AuthProvidersManageScope,
   AuthRelayReadScope,
   AuthRelayWriteScope,
@@ -52,6 +53,11 @@ export const AUTH_SCOPE_OPTIONS: ReadonlyArray<{
     scope: AuthPreviewOperateScope,
     title: "Control previews",
     description: "Open browser previews and host browser automation.",
+  },
+  {
+    scope: AuthCookieMirrorWriteScope,
+    title: "Mirror desktop browser logins",
+    description: "Allow this paired desktop to write mirrored browser cookies to this environment.",
   },
   {
     scope: AuthDiagnosticsReadScope,

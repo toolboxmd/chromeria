@@ -1,21 +1,28 @@
 import * as NodeHttpPlatform from "@effect/platform-node/NodeHttpPlatform";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { expect, it } from "@effect/vitest";
+import * as NodeWS from "@effect/platform-node/NodeWS";
+import { expect, it, vi } from "@effect/vitest";
 import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthPreviewOperateScope,
   AuthSessionId,
+  EnvironmentId,
+  ThreadId,
+  type PeerAuthorityEnvelope,
+  type PreviewViewerOpenInput,
   PREVIEW_STREAM_HOST_SETUP_CLOSE_CODE,
   PreviewStreamHostSetup,
   type AuthEnvironmentScope,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import { HttpRouter, HttpServer } from "effect/http";
@@ -23,7 +30,14 @@ import { HttpRouter, HttpServer } from "effect/http";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
-import { routeLayer } from "./ServerBrowserStream.ts";
+import { PreviewViewers, layerViewers, routeLayer } from "./ServerBrowserStream.ts";
+import * as AuthSessions from "../persistence/AuthSessions.ts";
+import * as Sqlite from "../persistence/Sqlite.ts";
+import * as SessionStore from "../auth/SessionStore.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
+import * as PeerLinks from "../peer/PeerLinks.ts";
+import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 
 const platformLayer = NodeHttpPlatform.layer.pipe(Layer.provideMerge(NodeServices.layer));
 
@@ -32,7 +46,7 @@ const makeAuth = (
   error?: EnvironmentAuth.ServerAuthCredentialError,
 ) => {
   const requests: string[] = [];
-  const layer = Layer.mock(EnvironmentAuth.EnvironmentAuth, {
+  const ingress = Layer.mock(EnvironmentAuth.EnvironmentAuth, {
     authenticateWebSocketUpgrade: (request) => {
       requests.push(request.url);
       return error
@@ -45,6 +59,29 @@ const makeAuth = (
           });
     },
   });
+  const nativeSession = Layer.effectDiscard(
+    Effect.gen(function* () {
+      const repository = yield* AuthSessions.AuthSessionRepository;
+      const now = yield* DateTime.now;
+      yield* repository.create({
+        sessionId: AuthSessionId.make("stream-test"),
+        subject: "stream-test",
+        scopes,
+        method: "bearer-access-token",
+        client: {
+          label: null,
+          ipAddress: null,
+          userAgent: null,
+          deviceType: "unknown",
+          os: null,
+          browser: null,
+        },
+        issuedAt: now,
+        expiresAt: DateTime.add(now, { hours: 1 }),
+      });
+    }),
+  ).pipe(Layer.provideMerge(AuthSessions.layer.pipe(Layer.provide(Sqlite.layerMemory))));
+  const layer = Layer.merge(ingress, nativeSession);
   return { layer, requests };
 };
 
@@ -66,6 +103,125 @@ const mutations = [
 ];
 
 it.effect.each([
+  { destinationExpiry: "2036-04-07T00:04:00.000Z", expected: "2036-04-07T00:04:00.000Z" },
+  { destinationExpiry: "2036-04-07T00:06:00.000Z", expected: "2036-04-07T00:05:00.000Z" },
+])(
+  "caps remote viewer renewal at the earlier ticket expiry (%s)",
+  ({ destinationExpiry, expected }) =>
+    Effect.gen(function* () {
+      const sourceExpiry = DateTime.makeUnsafe("2036-04-07T00:05:00.000Z");
+      const destination = EnvironmentId.make("destination");
+      const envelope: PeerAuthorityEnvelope = {
+        version: 1,
+        environmentId: destination,
+        generation: "generation",
+        recordId: "record",
+        actionId: "action",
+        digest: "digest",
+        route: [destination],
+        descendant: false,
+      };
+      const input: PreviewViewerOpenInput = {
+        resource: {
+          type: "preview",
+          environmentId: destination,
+          threadId: ThreadId.make("thread"),
+          tabId: "tab",
+          serverEpoch: "epoch",
+        },
+        operation: "view",
+      };
+      const requests: PreviewViewerOpenInput[] = [];
+      const services = yield* Layer.build(
+        layerViewers.pipe(
+          Layer.provide(makeAuth([AuthOrchestrationReadScope]).layer),
+          Layer.provide(
+            Layer.mock(ServerEnvironment.ServerEnvironment, {
+              getEnvironmentId: Effect.succeed(EnvironmentId.make("source")),
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(SessionStore.SessionStore, {
+              cookieName: "stream-test",
+              legacyCookieName: undefined,
+              issueViewerToken: ({ viewerId }) =>
+                Effect.succeed({
+                  viewerId: viewerId ?? "00000000-0000-0000-0000-000000000001",
+                  token: viewerId === undefined ? "source-open" : "source-renewed",
+                  expiresAt: sourceExpiry,
+                }),
+              awaitViewerInvalidation: () => Effect.never,
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(PeerAuthority.PeerAuthority, {
+              preparePreviewViewer: () => Effect.succeed(envelope),
+              checkRecord: () => Effect.void,
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(PeerLinks.PeerLinks, {
+              get: () =>
+                Effect.succeedSome({
+                  environmentId: destination,
+                  label: "destination",
+                  urls: ["https://destination.test"],
+                  access: "full-access",
+                  linkedAt: sourceExpiry,
+                  expiresAt: sourceExpiry,
+                  lastReachedAt: null,
+                  lastError: null,
+                  launchIdentity: "generation",
+                }),
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(PeerMcpClient.PeerMcpClient, {
+              openPreviewViewer: ({ request }) =>
+                Effect.sync(() => {
+                  requests.push(request);
+                  return {
+                    origin: "https://destination.test",
+                    access: {
+                      viewerId: "00000000-0000-0000-0000-000000000002",
+                      ticket: "destination-ticket",
+                      expiresAt:
+                        request.viewerId === undefined
+                          ? "2036-04-07T00:03:00.000Z"
+                          : destinationExpiry,
+                      streamBasePath: "/api/preview-stream" as const,
+                    },
+                  };
+                }),
+              closePreviewViewer: () => Effect.succeed(true),
+            }),
+          ),
+        ),
+      );
+      const viewers = Context.get(services, PreviewViewers);
+      const session: EnvironmentAuth.AuthenticatedSession = {
+        sessionId: AuthSessionId.make("stream-test"),
+        subject: "stream-test",
+        method: "bearer-access-token",
+        scopes: [AuthOrchestrationReadScope],
+      };
+      const opened = yield* viewers.open(session, input);
+      expect(opened.expiresAt).toBe("2036-04-07T00:03:00.000Z");
+      const renewed = yield* viewers.open(session, { ...input, viewerId: opened.viewerId });
+      expect(renewed).toEqual({
+        viewerId: opened.viewerId,
+        ticket: "source-renewed",
+        expiresAt: expected,
+        streamBasePath: "/api/preview-stream",
+      });
+      expect(requests).toEqual([
+        input,
+        { ...input, viewerId: "00000000-0000-0000-0000-000000000002" },
+      ]);
+    }).pipe(Effect.scoped),
+);
+
+it.live.each([
   { hasOperateScope: false, interactive: true },
   { hasOperateScope: true, interactive: true },
   { hasOperateScope: true, interactive: false },
@@ -88,6 +244,8 @@ it.effect.each([
       ack: Effect.sync(() => acked.resolve()),
     });
     const browser = ServerBrowser.ServerBrowser.of({
+      mirrorCookies: () => Effect.void,
+      mirrorResets: Stream.empty,
       clearProfile: () => Effect.void,
       profileReporter: Effect.succeed(() => Effect.void),
       openDownload: () => Effect.succeedNone,
@@ -98,6 +256,7 @@ it.effect.each([
           return {
             output,
             input: (message) => Effect.sync(() => void inputs.push(message)),
+            enqueueInput: (message) => Effect.sync(() => void inputs.push(message)),
           };
         }),
     });
@@ -122,6 +281,10 @@ it.effect.each([
     const viewports: unknown[] = [];
     const frames: Uint8Array[] = [];
     socket.addEventListener("error", () => received.reject(new Error("stream failed")));
+    socket.addEventListener("close", (event) => {
+      received.reject(new Error(`stream closed before frame: ${event.code} ${event.reason}`));
+      acked.reject(new Error(`stream closed before ack: ${event.code} ${event.reason}`));
+    });
     socket.addEventListener("message", (event) => {
       if (typeof event.data === "string") {
         viewports.push(JSON.parse(event.data));
@@ -133,13 +296,20 @@ it.effect.each([
       socket.send(JSON.stringify({ type: "ack" }));
       received.resolve();
     });
-    yield* Effect.promise(() => received.promise);
-    // The socket ack follows every mutation, providing a barrier without sleeps.
-    yield* Effect.promise(() => acked.promise);
+    // The ack follows every mutation on the socket, so this is also a barrier
+    // proving all preceding inputs were processed, without a timing sleep.
+    yield* Effect.promise(() => Promise.all([received.promise, acked.promise]));
     expect(frames).toEqual([frame]);
     expect(viewports).toEqual([{ type: "viewport", width: 1280, height: 800 }]);
     expect(inputs).toEqual(canOperate ? [...mutations, null] : []);
-    expect(attachments).toEqual([
+    expect(
+      attachments.map(
+        ({ authorize: _authorize, resourceViewerId: _viewerId, disconnectReason, ...input }) => ({
+          ...input,
+          disconnectReason: disconnectReason?.(),
+        }),
+      ),
+    ).toEqual([
       {
         threadId: "thread",
         tabId: "tab",
@@ -147,6 +317,7 @@ it.effect.each([
         maxHeight: 800,
         quality: 70,
         canOperate,
+        disconnectReason: "transport",
       },
     ]);
     expect(auth.requests).toEqual([resource]);
@@ -165,9 +336,12 @@ it.effect("sends replies ahead of stale frames and only the newest frame after a
     const browser = ServerBrowser.ServerBrowser.of({
       clearProfile: () => Effect.void,
       profileReporter: Effect.succeed(() => Effect.void),
+      mirrorResets: Stream.empty,
+      mirrorCookies: () => Effect.void,
       openDownload: () => Effect.succeedNone,
       answerFileChooser: () => Effect.succeed(false),
-      attachViewer: () => Effect.succeed({ output, input: () => Effect.void }),
+      attachViewer: () =>
+        Effect.succeed({ output, input: () => Effect.void, enqueueInput: () => Effect.void }),
     });
     const services = yield* Layer.build(
       HttpRouter.serve(
@@ -225,7 +399,7 @@ it.effect("sends replies ahead of stale frames and only the newest frame after a
   }),
 );
 
-it.effect.each([
+it.live.each([
   { scopes: [], error: undefined, status: 403 },
   { scopes: [AuthOrchestrationOperateScope], error: undefined, status: 403 },
   { scopes: [], error: new EnvironmentAuth.ServerAuthMissingCredentialError({}), status: 401 },
@@ -234,6 +408,8 @@ it.effect.each([
     const auth = makeAuth(testCase.scopes, testCase.error);
     let attachments = 0;
     const browser = ServerBrowser.ServerBrowser.of({
+      mirrorCookies: () => Effect.void,
+      mirrorResets: Stream.empty,
       clearProfile: () => Effect.void,
       profileReporter: Effect.succeed(() => Effect.void),
       openDownload: () => Effect.succeedNone,
@@ -268,13 +444,15 @@ it.effect.each([
   }),
 );
 
-it.effect("serves a tab's download only to an authorized session", () =>
+it.live("serves a tab's download only to an authorized session", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = `${yield* fs.makeTempDirectoryScoped({ prefix: "t3-download-" })}/file`;
     yield* fs.writeFileString(path, "report contents");
     const requests: Array<unknown> = [];
     const browser = ServerBrowser.ServerBrowser.of({
+      mirrorCookies: () => Effect.void,
+      mirrorResets: Stream.empty,
       clearProfile: () => Effect.void,
       profileReporter: Effect.succeed(() => Effect.void),
       openDownload: (input) =>
@@ -287,7 +465,7 @@ it.effect("serves a tab's download only to an authorized session", () =>
       answerFileChooser: () => Effect.succeed(false),
       attachViewer: () => Effect.die("unused"),
     });
-    const serve = (scopes: ReadonlyArray<AuthEnvironmentScope>, url: string) =>
+    const serve = (scopes: ReadonlyArray<AuthEnvironmentScope>, url: string, method = "GET") =>
       Effect.gen(function* () {
         const handler = yield* Effect.acquireRelease(
           Effect.sync(() =>
@@ -302,7 +480,7 @@ it.effect("serves a tab's download only to an authorized session", () =>
           ),
           ({ dispose }) => Effect.promise(dispose),
         );
-        return yield* Effect.promise(() => handler.handler(new Request(url)));
+        return yield* Effect.promise(() => handler.handler(new Request(url, { method })));
       });
     const base = "http://t3.test/api/preview-stream/download?threadId=thread&tabId=tab";
     const denied = yield* serve([], `${base}&id=download-1`);
@@ -314,15 +492,23 @@ it.effect("serves a tab's download only to an authorized session", () =>
       'attachment; filename="Q3 report.csv"',
     );
     expect(yield* Effect.promise(() => response.text())).toBe("report contents");
+    const head = yield* serve([AuthOrchestrationReadScope], `${base}&id=download-1`, "HEAD");
+    expect(head.status).toBe(200);
+    expect(head.headers.get("content-length")).toBe("15");
+    expect(yield* Effect.promise(() => head.text())).toBe("");
+    const deniedHead = yield* serve([], `${base}&id=download-1`, "HEAD");
+    expect(deniedHead.status).toBe(403);
     const missing = yield* serve([AuthOrchestrationReadScope], `${base}&id=other`);
     expect(missing.status).toBe(404);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-it.effect("passes uploaded files to the page's open picker and needs operate scope", () =>
+it.live("passes uploaded files to the page's open picker and needs operate scope", () =>
   Effect.gen(function* () {
     const answers: Array<{ chooserId: string; files: Array<{ name: string; text: string }> }> = [];
     const browser = ServerBrowser.ServerBrowser.of({
+      mirrorCookies: () => Effect.void,
+      mirrorResets: Stream.empty,
       clearProfile: () => Effect.void,
       profileReporter: Effect.succeed(() => Effect.void),
       openDownload: () => Effect.succeedNone,
@@ -375,7 +561,194 @@ it.effect("passes uploaded files to the page's open picker and needs operate sco
 
 const decodeHostSetup = Schema.decodeUnknownEffect(Schema.fromJsonString(PreviewStreamHostSetup));
 
-it.effect.each([
+it.live.each(["closing", "open"] as const)(
+  "keeps the peer close owner when a send fails on a %s socket",
+  (state) => {
+    let releaseSend: (() => void) | undefined;
+    let releaseClose: (() => void) | undefined;
+    let gating = true;
+    const releaseGates = () => {
+      gating = false;
+      releaseSend?.();
+      releaseClose?.();
+    };
+    return Effect.gen(function* () {
+      const peer = yield* Effect.acquireRelease(
+        Effect.sync(() => new NodeWS.WebSocketServer({ port: 0 })),
+        (server) =>
+          Effect.promise(
+            () =>
+              new Promise<void>((resolve) => {
+                for (const client of server.clients) client.terminate();
+                server.close(() => resolve());
+              }),
+          ),
+      );
+      if (!peer.address())
+        yield* Effect.promise(
+          () => new Promise<void>((resolve) => peer.once("listening", resolve)),
+        );
+      const address = peer.address();
+      if (typeof address !== "object" || address === null) throw new Error("Missing peer port");
+      const peerOrigin = `http://127.0.0.1:${address.port}`;
+      const peerSocketOrigin = peerOrigin.replace(/^http/, "ws");
+      peer.on("connection", (socket) => {
+        socket.send("ready");
+        if (state === "closing")
+          socket.once("message", () => socket.close(1013, "browser input backlog"));
+      });
+      let sendFailureState: number | undefined;
+      let closedWriteCause: unknown;
+      let peerCloseCode: number | undefined;
+      const originalSend = NodeWS.WebSocket.prototype.send;
+      const originalEmit = NodeWS.WebSocket.prototype.emit;
+      yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          vi.spyOn(NodeWS.WebSocket.prototype, "send").mockImplementation(function (
+            this: NodeWS.WebSocket,
+            data,
+            ...args
+          ) {
+            const callback = args.at(-1);
+            if (
+              gating &&
+              this.url?.startsWith(peerSocketOrigin) &&
+              typeof callback === "function"
+            ) {
+              args[args.length - 1] = (error) => {
+                if (state === "open") {
+                  sendFailureState = this.readyState;
+                  callback(new Error("Open peer write failed"));
+                } else if (data === JSON.stringify({ type: "text", text: "first" })) {
+                  releaseSend = () => {
+                    releaseSend = undefined;
+                    callback(error);
+                  };
+                  if (releaseClose) releaseSend();
+                } else {
+                  sendFailureState = this.readyState;
+                  closedWriteCause = error;
+                  callback(error);
+                  queueMicrotask(() => releaseClose?.());
+                }
+              };
+            }
+            return originalSend.call(this, data, ...args);
+          }),
+        ),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      );
+      yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          vi.spyOn(NodeWS.WebSocket.prototype, "emit").mockImplementation(function (
+            this: NodeWS.WebSocket,
+            event,
+            ...args
+          ) {
+            if (
+              gating &&
+              state === "closing" &&
+              this.url?.startsWith(peerSocketOrigin) &&
+              event === "close"
+            ) {
+              peerCloseCode = args[0];
+              releaseClose = () => {
+                releaseClose = undefined;
+                originalEmit.call(this, event, ...args);
+              };
+              releaseSend?.();
+              return true;
+            }
+            return originalEmit.call(this, event, ...args);
+          }),
+        ),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      );
+      const scopes = [AuthOrchestrationReadScope, AuthPreviewOperateScope];
+      const expiresAt = DateTime.add(yield* DateTime.now, { hours: 1 });
+      const services = yield* Layer.build(
+        HttpRouter.serve(routeLayer.pipe(Layer.provide(platformLayer)), {
+          disableListenLog: true,
+        }).pipe(
+          Layer.provideMerge(NodeHttpServer.layerTest),
+          Layer.provide(makeAuth(scopes).layer),
+          Layer.provide(
+            Layer.mock(PreviewViewers, {
+              resolve: () => Effect.succeed({ type: "peer", origin: peerOrigin, ticket: "peer" }),
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(SessionStore.SessionStore, {
+              cookieName: "stream-test",
+              legacyCookieName: undefined,
+              admitViewerToken: () =>
+                Effect.succeed({
+                  session: {
+                    sessionId: AuthSessionId.make("stream-test"),
+                    token: "test",
+                    method: "bearer-access-token",
+                    client: {
+                      label: "Relay fixture",
+                      deviceType: "unknown",
+                    },
+                    subject: "stream-test",
+                    scopes,
+                  },
+                  viewerId: "viewer",
+                  expiresAt,
+                  resource: {
+                    type: "preview",
+                    environmentId: EnvironmentId.make("peer"),
+                    threadId: ThreadId.make("thread"),
+                    tabId: "tab",
+                    serverEpoch: "epoch",
+                  },
+                  operation: "control",
+                  generation: "generation",
+                  recheck: Effect.void,
+                }),
+              awaitViewerInvalidation: () => Effect.never,
+            }),
+          ),
+        ),
+      );
+      const origin = HttpServer.formatAddress(
+        Context.get(services, HttpServer.HttpServer).address,
+      ).replace(/^http/, "ws");
+      const closed = Promise.withResolvers<number>();
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          const socket = new WebSocket(
+            `${origin}/api/preview-stream/ws?threadId=thread&tabId=tab&viewerTicket=test`,
+          );
+          socket.addEventListener("error", () => closed.reject(new Error("Relay fixture failed")));
+          socket.addEventListener("close", ({ code }) => closed.resolve(code), { once: true });
+          socket.addEventListener(
+            "message",
+            () => {
+              socket.send(JSON.stringify({ type: "text", text: "first" }));
+              if (state === "closing")
+                socket.send(JSON.stringify({ type: "text", text: "second" }));
+            },
+            { once: true },
+          );
+          return socket;
+        }),
+        (socket) => Effect.sync(() => socket.close()),
+      );
+      expect(yield* Effect.promise(() => closed.promise)).toBe(state === "closing" ? 1013 : 1011);
+      expect(sendFailureState).toBe(
+        state === "closing" ? NodeWS.WebSocket.CLOSED : NodeWS.WebSocket.OPEN,
+      );
+      if (state === "closing") {
+        expect(peerCloseCode).toBe(1013);
+        expect(closedWriteCause).toBeInstanceOf(Error);
+      }
+    }).pipe(Effect.ensuring(Effect.sync(releaseGates)), Effect.scoped);
+  },
+);
+
+it.live.each([
   {
     error: new PreviewBrowserHost.PreviewBrowserSandboxError({
       setupCommand: "sudo t3 browser setup",
@@ -392,6 +765,8 @@ it.effect.each([
 ])("tells viewers the command that sets up the host ($need)", ({ error, need }) =>
   Effect.gen(function* () {
     const browser = ServerBrowser.ServerBrowser.of({
+      mirrorCookies: () => Effect.void,
+      mirrorResets: Stream.empty,
       clearProfile: () => Effect.void,
       profileReporter: Effect.succeed(() => Effect.void),
       openDownload: () => Effect.succeedNone,
