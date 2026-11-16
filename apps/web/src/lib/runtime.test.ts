@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "@effect/vitest";
 import { withRelayClientTracing } from "@t3tools/shared/relayTracing";
 import * as Effect from "effect/Effect";
 import * as Tracer from "effect/Tracer";
+import { SessionRenewal } from "@t3tools/client-runtime/authorization";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -74,6 +75,27 @@ describe("web runtime relay telemetry policy", () => {
       expect(payload).toContain('"name":"relay.first-operation"');
     } else {
       expect(fetchFn).not.toHaveBeenCalled();
+    }
+  });
+});
+
+describe("web runtime session renewal", () => {
+  it("constructs renewal without a primary when the desktop local environment is disabled", async () => {
+    vi.resetModules();
+    vi.stubGlobal("window", {
+      location: new URL("t3code://app/"),
+      desktopBridge: {
+        getLocalEnvironmentEnabled: () => false,
+        getRelayTelemetryEnabled: () => false,
+      },
+    });
+    const { runtime } = await import("./runtime");
+    try {
+      await expect(
+        runtime.runPromise(SessionRenewal.SessionRenewal.pipe(Effect.asVoid)),
+      ).resolves.toBeUndefined();
+    } finally {
+      await runtime.dispose();
     }
   });
 });

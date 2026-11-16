@@ -142,3 +142,8 @@ export const TAKE_LEGACY_LOCAL_STORAGE_CHANNEL = "desktop:take-legacy-local-stor
 export const COMPLETE_LEGACY_LOCAL_STORAGE_CHANNEL = "desktop:complete-legacy-local-storage";
 
 export const RESTART_AUDIO_SERVICE_CHANNEL = "desktop:restart-audio-service";
+
+export const GET_RENEWAL_RECORD_CHANNEL = "desktop:renewal-record:get";
+export const COMPARE_RENEWAL_RECORD_CHANNEL = "desktop:renewal-record:compare";
+
+export const COOKIE_MIRROR_CONNECTION_CHANNEL = "cookie-mirror:connection";
