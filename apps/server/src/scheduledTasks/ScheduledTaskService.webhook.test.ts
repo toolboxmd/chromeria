@@ -1,3 +1,4 @@
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto has no createHmac.
 import * as NodeCrypto from "node:crypto";
 
@@ -123,6 +124,7 @@ type LaunchInput = ThreadLaunchService.ThreadLaunchInput;
 
 const webhookTaskInput = (overrides: Record<string, unknown> = {}) =>
   decodeUpsertInput({
+    purposeIntent: { version: 1, intent: { type: "unscoped" } },
     id: "scheduled-task:hook",
     title: "Review PRs",
     prompt: "Review this PR: {{body.pull_request.url}}",
@@ -262,7 +264,12 @@ const withService = <A, E>(
       return yield* body({ service, launches, sql, secretsByRef });
     }).pipe(
       Effect.provide(
-        Layer.fresh(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))),
+        Layer.fresh(
+          ScheduledTaskService.layer.pipe(
+            Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+            Layer.provide(layerDependencies),
+          ),
+        ),
       ),
     );
   }).pipe(
