@@ -27,6 +27,19 @@ export const BRAND_ASSET_PATHS = {
   nightlyWebIcon192Png: "assets/nightly/nightly-web-icon-192x192.png",
   nightlyWebIcon512Png: "assets/nightly/nightly-web-icon-512x512.png",
 
+  // Chromeria (toolboxmd fork) brand, used by stable desktop and web builds.
+  // The 1024px source is the macOS rounded-square icon; the rest derive from it.
+  chromeriaIconPng: "assets/chromeria/chromeria-icon-1024.png",
+  // Opaque, full-bleed iOS app icon: the source scaled 108% over its navy background.
+  chromeriaIosIconPng: "assets/chromeria/chromeria-ios-1024.png",
+  chromeriaWindowsIconIco: "assets/chromeria/chromeria-windows.ico",
+  chromeriaWebFaviconIco: "assets/chromeria/chromeria-web-favicon.ico",
+  chromeriaWebFavicon16Png: "assets/chromeria/chromeria-web-favicon-16x16.png",
+  chromeriaWebFavicon32Png: "assets/chromeria/chromeria-web-favicon-32x32.png",
+  chromeriaWebAppleTouchIconPng: "assets/chromeria/chromeria-web-apple-touch-180.png",
+  chromeriaWebIcon192Png: "assets/chromeria/chromeria-web-icon-192x192.png",
+  chromeriaWebIcon512Png: "assets/chromeria/chromeria-web-icon-512x512.png",
+
   developmentDesktopIconPng: "assets/dev/blueprint-macos-1024.png",
   developmentWindowsIconIco: "assets/dev/blueprint-windows.ico",
   developmentWebFaviconIco: "assets/dev/blueprint-web-favicon.ico",
@@ -79,12 +92,12 @@ const WEB_ICON_SOURCE_PATHS_BY_BRAND = {
     icon512Png: BRAND_ASSET_PATHS.nightlyWebIcon512Png,
   },
   production: {
-    faviconIco: BRAND_ASSET_PATHS.productionWebFaviconIco,
-    favicon16Png: BRAND_ASSET_PATHS.productionWebFavicon16Png,
-    favicon32Png: BRAND_ASSET_PATHS.productionWebFavicon32Png,
-    appleTouchIconPng: BRAND_ASSET_PATHS.productionWebAppleTouchIconPng,
-    icon192Png: BRAND_ASSET_PATHS.productionWebIcon192Png,
-    icon512Png: BRAND_ASSET_PATHS.productionWebIcon512Png,
+    faviconIco: BRAND_ASSET_PATHS.chromeriaWebFaviconIco,
+    favicon16Png: BRAND_ASSET_PATHS.chromeriaWebFavicon16Png,
+    favicon32Png: BRAND_ASSET_PATHS.chromeriaWebFavicon32Png,
+    appleTouchIconPng: BRAND_ASSET_PATHS.chromeriaWebAppleTouchIconPng,
+    icon192Png: BRAND_ASSET_PATHS.chromeriaWebIcon192Png,
+    icon512Png: BRAND_ASSET_PATHS.chromeriaWebIcon512Png,
   },
 } as const satisfies Record<WebAssetBrand, Record<keyof typeof WEB_ICON_TARGET_FILENAMES, string>>;
 
