@@ -15,7 +15,7 @@ import {
   TurnItemId,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2StoredEvent,
-  type OrchestrationV2ThreadProjection,
+  OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadStreamItem,
   OrchestrationV2TurnItem,
   OrchestrationV2TurnItemJson,
@@ -35,6 +35,7 @@ import {
 import { threadShellFromProjection } from "./ProjectionStore.ts";
 import { MAX_TOOL_OUTPUT_IMAGES, toolOutputImages } from "@t3tools/shared/toolOutput";
 
+const decodeThreadProjection = Schema.decodeUnknownSync(OrchestrationV2ThreadProjection);
 const decodeTurnItem = Schema.decodeUnknownSync(OrchestrationV2TurnItem);
 const encodeTurnItemJson = Schema.encodeSync(OrchestrationV2TurnItemJson);
 const decodeTurnItemJson = Schema.decodeUnknownSync(OrchestrationV2TurnItemJson);
@@ -107,7 +108,7 @@ describe("orchestration V2 wire projection", () => {
   it("keeps transcript bodies out of shell rows", () => {
     const now = DateTime.makeUnsafe("2026-08-13T00:00:00.000Z");
     const threadId = ThreadId.make("thread-shell-budget");
-    const projection = {
+    const projection = decodeThreadProjection({
       thread: {
         createdBy: "user",
         creationSource: "web",
@@ -115,7 +116,7 @@ describe("orchestration V2 wire projection", () => {
         projectId: ProjectId.make("project-shell-budget"),
         title: "Shell payload budget",
         providerInstanceId: ProviderInstanceId.make("codex"),
-        modelSelection: null,
+        modelSelection: { instanceId: "codex", model: "gpt-6.1-sol" },
         runtimeMode: "full-access",
         interactionMode: "default",
         branch: null,
@@ -136,10 +137,25 @@ describe("orchestration V2 wire projection", () => {
       },
       runs: [],
       attempts: [],
+      nodes: [],
+      subagents: [],
+      providerTurns: [],
+      checkpointScopes: [],
+      checkpoints: [],
+      contextHandoffs: [],
+      contextTransfers: [],
       runtimeRequests: [],
       messages: [
         {
+          createdBy: "agent",
+          creationSource: "provider",
           id: MessageId.make("message-shell-budget"),
+          threadId,
+          runId: null,
+          nodeId: null,
+          attachments: [],
+          streaming: false,
+          createdAt: now,
           role: "assistant",
           text: "x".repeat(1_000_000),
           updatedAt: now,
@@ -151,7 +167,7 @@ describe("orchestration V2 wire projection", () => {
       visibleTurnItems: [],
       plans: [],
       updatedAt: now,
-    } as unknown as OrchestrationV2ThreadProjection;
+    });
 
     const shell = threadShellFromProjection(projection);
 

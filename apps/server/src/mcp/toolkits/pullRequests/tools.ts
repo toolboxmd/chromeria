@@ -1,6 +1,13 @@
 import {
+  ExecutionPurposeDelivery,
+  PurposeDeliveryIntent,
+  SavedPurposeIntent,
+} from "@t3tools/contracts";
+import * as McpRouting from "../../McpRouting.ts";
+import {
   McpCapabilityUnavailableError,
   OrchestratorMcpEnvironmentTarget,
+  McpConfirmedOperation,
   OrchestratorMcpFailure,
   PositiveInt,
   PullRequestReviewGuide,
@@ -126,6 +133,7 @@ export class PullRequestGuideFailedError extends Schema.TaggedError<PullRequestG
 export const PullRequestToolError = Schema.Union([
   OrchestratorMcpFailure,
   McpCapabilityUnavailableError,
+  McpConfirmedOperation,
   PullRequestUrlInvalidError,
   PullRequestTargetIncompleteError,
   PullRequestHostRequiredError,
@@ -156,6 +164,7 @@ export const CHILD_PULL_REQUEST_REPORT_NEXT =
 
 export const LinkPullRequestResult = Schema.Struct({
   ...PullRequestIdentity,
+  purposeDelivery: Schema.optional(PurposeDeliveryIntent),
   alreadyLinked: Schema.Boolean,
   next: Schema.optional(Schema.String),
 });
@@ -228,6 +237,7 @@ export const ThreadPullRequestEntry = Schema.Struct({
 export type ThreadPullRequestEntry = typeof ThreadPullRequestEntry.Type;
 
 export const ListThreadPullRequestsResult = Schema.Struct({
+  purposeDeliveries: Schema.optional(Schema.Array(ExecutionPurposeDelivery)),
   pullRequests: Schema.Array(ThreadPullRequestEntry),
   chains: Schema.Array(
     Schema.Struct({
@@ -243,9 +253,14 @@ export type ListThreadPullRequestsResult = typeof ListThreadPullRequestsResult.T
 
 const LinkPullRequestTool = Tool.make("link_pull_request", {
   description:
-    "Link a PR to this thread. T3 shows its status and settles the thread on merge. For several PRs, use `link_pull_requests`.",
-  parameters: PullRequestTargetInput,
-  success: LinkPullRequestResult,
+    "Link a PR to this thread. T3 shows its status and settles the thread on merge. Optional `purposeDelivery` records the exact Issue or PR outcome this PR delivers, including work before the PR existed; it never changes execution ownership, and omitting it records navigation only. Negotiated keyed calls return a historical confirmed-operation receipt; `list_thread_pull_requests` reads current links. Unkeyed relinking succeeds and can add a delivery declaration.",
+  parameters: McpRouting.parameters(
+    Schema.Struct({
+      ...PullRequestTargetInput.fields,
+      purposeDelivery: Schema.optional(PurposeDeliveryIntent),
+    }),
+  ),
+  success: Schema.Union([LinkPullRequestResult, McpConfirmedOperation]),
   failure: PullRequestToolError,
   dependencies,
 })
@@ -275,9 +290,9 @@ const LinkPullRequestsTool = Tool.make("link_pull_requests", {
 
 const UnlinkPullRequestTool = Tool.make("unlink_pull_request", {
   description:
-    "Remove a PR link from this thread. Succeeds with `wasLinked=false` when it was not linked.",
-  parameters: PullRequestTargetInput,
-  success: UnlinkPullRequestResult,
+    "Remove a PR link from this thread. Unkeyed calls succeed with `wasLinked=false` when it was not linked. Negotiated keyed calls return a historical confirmed-operation receipt; `list_thread_pull_requests` reads current links.",
+  parameters: McpRouting.parameters(PullRequestTargetInput),
+  success: Schema.Union([UnlinkPullRequestResult, McpConfirmedOperation]),
   failure: PullRequestToolError,
   dependencies,
 })
@@ -327,7 +342,12 @@ const ListThreadPullRequestsTool = Tool.make("list_thread_pull_requests", {
 const WatchPullRequestTool = Tool.make("watch_pull_request", {
   description:
     "Watch an open PR for this thread, linking it first if needed. T3 wakes you on failed checks, passed required checks, new comments or reviews, or conflicts. Handle old comments first. Only later ones wake you. After this call, end your turn. The watch stays on after each wake, so do not call this again on a wake. A wake is not a merge decision. Check readiness yourself.",
-  parameters: PullRequestTargetInput,
+  parameters: McpRouting.parameters(
+    PullRequestTargetInput.mapFields((fields) => ({
+      ...fields,
+      purposeIntent: Schema.optional(SavedPurposeIntent),
+    })),
+  ),
   success: WatchPullRequestResult,
   failure: PullRequestToolError,
   dependencies: watchDependencies,
@@ -387,10 +407,11 @@ export type ReadPullRequestGuideResult = typeof ReadPullRequestGuideResult.Type;
 const WritePullRequestGuidesTool = Tool.make("write_pull_request_guides", {
   description:
     "Write review guides for up to 20 PRs (the tour in the PR Guide tab). Returns once runs start. Each run takes minutes in a temporary checkout. A run for the same head is joined. Read with `read_pull_request_guide`. Fails while guides are off.",
-  parameters: Schema.Struct({
-    environmentId: OrchestratorMcpEnvironmentTarget,
-    pullRequests: Schema.Array(GuideTarget).check(Schema.isMinLength(1), Schema.isMaxLength(20)),
-  }),
+  parameters: McpRouting.parameters(
+    Schema.Struct({
+      pullRequests: Schema.Array(GuideTarget).check(Schema.isMinLength(1), Schema.isMaxLength(20)),
+    }),
+  ),
   success: WritePullRequestGuidesResult,
   failure: PullRequestToolError,
   dependencies: guideDependencies,
@@ -404,10 +425,7 @@ const WritePullRequestGuidesTool = Tool.make("write_pull_request_guides", {
 const ReadPullRequestGuideTool = Tool.make("read_pull_request_guide", {
   description:
     "Read a PR's stored review guide and run state. `guide` is null when none exists. Never starts a run.",
-  parameters: Schema.Struct({
-    environmentId: OrchestratorMcpEnvironmentTarget,
-    ...GuideTarget.fields,
-  }),
+  parameters: McpRouting.parameters(GuideTarget),
   success: ReadPullRequestGuideResult,
   failure: PullRequestToolError,
   dependencies: guideDependencies,
