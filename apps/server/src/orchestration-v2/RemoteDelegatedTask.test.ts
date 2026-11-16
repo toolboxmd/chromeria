@@ -941,8 +941,9 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
           parentThreadId: parent.threadId,
           taskId,
           stop: { requestId: "stop-generation", state: "pending" },
+          cancel: true,
         });
-        // A later real result remains observable but cannot resurrect a stopped parent.
+        // A later real result before the destination accepts the cancel stays owed to the parent.
         yield* orchestrator.dispatch({
           type: "delegated_task.remote.complete",
           commandId: CommandId.make("late-after-stop"),
@@ -971,8 +972,27 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
         assert.equal(late.result, "Result 1");
         assert.equal(late.remoteChild?.latestResult?.text, "Late result");
         assert.equal(late.remoteChild?.stop?.state, "pending");
-        assert.equal(late.completionDelivery?.state, "disposed");
-        assert.equal((yield* Ref.get(offers)).length, 3);
+        assert.equal(late.completionDelivery?.state, "claimed");
+        // Acceptance takes the wake the parent has not consumed, as a local cancel would.
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.observe",
+          commandId: CommandId.make("stop-accepted"),
+          parentThreadId: parent.threadId,
+          taskId,
+          stop: { requestId: "stop-generation", state: "acknowledged" },
+        });
+        const accepted = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents.find(
+          (task) => task.id === taskId,
+        )!;
+        assert.equal(accepted.result, "Result 1");
+        assert.equal(accepted.completionDelivery?.state, "disposed");
+        assert.equal(accepted.remoteChild?.cancelIntent, undefined);
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(parent.threadId)).runs
+            .find((run) => run.id === parent.runId)
+            ?.delegatedCompletion?.delivery?.taskIds.includes(taskId) ?? false,
+          false,
+        );
         assert.equal(yield* orchestrator.getThreadShell(remoteChild.threadId), null);
       }),
   );
