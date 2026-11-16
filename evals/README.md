@@ -16,7 +16,7 @@ Write or run an eval when a change affects what a model sees or does: agent inst
 
 1. Run `vp i` at the repo root.
 2. Put the API keys the eval needs in the repo root `.env`. It is gitignored, and the eval scripts load it. Never print or commit a key.
-3. From `evals/`, run `pnpm <eval> --out runs/<name>`. `runs/` is gitignored.
+3. From `evals/`, run `pnpm <eval> --out runs/<name>`. `runs/` is gitignored. Scope with `--case`; a run above the sample cap refuses until you raise it.
 
 Each eval's README lists its models, flags, and cost. Start with one case and one sample to check the setup.
 
@@ -46,7 +46,7 @@ Every eval follows the same shape, so a new one is easy to write and an old one 
 
 ## Cost
 
-Run only the cases your change touches until they pass. Then do one full run per model before the PR merges. Each eval's summary records what the run cost.
+Run only the cases your change touches until they pass. Fork PRs follow [the fork guide](../docs/fork.md#proof-and-upstream-overlap): affected fork-owned cases only, never a full run. Each eval's summary records what the run cost. A run above the sample cap needs the user's approval of the cost; raise the cap only for an approved run.
 
 ## Add an eval
 
