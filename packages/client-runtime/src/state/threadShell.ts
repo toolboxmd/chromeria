@@ -91,7 +91,7 @@ export function resolveListedAncestorThreadRef(
     if (!isListedThreadLineage(thread.lineage)) {
       if (thread.lineage.parentThreadId === null) return ref;
       parent = { environmentId: thread.environmentId, threadId: thread.lineage.parentThreadId };
-    } else if (thread.delegatedFrom != null) {
+    } else if (thread.delegatedFrom != null && thread.lineage.relationshipToParent !== "fork") {
       parent = {
         environmentId: thread.delegatedFrom.environmentId,
         threadId: thread.delegatedFrom.threadId,

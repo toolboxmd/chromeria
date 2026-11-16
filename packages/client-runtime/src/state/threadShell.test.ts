@@ -852,4 +852,18 @@ describe("resolveListedAncestorThreadRef", () => {
       ref(remoteEnvironmentId, parent.id),
     );
   });
+
+  it("keeps a user fork that inherited a task's delegatedFrom on its own row", () => {
+    const parent = listed("thread-parent", remoteEnvironmentId);
+    const fork = listed("thread-fork", environmentId, {
+      lineage: {
+        rootThreadId: ThreadId.make("thread-task"),
+        parentThreadId: ThreadId.make("thread-task"),
+        relationshipToParent: "fork",
+      },
+      delegatedFrom: { environmentId: remoteEnvironmentId, threadId: parent.id, title: "Parent" },
+    });
+
+    expect(rowOf(fork.id, environmentId, [parent, fork])).toEqual(ref(environmentId, fork.id));
+  });
 });
