@@ -2111,7 +2111,16 @@ const layerPeerControl = Layer.unwrap(
           yield* decodeSecretControl(yield* request.json),
         );
         return HttpServerResponse.jsonUnsafe(result);
-      }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 403 }))),
+      }).pipe(
+        // The source shows a denial's reason, such as a missing link grant, instead of a bare 403.
+        Effect.catch((error) =>
+          Effect.succeed(
+            isPeerFailure(error) && error.code === "capability_denied"
+              ? HttpServerResponse.jsonUnsafe({ message: error.message }, { status: 403 })
+              : HttpServerResponse.empty({ status: 403 }),
+          ),
+        ),
+      ),
     );
     const secretReceipt = HttpRouter.add(
       "POST",

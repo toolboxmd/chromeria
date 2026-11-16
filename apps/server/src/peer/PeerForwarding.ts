@@ -974,7 +974,18 @@ const make = Effect.gen(function* () {
             message: "An attachment belongs to another environment.",
           });
         const consumer = `peer-request:${RequestReceipts.requestDigest([requestNamespace(scope), toolName, key])}`;
-        yield* staging.value.reserveTransfer(scope, consumer, `peer:${environmentId}`, sourceOwned);
+        yield* staging.value
+          .reserveTransfer(scope, consumer, `peer:${environmentId}`, sourceOwned)
+          .pipe(
+            Effect.mapError((error) =>
+              error.code === "invalid_request"
+                ? new OrchestratorMcpFailure({
+                    code: error.code,
+                    message: `${error.message} Prepare uploads for a linked environment here, with \`t3_attachment_prepare_upload\` and no \`environmentId\`; they transfer automatically. An upload prepared there needs its \`environmentId\`.`,
+                  })
+                : error,
+            ),
+          );
         args.attachments = yield* Effect.forEach(args.attachments, (raw, index) =>
           Effect.gen(function* () {
             const attachment = yield* decodeAttachment(raw).pipe(Effect.mapError(unavailable));

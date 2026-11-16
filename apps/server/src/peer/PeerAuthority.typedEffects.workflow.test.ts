@@ -1866,6 +1866,23 @@ it.live(
         expect(resource.digest).toMatch(/^[a-f0-9]{64}$/);
         expect(stopped.structuredContent).not.toHaveProperty("path");
         expect(json(stopped)).not.toContain("/isolated-renderer/");
+        // An agent that omits a destination upload's environmentId learns where to prepare it.
+        const unqualified = yield* nativeCall(a, parent, "t3_thread_send_attachments", {
+          environmentId: b.environmentId,
+          threadId: child,
+          clientRequestId: "recording382-unqualified",
+          attachments: [
+            {
+              type: "file",
+              id: resource.attachmentId,
+              name: resource.name,
+              mimeType: resource.mimeType,
+              sizeBytes: resource.sizeBytes,
+            },
+          ],
+        });
+        expect(unqualified.isError).toBe(true);
+        expect(json(unqualified.content)).toContain("t3_attachment_prepare_upload");
         const sent = yield* nativeCall(a, parent, "t3_thread_send_attachments", {
           environmentId: b.environmentId,
           threadId: child,

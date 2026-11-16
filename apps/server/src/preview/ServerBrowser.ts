@@ -273,6 +273,7 @@ export type ServerBrowserViewerOutput =
       readonly accept: string;
     }
   | { readonly _tag: "fileChooserClosed"; readonly id: string }
+  | { readonly _tag: "controlFailed"; readonly action: "take" | "release" }
   /** The page this viewer controls opened a new tab; the viewer shows it, as a browser would. */
   | { readonly _tag: "popup"; readonly tabId: string; readonly resource?: PreviewViewerResource }
   | {
@@ -4526,6 +4527,11 @@ const make = Effect.gen(function* () {
             await copyRead?.();
           }
         } catch {
+          if (message.type === "takeControl" || message.type === "releaseControl")
+            viewer.push({
+              _tag: "controlFailed",
+              action: message.type === "takeControl" ? "take" : "release",
+            });
           broadcastControl(tab);
         } finally {
           release();

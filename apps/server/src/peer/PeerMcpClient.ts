@@ -115,6 +115,9 @@ const deviceViewerReply = (response: HttpClientResponse.HttpClientResponse) =>
 const decodeAutomationDisableAck = Schema.decodeUnknownEffect(
   Schema.fromJsonString(AutomationAuthority.AutomationDisableAck),
 );
+const decodeSecretDenial = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Struct({ message: Schema.String.check(Schema.isMaxLength(512)) })),
+);
 const decodeAutomationSupport = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Struct({ version: Schema.Literal(1) })),
 );
@@ -1880,6 +1883,17 @@ const make = Effect.gen(function* () {
             }),
           ),
         );
+        if (response.status === 403) {
+          const denial = yield* deviceViewerReply(response).pipe(
+            Effect.flatMap(decodeSecretDenial),
+            Effect.option,
+          );
+          if (Option.isSome(denial))
+            return yield* new OrchestratorMcpFailure({
+              code: "capability_denied",
+              message: `${denial.value.message} No fallback prompt was created.`,
+            });
+        }
         if (response.status !== 200)
           return yield* new OrchestratorMcpFailure({
             code:

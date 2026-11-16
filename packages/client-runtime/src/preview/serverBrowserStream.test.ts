@@ -295,6 +295,10 @@ describe("preview stream control", () => {
       promptText: "界".repeat(16384),
     });
     expect(client.send({ type: "text", text: "after-refusal" })).toBe(true);
+    socket.message(JSON.stringify({ type: "controlFailed", action: "take" }));
+    socket.message(JSON.stringify({ type: "controlFailed", action: "steal" }));
+    expect(rejected).toHaveBeenCalledTimes(5);
+    expect(rejected).toHaveBeenLastCalledWith("Couldn't take control of the browser. Try again.");
     client.stop();
   });
 
