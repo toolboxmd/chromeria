@@ -3256,8 +3256,10 @@ export const finishLifecycleRun = Effect.fn("PeerAuthority.finishLifecycleRun")(
   label: string,
   status: "completed" | "failed" = "completed",
   text = label,
+  /** A run already activated there, finished without activating it again. */
+  activeRunId?: RunId,
 ) {
-  const runId = yield* activate(node, childId);
+  const runId = activeRunId ?? (yield* activate(node, childId));
   const projection = yield* node.threads.getThreadRecords(childId, ["runs", "messages"]);
   const run = projection.runs.find((run) => run.id === runId)!;
   const now = yield* DateTime.now;

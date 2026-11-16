@@ -328,6 +328,11 @@ export class PeerAuthority extends Context.Service<
       scope: Invocation.McpInvocationScope,
       input: PeerTaskLifecycleRequest,
     ) => Effect.Effect<void, OrchestratorMcpFailure>;
+    /** After authenticating the pair and its generation, whether its child thread here is gone. */
+    readonly taskRetirement: (
+      scope: Invocation.McpInvocationScope,
+      input: PeerTaskLifecycleRequest,
+    ) => Effect.Effect<"deleted" | "archived" | undefined, OrchestratorMcpFailure>;
     readonly pendingWithinTask: (
       ancestor: { readonly environmentId: EnvironmentId; readonly threadId: ThreadId },
       target: ThreadId,
@@ -1143,8 +1148,16 @@ const make = Effect.gen(function* () {
             yield* checkResource(owner, current, binding, control, accepted);
             ceiling = intersect(ceiling, current);
           }
-          if (exceededDispatchModeLimit(ceiling, binding.thread) !== undefined)
-            return yield* denied("The stop exceeds a current destination mode.");
+          const exceeded = exceededDispatchModeLimit(ceiling, binding.thread);
+          // A typed refusal: the thread there keeps running in a mode above the stop's.
+          if (exceeded !== undefined)
+            return yield* new OrchestratorMcpFailure({
+              code:
+                exceeded === "runtime"
+                  ? "runtime_mode_escalation_denied"
+                  : "interaction_mode_escalation_denied",
+              message: "The stop exceeds a current destination mode.",
+            });
         }
         return ceiling;
       }
@@ -3242,46 +3255,66 @@ const make = Effect.gen(function* () {
   const verifyTask: (
     scope: Invocation.McpInvocationScope,
     input: PeerTaskLifecycleRequest,
-    receiptOnly?: boolean,
-  ) => Effect.Effect<void, OrchestratorMcpFailure> = Effect.fn("PeerAuthority.verifyTask")(
-    function* (
-      scope: Invocation.McpInvocationScope,
-      input: PeerTaskLifecycleRequest,
-      receiptOnly: boolean = false,
-    ) {
-      yield* enroll(scope, input);
-      if (scope.client?.linked !== true) return yield* denied("An authenticated peer is required.");
-      const rows = yield* sql<{
-        record_id: string;
-        pair_json: string;
-      }>`SELECT record_id, pair_json FROM peer_return_pairs WHERE task_id = ${input.pair.taskId}`.pipe(
-        Effect.mapError(unavailable),
-      );
-      if (!rows[0] || rows[0].pair_json !== json(input.pair))
-        return yield* denied("Unknown delegated lifecycle pair.");
-      const record = yield* readInteractive(rows[0].record_id);
-      if (
-        record.sessionId !== scope.client.sessionId ||
-        record.peer.environmentId !== input.environmentId ||
-        record.peer.generation !== input.generation ||
-        input.pair.parentEnvironmentId !== input.environmentId ||
-        input.pair.childEnvironmentId !== here
-      )
-        return yield* denied("The lifecycle pair belongs to another grant generation.");
-      yield* validateReturn(record);
-      if (receiptOnly) {
-        if (input.operation.type !== "stop")
-          return yield* denied("Only an existing stop receipt can be reconciled here.");
-        return;
-      }
-      const child = yield* threads
-        .getThreadShell(input.pair.childThreadId)
-        .pipe(Effect.mapError(unavailable));
-      if (child === null || child.deletedAt !== null || child.archivedAt !== null)
-        return yield* denied("The delegated lifecycle pair was retired.");
-      const current = yield* grant(record.sessionId);
-      if (!record.ceiling.capabilities.includes("orchestration"))
-        return yield* denied("This pair does not permit lifecycle observation.");
+    check?: "operation" | "receipt" | "retirement",
+  ) => Effect.Effect<"deleted" | "archived" | undefined, OrchestratorMcpFailure> = Effect.fn(
+    "PeerAuthority.verifyTask",
+  )(function* (
+    scope: Invocation.McpInvocationScope,
+    input: PeerTaskLifecycleRequest,
+    check: "operation" | "receipt" | "retirement" = "operation",
+  ) {
+    yield* enroll(scope, input);
+    if (scope.client?.linked !== true) return yield* denied("An authenticated peer is required.");
+    const rows = yield* sql<{
+      record_id: string;
+      pair_json: string;
+    }>`SELECT record_id, pair_json FROM peer_return_pairs WHERE task_id = ${input.pair.taskId}`.pipe(
+      Effect.mapError(unavailable),
+    );
+    if (!rows[0] || rows[0].pair_json !== json(input.pair))
+      return yield* denied("Unknown delegated lifecycle pair.");
+    const record = yield* readInteractive(rows[0].record_id);
+    if (
+      record.sessionId !== scope.client.sessionId ||
+      record.peer.environmentId !== input.environmentId ||
+      record.peer.generation !== input.generation ||
+      input.pair.parentEnvironmentId !== input.environmentId ||
+      input.pair.childEnvironmentId !== here
+    )
+      return yield* denied("The lifecycle pair belongs to another grant generation.");
+    yield* validateReturn(record);
+    if (check === "receipt") {
+      if (input.operation.type !== "stop")
+        return yield* denied("Only an existing stop receipt can be reconciled here.");
+      return undefined;
+    }
+    const child = yield* threads
+      .getThreadShell(input.pair.childThreadId)
+      .pipe(Effect.mapError(unavailable));
+    const retired =
+      child === null || child.deletedAt !== null
+        ? ("deleted" as const)
+        : child.archivedAt !== null
+          ? ("archived" as const)
+          : undefined;
+    if (check === "retirement") return retired;
+    if (child === null || retired !== undefined)
+      return yield* denied("The delegated lifecycle pair was retired.");
+    const current = yield* grant(record.sessionId);
+    if (!record.ceiling.capabilities.includes("orchestration"))
+      return yield* denied("This pair does not permit lifecycle observation.");
+    yield* checkResource(
+      record,
+      {
+        ...record.ceiling,
+        resourceScope:
+          record.ceiling.resourceScope === "created-work" ? "created-work" : current.resourceScope,
+      },
+      { type: "thread", thread: child },
+    );
+    if (input.operation.type === "view" && input.operation.resource !== undefined) {
+      if (input.operation.resource.environmentId !== here)
+        return yield* denied("The lifecycle resource belongs to another destination.");
       yield* checkResource(
         record,
         {
@@ -3291,25 +3324,11 @@ const make = Effect.gen(function* () {
               ? "created-work"
               : current.resourceScope,
         },
-        { type: "thread", thread: child },
+        yield* loadResource({ type: "thread", threadId: input.operation.resource.threadId }),
       );
-      if (input.operation.type === "view" && input.operation.resource !== undefined) {
-        if (input.operation.resource.environmentId !== here)
-          return yield* denied("The lifecycle resource belongs to another destination.");
-        yield* checkResource(
-          record,
-          {
-            ...record.ceiling,
-            resourceScope:
-              record.ceiling.resourceScope === "created-work"
-                ? "created-work"
-                : current.resourceScope,
-          },
-          yield* loadResource({ type: "thread", threadId: input.operation.resource.threadId }),
-        );
-      }
-    },
-  );
+    }
+    return undefined;
+  });
   // A person reaches a run as a `user` message from web or mobile;
   // agents and the server stamp their own provenance.
   const isOwnerInput = Effect.fn("PeerAuthority.isOwnerInput")(function* (
@@ -3798,13 +3817,21 @@ const make = Effect.gen(function* () {
       yield* save(record);
       const ceiling = yield* validate(record);
       if (!ceiling.capabilities.includes("orchestration"))
-        return yield* denied("The stop has no orchestration grant.");
+        return yield* new OrchestratorMcpFailure({
+          code: "task_not_cancellable",
+          message: "The stop has no orchestration grant.",
+        });
       return { ...record, ceiling };
     }),
     pendingActor,
-    verifyTask,
+    verifyTask: Effect.fn("PeerAuthority.verifyTaskOperation")((scope, input) =>
+      verifyTask(scope, input).pipe(Effect.asVoid),
+    ),
+    taskRetirement: Effect.fn("PeerAuthority.taskRetirement")((scope, input) =>
+      verifyTask(scope, input, "retirement"),
+    ),
     verifyTaskReceipt: Effect.fn("PeerAuthority.verifyTaskReceipt")((scope, input) =>
-      verifyTask(scope, input, true),
+      verifyTask(scope, input, "receipt").pipe(Effect.asVoid),
     ),
     checkEffect,
     authorizeStopEffect: Effect.fn("PeerAuthority.authorizeStopEffect")(

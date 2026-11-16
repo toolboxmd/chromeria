@@ -8704,6 +8704,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         AND child_thread_id IS NULL
         AND json_type(payload_json, '$.remoteChild') = 'object'
         AND json_extract(payload_json, '$.remoteChild.stop.state') IS NOT 'not_started'
+        AND json_extract(payload_json, '$.remoteChild.availability') IS NOT 'lost'
         AND ((json_type(payload_json, '$.remoteChild.threadId') = 'text' AND json_extract(payload_json, '$.remoteChild.launch.lifecycleVersion') = 1) OR json_extract(payload_json, '$.result') IS NULL OR json_extract(payload_json, '$.remoteChild.stop.state') IN ('pending','unconfirmed','acknowledged') OR json_extract(payload_json, '$.remoteChild.stoppedThere') = 0 OR (status IN ('cancelled','interrupted') AND json_extract(payload_json, '$.remoteChild.stoppedThere') IS NOT 1))
     `.pipe(
       Effect.map((rows) =>

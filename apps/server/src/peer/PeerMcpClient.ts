@@ -29,6 +29,7 @@ import {
   PeerSettledTasksResult,
   PeerTaskLifecycleRequest,
   PeerTaskLifecycleResult,
+  PEER_TASK_LIFECYCLE_OUTCOMES_HEADER,
   type PeerSettledTasksRequest,
 } from "@t3tools/contracts";
 import * as PeerLinkEvents from "./PeerLinkEvents.ts";
@@ -1058,6 +1059,10 @@ const make = Effect.gen(function* () {
       ),
   );
 
+  // Link generations whose destination answers lifecycle requests with typed outcomes.
+  const typedOutcomes = new Map<string, boolean>();
+  const outcomesKey = (environmentId: EnvironmentId, generation: string) =>
+    `${environmentId}\n${generation}`;
   const lifecycleRequest = Effect.fn("PeerMcpClient.lifecycleRequest")(
     function* (
       environmentId: EnvironmentId,
@@ -1097,7 +1102,16 @@ const make = Effect.gen(function* () {
               ),
             );
       const response = yield* httpClient.execute(
-        request.pipe(HttpClientRequest.setHeaders({ authorization: `Bearer ${resolved.token}` })),
+        request.pipe(
+          HttpClientRequest.setHeaders({
+            authorization: `Bearer ${resolved.token}`,
+            ...(input !== undefined &&
+            "operation" in input &&
+            typedOutcomes.get(outcomesKey(environmentId, resolved.link.launchIdentity)) === true
+              ? { [PEER_TASK_LIFECYCLE_OUTCOMES_HEADER]: "1" }
+              : {}),
+          }),
+        ),
       );
       if (response.status === 404 || response.status === 409)
         return yield* new OrchestratorMcpFailure({
@@ -1143,7 +1157,12 @@ const make = Effect.gen(function* () {
     }),
   );
   const decodeLifecycleVersion = Schema.decodeUnknownEffect(
-    Schema.fromJsonString(Schema.Struct({ version: Schema.Literal(1) })),
+    Schema.fromJsonString(
+      Schema.Struct({
+        version: Schema.Literal(1),
+        lifecycleOutcomes: Schema.optional(Schema.Literal(1)),
+      }),
+    ),
   );
   const requireTaskLifecycle: NonNullable<PeerMcpClient["Service"]["requireTaskLifecycle"]> = (
     environmentId,
@@ -1151,7 +1170,16 @@ const make = Effect.gen(function* () {
   ) =>
     lifecycleRequest(environmentId, generation).pipe(
       Effect.flatMap(decodeLifecycleVersion),
-      Effect.asVoid,
+      Effect.flatMap((support) =>
+        generation === undefined
+          ? Effect.void
+          : Effect.sync(() => {
+              typedOutcomes.set(
+                outcomesKey(environmentId, generation),
+                support.lifecycleOutcomes === 1,
+              );
+            }),
+      ),
       Effect.mapError((error) =>
         error._tag === "OrchestratorMcpFailure"
           ? error
@@ -1170,7 +1198,11 @@ const make = Effect.gen(function* () {
     generation,
     input,
   ) =>
-    lifecycleRequest(environmentId, generation, input).pipe(
+    (typedOutcomes.has(outcomesKey(environmentId, generation))
+      ? Effect.void
+      : requireTaskLifecycle(environmentId, generation).pipe(Effect.ignore)
+    ).pipe(
+      Effect.andThen(lifecycleRequest(environmentId, generation, input)),
       Effect.flatMap(decodeLifecycle),
       Effect.mapError((error) =>
         error._tag === "OrchestratorMcpFailure"

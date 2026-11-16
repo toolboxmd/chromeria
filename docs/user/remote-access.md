@@ -660,5 +660,12 @@ connection navigation and first-result observation.
 **Stop remote work** records a request to stop the destination thread and its
 nested work. Pending or unconfirmed means the destination has not confirmed the
 request. Acknowledged means it accepted Stop; confirmed means its execution has
-settled. The first result stays available. A later Stop request applies to work
-started since the earlier Stop, subject to the current link and permissions.
+settled. Refused means the destination thread runs above the modes or grant this
+side may stop, so it keeps running and its result still wakes the parent. A
+cancel takes effect when the destination accepts it: until then the task keeps
+its status, and a result that arrives first wakes the parent unless the cancel
+is accepted before the parent reads it. The first result stays
+available. A later Stop request applies to work started since the earlier Stop,
+subject to the current link and permissions. If the link is removed or replaced,
+or the destination thread is deleted, the task ends as lost: whether its work
+finished there is unknown.

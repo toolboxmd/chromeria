@@ -1085,8 +1085,16 @@ export const OrchestrationV2RemoteTaskChild = Schema.Struct({
     }),
   ),
   latestResult: Schema.optional(PeerTaskResult),
-  availability: Schema.optional(Schema.Literals(["current", "stale", "unsupported"])),
+  /** `lost`: the link or the thread there is gone for good; whether the work finished is unknown. */
+  availability: Schema.optional(Schema.Literals(["current", "stale", "unsupported", "lost"])),
   stop: Schema.optional(PeerTaskStop),
+  /**
+   * The current cancel, kept apart from `stop` so a Stop that replaces the cancel's still
+   * applies it: the wake is disposed only when the destination accepts the current Stop.
+   */
+  cancelIntent: Schema.optional(
+    Schema.Struct({ requestId: Schema.String, reason: Schema.optional(Schema.String) }),
+  ),
   environmentId: EnvironmentId,
   /** Unset until the accepted launch is attached to the durable source task. */
   threadId: Schema.optional(ThreadId),
@@ -4109,8 +4117,10 @@ const OrchestrationV2InternalCommand = Schema.Union([
       }),
     ),
     observation: Schema.optional(PeerTaskObservation),
-    availability: Schema.optional(Schema.Literals(["current", "stale", "unsupported"])),
+    availability: Schema.optional(Schema.Literals(["current", "stale", "unsupported", "lost"])),
     stop: Schema.optional(PeerTaskStop),
+    /** A cancel's pending Stop: records the cancel intent with it, and no result. */
+    cancel: Schema.optional(Schema.Literal(true)),
     stopResult: Schema.optional(
       Schema.Struct({
         status: Schema.Literals(["cancelled", "interrupted"]),

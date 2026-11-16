@@ -26,7 +26,11 @@ import { McpSavedSnapshotReceipt } from "@t3tools/contracts";
 import { sha256 } from "@noble/hashes/sha2";
 import * as Hex from "effect/encoding/Hex";
 import * as PeerTaskLifecycle from "../peer/PeerTaskLifecycle.ts";
-import { PeerSettledTasksRequest, PeerTaskLifecycleRequest } from "@t3tools/contracts";
+import {
+  PEER_TASK_LIFECYCLE_OUTCOMES_HEADER,
+  PeerSettledTasksRequest,
+  PeerTaskLifecycleRequest,
+} from "@t3tools/contracts";
 import * as SpectrumToolkit from "../spectrum/mcpToolkit.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -2235,7 +2239,7 @@ const layerPeerControl = Layer.unwrap(
         "/mcp/peer-control/tasks",
         Effect.succeed(
           Option.isSome(lifecycle)
-            ? HttpServerResponse.jsonUnsafe({ version: 1 })
+            ? HttpServerResponse.jsonUnsafe({ version: 1, lifecycleOutcomes: 1 })
             : HttpServerResponse.empty({ status: 409 }),
         ),
       ),
@@ -2248,7 +2252,11 @@ const layerPeerControl = Layer.unwrap(
           const scope = yield* McpInvocationContext.McpInvocationContext;
           return yield* Effect.gen(function* () {
             const input = yield* decodeTaskLifecycle(yield* request.json);
-            return HttpServerResponse.jsonUnsafe(yield* lifecycle.value.execute(scope, input));
+            // Negotiated outside the body, which a Stop's replay compares whole.
+            const typedOutcomes = request.headers[PEER_TASK_LIFECYCLE_OUTCOMES_HEADER] === "1";
+            return HttpServerResponse.jsonUnsafe(
+              yield* lifecycle.value.execute(scope, input, typedOutcomes),
+            );
           }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 403 })));
         }),
       ),

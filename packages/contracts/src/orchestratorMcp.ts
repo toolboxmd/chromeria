@@ -251,7 +251,7 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
   warnings: Schema.optional(Schema.Array(Schema.String)),
   remoteObservation: Schema.optional(
     Schema.Struct({
-      availability: Schema.Literals(["current", "stale", "unsupported"]),
+      availability: Schema.Literals(["current", "stale", "unsupported", "lost"]),
       snapshot: Schema.optional(PeerTaskSnapshot),
       originalRunId: Schema.optional(RunId),
       latestResult: Schema.optional(PeerTaskResult),

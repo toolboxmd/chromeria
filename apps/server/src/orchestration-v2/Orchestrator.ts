@@ -1061,6 +1061,47 @@ function isTerminalDelegatedTaskStatus(status: OrchestrationV2Subagent["status"]
   );
 }
 
+type RemoteStop = NonNullable<OrchestrationV2RemoteTaskChild["stop"]>;
+type RemoteSnapshot = OrchestrationV2RemoteTaskChild["snapshot"];
+
+/** The destination accepted this Stop but reported that executing it failed. */
+const remoteStopExecutionFailed = (stop: RemoteStop, snapshot: RemoteSnapshot) =>
+  stop.destinationCommandId !== undefined &&
+  snapshot?.stopExecution?.commandId === stop.destinationCommandId &&
+  snapshot.stopExecution.state === "failed";
+
+/** Whether a Stop still waits for the destination's answer. */
+const remoteStopUnresolved = (stop: RemoteStop, snapshot: RemoteSnapshot) =>
+  stop.state === "pending" ||
+  (stop.state === "unconfirmed" && !remoteStopExecutionFailed(stop, snapshot));
+
+/** A Stop's state moves only forward for its request. */
+const remoteStopAdvances = (prior: RemoteStop, next: RemoteStop, snapshot: RemoteSnapshot) => {
+  switch (prior.state) {
+    case "pending":
+      return next.state !== "pending" && next.state !== "confirmed";
+    case "unconfirmed":
+      return (
+        (next.state === "unconfirmed" ||
+          next.state === "acknowledged" ||
+          next.state === "refused" ||
+          next.state === "not_started") &&
+        !(
+          next.state === "acknowledged" &&
+          remoteStopExecutionFailed(prior, snapshot) &&
+          next.destinationCommandId === prior.destinationCommandId
+        )
+      );
+    case "acknowledged":
+      return (
+        next.state === "confirmed" ||
+        (next.state === "unconfirmed" && remoteStopExecutionFailed(prior, snapshot))
+      );
+    default:
+      return false;
+  }
+};
+
 function delegatedTaskTerminalStatus(
   status: OrchestrationV2Run["status"],
 ): OrchestrationV2Subagent["status"] | null {
@@ -11291,8 +11332,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return yield* emitRemoteStopOwed(events, command, task, task.remoteChild!);
       }
       const owesStop =
-        task.status === "cancelled" ||
-        task.status === "interrupted" ||
+        (task.remoteChild?.stop !== undefined &&
+          remoteStopUnresolved(task.remoteChild.stop, task.remoteChild.snapshot)) ||
         task.remoteChild?.stoppedThere === false;
       if (
         (command.stoppedThere === undefined && command.launchError === undefined) ||
@@ -11495,6 +11536,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           });
         return;
       }
+      // Recovery of a recorded cancel's own Stop never displaces an unresolved Stop; that
+      // Stop's acceptance or refusal resolves the cancel instead.
+      if (command.cancel === true && remote.cancelIntent?.requestId === command.stop.requestId) {
+        if ((remote.cancelIntent.reason ?? null) !== (command.stop.reason ?? null))
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: new Error("The stop request identity has conflicting semantics."),
+          });
+        if (remote.stop !== undefined && remoteStopUnresolved(remote.stop, remote.snapshot)) return;
+      }
     }
     if (
       command.observation !== undefined &&
@@ -11514,37 +11566,93 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       remote.stop?.requestId !== command.stop.requestId
     )
       return;
-    if (command.stop?.state === "pending" && task.completionDelivery?.state !== "disposed") {
-      yield* dispatchDelegatedTaskCompletionDeliveryResolution(
-        {
-          type: "delegated_task.completion-delivery.dispose",
-          commandId: command.commandId,
-          parentThreadId: command.parentThreadId,
-          taskId: command.taskId,
-        },
-        events,
-      );
-      task = { ...task, completionDelivery: { state: "disposed", observedByRunId: null } };
-    }
+    // A Stop's state only moves forward, so a late or repeated reply changes nothing.
+    if (
+      command.stop !== undefined &&
+      command.stop.state !== "pending" &&
+      remote.stop?.requestId === command.stop.requestId &&
+      !remoteStopAdvances(remote.stop, command.stop, remote.snapshot)
+    )
+      return;
+    const disposeDelivery = Effect.fn("orchestrationV2.dispatch.remoteObservationDispose")(
+      function* (current: OrchestrationV2Subagent) {
+        if (
+          current.completionDelivery?.state === "disposed" &&
+          current.completionDelivery.disposedBy === undefined
+        )
+          return current;
+        yield* dispatchDelegatedTaskCompletionDeliveryResolution(
+          {
+            type: "delegated_task.completion-delivery.dispose",
+            commandId: command.commandId,
+            parentThreadId: command.parentThreadId,
+            taskId: command.taskId,
+          },
+          events,
+        );
+        return {
+          ...current,
+          completionDelivery: { state: "disposed" as const, observedByRunId: null },
+        };
+      },
+    );
+    if (command.stop?.state === "pending" && command.stopResult !== undefined)
+      task = yield* disposeDelivery(task);
     if (command.stopResult !== undefined && command.stop?.state !== "pending") return;
+    let cancelIntent =
+      command.cancel === true && command.stop?.state === "pending"
+        ? {
+            requestId: command.stop.requestId,
+            ...(command.stop.reason === undefined ? {} : { reason: command.stop.reason }),
+          }
+        : remote.cancelIntent;
+    // A cancel recorded before the launch was sent settles here, under the lock the launch takes.
+    const stop =
+      command.cancel === true &&
+      command.stop?.state === "pending" &&
+      remote.threadId === undefined &&
+      remote.launchStarted !== true &&
+      task.result === null
+        ? { ...command.stop, state: "not_started" as const }
+        : command.stop;
+    // A cancel takes effect when the destination accepts the current Stop, whichever
+    // producer recorded it, or the launch never started: its wake goes as a local cancel's.
+    let cancelled: { readonly status: "cancelled"; readonly result: string } | undefined;
+    if (
+      cancelIntent !== undefined &&
+      (stop?.state === "acknowledged" || stop?.state === "not_started")
+    ) {
+      // A Run group member's result stays owed to the group's one wake.
+      if (task.runGroupId === undefined) task = yield* disposeDelivery(task);
+      if (stop.state === "not_started" && task.result === null)
+        cancelled = {
+          status: "cancelled",
+          result:
+            cancelIntent.reason === undefined ? "Cancelled." : `Cancelled: ${cancelIntent.reason}`,
+        };
+      cancelIntent = undefined;
+    }
+    if (stop?.state === "refused") cancelIntent = undefined;
     const now = yield* DateTime.now;
     const stoppedBeforeResult = task.result === null && command.stopResult !== undefined;
+    const ended = stoppedBeforeResult ? command.stopResult! : cancelled;
+    const { cancelIntent: _priorIntent, ...unintended } = remote;
     const updated = {
-      ...(stoppedBeforeResult
-        ? {
-            ...task,
-            status: command.stopResult!.status,
-            result: command.stopResult!.result,
-            completedAt: now,
-          }
-        : task),
+      ...(ended === undefined
+        ? task
+        : { ...task, status: ended.status, result: ended.result, completedAt: now }),
       remoteChild: {
-        ...remote,
+        ...unintended,
         ...(command.observation === undefined
           ? {}
           : { cursor: command.observation.cursor, snapshot: command.observation.snapshot }),
-        ...(command.availability === undefined ? {} : { availability: command.availability }),
-        ...(command.stop === undefined ? {} : { stop: command.stop }),
+        // Lost is final: nothing here reaches the thread there again.
+        ...(command.availability === undefined || remote.availability === "lost"
+          ? {}
+          : { availability: command.availability }),
+        ...(stop === undefined ? {} : { stop }),
+        ...(cancelIntent === undefined ? {} : { cancelIntent }),
+        ...(cancelled === undefined ? {} : { stoppedThere: true }),
       },
       updatedAt: now,
     };
@@ -11558,7 +11666,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       occurredAt: now,
       payload: updated,
     });
-    if (stoppedBeforeResult) {
+    if (ended !== undefined) {
       const node = parent.nodes.find((node) => node.id === task.id);
       if (node !== undefined)
         yield* emit(
@@ -11571,7 +11679,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           nodeId: node.id,
           driver: task.driver,
           occurredAt: now,
-          payload: { ...node, status: command.stopResult!.status, completedAt: now },
+          payload: { ...node, status: ended.status, completedAt: now },
         });
       const item = parent.turnItems.find(
         (item) => item.type === "subagent" && item.subagentId === task.id,

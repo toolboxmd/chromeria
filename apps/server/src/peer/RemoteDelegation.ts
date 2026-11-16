@@ -12,6 +12,7 @@ import {
   type PeerReturnPair,
   type PeerTaskObservation,
   type PeerTaskStop,
+  type PeerTaskStopRefusal,
   type PeerTaskView,
   type PeerTaskResource,
   type PeerTaskLifecycleResult,
@@ -47,6 +48,7 @@ import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -80,6 +82,8 @@ const FOLLOW_WAIT_MS = 10 * 60 * 1_000;
 const FOLLOW_MAX_BACKOFF = Duration.minutes(5);
 /** A follower that hits this many defects in a row fails its task instead of retrying. */
 const FOLLOW_MAX_DEFECTS = 3;
+/** How long a cancel waits for the destination's answer; the attempt continues without it. */
+const INLINE_STOP_WAIT = Duration.seconds(5);
 /** How a follower retries; tests step it by hand. */
 export const FollowRetrySchedule = Context.Reference<Schedule.Schedule<unknown>>(
   "t3/peer/RemoteDelegation/FollowRetrySchedule",
@@ -788,14 +792,29 @@ const make = Effect.gen(function* () {
         Effect.catchTags({
           OrchestratorMcpFailure: (error) => {
             if ((firstAttempt && dispatch.stage !== "sent") || error.launchReceipt === "absent") {
-              return complete(
-                parentThreadId,
-                taskId,
-                "failed",
-                error.message,
-                "stopped",
-                error.message,
-              ).pipe(Effect.andThen(Effect.fail(error)));
+              // The destination never received it: an outstanding cancel settles as never started.
+              const notStarted = threads.getThreadRecords(parentThreadId, ["subagents"]).pipe(
+                Effect.flatMap(({ subagents }) => {
+                  const current = subagents.find((candidate) => candidate.id === taskId);
+                  const stop = current?.remoteChild?.stop;
+                  return current?.remoteChild?.cancelIntent === undefined || stop === undefined
+                    ? Effect.void
+                    : observe(parentThreadId, taskId, { stop: { ...stop, state: "not_started" } });
+                }),
+              );
+              return notStarted.pipe(
+                Effect.andThen(
+                  complete(
+                    parentThreadId,
+                    taskId,
+                    "failed",
+                    error.message,
+                    "stopped",
+                    error.message,
+                  ),
+                ),
+                Effect.andThen(Effect.fail(error)),
+              );
             }
             if (isFinal(error) || isModeRefusal(error) || error.code === "invalid_request") {
               const message = `${error.message} The remote launch could not be confirmed. If it was already accepted, work may still be running on ${remote.label}.`;
@@ -935,6 +954,24 @@ const make = Effect.gen(function* () {
   /** A task's thread there that ended without a reply. */
   const noReply = "(The thread in the linked environment ended without a reply.)";
 
+  /**
+   * Why a lifecycle task can never be followed again, if it cannot: its thread there was
+   * deleted, or the link it launched under is gone or replaced here. Anything else is retried.
+   */
+  const lostThere = Effect.fn("RemoteDelegation.lostThere")(
+    function* (remote: OrchestrationV2RemoteTaskChild, error: OrchestratorMcpFailure) {
+      const unknown = "Whether its work finished there is unknown.";
+      if (error.code === "thread_not_found")
+        return `The task's thread was deleted on ${remote.label}. ${unknown}`;
+      const link = yield* links.get(remote.environmentId);
+      if (Option.isNone(link)) return `The link to ${remote.label} was removed. ${unknown}`;
+      if (link.value.launchIdentity !== remote.launch?.linkIdentity)
+        return `The link to ${remote.label} was replaced. ${unknown}`;
+      return undefined;
+    },
+    Effect.orElseSucceed(() => undefined),
+  );
+
   /** One observer per job, with bounded peer requests and durable replay on either restart. */
   const networkSlots = yield* Semaphore.make(8);
   // Jobs with nothing left to do there still watch for later work on their
@@ -976,10 +1013,22 @@ const make = Effect.gen(function* () {
               "subagents",
             ])).subagents.find((task) => task.id === taskId);
             if (current?.remoteChild?.launch !== undefined) {
+              const lost = yield* lostThere(current.remoteChild, error);
+              if (lost === undefined) {
+                yield* observe(parentThreadId, taskId, {
+                  availability: error.code === "invalid_request" ? "unsupported" : "stale",
+                });
+                return yield* error;
+              }
+              // Nothing here can reach or stop it there again; an outstanding Stop stays uncertain.
+              const stop = current.remoteChild.stop;
               yield* observe(parentThreadId, taskId, {
-                availability: error.code === "invalid_request" ? "unsupported" : "stale",
+                availability: "lost",
+                ...(stop?.state === "pending" ? { stop: { ...stop, state: "unconfirmed" } } : {}),
               });
-              return yield* error;
+              if (current.result === null)
+                yield* complete(parentThreadId, taskId, "failed", lost, undefined);
+              return;
             }
             const reason = yield* finalReason(parentThreadId, taskId, error);
             if (reason === undefined) return yield* error;
@@ -1173,7 +1222,23 @@ const make = Effect.gen(function* () {
               message: "Delegated lifecycle v1 is unsupported by this transport.",
             }),
           )
-        : peers.taskLifecycle(environmentId, generation, input).pipe(slots.withPermits(1));
+        : peers.taskLifecycle(environmentId, generation, input).pipe(
+            slots.withPermits(1),
+            Effect.filterOrFail(
+              (result) => result.type !== "pair_gone",
+              (result) =>
+                // Deleted there is final; archived there may be reopened, so it is retried.
+                result.type === "pair_gone" && result.reason === "deleted"
+                  ? new OrchestratorMcpFailure({
+                      code: "thread_not_found",
+                      message: "The task's thread there was deleted.",
+                    })
+                  : new OrchestratorMcpFailure({
+                      code: "orchestration_error",
+                      message: "The task's thread there is archived.",
+                    }),
+            ),
+          );
   const lifecycle = lifecycleIn(networkSlots);
   const pairFor = (parentThreadId: ThreadId, task: OrchestrationV2Subagent): PeerReturnPair => ({
     parentEnvironmentId: hereId,
@@ -1188,8 +1253,9 @@ const make = Effect.gen(function* () {
     taskId: NodeId,
     update: {
       observation?: PeerTaskObservation;
-      availability?: "current" | "stale" | "unsupported";
+      availability?: "current" | "stale" | "unsupported" | "lost";
       stop?: typeof PeerTaskStop.Type;
+      cancel?: true;
       stopResult?: { readonly status: "cancelled" | "interrupted"; readonly result: string };
     },
   ) {
@@ -1212,6 +1278,80 @@ const make = Effect.gen(function* () {
         ),
       );
   });
+  const reread = (parentThreadId: ThreadId, task: OrchestrationV2Subagent) =>
+    threads
+      .getThreadRecords(parentThreadId, ["subagents"])
+      .pipe(
+        Effect.map(
+          ({ subagents }) =>
+            subagents.find(
+              (candidate) => candidate.id === task.id && candidate.remoteChild !== undefined,
+            ) ?? task,
+        ),
+      );
+  // One Stop attempt per task at a time, whether a cancel waits on it or its follower sends it.
+  const stopLocks = yield* KeyedLock.make<NodeId>();
+  /**
+   * Sends the task's current Stop when it is still owed and records the destination's answer:
+   * accepted, refused while the thread keeps running there, or unconfirmed.
+   */
+  const stopAttempt = Effect.fn("RemoteDelegation.stopAttempt")(
+    function* (parentThreadId: ThreadId, taskId: NodeId) {
+      const task = (yield* threads.getThreadRecords(parentThreadId, ["subagents"])).subagents.find(
+        (candidate) => candidate.id === taskId,
+      );
+      const remote = task?.remoteChild;
+      const stop = remote?.stop;
+      if (
+        task === undefined ||
+        remote?.threadId === undefined ||
+        remote.launch === undefined ||
+        stop === undefined ||
+        remote.availability === "lost" ||
+        !stopOwed(remote)
+      )
+        return;
+      const negotiation = yield* requireLifecycle(
+        remote.environmentId,
+        remote.launch.linkIdentity,
+      ).pipe(Effect.result);
+      if (negotiation._tag === "Failure") {
+        yield* observe(parentThreadId, taskId, {
+          stop: { ...stop, state: "unconfirmed" },
+          availability: negotiation.failure.code === "invalid_request" ? "unsupported" : "stale",
+        });
+        return yield* negotiation.failure;
+      }
+      const answer = yield* lifecycle(remote.environmentId, remote.launch.linkIdentity, {
+        pair: pairFor(parentThreadId, task),
+        operation: {
+          type: "stop",
+          requestId: stop.requestId,
+          ...(stop.reason === undefined ? {} : { reason: stop.reason }),
+        },
+      }).pipe(Effect.result);
+      if (answer._tag === "Success" && answer.success.type === "stop") {
+        yield* observe(parentThreadId, taskId, {
+          stop: { ...stop, state: "acknowledged", destinationCommandId: answer.success.commandId },
+        });
+        return;
+      }
+      if (answer._tag === "Success" && answer.success.type === "stop_refused") {
+        yield* observe(parentThreadId, taskId, {
+          stop: { ...stop, state: "refused", refusal: answer.success.reason },
+        });
+        return;
+      }
+      yield* observe(parentThreadId, taskId, { stop: { ...stop, state: "unconfirmed" } });
+      return yield* answer._tag === "Failure"
+        ? answer.failure
+        : new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: "The destination did not return its Stop receipt.",
+          });
+    },
+    (effect, _parentThreadId, taskId) => stopLocks.withLock(taskId, effect),
+  );
   const modernFollow = Effect.fn("RemoteDelegation.modernFollow")(
     function* (
       parentThreadId: ThreadId,
@@ -1220,7 +1360,7 @@ const make = Effect.gen(function* () {
       afterSequence: number,
       mayRetire: boolean,
     ) {
-      const remote = task.remoteChild!;
+      let remote = task.remoteChild!;
       const launch = remote.launch!;
       if (remote.stop?.state === "not_started") return true;
       if ((remote.cursor ?? 0) > (acknowledgedCursors.get(task.id) ?? 0)) {
@@ -1235,54 +1375,32 @@ const make = Effect.gen(function* () {
           });
         acknowledgedCursors.set(task.id, remote.cursor!);
       }
-      const failedStop =
-        remote.stop?.destinationCommandId !== undefined &&
-        remote.snapshot?.stopExecution?.commandId === remote.stop.destinationCommandId &&
-        remote.snapshot.stopExecution.state === "failed";
+      // A recorded cancel whose own Stop was never recorded gets it now, unless an unresolved
+      // Stop is current; the dispatch rechecks this under the parent's lock.
+      const intent = remote.cancelIntent;
       if (
-        remote.stop?.state === "pending" ||
-        (remote.stop?.state === "unconfirmed" && !failedStop)
+        intent !== undefined &&
+        remote.stop?.requestId !== intent.requestId &&
+        (remote.stop === undefined || !stopOwed(remote))
       ) {
-        const negotiation = yield* requireLifecycle(remote.environmentId, launch.linkIdentity).pipe(
-          Effect.result,
-        );
-        if (negotiation._tag === "Failure") {
-          yield* observe(parentThreadId, task.id, {
-            stop: { ...remote.stop, state: "unconfirmed" },
-            availability: negotiation.failure.code === "invalid_request" ? "unsupported" : "stale",
-          });
-          return yield* negotiation.failure;
-        }
-        const stopped = yield* lifecycle(remote.environmentId, launch.linkIdentity, {
-          pair: pairFor(parentThreadId, task),
-          operation: {
-            type: "stop",
-            requestId: remote.stop.requestId,
-            ...(remote.stop.reason === undefined ? {} : { reason: remote.stop.reason }),
-          },
-        }).pipe(
-          Effect.flatMap((result) =>
-            result.type === "stop"
-              ? Effect.succeed({ stopCommandId: result.commandId })
-              : Effect.fail(
-                  new OrchestratorMcpFailure({
-                    code: "orchestration_error",
-                    message: "The destination did not return its Stop receipt.",
-                  }),
-                ),
-          ),
-          Effect.result,
-        );
         yield* observe(parentThreadId, task.id, {
           stop: {
-            ...remote.stop,
-            state: stopped._tag === "Success" ? "acknowledged" : "unconfirmed",
-            ...(stopped._tag === "Success" && stopped.success.stopCommandId !== undefined
-              ? { destinationCommandId: stopped.success.stopCommandId }
-              : {}),
+            requestId: intent.requestId,
+            state: "pending",
+            ...(intent.reason === undefined ? {} : { reason: intent.reason }),
           },
+          cancel: true,
         });
-        if (stopped._tag === "Failure") return yield* stopped.failure;
+        task = yield* reread(parentThreadId, task);
+        remote = task.remoteChild!;
+      }
+      if (stopOwed(remote)) {
+        // Observation never waits on the Stop: a failed attempt is recorded and retried later.
+        yield* stopAttempt(parentThreadId, task.id).pipe(
+          Effect.catch((error) => Effect.logDebug("A remote Stop attempt failed", error)),
+        );
+        task = yield* reread(parentThreadId, task);
+        remote = task.remoteChild!;
       }
       const backpressured =
         task.result !== null &&
@@ -1454,22 +1572,27 @@ const make = Effect.gen(function* () {
           code: "task_not_found",
           message: "This delegated job has no verified remote stop target.",
         });
+      // A cancel is an obligation, not a result: it takes effect when the destination accepts.
       yield* observe(parentThreadId, taskId, {
         stop: { requestId, state: "pending", ...(reason === undefined ? {} : { reason }) },
-        stopResult: {
-          status: "cancelled",
-          result: reason === undefined ? "Cancelled." : `Cancelled: ${reason}`,
-        },
+        cancel: true,
       });
       yield* follow(parentThreadId, taskId).pipe(Effect.forkIn(followers));
-      // A retried request keeps its recorded state; a new one answers with its own acceptance,
-      // since a running follower may already have advanced it.
-      const prior = task.remoteChild.stop;
-      return {
-        taskId,
-        status: "cancel_requested",
-        stopState: prior?.requestId === requestId ? prior.state : "pending",
-      } as const;
+      // The answer waits briefly for the destination; the attempt itself outlives the wait.
+      const attempt = yield* stopAttempt(parentThreadId, taskId).pipe(
+        Effect.ignore,
+        Effect.forkIn(followers),
+      );
+      yield* Fiber.await(attempt).pipe(Effect.timeoutOption(INLINE_STOP_WAIT));
+      const current = (yield* threads.getThreadRecords(parentThreadId, [
+        "subagents",
+      ])).subagents.find((candidate) => candidate.id === taskId)?.remoteChild?.stop;
+      // A replaced request keeps answering as it did, without its later Stop's state.
+      if (current?.requestId !== requestId)
+        return { taskId, status: "cancel_requested", stopState: "pending" } as const;
+      if (current.state === "refused")
+        return yield* stopRefused(current.refusal, task.remoteChild.label);
+      return { taskId, status: "cancel_requested", stopState: current.state } as const;
     },
     Effect.mapError((error) =>
       error._tag === "OrchestratorMcpFailure"
@@ -1807,6 +1930,29 @@ const quietThere = (task: OrchestrationV2Subagent) => {
     (stop?.state === "confirmed" || (stop === undefined && task.result !== null))
   );
 };
+
+/** Whether the task's current Stop still has to reach the destination. */
+const stopOwed = (remote: OrchestrationV2RemoteTaskChild) => {
+  const stop = remote.stop;
+  if (stop === undefined) return false;
+  const failedExecution =
+    stop.destinationCommandId !== undefined &&
+    remote.snapshot?.stopExecution?.commandId === stop.destinationCommandId &&
+    remote.snapshot.stopExecution.state === "failed";
+  return stop.state === "pending" || (stop.state === "unconfirmed" && !failedExecution);
+};
+
+/** A refused Stop answers its cancel as a local cancel of a thread above the caller's modes. */
+const stopRefused = (refusal: PeerTaskStopRefusal | undefined, label: string) =>
+  new OrchestratorMcpFailure({
+    code:
+      refusal === "runtime_mode"
+        ? "runtime_mode_escalation_denied"
+        : refusal === "interaction_mode"
+          ? "interaction_mode_escalation_denied"
+          : "capability_denied",
+    message: `${label} refused the Stop${refusal === undefined ? "" : ` (${refusal.replaceAll("_", " ")})`}; the task keeps running there and its result is still owed.`,
+  });
 
 const isTerminal = (status: string) =>
   status === "completed" ||

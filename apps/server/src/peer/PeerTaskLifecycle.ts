@@ -15,6 +15,7 @@ import {
   type ThreadId,
   type PeerTaskLifecycleResult,
   type PeerTaskSnapshot,
+  type PeerTaskStopRefusal,
   type PeerTaskResult,
   type OrchestrationV2DomainEvent,
   EventId,
@@ -44,9 +45,14 @@ import { RecoveryWaitState } from "./recoveryWait.ts";
 export class PeerTaskLifecycle extends Context.Service<
   PeerTaskLifecycle,
   {
+    /**
+     * `typedOutcomes`: the source decodes `stop_refused` and `pair_gone`, so they are answered
+     * instead of failing, after the pair and its generation are authenticated.
+     */
     readonly execute: (
       scope: Parameters<PeerAuthority.PeerAuthority["Service"]["verifyTask"]>[0],
       input: PeerTaskLifecycleRequest,
+      typedOutcomes?: boolean,
     ) => Effect.Effect<PeerTaskLifecycleResult, OrchestratorMcpFailure>;
     /** Waits on many quiet jobs at once and names those with lifecycle activity since their snapshot. */
     readonly settled: (
@@ -57,6 +63,15 @@ export class PeerTaskLifecycle extends Context.Service<
 >()("t3/peer/PeerTaskLifecycle") {}
 
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+/** A Stop refused while the thread keeps running, as `PeerAuthority.authorizeTaskStop` reports it. */
+const stopRefusal = (error: OrchestratorMcpFailure): PeerTaskStopRefusal | undefined =>
+  error.code === "runtime_mode_escalation_denied"
+    ? "runtime_mode"
+    : error.code === "interaction_mode_escalation_denied"
+      ? "interaction_mode"
+      : error.code === "task_not_cancellable"
+        ? "policy"
+        : undefined;
 const lifecycleTypes = [
   "run.created",
   "run.updated",
@@ -171,7 +186,26 @@ const make = Effect.gen(function* () {
       run,
     ).text;
   });
-  const execute: PeerTaskLifecycle["Service"]["execute"] = (scope, input) =>
+  const execute: PeerTaskLifecycle["Service"]["execute"] = (scope, input, typedOutcomes = false) =>
+    executeOperation(scope, input, typedOutcomes).pipe(
+      Effect.catchIf(
+        (error) => typedOutcomes && error.code === "capability_denied",
+        (error) =>
+          authority.taskRetirement(scope, input).pipe(
+            Effect.orElseSucceed(() => undefined),
+            Effect.flatMap((reason) =>
+              reason === undefined
+                ? Effect.fail(error)
+                : Effect.succeed({ type: "pair_gone", reason } as const),
+            ),
+          ),
+      ),
+    );
+  const executeOperation = (
+    scope: Parameters<PeerTaskLifecycle["Service"]["execute"]>[0],
+    input: PeerTaskLifecycleRequest,
+    typedOutcomes: boolean,
+  ): Effect.Effect<PeerTaskLifecycleResult, OrchestratorMcpFailure> =>
     Effect.scoped(
       Effect.gen(function* () {
         const { pair, operation } = input;
@@ -202,7 +236,15 @@ const make = Effect.gen(function* () {
               return yield* unavailable();
             return { type: "stop", commandId } as const;
           }
-          const owner = yield* authority.authorizeTaskStop(scope, { ...input, operation });
+          const authorized = yield* authority
+            .authorizeTaskStop(scope, { ...input, operation })
+            .pipe(Effect.result);
+          if (authorized._tag === "Failure") {
+            const refusal = typedOutcomes ? stopRefusal(authorized.failure) : undefined;
+            if (refusal !== undefined) return { type: "stop_refused", reason: refusal } as const;
+            return yield* authorized.failure;
+          }
+          const owner = authorized.success;
           yield* sql`INSERT INTO peer_task_stop_receipts (command_id,semantic_json) VALUES (${commandId},${semantic}) ON CONFLICT DO NOTHING`;
           const stored = yield* sql<{
             semantic_json: string;
@@ -376,7 +418,9 @@ const make = Effect.gen(function* () {
                   if (task.remoteChild !== undefined) {
                     if (
                       task.remoteChild.stop !== undefined &&
-                      !["confirmed", "not_started"].includes(task.remoteChild.stop.state)
+                      ["pending", "unconfirmed", "acknowledged"].includes(
+                        task.remoteChild.stop.state,
+                      )
                     ) {
                       executionSettled = false;
                       pendingChildren++;

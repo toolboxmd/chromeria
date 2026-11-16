@@ -49,6 +49,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
+import { sha256 } from "@noble/hashes/sha2";
+import * as Hex from "effect/encoding/Hex";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as PeerAuthority from "./PeerAuthority.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
@@ -1839,7 +1841,7 @@ it.live(
         expect(cancelled.structuredContent).toMatchObject({
           taskId,
           status: "cancel_requested",
-          stopState: "pending",
+          stopState: "acknowledged",
         });
         const event = yield* a.orchestrator
           .streamStoredEventsFrom({
@@ -1857,9 +1859,11 @@ it.live(
             Stream.runHead,
             Effect.flatMap(Effect.fromOption),
           );
-        expect(event.event.type === "subagent.updated" && event.event.payload.result).toBe(
-          "Cancelled.",
-        );
+        // Acceptance disposes the wake; the task's result is still the destination's to give.
+        expect(event.event.type === "subagent.updated" && event.event.payload).toMatchObject({
+          result: null,
+          completionDelivery: { state: "disposed" },
+        });
         yield* Ref.set(a.holdResultPage, false);
         yield* Deferred.succeed(a.releaseResultPage, undefined);
         yield* a.orchestrator
@@ -1880,7 +1884,9 @@ it.live(
         const task = (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
           (task) => task.id === taskId,
         )!;
-        expect(task.result).toBe("Cancelled.");
+        // The whole first result lands after acceptance, quietly, as a local cancel's would.
+        expect(task.result).toBe("late381" + "x".repeat(60000));
+        expect(task.status).toBe("completed");
         expect(task.completionDelivery?.state).toBe("disposed");
         expect(task.remoteChild?.latestResult?.text.length).toBe(60007);
         const drainWith = (failStop: boolean) =>
@@ -1945,6 +1951,19 @@ it.live(
             ? failed.event.payload.remoteChild?.stop?.destinationCommandId
             : undefined;
         expect(failedCommand).toBeDefined();
+        // The same key never resends a Stop whose execution failed; only a fresh cancel does.
+        const bEffects = () =>
+          Context.get(
+            b.database,
+            SqlClient.SqlClient,
+          )`SELECT effect_id FROM orchestration_v2_effect_outbox ORDER BY effect_id`;
+        const effectsBefore = yield* bEffects();
+        const sameKey = yield* nativeCall(a, parentId, "task_cancel", {
+          taskId,
+          clientRequestId: "cancel-page381",
+        });
+        expect(sameKey.structuredContent).toMatchObject({ stopState: "unconfirmed" });
+        expect(yield* bEffects()).toEqual(effectsBefore);
         const retried = yield* nativeCall(a, parentId, "task_cancel", {
           taskId,
           clientRequestId: "retry-native-stop381",
@@ -1959,7 +1978,7 @@ it.live(
         yield* (yield* drainWith(false)).drain();
         const confirmed = yield* stoppedObservation((remote) => remote.stop?.state === "confirmed");
         expect(confirmed.event.type === "subagent.updated" && confirmed.event.payload.result).toBe(
-          "Cancelled.",
+          "late381" + "x".repeat(60000),
         );
       }),
     ).pipe(
@@ -2047,7 +2066,12 @@ it.live(
           commandId: CommandId.make("stop-control-auto"),
           runtimeMode: "auto",
         });
-        yield* denied({ pair, operation });
+        // A source that negotiated typed outcomes learns the refusal; nothing happens there.
+        const refused = yield* connected.peers.taskLifecycle!(b.environmentId, generation, {
+          pair,
+          operation,
+        });
+        expect(refused).toEqual({ type: "stop_refused", reason: "runtime_mode" });
         yield* a.threads.dispatch({
           type: "thread.runtime-mode.set",
           threadId: parentId,
@@ -2060,7 +2084,9 @@ it.live(
           commandId: CommandId.make("stop-control-plan"),
           interactionMode: "plan",
         });
-        yield* denied({ pair, operation });
+        expect(
+          yield* connected.peers.taskLifecycle!(b.environmentId, generation, { pair, operation }),
+        ).toEqual({ type: "stop_refused", reason: "interaction_mode" });
         yield* a.threads.dispatch({
           type: "thread.interaction-mode.set",
           threadId: parentId,
@@ -2367,8 +2393,15 @@ it.live(
           taskId: second.taskId,
           clientRequestId: "stop-chain-native-ceiling",
         });
-        expect(nativeCancel.isError, json(nativeCancel.content)).not.toBe(true);
-        yield* observed(b, first.childId, second.taskId, "unconfirmed");
+        // C refuses inline and keeps running: the cancel answers with the local mode error.
+        expect(nativeCancel.isError).toBe(true);
+        expect(json(nativeCancel.content)).toContain("runtime_mode_escalation_denied");
+        yield* observed(b, first.childId, second.taskId, "refused");
+        expect(
+          (yield* b.threads.getThreadRecords(first.childId, ["subagents"])).subagents.find(
+            (task) => task.id === second.taskId,
+          ),
+        ).toMatchObject({ result: null, remoteChild: { stop: { refusal: "runtime_mode" } } });
         expect(yield* c.threads.getThreadEventSequence(second.childId)).toBe(cBeforeNative);
         yield* a.threads.dispatch({
           type: "thread.runtime-mode.set",
@@ -2405,91 +2438,48 @@ it.live(
           )?.status,
         ).toBe("running");
         yield* drainStops(b);
-        const currentStop = (yield* b.threads.getThreadRecords(first.childId, [
+        const obligation = (yield* b.threads.getThreadRecords(first.childId, [
           "subagents",
         ])).subagents.find((task) => task.id === second.taskId)!.remoteChild!.stop!;
-        yield* observed(b, first.childId, second.taskId, "unconfirmed", currentStop.requestId);
+        // C refuses the lowered B's Stop for good; it keeps running and nothing is resent.
+        yield* observed(b, first.childId, second.taskId, "refused", obligation.requestId);
         const aTask = (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
           (task) => task.id === first.taskId,
         )!;
         expect(aTask.remoteChild?.stop?.state).not.toBe("confirmed");
-        const cBefore = yield* c.threads.getThreadEventSequence(second.childId);
-        const cEffects = yield* Context.get(
-          c.database,
-          SqlClient.SqlClient,
-        )`SELECT effect_id FROM orchestration_v2_effect_outbox ORDER BY effect_id`;
-        expect(
-          (yield* c.threads.getThreadRecords(second.childId, ["runs"])).runs.find(
-            (run) => run.id === cRun,
-          )?.status,
-        ).toBe("running");
-        const obligation = (yield* b.threads.getThreadRecords(first.childId, [
-          "subagents",
-        ])).subagents.find((task) => task.id === second.taskId)!.remoteChild!.stop!;
+        const cRunning = (yield* c.threads.getThreadRecords(second.childId, ["runs"])).runs.find(
+          (run) => run.id === cRun,
+        )!;
+        expect(cRunning.status).toBe("running");
         const inherited = yield* Context.get(b.database, SqlClient.SqlClient)<{
           record_id: string;
         }>`SELECT record_id FROM peer_task_stop_authority WHERE task_id=${second.taskId} AND request_id=${obligation.requestId}`;
         expect(inherited).toHaveLength(1);
-        // Restart the observer after the persisted denied intent, then restore its current modes.
-        yield* b.stopConnections;
-        yield* b.threads.dispatch({
-          type: "thread.runtime-mode.set",
-          threadId: first.childId,
-          commandId: CommandId.make("stop-chain-restore-b"),
-          runtimeMode: "full-access",
-        });
-        const resumed = yield* b.reconnect();
-        yield* Context.get(resumed.services, RemoteDelegation.RemoteDelegation).start();
-        yield* observed(b, first.childId, second.taskId, "acknowledged", obligation.requestId);
-        expect(
-          (yield* c.threads.getThreadRecords(second.childId, ["runs"])).runs.find(
-            (run) => run.id === cRun,
-          )?.status,
-        ).toBe("interrupted");
-        expect(yield* c.threads.getThreadEventSequence(second.childId)).toBeGreaterThan(cBefore);
-        expect(
-          yield* Context.get(
-            c.database,
-            SqlClient.SqlClient,
-          )`SELECT effect_id FROM orchestration_v2_effect_outbox ORDER BY effect_id`,
-        ).not.toEqual(cEffects);
+        // C ends by itself: a refused Stop is not outstanding, so B settles and A confirms its own.
+        yield* finishLifecycleRun(
+          c,
+          second.childId,
+          "stop-chain-c-done",
+          "completed",
+          "C done",
+          cRun,
+        );
         yield* drainStops(c);
-        yield* observed(b, first.childId, second.taskId, "confirmed", obligation.requestId);
         yield* observed(a, parentId, first.taskId, "confirmed");
         const bTask = (yield* b.threads.getThreadRecords(first.childId, [
           "subagents",
         ])).subagents.find((task) => task.id === second.taskId)!;
-        const finalA = (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
-          (task) => task.id === first.taskId,
-        )!;
-        expect(bTask.remoteChild?.stop?.requestId).toBe(obligation.requestId);
-        expect(bTask.remoteChild?.stop?.destinationCommandId).toBeDefined();
-        expect(finalA.remoteChild?.stop?.destinationCommandId).toBeDefined();
-        expect(bTask.remoteChild?.stop?.destinationCommandId).not.toBe(
-          finalA.remoteChild?.stop?.destinationCommandId,
-        );
-        const nativeEvidence = (node: Node, commandId: CommandId) =>
-          Context.get(node.database, SqlClient.SqlClient)<{
-            effect_id: string;
-            effect_type: string;
-            status: string;
-          }>`SELECT effect_id,effect_type,status FROM orchestration_v2_effect_outbox WHERE command_id=${commandId} ORDER BY effect_id`;
-        yield* Effect.logInfo("381 generated-fixture Stop proof", {
-          sourceParentThreadId: parentId,
-          bTaskId: first.taskId,
-          bThreadId: first.childId,
-          bRunId: bRun,
-          bSourceRequestId: finalA.remoteChild!.stop!.requestId,
-          bCommandId: finalA.remoteChild!.stop!.destinationCommandId,
-          cTaskId: second.taskId,
-          cThreadId: second.childId,
-          cRunId: cRun,
-          cSourceRequestId: obligation.requestId,
-          cCommandId: bTask.remoteChild!.stop!.destinationCommandId,
-          bEffects: yield* nativeEvidence(b, finalA.remoteChild!.stop!.destinationCommandId!),
-          cEffects: yield* nativeEvidence(c, bTask.remoteChild!.stop!.destinationCommandId!),
+        expect(bTask.remoteChild?.stop).toMatchObject({
+          requestId: obligation.requestId,
+          state: "refused",
+          refusal: "runtime_mode",
         });
-
+        expect(bTask.remoteChild?.stop?.destinationCommandId).toBeUndefined();
+        expect(
+          (yield* c.threads.getThreadRecords(second.childId, ["runs"])).runs.find(
+            (run) => run.id === cRun,
+          )?.status,
+        ).toBe("completed");
         expect((yield* a.threads.getThreadShell(parentId))?.activeRunId).toBeNull();
       }),
     ).pipe(
@@ -4883,4 +4873,223 @@ it.live(
 const decodePeerAttachmentUploadResult = Schema.decodeUnknownEffect(PeerAttachmentUploadResult);
 const decodeIdpath = Schema.decodeUnknownEffect(
   Schema.Struct({ id: Schema.String, path: Schema.String }),
+);
+
+it.live(
+  "750: typed lifecycle outcomes are negotiated outside the body and given only to an authenticated pair",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* makeNode(descriptorOf("typed750-b", "B", { peerAuthority: 1 }), "disk");
+        const a = yield* makeNode(descriptorOf("typed750-a", "A", { peerAuthority: 1 }), "disk");
+        yield* linkTo(a.links, b, "full-access");
+        const parentId = ThreadId.make("typed750-parent");
+        yield* seedParent(a, parentId);
+        const gone = yield* delegate(a, b, parentId, "typed750-gone");
+        yield* activate(b, gone.childId);
+        const kept = yield* delegate(a, b, parentId, "typed750-kept");
+        yield* activate(b, kept.childId);
+        const resolved = yield* a.links.resolve(b.environmentId);
+        const generation = resolved.link.launchIdentity;
+        const http = yield* HttpClient.HttpClient;
+        // As a source of either version would send it; only the header differs.
+        const raw = (body: unknown, typed: boolean) =>
+          http
+            .execute(
+              HttpClientRequest.post(`${b.url}/mcp/peer-control/tasks`).pipe(
+                HttpClientRequest.setHeaders({
+                  authorization: `Bearer ${resolved.token}`,
+                  ...(typed ? { "x-t3-lifecycle-outcomes": "1" } : {}),
+                }),
+                HttpClientRequest.bodyJsonUnsafe(body),
+              ),
+            )
+            .pipe(
+              Effect.flatMap((response) =>
+                response.status === 200
+                  ? response.json.pipe(Effect.map((reply) => ({ status: 200, reply })))
+                  : Effect.succeed({ status: response.status, reply: null }),
+              ),
+            );
+        const request = (
+          task: { readonly taskId: NodeId; readonly childId: ThreadId },
+          operation: object,
+        ) => ({
+          environmentId: a.environmentId,
+          generation,
+          pair: {
+            parentEnvironmentId: a.environmentId,
+            parentThreadId: parentId,
+            taskId: task.taskId,
+            childEnvironmentId: b.environmentId,
+            childThreadId: task.childId,
+            childRunId: null,
+          },
+          operation,
+        });
+        const observe = { type: "observe", after: 0, wait: false };
+        const page = {
+          type: "resultText",
+          eventId: "event:none",
+          runId: "run:none",
+          sequence: 1,
+          textOffset: 0,
+        };
+        expect((yield* raw(request(gone, observe), true)).status).toBe(200);
+
+        // Archived there: a typed answer for every lifecycle request that asks for one.
+        yield* b.threads.dispatch({
+          type: "thread.archive",
+          commandId: CommandId.make("typed750-archive"),
+          threadId: gone.childId,
+        });
+        for (const operation of [observe, page, { type: "stop", requestId: "typed750-stop" }])
+          expect(yield* raw(request(gone, operation), true)).toEqual({
+            status: 200,
+            reply: { type: "pair_gone", reason: "archived" },
+          });
+        // An older source gets today's denial, and so does any other generation or pair.
+        expect((yield* raw(request(gone, observe), false)).status).toBe(403);
+        expect(
+          (yield* raw({ ...request(gone, observe), generation: "other-generation" }, true)).status,
+        ).toBe(403);
+        expect(
+          (yield* raw(request({ ...gone, taskId: NodeId.make("typed750-forged") }, observe), true))
+            .status,
+        ).toBe(403);
+        const remoteOf = (taskId: NodeId) =>
+          a.threads
+            .getThreadRecords(parentId, ["subagents"])
+            .pipe(Effect.map(({ subagents }) => subagents.find((task) => task.id === taskId)!));
+        const followed = (
+          taskId: NodeId,
+          predicate: (task: import("@t3tools/contracts").OrchestrationV2Subagent) => boolean,
+        ) =>
+          a.orchestrator
+            .streamStoredEventsFrom({
+              threadId: parentId,
+              afterSequence: 0,
+              eventType: "subagent.updated",
+            })
+            .pipe(
+              Stream.filter(
+                (stored) =>
+                  stored.event.type === "subagent.updated" &&
+                  stored.event.payload.id === taskId &&
+                  predicate(stored.event.payload),
+              ),
+              Stream.runHead,
+            );
+        // Archived can be reopened there, so the follower keeps trying.
+        yield* followed(gone.taskId, (task) => task.remoteChild?.availability === "stale");
+        expect((yield* remoteOf(gone.taskId)).result).toBeNull();
+        yield* b.threads.dispatch({
+          type: "thread.unarchive",
+          commandId: CommandId.make("typed750-unarchive"),
+          threadId: gone.childId,
+        });
+        expect((yield* raw(request(gone, observe), true)).status).toBe(200);
+        // Deleted there is final: the task ends without claiming how its work ended.
+        yield* b.threads.dispatch({
+          type: "thread.delete",
+          commandId: CommandId.make("typed750-delete"),
+          threadId: gone.childId,
+        });
+        expect(yield* raw(request(gone, observe), true)).toEqual({
+          status: 200,
+          reply: { type: "pair_gone", reason: "deleted" },
+        });
+        yield* followed(gone.taskId, (task) => task.remoteChild?.availability === "lost");
+        const lost = yield* followed(gone.taskId, (task) => task.result !== null);
+        expect(Option.getOrThrow(lost).event).toMatchObject({
+          payload: {
+            status: "failed",
+            result:
+              "The task's thread was deleted on B. Whether its work finished there is unknown.",
+          },
+        });
+        expect(yield* a.projections.getOpenRemoteDelegatedTasks).not.toContainEqual({
+          parentThreadId: parentId,
+          taskId: gone.taskId,
+        });
+
+        // A finished job waits in the shared quiet watch; its deletion there ends it as lost,
+        // keeping the result it already had.
+        const quiet = yield* delegate(a, b, parentId, "typed750-quiet");
+        yield* finishLifecycleRun(b, quiet.childId, "typed750-quiet", "completed", "Quiet result");
+        yield* followed(quiet.taskId, (task) => task.result !== null);
+        // With no undelivered result holding it here, it joins the shared watch.
+        yield* a.threads.dispatch({
+          type: "delegated_task.completion-delivery.dispose",
+          commandId: CommandId.make("typed750-quiet-read"),
+          parentThreadId: parentId,
+          taskId: quiet.taskId,
+        });
+        yield* followed(quiet.taskId, (task) => task.completionDelivery?.state === "disposed");
+        yield* b.threads.dispatch({
+          type: "thread.delete",
+          commandId: CommandId.make("typed750-quiet-delete"),
+          threadId: quiet.childId,
+        });
+        yield* followed(quiet.taskId, (task) => task.remoteChild?.availability === "lost");
+        expect(yield* remoteOf(quiet.taskId)).toMatchObject({
+          status: "completed",
+          result: "Quiet result",
+        });
+
+        // Stops recorded here and sent below, by this source's client (typed) or as an older
+        // source would send them (no header), over the channel the destination checks them on.
+        yield* a.stopConnections;
+        yield* a.remote.requestStop(parentId, kept.taskId, "typed750-partial");
+        const connected = yield* a.reconnect();
+        const typed = (operation: { readonly type: "stop"; readonly requestId: string }) =>
+          connected.peers.taskLifecycle!(b.environmentId, generation, {
+            pair: request(kept, operation).pair,
+            operation,
+          });
+        // A request recorded there whose stop never committed: refused under a changed policy
+        // with no effect, then accepted once under the original one.
+        const partialStop = { type: "stop" as const, requestId: "typed750-partial" };
+        const partial = request(kept, partialStop);
+        const commandId = `peer-task-stop:${Hex.encode(
+          sha256(new TextEncoder().encode(JSON.stringify([partial.pair, "typed750-partial"]))),
+        )}`;
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        yield* sql`INSERT INTO peer_task_stop_receipts (command_id,semantic_json) VALUES (${commandId},${JSON.stringify(partial)})`;
+        yield* a.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          threadId: parentId,
+          commandId: CommandId.make("typed750-lower"),
+          runtimeMode: "auto",
+        });
+        const childBefore = yield* b.threads.getThreadEventSequence(kept.childId);
+        expect(yield* typed(partialStop)).toEqual({ type: "stop_refused", reason: "runtime_mode" });
+        expect(yield* b.threads.getThreadEventSequence(kept.childId)).toBe(childBefore);
+        yield* a.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          threadId: parentId,
+          commandId: CommandId.make("typed750-restore"),
+          runtimeMode: "full-access",
+        });
+        // Accepted from an older source, then replayed from a newer one and back: the outcome
+        // format is a header, outside the body the destination compares.
+        const accepted = yield* raw(partial, false);
+        expect(accepted.reply).toEqual({ type: "stop", commandId });
+        expect(yield* typed(partialStop)).toEqual(accepted.reply);
+        expect(yield* raw(partial, false)).toEqual(accepted);
+        expect(yield* b.threads.getThreadEventSequence(kept.childId)).toBeGreaterThan(childBefore);
+        expect(
+          yield* sql<{
+            semantic_json: string;
+          }>`SELECT semantic_json FROM peer_task_stop_receipts WHERE command_id=${commandId}`,
+        ).toEqual([{ semantic_json: JSON.stringify(partial) }]);
+      }),
+    ).pipe(
+      Effect.provide(
+        Layer.merge(
+          FetchHttpClient.layer,
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+        ),
+      ),
+    ),
 );
