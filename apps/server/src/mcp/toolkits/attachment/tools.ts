@@ -41,7 +41,7 @@ const shared = {
 const AttachmentUploadTool = Tool.make("t3_attachment_prepare_upload", {
   ...shared,
   description:
-    "Get an upload URL. POST the file's exact bytes to `uploadUrl` (else `relativeUrl` on the returned `uploadOrigin`, else on this server), then send via `t3_thread_send_attachments` with the returned `attachmentId`. For a send or launch in a linked environment, prepare it here, without `environmentId`; it transfers automatically.",
+    "Get an upload URL. POST the file's exact bytes to `uploadUrl` (else `relativeUrl` on the returned `uploadOrigin`, else on this server), then send via `t3_thread_send_attachments` with the returned `attachmentId`.",
   parameters: McpRouting.parameters(
     Schema.Struct({
       upload: AttachmentCreateUploadUrlInput,
@@ -90,7 +90,7 @@ const AttachmentSendTool = Tool.make("t3_thread_send_attachments", {
   ...shared,
   dependencies: [...shared.dependencies, DocumentText.DocumentText],
   description:
-    "Send uploaded attachments as a new message to a permitted thread. `clientRequestId` keeps one message across retries and credential renewal. A descendant agent's send to an ordinary ancestor is a child notice queued behind active work; Stopped ancestors stay stopped. Acceptance records the message, not provider consumption. The target must stay within the caller's authority; uncertain dispatch keeps its attachment files. With `environmentId`, uploads prepared here transfer automatically.",
+    "Send uploaded attachments as a new message to a permitted thread. `clientRequestId` keeps one message across retries and credential renewal. A descendant agent's send to an ordinary ancestor is a child notice queued behind active work; Stopped ancestors stay stopped. Acceptance records the message, not provider consumption. The target must stay within the caller's authority; uncertain dispatch keeps its attachment files.",
   parameters: McpRouting.parameters(
     Schema.Struct({
       threadId: Schema.optional(ThreadId),
