@@ -343,6 +343,12 @@ export class PeerAuthority extends Context.Service<
     ) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly grants: Effect.Effect<ReadonlyArray<PeerGrantSummary>, OrchestratorMcpFailure>;
     readonly setGrant: (grant: PeerGrant) => Effect.Effect<PeerGrant, OrchestratorMcpFailure>;
+    /** Whether the calling link's grant shares browser logins. A hint for routing, never a gate. */
+    readonly browserExportGranted: (scope: Invocation.McpInvocationScope) => Effect.Effect<boolean>;
+    /** The gate before any cookie read: an accepted direct peer action under a current export grant. */
+    readonly authorizeBrowserExport: (
+      scope: Invocation.McpInvocationScope,
+    ) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly exchange: (
       scope: Invocation.McpInvocationScope,
       input: Exchange,
@@ -667,6 +673,7 @@ const make = Effect.gen(function* () {
         onward: false,
         preview: false,
         device: false,
+        browserExport: false,
       };
       yield* sql`INSERT INTO peer_authority_sessions (session_id, environment_id, generation, grant_json) VALUES (${sessionId}, ${peer.environmentId}, ${peer.generation}, ${json(initial)}) ON CONFLICT DO NOTHING`.pipe(
         Effect.mapError(unavailable),
@@ -1871,6 +1878,31 @@ const make = Effect.gen(function* () {
       return { ...frozen, ceiling: intersect(frozen.ceiling, record.ceiling) };
     },
   );
+  const browserExportGranted: PeerAuthority["Service"]["browserExportGranted"] = (scope) =>
+    scope.client?.linked === true
+      ? grant(scope.client.sessionId).pipe(
+          Effect.map((current) => current.browserExport),
+          Effect.orElseSucceed(() => false),
+        )
+      : Effect.succeed(false);
+  const authorizeBrowserExport: PeerAuthority["Service"]["authorizeBrowserExport"] = Effect.fn(
+    "PeerAuthority.authorizeBrowserExport",
+  )(function* (scope) {
+    if (scope.client?.linked !== true || scope.authority === undefined)
+      return yield* denied("Exporting browser logins needs an accepted peer action.");
+    const record = yield* readInteractive(scope.authority.id);
+    if (record.sessionId === null || record.sessionId !== scope.client.sessionId)
+      return yield* denied("Exporting browser logins needs an accepted peer action.");
+    // Browser access is drive consent; work a link started here, or that a peer
+    // forwards for another environment, never carries export consent.
+    if (record.envelope.descendant)
+      return yield* denied("Linked work cannot export this environment's browser logins.");
+    yield* validate(record);
+    if (!(yield* grant(record.sessionId)).browserExport)
+      return yield* denied(
+        "grant_off: This environment does not share browser logins with this link. The user can turn on Share browser logins for it in Connections settings.",
+      );
+  });
   const checkPayload: PeerAuthority["Service"]["checkPayload"] = Effect.fn(
     "PeerAuthority.checkPayload",
   )(function* (authority, tool, args) {
@@ -3927,6 +3959,8 @@ const make = Effect.gen(function* () {
     ),
     returnNotice,
     registerPair,
+    browserExportGranted,
+    authorizeBrowserExport,
     grants: Effect.gen(function* () {
       const now = yield* DateTime.now;
       const rows = yield* sql<{

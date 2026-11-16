@@ -47,6 +47,9 @@ flowchart TD
     %% BLM: #520 #541 PR #530 PR #545
     T3C --> BLM --> T3R
     BLM --> PBI
+    PLI["Peer login import"]
+    %% PLI: #522
+    BLM --> PLI
 
     VCF["Vault sign-in for agents"]
     %% VCF: #557
@@ -117,6 +120,7 @@ flowchart TD
     RBD["Remote browser and device control"]
     %% RBD: #383 #592 #588 PR #421 PR #534 PR #596 PR #595
     PGR --> RBD
+    RBD --> PLI
     PAR --> RBD
     DAA["Destination automations"]
     %% DAA: #384 PR #555 #586 #594 PR #642

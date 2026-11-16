@@ -12,6 +12,9 @@ import {
   type PreviewWatchReadResult,
   CookieMirrorError,
   type CookieMirrorBatch,
+  type MirrorCookie,
+  type PreviewLoginExportResult,
+  type PreviewLoginImportResult,
   OrchestratorMcpFailure,
   type NativeBrowserDownloadAssetResource,
   DEFAULT_BROWSER_PROFILE_ID,
@@ -116,6 +119,7 @@ import * as PreviewBrowser from "./PreviewBrowser.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
 import { ServerCookieMirrorProfiles } from "./ServerCookieMirrorProfiles.ts";
 import { ServerCookieMirror } from "./ServerCookieMirror.ts";
+import { ServerLoginCookies } from "./ServerLoginCookies.ts";
 import { presentAsChrome, ServerBrowserContexts } from "./ServerBrowserContexts.ts";
 import { PageWatchStore } from "./PageWatchStore.ts";
 import { installPageWatch } from "./ServerBrowserWatch.ts";
@@ -368,6 +372,20 @@ export class ServerBrowser extends Context.Service<
     readonly profileReporter: Effect.Effect<ProfileReporter, never, Scope.Scope>;
     readonly mirrorResets: Stream.Stream<string>;
     readonly mirrorCookies: (input: CookieMirrorBatch) => Effect.Effect<void, CookieMirrorError>;
+    /** Fork: one-snapshot login copies between linked environments' server browsers. */
+    readonly loginCookies?: {
+      readonly check: (profileId: string) => Effect.Effect<void, OrchestratorMcpFailure>;
+      readonly export: (input: {
+        readonly profileId: string;
+        readonly hosts: ReadonlyArray<string>;
+      }) => Effect.Effect<PreviewLoginExportResult, OrchestratorMcpFailure>;
+      readonly import: (input: {
+        readonly profileId: string;
+        readonly hosts: ReadonlyArray<string>;
+        readonly cookies: ReadonlyArray<MirrorCookie>;
+        readonly skipped: PreviewLoginExportResult["skipped"];
+      }) => Effect.Effect<PreviewLoginImportResult, OrchestratorMcpFailure>;
+    };
 
     readonly authorizeViewer?: (
       resource: PreviewViewerResource,
@@ -4658,6 +4676,24 @@ const make = Effect.gen(function* () {
       catch: (cause) => new PreviewClearProfileError({ profileId, cause }),
     });
 
+  const loginCookies = new ServerLoginCookies(cookieMirror, {
+    find: (profileId) => availableProfiles().find((profile) => profile.id === profileId),
+    inLogin: (profileId) => profileLogins.has(`profile:${profileId}`),
+  });
+  const isOrchestratorMcpFailure = Schema.is(OrchestratorMcpFailure);
+  // Causes may quote cookie values, so only refusals keep their own message.
+  const loginCookieCall = <A>(run: () => Promise<A>) =>
+    Effect.tryPromise({
+      try: run,
+      catch: (cause) =>
+        isOrchestratorMcpFailure(cause)
+          ? cause
+          : new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: "The browser could not read or write this profile's cookies.",
+            }),
+    });
+
   return ServerBrowser.of({
     readWatch: Effect.fn("ServerBrowser.readWatch")(function* (input, authorizeReader) {
       const context = yield* Effect.context<Effect.Services<typeof authorizeReader>>();
@@ -4709,6 +4745,11 @@ const make = Effect.gen(function* () {
     }),
     attachViewer,
     clearProfile,
+    loginCookies: {
+      check: (profileId) => loginCookieCall(async () => loginCookies.check(profileId)),
+      export: (input) => loginCookieCall(() => loginCookies.export(input)),
+      import: (input) => loginCookieCall(() => loginCookies.import(input)),
+    },
     profileReporter,
     openDownload,
     inspectDownload: Effect.fn("ServerBrowser.inspectDownload")((resource, authorize) =>

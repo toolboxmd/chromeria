@@ -44,6 +44,7 @@ function GrantEditor({
           ["onward", "Delegate onward"],
           ["preview", "Browser access"],
           ["device", "Device access"],
+          ["browserExport", "Share browser logins"],
         ] as const
       ).map(([key, label]) => (
         <SettingsSwitchRow
@@ -81,7 +82,7 @@ export function PeerGrantSettings({ environmentId }: { environmentId: Environmen
   const grants = Option.getOrElse(AsyncResult.value(result), () => []);
   return grants.map((grant) => (
     <GrantEditor
-      key={`${grant.sessionId}:${grant.resourceScope}:${grant.onward}:${grant.preview}:${grant.device}`}
+      key={`${grant.sessionId}:${grant.resourceScope}:${grant.onward}:${grant.preview}:${grant.device}:${grant.browserExport}`}
       environmentId={environmentId}
       grant={grant}
     />

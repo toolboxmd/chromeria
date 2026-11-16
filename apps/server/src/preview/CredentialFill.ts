@@ -62,7 +62,7 @@ const isIpHost = (host: string) => host.startsWith("[") || /^\d+(?:\.\d+){3}$/.t
 
 // The registrable domain (eTLD+1) under the public suffix list, private suffixes such as
 // github.io included. IP hosts, single-label hosts and public suffixes have none.
-const registrableDomain = (host: string) =>
+export const registrableDomain = (host: string): string | undefined =>
   isIpHost(host) || !host.includes(".")
     ? undefined
     : (getDomain(host, { allowPrivateDomains: true, extractHostname: false }) ?? undefined);

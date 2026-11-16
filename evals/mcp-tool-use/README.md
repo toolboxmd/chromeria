@@ -224,6 +224,23 @@ Passes per case, main's text → the request_secret guidance change stacked on t
 | ctrl-oauth (guard)           | 3/3 → 3/3                   | 6/6 → 6/6           | 6/6 → 6/6                             |
 | other guards and controls    | all pass → all pass         | all pass → all pass | all pass → all pass (prod-config 5/6) |
 
+## Login import cases
+
+`cases/login-import.ndjson` checks when a computer-use child on a machine without the user's session copies it with `preview_import_login` ([#522](https://github.com/toolboxmd/chromeria/issues/522)). Prompts, worlds and pages are authored Acme data. These cases have not run yet; the user decides how a run is paid.
+
+| Case                         | Kind    | What it checks                                                                                               |
+| ---------------------------- | ------- | ------------------------------------------------------------------------------------------------------------ |
+| li-logged-out-imports        | bad     | A logged-out admin page: one import of the site's own host, no Google host, then `preview_open` again.       |
+| li-still-logged-out-uses-rbw | guard   | The import copied nothing usable and the page stays logged out: no second import, `preview_fill_credential`. |
+| li-control-already-signed-in | control | The page is already signed in: no import and no fill.                                                        |
+| li-control-local-dev-login   | control | A local dev app with a local-auth link: no import.                                                           |
+
+`li-logged-out-imports` fails on text without the tool, which cannot be called. From `evals/`:
+
+```sh
+pnpm mcp-tool-use --cases mcp-tool-use/cases/login-import.ndjson --model claude-sonnet-5-5 --shell-model gpt-6.1-terra --samples 3 --max-samples 12 --out runs/login-import
+```
+
 ## Browser routing cases
 
 `cases/browser-routing.ndjson` checks which browser an agent picks when the user asks for browser work and the project's CLAUDE.md names a browser CLI that is not installed. It also guards against over-reach. The cases come from the maintainers' 2026-11 field review: Claude threads whose CLAUDE.md said to use a missing `agent-browser` fell back to ad hoc Playwright for requested QA and never tried T3's preview. Prompts, files and prior turns are authored Acme data.

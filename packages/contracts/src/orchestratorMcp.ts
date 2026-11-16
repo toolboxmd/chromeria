@@ -835,6 +835,8 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   peerRequests: Schema.optional(Schema.Literal(1)),
   bareLaunch: Schema.optional(Schema.Boolean),
   toolAllowlist: Schema.optional(Schema.Boolean),
+  /** Whether this link's grant shares browser logins; `browser_login_export` still checks it. */
+  browserExport: Schema.optional(Schema.Boolean),
   /** The calling thread, or null when the caller is not a T3 thread. */
   parentThreadId: Schema.NullOr(ThreadId),
   inheritedProviderInstanceId: Schema.NullOr(ProviderInstanceId),

@@ -38,6 +38,23 @@ Chrome and other observed device-bound sites appear in **Settings > Integrations
 Browser** as **device-bound, not mirrored**. Sign in separately in each environment
 for those sites. Cookie convergence alone does not prove a working login.
 
+## Agents on other machines
+
+An agent on another linked environment can copy your session for a site from the environment that holds your logins, such as the one your desktop mirrors Chrome into. It copies one snapshot of that site's cookies into a browser profile on its own machine, then opens the site with that profile. If the site is still logged out, the agent signs in from your [rbw vault](#agent-sign-in-from-an-rbw-vault) instead.
+
+To allow it, open **Settings > Connections** on the environment that holds your logins and turn on **Share browser logins** for the linked environment whose agents may copy them, then save the link permissions. It is off by default and separate from **Browser access**: letting an environment drive this browser does not let it copy your sessions. Turning it off stops copies that have not started yet.
+
+The agent names the site's hosts, at most 8, such as `admin.shopify.com`. It receives cookies the browser would send to those hosts and nothing else. A copy fails as a whole if those hosts hold more than 256 cookies or 64 KiB. The receiving profile keeps cookies on a parent domain, such as `.shopify.com`, that the copy lacks, because they can belong to other sites.
+
+Some sessions cannot be copied:
+
+- Google sign-in is bound to each machine. Sign in on each machine separately.
+- Partitioned cookies belong to another site's embeds and stay behind.
+- Work that another environment started cannot copy sessions. Its parent runs a computer-use agent on the machine with your logins instead.
+- Incognito profiles, profiles in a login, and profile ids the receiving environment does not know are refused.
+
+Each copy appends a line to `login-imports.jsonl` in the `userdata` directory of both environments. The line records the time, environments, thread, profiles, hosts, counts and outcome, never a cookie name or value. The agent sees only counts.
+
 ## One-time imports
 
 The desktop app can import cookies from another browser so you can reuse its signed-in sessions

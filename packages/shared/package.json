@@ -598,6 +598,10 @@
     "./browserCookieMirror": {
       "types": "./src/browserCookieMirror.ts",
       "import": "./src/browserCookieMirror.ts"
+    },
+    "./browserLoginImport": {
+      "types": "./src/browserLoginImport.ts",
+      "import": "./src/browserLoginImport.ts"
     }
   },
   "scripts": {

@@ -54,6 +54,11 @@ function GrantEditor({
             "Allow permitted browser tools and private browser output.",
           ],
           ["device", "Device access", "Allow permitted simulator and emulator tools and output."],
+          [
+            "browserExport",
+            "Share browser logins",
+            "Let its agents copy this environment's browser sessions for the sites they name.",
+          ],
         ] as const
       ).map(([key, title, description]) => (
         <label key={key} className="flex items-start gap-3 text-xs">
@@ -112,7 +117,7 @@ export function PeerGrantSettings({ environmentId }: { environmentId: Environmen
   );
   return grants.map((grant) => (
     <GrantEditor
-      key={`${grant.sessionId}:${grant.resourceScope}:${grant.onward}:${grant.preview}:${grant.device}`}
+      key={`${grant.sessionId}:${grant.resourceScope}:${grant.onward}:${grant.preview}:${grant.device}:${grant.browserExport}`}
       environmentId={environmentId}
       grant={grant}
       label={grant.label}

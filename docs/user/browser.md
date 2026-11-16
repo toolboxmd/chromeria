@@ -48,6 +48,9 @@ to the environment's agent browser. To reuse logins from another browser:
   a new value for them; signing out on the desktop does not remove them.
 - For a one-time copy, open **Settings → Integrations → Browser profiles →
   Add profile** and choose **Import from**.
+- An agent on another linked environment can copy one site's session from an
+  environment whose **Share browser logins** permission for it is on, with
+  `preview_import_login`. The permission is separate from **Browser access**.
 
 See [Reuse browser logins](browser-import.md) for setup and limits, including
 logins that cannot move between devices. The agent's rbw login tool,
