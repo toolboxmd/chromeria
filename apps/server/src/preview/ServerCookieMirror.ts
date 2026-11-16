@@ -14,6 +14,9 @@ import type { ServerBrowserContexts } from "./ServerBrowserContexts.ts";
 import type { BrowserContext, CDPSession } from "playwright-core";
 import type { CookieMirrorStore } from "@t3tools/shared/browserCookieMirror";
 
+/** A stored signature no real cookie has: the profile removed this desktop cookie itself. */
+const REMOVED_HERE = "\u0000removed-here";
+
 /**
  * Borrows each persistent context's reserved page: it owns only its CDP
  * session, never the page, and re-attaches after the page or session goes.
@@ -72,12 +75,18 @@ export class ServerCookieMirror {
     }
   }
 
-  /** The profile's cookies, opaque partitions left out. Callers check the profile id first. */
-  readProfile(profileId: string): Promise<ReadonlyArray<MirrorCookie>> {
+  /**
+   * The profile's cookies, opaque partitions left out. Callers check the profile id
+   * first; `guard` runs again once the context is attached, before and after the read.
+   */
+  readProfile(profileId: string, guard: () => void): Promise<ReadonlyArray<MirrorCookie>> {
     return this.serialized(async () => {
       const context = await this.contexts.contextFor(profileId);
       const attached = await this.attach(context);
-      return this.readAttached(context, attached.cdp);
+      guard();
+      const cookies = await this.readAttached(context, attached.cdp);
+      guard();
+      return cookies;
     });
   }
 
@@ -102,6 +111,14 @@ export class ServerCookieMirror {
       } catch (error) {
         await this.detachAfter(context, attached.cdp);
         throw error;
+      }
+      // An absent cookie normally lets a replay restore it; one the import deleted must stay gone.
+      const mirrored = this.mirrored.get(profileId);
+      for (const mutation of mutations) {
+        if (mutation.type !== "remove") continue;
+        const key = cookieMirrorKey(mutation.key);
+        const last = mirrored?.get(key);
+        if (last !== undefined) mirrored!.set(key, { sent: last.sent, stored: REMOVED_HERE });
       }
       return result;
     });
@@ -134,7 +151,8 @@ export class ServerCookieMirror {
         const key = cookieMirrorKey(mutation.type === "set" ? mutation.cookie : mutation.key);
         const last = mirrored.get(key);
         const changedHere =
-          last !== undefined && current.has(key) && current.get(key) !== last.stored;
+          last !== undefined &&
+          (current.has(key) ? current.get(key) !== last.stored : last.stored === REMOVED_HERE);
         return (
           !changedHere ||
           (mutation.type === "set" && mirrorCookieSignature(mutation.cookie) !== last.sent)

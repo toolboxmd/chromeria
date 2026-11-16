@@ -68,7 +68,10 @@ export class ServerLoginCookies {
     readonly hosts: ReadonlyArray<string>;
   }): Promise<PreviewLoginExportResult> {
     this.check(input.profileId);
-    const cookies = await this.mirror.readProfile(input.profileId);
+    // A login may start while the read waits in the queue or the context opens.
+    const cookies = await this.mirror.readProfile(input.profileId, () =>
+      this.check(input.profileId),
+    );
     const selection = selectLoginCookies({ cookies, hosts: input.hosts, registrableDomain });
     if (selection._tag === "refused") throw loginRefusal(selection.reason);
     return { cookies: selection.cookies, skipped: selection.skipped };

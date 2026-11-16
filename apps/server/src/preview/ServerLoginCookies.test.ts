@@ -173,6 +173,16 @@ describe("ServerLoginCookies", () => {
       message: expect.stringMatching(/^login_in_progress:/),
     });
     expect(values()).toEqual({ "shop.test/session": "kept" });
+
+    // Export has the same race: a login starting while the context opens must not leak its cookies.
+    logins.clear();
+    contexts.contextFor.mockImplementationOnce(async () => {
+      logins.add("work");
+      return context;
+    });
+    await expect(login.export({ profileId: "work", hosts: ["shop.test"] })).rejects.toMatchObject({
+      message: expect.stringMatching(/^login_in_progress:/),
+    });
   });
 
   it("exports only the listed hosts' cookies and refuses Google hosts", async () => {
@@ -208,5 +218,24 @@ describe("ServerLoginCookies", () => {
     expect(values()).toEqual({ ".shop.test/sid": "imported" });
     await mirror.apply(desktop("desktop-new"));
     expect(values()).toEqual({ ".shop.test/sid": "desktop-new" });
+
+    // A host-only cookie the import deleted, because the source had signed out, stays deleted
+    // through a desktop replay, while a new desktop value still restores it.
+    const hostOnly = (value: string) => ({
+      ...desktop(value),
+      mutations: [{ type: "set" as const, cookie: snapshotCookie("shop.test", "a", value) }],
+    });
+    await mirror.apply(hostOnly("desktop-a"));
+    await login.import({
+      profileId: "work",
+      hosts: ["shop.test"],
+      cookies: [snapshotCookie(".shop.test", "sid", "desktop-new")],
+      skipped: none,
+    });
+    expect(values()).toEqual({ ".shop.test/sid": "desktop-new" });
+    await mirror.apply(hostOnly("desktop-a"));
+    expect(values()).toEqual({ ".shop.test/sid": "desktop-new" });
+    await mirror.apply(hostOnly("desktop-a2"));
+    expect(values()).toEqual({ ".shop.test/sid": "desktop-new", "shop.test/a": "desktop-a2" });
   });
 });

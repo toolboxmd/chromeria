@@ -59,6 +59,18 @@ const unavailable = () =>
     message: "Browser login import is unavailable in this environment.",
   });
 
+/**
+ * The thread that asked, as the calling link reports it, kept only when it names the
+ * environment of the verified peer authority. It is the peer's own claim, not part of the digest.
+ */
+const initiatingThread = (scope: McpInvocationContext.McpInvocationScope) => {
+  const sender = scope.client?.senderThread;
+  const peer = interactiveAuthority(scope.authority)?.peer.environmentId;
+  return sender !== undefined && peer !== undefined && sender.environmentId === peer
+    ? sender.threadId
+    : null;
+};
+
 const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const browser = yield* Effect.serviceOption(ServerBrowser.ServerBrowser);
@@ -193,7 +205,7 @@ const make = Effect.gen(function* () {
       side: "export" as const,
       environmentId: scope.environmentId,
       peerEnvironmentId: interactiveAuthority(scope.authority)?.peer.environmentId ?? null,
-      threadId: null,
+      threadId: initiatingThread(scope),
       profileId: input.profileId,
       sourceProfileId: input.profileId,
       hosts: input.hosts,

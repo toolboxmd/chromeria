@@ -263,6 +263,12 @@ it.live("imports rocky's session only under its separate export grant, and logs 
 
       const rockyLines = yield* auditLines(env.rockyStateDir);
       const bestiaLines = yield* auditLines(env.bestiaStateDir);
+      // The source records the thread that asked, as its link reported it.
+      expect(rockyLines.map((line) => JSON.parse(line).threadId)).toEqual([
+        "bestia-agent",
+        "bestia-agent",
+        "bestia-agent",
+      ]);
       expect(rockyLines.map((line) => JSON.parse(line).result)).toEqual([
         "grant_off",
         "grant_off",
