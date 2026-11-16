@@ -1,0 +1,363 @@
+import { act, render } from "../../../test/render";
+import { cloneElement, type ReactElement, type ReactNode } from "react";
+import { EnvironmentId, NodeId, ThreadId, type PeerTaskSnapshot } from "@t3tools/contracts";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import * as DateTime from "effect/DateTime";
+import { expect, it, vi } from "vite-plus/test";
+
+const state = vi.hoisted(() => ({
+  subagents: [] as unknown[],
+  configs: new Map<string, unknown>(),
+  queries: [] as unknown[],
+}));
+
+vi.mock("../../state/threads", async () => {
+  const { Atom } = await import("effect/reactivity");
+  return {
+    environmentThreadDetails: {
+      threadAtom: () => Atom.make({ projection: { subagents: state.subagents } }),
+    },
+  };
+});
+
+vi.mock("../../state/entities", () => {
+  return {
+    useServerConfigs: () => state.configs,
+    useThreadShell: () => null,
+    useProject: () => null,
+  };
+});
+
+vi.mock("../ui/tooltip", () => ({
+  Tooltip: ({ children }: { children: ReactNode }) => children,
+  TooltipTrigger: ({ render, children }: { render: ReactElement; children: ReactNode }) =>
+    cloneElement(render, {}, children),
+  TooltipPopup: () => null,
+}));
+
+vi.mock("../../state/remoteTasks", async () => {
+  const { Atom, AsyncResult } = await import("effect/reactivity");
+  return {
+    remoteTasks: {
+      view: (input: unknown) => {
+        state.queries.push(input);
+        return Atom.make(
+          AsyncResult.success({
+            taskId: "remote-agent",
+            environmentId: "cavallo",
+            threadId: "remote-child",
+            snapshot: {
+              sequence: 1,
+              executionSettled: false,
+              pendingQuestions: 0,
+              requests: [],
+              title: "Source inspected work",
+              observedAt: "2026-10-17T00:00:00Z",
+              workState: "working",
+              pendingChildren: 1,
+              queuedRuns: 2,
+              requestCount: 0,
+              recoveryWaiting: false,
+              incomplete: false,
+            } satisfies PeerTaskSnapshot,
+            childrenTruncated: false,
+            children: [],
+            messages: [{ id: "source-message", role: "assistant", text: "Read through A" }],
+            nextCursor: null,
+            nextTextOffset: null,
+          }),
+        );
+      },
+      stop: { permissionAtom: () => Atom.make(false) },
+    },
+  };
+});
+vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => vi.fn() }));
+vi.mock("../ui/dialog", () => ({
+  Dialog: ({ children }: { children: ReactNode }) => children,
+  DialogPopup: ({ children }: { children: ReactNode }) => children,
+  DialogTitle: ({ children }: { children: ReactNode }) => children,
+}));
+import { BackgroundSubagentOpenButton } from "./BackgroundSubagentOpenButton";
+import { NotificationSubagentOpenButton, SubagentNotificationLink } from "./V2LifecycleRow";
+
+const remoteAgent = {
+  threadId: ThreadId.make("parent"),
+  id: NodeId.make("remote-agent"),
+  childThreadId: null,
+  remoteChild: {
+    environmentId: EnvironmentId.make("cavallo"),
+    threadId: ThreadId.make("remote-child"),
+    label: "cavallo",
+  },
+  origin: "app_owned",
+  driver: "cursor",
+  providerInstanceId: "cursor",
+  title: "Remote roast",
+  prompt: "Roast the draft",
+  model: "grok-4.7",
+  modelSelection: undefined,
+  status: "completed",
+  progress: null,
+  result: "Done",
+  startedAt: DateTime.makeUnsafe("2026-09-16T12:00:00Z"),
+  completedAt: DateTime.makeUnsafe("2026-09-16T12:01:00Z"),
+  updatedAt: DateTime.makeUnsafe("2026-09-16T12:01:00Z"),
+};
+
+const parentRef = scopeThreadRef(EnvironmentId.make("test"), ThreadId.make("parent"));
+
+it("opens a remote delegated task's notification card in its own environment", async () => {
+  using _cleanup = {
+    [Symbol.dispose]: () => {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    },
+  };
+
+  state.subagents = [];
+  state.configs = new Map();
+  state.queries = [];
+
+  await using screen = await render(null);
+  const container = screen.container;
+  function buttonsByLabel(label: string) {
+    return [...container.querySelectorAll("button")].filter(
+      (button) => button.getAttribute("aria-label") === label,
+    );
+  }
+
+  state.subagents = [remoteAgent];
+  state.configs = new Map([["cavallo", {}]]);
+  const onOpenThread = vi.fn();
+  await act(async () => {
+    screen.rerender(
+      <SubagentNotificationLink
+        parentRef={parentRef}
+        subagentId={NodeId.make("remote-agent")}
+        outcome="completed"
+        createdAt="2026-09-16T12:02:00Z"
+        timestampFormat="locale"
+        onOpenThread={onOpenThread}
+        fallback={<span>fallback</span>}
+      />,
+    );
+  });
+  const buttons = buttonsByLabel("Open Remote roast");
+  expect(buttons).toHaveLength(1);
+  await act(async () => buttons[0]!.click());
+  expect(onOpenThread).toHaveBeenCalledWith(
+    ThreadId.make("remote-child"),
+    EnvironmentId.make("cavallo"),
+  );
+});
+
+it("renders no link for a remote notification when the client is not connected there", async () => {
+  using _cleanup = {
+    [Symbol.dispose]: () => {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    },
+  };
+
+  state.subagents = [];
+  state.configs = new Map();
+  state.queries = [];
+
+  await using screen = await render(null);
+  const container = screen.container;
+  function buttonsByLabel(label: string) {
+    return [...container.querySelectorAll("button")].filter(
+      (button) => button.getAttribute("aria-label") === label,
+    );
+  }
+
+  state.subagents = [remoteAgent];
+  const onOpenThread = vi.fn();
+  const rerender = () =>
+    act(async () => {
+      screen.rerender(
+        <NotificationSubagentOpenButton
+          parentRef={parentRef}
+          subagentId={NodeId.make("remote-agent")}
+          onOpenThread={onOpenThread}
+        />,
+      );
+    });
+  await rerender();
+  expect(buttonsByLabel("Open subagent thread")).toHaveLength(0);
+
+  // The native config atom publishes a new snapshot when membership changes.
+  // In-place edits hide those changes from the compiler's cached consumer.
+  state.configs = new Map([["cavallo", {}]]);
+  await rerender();
+  const buttons = buttonsByLabel("Open subagent thread");
+  expect(buttons).toHaveLength(1);
+  await act(async () => buttons[0]!.click());
+  expect(onOpenThread).toHaveBeenCalledWith(
+    ThreadId.make("remote-child"),
+    EnvironmentId.make("cavallo"),
+  );
+
+  onOpenThread.mockClear();
+  state.configs = new Map();
+  await rerender();
+  expect(buttonsByLabel("Open subagent thread")).toHaveLength(0);
+  expect(onOpenThread).not.toHaveBeenCalled();
+});
+
+const entries = ["transcript", "notification", "background"] as const;
+it.each([false, true].flatMap((connected) => entries.map((entry) => ({ connected, entry }))))(
+  "opens $entry through A for a negotiated job when B connected=$connected",
+  async ({ connected, entry }) => {
+    using _cleanup = {
+      [Symbol.dispose]: () => {
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+      },
+    };
+
+    state.subagents = [];
+    state.configs = new Map();
+    state.queries = [];
+
+    await using screen = await render(null);
+    const container = screen.container;
+    function buttonsByLabel(label: string) {
+      return [...container.querySelectorAll("button")].filter(
+        (button) => button.getAttribute("aria-label") === label,
+      );
+    }
+    state.subagents = [
+      {
+        ...remoteAgent,
+        remoteChild: { ...remoteAgent.remoteChild, launch: { lifecycleVersion: 1 } },
+      },
+    ];
+    if (connected) state.configs.set("cavallo", {});
+    const onOpenThread = vi.fn();
+    const common = { parentRef, subagentId: NodeId.make("remote-agent"), onOpenThread };
+    await act(async () => {
+      screen.rerender(
+        entry === "transcript" ? (
+          <SubagentNotificationLink
+            {...common}
+            outcome="completed"
+            createdAt="2026-09-16T12:02:00Z"
+            timestampFormat="locale"
+            fallback={<span>fallback</span>}
+          />
+        ) : entry === "notification" ? (
+          <NotificationSubagentOpenButton {...common} />
+        ) : (
+          <BackgroundSubagentOpenButton
+            parentRef={parentRef}
+            item={{
+              taskId: NodeId.make("remote-agent"),
+              label: "Remote work",
+              childThreadId: ThreadId.make("remote-child"),
+              childEnvironmentId: EnvironmentId.make("cavallo"),
+            }}
+            onOpenThread={onOpenThread}
+          />
+        ),
+      );
+    });
+    const button = buttonsByLabel(
+      entry === "transcript" ? "Open Remote roast" : "Open subagent thread",
+    )[0];
+    expect(button).toBeDefined();
+    await act(async () => button!.click());
+    expect(onOpenThread).not.toHaveBeenCalled();
+    expect(state.queries).toContainEqual({
+      environmentId: EnvironmentId.make("test"),
+      input: {
+        parentThreadId: ThreadId.make("parent"),
+        taskId: NodeId.make("remote-agent"),
+        after: 0,
+        textOffset: 0,
+      },
+    });
+    expect(container.textContent).toContain("Read through A");
+  },
+);
+
+it.each(
+  [false, true].flatMap((connected) =>
+    [false, true].flatMap((local) => entries.map((entry) => ({ connected, local, entry }))),
+  ),
+)(
+  "retains local=$local $entry navigation with B connected=$connected",
+  async ({ connected, local, entry }) => {
+    using _cleanup = {
+      [Symbol.dispose]: () => {
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+      },
+    };
+
+    state.subagents = [];
+    state.configs = new Map();
+    state.queries = [];
+
+    await using screen = await render(null);
+    const container = screen.container;
+    function buttonsByLabel(label: string) {
+      return [...container.querySelectorAll("button")].filter(
+        (button) => button.getAttribute("aria-label") === label,
+      );
+    }
+    state.subagents = [
+      local
+        ? {
+            ...remoteAgent,
+            childThreadId: ThreadId.make("local-child"),
+            remoteChild: undefined,
+          }
+        : remoteAgent,
+    ];
+    if (connected) state.configs.set("cavallo", {});
+    const onOpenThread = vi.fn();
+    const common = { parentRef, subagentId: NodeId.make("remote-agent"), onOpenThread };
+    await act(async () => {
+      screen.rerender(
+        entry === "transcript" ? (
+          <SubagentNotificationLink
+            {...common}
+            outcome="completed"
+            createdAt="2026-09-16T12:02:00Z"
+            timestampFormat="locale"
+            fallback={<span>fallback</span>}
+          />
+        ) : entry === "notification" ? (
+          <NotificationSubagentOpenButton {...common} />
+        ) : (
+          <BackgroundSubagentOpenButton
+            parentRef={parentRef}
+            item={{
+              taskId: NodeId.make("remote-agent"),
+              label: "Remote work",
+              childThreadId: ThreadId.make("remote-child"),
+              childEnvironmentId: EnvironmentId.make("cavallo"),
+            }}
+            onOpenThread={onOpenThread}
+          />
+        ),
+      );
+    });
+    const buttons = buttonsByLabel(
+      entry === "transcript" ? "Open Remote roast" : "Open subagent thread",
+    );
+    expect(buttons.length).toBe(local || connected ? 1 : 0);
+    if (buttons[0]) {
+      await act(async () => buttons[0]!.click());
+      if (local) expect(onOpenThread).toHaveBeenCalledWith(ThreadId.make("local-child"));
+      else
+        expect(onOpenThread).toHaveBeenCalledWith(
+          ThreadId.make("remote-child"),
+          EnvironmentId.make("cavallo"),
+        );
+    }
+    expect(state.queries).toEqual([]);
+  },
+);

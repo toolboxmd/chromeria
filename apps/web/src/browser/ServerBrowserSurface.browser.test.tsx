@@ -12,7 +12,13 @@ import { act, render } from "../../test/render";
 const mocks = vi.hoisted(() => ({
   createClient: vi.fn<(target: unknown, handlers: PreviewStreamEvents) => unknown>(),
   sent: [] as PreviewStreamInput[],
-  access: { url: "ws://preview.test", token: "test" },
+  access: {
+    httpBase: "http://preview.test",
+    wsBase: "ws://preview.test",
+    query: {},
+    credentials: true,
+  },
+  refreshAccess: () => {},
   painted: null as (() => void) | null,
 }));
 
@@ -27,7 +33,11 @@ vi.mock(import("@t3tools/client-runtime/preview/server-browser-stream"), async (
 
 vi.mock(import("~/state/previewStream"), async (original) => ({
   ...(await original()),
-  usePreviewStreamAccess: () => mocks.access as never,
+  usePreviewStreamAccessState: () => ({
+    access: mocks.access,
+    error: null,
+    refresh: mocks.refreshAccess,
+  }),
 }));
 
 import { ServerBrowserSurface } from "./ServerBrowserSurface";

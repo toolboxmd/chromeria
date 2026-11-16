@@ -7,6 +7,64 @@ function completed(input: unknown, output?: unknown): T3ToolSummaryCall {
 }
 
 describe("summarizeT3ToolCalls", () => {
+  it("summarizes dismissal as dismissal and deduplicates the request", () => {
+    expect(
+      summarizeT3ToolCalls("question-dismiss", [
+        completed({ requestId: "request-1" }),
+        completed({ requestId: "request-1" }),
+      ]).label,
+    ).toBe("Dismissed 1 pending question request");
+  });
+
+  it("keeps upload inspection separate from historical native acquisition acceptance", () => {
+    const inspect = completed(
+      { source: { type: "upload", attachmentId: "upload-1" } },
+      { type: "upload", inspection: { stage: "awaiting-bytes" } },
+    );
+    expect(summarizeT3ToolCalls("attachment-inspect", [inspect, inspect])).toEqual({
+      label: "Inspected 1 attachment upload",
+      failedCount: 0,
+    });
+    expect(
+      summarizeT3ToolCalls("attachment-inspect", [
+        completed(
+          { source: { type: "capabilities" } },
+          { type: "capabilities", version: 1, maxBytes: 52428800 },
+        ),
+      ]).label,
+    ).toBe("Checked attachment transfer support 1 time");
+    const acquired = completed(
+      { clientRequestId: "acquire-1" },
+      {
+        acceptance: "native-accepted",
+        resource: { reference: { attachmentId: "source-copy" } },
+      },
+    );
+    expect(summarizeT3ToolCalls("attachment-acquire", [acquired, acquired])).toEqual({
+      label: "Recorded acquisition of 1 attachment",
+      failedCount: 0,
+    });
+    expect(
+      summarizeT3ToolCalls("attachment-acquire", [
+        completed(
+          {},
+          {
+            isError: true,
+            structuredContent: { message: "denied" },
+          },
+        ),
+      ]),
+    ).toEqual({ label: "Tried to acquire 1 attachment", failedCount: 1 });
+    expect(
+      summarizeT3ToolCalls("attachment-inspect", [
+        {
+          ...inspect,
+          outcome: "unfinished",
+        },
+      ]),
+    ).toEqual({ label: "Tried to inspect 1 attachment upload", failedCount: 0 });
+  });
+
   it("reads provider result envelopes without treating JSON in the message as result data", () => {
     const result = { messageId: "message-1", threadId: "actual-thread" };
     const json = JSON.stringify(result);
