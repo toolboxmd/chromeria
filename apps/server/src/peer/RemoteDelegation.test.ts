@@ -4906,42 +4906,47 @@ it.effect(
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect("a task lost before its result was committed still ends after a restart", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const thread = yield* makeBoxThread;
-      const b = yield* serveBox(thread);
-      const offers = yield* SubscriptionRef.make<
-        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
-      >([]);
-      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-      const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
-      const taskId = yield* Effect.scoped(
-        Effect.gen(function* () {
-          const before = yield* makeLaptop(database, offers, linking);
-          yield* linkTo(before.links, b, "full-access");
-          yield* seedParent(before);
-          return (yield* delegateToBox(before)).taskId;
-        }),
-      );
-      // The laptop stopped after recording the loss and before recording the task's end.
-      const after = yield* makeLaptop(database, offers, linking);
-      yield* after.links.unlink(box.environmentId);
-      yield* observeTask(after, taskId, "lost-before-result", { availability: "lost" });
-      expect(yield* readTask(after, taskId)).toMatchObject({
-        result: null,
-        remoteChild: { availability: "lost" },
-      });
-      yield* after.remote.start();
-      expect(yield* taskResult(after, taskId)).toMatchObject({
-        status: "failed",
-        result: "The link to Box was removed. Whether its work finished there is unknown.",
-      });
-      expect(yield* committedWakes(after, taskId)).toBe(1);
-      expect(yield* after.projections.getOpenRemoteDelegatedTasks).not.toContainEqual({
-        parentThreadId,
-        taskId,
-      });
-    }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+it.effect.each(["link removed", "destination offline"] as const)(
+  "a task lost before its result was committed still ends after a restart (%s)",
+  (after_) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
+        const taskId = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const before = yield* makeLaptop(database, offers, linking);
+            yield* linkTo(before.links, b, "full-access");
+            yield* seedParent(before);
+            return (yield* delegateToBox(before)).taskId;
+          }),
+        );
+        // The laptop stopped after recording the loss and before recording the task's end; the
+        // cause need not be visible again, as for a thread deleted there and then out of reach.
+        const after = yield* makeLaptop(database, offers, linking);
+        if (after_ === "link removed") yield* after.links.unlink(box.environmentId);
+        else yield* Ref.set(b.descriptor, descriptorOf("environment-elsewhere", "Elsewhere"));
+        yield* observeTask(after, taskId, "lost-before-result", { availability: "lost" });
+        expect(yield* readTask(after, taskId)).toMatchObject({
+          result: null,
+          remoteChild: { availability: "lost" },
+        });
+        yield* after.remote.start();
+        expect(yield* taskResult(after, taskId)).toMatchObject({
+          status: "failed",
+          result:
+            "Box can no longer be reached for this task. Whether its work finished there is unknown.",
+        });
+        expect(yield* committedWakes(after, taskId)).toBe(1);
+        expect(yield* after.projections.getOpenRemoteDelegatedTasks).not.toContainEqual({
+          parentThreadId,
+          taskId,
+        });
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

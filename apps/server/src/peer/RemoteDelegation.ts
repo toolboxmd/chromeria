@@ -1659,6 +1659,21 @@ const make = Effect.gen(function* () {
     taskId: NodeId,
     mayRetire: boolean,
   ) {
+    // A loss is final once recorded, even if a restart cut it off before the task's end.
+    const known = (yield* threads.getThreadRecords(parentThreadId, ["subagents"])).subagents.find(
+      (candidate) => candidate.id === taskId,
+    );
+    if (known?.remoteChild?.availability === "lost") {
+      if (known.result === null)
+        yield* complete(
+          parentThreadId,
+          taskId,
+          "failed",
+          `${known.remoteChild.label} can no longer be reached for this task. Whether its work finished there is unknown.`,
+          undefined,
+        );
+      return true;
+    }
     yield* launchPending(parentThreadId, taskId);
     const sequence = yield* threads.getThreadEventSequence(parentThreadId);
     const records = yield* threads.getThreadRecords(parentThreadId, ["subagents"]);
