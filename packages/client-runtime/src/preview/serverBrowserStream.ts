@@ -278,6 +278,7 @@ export function createPreviewStreamClient(
         phase,
         sequence,
         tabId,
+        action,
       } = message as Record<string, unknown>;
       if (
         type === "fileChooser" &&
@@ -324,6 +325,12 @@ export function createPreviewStreamClient(
             return;
           events.onPopup?.(tabId, popup.value);
         } else events.onPopup?.(tabId, Option.getOrUndefined(popup));
+      } else if (type === "controlFailed" && (action === "take" || action === "release")) {
+        events.onInputRejected?.(
+          action === "take"
+            ? "Couldn't take control of the browser. Try again."
+            : "Couldn't release control of the browser. Try again.",
+        );
       } else if (type === "clipboard" && typeof text === "string") {
         events.onClipboard?.(text);
       } else if (

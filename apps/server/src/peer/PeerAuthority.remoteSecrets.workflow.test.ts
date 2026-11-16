@@ -969,7 +969,12 @@ it.live("secret385 narrowed grants and broader fields fail before any source car
       const [grant] = yield* b.authority.grants;
       if (grant === undefined) return yield* Effect.die("Missing native grant");
       yield* b.authority.setGrant({ ...grant, resourceScope: "created-work" });
-      expect((yield* nativeCall(a, parent, "request_secret", input)).isError).toBe(true);
+      const narrowed = yield* nativeCall(a, parent, "request_secret", {
+        ...input,
+        clientRequestId: "narrowed",
+      });
+      expect(narrowed.isError).toBe(true);
+      expect(JSON.stringify(narrowed.content)).toContain("Access existing environment resources");
       for (const node of [a, b]) {
         const sql = Context.get(node.database, SqlClient.SqlClient);
         expect(yield* sql`SELECT request_id FROM remote_secret_requests`).toHaveLength(0);

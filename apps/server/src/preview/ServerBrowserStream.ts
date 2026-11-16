@@ -839,6 +839,7 @@ const makeHandler = Effect.fn("ServerBrowserStream.makeHandler")(
               }
               case "viewport":
               case "control":
+              case "controlFailed":
               case "clipboard":
               case "download":
               case "fileChooser":

@@ -60,6 +60,8 @@ of the vault item's URIs, so `www.example.com` covers `portal.example.com`.
 On an agent tab, choose **Take control** before interacting with the page.
 Clicking inside the page does not take control. The agent pauses its actions
 while you control it. Choose **Release control** to let the agent continue.
+If either step fails, for example because the link lost browser access, an
+error says so and control stays where it was.
 Losing the connection, closing the panel or switching threads does not return
 control to the agent. You keep control, and another open panel on that tab, or
 the next one you open, shows **Release control**. If the browser rejects an input backlog, it ends that

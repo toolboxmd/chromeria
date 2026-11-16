@@ -273,6 +273,7 @@ export type ServerBrowserViewerOutput =
       readonly accept: string;
     }
   | { readonly _tag: "fileChooserClosed"; readonly id: string }
+  | { readonly _tag: "controlFailed"; readonly action: "take" | "release" }
   /** The page this viewer controls opened a new tab; the viewer shows it, as a browser would. */
   | { readonly _tag: "popup"; readonly tabId: string; readonly resource?: PreviewViewerResource }
   | {
@@ -4274,7 +4275,11 @@ const make = Effect.gen(function* () {
         if (next._tag === "frame") runFork(next.ack);
         // State a stalled viewer cannot miss compacts its backlog. It runs
         // synchronously so an older compaction can never land after a newer one.
-        else if (["gone", "reconnect", "control", "viewport", "fileChooser"].includes(next._tag)) {
+        else if (
+          ["gone", "reconnect", "control", "controlFailed", "viewport", "fileChooser"].includes(
+            next._tag,
+          )
+        ) {
           const dropped = runSyncExit(Queue.clear(output));
           if (dropped._tag === "Failure") return;
           const items = [...dropped.value, next];
@@ -4526,6 +4531,11 @@ const make = Effect.gen(function* () {
             await copyRead?.();
           }
         } catch {
+          if (message.type === "takeControl" || message.type === "releaseControl")
+            viewer.push({
+              _tag: "controlFailed",
+              action: message.type === "takeControl" ? "take" : "release",
+            });
           broadcastControl(tab);
         } finally {
           release();

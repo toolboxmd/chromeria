@@ -49,6 +49,12 @@ const denied = () =>
     code: "capability_denied",
     message: "The secret request does not permit this actor, intent or state.",
   });
+const missingResourceGrant = () =>
+  new OrchestratorMcpFailure({
+    code: "capability_denied",
+    message:
+      "This link lacks the destination grant “Access existing environment resources”. Allow it for this link in the destination's Settings → Connections, then retry.",
+  });
 const unavailable = () =>
   new OrchestratorMcpFailure({
     code: "orchestration_error",
@@ -180,11 +186,12 @@ const make = Effect.gen(function* () {
       return yield* denied();
     yield* authority.checkPayload(record, "remote_secret", remoteSecretIntent(input));
     if (input.type === "create") {
+      if (record.ceiling.resourceScope !== "environment-resources")
+        return yield* missingResourceGrant();
       yield* authority.checkTarget(scope, { type: "environment" });
       if (
         record.ceiling.runtimeMode !== "full-access" ||
         record.ceiling.interactionMode !== "default" ||
-        record.ceiling.resourceScope !== "environment-resources" ||
         !record.ceiling.capabilities.includes("orchestration")
       )
         return yield* denied();

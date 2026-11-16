@@ -1755,6 +1755,43 @@ it.effect("keeps a tab's zoom when its viewer resizes", () =>
   ).pipe(Effect.provide(layer)),
 );
 
+it.effect("tells the viewer when taking or releasing control fails", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, tabId } = yield* ready;
+      let authorized = true;
+      const viewer = yield* browser.attachViewer({
+        ...viewerInput(tabId, true),
+        authorize: async () => {
+          if (!authorized) throw new Error("grant revoked");
+        },
+      });
+      const failure = (action: "take" | "release") =>
+        Stream.fromQueue(viewer.output).pipe(
+          Stream.filter((output) => output._tag === "controlFailed"),
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.map((outputs) =>
+            expect([...outputs]).toEqual([{ _tag: "controlFailed", action }]),
+          ),
+        );
+      authorized = false;
+      yield* viewer.input({ type: "takeControl" });
+      yield* failure("take");
+      authorized = true;
+      yield* viewer.input({ type: "takeControl" });
+      authorized = false;
+      yield* viewer.input({ type: "releaseControl" });
+      yield* failure("release");
+      // A stalled viewer whose queue is full of frames still learns of the failure.
+      const acked = stallViewer(viewer);
+      yield* viewer.input({ type: "releaseControl" });
+      yield* failure("release");
+      yield* acked;
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.effect(
   "streams to a read-only viewer without allowing takeover, input, or viewport changes",
   () =>
