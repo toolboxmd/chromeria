@@ -43,6 +43,10 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as QuestionReactor from "../orchestration-v2/DelegatedTaskQuestionReactor.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as PeerLinkEvents from "./PeerLinkEvents.ts";
+import type { OrchestrationV2DomainEvent } from "@t3tools/contracts";
 import { RuntimeRequestId, ProviderSessionId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -1808,4 +1812,47 @@ it.live("secret385 r1 startup does not hide a protected state transition SQL fai
       expect((yield* Fiber.join(opened.pending)).isError).not.toBe(true);
     }),
   ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
+);
+
+it.effect(
+  "secret758 the started reactor reconciles on archives and cancelled secret requests",
+  () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("secret758-thread");
+      const events = [
+        { type: "thread.archived", threadId },
+        {
+          type: "turn-item.updated",
+          threadId,
+          payload: { type: "secret_request", secretStatus: "cancelled" },
+        },
+        { type: "run.updated", threadId, payload: { status: "completed" } },
+      ] as unknown as ReadonlyArray<OrchestrationV2DomainEvent>;
+      const seen = yield* Queue.unbounded<"reconciled" | "sentinel">();
+      const services = yield* QuestionReactor.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.succeed(Orchestrator.OrchestratorV2, {
+              streamDomainEvents: Stream.fromIterable(events),
+            } as unknown as Orchestrator.OrchestratorV2["Service"]),
+            Layer.succeed(ProjectionStore.ProjectionStoreV2, {
+              getThreadRecords: () =>
+                Queue.offer(seen, "sentinel").pipe(
+                  Effect.as({ thread: { archivedAt: "archived", deletedAt: null }, subagents: [] }),
+                ),
+            } as unknown as ProjectionStore.ProjectionStoreV2["Service"]),
+            Layer.succeed(SqlClient.SqlClient, (() =>
+              Effect.succeed([])) as unknown as SqlClient.SqlClient),
+            Layer.succeed(PeerLinkEvents.PeerLinkEvents, {
+              automationChanged: Queue.offer(seen, "reconciled").pipe(Effect.asVoid),
+            } as unknown as PeerLinkEvents.PeerLinkEvents["Service"]),
+          ),
+        ),
+        Layer.build,
+      );
+      yield* Context.get(services, QuestionReactor.DelegatedTaskQuestionReactor).start();
+      const order: Array<"reconciled" | "sentinel"> = [];
+      while (order.at(-1) !== "sentinel") order.push(yield* Queue.take(seen));
+      expect(order).toEqual(["reconciled", "reconciled", "reconciled", "sentinel"]);
+    }).pipe(Effect.scoped),
 );
