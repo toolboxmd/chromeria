@@ -3097,6 +3097,7 @@ sources and reasons.
     "apps/server/src/mcp/toolkits/loginImport/tools.ts",
     "apps/server/src/preview/BrowserLoginImport.integration.test.ts",
     "apps/server/src/preview/BrowserLoginImport.ts",
+    "apps/server/src/preview/BrowserLoginImportService.ts",
     "apps/server/src/preview/LoginImportAudit.ts",
     "apps/server/src/preview/ServerLoginCookies.test.ts",
     "apps/server/src/preview/ServerLoginCookies.ts",

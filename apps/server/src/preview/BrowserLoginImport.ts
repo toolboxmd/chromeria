@@ -1,14 +1,9 @@
 import {
   type EnvironmentId,
   OrchestratorMcpFailure,
-  type PreviewAutomationUnavailableError,
-  type PreviewLoginExportInput,
-  type PreviewLoginExportResult,
   type PreviewLoginImportInput,
-  type PreviewLoginImportResult,
 } from "@t3tools/contracts";
 import { isGoogleHost } from "@t3tools/shared/browserLoginImport";
-import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -29,27 +24,7 @@ import { registrableDomain } from "./CredentialFill.ts";
 import { auditReason, recordLoginImport } from "./LoginImportAudit.ts";
 import { loginRefusal } from "./ServerLoginCookies.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
-
-/**
- * Copies one site's session between linked environments' server browsers on demand:
- * the destination pulls one bounded snapshot from the peer that shares its logins.
- */
-export class BrowserLoginImport extends Context.Service<
-  BrowserLoginImport,
-  {
-    readonly importLogin: (
-      scope: McpInvocationContext.McpInvocationScope,
-      input: PreviewLoginImportInput,
-    ) => Effect.Effect<
-      PreviewLoginImportResult,
-      OrchestratorMcpFailure | PreviewAutomationUnavailableError
-    >;
-    readonly exportLogin: (
-      scope: McpInvocationContext.McpInvocationScope,
-      input: PreviewLoginExportInput,
-    ) => Effect.Effect<PreviewLoginExportResult, OrchestratorMcpFailure>;
-  }
->()("t3/preview/BrowserLoginImport") {}
+import { BrowserLoginImport } from "./BrowserLoginImportService.ts";
 
 const denied = (message: string) =>
   new OrchestratorMcpFailure({ code: "capability_denied", message });

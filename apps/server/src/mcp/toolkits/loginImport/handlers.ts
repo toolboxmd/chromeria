@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
-import * as BrowserLoginImport from "../../../preview/BrowserLoginImport.ts";
+import * as BrowserLoginImport from "../../../preview/BrowserLoginImportService.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { LoginExportToolkit, LoginImportToolkit } from "./tools.ts";
 

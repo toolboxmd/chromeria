@@ -12,7 +12,7 @@ import * as Schema from "effect/Schema";
 import { McpSchema, Tool, Toolkit } from "effect/ai";
 
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
-import * as BrowserLoginImport from "../../../preview/BrowserLoginImport.ts";
+import * as BrowserLoginImport from "../../../preview/BrowserLoginImportService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
 const dependencies = [

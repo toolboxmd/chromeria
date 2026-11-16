@@ -36,6 +36,7 @@ import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as Settings from "../serverSettings.ts";
 import * as BrowserLoginImport from "./BrowserLoginImport.ts";
+import { BrowserLoginImport as BrowserLoginImportService } from "./BrowserLoginImportService.ts";
 import { registrableDomain } from "./CredentialFill.ts";
 import { LOGIN_IMPORT_AUDIT_FILE } from "./LoginImportAudit.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
@@ -122,10 +123,10 @@ const setup = (callerShell = shell) =>
       },
     });
     const hooked = Layer.effect(
-      BrowserLoginImport.BrowserLoginImport,
+      BrowserLoginImportService,
       Effect.gen(function* () {
-        const real = yield* BrowserLoginImport.BrowserLoginImport;
-        return BrowserLoginImport.BrowserLoginImport.of({
+        const real = yield* BrowserLoginImportService;
+        return BrowserLoginImportService.of({
           importLogin: real.importLogin,
           exportLogin: (accepted, input) =>
             Ref.get(beforeExport).pipe(
@@ -207,7 +208,7 @@ const setup = (callerShell = shell) =>
         yield* rockyAuthority.setGrant({ ...grant, ...change });
       });
     return {
-      service: Context.get(services, BrowserLoginImport.BrowserLoginImport),
+      service: Context.get(services, BrowserLoginImportService),
       rockyAuthority,
       rockySql: Context.get(rockyDatabase, SqlClient.SqlClient),
       setGrant,
