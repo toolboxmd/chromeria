@@ -137,6 +137,7 @@ export interface Preferences {
   }>;
   readonly threadListSettledShelfExpanded?: boolean;
   readonly threadListSnoozedShelfExpanded?: boolean;
+  readonly threadListNoProjectShelfExpanded?: boolean;
   readonly threadListWorkingShelfExpanded?: boolean;
   readonly threadListFilters?: ThreadListFilters;
   readonly pullRequestListFilters?: PullRequestListPreferences;
@@ -221,6 +222,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     modelFavorites?: Preferences["modelFavorites"];
     threadListSettledShelfExpanded?: boolean;
     threadListSnoozedShelfExpanded?: boolean;
+    threadListNoProjectShelfExpanded?: boolean;
     threadListWorkingShelfExpanded?: boolean;
     threadListFilters?: ThreadListFilters;
     pullRequestListFilters?: PullRequestListPreferences;
@@ -367,6 +369,9 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   }
   if (typeof parsed.threadListSnoozedShelfExpanded === "boolean") {
     preferences.threadListSnoozedShelfExpanded = parsed.threadListSnoozedShelfExpanded;
+  }
+  if (typeof parsed.threadListNoProjectShelfExpanded === "boolean") {
+    preferences.threadListNoProjectShelfExpanded = parsed.threadListNoProjectShelfExpanded;
   }
   if (typeof parsed.threadListWorkingShelfExpanded === "boolean") {
     preferences.threadListWorkingShelfExpanded = parsed.threadListWorkingShelfExpanded;
