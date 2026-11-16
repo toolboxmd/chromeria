@@ -3081,10 +3081,11 @@ sources and reasons.
 ```json
 {
   "id": "chrome-login-mirror",
-  "purpose": "Continuously mirror macOS Chrome cookies into persistent desktop partitions and authenticated environment browser profiles, preserving source-only removals and complete partition keys.",
+  "purpose": "Continuously mirror macOS Chrome cookies into persistent desktop partitions and authenticated environment browser profiles, preserving source-only removals and complete partition keys, and let agents import one site's session from a linked environment that shares its logins.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/520",
-    "https://github.com/toolboxmd/chromeria/issues/541"
+    "https://github.com/toolboxmd/chromeria/issues/541",
+    "https://github.com/toolboxmd/chromeria/issues/522"
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/530",
@@ -3092,6 +3093,18 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/pull/632"
   ],
   "newFiles": [
+    "apps/server/src/mcp/toolkits/loginImport/handlers.ts",
+    "apps/server/src/mcp/toolkits/loginImport/tools.ts",
+    "apps/server/src/preview/BrowserLoginImport.integration.test.ts",
+    "apps/server/src/preview/BrowserLoginImport.ts",
+    "apps/server/src/preview/LoginImportAudit.ts",
+    "apps/server/src/preview/ServerLoginCookies.test.ts",
+    "apps/server/src/preview/ServerLoginCookies.ts",
+    "evals/mcp-tool-use/cases/login-import.ndjson",
+    "packages/contracts/src/peerAuthority.test.ts",
+    "packages/contracts/src/previewLoginImport.ts",
+    "packages/shared/src/browserLoginImport.test.ts",
+    "packages/shared/src/browserLoginImport.ts",
     "apps/desktop/src/preview/BrowserImport/ChromiumKeychainWorker.ts",
     "apps/desktop/src/preview/BrowserImport/ChromiumKeychainWorker.test.ts",
     "apps/desktop/src/preview/BrowserImport/ChromiumKeychain.test.ts",
