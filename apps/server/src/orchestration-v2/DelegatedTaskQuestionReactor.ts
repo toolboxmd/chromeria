@@ -1,3 +1,7 @@
+import * as PeerLinkEvents from "../peer/PeerLinkEvents.ts";
+import * as RemoteSecretPersistence from "../secrets/remoteSecretPersistence.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as Option from "effect/Option";
 import {
   CommandId,
   MessageId,
@@ -13,8 +17,6 @@ import * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
-import { reportLabel } from "@t3tools/provider-core/server/notification";
-
 import { forkParked } from "../serverActivation.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -29,35 +31,15 @@ export class DelegatedTaskQuestionReactor extends Context.Service<
 
 const make = Effect.gen(function* () {
   const engine = yield* Orchestrator.OrchestratorV2;
+  const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
+  const links = yield* Effect.serviceOption(PeerLinkEvents.PeerLinkEvents);
   const projections = yield* ProjectionStore.ProjectionStoreV2;
 
   const wakeParent = Effect.fnUntraced(function* (
     task: OrchestrationV2Subagent,
     request: OrchestrationV2RuntimeRequest,
   ) {
-    if (task.childThreadId === null) return;
-    const key = `${task.threadId}:${request.id}`;
-    const label = reportLabel(task.title?.trim() || task.prompt);
-    const situation =
-      request.responseCapability.type === "message"
-        ? `Delegated task ${task.id} asked a question and is still working.`
-        : `Delegated task ${task.id} is blocked on a question and cannot continue until it is answered.`;
-    yield* engine.dispatch({
-      type: "message.dispatch",
-      commandId: CommandId.make(`server:delegated-task-question:${key}`),
-      threadId: task.threadId,
-      messageId: MessageId.make(`message:delegated-task-question:${key}`),
-      text: `${situation} Read it with t3_pending_request action read, threadId ${task.childThreadId}, and requestId ${request.id}. Answer it with action respond when the answer follows from the task or the user's instructions; otherwise ask the user, then answer it. If it is no longer pending, it was answered or dismissed.`,
-      notification: {
-        source: { kind: "delegated_task", taskIds: [task.id], childThreadId: task.childThreadId },
-        outcome: "updated",
-        summary: `Delegated task${label === undefined ? "" : ` "${label}"`} has a question`,
-      },
-      attachments: [],
-      dispatchMode: { type: "queue_after_active" },
-      createdBy: "agent",
-      creationSource: "server",
-    });
+    yield* engine.reconcileDelegatedTaskQuestion(task.threadId, task.id, request.id);
   });
 
   const cancelQueuedWakes = Effect.fnUntraced(function* (
@@ -94,6 +76,23 @@ const make = Effect.gen(function* () {
   // Runs for every domain event; most events return before any work is needed.
   const handle: DelegatedTaskQuestionReactor["Service"]["handle"] = Effect.fnUntraced(
     function* (event) {
+      if (
+        ((event.type === "run.updated" &&
+          !["preparing", "starting", "running"].includes(event.payload.status)) ||
+          event.type === "thread.archived" ||
+          (event.type === "turn-item.updated" &&
+            event.payload.type === "secret_request" &&
+            event.payload.secretStatus === "cancelled")) &&
+        Option.isSome(sql)
+      ) {
+        yield* RemoteSecretPersistence.reconcileObligations.pipe(
+          Effect.provideService(SqlClient.SqlClient, sql.value),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Remote secret retirement reconciliation remains pending", { cause }),
+          ),
+        );
+        if (Option.isSome(links)) yield* links.value.automationChanged;
+      }
       if (event.type === "run.updated") {
         if (!["completed", "failed", "waiting"].includes(event.payload.status)) return;
         const parent = yield* projections.getThreadRecords(event.threadId, ["subagents"]);
@@ -103,10 +102,26 @@ const make = Effect.gen(function* () {
             task.origin !== "app_owned" ||
             task.runId !== event.payload.id ||
             task.completionWake !== "settled_only" ||
-            task.completionDelivery?.state === "disposed" ||
-            task.childThreadId === null ||
-            ["completed", "failed", "cancelled", "interrupted"].includes(task.status)
+            task.completionDelivery?.state === "disposed"
           ) {
+            continue;
+          }
+          if (task.childThreadId === null) {
+            const request = task.remoteChild?.snapshot?.requests.find(
+              (request) =>
+                request.responseType === "live" &&
+                request.kind !== "auth_refresh" &&
+                request.kind !== "dynamic_tool_call",
+            );
+            if (request !== undefined)
+              yield* engine.reconcileDelegatedTaskQuestion(
+                task.threadId,
+                task.id,
+                request.requestId,
+              );
+            continue;
+          }
+          if (["completed", "failed", "cancelled", "interrupted"].includes(task.status)) {
             continue;
           }
           const child = yield* projections.getThreadRecords(task.childThreadId, [
@@ -131,46 +146,6 @@ const make = Effect.gen(function* () {
             );
           }
         }
-        return;
-      }
-      if (event.type === "subagent.updated") {
-        const task = event.payload;
-        if (
-          task.origin !== "app_owned" ||
-          task.childThreadId === null ||
-          !["completed", "failed", "cancelled", "interrupted"].includes(task.status)
-        ) {
-          return;
-        }
-        // A settled task can no longer use an answer to its still-pending questions.
-        const { runtimeRequests } = yield* projections.getThreadRecords(task.childThreadId, [
-          "runtimeRequests",
-        ]);
-        const questions = runtimeRequests.filter((request) => request.kind === "user_input");
-        if (questions.length === 0) return;
-        const child = yield* projections.getThreadRecords(task.childThreadId, ["runs", "nodes"]);
-        const taskRunIds = new Set(
-          child.runs
-            .filter(
-              (run) =>
-                run.delegatedTaskId === task.id ||
-                (run.delegatedTaskId === undefined &&
-                  child.thread.forkedFrom?.type === "node" &&
-                  child.thread.forkedFrom.nodeId === task.id),
-            )
-            .map((run) => run.id),
-        );
-        const taskNodeIds = new Set(
-          child.nodes
-            .filter((node) => node.runId !== null && taskRunIds.has(node.runId))
-            .map((node) => node.id),
-        );
-        yield* cancelQueuedWakes(
-          task.threadId,
-          questions
-            .filter((request) => taskNodeIds.has(request.nodeId))
-            .map((request) => request.id),
-        );
         return;
       }
       if (event.type !== "runtime-request.updated" || event.payload.kind !== "user_input") {
@@ -199,18 +174,6 @@ const make = Effect.gen(function* () {
         task === undefined ||
         parent.thread.archivedAt !== null ||
         parent.thread.deletedAt !== null
-      ) {
-        return;
-      }
-      // A blocking delegate_task wait delivers the question itself.
-      if (
-        task.completionWake === "settled_only" &&
-        event.payload.responseCapability.type === "live" &&
-        parent.runs.some(
-          (run) =>
-            run.id === task.runId &&
-            (run.status === "preparing" || run.status === "starting" || run.status === "running"),
-        )
       ) {
         return;
       }
