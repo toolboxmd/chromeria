@@ -787,6 +787,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "delegated_task.request":
     case "delegated_task.group.request":
     case "delegated_task.remote.request":
+    case "delegated_task.remote.group.request":
     case "delegated_task.remote.stop":
     case "delegated_task.remote.launch":
     case "delegated_task.remote.attach":
@@ -10999,6 +11000,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       { readonly type: "delegated_task.remote.request" }
     >,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    member?: RunGroupMember,
   ) {
     const parentProjection = yield* projectionStore
       .getThreadRecords(command.parentThreadId, ["runs", "providerTurns", "attempts", "subagents"])
@@ -11056,7 +11058,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       (remotePurposeLaunch === undefined ||
         remotePurposeLaunch.threadId !== command.parentThreadId ||
         remotePurposeLaunch.runId !== parentRun.id ||
-        remotePurposeLaunch.launchId !== command.commandId ||
+        remotePurposeLaunch.launchId !== (member?.idSeed ?? command.commandId) ||
         !executionPurposesEqual(remotePurposeLaunch.purpose, resolvedRemotePurpose.purpose))
     ) {
       return yield* mapDispatchError(command)(
@@ -11066,15 +11068,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
     }
     const now = yield* DateTime.now;
-    const taskNodeId = idAllocator.derive.delegatedTaskNode({ commandId: command.commandId });
-    const taskTurnItemId = idAllocator.derive.delegatedTaskTurnItem({
-      commandId: command.commandId,
-    });
+    const idSeed = { commandId: member?.idSeed ?? command.commandId };
+    const taskNodeId = idAllocator.derive.delegatedTaskNode(idSeed);
+    const taskTurnItemId = idAllocator.derive.delegatedTaskTurnItem(idSeed);
     const taskTitle = subagentThreadTitle({
       parentTitle: parentProjection.thread.title,
       prompt: command.task,
       ...(command.title === undefined ? {} : { title: command.title }),
-      ordinal: (yield* subagentCount(command.parentThreadId)) + 1,
+      ordinal: (yield* subagentCount(command.parentThreadId)) + 1 + (member?.index ?? 0),
     });
     const common = {
       threadId: command.parentThreadId,
@@ -11125,6 +11126,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         remoteChild: command.remoteChild,
         nativeTaskRef: null,
         prompt: command.task,
+        ...(member === undefined ? {} : { runGroupId: member.groupId }),
         title: command.title ?? null,
         model: command.modelSelection?.model ?? null,
         ...(command.modelSelection === undefined ? {} : { modelSelection: command.modelSelection }),
@@ -11148,7 +11150,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerTurnId: providerTurnForRun(parentProjection, parentRun)?.id ?? null,
         nativeItemRef: null,
         parentItemId: null,
-        ordinal: yield* nextTurnItemOrdinal(parentProjection),
+        // Earlier members of the same group hold the next ordinals in this command.
+        ordinal: (yield* nextTurnItemOrdinal(parentProjection)) + (member?.index ?? 0),
         status: command.remoteChild.threadId === undefined ? "pending" : "running",
         title: command.title ?? taskTitle,
         startedAt: now,
@@ -11165,6 +11168,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         result: null,
       },
     });
+  });
+
+  // Every remote member commits in this one command, as a local Run group's members do.
+  const dispatchRemoteDelegatedTaskGroupRequest = Effect.fn(
+    "orchestrationV2.dispatch.remoteDelegatedTaskGroupRequest",
+  )(function* (
+    command: Extract<
+      OrchestrationV2InternalCommand,
+      { readonly type: "delegated_task.remote.group.request" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const { members, groupId, ...shared } = command;
+    for (const [index, member] of members.entries()) {
+      yield* dispatchRemoteDelegatedTaskRequest(
+        { ...shared, ...member, type: "delegated_task.remote.request" },
+        events,
+        runGroupMember(command.commandId, groupId, index),
+      );
+    }
   });
 
   /** Launch/attachment need the durable task, not a live parent provider run. */
@@ -11203,7 +11226,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     const remote = task.remoteChild;
     if (command.type === "delegated_task.remote.launch") {
-      if (remote.threadId !== undefined || remote.launchStarted === true || task.result !== null)
+      // An outstanding cancel settles an unsent launch as never started instead.
+      if (
+        remote.threadId !== undefined ||
+        remote.launchStarted === true ||
+        task.result !== null ||
+        remote.cancelIntent !== undefined
+      )
         return;
       if (remote.launch === undefined) {
         return yield* new OrchestratorDispatchError({
@@ -11326,7 +11355,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   ) {
     // Delivery planning reads only this task and the undelivered tasks of the queued delivery;
     // the task's own node and turn item are all it updates besides.
-    const parentProjection = yield* projectionStore
+    const loadedParent = yield* projectionStore
       .getThreadRecords(
         command.parentThreadId,
         ["runs", "messages", "subagents", "providerTurns", "nodes", "turnItems"],
@@ -11343,7 +11372,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           (cause) => new OrchestratorProjectionError({ threadId: command.parentThreadId, cause }),
         ),
       );
-    const task = parentProjection.subagents.find(
+    const task = loadedParent.subagents.find(
       (candidate) =>
         candidate.id === command.taskId &&
         candidate.origin === "app_owned" &&
@@ -11356,6 +11385,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Delegated task ${command.taskId} is not a remote task of thread ${command.parentThreadId}.`,
       });
     }
+    // A Run group member's wake depends on every member of its group, settled ones included.
+    const parentProjection =
+      task.runGroupId === undefined
+        ? loadedParent
+        : {
+            ...loadedParent,
+            subagents: (yield* projectionStore
+              .getThreadRecords(command.parentThreadId, ["subagents"])
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestratorProjectionError({ threadId: command.parentThreadId, cause }),
+                ),
+              )).subagents,
+          };
     if (
       command.stoppedThere === "stopped" &&
       (command.stopCount ?? 0) !== (task.remoteChild?.stopCount ?? 0)
@@ -11566,6 +11610,37 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
   });
 
+  /** Plans a remote Run group member's settlement against every member of its group. */
+  const planRemoteMemberSettlement = Effect.fnUntraced(function* (
+    parentThreadId: ThreadId,
+    task: OrchestrationV2Subagent,
+    now: DateTime.Utc,
+  ) {
+    const { parentRun, ...records } = yield* readDelegatedCompletionPlanRecords(
+      parentThreadId,
+      task,
+    ).pipe(
+      Effect.mapError(
+        (cause) => new OrchestratorProjectionError({ threadId: parentThreadId, cause }),
+      ),
+    );
+    const { subagents } = yield* projectionStore
+      .getThreadRecords(parentThreadId, ["subagents"])
+      .pipe(
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: parentThreadId, cause }),
+        ),
+      );
+    const plan = yield* planRunGroupCompletionDelivery({
+      parentProjection: { ...records, subagents },
+      parentRun,
+      task,
+      updatedTask: task,
+      now,
+    });
+    return { ...plan, providerInstanceId: records.thread.providerInstanceId };
+  });
+
   const dispatchRemoteObservation = Effect.fnUntraced(function* (
     command: Extract<OrchestrationV2InternalCommand, { type: "delegated_task.remote.observe" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
@@ -11583,20 +11658,40 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (task?.remoteChild === undefined) return;
     const remote = task.remoteChild;
     if (command.stop?.state === "pending") {
-      // The parent dispatch lock covers history lookup and intent commit. The
-      // event log retains accepted identities even after a newer Stop replaces
-      // the current projection, including after restart or a lost reply.
+      // The parent lock covers lookup and commit; the event log keeps every accepted identity.
+      // A group cancel's admission (I2) is an identity's first record: no entry records its
+      // Stop again, and only the follower's recovery (I5) records it, once.
       const prior = yield* forkSql<{
+        stop_request_id: string | null;
+        intent_reason: string | null;
         reason: string | null;
         environment_id: string;
         thread_id: string | null;
         generation: string;
         namespace: string | null;
         request_id: string | null;
-      }>`SELECT json_extract(payload_json,'$.remoteChild.stop.reason') AS reason,json_extract(payload_json,'$.remoteChild.environmentId') AS environment_id,json_extract(payload_json,'$.remoteChild.threadId') AS thread_id,json_extract(payload_json,'$.remoteChild.launch.linkIdentity') AS generation,json_extract(payload_json,'$.remoteChild.launch.requestNamespace') AS namespace,json_extract(payload_json,'$.remoteChild.launch.clientRequestId') AS request_id FROM orchestration_events WHERE stream_id=${command.parentThreadId} AND event_type='subagent.updated' AND json_extract(payload_json,'$.id')=${task.id} AND json_extract(payload_json,'$.remoteChild.stop.requestId')=${command.stop.requestId} ORDER BY sequence LIMIT 1`.pipe(
+      }>`SELECT json_extract(payload_json,'$.remoteChild.stop.requestId') AS stop_request_id,json_extract(payload_json,'$.remoteChild.cancelIntent.reason') AS intent_reason,json_extract(payload_json,'$.remoteChild.stop.reason') AS reason,json_extract(payload_json,'$.remoteChild.environmentId') AS environment_id,json_extract(payload_json,'$.remoteChild.threadId') AS thread_id,json_extract(payload_json,'$.remoteChild.launch.linkIdentity') AS generation,json_extract(payload_json,'$.remoteChild.launch.requestNamespace') AS namespace,json_extract(payload_json,'$.remoteChild.launch.clientRequestId') AS request_id FROM orchestration_events WHERE stream_id=${command.parentThreadId} AND event_type='subagent.updated' AND json_extract(payload_json,'$.id')=${task.id} AND (json_extract(payload_json,'$.remoteChild.stop.requestId')=${command.stop.requestId} OR json_extract(payload_json,'$.remoteChild.cancelIntent.requestId')=${command.stop.requestId}) ORDER BY sequence LIMIT 1`.pipe(
         mapDispatchError(command),
       );
-      if (prior[0] !== undefined) {
+      if (prior[0] !== undefined && prior[0].stop_request_id !== command.stop.requestId) {
+        if (prior[0].intent_reason !== (command.stop.reason ?? null))
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: new Error("The stop request identity has conflicting semantics."),
+          });
+        if (
+          command.recovery !== true ||
+          remote.cancelIntent?.requestId !== command.stop.requestId ||
+          (remote.stop !== undefined && remoteStopUnresolved(remote.stop, remote.snapshot))
+        )
+          return;
+        const recorded =
+          yield* forkSql`SELECT 1 FROM orchestration_events WHERE stream_id=${command.parentThreadId} AND event_type='subagent.updated' AND json_extract(payload_json,'$.id')=${task.id} AND json_extract(payload_json,'$.remoteChild.stop.requestId')=${command.stop.requestId} LIMIT 1`.pipe(
+            mapDispatchError(command),
+          );
+        if (recorded.length > 0) return;
+      } else if (prior[0] !== undefined) {
         let acceptedAttachment = false;
         if (
           prior[0].thread_id === null &&
@@ -11695,40 +11790,53 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (command.stop?.state === "pending" && command.stopResult !== undefined)
       task = yield* disposeDelivery(task);
     if (command.stopResult !== undefined && command.stop?.state !== "pending") return;
-    let cancelIntent =
-      command.cancel === true && command.stop?.state === "pending"
+    const records = command.cancel === true && command.stop?.state === "pending";
+    let cancelIntent: OrchestrationV2RemoteTaskChild["cancelIntent"] =
+      records && remote.cancelIntent?.requestId !== command.stop!.requestId
         ? {
-            requestId: command.stop.requestId,
-            ...(command.stop.reason === undefined ? {} : { reason: command.stop.reason }),
+            requestId: command.stop!.requestId,
+            ...(command.stop!.reason === undefined ? {} : { reason: command.stop!.reason }),
           }
         : remote.cancelIntent;
+    let cancelResolution: OrchestrationV2RemoteTaskChild["cancelResolution"] =
+      records && remote.cancelIntent !== undefined && cancelIntent !== remote.cancelIntent
+        ? { requestId: remote.cancelIntent.requestId, outcome: "superseded" as const }
+        : undefined;
     // A cancel recorded before the launch was sent settles here, under the lock the launch takes.
     const stop =
-      command.cancel === true &&
-      command.stop?.state === "pending" &&
-      remote.threadId === undefined &&
-      remote.launchStarted !== true &&
-      task.result === null
-        ? { ...command.stop, state: "not_started" as const }
+      records && remote.threadId === undefined && remote.launchStarted !== true
+        ? { ...command.stop!, state: "not_started" as const }
         : command.stop;
     // A cancel takes effect when the destination accepts the current Stop, whichever
     // producer recorded it, or the launch never started: its wake goes as a local cancel's.
     let cancelled: { readonly status: "cancelled"; readonly result: string } | undefined;
+    let givenUp = false;
     if (
       cancelIntent !== undefined &&
       (stop?.state === "acknowledged" || stop?.state === "not_started")
     ) {
-      // A Run group member's result stays owed to the group's one wake.
-      if (task.runGroupId === undefined) task = yield* disposeDelivery(task);
+      // A Run group member's result stays owed to the group's one wake, unless the group's cancel
+      // gave the member up: as a local group cancel does, it is marked and its wake disposed.
+      if (task.runGroupId !== undefined && cancelIntent.groupCancelId !== undefined) {
+        task = yield* disposeDelivery({
+          ...task,
+          groupCancel: { commandId: cancelIntent.groupCancelId },
+        });
+        givenUp = true;
+      } else if (task.runGroupId === undefined) task = yield* disposeDelivery(task);
       if (stop.state === "not_started" && task.result === null)
         cancelled = {
           status: "cancelled",
           result:
             cancelIntent.reason === undefined ? "Cancelled." : `Cancelled: ${cancelIntent.reason}`,
         };
+      cancelResolution = { requestId: cancelIntent.requestId, outcome: "applied" };
       cancelIntent = undefined;
     }
-    if (stop?.state === "refused") cancelIntent = undefined;
+    if (stop?.state === "refused" && cancelIntent !== undefined) {
+      cancelResolution = { requestId: cancelIntent.requestId, outcome: "refused" };
+      cancelIntent = undefined;
+    }
     const now = yield* DateTime.now;
     const stoppedBeforeResult = task.result === null && command.stopResult !== undefined;
     const ended = stoppedBeforeResult ? command.stopResult! : cancelled;
@@ -11748,10 +11856,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : { availability: command.availability }),
         ...(stop === undefined ? {} : { stop }),
         ...(cancelIntent === undefined ? {} : { cancelIntent }),
+        ...(cancelResolution === undefined ? {} : { cancelResolution }),
         ...(cancelled === undefined ? {} : { stoppedThere: true }),
       },
       updatedAt: now,
     };
+    // A member that ends here, or is given up after it ended, settles its group's one wake.
+    const plan =
+      updated.runGroupId !== undefined &&
+      (cancelled !== undefined || (givenUp && isTerminalDelegatedTaskStatus(updated.status)))
+        ? yield* planRemoteMemberSettlement(command.parentThreadId, updated, now).pipe(
+            mapDispatchError(command),
+          )
+        : undefined;
     yield* emit(
       events,
       command,
@@ -11760,8 +11877,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       threadId: command.parentThreadId,
       nodeId: task.id,
       occurredAt: now,
-      payload: updated,
+      payload: plan?.task ?? updated,
     });
+    if (plan !== undefined) {
+      for (const event of releasedSiblingEvents(plan.siblings, now))
+        yield* emit(events, command)(event);
+      for (const event of delegatedCompletionPlanEvents(
+        command.parentThreadId,
+        plan,
+        plan.providerInstanceId,
+        now,
+      ))
+        yield* emit(events, command)(event);
+    }
     if (ended !== undefined) {
       const node = parent.nodes.find((node) => node.id === task.id);
       if (node !== undefined)
@@ -12026,6 +12154,40 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const now = yield* DateTime.now;
     const emitEvent = emit(events, command);
     for (const member of members) {
+      const remote = member.remoteChild;
+      const admitted = command.remoteMembers?.find((candidate) => candidate.taskId === member.id);
+      if (remote !== undefined && admitted === undefined)
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Remote Run group member ${member.id} has no cancel request.`,
+        });
+      // A remote member is given up when its destination accepts the Stop: this records the
+      // cancel's intent (I2), replacing an earlier one, which is then superseded.
+      const payload =
+        remote === undefined || admitted === undefined
+          ? { ...member, groupCancel: { commandId: command.commandId }, updatedAt: now }
+          : {
+              ...member,
+              remoteChild: {
+                ...remote,
+                cancelIntent: {
+                  requestId: admitted.cancelRequestId,
+                  ...(admitted.reason === undefined ? {} : { reason: admitted.reason }),
+                  groupCancelId: command.commandId,
+                },
+                ...(remote.cancelIntent === undefined ||
+                remote.cancelIntent.requestId === admitted.cancelRequestId
+                  ? {}
+                  : {
+                      cancelResolution: {
+                        requestId: remote.cancelIntent.requestId,
+                        outcome: "superseded" as const,
+                      },
+                    }),
+              },
+              updatedAt: now,
+            };
       yield* emitEvent({
         type: "subagent.updated",
         threadId: command.parentThreadId,
@@ -12034,7 +12196,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         driver: member.driver,
         providerInstanceId: member.providerInstanceId,
         occurredAt: now,
-        payload: { ...member, groupCancel: { commandId: command.commandId }, updatedAt: now },
+        payload,
       });
     }
   });
@@ -17769,6 +17931,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "delegated_task.remote.request":
         yield* dispatchRemoteDelegatedTaskRequest(command, events);
         break;
+      case "delegated_task.remote.group.request":
+        yield* dispatchRemoteDelegatedTaskGroupRequest(command, events);
+        break;
       case "delegated_task.remote.stop":
         yield* dispatchRemoteDelegatedTaskStop(command, events);
         break;
@@ -17923,7 +18088,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command.type === "message.dispatch" ||
       command.type === "delegated_task.request" ||
       command.type === "delegated_task.group.request" ||
-      command.type === "delegated_task.remote.request"
+      command.type === "delegated_task.remote.request" ||
+      command.type === "delegated_task.remote.group.request"
     ) {
       const prior = storedEvents.find(({ event }) =>
         command.type === "message.dispatch"
@@ -18037,7 +18203,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const admissionThreadId =
       command.type === "delegated_task.request" ||
       command.type === "delegated_task.group.request" ||
-      command.type === "delegated_task.remote.request"
+      command.type === "delegated_task.remote.request" ||
+      command.type === "delegated_task.remote.group.request"
         ? command.parentThreadId
         : commandThreadId(command);
     const needsAdmission =
@@ -18045,6 +18212,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command.type === "delegated_task.request" ||
       command.type === "delegated_task.group.request" ||
       command.type === "delegated_task.remote.request" ||
+      command.type === "delegated_task.remote.group.request" ||
       command.type === "prepared-run.release" ||
       command.type === "prepared-run.retry" ||
       command.type === "queue.resume";
@@ -18550,7 +18718,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (
       command.type === "delegated_task.wake-policy" ||
       command.type === "delegated_task.group-cancel.release" ||
-      command.type === "delegated_task.remote.complete"
+      command.type === "delegated_task.remote.complete" ||
+      // A remote Run group member that settles while observed can release the group's wake.
+      (command.type === "delegated_task.remote.observe" &&
+        committed.storedEvents.some(
+          ({ event }) =>
+            event.type === "message.updated" ||
+            (event.type === "subagent.updated" &&
+              event.payload.completionDelivery?.state === "pending"),
+        ))
     ) {
       yield* mapDispatchError(command)(offerDelegatedCompletionDeliveries(command.parentThreadId));
     }

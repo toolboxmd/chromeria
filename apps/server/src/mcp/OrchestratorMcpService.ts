@@ -43,6 +43,7 @@ import {
   type OrchestrationV2TurnItem,
   OrchestratorMcpFailure,
   type OrchestratorMcpCapabilitiesInput,
+  OrchestratorMcpPrismColorsRequest,
   type OrchestratorMcpCapabilitiesResult,
   type OrchestratorMcpModelOption,
   type OrchestratorMcpCreateThreadsInput,
@@ -98,6 +99,7 @@ import {
   SECRET_REQUEST_UNSAVED_NOTE,
   threadOwner,
   admitDelegateRole,
+  isPrismRunGroupRole,
   PRISM_DELEGATE_ROLE_ERROR,
   SECRET_REQUEST_SINGLE_FIELD_NAME,
 } from "@t3tools/contracts";
@@ -1669,6 +1671,60 @@ const make = Effect.gen(function* () {
 
   const prism = yield* Prism.PrismService;
   const loadProviders = providerRegistry.getProviders;
+  const decodePrismColors = Schema.decodeUnknownEffect(OrchestratorMcpPrismColorsRequest);
+
+  /**
+   * The Colors and kit a linked environment's Run group starts here, chosen as `t3_thread_launch`
+   * would choose them. Admitted as a project read, before any kit read or provider refresh.
+   */
+  const prismColors = Effect.fn("OrchestratorMcpService.prismColors")(function* (
+    scope: McpInvocationScope,
+    request: OrchestratorMcpPrismColorsRequest,
+  ) {
+    yield* requireCapability(scope);
+    const project = yield* projects
+      .getById(request.projectId)
+      .pipe(
+        Effect.mapError(() =>
+          failure("orchestration_error", "The operation could not be completed."),
+        ),
+      );
+    if (Option.isNone(project))
+      return yield* failure("invalid_request", "The project was not found.");
+    const settings = yield* serverSettings.getSettings.pipe(
+      Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
+    );
+    const inherited = yield* Prism.projectDefaultSelection(
+      request.projectId,
+      resolveProjectSettings(settings, request.projectId, project.value).settings,
+    ).pipe(Effect.provideService(ProviderRegistry.ProviderRegistry, providerRegistry));
+    const resolved = yield* prism.resolve({
+      projectId: request.projectId,
+      role: request.role,
+      lane: request.lane,
+      inherited,
+      count: request.count,
+      validate: (selection) =>
+        Prism.validateLaunchSelection(selection).pipe(
+          Effect.provideService(
+            ProviderAdapterRegistry.ProviderAdapterRegistryV2,
+            providerAdapters,
+          ),
+          Effect.provideService(ProviderRegistry.ProviderRegistry, providerRegistry),
+        ),
+    });
+    const providers = yield* loadProviders;
+    const [first, ...rest] = resolved.modelSelections.map((modelSelection) => {
+      const modes = providers.find(
+        (provider) => provider.instanceId === modelSelection.instanceId,
+      )?.supportedRuntimeModes;
+      return {
+        modelSelection,
+        ...(modes === undefined ? {} : { supportedRuntimeModes: [...modes] }),
+      };
+    });
+    return { colors: [first!, ...rest] as const, kitText: resolved.kitText };
+  });
 
   const loadOrchestrationCapableInstanceIds = () =>
     providerAdapters.list().pipe(Effect.map((instanceIds) => new Set(instanceIds)));
@@ -2616,26 +2672,33 @@ const make = Effect.gen(function* () {
               "orchestration_error",
               new PurposeAdmissionError({ reason: "intent_reused" }).message,
             );
+          // A replay finds the members recorded; each is followed even if the first call died.
+          const remoteMembers = committed.filter((member) => member.remoteChild !== undefined);
+          if (remoteMembers.length > 0)
+            yield* remoteDelegation.ensureFollowing(
+              scope.thread.threadId,
+              remoteMembers.map((member) => member.id),
+            );
           return yield* input.mode === "wait"
             ? awaitRunGroup(scope, groupId, committed, input.timeoutMs)
             : readRunGroup(scope, groupId, committed);
         }
+        const environmentId =
+          target === undefined
+            ? undefined
+            : PeerForwarding.remoteTarget(callerScope, target.environmentId);
         // A retry of a request accepted as one task stays one task.
-        const acceptedAsTask = yield* threadManagement.hasReceipt(
-          stableCommandId({ scope, requestKey: key, operation: "delegate-task" }),
-        );
+        const acceptedAsTask =
+          (yield* threadManagement.hasReceipt(
+            stableCommandId({ scope, requestKey: key, operation: "delegate-task" }),
+          )) ||
+          (environmentId !== undefined && (yield* remoteDelegation.acceptedAsTask(scope, key)));
         const run = acceptedAsTask
           ? 1
           : yield* prism.run({ projectId: caller.thread.projectId, role });
-        if (run === 1) return yield* single.delegateTask(callerScope, input);
-        if (
-          target !== undefined &&
-          PeerForwarding.remoteTarget(callerScope, target.environmentId) !== undefined
-        )
-          return yield* failure(
-            "invalid_request",
-            `Prism role ${role} runs ${run} Colors, and a Run group cannot run in a linked environment. Name target.model to run one Color there.`,
-          );
+        // Only a read-only role's Run exceeds 1.
+        if (run === 1 || !isPrismRunGroupRole(role))
+          return yield* single.delegateTask(callerScope, input);
         if (
           input.isolation === "worktree" ||
           input.projectId !== undefined ||
@@ -2643,8 +2706,21 @@ const make = Effect.gen(function* () {
         )
           return yield* failure(
             "invalid_request",
-            `Prism role ${role} runs ${run} Colors that share this thread's checkout. Omit projectId, workspaceStrategy and isolation, or name target.model to run one Color.`,
+            `Prism role ${role} runs ${run} Colors that share ${environmentId === undefined ? "this thread's checkout" : "the project's checkout there"}. Omit projectId, workspaceStrategy and isolation, or name target.model to run one Color.`,
           );
+        if (target !== undefined && environmentId !== undefined) {
+          yield* requireCapability(callerScope);
+          // The Colors and kit come from there; every member is recorded here in one command.
+          yield* remoteDelegation.delegateGroup(
+            scope,
+            { ...input, target: { ...target, environmentId } },
+            { commandId, groupId, key, role, run },
+          );
+          const members = yield* loadRunGroup(scope, groupId);
+          return yield* input.mode === "wait"
+            ? awaitRunGroup(scope, groupId, members, input.timeoutMs)
+            : readRunGroup(scope, groupId, members);
+        }
         const { parent } = yield* loadThreadCaller(callerScope, "delegate_task");
         const parentRun = ThreadManagementService.latestActiveRun(parent);
         if (
@@ -2751,12 +2827,28 @@ const make = Effect.gen(function* () {
           requestKey: key,
           operation: "cancel-run-group",
         });
+        // A remote member's cancel is recorded here as its intent, under the key its entry uses.
+        const remoteMembers = members.flatMap((member, index) =>
+          member.remoteChild === undefined
+            ? []
+            : [
+                {
+                  taskId: member.id,
+                  cancelRequestId: RemoteDelegation.cancelRequestId(
+                    scope.requestNamespace,
+                    `${key}:${index}`,
+                  ),
+                  ...(input.reason === undefined ? {} : { reason: input.reason }),
+                },
+              ],
+        );
         yield* threadManagement
           .dispatch({
             type: "delegated_task.group-cancel",
             commandId: groupCancelId,
             parentThreadId: scope.thread.threadId,
             groupId: input.taskId,
+            ...(remoteMembers.length === 0 ? {} : { remoteMembers }),
           })
           .pipe(
             Effect.mapError((error) =>
@@ -2766,60 +2858,66 @@ const make = Effect.gen(function* () {
               ),
             ),
           );
-        const outcomes = yield* Effect.forEach(members, (member, index) =>
-          Effect.result(
-            single
-              .cancelTask(callerScope, {
-                ...input,
-                taskId: member.id,
-                clientRequestId: `${key}:${index}`,
-              })
-              .pipe(
-                Effect.tapError(() =>
-                  threadManagement
-                    .dispatch({
-                      type: "delegated_task.group-cancel.release",
-                      commandId: stableCommandId({
-                        scope,
-                        requestKey: `${key}:${index}`,
-                        operation: "cancel-run-group-release",
-                      }),
-                      parentThreadId: scope.thread.threadId,
-                      taskId: member.id,
-                      groupCancelId,
-                    })
-                    .pipe(
-                      Effect.mapError((error) =>
-                        failure(
-                          "orchestration_error",
-                          `Unable to restore delegated task ${member.id} completion delivery: ${errorMessage(error)}`,
+        const outcomes = yield* Effect.forEach(
+          members,
+          (member, index) =>
+            Effect.result(
+              single
+                .cancelTask(callerScope, {
+                  ...input,
+                  taskId: member.id,
+                  clientRequestId: `${key}:${index}`,
+                })
+                .pipe(
+                  Effect.tapError(() =>
+                    threadManagement
+                      .dispatch({
+                        type: "delegated_task.group-cancel.release",
+                        commandId: stableCommandId({
+                          scope,
+                          requestKey: `${key}:${index}`,
+                          operation: "cancel-run-group-release",
+                        }),
+                        parentThreadId: scope.thread.threadId,
+                        taskId: member.id,
+                        groupCancelId,
+                      })
+                      .pipe(
+                        Effect.mapError((error) =>
+                          failure(
+                            "orchestration_error",
+                            `Unable to restore delegated task ${member.id} completion delivery: ${errorMessage(error)}`,
+                          ),
                         ),
                       ),
-                    ),
+                  ),
+                  // A remote member is given up when its destination accepts the Stop.
+                  Effect.tap(() =>
+                    member.remoteChild !== undefined
+                      ? Effect.void
+                      : threadManagement
+                          .dispatch({
+                            type: "delegated_task.completion-delivery.dispose",
+                            commandId: stableCommandId({
+                              scope,
+                              requestKey: `${key}:${index}`,
+                              operation: "cancel-run-group-delivery",
+                            }),
+                            parentThreadId: scope.thread.threadId,
+                            taskId: member.id,
+                          })
+                          .pipe(
+                            Effect.mapError((error) =>
+                              failure(
+                                "orchestration_error",
+                                `Unable to dispose delegated task ${member.id} completion delivery: ${errorMessage(error)}`,
+                              ),
+                            ),
+                          ),
+                  ),
                 ),
-                Effect.tap(() =>
-                  threadManagement
-                    .dispatch({
-                      type: "delegated_task.completion-delivery.dispose",
-                      commandId: stableCommandId({
-                        scope,
-                        requestKey: `${key}:${index}`,
-                        operation: "cancel-run-group-delivery",
-                      }),
-                      parentThreadId: scope.thread.threadId,
-                      taskId: member.id,
-                    })
-                    .pipe(
-                      Effect.mapError((error) =>
-                        failure(
-                          "orchestration_error",
-                          `Unable to dispose delegated task ${member.id} completion delivery: ${errorMessage(error)}`,
-                        ),
-                      ),
-                    ),
-                ),
-              ),
-          ),
+            ),
+          { concurrency: "unbounded" },
         );
         const tasks: Array<OrchestratorMcpTaskCancelResult> = [];
         for (const outcome of outcomes) {
@@ -3499,6 +3597,15 @@ const make = Effect.gen(function* () {
 
     capabilities: Effect.fn("OrchestratorMcpService.capabilities")(function* (scope, input = {}) {
       const { parent, limits } = yield* loadCaller(scope, []);
+      const runGroupColors =
+        input.prismColors === undefined
+          ? undefined
+          : yield* decodePrismColors(input.prismColors).pipe(
+              Effect.mapError(() =>
+                failure("invalid_request", "prismColors is set only by a linked environment."),
+              ),
+              Effect.flatMap((request) => prismColors(scope, request)),
+            );
       const providers = yield* loadProviders;
       const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
       const settings = yield* serverSettings.getSettings.pipe(
@@ -3520,6 +3627,8 @@ const make = Effect.gen(function* () {
         ),
       );
       return {
+        runGroupColors: 1 as const,
+        ...(runGroupColors === undefined ? {} : { prismColors: runGroupColors }),
         bareLaunch: true,
         toolAllowlist: true,
         executionPurposeVersions: [1],

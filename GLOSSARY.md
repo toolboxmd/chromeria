@@ -89,8 +89,9 @@ Promachos is a stored launch kit, not a role `delegate_task` accepts.
 
 **Run group**:
 The Drafters one delegation starts on several Colors of a read-only Prism role.
-They share the caller's checkout and wake it once when all of them finish; the
-role's **Run** says how many Colors one delegation starts.
+They share one checkout, the caller's or, in a linked environment, its project's
+there, and wake the caller once when all of them finish; the role's **Run** says
+how many Colors one delegation starts.
 _Avoid_: fan-out, batch, swarm
 
 **Lane**:

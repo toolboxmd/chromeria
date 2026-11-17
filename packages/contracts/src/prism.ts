@@ -96,6 +96,7 @@ export function admitDelegateRole(
  */
 const PRISM_RUN_GROUP_ROLES = ["researcher", "designer", "roast", "reviewer", "judge"] as const;
 export type PrismRunGroupRole = (typeof PRISM_RUN_GROUP_ROLES)[number];
+export const PrismRunGroupRole = Schema.Literals(PRISM_RUN_GROUP_ROLES);
 export function isPrismRunGroupRole(role: PrismRole): role is PrismRunGroupRole {
   return (PRISM_RUN_GROUP_ROLES as ReadonlyArray<PrismRole>).includes(role);
 }

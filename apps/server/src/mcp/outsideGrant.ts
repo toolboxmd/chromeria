@@ -18,6 +18,7 @@ const Target = Schema.Struct({
   action: Schema.optionalKey(Schema.String),
   watchId: Schema.optionalKey(Schema.String),
   epoch: Schema.optionalKey(Schema.String),
+  prismColors: Schema.optionalKey(Schema.Struct({ projectId: ProjectId })),
 });
 const decodeTarget = Schema.decodeUnknownOption(Target);
 const operations: Readonly<Record<string, AuthMcpOperation>> = {
@@ -57,6 +58,13 @@ export const checkOutsideGrant = Effect.fn("outsideGrant.checkOutsideGrant")(fun
   if (
     tool === "preview_watch_read" &&
     (limits.projectId === undefined || !target.watchId || !target.epoch)
+  )
+    return yield* denied();
+  if (
+    tool === "orchestrator_capabilities" &&
+    limits.projectId !== undefined &&
+    target.prismColors !== undefined &&
+    target.prismColors.projectId !== limits.projectId
   )
     return yield* denied();
   if (limits.projectId === undefined || tool === "orchestrator_capabilities") return;

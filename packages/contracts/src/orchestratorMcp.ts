@@ -11,7 +11,12 @@ import {
   RemotePurposeContinuation,
   SavedPurposeIntent,
 } from "./executionPurpose.ts";
-import { PRISM_DELEGATE_ROLE_GUIDE, PrismDelegateRoleInput, PrismLane } from "./prism.ts";
+import {
+  PRISM_DELEGATE_ROLE_GUIDE,
+  PrismDelegateRoleInput,
+  PrismLane,
+  PrismRunGroupRole,
+} from "./prism.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
@@ -62,6 +67,7 @@ import {
 } from "./orchestrationV2.ts";
 import { ProviderOptionSelection, ProviderOptionSelectionValue } from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
+import { ModelSelection } from "./modelSelection.ts";
 
 const OrchestratorMcpPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(120_000));
 const OrchestratorMcpTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
@@ -164,6 +170,18 @@ export const OrchestratorMcpTaskRole = Schema.Literals([
   "general",
 ]);
 export type OrchestratorMcpTaskRole = typeof OrchestratorMcpTaskRole.Type;
+
+/** The role line a delegated task's prompt gains, `Act as the <role> sub-agent for this task.`. */
+export const delegatedRoleLine = (role: string) =>
+  `Act as the ${role} sub-agent for this task.\n\n`;
+/** A launch message may carry a whole delegated task plus its role line. */
+export const DELEGATED_LAUNCH_MESSAGE_MAX_LENGTH =
+  120_000 +
+  Math.max(
+    ...[...OrchestratorMcpTaskRole.literals, "computer-use"].map(
+      (role) => delegatedRoleLine(role).length,
+    ),
+  );
 
 export const OrchestratorMcpDelegatedTaskStatus = Schema.Literals([
   "queued",
@@ -805,8 +823,24 @@ export const OrchestratorMcpCapabilitiesInput = Schema.Struct({
       description: "Match model ids and labels. Replaces the short list.",
     }),
   ),
+  /** Set by a linked environment recording a Run group: `OrchestratorMcpPrismColorsRequest`. */
+  prismColors: Schema.optional(Schema.Unknown),
 });
 export type OrchestratorMcpCapabilitiesInput = typeof OrchestratorMcpCapabilitiesInput.Type;
+
+/**
+ * The Colors and kit a linked environment's Run group starts. Agents never send it, so the tool
+ * advertises it opaque and the destination decodes it.
+ */
+export const OrchestratorMcpPrismColorsRequest = Schema.Struct({
+  projectId: ProjectId,
+  role: PrismRunGroupRole,
+  lane: Schema.optional(PrismLane),
+  count: PositiveInt,
+});
+export type OrchestratorMcpPrismColorsRequest = typeof OrchestratorMcpPrismColorsRequest.Type;
+/** A Run group member's launch kit, sent only by its delegation owner; advertised opaque. */
+export const OrchestratorMcpRunGroupMember = Schema.Struct({ kitText: Schema.String });
 
 export const OrchestratorMcpEnvironmentLink = Schema.Struct({
   environmentId: EnvironmentId,
@@ -830,6 +864,19 @@ export type OrchestratorMcpEnvironmentLinksResult =
   typeof OrchestratorMcpEnvironmentLinksResult.Type;
 
 export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
+  /** This environment answers `prismColors` and runs Run group members it is sent. */
+  runGroupColors: Schema.optional(Schema.Literal(1)),
+  prismColors: Schema.optional(
+    Schema.Struct({
+      colors: Schema.NonEmptyArray(
+        Schema.Struct({
+          modelSelection: ModelSelection,
+          supportedRuntimeModes: Schema.optional(Schema.Array(RuntimeMode)),
+        }),
+      ),
+      kitText: Schema.String,
+    }),
+  ),
   executionPurposeVersions: Schema.optional(Schema.Array(Schema.Literal(1))),
   peerAttachments: Schema.optional(Schema.Literal(1)),
   peerRequests: Schema.optional(Schema.Literal(1)),

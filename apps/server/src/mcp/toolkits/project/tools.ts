@@ -26,6 +26,7 @@ import {
   OrchestratorMcpClientRequestId,
   OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
+  DELEGATED_LAUNCH_MESSAGE_MAX_LENGTH,
   SourceControlCloneRepositoryInput,
   SourceControlCloneRepositoryResult,
 } from "@t3tools/contracts";
@@ -167,7 +168,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
         }),
       ),
       message: Schema.optional(
-        Schema.String.check(Schema.isMaxLength(120000)).annotate({
+        Schema.String.check(Schema.isMaxLength(DELEGATED_LAUNCH_MESSAGE_MAX_LENGTH)).annotate({
           description: "First prompt. Omit it and `attachments` for idle.",
         }),
       ),
@@ -175,6 +176,8 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
       clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
       /** Set by a linked environment launching its agent's delegated task here; ignored otherwise. */
       delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
+      /** Set by a linked environment launching its Run group member here; refused otherwise. */
+      runGroupMember: Schema.optional(Schema.Unknown),
       purposeIntent: Schema.optional(PurposeIntent),
     }),
   ),

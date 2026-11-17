@@ -936,6 +936,12 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
             )
           : Context.empty();
       const holdLaunchReply = yield* Ref.make(false);
+      /** Launches wait here before they are sent, each named by its key, until released. */
+      const holdLaunchRequests = yield* Ref.make(false);
+      const launchRequestsHeld = yield* Queue.unbounded<string>();
+      const releaseLaunchRequests = yield* Deferred.make<void>();
+      /** Peers answer `orchestrator_capabilities` as a destination from before Run groups. */
+      const legacyRunGroupPeer = yield* Ref.make(false);
       const dropLaunchResponses = yield* Ref.make(0);
       const dropCommittedToolReply = yield* Ref.make<string | undefined>(undefined);
       const launchReplyHeld = yield* Deferred.make<void>();
@@ -955,8 +961,30 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
         PeerMcpClient.PeerMcpClient,
         Effect.gen(function* () {
           const peers = yield* PeerMcpClient.PeerMcpClient;
+          const heldLaunch = Effect.fn("PeerAuthorityFixture.heldLaunch")(function* (
+            input: Parameters<typeof peers.call>[0],
+          ) {
+            if (input.tool !== "t3_thread_launch" || !(yield* Ref.get(holdLaunchRequests))) return;
+            const key = input.arguments.clientRequestId;
+            yield* Queue.offer(launchRequestsHeld, typeof key === "string" ? key : "");
+            yield* Deferred.await(releaseLaunchRequests);
+          });
           const call: typeof peers.call = (input) =>
-            peers.call(input).pipe(
+            heldLaunch(input).pipe(
+              Effect.andThen(peers.call(input)),
+              Effect.flatMap((result) =>
+                Ref.get(legacyRunGroupPeer).pipe(
+                  Effect.map((legacy) => {
+                    if (!legacy || input.tool !== "orchestrator_capabilities") return result;
+                    const {
+                      runGroupColors: _marker,
+                      prismColors: _colors,
+                      ...older
+                    } = result as Record<string, unknown>;
+                    return older as typeof result;
+                  }),
+                ),
+              ),
               Effect.tap(() =>
                 Effect.gen(function* () {
                   if ((yield* Ref.get(dropCommittedToolReply)) === input.tool) {
@@ -2454,6 +2482,10 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
         pendingRequests: Context.get(pendingRequests, PendingRequests.PendingRequests),
         noticeFailure,
         holdLaunchReply,
+        holdLaunchRequests,
+        legacyRunGroupPeer,
+        launchRequestsHeld,
+        releaseLaunchRequests,
         dropLaunchResponses,
         dropCommittedToolReply,
         secretConsumes,

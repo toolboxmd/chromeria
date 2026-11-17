@@ -1,4 +1,5 @@
 import {
+  delegatedRoleLine,
   type ModelSelection,
   OrchestratorMcpFailure,
   type OrchestratorMcpDelegateTaskInput,
@@ -93,5 +94,5 @@ export function taskPrompt(input: OrchestratorMcpDelegateTaskInput): string {
   const role = input.prismRole === "computer-use" ? input.prismRole : input.role;
   return input.bare !== undefined || role === undefined || role === "general"
     ? input.task
-    : `Act as the ${role} sub-agent for this task.\n\n${input.task}`;
+    : `${delegatedRoleLine(role)}${input.task}`;
 }

@@ -13,6 +13,7 @@ import {
   OrchestrationV2RemoteTaskLaunch,
   OrchestrationV2Command,
   type PeerTaskLifecycleResult,
+  type ModelSelection,
 } from "@t3tools/contracts";
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
@@ -275,10 +276,11 @@ const serveBox = (
   >,
   /** The box project's real Git checkout. */
   checkout?: string,
+  reviewers?: ReadonlyArray<ModelSelection>,
 ) => {
   return servePeer(
     box,
-    boxToolkitLayer(thread, undefined, lifecycleSupported, catalog, checkout),
+    boxToolkitLayer(thread, undefined, lifecycleSupported, catalog, checkout, reviewers),
   ).pipe(
     Effect.tap((peer) =>
       peer.settings.updateSettings({
@@ -312,6 +314,8 @@ const boxToolkitLayer = (
     ProviderRegistry.ProviderRegistry | ProviderAdapterRegistry.ProviderAdapterRegistryV2
   >,
   checkout?: string,
+  /** The box's reviewer Colors, for a Run group sent there. */
+  reviewers: ReadonlyArray<ModelSelection> = [modelSelection],
 ) => {
   const runId = boxRunId;
   const interrupts = new Set<string>();
@@ -873,7 +877,7 @@ const boxToolkitLayer = (
           worker: {
             lanes: { medium: [modelSelection], hard: [{ instanceId, model: "box-prism" }] },
           },
-          reviewer: { models: [modelSelection] },
+          reviewer: { models: [...reviewers] },
           roast: { models: [{ instanceId, model: "box-prism" }] },
         },
       }),
@@ -4966,11 +4970,18 @@ it.effect("a recorded cancel without its Stop never displaces an unresolved owed
       const applied = yield* readTask(a, taskId);
       expect(applied.remoteChild?.cancelIntent).toBeUndefined();
       expect(applied.completionDelivery?.state).toBe("disposed");
-      // With no unresolved Stop, the cancel's own Stop is recorded.
+      // With no unresolved Stop, an entry still records nothing; recovery records the Stop.
       yield* seedIntent("i3", "second");
+      const settled = (yield* readTask(a, taskId)).remoteChild!.stop;
+      yield* observeTask(a, taskId, "i3-entry", {
+        stop: { requestId: "i3", reason: "group", state: "pending" },
+        cancel: true,
+      });
+      expect((yield* readTask(a, taskId)).remoteChild?.stop).toEqual(settled);
       yield* observeTask(a, taskId, "i3", {
         stop: { requestId: "i3", reason: "group", state: "pending" },
         cancel: true,
+        recovery: true,
       });
       expect((yield* readTask(a, taskId)).remoteChild).toMatchObject({
         stop: { requestId: "i3", state: "pending" },
@@ -5186,6 +5197,90 @@ it.effect(
         yield* finishThere(thread, "Finished while archived.");
         yield* Queue.take(retrying);
         expect(yield* Ref.get(thread.stopRequests)).toHaveLength(3);
+      }),
+    ).pipe(Effect.provide(layerLoopbackServerTest)),
+);
+
+/** The box's Codex instance offers every mode; its Claude instance only asks first. */
+const layerBoxModesCatalog = Layer.unwrap(
+  Effect.gen(function* () {
+    const usual = yield* layerBoxClaudeCatalog.pipe(Layer.build);
+    const providers = Context.get(usual, ProviderRegistry.ProviderRegistry);
+    return Layer.merge(
+      Layer.mock(ProviderRegistry.ProviderRegistry)({
+        getProviders: providers.getProviders.pipe(
+          Effect.map((listed) =>
+            listed.map((provider) =>
+              provider.instanceId === boxClaude.instanceId
+                ? { ...provider, supportedRuntimeModes: ["approval-required" as const] }
+                : provider,
+            ),
+          ),
+        ),
+      }),
+      Layer.succeedContext(Context.pick(ProviderAdapterRegistry.ProviderAdapterRegistryV2)(usual)),
+    );
+  }),
+);
+
+it.effect(
+  "a remote Run group resolves each member's mode from its Color there, as a local group does",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread, true, layerBoxModesCatalog, undefined, [
+          modelSelection,
+          { instanceId: boxClaude.instanceId, model: "claude-sonnet-4-6" },
+        ]);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+        const group = (key: string, runtimeMode?: "full-access") => {
+          const commandId = CommandId.make(`command:modes:${key}`);
+          return a.remote.delegateGroup(
+            parentScope as McpInvocationContext.McpThreadInvocationScope,
+            {
+              task: "Review the plan.",
+              prismRole: "reviewer",
+              target: { environmentId: box.environmentId, projectId: boxProject },
+              ...(runtimeMode === undefined ? {} : { runtimeMode }),
+            },
+            {
+              commandId,
+              groupId: NodeId.make(`run-group:${commandId}`),
+              key,
+              role: "reviewer",
+              run: 2,
+            },
+          );
+        };
+        // Inherited: the Codex member keeps the parent's mode, the Claude one steps down.
+        const members = yield* group("inherited");
+        const recorded = (yield* a.threads.getThreadRecords(parentThreadId, ["subagents"]))
+          .subagents;
+        expect(
+          members.map((id) => {
+            const launch = recorded.find((task) => task.id === id)!.remoteChild!.launch!;
+            return [launch.modelSelection?.instanceId, launch.runtimeMode];
+          }),
+        ).toEqual([
+          [instanceId, "full-access"],
+          [boxClaude.instanceId, "approval-required"],
+        ]);
+        // Explicit: a mode one Color does not offer refuses the whole group before anything is kept.
+        const launchesBefore = (yield* Ref.get(thread.launchIds)).length;
+        const refused = yield* group("explicit", "full-access").pipe(Effect.flip);
+        expect(refused).toMatchObject({ code: "invalid_request" });
+        expect(refused.message).toContain("does not offer runtime mode full-access");
+        expect(
+          (yield* a.threads.getThreadRecords(parentThreadId, ["subagents"])).subagents,
+        ).toHaveLength(2);
+        expect(yield* Ref.get(thread.launchIds)).toHaveLength(launchesBefore);
       }),
     ).pipe(Effect.provide(layerLoopbackServerTest)),
 );

@@ -1362,10 +1362,11 @@ Child creation paths are owned by child-threads and shared with thread-people.
 ```json
 {
   "id": "run-groups",
-  "purpose": "Let one delegate_task call run several Colors of a read-only Prism role (Researcher, Designer, Roast, Reviewer, Judge) as one Run group: one command commits every member that can start, members share the caller's checkout, and the parent wakes once after every member is terminal. task_status and task_cancel take the groupId or a member; Run 1 keeps the single-task result.",
+  "purpose": "Let one delegate_task call run several Colors of a read-only Prism role (Researcher, Designer, Roast, Reviewer, Judge) as one Run group: one command commits every member that can start, members share the caller's checkout, and the parent wakes once after every member is terminal. task_status and task_cancel take the groupId or a member; Run 1 keeps the single-task result. A group sent to a linked environment takes its Colors and kit from there, runs in that project's checkout, and behaves as a local group except where the network forces it (#751).",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/402",
-    "https://github.com/toolboxmd/chromeria/issues/511"
+    "https://github.com/toolboxmd/chromeria/issues/511",
+    "https://github.com/toolboxmd/chromeria/issues/751"
   ],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/512"],
   "newFiles": [

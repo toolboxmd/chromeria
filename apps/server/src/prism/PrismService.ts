@@ -16,6 +16,7 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -24,6 +25,27 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { ProviderAdapterRegistryV2 } from "../orchestration-v2/ProviderAdapterRegistry.ts";
+
+/**
+ * The model a launch outside any thread inherits: the project's effective default, as the
+ * composer picks it. `t3_thread_launch` and a linked environment's Run group read share it.
+ */
+export const projectDefaultSelection = Effect.fn("Prism.projectDefaultSelection")(function* (
+  projectId: ProjectId,
+  settings: NonNullable<Parameters<typeof resolveNewThreadModelSelection>[0]["settings"]>,
+) {
+  const providers = yield* (yield* ProviderRegistry.ProviderRegistry).getProviders;
+  return (
+    resolveNewThreadModelSelection({
+      defaultSelection: settings.defaultModelSelection,
+      fallbackSelection: settings.fallbackModelSelection,
+      providers,
+      settings,
+      projectId,
+      now: DateTime.toEpochMillis(yield* DateTime.now),
+    }).selection ?? undefined
+  );
+});
 
 /** Native launch callers validate adapter admission before creating a thread/run. */
 export const validateLaunchSelection = Effect.fn("Prism.validateLaunchSelection")(function* (

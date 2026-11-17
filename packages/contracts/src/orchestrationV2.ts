@@ -1070,6 +1070,8 @@ export const OrchestrationV2RemoteTaskLaunch = Schema.Struct({
   runtimeMode: Schema.optional(RuntimeMode),
   interactionMode: Schema.optional(ProviderInteractionMode),
   delegatedFrom: OrchestrationV2DelegatedFrom,
+  /** A Run group member's kit, read once from the destination when its group was recorded. */
+  runGroupMember: Schema.optional(Schema.Struct({ kitText: Schema.String })),
 });
 export type OrchestrationV2RemoteTaskLaunch = typeof OrchestrationV2RemoteTaskLaunch.Type;
 
@@ -1098,7 +1100,19 @@ export const OrchestrationV2RemoteTaskChild = Schema.Struct({
    * applies it: the wake is disposed only when the destination accepts the current Stop.
    */
   cancelIntent: Schema.optional(
-    Schema.Struct({ requestId: Schema.String, reason: Schema.optional(Schema.String) }),
+    Schema.Struct({
+      requestId: Schema.String,
+      reason: Schema.optional(Schema.String),
+      /** Set by a Run group cancel: acceptance gives the member up as a local group cancel does. */
+      groupCancelId: Schema.optional(CommandId),
+    }),
+  ),
+  /** How the latest cancel intent ended; the event log keeps every earlier one. */
+  cancelResolution: Schema.optional(
+    Schema.Struct({
+      requestId: Schema.String,
+      outcome: Schema.Literals(["applied", "refused", "superseded"]),
+    }),
   ),
   environmentId: EnvironmentId,
   /** Unset until the accepted launch is attached to the durable source task. */
@@ -3984,12 +3998,24 @@ const OrchestrationV2InternalCommand = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
   }),
-  /** Marks every member of a Run group as given up by one group cancel. */
+  /**
+   * Marks every member of a Run group as given up by one group cancel. A remote member instead
+   * records its cancel intent, which its destination's acceptance applies.
+   */
   Schema.Struct({
     type: Schema.Literal("delegated_task.group-cancel"),
     commandId: CommandId,
     parentThreadId: ThreadId,
     groupId: NodeId,
+    remoteMembers: Schema.optional(
+      Schema.Array(
+        Schema.Struct({
+          taskId: NodeId,
+          cancelRequestId: Schema.String,
+          reason: Schema.optional(Schema.String),
+        }),
+      ),
+    ),
   }),
   /** Clears one member's group cancel after its stop was refused. */
   Schema.Struct({
@@ -4081,6 +4107,30 @@ const OrchestrationV2InternalCommand = Schema.Union([
     interactionMode: ProviderInteractionMode,
     completionWake: Schema.Literals(["always", "settled_only"]),
   }),
+  /**
+   * Records a Run group whose members run in a linked environment: one remote task per member,
+   * each with its own Color and launch identity. Every member commits in this one command or none
+   * does; member ids derive from `commandId` and the member's position.
+   */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.remote.group.request"),
+    purposeIntent: Schema.optional(PurposeIntent),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    parentRunId: RunId,
+    parentNodeId: NodeId,
+    groupId: NodeId,
+    task: TrimmedNonEmptyString,
+    title: Schema.optional(TrimmedNonEmptyString),
+    driver: ProviderDriverKind,
+    members: Schema.NonEmptyArray(
+      Schema.Struct({
+        modelSelection: ModelSelection,
+        remoteChild: OrchestrationV2RemoteTaskChild,
+      }),
+    ),
+    completionWake: Schema.Literals(["always", "settled_only"]),
+  }),
   /** Serializes starting a pending launch against cancellation before any network I/O. */
   Schema.Struct({
     type: Schema.Literal("delegated_task.remote.launch"),
@@ -4151,6 +4201,8 @@ const OrchestrationV2InternalCommand = Schema.Union([
     stop: Schema.optional(PeerTaskStop),
     /** A cancel's pending Stop: records the cancel intent with it, and no result. */
     cancel: Schema.optional(Schema.Literal(true)),
+    /** The follower recording the current intent's own Stop, which no entry records. */
+    recovery: Schema.optional(Schema.Literal(true)),
     stopResult: Schema.optional(
       Schema.Struct({
         status: Schema.Literals(["cancelled", "interrupted"]),
