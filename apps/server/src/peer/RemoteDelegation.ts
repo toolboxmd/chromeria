@@ -210,6 +210,36 @@ const make = Effect.gen(function* () {
   // Followers live as long as this service, so shutting down stops them.
   const followers = yield* Scope.Scope;
 
+  /** A refusal for a pinned commit no remote there has, naming the remote this branch is on. */
+  const withParentRemote = (parentThreadId: ThreadId, error: OrchestratorMcpFailure) =>
+    !error.message.includes(DelegatedWorktreeBase.MISSING_BASE_REFUSAL)
+      ? Effect.succeed(error)
+      : Effect.gen(function* () {
+          const parent = yield* threads.getThreadRecords(parentThreadId, ["runs"]);
+          const checkout =
+            parent.thread.worktreePath ??
+            Option.getOrUndefined(yield* projects.getById(parent.thread.projectId))?.workspaceRoot;
+          const remote =
+            checkout === undefined
+              ? undefined
+              : yield* DelegatedWorktreeBase.upstreamRemote(checkout).pipe(
+                  Effect.provideService(GitVcsDriver.GitVcsDriver, git),
+                );
+          return remote === undefined
+            ? error
+            : new OrchestratorMcpFailure({
+                code: error.code,
+                message: `${error.message} Add the remote this branch is pushed to there: ${remote}.`,
+                ...(error.requestId === undefined ? {} : { requestId: error.requestId }),
+                ...(error.lastConfirmedStage === undefined
+                  ? {}
+                  : { lastConfirmedStage: error.lastConfirmedStage }),
+                ...(error.launchReceipt === undefined
+                  ? {}
+                  : { launchReceipt: error.launchReceipt }),
+              });
+        }).pipe(Effect.orElseSucceed(() => error));
+
   /** The peer's project with this thread's repository, or the one the caller named. */
   const resolveRemoteProject = Effect.fn("RemoteDelegation.resolveRemoteProject")(function* (
     scope: ThreadScope,
@@ -821,6 +851,10 @@ const make = Effect.gen(function* () {
           },
         );
       }).pipe(
+        // The destination cannot name the remote it lacks; this checkout's branch can.
+        Effect.catchTags({
+          OrchestratorMcpFailure: (error) => Effect.flip(withParentRemote(parentThreadId, error)),
+        }),
         Effect.catchTags({
           OrchestratorMcpFailure: (error) => {
             if ((firstAttempt && dispatch.stage !== "sent") || error.launchReceipt === "absent") {

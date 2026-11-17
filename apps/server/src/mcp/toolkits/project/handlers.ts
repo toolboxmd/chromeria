@@ -309,7 +309,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                       workspaceRoot: project.workspaceRoot,
                       baseRef: strategy.baseRef,
                     }).message
-                  } No thread was created. No remote of this checkout has that commit; add the remote it was pushed to.`,
+                  } No thread was created. ${DelegatedWorktreeBase.MISSING_BASE_REFUSAL}`,
                 });
               // Reject unresolved base refs and blocked branch names before accepting a launch; worktree provisioning happens later.
               if (strategy?.type === "worktree")

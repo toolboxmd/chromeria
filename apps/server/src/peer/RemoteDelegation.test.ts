@@ -3289,7 +3289,10 @@ it.live.each(["pushed", "unpushed", "missing there"] as const)(
         if (state !== "pushed") {
           expect(response.isError).toBe(true);
           expect(JSON.stringify(response.content)).toContain(
-            state === "unpushed" ? "git push -u" : "No thread was created",
+            state === "unpushed"
+              ? "git push -u"
+              : // The parent names the remote its branch is on, which that checkout lacks.
+                "Add the remote this branch is pushed to there: origin (",
           );
           expect(yield* Ref.get(thread.launchIds)).toEqual([]);
           return;

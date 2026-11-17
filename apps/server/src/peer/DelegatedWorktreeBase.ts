@@ -12,6 +12,9 @@ const git = (operation: string, cwd: string, args: ReadonlyArray<string>) =>
     Effect.orElseSucceed(() => null),
   );
 
+/** Ends a destination's refusal of a pinned commit none of its remotes has; the parent names its remote. */
+export const MISSING_BASE_REFUSAL = "No remote of this checkout has that commit.";
+
 const notPushed = (detail: string) =>
   new OrchestratorMcpFailure({
     code: "invalid_request",
@@ -87,4 +90,26 @@ export const fetchBase = Effect.fn("DelegatedWorktreeBase.fetchBase")(function* 
     if (yield* present) return true;
   }
   return false;
+});
+
+/** The remote this checkout's branch is pushed to, by name and URL without credentials. */
+export const upstreamRemote = Effect.fn("DelegatedWorktreeBase.upstreamRemote")(function* (
+  cwd: string,
+) {
+  const headRef = yield* git("DelegatedWorktreeBase.branch", cwd, ["symbolic-ref", "-q", "HEAD"]);
+  if (headRef === null) return undefined;
+  const remoteName = yield* git("DelegatedWorktreeBase.upstream", cwd, [
+    "for-each-ref",
+    "--format=%(upstream:remotename)",
+    headRef,
+  ]);
+  if (remoteName === null || remoteName === "" || remoteName === ".") return undefined;
+  const url = yield* git("DelegatedWorktreeBase.remoteUrl", cwd, [
+    "remote",
+    "get-url",
+    "--",
+    remoteName,
+  ]);
+  if (url === null) return undefined;
+  return `${remoteName} (${url.replace(/^(https?:\/\/)[^/@]*@/, "$1")})`;
 });
