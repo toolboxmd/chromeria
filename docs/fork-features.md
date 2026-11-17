@@ -959,7 +959,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "https://github.com/toolboxmd/chromeria/pull/279",
     "https://github.com/toolboxmd/chromeria/pull/301",
     "https://github.com/toolboxmd/chromeria/pull/431",
-    "https://github.com/toolboxmd/chromeria/pull/413"
+    "https://github.com/toolboxmd/chromeria/pull/413",
+    "https://github.com/toolboxmd/chromeria/pull/762"
   ],
   "newFiles": [
     "packages/client-runtime/src/state/restartCutPresentation.ts",
@@ -1036,7 +1037,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/orchestration-v2/RestartContinuation.ts",
     "apps/server/src/orchestration-v2/SubagentProjection.test.ts",
     "packages/client-runtime/src/work-log/presentation.ts",
-    "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts"
+    "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts",
+    "apps/server/src/orchestration-v2/http.test.ts"
   ],
   "sharedFiles": [
     "apps/server/src/persistence/forkV1Backfills.ts",

@@ -33,6 +33,7 @@ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { HTTP_ROUTER_CONFIG } from "../server.ts";
 
 import * as OrchestrationEventStore from "../persistence/OrchestrationEventStore.ts";
 import { ProjectEnrichmentService } from "../project/ProjectEnrichmentService.ts";
@@ -43,6 +44,7 @@ import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
+import { encodeThreadHistoryCursor } from "./threadHistoryPaging.ts";
 
 class TranscriptTestApi extends HttpApi.make("environment").add(
   EnvironmentHttpApi.groups.orchestration,
@@ -176,7 +178,10 @@ const serveOrchestrationHttp = (allowed: () => boolean) =>
       Layer.provide(Etag.layerWeak),
       Layer.provide(NodeServices.layer),
     );
-    const { handler, dispose } = HttpRouter.toWebHandler(routes, { disableLogger: true });
+    const { handler, dispose } = HttpRouter.toWebHandler(routes, {
+      disableLogger: true,
+      routerConfig: HTTP_ROUTER_CONFIG,
+    });
     yield* Effect.addFinalizer(() => Effect.promise(dispose));
     return { services, eventSink, handler };
   });
@@ -391,6 +396,42 @@ it.effect("leaves older settled threads out of the HTTP shell only when asked", 
     expect(yield* shell(`?resumeFrom=${full.snapshotSequence - 1}`)).toEqual({ resumable: true });
     for (const cursor of [full.snapshotSequence + 1, "x"]) {
       expect((yield* shell(`?omitOlderSettled=1&resumeFrom=${cursor}`)).threads).toHaveLength(26);
+    }
+  }),
+);
+
+it.effect("serves every thread route for ids over a thousand characters", () =>
+  Effect.gen(function* () {
+    const { eventSink, handler } = yield* serveOrchestrationHttp(() => true);
+    // Nested delegated-task ids grow with each level of escaped provenance.
+    const id = ThreadId.make(`thread:delegated-task:${"thread%3Adelegated-task%3A".repeat(40)}`);
+    yield* eventSink.write({
+      events: [
+        {
+          id: EventId.make("create-long"),
+          type: "thread.created",
+          threadId: id,
+          occurredAt: now,
+          payload: { ...thread, id, lineage: { ...thread.lineage, rootThreadId: id } },
+        },
+      ],
+    });
+    const base = `http://localhost/api/orchestration/threads/${encodeURIComponent(id)}`;
+    const cursor = encodeThreadHistoryCursor({
+      snapshotSequence: 1,
+      sourceThreadId: id,
+      sourceItemId: "item-0",
+      position: 0,
+    });
+    for (const suffix of ["", "/transcript", "/bounded", `/history?cursor=${cursor}`]) {
+      const response = yield* Effect.promise(() =>
+        handler(
+          new Request(`${base}${suffix}`, {
+            headers: { [ORCHESTRATION_PROTOCOL_HEADER]: ORCHESTRATION_PROTOCOL_VERSION_TEXT },
+          }),
+        ),
+      );
+      expect({ suffix, status: response.status }).toEqual({ suffix, status: 200 });
     }
   }),
 );
