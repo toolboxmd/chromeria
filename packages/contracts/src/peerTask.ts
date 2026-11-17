@@ -75,11 +75,22 @@ export const PeerTaskObservation = Schema.Struct({
   result: Schema.optional(PeerTaskResult),
 });
 export type PeerTaskObservation = typeof PeerTaskObservation.Type;
+/** Why a destination refused a Stop; the thread there keeps running. */
+export const PeerTaskStopRefusal = Schema.Literals(["runtime_mode", "interaction_mode", "policy"]);
+export type PeerTaskStopRefusal = typeof PeerTaskStopRefusal.Type;
 export const PeerTaskStop = Schema.Struct({
   requestId: Schema.String,
   destinationCommandId: Schema.optional(CommandId),
   reason: Schema.optional(Schema.String),
-  state: Schema.Literals(["pending", "unconfirmed", "acknowledged", "confirmed", "not_started"]),
+  state: Schema.Literals([
+    "pending",
+    "unconfirmed",
+    "acknowledged",
+    "confirmed",
+    "not_started",
+    "refused",
+  ]),
+  refusal: Schema.optional(PeerTaskStopRefusal),
 });
 export const PeerTaskResource = Schema.Struct({ environmentId: EnvironmentId, threadId: ThreadId });
 export type PeerTaskResource = typeof PeerTaskResource.Type;
@@ -152,8 +163,16 @@ export const PeerTaskView = Schema.Struct({
   nextTextOffset: Schema.NullOr(NonNegativeInt),
 });
 export type PeerTaskView = typeof PeerTaskView.Type;
+/** Sent on lifecycle requests by a source that decodes typed outcomes; outside the request body. */
+export const PEER_TASK_LIFECYCLE_OUTCOMES_HEADER = "x-t3-lifecycle-outcomes";
 export const PeerTaskLifecycleResult = Schema.Union([
   Schema.Struct({ type: Schema.Literal("stop"), commandId: CommandId }),
+  /** Typed outcomes, only for a request with `PEER_TASK_LIFECYCLE_OUTCOMES_HEADER`. */
+  Schema.Struct({ type: Schema.Literal("stop_refused"), reason: PeerTaskStopRefusal }),
+  Schema.Struct({
+    type: Schema.Literal("pair_gone"),
+    reason: Schema.Literals(["deleted", "archived"]),
+  }),
   Schema.Struct({ type: Schema.Literal("observation"), observation: PeerTaskObservation }),
   Schema.Struct({
     type: Schema.Literal("resultText"),

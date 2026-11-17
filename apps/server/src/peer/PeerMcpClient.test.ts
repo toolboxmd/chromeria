@@ -5,6 +5,7 @@ import { NodeHttpServer } from "@effect/platform-node";
 import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  NodeId,
   OrchestrationV2LinkedSender,
   OrchestratorMcpFailure,
   ThreadId,
@@ -482,6 +483,65 @@ it.layer(NodeCrypto.layer)("peer MCP client", (it) => {
       expect(refused.code).toBe("capability_denied");
       expect(requests).toEqual([]);
     }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([true, false])(
+    "asks for typed lifecycle outcomes only from a destination that offers them (offered=%s)",
+    (offered) =>
+      Effect.gen(function* () {
+        const posts: Array<string | undefined> = [];
+        const services = yield* PeerMcpClient.layerOver(runtime).pipe(
+          Layer.provide(
+            Layer.mock(PeerLinks.PeerLinks)({
+              resolve: () => Effect.succeed({ link, url: "https://peer.test", token: "token" }),
+              get: () => Effect.succeedSome(link),
+              recordOutcome: () => Effect.void,
+            }),
+          ),
+          Layer.provide(
+            Layer.succeed(
+              HttpClient.HttpClient,
+              HttpClient.make((request) => {
+                if (request.method === "GET")
+                  return Effect.succeed(
+                    HttpClientResponse.fromWeb(
+                      request,
+                      new Response(
+                        offered ? '{"version":1,"lifecycleOutcomes":1}' : '{"version":1}',
+                      ),
+                    ),
+                  );
+                posts.push(request.headers["x-t3-lifecycle-outcomes"]);
+                return Effect.succeed(
+                  HttpClientResponse.fromWeb(
+                    request,
+                    new Response('{"type":"pair_gone","reason":"deleted"}'),
+                  ),
+                );
+              }),
+            ),
+          ),
+          Layer.provide(NodeCrypto.layer),
+          Layer.build,
+        );
+        const peers = Context.get(services, PeerMcpClient.PeerMcpClient);
+        const observe = () =>
+          peers.taskLifecycle!(peer, "generation", {
+            pair: {
+              parentEnvironmentId: here.environmentId,
+              parentThreadId: ThreadId.make("thread:parent"),
+              taskId: NodeId.make("node:task"),
+              childEnvironmentId: peer,
+              childThreadId: ThreadId.make("thread:child"),
+              childRunId: null,
+            },
+            operation: { type: "observe", after: 0, wait: false },
+          });
+        // The first request learns the format; later ones reuse it.
+        expect(yield* observe()).toEqual({ type: "pair_gone", reason: "deleted" });
+        yield* observe();
+        expect(posts).toEqual(offered ? ["1", "1"] : [undefined, undefined]);
+      }).pipe(Effect.scoped),
   );
 
   it.effect.each(["structured", "legacy", "invalid"] as const)(
