@@ -55,6 +55,7 @@ import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Queue from "effect/Queue";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -167,6 +168,8 @@ interface BoxThread {
   readonly stopRequests: Ref.Ref<
     ReadonlyArray<{ readonly requestId: string; readonly typed: boolean }>
   >;
+  /** Each Stop request's id, offered as it arrives. */
+  readonly stopArrived: Queue.Queue<string>;
   /** The box refuses Stops, keeping the thread running. */
   readonly refuseStop: Ref.Ref<"runtime_mode" | "interaction_mode" | "policy" | null>;
   /** While set, a Stop request waits: completed once one arrives, released by `releaseStop`. */
@@ -220,6 +223,7 @@ const makeBoxThread = Effect.gen(function* () {
     stopRequests: yield* Ref.make<
       ReadonlyArray<{ readonly requestId: string; readonly typed: boolean }>
     >([]),
+    stopArrived: yield* Queue.unbounded<string>(),
     refuseStop: yield* Ref.make<"runtime_mode" | "interaction_mode" | "policy" | null>(null),
     holdStop: yield* Ref.make(false),
     stopStarted: yield* Deferred.make<void>(),
@@ -612,6 +616,7 @@ const boxToolkitLayer = (
             ...seen,
             { requestId: operation.requestId, typed },
           ]);
+          yield* Queue.offer(thread.stopArrived, operation.requestId);
           if (yield* Ref.get(thread.holdStop)) {
             yield* Deferred.succeed(thread.stopStarted, undefined);
             yield* Deferred.await(thread.releaseStop);
@@ -5044,39 +5049,32 @@ it.effect(
         yield* Ref.set(thread.typedOutcomes, false);
         yield* Ref.set(thread.refuseStop, "runtime_mode");
         const { taskId } = yield* delegateToBox(a);
-        yield* a.call("task_cancel", { taskId });
+        // The first Stop is held there while the parent is archived, so no other attempt passes
+        // the archive check before it.
+        yield* Ref.set(thread.holdStop, true);
+        const cancelling = yield* a.call("task_cancel", { taskId }).pipe(Effect.forkScoped);
+        yield* Deferred.await(thread.stopStarted);
         yield* a.orchestrator.dispatch({
           type: "thread.archive",
           commandId: CommandId.make("command:archive:laptop-parent"),
           threadId: parentThreadId,
         });
-        const sent = (yield* Ref.get(thread.stopRequests)).length;
+        yield* Deferred.succeed(thread.releaseStop, undefined);
+        yield* Fiber.join(cancelling);
+        yield* remoteState(a, taskId, (task) => task.remoteChild?.stop?.state === "unconfirmed");
+        yield* Queue.take(thread.stopArrived);
         // The backoff elapses while the parent is archived: nothing is sent there.
         yield* TestClock.adjust("10 seconds");
+        expect(yield* Ref.get(thread.stopRequests)).toHaveLength(1);
         yield* a.orchestrator.dispatch({
           type: "thread.unarchive",
           commandId: CommandId.make("command:unarchive:laptop-parent"),
           threadId: parentThreadId,
         });
-        const reopened = yield* a.orchestrator.getThreadEventSequence(parentThreadId);
         yield* finishThere(thread, "Finished while archived.");
-        // Reopened, its follower sends the Stop it still owes.
-        yield* a.orchestrator
-          .streamStoredEventsFrom({
-            threadId: parentThreadId,
-            afterSequence: reopened,
-            eventType: "subagent.updated",
-          })
-          .pipe(
-            Stream.filter(
-              (stored) =>
-                stored.event.type === "subagent.updated" &&
-                stored.event.payload.id === taskId &&
-                stored.event.payload.remoteChild?.stop?.state === "unconfirmed",
-            ),
-            Stream.runHead,
-          );
-        expect(yield* Ref.get(thread.stopRequests)).toHaveLength(sent + 1);
+        // Reopened, its follower sends the Stop it still owes; a repeated refusal records nothing.
+        yield* Queue.take(thread.stopArrived);
+        expect(yield* Ref.get(thread.stopRequests)).toHaveLength(2);
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
