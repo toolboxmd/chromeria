@@ -168,8 +168,6 @@ interface BoxThread {
   readonly stopRequests: Ref.Ref<
     ReadonlyArray<{ readonly requestId: string; readonly typed: boolean }>
   >;
-  /** Each Stop request's id, offered as it arrives. */
-  readonly stopArrived: Queue.Queue<string>;
   /** The box refuses Stops, keeping the thread running. */
   readonly refuseStop: Ref.Ref<"runtime_mode" | "interaction_mode" | "policy" | null>;
   /** While set, a Stop request waits: completed once one arrives, released by `releaseStop`. */
@@ -223,7 +221,6 @@ const makeBoxThread = Effect.gen(function* () {
     stopRequests: yield* Ref.make<
       ReadonlyArray<{ readonly requestId: string; readonly typed: boolean }>
     >([]),
-    stopArrived: yield* Queue.unbounded<string>(),
     refuseStop: yield* Ref.make<"runtime_mode" | "interaction_mode" | "policy" | null>(null),
     holdStop: yield* Ref.make(false),
     stopStarted: yield* Deferred.make<void>(),
@@ -616,7 +613,6 @@ const boxToolkitLayer = (
             ...seen,
             { requestId: operation.requestId, typed },
           ]);
-          yield* Queue.offer(thread.stopArrived, operation.requestId);
           if (yield* Ref.get(thread.holdStop)) {
             yield* Deferred.succeed(thread.stopStarted, undefined);
             yield* Deferred.await(thread.releaseStop);
@@ -5045,36 +5041,60 @@ it.effect(
   () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { thread, a } = yield* laptopHarness;
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        // Each Stop retry offers its fiber and waits until the test lets it run.
+        const retrying = yield* Queue.unbounded<Fiber.Fiber<unknown, unknown>>();
+        const proceed = yield* Queue.unbounded<void>();
+        const a = yield* makeLaptop(database, offers).pipe(
+          Effect.provideService(
+            RemoteDelegation.FollowRetrySchedule,
+            Schedule.forever.pipe(
+              Schedule.tap(() =>
+                Effect.gen(function* () {
+                  yield* Queue.offer(retrying, yield* Effect.fiber);
+                  yield* Queue.take(proceed);
+                }),
+              ),
+            ),
+          ),
+        );
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
         yield* Ref.set(thread.typedOutcomes, false);
         yield* Ref.set(thread.refuseStop, "runtime_mode");
         const { taskId } = yield* delegateToBox(a);
-        // The first Stop is held there while the parent is archived, so no other attempt passes
-        // the archive check before it.
-        yield* Ref.set(thread.holdStop, true);
-        const cancelling = yield* a.call("task_cancel", { taskId }).pipe(Effect.forkScoped);
-        yield* Deferred.await(thread.stopStarted);
+        yield* a.call("task_cancel", { taskId });
+        yield* remoteState(a, taskId, (task) => task.remoteChild?.stop?.state === "unconfirmed");
+        // The cancel's own attempt and the follower's were both refused; the follower's retry waits.
+        const retry = yield* Queue.take(retrying);
+        expect(yield* Ref.get(thread.stopRequests)).toHaveLength(2);
         yield* a.orchestrator.dispatch({
           type: "thread.archive",
           commandId: CommandId.make("command:archive:laptop-parent"),
           threadId: parentThreadId,
         });
-        yield* Deferred.succeed(thread.releaseStop, undefined);
-        yield* Fiber.join(cancelling);
-        yield* remoteState(a, taskId, (task) => task.remoteChild?.stop?.state === "unconfirmed");
-        yield* Queue.take(thread.stopArrived);
-        // The backoff elapses while the parent is archived: nothing is sent there.
-        yield* TestClock.adjust("10 seconds");
-        expect(yield* Ref.get(thread.stopRequests)).toHaveLength(1);
+        // Archived, the retry sends nothing and ends instead of retrying again.
+        yield* Queue.offer(proceed, undefined);
+        const ended = yield* Fiber.await(retry).pipe(
+          Effect.as(true),
+          Effect.raceFirst(Queue.take(retrying).pipe(Effect.as(false))),
+        );
+        expect(ended).toBe(true);
+        expect(yield* Ref.get(thread.stopRequests)).toHaveLength(2);
         yield* a.orchestrator.dispatch({
           type: "thread.unarchive",
           commandId: CommandId.make("command:unarchive:laptop-parent"),
           threadId: parentThreadId,
         });
+        // Reopened, its follower's next look sends the Stop it still owes, refused again.
         yield* finishThere(thread, "Finished while archived.");
-        // Reopened, its follower sends the Stop it still owes; a repeated refusal records nothing.
-        yield* Queue.take(thread.stopArrived);
-        expect(yield* Ref.get(thread.stopRequests)).toHaveLength(2);
+        yield* Queue.take(retrying);
+        expect(yield* Ref.get(thread.stopRequests)).toHaveLength(3);
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
