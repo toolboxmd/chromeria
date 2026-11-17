@@ -34,6 +34,7 @@ import {
   caller,
   decodeTaskReceipt,
   delegate,
+  drainStops,
   finishLifecycleRun,
   instanceId,
   json,
@@ -1470,6 +1471,128 @@ it.live(
         expect(cancel.isError, json(cancel.content)).not.toBe(true);
         yield* recorded(a, parentId, members[0]!.id, (task) => task.result !== null);
         expect((yield* committedWakes(a, parentId, ids(members))).size).toBe(1);
+      }),
+    ).pipe(Effect.provide(services)),
+);
+
+/** The Stop identities the destination recorded, one per `peer-task-stop:*` command. */
+const destinationStopIds = (node: Node) =>
+  Context.get(node.database, SqlClient.SqlClient)<{
+    readonly request_id: string;
+  }>`SELECT json_extract(semantic_json,'$.operation.requestId') AS request_id FROM peer_task_stop_receipts WHERE command_id LIKE 'peer-task-stop:%'`.pipe(
+    Effect.map((rows) => rows.map((row) => row.request_id).toSorted()),
+  );
+
+it.live(
+  "runGroups751: retirement after the group cancel is accepted keeps the members quiet through completion",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parentId } = yield* pair("rg-retire-late");
+        const { groupId, members } = yield* startGroup(a, b, parentId, "rg-retire-late");
+        const cancel = yield* nativeCall(a, parentId, "task_cancel", {
+          taskId: groupId,
+          clientRequestId: "rg-retire-late-stop",
+        });
+        expect(cancel.isError, json(cancel.content)).not.toBe(true);
+        for (const task of members)
+          yield* recorded(a, parentId, task.id, (current) => current.groupCancel !== undefined);
+        const accepted = yield* destinationStopIds(b);
+        expect(accepted).toEqual(
+          [0, 1]
+            .map((index) =>
+              RemoteDelegation.cancelRequestId(
+                namespaceOf(a, parentId),
+                `rg-retire-late-stop:${index}`,
+              ),
+            )
+            .toSorted(),
+        );
+        // Retired after acceptance, then the runs there end; reopened and recovered, they end quietly.
+        yield* a.threads.dispatch({
+          type: "thread.archive",
+          commandId: CommandId.make("rg-retire-late-archive"),
+          threadId: parentId,
+        });
+        for (const [index, task] of members.entries())
+          yield* finishLifecycleRun(b, childOf(task), `rg-retire-late-${index}`);
+        yield* a.threads.dispatch({
+          type: "thread.unarchive",
+          commandId: CommandId.make("rg-retire-late-unarchive"),
+          threadId: parentId,
+        });
+        yield* a.stopConnections;
+        yield* restart(a);
+        for (const task of members)
+          yield* recorded(a, parentId, task.id, (current) => current.result !== null);
+        expect((yield* committedWakes(a, parentId, ids(members))).size).toBe(0);
+        expect(yield* destinationStopIds(b)).toEqual(accepted);
+      }),
+    ).pipe(Effect.provide(services)),
+);
+
+it.live(
+  "runGroups751: a propagated retirement Stop over an outstanding group cancel resolves it after recovery",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parentId } = yield* pair("rg-retire-stop");
+        const { groupId, members } = yield* startGroup(a, b, parentId, "rg-retire-stop");
+        yield* a.stopConnections;
+        yield* admitGroupCancel(a, parentId, groupId, members, "rg-retire-cancel");
+        // The parent stops: its retirement Stop, with its provenance, replaces each member's
+        // unsent cancel Stop before the destination hears of either.
+        yield* a.threads.dispatch({
+          type: "thread.stop",
+          threadId: parentId,
+          commandId: CommandId.make("rg-retire-parent-stop"),
+        });
+        yield* drainStops(a);
+        const retirement = (task: OrchestrationV2Subagent) =>
+          `rg-retire-parent-stop:stop:${task.id}`;
+        for (const task of members)
+          yield* recorded(
+            a,
+            parentId,
+            task.id,
+            (current) => current.remoteChild?.stop?.requestId === retirement(task),
+          );
+        yield* restart(a);
+        for (const [index, task] of members.entries())
+          yield* recorded(
+            a,
+            parentId,
+            task.id,
+            (current) =>
+              current.groupCancel !== undefined &&
+              current.remoteChild?.cancelResolution?.requestId ===
+                RemoteDelegation.cancelRequestId(
+                  namespaceOf(a, parentId),
+                  `rg-retire-cancel:${index}`,
+                ) &&
+              current.remoteChild.cancelResolution.outcome === "applied",
+          );
+        // Only the retirement Stops reached the destination; the cancel's own were never sent.
+        expect(yield* destinationStopIds(b)).toEqual(members.map(retirement).toSorted());
+        // A stopped parent's agent can no longer call; a late entry reaches the Stop owner as the
+        // entry's own observe, which finds the admission and records nothing.
+        for (const [index, task] of members.entries()) {
+          const identity = RemoteDelegation.cancelRequestId(
+            namespaceOf(a, parentId),
+            `rg-retire-cancel:${index}`,
+          );
+          yield* a.orchestrator.dispatch({
+            type: "delegated_task.remote.observe",
+            commandId: CommandId.make(`command:rg-retire-late-entry:${index}`),
+            parentThreadId: parentId,
+            taskId: task.id,
+            stop: { requestId: identity, state: "pending" },
+            cancel: true,
+          });
+          expect(yield* stopRecords(a, parentId, task.id, identity)).toBe(0);
+        }
+        expect(yield* destinationStopIds(b)).toEqual(members.map(retirement).toSorted());
+        expect((yield* committedWakes(a, parentId, ids(members))).size).toBe(0);
       }),
     ).pipe(Effect.provide(services)),
 );
