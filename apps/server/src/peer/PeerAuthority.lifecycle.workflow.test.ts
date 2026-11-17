@@ -2299,10 +2299,16 @@ it.live(
             Stream.runHead,
             Effect.flatMap(Effect.fromOption),
           );
-        const pendingRows = yield* Context.get(a.database, SqlClient.SqlClient)<{
-          count: number;
-        }>`SELECT COUNT(*) AS count FROM orchestration_events WHERE stream_id=${parentId} AND event_type='subagent.updated' AND json_extract(payload_json,'$.id')=${taskId} AND json_extract(payload_json,'$.remoteChild.stop.requestId')='client-stop:review-newer381' AND json_extract(payload_json,'$.remoteChild.stop.state')='pending'`;
-        expect(pendingRows[0]?.count).toBe(1);
+        // The newer obligation was recorded once and only moved forward; observations committed
+        // while its Stop was in flight carry it unchanged.
+        const stopStates = yield* Context.get(a.database, SqlClient.SqlClient)<{
+          state: string;
+        }>`SELECT json_extract(payload_json,'$.remoteChild.stop.state') AS state FROM orchestration_events WHERE stream_id=${parentId} AND event_type='subagent.updated' AND json_extract(payload_json,'$.id')=${taskId} AND json_extract(payload_json,'$.remoteChild.stop.requestId')='client-stop:review-newer381' ORDER BY sequence`;
+        expect(
+          stopStates
+            .map((row) => row.state)
+            .filter((state, index, states) => state !== states[index - 1]),
+        ).toEqual(["pending", "acknowledged", "confirmed"]);
         yield* connected.stop;
         yield* a.threads.dispatch({
           type: "delegated_task.remote.observe",

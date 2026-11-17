@@ -4950,3 +4950,34 @@ it.effect.each(["link removed", "destination offline"] as const)(
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
+
+it.effect("a result that arrives while the Stop is unanswered wakes the parent at once", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { thread, a } = yield* laptopHarness;
+      const { taskId } = yield* delegateToBox(a);
+      yield* Ref.set(thread.holdStop, true);
+      const cancelling = yield* a.call("task_cancel", { taskId }).pipe(Effect.forkScoped);
+      yield* Deferred.await(thread.stopStarted);
+      yield* TestClock.adjust("5 seconds");
+      yield* Fiber.join(cancelling);
+      // The Stop is still in flight there; the result is observed and owed regardless.
+      yield* finishThere(thread, "Finished while the Stop was in flight.");
+      expect(yield* taskResult(a, taskId)).toMatchObject({
+        status: "completed",
+        result: "Finished while the Stop was in flight.",
+        remoteChild: { stop: { state: "pending" } },
+      });
+      expect(yield* committedWakes(a, taskId)).toBe(1);
+      // Acceptance then withdraws the wake the parent has not consumed, as a local cancel would.
+      yield* Deferred.succeed(thread.releaseStop, undefined);
+      const accepted = yield* remoteState(
+        a,
+        taskId,
+        (task) => task.remoteChild?.stop?.state === "acknowledged",
+      );
+      expect(accepted?.completionDelivery?.state).toBe("disposed");
+      expect(yield* committedWakes(a, taskId)).toBe(0);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);

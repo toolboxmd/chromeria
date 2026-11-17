@@ -1291,6 +1291,8 @@ const make = Effect.gen(function* () {
       );
   // One Stop attempt per task at a time, whether a cancel waits on it or its follower sends it.
   const stopLocks = yield* KeyedLock.make<NodeId>();
+  // Tasks whose follower has an attempt running, so its later looks do not queue more.
+  const stopsInFlight = new Set<NodeId>();
   /**
    * Sends the task's current Stop when it is still owed and records the destination's answer:
    * accepted, refused while the thread keeps running there, or unconfirmed.
@@ -1394,13 +1396,15 @@ const make = Effect.gen(function* () {
         task = yield* reread(parentThreadId, task);
         remote = task.remoteChild!;
       }
-      if (stopOwed(remote)) {
-        // Observation never waits on the Stop: a failed attempt is recorded and retried later.
+      if (stopOwed(remote) && !stopsInFlight.has(task.id)) {
+        // Observation never waits on the Stop: its answer is recorded, and wakes this follower,
+        // whenever it comes; a failed attempt is retried on a later look.
+        stopsInFlight.add(task.id);
         yield* stopAttempt(parentThreadId, task.id).pipe(
           Effect.catch((error) => Effect.logDebug("A remote Stop attempt failed", error)),
+          Effect.ensuring(Effect.sync(() => stopsInFlight.delete(task.id))),
+          Effect.forkIn(followers),
         );
-        task = yield* reread(parentThreadId, task);
-        remote = task.remoteChild!;
       }
       const backpressured =
         task.result !== null &&
@@ -1426,6 +1430,8 @@ const make = Effect.gen(function* () {
               stored.event.type === "subagent.updated" &&
               stored.event.payload.id === task.id &&
               (stored.event.payload.remoteChild?.stop?.state === "pending" ||
+                stored.event.payload.remoteChild?.stop?.state !== remote.stop?.state ||
+                stored.event.payload.remoteChild?.stop?.requestId !== remote.stop?.requestId ||
                 (backpressured &&
                   stored.event.payload.completionDelivery?.state !==
                     task.completionDelivery?.state)),
