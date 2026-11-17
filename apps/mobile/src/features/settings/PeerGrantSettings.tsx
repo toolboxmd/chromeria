@@ -8,6 +8,7 @@ import {
 import {
   autosavePeerGrant,
   isPeerGrantPermissionEnabled,
+  peerGrantRevision,
   type PeerGrantPermission,
   setPeerGrantPermission,
 } from "@t3tools/client-runtime/state/peer-grants";
@@ -40,7 +41,13 @@ function GrantEditor({
   environmentId: EnvironmentId;
   grant: PeerGrantSummary;
 }) {
+  const revision = peerGrantRevision(grant);
+  const [savedRevision, setSavedRevision] = useState(revision);
   const [draft, setDraft] = useState(grant);
+  if (savedRevision !== revision) {
+    setSavedRevision(revision);
+    setDraft(grant);
+  }
   const [saving, setSaving] = useState(false);
   const [advanced, setAdvanced] = useState(false);
   const canSave = useAtomValue(peerGrants.update.permissionAtom(environmentId));
@@ -97,10 +104,6 @@ export function PeerGrantSettings({ environmentId }: { environmentId: Environmen
   const result = useAtomValue(peerGrants.list({ environmentId, input: {} }));
   const grants = Option.getOrElse(AsyncResult.value(result), () => []);
   return grants.map((grant) => (
-    <GrantEditor
-      key={`${grant.sessionId}:${grant.resourceScope}:${grant.onward}:${grant.preview}:${grant.device}:${grant.browserExport}`}
-      environmentId={environmentId}
-      grant={grant}
-    />
+    <GrantEditor key={grant.sessionId} environmentId={environmentId} grant={grant} />
   ));
 }

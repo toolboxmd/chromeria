@@ -9,6 +9,7 @@ import { ChevronRightIcon } from "lucide-react";
 import {
   autosavePeerGrant,
   isPeerGrantPermissionEnabled,
+  peerGrantRevision,
   setPeerGrantPermission,
 } from "@t3tools/client-runtime/state/peer-grants";
 import { toastManager } from "../ui/toast";
@@ -49,7 +50,13 @@ function GrantEditor({
   environmentId: EnvironmentId;
   grant: PeerGrantSummary;
 }) {
+  const revision = peerGrantRevision(grant);
+  const [savedRevision, setSavedRevision] = useState(revision);
   const [draft, setDraft] = useState(grant);
+  if (savedRevision !== revision) {
+    setSavedRevision(revision);
+    setDraft(grant);
+  }
   const [saving, setSaving] = useState(false);
   const canSave = useAtomValue(updatePeerGrant.permissionAtom(environmentId));
   const save = useAtomCommand(updatePeerGrant);
@@ -125,11 +132,7 @@ export function PeerGrantSettings({ environmentId }: { environmentId: Environmen
   return (
     <SettingsSection id="linked-environments" title="Linked environments">
       {grants.map((grant) => (
-        <GrantEditor
-          key={`${grant.sessionId}:${grant.resourceScope}:${grant.onward}:${grant.preview}:${grant.device}:${grant.browserExport}`}
-          environmentId={environmentId}
-          grant={grant}
-        />
+        <GrantEditor key={grant.sessionId} environmentId={environmentId} grant={grant} />
       ))}
     </SettingsSection>
   );

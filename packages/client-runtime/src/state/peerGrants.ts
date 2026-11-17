@@ -31,6 +31,10 @@ export function setPeerGrantPermission<G extends PeerGrant>(
     : { ...grant, [key]: enabled };
 }
 
+/** Changes whenever the saved permissions change, so an editor can adopt them without remounting. */
+export const peerGrantRevision = (grant: PeerGrant) =>
+  `${grant.resourceScope}:${grant.onward}:${grant.preview}:${grant.device}:${grant.browserExport}`;
+
 /** Shows `next` at once and saves it; a failed save shows `previous` again. Interruptions stay silent. */
 export async function autosavePeerGrant<G, A, E>(input: {
   readonly previous: G;
