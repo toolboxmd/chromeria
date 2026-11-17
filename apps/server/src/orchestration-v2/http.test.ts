@@ -404,7 +404,7 @@ it.effect("serves every thread route for ids over a thousand characters", () =>
   Effect.gen(function* () {
     const { eventSink, handler } = yield* serveOrchestrationHttp(() => true);
     // Nested delegated-task ids grow with each level of escaped provenance.
-    const id = ThreadId.make(`thread:task:${"handoff%3A".repeat(100)}`);
+    const id = ThreadId.make(`thread:delegated-task:${"thread%3Adelegated-task%3A".repeat(40)}`);
     yield* eventSink.write({
       events: [
         {
