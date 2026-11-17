@@ -1119,6 +1119,7 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
           Layer.provide(nodeConfig),
           Layer.provide(projectLayer),
           Layer.provide(RepositoryIdentity.layer),
+          Layer.provide(Layer.mock(Git.GitVcsDriver)({})),
           Layer.provide(hostServices),
           Layer.provide(environment),
           Layer.provide(peerHttp),

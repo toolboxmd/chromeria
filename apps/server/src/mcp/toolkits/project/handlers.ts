@@ -39,6 +39,7 @@ import { mutateProjectWithClone } from "../../../project/ProjectMutation.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as PeerAuthority from "../../../peer/PeerAuthority.ts";
+import * as DelegatedWorktreeBase from "../../../peer/DelegatedWorktreeBase.ts";
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
@@ -290,6 +291,13 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                       startFromOrigin: projectSettings.newWorktreesStartFromOrigin,
                     }
                   : input.workspaceStrategy;
+              // Fork: a linked parent's worktree starts at its pushed commit, maybe not yet fetched here.
+              if (
+                strategy?.type === "worktree" &&
+                strategy.startFromOrigin === false &&
+                linkOrigin !== undefined
+              )
+                yield* DelegatedWorktreeBase.fetchBase(project.workspaceRoot, strategy.baseRef);
               // Reject unresolved base refs and blocked branch names before accepting a launch; worktree provisioning happens later.
               if (strategy?.type === "worktree")
                 yield* ThreadLaunch.ThreadLaunchService.pipe(

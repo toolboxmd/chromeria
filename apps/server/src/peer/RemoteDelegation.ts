@@ -74,6 +74,8 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
+import * as DelegatedWorktreeBase from "./DelegatedWorktreeBase.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 
 /** How long one follow of a remote task waits on its thread there before checking again. */
@@ -201,6 +203,7 @@ const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const random = yield* SecureRandom.SecureRandom;
+  const git = yield* GitVcsDriver.GitVcsDriver;
   const hereId = yield* ServerEnvironment.ServerEnvironment.pipe(
     Effect.flatMap((environment) => environment.getEnvironmentId),
   );
@@ -396,6 +399,27 @@ const make = Effect.gen(function* () {
         });
       if (existing === undefined || existing.remoteChild?.launch?.lifecycleVersion === 1)
         yield* requireLifecycle(target.environmentId, link.launchIdentity);
+      // A worktree there starts at this checkout's exact commit, as a task here does. A
+      // retry replays the recorded launch, so only the first request resolves it.
+      const isolated = input.isolation === "worktree" && existing === undefined;
+      const parentCheckout = isolated
+        ? (parent.thread.worktreePath ??
+          (yield* projects.getById(parent.thread.projectId).pipe(
+            Effect.map(Option.getOrUndefined),
+            Effect.orElseSucceed(() => undefined),
+          ))?.workspaceRoot)
+        : undefined;
+      if (isolated && parentCheckout === undefined)
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "Unable to resolve the parent checkout commit.",
+        });
+      const worktreeBase =
+        parentCheckout === undefined
+          ? undefined
+          : yield* DelegatedWorktreeBase.resolveBase(parentCheckout).pipe(
+              Effect.provideService(GitVcsDriver.GitVcsDriver, git),
+            );
       // Keep the original inherited modes across recovery, even if the parent
       // is later raised. Forwarding still checks the current parent's limits.
       const linkRuntimeMode =
@@ -495,9 +519,17 @@ const make = Effect.gen(function* () {
         ...(modelSelection === undefined ? {} : { modelSelection }),
         prismRole,
         ...(input.lane === undefined ? {} : { lane: input.lane }),
-        ...(input.workspaceStrategy === undefined
-          ? {}
-          : { workspaceStrategy: input.workspaceStrategy }),
+        ...(worktreeBase !== undefined
+          ? {
+              workspaceStrategy: {
+                type: "worktree" as const,
+                baseRef: worktreeBase,
+                startFromOrigin: false,
+              },
+            }
+          : input.workspaceStrategy === undefined
+            ? {}
+            : { workspaceStrategy: input.workspaceStrategy }),
         runtimeMode: runtimeMode ?? inheritedRuntimeMode,
         interactionMode: interactionMode ?? parentModes.interactionMode,
         delegatedFrom: {
