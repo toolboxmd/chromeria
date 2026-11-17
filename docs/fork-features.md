@@ -3597,7 +3597,7 @@ sources and reasons.
   "id": "opencode-deferred-tools",
   "purpose": "OpenCode registers the T3 MCP server with deferred tool exposure, so a new thread lists the core tools plus tool_search instead of every schema. Drop when upstream sends the exposure header from the OpenCode adapter or replaces deferred listing.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/778"],
-  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...defer-opencode-tool-exposure"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/780"],
   "newFiles": [],
   "upstreamFiles": [],
   "sharedFiles": [
