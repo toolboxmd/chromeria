@@ -1590,10 +1590,13 @@ export const mockOutput = (sample: Sample, command: string) =>
     : sample.testCase.setup.shellMocks?.find((mock) => new RegExp(mock.match).test(command))
         ?.output;
 
+type ModelEndpoint = { readonly url: string; readonly headers: Readonly<Record<string, string>> };
 type Config = {
   readonly apiKey: string;
   readonly model: Model;
-  readonly proxy?: { readonly url: string; readonly headers: Readonly<Record<string, string>> };
+  readonly proxy?: ModelEndpoint;
+  /** Set only by `--anthropic-base-url`. Claude calls go here instead of api.anthropic.com. */
+  readonly claudeProxy?: ModelEndpoint;
   readonly effort: string;
   readonly maxSteps: number;
   readonly shellModel: ShellModel;
@@ -1619,7 +1622,11 @@ const simulate = Effect.fn("evaluateMcpToolUse.simulate")(function* (
   if (output === undefined) {
     const body = shellRequest(sample, call, config.shellModel);
     const response = isPricedModel(config.shellModel)
-      ? yield* callModel(config.apiKey, body, config.apiKey ? undefined : config.proxy)
+      ? yield* callModel(
+          config.apiKey,
+          body,
+          config.claudeProxy ?? (config.apiKey ? undefined : config.proxy),
+        )
       : yield* callCodex(config, shellResponsesRequest(body));
     addUsage(sample.shellUsage, response.usage);
     output = shellOutput(response.content);
@@ -2119,7 +2126,7 @@ const RETRY = Schedule.min([Schedule.exponential("2 seconds"), Schedule.spaced("
 const postModel = Effect.fn("evaluateMcpToolUse.postModel")(function* (
   apiKey: string,
   body: unknown,
-  proxy?: Config["proxy"],
+  proxy?: ModelEndpoint,
   responses = false,
 ) {
   const client = (yield* HttpClient.HttpClient).pipe(
@@ -2152,7 +2159,7 @@ const postModel = Effect.fn("evaluateMcpToolUse.postModel")(function* (
   }
   return yield* response.text;
 });
-const callModel = (apiKey: string, body: unknown, proxy?: Config["proxy"]) =>
+const callModel = (apiKey: string, body: unknown, proxy?: ModelEndpoint) =>
   postModel(apiKey, body, proxy).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(ApiResponse))),
   );
@@ -2218,7 +2225,11 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   for (let step = 0; step < maxSteps; step++) {
     const response = input
       ? yield* callCodex(config, codexRequest(base, input))
-      : yield* callModel(config.apiKey, requestBody(sample, config.effort, messages));
+      : yield* callModel(
+          config.apiKey,
+          requestBody(sample, config.effort, messages),
+          config.claudeProxy,
+        );
     addUsage(usage, response.usage);
     if ("raw" in response) {
       input?.push(...response.raw);
@@ -2442,6 +2453,12 @@ export const sampleCapMessage = (planned: number, maxSamples: number | undefined
     : undefined;
 };
 
+/** `postModel` appends `/messages`, so the base ends in `/v1`. */
+const anthropicEndpoint = (base: string) => {
+  const trimmed = base.trim().replace(/\/+$/, "");
+  return trimmed.endsWith("/v1") ? trimmed : `${trimmed}/v1`;
+};
+
 const PositiveInt = Schema.FiniteFromString.check(Schema.isInt(), Schema.isGreaterThan(0));
 const PositiveIntOrZero = Schema.FiniteFromString.check(
   Schema.isInt(),
@@ -2468,6 +2485,7 @@ const Flags = Schema.Struct({
   "stop-on-regression": Schema.Boolean,
   "regression-budget": Schema.optional(PositiveIntOrZero),
   context: Schema.Boolean,
+  "anthropic-base-url": Schema.optional(Schema.String),
 });
 const decodeFlags = Schema.decodeUnknownEffect(Flags);
 const decodeCapture = Schema.decodeUnknownEffect(Schema.fromJsonString(Capture));
@@ -2511,6 +2529,8 @@ const main = Effect.gen(function* () {
       "regression-budget": string,
       // Prints the size of T3's text and tool schemas, then exits. Needs no template or key.
       context: { type: "boolean", default: false },
+      // Opt-in. ANTHROPIC_BASE_URL stays ignored so a shell setting cannot redirect a paid run.
+      "anthropic-base-url": string,
     },
   });
   const flags = yield* decodeFlags({ template: "", ...values });
@@ -2659,12 +2679,22 @@ const main = Effect.gen(function* () {
   const out = flags.out;
   if ((!apiKey && !codex) || out === undefined) {
     const message =
-      "Set ANTHROPIC_API_KEY and pass --out <directory>. ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL are never used.";
+      "Set ANTHROPIC_API_KEY and pass --out <directory>. ANTHROPIC_AUTH_TOKEN is ignored. Pass --anthropic-base-url to send Claude calls to that server; ANTHROPIC_BASE_URL is still ignored.";
     return yield* Effect.die(new Error(message));
   }
+  if (flags["anthropic-base-url"] !== undefined && codex) {
+    return yield* Effect.die(
+      new Error("--anthropic-base-url applies to Claude models. Codex already uses its own proxy."),
+    );
+  }
+  const claudeProxy =
+    flags["anthropic-base-url"] === undefined
+      ? undefined
+      : { url: anthropicEndpoint(flags["anthropic-base-url"]), headers: {} };
   const config: Config = {
     apiKey,
     model: flags.model,
+    ...(claudeProxy ? { claudeProxy } : {}),
     ...(codex || !isPricedModel(flags["shell-model"]) ? { proxy: proxyConfig() } : {}),
     effort,
     maxSteps: flags["max-steps"] ?? (codex ? 10 : 6),
@@ -2695,7 +2725,11 @@ const main = Effect.gen(function* () {
     const { id, kind, pattern } = testCase;
     const identity = { id, kind, pattern, role: testCase.setup.role };
     const usage = { usage: emptyUsage(), shellUsage: emptyUsage() };
-    const privateValues = [config.apiKey, ...Object.values(config.proxy?.headers ?? {})]
+    const privateValues = [
+      config.apiKey,
+      ...Object.values(config.proxy?.headers ?? {}),
+      ...Object.values(config.claudeProxy?.headers ?? {}),
+    ]
       .flatMap((value) => [value, value.replace(/^Bearer /i, "")])
       .filter(Boolean);
     return runSample(testCase, config, baseFor(testCase), usage).pipe(
@@ -2768,7 +2802,8 @@ const main = Effect.gen(function* () {
     { concurrency: flags.concurrency, discard: true },
   ).pipe(Effect.ignore);
   const samples = flags.samples === undefined ? "2-3 (adaptive)" : flags.samples;
-  const header = `Commit \`${commit}\`, ${flags.model} at ${effort} effort, user instructions ${flags["user-instructions"]}, ${samples} samples per case, template \`${path.basename(templatePath)}\``;
+  const via = config.claudeProxy ? ` via ${config.claudeProxy.url}` : "";
+  const header = `Commit \`${commit}\`, ${flags.model} at ${effort} effort${via}, user instructions ${flags["user-instructions"]}, ${samples} samples per case, template \`${path.basename(templatePath)}\``;
   const finished = new Set(rows.map((row) => row.id)).size;
   const stopped =
     regressions.length === 0
