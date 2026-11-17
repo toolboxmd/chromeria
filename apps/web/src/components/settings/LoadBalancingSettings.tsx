@@ -47,12 +47,12 @@ export function LoadBalancingSettings({
   environments: ReadonlyArray<EnvironmentPresentation>;
 }) {
   // Fork: saved on this app's primary machine, whose agents' delegations balance with it too.
-  const { autoBalance, update } = useAutoBalance();
+  const { autoBalance, ready, update } = useAutoBalance();
   const settings = {
     loadBalancingEnabled: autoBalance.enabled,
     loadBalancingWeights: autoBalance.weights,
   };
-  const settingsHydrated = useClientSettingsHydrated();
+  const settingsHydrated = useClientSettingsHydrated() && ready;
 
   if (environments.length < 2) return null;
 

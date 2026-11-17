@@ -52,3 +52,19 @@ export function autoBalanceMigrationPatch(
     ? { migrateAutoBalance: legacy }
     : null;
 }
+
+/**
+ * The Auto balance a client acts on: its own with no primary server, the primary's once known
+ * (its own until the primary has one), and off while the primary's is unknown.
+ */
+export function resolveAutoBalance(input: {
+  readonly hasPrimary: boolean;
+  /** Undefined until the primary's settings arrive; null when it has never been set. */
+  readonly primary: AutoBalanceSettings | null | undefined;
+  readonly legacy: AutoBalanceSettings;
+}): { readonly autoBalance: AutoBalanceSettings; readonly ready: boolean } {
+  if (!input.hasPrimary) return { autoBalance: input.legacy, ready: true };
+  if (input.primary === undefined)
+    return { autoBalance: { enabled: false, weights: {} }, ready: false };
+  return { autoBalance: input.primary ?? input.legacy, ready: true };
+}

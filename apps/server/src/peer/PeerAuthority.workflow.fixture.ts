@@ -500,7 +500,15 @@ export const layerFixtureHostServices = Layer.mergeAll(
   McpProviderSessions.layer,
   // Fixture repositories have no forge; pull request reads are mocked per test.
   Layer.succeed(BuiltInDrivers.SourceControlDrivers, []),
-  Layer.mock(HostResources.HostResources)({}),
+  Layer.mock(HostResources.HostResources)({
+    read: Effect.succeed({
+      sampledAt: 0,
+      cpuUtilization: 0.5,
+      cpuCount: 4,
+      availableMemoryBytes: 1,
+      totalMemoryBytes: 2,
+    }),
+  }),
 );
 
 export const makeNode = Effect.fn("PeerAuthority.makeNode")(
