@@ -3590,3 +3590,23 @@ sources and reasons.
   "keywords": ["sortActiveThreadsByOrderKey", "activeThreadAnchorTimestampMs"]
 }
 ```
+
+## opencode-deferred-tools
+
+```json
+{
+  "id": "opencode-deferred-tools",
+  "purpose": "OpenCode 1.x and 2.x register the T3 MCP server with deferred tool exposure, so a new thread lists the core tools plus tool_search instead of every schema; a bare launch that names individual T3 tools keeps them listed upfront. Drop when upstream sends the exposure header from the OpenCode adapter or replaces deferred listing.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/778"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/780"],
+  "newFiles": [],
+  "upstreamFiles": [],
+  "sharedFiles": [
+    "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts",
+    "packages/provider-opencode/src/server/adapter.ts",
+    "packages/provider-opencode/src/server/adapter.test.ts",
+    "packages/provider-opencode/src/server/v2/adapter.ts"
+  ],
+  "keywords": ["MCP_TOOL_EXPOSURE_HEADER", "t3-tool-exposure", "t3McpHeaders"]
+}
+```

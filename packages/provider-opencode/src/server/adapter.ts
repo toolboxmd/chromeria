@@ -1,4 +1,8 @@
-import { executionPurposeOf, type NativeExecutionSegment } from "@t3tools/contracts";
+import {
+  executionPurposeOf,
+  type NativeExecutionSegment,
+  type ThreadBare,
+} from "@t3tools/contracts";
 import * as Path from "effect/Path";
 import * as FileSystem from "effect/FileSystem";
 import {
@@ -9,6 +13,7 @@ import {
   BareLaunchError,
   bareReceipt,
   bareInventoryEvidence,
+  bareT3ToolNames,
   namesT3Mcp,
 } from "@t3tools/provider-core/server/bareLaunch";
 import type {
@@ -70,6 +75,7 @@ import * as Stream from "effect/Stream";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { mcpToolPresentation } from "@t3tools/provider-core/server/mcpToolPresentation";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import { MCP_TOOL_EXPOSURE_HEADER } from "@t3tools/provider-core/server/mcpSession";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import {
   structuralProtocolMethod,
@@ -98,6 +104,13 @@ import {
 import { openCodeCommandFailed, openCodeToolOutput, openCodeToolTurnItem } from "./toolItems.ts";
 
 export const OPENCODE_PROVIDER = ProviderDriverKind.make("opencode");
+
+// Tools named by a bare launch stay listed upfront: its credential hides tool_search.
+export function t3McpHeaders(authorization: string, bare: ThreadBare | undefined) {
+  return bareT3ToolNames(bare) === undefined
+    ? { Authorization: authorization, [MCP_TOOL_EXPOSURE_HEADER]: "deferred" }
+    : { Authorization: authorization };
+}
 export const OPENCODE_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(OPENCODE_PROVIDER);
 export const OPENCODE_SDK_PROTOCOL = "opencode-sdk.sse" as const;
 const DEFAULT_OPENCODE_SETTINGS = Schema.decodeSync(OpenCodeSettings)({});
@@ -1231,7 +1244,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               config: {
                 type: "remote",
                 url: mcpSession.endpoint,
-                headers: { Authorization: mcpSession.authorizationHeader },
+                headers: t3McpHeaders(mcpSession.authorizationHeader, bare),
                 oauth: false,
               },
             }),
