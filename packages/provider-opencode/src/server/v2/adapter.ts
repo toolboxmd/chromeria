@@ -98,7 +98,7 @@ import {
 } from "@t3tools/provider-core/server/subagentProjection";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { turnScopedSelectionTransition } from "@t3tools/provider-core/server/selectionTransition";
-import { OPENCODE_PROVIDER, openCodePermissionRequestKind } from "../adapter.ts";
+import { OPENCODE_PROVIDER, openCodePermissionRequestKind, t3McpHeaders } from "../adapter.ts";
 import {
   openCodeCodeModeHtmlRenders,
   openCodeCommandFailed,
@@ -4680,7 +4680,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
             config: new Mcp.RemoteConfig({
               type: "remote",
               url: mcpSession!.endpoint,
-              headers: { Authorization: wanted.credential },
+              headers: t3McpHeaders(wanted.credential, turnInput.runtimePolicy.bare),
               oauth: false,
             }),
           })

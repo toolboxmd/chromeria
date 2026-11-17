@@ -24,6 +24,7 @@ import {
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
   type ProviderOptionSelection,
+  type ThreadBare,
 } from "@t3tools/contracts";
 import { OpenCodeSettings } from "../settings.ts";
 import * as Effect from "effect/Effect";
@@ -167,6 +168,7 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
     readonly exitCode?: Effect.Effect<number>;
     readonly options?: ReadonlyArray<ProviderOptionSelection>;
     readonly interactionMode?: ProviderAdapter.ProviderAdapterV2RuntimePolicy["interactionMode"];
+    readonly bareAdditions?: ThreadBare["additions"];
   } = {},
 ) {
   const instanceId = ProviderInstanceId.make(`opencode-${suffix}`);
@@ -181,7 +183,7 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
   const policy = runtimePolicy("full-access", {
     cwd: "/workspace",
     interactionMode: turnSettings.interactionMode ?? "default",
-    ...(bareRoot === undefined ? {} : { bare: { additions: [] } }),
+    ...(bareRoot === undefined ? {} : { bare: { additions: turnSettings.bareAdditions ?? [] } }),
   });
   const adapter = yield* makeOpenCodeAdapterV2({
     instanceId,
@@ -335,8 +337,19 @@ describe("OpenCodeAdapterV2", () => {
     ),
   );
 
-  it.effect("registers the T3 MCP server with deferred tool exposure", () =>
+  // A bare thread limited to named T3 tools cannot list tool_search, so deferral would hide them all.
+  it.effect.each([
+    { name: "an ordinary thread", additions: undefined, deferred: true },
+    { name: "a bare thread with the whole T3 server", additions: [{}], deferred: true },
+    {
+      name: "a bare thread with one selected T3 tool",
+      additions: [{ tool: "preview_open" }],
+      deferred: false,
+    },
+  ] as const)("registers the T3 MCP server for $name", ({ additions, deferred }) =>
     Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = additions === undefined ? undefined : yield* fs.makeTempDirectoryScoped();
       const nativeEvents = asyncEventStream();
       yield* Effect.addFinalizer(() => Effect.sync(() => nativeEvents.close()));
       const added: Array<unknown> = [];
@@ -356,10 +369,13 @@ describe("OpenCodeAdapterV2", () => {
         "ses_mcp",
         {
           event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
+          config: { get: async () => ({ data: OPEN_CODE_BARE_CONFIG }) },
+          tool: { list: async () => ({ data: [] }) },
           session: {
             create: async () => ({ data: { id: "ses_mcp", time: { created: 1, updated: 1 } } }),
           },
           mcp: {
+            status: async () => ({ data: { "t3-code": { status: "connected" } } }),
             add: async (input: unknown) => {
               added.push(input);
               return { data: true };
@@ -367,9 +383,20 @@ describe("OpenCodeAdapterV2", () => {
           },
         },
         {},
+        root,
         undefined,
-        undefined,
-        { exitCode: Effect.never },
+        {
+          exitCode: Effect.never,
+          ...(additions === undefined
+            ? {}
+            : {
+                bareAdditions: additions.map((addition) => ({
+                  type: "mcp" as const,
+                  server: "t3-code" as const,
+                  ...addition,
+                })),
+              }),
+        },
       );
       assert.deepStrictEqual(added, [
         {
@@ -377,7 +404,10 @@ describe("OpenCodeAdapterV2", () => {
           config: {
             type: "remote",
             url: "http://t3.invalid/mcp",
-            headers: { Authorization: "Bearer t3-token", "t3-tool-exposure": "deferred" },
+            headers: {
+              Authorization: "Bearer t3-token",
+              ...(deferred ? { "t3-tool-exposure": "deferred" } : {}),
+            },
             oauth: false,
           },
         },
@@ -385,7 +415,7 @@ describe("OpenCodeAdapterV2", () => {
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+        Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
       ),
     ),
   );
