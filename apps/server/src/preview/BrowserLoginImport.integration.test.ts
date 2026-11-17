@@ -197,7 +197,7 @@ const setup = (callerShell = shell) =>
       Layer.build,
     );
     const links = Context.get(services, PeerLinks.PeerLinks);
-    yield* linkTo(links, target, "full-access");
+    yield* linkTo(links, target, "auto");
     const rockyAuthority = target.peerAuthority;
     if (rockyAuthority === undefined) return yield* Effect.die("rocky needs peer authority");
     const setGrant = (change: { readonly preview?: boolean; readonly browserExport?: boolean }) =>
