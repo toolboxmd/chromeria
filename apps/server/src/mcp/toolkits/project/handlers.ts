@@ -292,12 +292,25 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                     }
                   : input.workspaceStrategy;
               // Fork: a linked parent's worktree starts at its pushed commit, maybe not yet fetched here.
+              // Refused here when still missing: preflight accepts any base in a repository
+              // without commits, and provisioning would then fall back to another commit.
               if (
                 strategy?.type === "worktree" &&
                 strategy.startFromOrigin === false &&
-                linkOrigin !== undefined
+                linkOrigin !== undefined &&
+                !(yield* DelegatedWorktreeBase.fetchBase(project.workspaceRoot, strategy.baseRef))
               )
-                yield* DelegatedWorktreeBase.fetchBase(project.workspaceRoot, strategy.baseRef);
+                return yield* new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message: `${
+                    new ThreadLaunch.ThreadLaunchBaseRefError({
+                      projectId,
+                      projectTitle: project.title,
+                      workspaceRoot: project.workspaceRoot,
+                      baseRef: strategy.baseRef,
+                    }).message
+                  } No thread was created. No remote of this checkout has that commit; add the remote it was pushed to.`,
+                });
               // Reject unresolved base refs and blocked branch names before accepting a launch; worktree provisioning happens later.
               if (strategy?.type === "worktree")
                 yield* ThreadLaunch.ThreadLaunchService.pipe(

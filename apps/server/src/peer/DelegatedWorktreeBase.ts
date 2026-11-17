@@ -58,20 +58,20 @@ export const resolveBase = Effect.fn("DelegatedWorktreeBase.resolveBase")(functi
 
 /**
  * Makes the exact commit `commitSha` present in `cwd` by fetching it from this checkout's
- * remotes, which serve reachable commits by id. Never fails: launch preflight refuses a base
- * that is still missing, so a different commit is never used.
+ * remotes, which serve reachable commits by id. False when it is still missing; a base that
+ * is not a full commit id is left to launch preflight.
  */
 export const fetchBase = Effect.fn("DelegatedWorktreeBase.fetchBase")(function* (
   cwd: string,
   commitSha: string,
 ) {
-  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commitSha)) return;
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commitSha)) return true;
   const present = git("DelegatedWorktreeBase.present", cwd, [
     "cat-file",
     "-e",
     `${commitSha}^{commit}`,
   ]).pipe(Effect.map((result) => result !== null));
-  if (yield* present) return;
+  if (yield* present) return true;
   const remotes = ((yield* git("DelegatedWorktreeBase.remotes", cwd, ["remote"])) ?? "")
     .split("\n")
     .filter(Boolean);
@@ -84,6 +84,7 @@ export const fetchBase = Effect.fn("DelegatedWorktreeBase.fetchBase")(function* 
       remote,
       commitSha,
     ]);
-    if (yield* present) return;
+    if (yield* present) return true;
   }
+  return false;
 });

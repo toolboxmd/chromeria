@@ -25,7 +25,7 @@ it.live(
       git(parent, "commit", "-q", "--allow-empty", "-m", "later");
       git(parent, "push", "-q");
       expect(has(box, head)).toBe(false);
-      yield* DelegatedWorktreeBase.fetchBase(box, head);
+      expect(yield* DelegatedWorktreeBase.fetchBase(box, head)).toBe(true);
       expect(has(box, head)).toBe(true);
       expect(has(box, git(parent, "rev-parse", "HEAD"))).toBe(false);
     }).pipe(Effect.scoped, Effect.provide(layer)),
@@ -45,12 +45,12 @@ it.live.each(["unpushed commit", "no upstream", "detached"] as const)(
     }).pipe(Effect.scoped, Effect.provide(layer)),
 );
 
-it.live("a base no remote has stays missing, for launch preflight to refuse", () =>
+it.live("a base no remote has stays missing and is reported missing", () =>
   Effect.gen(function* () {
     const { parent, box } = yield* pushedCheckouts;
     git(parent, "commit", "-q", "--allow-empty", "-m", "local");
     const local = git(parent, "rev-parse", "HEAD");
-    yield* DelegatedWorktreeBase.fetchBase(box, local);
+    expect(yield* DelegatedWorktreeBase.fetchBase(box, local)).toBe(false);
     expect(has(box, local)).toBe(false);
   }).pipe(Effect.scoped, Effect.provide(layer)),
 );

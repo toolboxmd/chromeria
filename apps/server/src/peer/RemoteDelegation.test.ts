@@ -922,7 +922,7 @@ const boxToolkitLayer = (
         getById: () =>
           Effect.succeedSome({
             defaultModelSelection: modelSelection,
-            ...(checkout === undefined ? {} : { workspaceRoot: checkout }),
+            ...(checkout === undefined ? {} : { title: "app", workspaceRoot: checkout }),
           } as never),
         // More than a page, so finding the project with this repository pages.
         listPage: ({ cursor, limit }) =>
@@ -3243,7 +3243,7 @@ it.effect.each([false, true])(
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.live.each(["pushed", "unpushed"] as const)(
+it.live.each(["pushed", "unpushed", "missing there"] as const)(
   "a worktree task there starts at the parent's exact pushed commit (%s)",
   (state) =>
     Effect.scoped(
@@ -3251,8 +3251,20 @@ it.live.each(["pushed", "unpushed"] as const)(
         const checkouts = yield* pushedCheckouts;
         if (state === "unpushed") git(checkouts.parent, "commit", "-q", "--allow-empty", "-m", "x");
         const head = git(checkouts.parent, "rev-parse", "HEAD");
+        // A checkout there without commits whose only remote never had the parent's commit.
+        const lonely = `${checkouts.box}-lonely`;
+        if (state === "missing there") {
+          git(checkouts.box, "init", "-q", "--bare", `${lonely}-origin.git`);
+          git(checkouts.box, "init", "-q", lonely);
+          git(lonely, "remote", "add", "origin", `${lonely}-origin.git`);
+        }
         const thread = yield* makeBoxThread;
-        const b = yield* serveBox(thread, true, undefined, checkouts.box);
+        const b = yield* serveBox(
+          thread,
+          true,
+          undefined,
+          state === "missing there" ? lonely : checkouts.box,
+        );
         const offers = yield* SubscriptionRef.make<
           ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
         >([]);
@@ -3274,9 +3286,11 @@ it.live.each(["pushed", "unpushed"] as const)(
           mode: "async",
           clientRequestId: "isolated-on-box",
         });
-        if (state === "unpushed") {
+        if (state !== "pushed") {
           expect(response.isError).toBe(true);
-          expect(JSON.stringify(response.content)).toContain("git push -u");
+          expect(JSON.stringify(response.content)).toContain(
+            state === "unpushed" ? "git push -u" : "No thread was created",
+          );
           expect(yield* Ref.get(thread.launchIds)).toEqual([]);
           return;
         }
