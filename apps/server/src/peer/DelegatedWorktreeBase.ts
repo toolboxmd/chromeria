@@ -111,5 +111,19 @@ export const upstreamRemote = Effect.fn("DelegatedWorktreeBase.upstreamRemote")(
     remoteName,
   ]);
   if (url === null) return undefined;
-  return `${remoteName} (${url.replace(/^(https?:\/\/)[^/@]*@/, "$1")})`;
+  return `${remoteName} (${redactRemoteUrl(url)})`;
 });
+
+/** A remote URL without userinfo or query, where tokens live; scp-style and paths are unchanged. */
+export function redactRemoteUrl(remoteUrl: string): string {
+  try {
+    const url = new URL(remoteUrl);
+    if (url.username === "" && url.password === "" && url.search === "") return remoteUrl;
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    return url.toString();
+  } catch {
+    return remoteUrl;
+  }
+}

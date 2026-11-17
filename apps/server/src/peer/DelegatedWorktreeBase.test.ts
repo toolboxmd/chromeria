@@ -54,3 +54,16 @@ it.live("a base no remote has stays missing and is reported missing", () =>
     expect(has(box, local)).toBe(false);
   }).pipe(Effect.scoped, Effect.provide(layer)),
 );
+
+it.each([
+  ["https://user:pa@rt@github.com/org/repo.git", "https://github.com/org/repo.git"],
+  [
+    "https://github.com/org/repo.git?access_token=synthetic-secret",
+    "https://github.com/org/repo.git",
+  ],
+  ["ssh://git:secret@example.com/org/repo.git", "ssh://example.com/org/repo.git"],
+  ["git@github.com:org/repo.git", "git@github.com:org/repo.git"],
+  ["https://github.com/org/repo.git", "https://github.com/org/repo.git"],
+])("names a remote %s without its credentials", (url, shown) => {
+  expect(DelegatedWorktreeBase.redactRemoteUrl(url)).toBe(shown);
+});
