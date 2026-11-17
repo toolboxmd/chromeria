@@ -959,7 +959,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "https://github.com/toolboxmd/chromeria/pull/279",
     "https://github.com/toolboxmd/chromeria/pull/301",
     "https://github.com/toolboxmd/chromeria/pull/431",
-    "https://github.com/toolboxmd/chromeria/pull/413"
+    "https://github.com/toolboxmd/chromeria/pull/413",
+    "https://github.com/toolboxmd/chromeria/pull/762"
   ],
   "newFiles": [
     "packages/client-runtime/src/state/restartCutPresentation.ts",
