@@ -54,7 +54,14 @@ vi.stubEnv("T3CODE_SERVER_BROWSER_SANDBOX", "0");
 const PASSWORD = `LOGIN-Password+&=#?% 42<"'>`;
 const USERNAME = "LOGIN-user@example.test";
 const CODE = "826493";
-const SECRETS = [PASSWORD, USERNAME, CODE, encodeURIComponent(PASSWORD)];
+const SECRETS = [
+  PASSWORD,
+  USERNAME,
+  CODE,
+  encodeURIComponent(PASSWORD),
+  // As JSON.stringify writes it, since the password holds a quote.
+  JSON.stringify(PASSWORD).slice(1, -1),
+];
 /** Also decoded: Chromium escapes a URL its own way, such as ' as %27. */
 const expectNoSecret = (value: unknown) => {
   const text = JSON.stringify(value);
@@ -92,7 +99,7 @@ const desktop = {
   bus: new NodeEvents.EventEmitter(),
 };
 const contexts: Array<BrowserContext> = [];
-const passwordPosts: Array<string> = [];
+const posts: Array<{ readonly path: string; readonly body: string }> = [];
 
 const routedContextFor = ServerBrowserContexts.prototype.contextFor;
 vi.spyOn(ServerBrowserContexts.prototype, "contextFor").mockImplementation(async function (
@@ -110,8 +117,9 @@ vi.spyOn(ServerBrowserContexts.prototype, "contextFor").mockImplementation(async
         return page(
           "<title>Sign in</title><form method=post action=/passkey-error><label>Password<input type=password name=password></label><button>Continue</button></form>",
         );
+      if (route.request().method() === "POST")
+        posts.push({ path: url.pathname, body: route.request().postData() ?? "" });
       if (url.pathname === "/passkey-error") {
-        passwordPosts.push(route.request().method());
         return page(
           "<title>Passkey</title><p role=alert>This passkey can't be used on this device.</p><a href=/otp>Try another way</a>",
         );
@@ -317,7 +325,7 @@ const withBrowser = <A, E>(
         vault.fail = false;
         vault.password = PASSWORD;
         vault.uris = ["example.test"];
-        passwordPosts.length = 0;
+        posts.length = 0;
         desktop.enabled = false;
         desktop.page = undefined;
         desktop.disconnected = undefined;
@@ -370,7 +378,10 @@ describe.skipIf(!executable)("credential login in a real browser", () => {
         yield* act(tabId, "waitFor", { text: "Try another way" });
         const prompt = yield* act<PreviewAutomationSnapshot>(tabId, "snapshot");
         expect(prompt.visibleText).toContain("This passkey can't be used on this device.");
-        expect(passwordPosts).toEqual(["POST"]);
+        // One password submission, carrying the vault's password.
+        expect(posts).toEqual([
+          { path: "/passkey-error", body: new URLSearchParams({ password: PASSWORD }).toString() },
+        ]);
         const status = yield* act<PreviewAutomationStatus>(tabId, "status");
         expect(status).toMatchObject({
           url: "https://login.example.test/passkey-error",
@@ -391,7 +402,8 @@ describe.skipIf(!executable)("credential login in a real browser", () => {
           tabId,
           title: "Account",
         });
-        expect(passwordPosts).toEqual(["POST"]);
+        expect(posts.map((post) => post.path)).toEqual(["/passkey-error", "/signed"]);
+        expect(posts[1]!.body).toBe(`code=${CODE}`);
         const manager = yield* Manager.PreviewManager;
         expect(
           (yield* manager.list({ threadId: scope.thread.threadId })).sessions.map(

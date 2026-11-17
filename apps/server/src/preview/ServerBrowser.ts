@@ -447,11 +447,6 @@ interface ServerTab {
   fileChooserIntercepted: boolean;
   readonly onFileChooser: (chooser: FileChooser) => void;
   readonly watches: Set<string>;
-  /**
-   * The browser profile whose storage the tab shares: a server profile id, its own
-   * context for an isolated tab and its popups, or a desktop tab of its own.
-   */
-  readonly profileKey: string;
 
   readonly isolatedContext: boolean;
 
@@ -803,10 +798,7 @@ const make = Effect.gen(function* () {
   const tabAuthorizations = new Map<string, () => Promise<void>>();
   /** Sessions closed while their tab was still opening; the open discards its page. */
   const closedPendingTabs = new Set<string>();
-  const adoptedPages = new Map<
-    string,
-    { readonly page: Page; readonly openerTabId: string; readonly profileKey: string }
-  >();
+  const adoptedPages = new Map<string, { readonly page: Page; readonly openerTabId: string }>();
   const mayCloseSettledTab = (tab: ServerTab) =>
     tab.control.agentId !== null &&
     tab.control.controller === null &&
@@ -1427,13 +1419,6 @@ const make = Effect.gen(function* () {
             .catch(constVoid);
         },
         watches: new Set(),
-        profileKey:
-          adopted?.profileKey ??
-          (desktop
-            ? `desktop:${tabKey(snapshot.threadId, snapshot.tabId)}`
-            : isolatedContext
-              ? `isolated:${tabKey(snapshot.threadId, snapshot.tabId)}`
-              : `profile:${snapshot.profileId ?? DEFAULT_BROWSER_PROFILE_ID}`),
         isolatedContext,
         desktop: desktop === null ? null : { close: desktop.close },
         profileId: snapshot.profileId,
@@ -2214,7 +2199,6 @@ const make = Effect.gen(function* () {
           adoptedPages.set(tabKey(snapshot.threadId, snapshot.tabId), {
             page: popup,
             openerTabId: opener.tabId,
-            profileKey: opener.profileKey,
           }),
       }),
     ).then(
