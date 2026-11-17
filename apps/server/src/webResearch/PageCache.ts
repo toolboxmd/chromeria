@@ -13,6 +13,7 @@ import * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
+import { writeFileDurably } from "./durableWrite.ts";
 import { CachedPage } from "./schemas.ts";
 
 const gzip = NodeUtil.promisify(NodeZlib.gzip);
@@ -198,13 +199,8 @@ const make = Effect.gen(function* () {
       try: () => gzip(json),
       catch: (cause) => new PageCacheError({ operation: "write", cause }),
     });
-    const blob = path.join(directory, `${page.cacheId}.gz`);
-    // The index row is durable once SQLite commits, so the body must reach disk first:
-    // an unsynced body comes back empty after a crash while its row survives.
-    yield* fs.open(blob, { flag: "w" }).pipe(
-      Effect.flatMap((file) => file.writeAll(body).pipe(Effect.andThen(file.sync))),
-      Effect.scoped,
-      Effect.tapError(() => fs.remove(blob, { force: true }).pipe(Effect.ignore)),
+    // The index row is durable once SQLite commits, so the body must reach disk first.
+    yield* writeFileDurably(fs, path.join(directory, `${page.cacheId}.gz`), body).pipe(
       Effect.mapError((cause) => new PageCacheError({ operation: "write", cause })),
     );
     // Publish the index after the body exists. Cache ids are immutable across refreshes.

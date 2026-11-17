@@ -16,6 +16,7 @@ import * as HttpIncomingMessage from "effect/http/HttpIncomingMessage";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as PublicHttp from "./PublicHttp.ts";
+import { writeFileDurably } from "./durableWrite.ts";
 import { extract } from "./extract.ts";
 
 export const TREG_SECRET_NAME = "web-research-treg-token";
@@ -136,8 +137,8 @@ const make = Effect.gen(function* () {
   let quota: typeof Quota.Type | undefined;
   const storeQuota = Effect.fnUntraced(function* (value: typeof Quota.Type) {
     yield* fs.makeDirectory(directory, { recursive: true });
-    yield* fs.writeFileString(`${quotaPath}.tmp`, yield* encodeQuota(value), { mode: 0o600 });
-    yield* fs.rename(`${quotaPath}.tmp`, quotaPath);
+    const encoded = new TextEncoder().encode(yield* encodeQuota(value));
+    yield* writeFileDurably(fs, quotaPath, encoded, 0o600);
     quota = value;
   });
   const reserve = Effect.fn("TinyFish.reserve")(
@@ -146,10 +147,11 @@ const make = Effect.gen(function* () {
         const stored = yield* fs.readFileString(quotaPath).pipe(
           Effect.catchIf(
             (error) => error.reason._tag === "NotFound",
-            () => Effect.succeed('{"starts":[],"blockedUntil":0}'),
+            () => Effect.succeed(""),
           ),
         );
-        quota = yield* decodeQuota(stored);
+        // An empty file is a crash remnant, not corruption, so it starts a fresh quota like a missing one.
+        quota = yield* decodeQuota(stored === "" ? '{"starts":[],"blockedUntil":0}' : stored);
       }
       const now = yield* Clock.currentTimeMillis;
       // Admission uses the live subscribers' deadline after quota I/O and lock waiting.

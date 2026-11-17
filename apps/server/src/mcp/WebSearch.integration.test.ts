@@ -622,6 +622,22 @@ it.effect(
     }).pipe(Effect.provide(base)),
 );
 
+it.effect("treats empty quota files left by a crash as fresh quota", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture();
+    yield* f.fs.makeDirectory(`${f.paths.stateDir}/web-cache`, { recursive: true });
+    for (const source of ["tinyfish", "searxng"])
+      yield* f.fs.writeFileString(`${f.paths.stateDir}/web-cache/search-${source}-quota.json`, "");
+    yield* Effect.gen(function* () {
+      yield* f.provision;
+      const result = yield* search({ query: "after a reset" });
+      expect(result.status).toBe("ok");
+      expect(result.engines.map((engine) => engine.status)).not.toContain("provider_error");
+      expect(f.seen).toHaveLength(2);
+    }).pipe(Effect.provide(f.layer));
+  }).pipe(Effect.provide(base)),
+);
+
 it.effect("returns a safe unconfigured state when the existing secret is absent", () =>
   Effect.gen(function* () {
     const f = yield* fixture();

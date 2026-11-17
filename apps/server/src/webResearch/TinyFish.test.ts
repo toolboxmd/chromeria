@@ -334,6 +334,20 @@ it.effect.each(["cancel", "timeout"] as const)(
     }).pipe(Effect.provide(base)),
 );
 
+it.effect("an empty quota file left by a crash starts a fresh quota", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture();
+    yield* f.fs.makeDirectory(`${f.paths.stateDir}/web-cache`, { recursive: true });
+    yield* f.fs.writeFileString(f.quotaFile, "");
+    yield* Effect.gen(function* () {
+      yield* f.provision;
+      expect(yield* fetch()).toMatchObject({ _tag: "Fetched", chargedMicro: 0 });
+      expect(f.requests).toHaveLength(1);
+      expect(JSON.parse(yield* f.fs.readFileString(f.quotaFile)).starts).toHaveLength(1);
+    }).pipe(Effect.provide(f.layer));
+  }).pipe(Effect.provide(base)),
+);
+
 it.effect("corrupted quota state fails closed before a request", () =>
   Effect.gen(function* () {
     const f = yield* fixture();
