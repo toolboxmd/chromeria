@@ -1,6 +1,11 @@
-import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { useAtomValue } from "@effect/atom-react";
 import { type EnvironmentId, type PeerGrantSummary } from "@t3tools/contracts";
+import {
+  autosavePeerGrant,
+  isPeerGrantPermissionEnabled,
+  type PeerGrantPermission,
+  setPeerGrantPermission,
+} from "@t3tools/client-runtime/state/peer-grants";
 import { useState } from "react";
 import { Alert } from "react-native";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
@@ -9,7 +14,18 @@ import { peerGrants } from "../../state/peer-grants";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
-import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActionRow";
+
+const PERMISSIONS: ReadonlyArray<readonly [PeerGrantPermission, string, string?]> = [
+  [
+    "resourceScope",
+    "Existing environment resources",
+    "Includes other threads, within the link’s runtime permissions.",
+  ],
+  ["onward", "Delegate onward"],
+  ["preview", "Browser access"],
+  ["device", "Device access"],
+  ["browserExport", "Share browser logins"],
+];
 
 function GrantEditor({
   environmentId,
@@ -24,55 +40,32 @@ function GrantEditor({
   const save = useAtomCommand(peerGrants.update);
   return (
     <SettingsSection
-      title={grant.label}
+      title={`Linked environment: ${grant.label}`}
       footer="New work uses these permissions. Existing work keeps its original ceiling. Removing permission also limits existing work."
     >
-      <SettingsSwitchRow
-        label="Existing environment resources"
-        subtitle="Includes other threads, within the link’s runtime permissions."
-        value={draft.resourceScope === "environment-resources"}
-        disabled={!canSave || saving}
-        onValueChange={(value) =>
-          setDraft((current) => ({
-            ...current,
-            resourceScope: value ? "environment-resources" : "created-work",
-          }))
-        }
-      />
-      {(
-        [
-          ["onward", "Delegate onward"],
-          ["preview", "Browser access"],
-          ["device", "Device access"],
-          ["browserExport", "Share browser logins"],
-        ] as const
-      ).map(([key, label]) => (
+      {PERMISSIONS.map(([key, label, subtitle]) => (
         <SettingsSwitchRow
           key={key}
           label={label}
-          value={draft[key]}
+          subtitle={subtitle}
+          value={isPeerGrantPermissionEnabled(draft, key)}
           disabled={!canSave || saving}
-          onValueChange={(value) => setDraft((current) => ({ ...current, [key]: value }))}
-        />
-      ))}
-      <SettingsActionRow
-        icon="checkmark"
-        label="Save link permissions"
-        disabled={!canSave || saving}
-        loading={saving}
-        onPress={() => {
-          setSaving(true);
-          void save({ environmentId, input: draft })
-            .then((result) => {
-              if (AsyncResult.isFailure(result))
+          onValueChange={(value) => {
+            setSaving(true);
+            void autosavePeerGrant({
+              previous: draft,
+              next: setPeerGrantPermission(draft, key, value),
+              show: setDraft,
+              save: (input) => save({ environmentId, input }),
+              onError: (error) =>
                 Alert.alert(
                   "Could not save link permissions",
-                  String(squashAtomCommandFailure(result)),
-                );
-            })
-            .finally(() => setSaving(false));
-        }}
-      />
+                  error instanceof Error ? error.message : String(error),
+                ),
+            }).finally(() => setSaving(false));
+          }}
+        />
+      ))}
     </SettingsSection>
   );
 }

@@ -11,6 +11,7 @@ import {
   AuthRelayReadScope,
   AuthRelayWriteScope,
   type AuthClientSession,
+  COOKIE_MIRROR_CHILD_SUBJECT_PREFIX,
   type AuthPairingLink,
   type AuthPairingCredentialResult,
   type AdvertisedEndpoint,
@@ -443,9 +444,11 @@ function ConnectionsSettingsContent({
     const event = authAccessChanges.data;
     if (event?.type !== "snapshot") return [];
     return sortDesktopClientSessions(
-      event.payload.clientSessions.map((clientSession: AuthClientSession) =>
-        toDesktopClientSessionRecord(clientSession),
-      ),
+      event.payload.clientSessions
+        .filter(
+          (clientSession) => !clientSession.subject.startsWith(COOKIE_MIRROR_CHILD_SUBJECT_PREFIX),
+        )
+        .map((clientSession: AuthClientSession) => toDesktopClientSessionRecord(clientSession)),
     );
   })();
   const isLocalBackendNetworkAccessible = desktopBridge
@@ -1123,9 +1126,6 @@ function ConnectionsSettingsContent({
         </div>
       ) : null}
       {renderPairingClientsList(visibleDesktopPairingLinks, desktopClientSessions)}
-      {primaryEnvironment?.serverConfig?.environment.capabilities.peerAuthority === 1 ? (
-        <PeerGrantSettings environmentId={primaryEnvironment.environmentId} />
-      ) : null}
     </>
   );
   const renderNetworkAccessRow = () => (
@@ -1380,6 +1380,9 @@ function ConnectionsSettingsContent({
                 )}
               </ScrollArea>
             </FoldedSettingsSection>
+          ) : null}
+          {canReadAccess && accessServerConfig?.environment.capabilities.peerAuthority === 1 ? (
+            <PeerGrantSettings environmentId={accessEnvironmentId} />
           ) : null}
           {canReadAccess &&
           connectDevices !== null &&
