@@ -56,16 +56,16 @@ it.live("a base no remote has stays missing and is reported missing", () =>
 );
 
 it.each([
-  ["https://user:pa@rt@github.com/org/repo.git", "https://github.com/org/repo.git"],
-  [
-    "https://github.com/org/repo.git?access_token=synthetic-secret",
-    "https://github.com/org/repo.git",
-  ],
-  ["ssh://git:secret@example.com/org/repo.git", "ssh://example.com/org/repo.git"],
-  ["https://github.com/org/repo.git#synthetic-secret", "https://github.com/org/repo.git"],
   ["git@github.com:org/repo.git", "git@github.com:org/repo.git"],
   ["https://github.com/org/repo.git", "https://github.com/org/repo.git"],
-  // Forms Git accepts that the URL parser rejects or reads as opaque are not shown at all.
+  ["https://GitHub.com/org/repo.git", "https://github.com/org/repo.git"],
+  // Any form that can carry credentials is not shown at all; the remote's name still is.
+  ["https://user:pa@rt@github.com/org/repo.git", undefined],
+  ["https://github.com/org/repo.git?access_token=synthetic-secret", undefined],
+  ["ssh://git:secret@example.com/org/repo.git", undefined],
+  ["https://github.com/org/repo.git#synthetic-secret", undefined],
+  ["http://user\\:synthetic-secret@127.0.0.1:63666/repo.git", undefined],
+  ["https://user%3Asynthetic-secret@github.com/org/repo.git", undefined],
   ["http://user:synthetic-secret@[::1%25lo0]:63666/repo.git", undefined],
   ["http::http://user:synthetic-secret@[::1]:64875/repo.git", undefined],
   ["user:synthetic-secret@example.com:org/repo.git", undefined],

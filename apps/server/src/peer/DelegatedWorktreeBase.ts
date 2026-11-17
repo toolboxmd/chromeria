@@ -116,11 +116,13 @@ export const upstreamRemote = Effect.fn("DelegatedWorktreeBase.upstreamRemote")(
 });
 
 /**
- * A remote URL safe to show: rebuilt from scheme, host and path, or a plain scp-style address.
- * Undefined for any other form Git accepts, which may carry credentials the parser misses.
+ * A remote URL safe to show: a plain scp-style address, or one with no userinfo, query,
+ * fragment, backslash or escape at all, rebuilt from scheme, host and path. Undefined otherwise.
  */
 export function displayRemoteUrl(remoteUrl: string): string | undefined {
   if (/^[\w.-]+@[\w.-]+:[\w./~-]+$/.test(remoteUrl)) return remoteUrl;
+  // Credentials need one of these characters; parsers disagree on where they belong.
+  if (/[@?#\\%]/.test(remoteUrl)) return undefined;
   try {
     const url = new URL(remoteUrl);
     return ["https:", "http:", "ssh:", "git:"].includes(url.protocol) && url.host !== ""
