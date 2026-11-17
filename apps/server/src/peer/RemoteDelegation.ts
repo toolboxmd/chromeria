@@ -1301,12 +1301,14 @@ const make = Effect.gen(function* () {
    */
   const stopAttempt = Effect.fn("RemoteDelegation.stopAttempt")(
     function* (parentThreadId: ThreadId, taskId: NodeId) {
-      const task = (yield* threads.getThreadRecords(parentThreadId, ["subagents"])).subagents.find(
-        (candidate) => candidate.id === taskId,
-      );
+      const records = yield* threads.getThreadRecords(parentThreadId, ["subagents"]);
+      const task = records.subagents.find((candidate) => candidate.id === taskId);
       const remote = task?.remoteChild;
       const stop = remote?.stop;
+      // A retired parent sends nothing; reopening an archived one gives its follower the Stop back.
       if (
+        records.thread.deletedAt !== null ||
+        records.thread.archivedAt !== null ||
         task === undefined ||
         remote?.threadId === undefined ||
         remote.launch === undefined ||

@@ -5034,3 +5034,49 @@ it.effect(
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
+
+it.effect(
+  "a failing Stop's retries pause while its parent is archived and resume after reopening",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { thread, a } = yield* laptopHarness;
+        yield* Ref.set(thread.typedOutcomes, false);
+        yield* Ref.set(thread.refuseStop, "runtime_mode");
+        const { taskId } = yield* delegateToBox(a);
+        yield* a.call("task_cancel", { taskId });
+        yield* a.orchestrator.dispatch({
+          type: "thread.archive",
+          commandId: CommandId.make("command:archive:laptop-parent"),
+          threadId: parentThreadId,
+        });
+        const sent = (yield* Ref.get(thread.stopRequests)).length;
+        // The backoff elapses while the parent is archived: nothing is sent there.
+        yield* TestClock.adjust("10 seconds");
+        yield* a.orchestrator.dispatch({
+          type: "thread.unarchive",
+          commandId: CommandId.make("command:unarchive:laptop-parent"),
+          threadId: parentThreadId,
+        });
+        const reopened = yield* a.orchestrator.getThreadEventSequence(parentThreadId);
+        yield* finishThere(thread, "Finished while archived.");
+        // Reopened, its follower sends the Stop it still owes.
+        yield* a.orchestrator
+          .streamStoredEventsFrom({
+            threadId: parentThreadId,
+            afterSequence: reopened,
+            eventType: "subagent.updated",
+          })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "subagent.updated" &&
+                stored.event.payload.id === taskId &&
+                stored.event.payload.remoteChild?.stop?.state === "unconfirmed",
+            ),
+            Stream.runHead,
+          );
+        expect(yield* Ref.get(thread.stopRequests)).toHaveLength(sent + 1);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
