@@ -145,6 +145,8 @@ it.live("runGroups751: a Run group to a linked environment starts B's Colors and
       expect(group.tasks).toHaveLength(2);
       const members = yield* tasksOf(a, parentId);
       expect(members.map((task) => task.runGroupId)).toEqual([group.groupId, group.groupId]);
+      // The kit travels apart from the task, so a destination that ignores it never doubles it.
+      expect(members.map((task) => task.prompt)).toEqual(["Review the plan.", "Review the plan."]);
       const children = yield* Effect.forEach(members, (task) =>
         recorded(a, parentId, task.id, (current) => current.remoteChild?.threadId !== undefined),
       );
@@ -764,36 +766,65 @@ it.live(
     ).pipe(Effect.provide(services)),
 );
 
-it.live.each(["accepted", "refused"] as const)(
-  "runGroups751: an owed Stop %s before a member's entry resolves its group cancel",
-  (outcome) =>
+it.live.each([
+  { outcome: "accepted", restart: true },
+  { outcome: "refused", restart: true },
+  { outcome: "accepted", restart: false },
+  { outcome: "refused", restart: false },
+] as const)(
+  "runGroups751: an owed Stop $outcome before a member's entry resolves its group cancel (restart: $restart)",
+  ({ outcome, restart: restarted }) =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { a, b, parentId } = yield* pair(`rg-owed-${outcome}`);
-        const { groupId, members } = yield* startGroup(a, b, parentId, `rg-owed-${outcome}`);
+        const name = `rg-owed-${outcome}-${restarted}`;
+        const { a, b, parentId } = yield* pair(name);
+        const { groupId, members } = yield* startGroup(a, b, parentId, name);
         for (const [index, task] of members.entries())
-          yield* finishLifecycleRun(b, childOf(task), `rg-owed-${outcome}-${index}`);
+          yield* finishLifecycleRun(b, childOf(task), `${name}-${index}`);
         for (const task of members)
           yield* recorded(a, parentId, task.id, (current) => current.result !== null);
         const wakes = (yield* committedWakes(a, parentId, ids(members))).size;
         expect(wakes).toBe(1);
-        // A Stop owed for later work there is current and unanswered when the group is cancelled.
-        yield* a.stopConnections;
-        yield* a.threads.dispatch({
-          type: "delegated_task.remote.stop",
-          commandId: CommandId.make(`command:rg-owed-${outcome}`),
-          parentThreadId: parentId,
-          taskId: members[0]!.id,
-        });
-        yield* admitGroupCancel(a, parentId, groupId, members, "rg-owed-stop");
         if (outcome === "refused")
           yield* a.threads.dispatch({
             type: "thread.runtime-mode.set",
             threadId: parentId,
-            commandId: CommandId.make("rg-owed-lower"),
+            commandId: CommandId.make(`${name}-lower`),
             runtimeMode: "auto",
           });
-        yield* restart(a);
+        // A Stop owed for later work there is current and unanswered when the group is cancelled.
+        yield* a.stopConnections;
+        yield* a.threads.dispatch({
+          type: "delegated_task.remote.stop",
+          commandId: CommandId.make(`command:${name}`),
+          parentThreadId: parentId,
+          taskId: members[0]!.id,
+        });
+        const owed = (yield* recorded(
+          a,
+          parentId,
+          members[0]!.id,
+          (task) => task.remoteChild?.stop?.state === "pending",
+        )).remoteChild!.stop!;
+        yield* admitGroupCancel(a, parentId, groupId, members, "rg-owed-stop");
+        // Its answer arrives through a restarted follower there, or straight from the
+        // destination's reply to the attempt already running.
+        if (restarted) yield* restart(a);
+        else
+          yield* a.orchestrator.dispatch({
+            type: "delegated_task.remote.observe",
+            commandId: CommandId.make(`command:${name}:answer`),
+            parentThreadId: parentId,
+            taskId: members[0]!.id,
+            stop:
+              outcome === "accepted"
+                ? {
+                    ...owed,
+                    state: "acknowledged",
+                    destinationCommandId: CommandId.make(`${name}-d`),
+                  }
+                : { ...owed, state: "refused", refusal: "runtime_mode" },
+          });
         const owedIntent = RemoteDelegation.cancelRequestId(
           namespaceOf(a, parentId),
           "rg-owed-stop:0",
@@ -810,13 +841,17 @@ it.live.each(["accepted", "refused"] as const)(
         const stops = yield* destinationStops(b);
         const entry = yield* memberEntry(a, parentId, members[0]!, "rg-owed-stop", 0);
         expect(entry.isError).toBe(outcome === "refused");
+        // A changed reason for the same identity is refused, with no effect there.
+        const changed = yield* memberEntry(a, parentId, members[0]!, "rg-owed-stop", 0, "Other");
+        expect(changed.isError).toBe(true);
         // The owed Stop resolved the cancel; the cancel's own Stop is never recorded or sent.
         expect(yield* stopRecords(a, parentId, members[0]!.id, owedIntent)).toBe(0);
         expect(yield* destinationStops(b)).toBe(stops);
-        // Accepted, the cancel gives up the wake its members had not yet delivered, as a local
-        // group cancel of finished members does; refused, the wake stands.
+        // Accepted for both members (the other's own Stop is answered after the restart), the
+        // cancel gives up the wake they had not yet delivered, as a local group cancel of finished
+        // members does; while a member's Stop is unanswered, or refused, the wake stands.
         expect((yield* committedWakes(a, parentId, ids(members))).size).toBe(
-          outcome === "accepted" ? 0 : wakes,
+          outcome === "accepted" && restarted ? 0 : wakes,
         );
       }),
     ).pipe(Effect.provide(services)),
@@ -1030,4 +1065,180 @@ it.live(
         expect(plain.providers.length).toBeGreaterThan(0);
       }),
     ).pipe(Effect.provide(services)),
+);
+
+it.live.each(["accepted", "refused", "changed-reason"] as const)(
+  "runGroups751: a member's own cancel before the group cancel keeps its outcome (%s)",
+  (variant) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const name = `rg-first-${variant}`;
+        const { a, b, parentId } = yield* pair(name);
+        const { groupId, members } = yield* startGroup(a, b, parentId, name);
+        if (variant === "refused")
+          yield* a.threads.dispatch({
+            type: "thread.runtime-mode.set",
+            threadId: parentId,
+            commandId: CommandId.make(`${name}-lower`),
+            runtimeMode: "auto",
+          });
+        // The member's own cancel uses the identity the group cancel derives for it.
+        const own = yield* memberEntry(a, parentId, members[0]!, "G", 0, "Enough");
+        expect(own.isError).toBe(variant === "refused");
+        const identity = RemoteDelegation.cancelRequestId(namespaceOf(a, parentId), "G:0");
+        yield* recorded(
+          a,
+          parentId,
+          members[0]!.id,
+          (task) =>
+            task.remoteChild?.stop?.requestId === identity &&
+            task.remoteChild.stop.state !== "pending" &&
+            task.remoteChild.cancelIntent === undefined,
+        );
+        const stops = yield* destinationStops(b);
+        const group = yield* nativeCall(a, parentId, "task_cancel", {
+          taskId: groupId,
+          clientRequestId: "G",
+          reason: variant === "changed-reason" ? "Other" : "Enough",
+        });
+        expect(group.isError).toBe(variant !== "accepted");
+        const first = (yield* tasksOf(a, parentId)).find((task) => task.id === members[0]!.id)!;
+        // The recorded identity never reopens: no intent, and no second Stop for it.
+        expect(first.remoteChild?.cancelIntent).toBeUndefined();
+        expect(yield* stopRecords(a, parentId, members[0]!.id, identity)).toBe(1);
+        expect(first.groupCancel !== undefined).toBe(variant === "accepted");
+        if (variant === "accepted") expect(first.completionDelivery?.state).toBe("disposed");
+        // The other member gets the group's intent and its own Stop (refused while lowered).
+        yield* recorded(
+          a,
+          parentId,
+          members[1]!.id,
+          (task) => task.remoteChild?.cancelResolution !== undefined,
+        );
+        expect(yield* destinationStops(b)).toBe(stops + (variant === "refused" ? 0 : 1));
+        // A restart finds nothing outstanding for the first member.
+        yield* a.stopConnections;
+        yield* restart(a);
+        const after = (yield* tasksOf(a, parentId)).find((task) => task.id === members[0]!.id)!;
+        expect(after.remoteChild?.cancelIntent).toBeUndefined();
+        expect(yield* a.projections.getOpenRemoteDelegatedTasks).toContainEqual({
+          parentThreadId: parentId,
+          taskId: members[0]!.id,
+        });
+        expect(yield* destinationStops(b)).toBe(stops + (variant === "refused" ? 0 : 1));
+      }),
+    ).pipe(Effect.provide(services)),
+);
+
+it.live("runGroups751: competing recoveries and entries record an admitted Stop once", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { a, b, parentId } = yield* pair("rg-contend");
+      const { groupId, members } = yield* recordUnsent(a, b, parentId, "rg-contend");
+      yield* admitGroupCancel(a, parentId, groupId, members, "rg-contend-stop", "Enough");
+      const identity = RemoteDelegation.cancelRequestId(
+        namespaceOf(a, parentId),
+        "rg-contend-stop:0",
+      );
+      // Every contender passed its own check before any committed; the parent lock orders them.
+      const observe = (label: string, recovery: boolean) =>
+        a.orchestrator.dispatch({
+          type: "delegated_task.remote.observe",
+          commandId: CommandId.make(`command:rg-contend:${label}`),
+          parentThreadId: parentId,
+          taskId: members[0]!.id,
+          stop: { requestId: identity, state: "pending", reason: "Enough" },
+          cancel: true,
+          ...(recovery ? { recovery: true as const } : {}),
+        });
+      yield* Effect.all(
+        [
+          observe("recover-1", true),
+          observe("entry-1", false),
+          observe("recover-2", true),
+          observe("entry-2", false),
+          observe("recover-3", true),
+        ],
+        { concurrency: "unbounded" },
+      );
+      const sql = Context.get(a.database, SqlClient.SqlClient);
+      const records = yield* sql<{
+        readonly count: number;
+      }>`SELECT COUNT(*) AS count FROM orchestration_events WHERE stream_id=${parentId} AND event_type='subagent.updated' AND json_extract(payload_json,'$.id')=${members[0]!.id} AND json_extract(payload_json,'$.remoteChild.stop.requestId')=${identity}`;
+      expect(records[0]?.count).toBe(1);
+      const settled = (yield* tasksOf(a, parentId)).find((task) => task.id === members[0]!.id)!;
+      expect(settled).toMatchObject({
+        status: "cancelled",
+        remoteChild: { stop: { requestId: identity, state: "not_started" } },
+      });
+      expect(yield* destinationThreads(b)).toBe(0);
+      expect(yield* destinationStops(b)).toBe(0);
+    }),
+  ).pipe(Effect.provide(services)),
+);
+
+it.live(
+  "runGroups751: a quiet member whose wake was read recovers the group cancel after a restart",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parentId } = yield* pair("rg-quiet");
+        const { groupId, members } = yield* startGroup(a, b, parentId, "rg-quiet");
+        for (const [index, task] of members.entries())
+          yield* finishLifecycleRun(b, childOf(task), `rg-quiet-${index}`);
+        for (const task of members)
+          yield* recorded(a, parentId, task.id, (current) => current.result !== null);
+        // The parent consumed the group's wake: nothing is left to deliver, so they wait quietly.
+        for (const task of members)
+          yield* a.threads.dispatch({
+            type: "delegated_task.completion-delivery.dispose",
+            commandId: CommandId.make(`rg-quiet-read-${task.id}`),
+            parentThreadId: parentId,
+            taskId: task.id,
+          });
+        const wakes = (yield* committedWakes(a, parentId, ids(members))).size;
+        yield* a.stopConnections;
+        yield* admitGroupCancel(a, parentId, groupId, members, "rg-quiet-stop");
+        yield* restart(a);
+        for (const task of members)
+          yield* recorded(
+            a,
+            parentId,
+            task.id,
+            (current) =>
+              current.groupCancel !== undefined &&
+              current.remoteChild?.cancelResolution?.outcome === "applied",
+          );
+        // One Stop each there, and no further wake.
+        expect(yield* destinationStops(b)).toBe(2);
+        expect((yield* committedWakes(a, parentId, ids(members))).size).toBe(wakes);
+      }),
+    ).pipe(Effect.provide(services)),
+);
+
+it.live("runGroups751: a destination rejects an argument it does not declare", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { a, b } = yield* pair("rg-undeclared");
+      // Sent as is, past this side's own encoding: a destination from before Run groups
+      // declares no runGroupMember, and refuses it as it refuses this.
+      const connected = yield* a.reconnect();
+      const refused = yield* connected.peers
+        .call({
+          environmentId: b.environmentId,
+          tool: "t3_thread_launch",
+          arguments: {
+            projectId: b.project.id,
+            title: "Undeclared",
+            message: "Review the plan.",
+            notDeclaredHere: { kitText: "Kit." },
+          },
+          limits: { runtimeMode: "full-access", interactionMode: "default" },
+          success: Schema.Struct({ threadId: ThreadId }),
+        })
+        .pipe(Effect.flip);
+      expect(refused.message).toContain('Unknown argument "notDeclaredHere"');
+      expect(yield* destinationThreads(b)).toBe(0);
+    }),
+  ).pipe(Effect.provide(services)),
 );

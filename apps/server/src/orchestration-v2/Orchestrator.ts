@@ -12133,6 +12133,73 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
 
+  /**
+   * A member whose cancel identity an individual cancel already recorded keeps that cancel's
+   * outcome: still open, the group adopts it; accepted, the member is given up now; refused or
+   * replaced, nothing changes. Its Stop is never recorded or sent again. A changed reason
+   * leaves the member as it is, and its entry reports the conflict.
+   */
+  const adoptRecordedCancel = Effect.fnUntraced(function* (
+    command: Extract<
+      OrchestrationV2ServerCommand,
+      { readonly type: "delegated_task.group-cancel" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    member: OrchestrationV2Subagent,
+    remote: OrchestrationV2RemoteTaskChild,
+    admitted: { readonly cancelRequestId: string; readonly reason?: string | undefined },
+    now: DateTime.Utc,
+  ) {
+    const requestId = admitted.cancelRequestId;
+    const recorded = yield* forkSql<{
+      reason: string | null;
+      outcome: string | null;
+      present: number | null;
+    }>`SELECT (SELECT json_extract(payload_json,'$.remoteChild.stop.reason') FROM orchestration_events WHERE stream_id=${command.parentThreadId} AND event_type='subagent.updated' AND json_extract(payload_json,'$.id')=${member.id} AND json_extract(payload_json,'$.remoteChild.stop.requestId')=${requestId} ORDER BY sequence LIMIT 1) AS reason,(SELECT json_extract(payload_json,'$.remoteChild.cancelResolution.outcome') FROM orchestration_events WHERE stream_id=${command.parentThreadId} AND event_type='subagent.updated' AND json_extract(payload_json,'$.id')=${member.id} AND json_extract(payload_json,'$.remoteChild.cancelResolution.requestId')=${requestId} ORDER BY sequence DESC LIMIT 1) AS outcome,(SELECT 1 FROM orchestration_events WHERE stream_id=${command.parentThreadId} AND event_type='subagent.updated' AND json_extract(payload_json,'$.id')=${member.id} AND json_extract(payload_json,'$.remoteChild.stop.requestId')=${requestId} LIMIT 1) AS present`.pipe(
+      mapDispatchError(command),
+    );
+    const row = recorded[0];
+    if (row?.present !== 1) return undefined;
+    const unchanged = { ...member, updatedAt: now };
+    if (row.reason !== (admitted.reason ?? null)) return unchanged;
+    if (remote.cancelIntent?.requestId === requestId)
+      return {
+        ...member,
+        remoteChild: {
+          ...remote,
+          cancelIntent: { ...remote.cancelIntent, groupCancelId: command.commandId },
+        },
+        updatedAt: now,
+      };
+    const stop = remote.stop?.requestId === requestId ? remote.stop : undefined;
+    const applied =
+      row.outcome === "applied" ||
+      (row.outcome === null &&
+        (stop?.state === "acknowledged" ||
+          stop?.state === "confirmed" ||
+          stop?.state === "not_started"));
+    if (!applied) return unchanged;
+    if (
+      member.completionDelivery?.state !== "disposed" ||
+      member.completionDelivery.disposedBy !== undefined
+    )
+      yield* dispatchDelegatedTaskCompletionDeliveryResolution(
+        {
+          type: "delegated_task.completion-delivery.dispose",
+          commandId: command.commandId,
+          parentThreadId: command.parentThreadId,
+          taskId: member.id,
+        },
+        events,
+      );
+    return {
+      ...member,
+      groupCancel: { commandId: command.commandId },
+      completionDelivery: { state: "disposed" as const, observedByRunId: null },
+      updatedAt: now,
+    };
+  });
+
   // A whole-group task_cancel records its id on every member before any member
   // is stopped, so a member ending at any point afterwards stays quiet.
   const dispatchRunGroupCancel = Effect.fn("orchestrationV2.dispatch.runGroupCancel")(function* (
@@ -12162,6 +12229,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           commandType: command.type,
           cause: `Remote Run group member ${member.id} has no cancel request.`,
         });
+      if (remote !== undefined && admitted !== undefined) {
+        const adopted = yield* adoptRecordedCancel(command, events, member, remote, admitted, now);
+        if (adopted !== undefined) {
+          yield* emitEvent({
+            type: "subagent.updated",
+            threadId: command.parentThreadId,
+            ...(member.runId === null ? {} : { runId: member.runId }),
+            nodeId: member.id,
+            driver: member.driver,
+            providerInstanceId: member.providerInstanceId,
+            occurredAt: now,
+            payload: adopted,
+          });
+          continue;
+        }
+      }
       // A remote member is given up when its destination accepts the Stop: this records the
       // cancel's intent (I2), replacing an earlier one, which is then superseded.
       const payload =

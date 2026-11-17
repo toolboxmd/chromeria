@@ -5284,3 +5284,128 @@ it.effect(
       }),
     ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
+
+it.effect("an explicit mode above the link's access refuses a remote Run group before commit", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread, true, layerBoxModesCatalog, undefined, [
+        modelSelection,
+        { instanceId: boxClaude.instanceId, model: "claude-sonnet-4-6" },
+      ]);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "auto");
+      yield* seedParent(a);
+      const group = (key: string, runtimeMode?: "full-access") => {
+        const commandId = CommandId.make(`command:link-modes:${key}`);
+        return a.remote.delegateGroup(
+          parentScope as McpInvocationContext.McpThreadInvocationScope,
+          {
+            task: "Review the plan.",
+            prismRole: "reviewer",
+            target: { environmentId: box.environmentId, projectId: boxProject },
+            ...(runtimeMode === undefined ? {} : { runtimeMode }),
+          },
+          {
+            commandId,
+            groupId: NodeId.make(`run-group:${commandId}`),
+            key,
+            role: "reviewer",
+            run: 2,
+          },
+        );
+      };
+      const refused = yield* group("explicit", "full-access").pipe(Effect.flip);
+      expect(refused).toMatchObject({ code: "runtime_mode_escalation_denied" });
+      expect((yield* a.threads.getThreadRecords(parentThreadId, ["subagents"])).subagents).toEqual(
+        [],
+      );
+      expect(yield* Ref.get(thread.launchIds)).toEqual([]);
+      // Inherited, every member stays within the link's access.
+      const members = yield* group("inherited");
+      const recorded = (yield* a.threads.getThreadRecords(parentThreadId, ["subagents"])).subagents;
+      expect(
+        members.map(
+          (id) => recorded.find((task) => task.id === id)!.remoteChild!.launch!.runtimeMode,
+        ),
+      ).toEqual(["auto", "approval-required"]);
+    }),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
+);
+
+it.effect("a group cancel enters every remote member at once", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { thread, a } = yield* laptopHarness;
+      const link = Option.getOrThrow(yield* a.links.get(box.environmentId));
+      const commandId = CommandId.make("command:concurrent-group");
+      const groupId = NodeId.make(`run-group:${commandId}`);
+      const members = [0, 1].map((index) => ({
+        modelSelection,
+        remoteChild: {
+          environmentId: box.environmentId,
+          label: link.label,
+          title: "Concurrent",
+          launch: {
+            lifecycleVersion: 1 as const,
+            requestNamespace: `thread:${laptop.environmentId}:${parentThreadId}`,
+            clientRequestId: `delegate-group:${parentThreadId}:concurrent:${index}`,
+            linkIdentity: link.launchIdentity,
+            capabilities: ["orchestration" as const],
+            projectId: boxProject,
+            title: "Concurrent",
+            modelSelection,
+            prismRole: "reviewer" as const,
+            runtimeMode: "full-access" as const,
+            interactionMode: "default" as const,
+            delegatedFrom: {
+              environmentId: laptop.environmentId,
+              threadId: parentThreadId,
+              title: "Laptop parent",
+            },
+          },
+        },
+      }));
+      yield* a.orchestrator.dispatch({
+        type: "delegated_task.remote.group.request",
+        commandId,
+        parentThreadId,
+        parentRunId,
+        parentNodeId: parentRootNode,
+        groupId,
+        task: "Review the plan.",
+        driver: ProviderDriverKind.make("remote"),
+        members: [members[0]!, members[1]!],
+        completionWake: "always",
+      });
+      const recorded = (yield* a.threads.getThreadRecords(parentThreadId, [
+        "subagents",
+      ])).subagents.filter((task) => task.runGroupId === groupId);
+      const [launched, unsent] = recorded;
+      // One member runs on the box; the other was never sent.
+      yield* a.remote.ensureFollowing(parentThreadId, [launched!.id]);
+      yield* Deferred.await(thread.launchAccepted);
+      yield* remoteState(a, launched!.id, (task) => task.remoteChild?.threadId !== undefined);
+      // The launched member's Stop hangs on the box; the clock never moves past its inline wait.
+      yield* Ref.set(thread.holdStop, true);
+      const cancelling = yield* a
+        .call("task_cancel", { taskId: groupId, clientRequestId: "concurrent" })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(thread.stopStarted);
+      // The unsent member's entry ran beside the held one and settled it.
+      yield* remoteState(a, unsent!.id, (task) => task.status === "cancelled");
+      expect(yield* readTask(a, unsent!.id)).toMatchObject({
+        groupCancel: { commandId: expect.any(String) },
+        remoteChild: { stop: { state: "not_started" } },
+      });
+      yield* Deferred.succeed(thread.releaseStop, undefined);
+      const answered = yield* Fiber.join(cancelling);
+      expect(answered.isError, JSON.stringify(answered.content)).toBe(false);
+      expect(yield* Ref.get(thread.launchIds)).toHaveLength(1);
+    }),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
+);

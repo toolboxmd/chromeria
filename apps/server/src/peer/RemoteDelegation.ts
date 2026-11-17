@@ -44,7 +44,6 @@ import {
   admitDelegateRole,
   PRISM_DELEGATE_ROLE_ERROR,
   type PrismRunGroupRole,
-  type RuntimeMode,
 } from "@t3tools/contracts";
 import { runGroupMember } from "../orchestration-v2/RunGroups.ts";
 import * as Arr from "effect/Array";
@@ -431,18 +430,15 @@ const make = Effect.gen(function* () {
         code: "invalid_request",
         message: `${link.label} runs an older version that cannot run a Run group. Update it there, or name target.model to run one Color.`,
       });
-    // An inherited mode is capped by this thread, the link's access and the caller's mode there,
-    // then steps down per Color as a local group's does; an explicit one is refused if unsupported.
-    const narrowest = (modes: ReadonlyArray<RuntimeMode>) =>
-      modes.toSorted((left, right) => runtimeModeRank(left) - runtimeModeRank(right))[0]!;
-    const inheritedCeiling = narrowest([
+    // Every member's mode stays within this thread, the link's access and the caller's mode there:
+    // an inherited one steps down per Color as a local group's does, an explicit one is refused.
+    const ceiling = [
       parentModes.runtimeMode,
-      link.access === "read-only" ? "approval-required" : link.access,
+      link.access === "read-only" ? ("approval-required" as const) : link.access,
       there.runtimeMode,
-    ]);
-    const explicit = input.runtimeMode !== undefined && input.runtimeMode !== "inherit";
+    ].toSorted((left, right) => runtimeModeRank(left) - runtimeModeRank(right))[0]!;
     const colors = yield* Effect.forEach(there.prismColors.colors, (color) =>
-      resolveRuntimeMode(explicit ? parentModes.runtimeMode : inheritedCeiling, input.runtimeMode, {
+      resolveRuntimeMode(ceiling, input.runtimeMode, {
         modelSelection: color.modelSelection,
         supportedRuntimeModes: color.supportedRuntimeModes,
       }).pipe(Effect.map((runtimeMode) => ({ ...color, runtimeMode }))),
