@@ -1,5 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
-import { type EnvironmentId, type PeerGrantSummary } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  isFullPeerGrant,
+  type PeerGrantSummary,
+  uniformPeerGrant,
+} from "@t3tools/contracts";
+import { ChevronRightIcon } from "lucide-react";
 import {
   autosavePeerGrant,
   isPeerGrantPermissionEnabled,
@@ -13,7 +19,8 @@ import { peerGrants, updatePeerGrant } from "../../state/peerGrants";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ChromeriaTitle } from "../ChromeriaFeatureMark";
 import { Checkbox } from "../ui/checkbox";
-import { SettingsSection } from "./settingsLayout";
+import { Switch } from "../ui/switch";
+import { SettingsRow, SettingsSection } from "./settingsLayout";
 
 const PERMISSIONS = [
   [
@@ -46,42 +53,65 @@ function GrantEditor({
   const [saving, setSaving] = useState(false);
   const canSave = useAtomValue(updatePeerGrant.permissionAtom(environmentId));
   const save = useAtomCommand(updatePeerGrant);
+  const disabled = !canSave || saving;
+  const commit = (next: PeerGrantSummary) => {
+    setSaving(true);
+    void autosavePeerGrant({
+      previous: draft,
+      next,
+      show: setDraft,
+      save: (input) => save({ environmentId, input }),
+      onError: (error) =>
+        toastManager.add({
+          type: "error",
+          title: "Could not save link permissions",
+          description: error instanceof Error ? error.message : String(error),
+        }),
+    }).finally(() => setSaving(false));
+  };
+  const full = isFullPeerGrant(draft);
+  const none = PERMISSIONS.every(([key]) => !isPeerGrantPermissionEnabled(draft, key));
   return (
-    <fieldset disabled={!canSave || saving} className="space-y-3 px-4 py-3">
-      <legend className="text-sm font-medium">
-        <ChromeriaTitle>{grant.label}</ChromeriaTitle>
-      </legend>
-      <p className="text-xs text-muted-foreground">
-        New work uses these permissions. Existing delegated work keeps its original ceiling.
-        Removing permission also limits existing work.
-      </p>
-      {PERMISSIONS.map(([key, title, description]) => (
-        <label key={key} className="flex items-start gap-3 text-xs">
-          <Checkbox
-            checked={isPeerGrantPermissionEnabled(draft, key)}
-            onCheckedChange={(checked) => {
-              setSaving(true);
-              void autosavePeerGrant({
-                previous: draft,
-                next: setPeerGrantPermission(draft, key, checked === true),
-                show: setDraft,
-                save: (input) => save({ environmentId, input }),
-                onError: (error) =>
-                  toastManager.add({
-                    type: "error",
-                    title: "Could not save link permissions",
-                    description: error instanceof Error ? error.message : String(error),
-                  }),
-              }).finally(() => setSaving(false));
-            }}
+    <div>
+      <SettingsRow
+        title={<ChromeriaTitle>{grant.label}</ChromeriaTitle>}
+        description="Full access lets this machine's agents use every permission below. Removing permission also limits existing work."
+        control={
+          <Switch
+            aria-label={`Full access for ${grant.label}`}
+            checked={full}
+            mixed={!full && !none}
+            disabled={disabled}
+            onCheckedChange={(checked) => commit({ ...draft, ...uniformPeerGrant(checked) })}
           />
-          <span>
-            <span className="block font-medium">{title}</span>
-            <span className="text-muted-foreground">{description}</span>
-          </span>
-        </label>
-      ))}
-    </fieldset>
+        }
+      />
+      <details className="group px-3 pb-2 sm:px-4">
+        <summary className="flex min-h-9 cursor-pointer list-none items-center gap-2 rounded-md text-xs font-medium text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+          Advanced
+          <ChevronRightIcon aria-hidden className="size-3 group-open:rotate-90" />
+        </summary>
+        <fieldset disabled={disabled} className="space-y-3 pb-2">
+          <p className="text-xs text-muted-foreground">
+            New work uses these permissions. Existing delegated work keeps its original ceiling.
+          </p>
+          {PERMISSIONS.map(([key, title, description]) => (
+            <label key={key} className="flex items-start gap-3 text-xs">
+              <Checkbox
+                checked={isPeerGrantPermissionEnabled(draft, key)}
+                onCheckedChange={(checked) =>
+                  commit(setPeerGrantPermission(draft, key, checked === true))
+                }
+              />
+              <span>
+                <span className="block font-medium">{title}</span>
+                <span className="text-muted-foreground">{description}</span>
+              </span>
+            </label>
+          ))}
+        </fieldset>
+      </details>
+    </div>
   );
 }
 

@@ -14,6 +14,21 @@ export const PeerGrant = Schema.Struct({
   browserExport: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
 });
 export type PeerGrant = typeof PeerGrant.Type;
+/** Every grant on ("Full access") or every grant off, without the session. */
+export const uniformPeerGrant = (enabled: boolean) =>
+  ({
+    resourceScope: enabled ? "environment-resources" : "created-work",
+    onward: enabled,
+    preview: enabled,
+    device: enabled,
+    browserExport: enabled,
+  }) satisfies Omit<PeerGrant, "sessionId">;
+export const isFullPeerGrant = (grant: PeerGrant) =>
+  grant.resourceScope === "environment-resources" &&
+  grant.onward &&
+  grant.preview &&
+  grant.device &&
+  grant.browserExport;
 export const PeerGrantSummary = Schema.Struct({
   ...PeerGrant.fields,
   environmentId: EnvironmentId,

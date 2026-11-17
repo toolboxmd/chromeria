@@ -10,7 +10,14 @@ import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as Schema from "effect/Schema";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import { CommandId, EventId, MessageId, RunId, ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  EventId,
+  MessageId,
+  RunId,
+  ThreadId,
+  uniformPeerGrant,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -849,6 +856,35 @@ it.live("explicit descendant environment grants retain operation mode policy", (
         );
         expect(result._tag === "Success").toBe(allowed);
       }
+    }),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
+);
+
+it.live("a full-access link starts with every grant on and a narrower link with none", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const b = yield* makeNode(descriptorOf("default-grants-b", "B", { peerAuthority: 1 }));
+      const a = yield* makeNode(descriptorOf("default-grants-a", "A", { peerAuthority: 1 }));
+      const c = yield* makeNode(descriptorOf("default-grants-c", "C", { peerAuthority: 1 }));
+      yield* linkTo(a.links, b, "full-access");
+      yield* linkTo(c.links, b, "auto");
+      for (const source of [a, c]) {
+        const parent = ThreadId.make(`default-grants-parent-${source.environmentId}`);
+        yield* seedParent(source, parent);
+        yield* source.forwarding.call(
+          caller(source, parent),
+          ProjectToolkit.tools.t3_project_list,
+          b.environmentId,
+          {},
+        );
+      }
+      const grants = yield* b.authority.grants;
+      expect(grants.find((grant) => grant.environmentId === a.environmentId)).toMatchObject(
+        uniformPeerGrant(true),
+      );
+      expect(grants.find((grant) => grant.environmentId === c.environmentId)).toMatchObject(
+        uniformPeerGrant(false),
+      );
     }),
   ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );

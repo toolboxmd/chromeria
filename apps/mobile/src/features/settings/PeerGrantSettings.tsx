@@ -1,5 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
-import { type EnvironmentId, type PeerGrantSummary } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  isFullPeerGrant,
+  type PeerGrantSummary,
+  uniformPeerGrant,
+} from "@t3tools/contracts";
 import {
   autosavePeerGrant,
   isPeerGrantPermissionEnabled,
@@ -14,6 +19,7 @@ import { peerGrants } from "../../state/peer-grants";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
+import { ListActionRow } from "../../components/ui/ListActionRow";
 
 const PERMISSIONS: ReadonlyArray<readonly [PeerGrantPermission, string, string?]> = [
   [
@@ -36,36 +42,53 @@ function GrantEditor({
 }) {
   const [draft, setDraft] = useState(grant);
   const [saving, setSaving] = useState(false);
+  const [advanced, setAdvanced] = useState(false);
   const canSave = useAtomValue(peerGrants.update.permissionAtom(environmentId));
   const save = useAtomCommand(peerGrants.update);
+  const disabled = !canSave || saving;
+  const commit = (next: PeerGrantSummary) => {
+    setSaving(true);
+    void autosavePeerGrant({
+      previous: draft,
+      next,
+      show: setDraft,
+      save: (input) => save({ environmentId, input }),
+      onError: (error) =>
+        Alert.alert(
+          "Could not save link permissions",
+          error instanceof Error ? error.message : String(error),
+        ),
+    }).finally(() => setSaving(false));
+  };
   return (
     <SettingsSection
       title={`Linked environment: ${grant.label}`}
       footer="New work uses these permissions. Existing work keeps its original ceiling. Removing permission also limits existing work."
     >
-      {PERMISSIONS.map(([key, label, subtitle]) => (
-        <SettingsSwitchRow
-          key={key}
-          label={label}
-          subtitle={subtitle}
-          value={isPeerGrantPermissionEnabled(draft, key)}
-          disabled={!canSave || saving}
-          onValueChange={(value) => {
-            setSaving(true);
-            void autosavePeerGrant({
-              previous: draft,
-              next: setPeerGrantPermission(draft, key, value),
-              show: setDraft,
-              save: (input) => save({ environmentId, input }),
-              onError: (error) =>
-                Alert.alert(
-                  "Could not save link permissions",
-                  error instanceof Error ? error.message : String(error),
-                ),
-            }).finally(() => setSaving(false));
-          }}
-        />
-      ))}
+      <SettingsSwitchRow
+        label="Full access"
+        subtitle="Every permission below."
+        value={isFullPeerGrant(draft)}
+        disabled={disabled}
+        onValueChange={(value) => commit({ ...draft, ...uniformPeerGrant(value) })}
+      />
+      <ListActionRow
+        icon={advanced ? "chevron.down" : "chevron.right"}
+        label="Advanced"
+        onPress={() => setAdvanced((open) => !open)}
+      />
+      {advanced
+        ? PERMISSIONS.map(([key, label, subtitle]) => (
+            <SettingsSwitchRow
+              key={key}
+              label={label}
+              subtitle={subtitle}
+              value={isPeerGrantPermissionEnabled(draft, key)}
+              disabled={disabled}
+              onValueChange={(value) => commit(setPeerGrantPermission(draft, key, value))}
+            />
+          ))
+        : null}
     </SettingsSection>
   );
 }
