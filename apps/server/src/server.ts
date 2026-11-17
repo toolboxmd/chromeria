@@ -247,9 +247,10 @@ import {
 } from "@t3tools/tailscale";
 import * as ServerActivation from "./serverActivation.ts";
 
-// Escaped MCP handoff provenance can exceed find-my-way's 100-character segment default.
-const HTTP_ROUTER_CONFIG = {
-  maxParamLength: 512,
+// Thread ids carry escaped provenance that grows with each delegation level, so a fixed
+// segment cap sends long ids to the SPA fallback; Node's 16 KiB header limit bounds them.
+export const HTTP_ROUTER_CONFIG = {
+  maxParamLength: 16_384,
 } as const;
 
 // Skip Effect's default 20 s grace; WebSocket scope finalizers already close connections gracefully.
