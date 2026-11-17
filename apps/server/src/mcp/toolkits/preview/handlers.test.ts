@@ -255,11 +255,8 @@ const vaultMcpClient = McpSchema.McpServerClient.of({
 
 it.effect.each([
   ["preview_fill_credential", "completed"],
-  ["preview_end_login", "completed"],
   ["preview_fill_credential", "unresolved"],
-  ["preview_end_login", "unresolved"],
   ["preview_fill_credential", "legacy"],
-  ["preview_end_login", "legacy"],
 ] as const)("vault379: registered %s preserves %s boundaries", ([name, scenario]) => {
   let live = true;
   const database = Sqlite.layerMemory.pipe(
@@ -284,11 +281,14 @@ it.effect.each([
       const server = yield* McpServer.McpServer;
       const ready = yield* Deferred.make<void>();
       const tabId = PreviewTabId.make("vault-tab");
-      const operation = name === "preview_fill_credential" ? "fillCredential" : "endLogin";
-      const result =
-        name === "preview_fill_credential"
-          ? { filled: true, item: "synthetic-item", field: "password", site: "example.test", tabId }
-          : { closed: [tabId] };
+      const operation = "fillCredential";
+      const result = {
+        filled: true,
+        item: "synthetic-item",
+        field: "password",
+        site: "example.test",
+        tabId,
+      };
       let effects = 0;
       let loseReply = false;
       yield* Stream.runForEach(
@@ -331,9 +331,9 @@ it.effect.each([
             name,
             arguments: {
               tabId,
-              ...(name === "preview_fill_credential"
-                ? { item: "synthetic-item", field: "password", locator: "#password" }
-                : {}),
+              item: "synthetic-item",
+              field: "password",
+              locator: "#password",
               clientRequestId: key,
             },
           })

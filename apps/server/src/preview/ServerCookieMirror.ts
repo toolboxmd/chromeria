@@ -75,18 +75,12 @@ export class ServerCookieMirror {
     }
   }
 
-  /**
-   * The profile's cookies, opaque partitions left out. Callers check the profile id
-   * first; `guard` runs again once the context is attached, before and after the read.
-   */
-  readProfile(profileId: string, guard: () => void): Promise<ReadonlyArray<MirrorCookie>> {
+  /** The profile's cookies, opaque partitions left out. Callers check the profile id first. */
+  readProfile(profileId: string): Promise<ReadonlyArray<MirrorCookie>> {
     return this.serialized(async () => {
       const context = await this.contexts.contextFor(profileId);
       const attached = await this.attach(context);
-      guard();
-      const cookies = await this.readAttached(context, attached.cdp);
-      guard();
-      return cookies;
+      return this.readAttached(context, attached.cdp);
     });
   }
 

@@ -71,7 +71,6 @@ const harness = (initial: ReadonlyArray<Stored> = []) => {
     contextFor: vi.fn(async () => context),
     reservedPage: vi.fn(async () => page),
   } as unknown as ServerBrowserContexts & { contextFor: ReturnType<typeof vi.fn> };
-  const logins = new Set<string>();
   const profiles: LoginProfiles = {
     find: (id) =>
       id === "work"
@@ -79,7 +78,6 @@ const harness = (initial: ReadonlyArray<Stored> = []) => {
         : id === "incognito"
           ? { id, name: "Incognito", kind: "incognito" }
           : undefined,
-    inLogin: (id) => logins.has(id),
   };
   const mirror = new ServerCookieMirror(contexts);
   const values = () =>
@@ -90,7 +88,7 @@ const harness = (initial: ReadonlyArray<Stored> = []) => {
       ]),
     );
   const login = new ServerLoginCookies(mirror, profiles);
-  return { context, contexts, logins, mirror, login, values };
+  return { context, contexts, mirror, login, values };
 };
 
 const snapshotCookie = (domain: string, name: string, value: string): MirrorCookie => ({
@@ -146,43 +144,6 @@ describe("ServerLoginCookies", () => {
       login.export({ hosts: ["shop.test"], profileId: "incognito" }),
     ).rejects.toMatchObject({ message: expect.stringMatching(/^incognito_profile:/) });
     expect(contexts.contextFor).not.toHaveBeenCalled();
-  });
-
-  it("refuses a profile in a login, including one that starts while the context opens", async () => {
-    const { login, logins, context, contexts, values } = harness([
-      { name: "session", value: "kept", domain: "shop.test", path: "/" },
-    ]);
-    const args = {
-      profileId: "work",
-      hosts: ["shop.test"],
-      cookies: [snapshotCookie("shop.test", "session", "imported")],
-      skipped: none,
-    };
-    logins.add("work");
-    await expect(login.import(args)).rejects.toMatchObject({
-      message: expect.stringMatching(/^login_in_progress:/),
-    });
-    expect(contexts.contextFor).not.toHaveBeenCalled();
-
-    logins.clear();
-    contexts.contextFor.mockImplementationOnce(async () => {
-      logins.add("work");
-      return context;
-    });
-    await expect(login.import(args)).rejects.toMatchObject({
-      message: expect.stringMatching(/^login_in_progress:/),
-    });
-    expect(values()).toEqual({ "shop.test/session": "kept" });
-
-    // Export has the same race: a login starting while the context opens must not leak its cookies.
-    logins.clear();
-    contexts.contextFor.mockImplementationOnce(async () => {
-      logins.add("work");
-      return context;
-    });
-    await expect(login.export({ profileId: "work", hosts: ["shop.test"] })).rejects.toMatchObject({
-      message: expect.stringMatching(/^login_in_progress:/),
-    });
   });
 
   it("exports only the listed hosts' cookies and refuses Google hosts", async () => {

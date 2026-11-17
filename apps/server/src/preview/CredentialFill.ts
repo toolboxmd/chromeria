@@ -2,7 +2,6 @@ import {
   PreviewCredentialError,
   type PreviewAutomationFillCredentialInput,
   type PreviewAutomationFillCredentialResult,
-  type PreviewAutomationOperation,
   type PreviewCredentialReason,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -29,22 +28,7 @@ const refused = (reason: PreviewCredentialReason, tabId?: string) => {
   });
 };
 
-/** The one answer to every read of a tab in a login. */
-export const loginInProgress = () => refused("loginInProgress");
 export const serverBrowserOnly = () => refused("serverBrowserOnly");
-
-/**
- * What a login tab still allows: more fills, and actions that return no page
- * content. Status, dialogs, closing and preview_end_login are handled outside the
- * tab's queue and return no page content either.
- */
-export const LOGIN_OPERATIONS: ReadonlySet<PreviewAutomationOperation> = new Set([
-  "fillCredential",
-  "click",
-  "press",
-  "type",
-  "waitFor",
-]);
 
 const hostOf = (uri: string) => {
   // Bitwarden stores bare hosts such as shopify.com as well as full URLs.
@@ -110,10 +94,7 @@ export const fillCredential = async (input: {
   readonly vault: CredentialVault["Service"];
   readonly request: PreviewAutomationFillCredentialInput;
   readonly locate: (locator: string) => Locator;
-  /**
-   * Runs just before the value enters the page, and may refuse. Until then a failed
-   * fill has put nothing in the page, so the caller can lift its quarantine.
-   */
+  /** Runs just before the value enters the page, and may refuse. */
   readonly beforeTyping?: () => Promise<void>;
 }): Promise<PreviewAutomationFillCredentialResult> => {
   const { request, tabId } = input;

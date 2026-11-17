@@ -78,8 +78,7 @@ desktop tab.
 ## Tab lifetime and limits
 
 When a thread settles, its agent tabs close unless you are watching or
-controlling them, a page watch is active, or a login is in progress in their
-profile. Tabs you opened yourself stay open. Agent tabs also close
+controlling them, or a page watch is active. Tabs you opened yourself stay open. Agent tabs also close
 after 30 minutes unused unless someone is watching them or a page watch is active.
 The agent browser allows up to 8 tabs per agent session and 32 per environment;
 agents can close or reuse tabs to make room.
@@ -116,7 +115,7 @@ returned event, and an empty active reply keeps your supplied cursor.
 
 A page watch survives turn completion and thread settlement. Explicit close,
 navigation (including route changes), human takeover, thread archive/deletion,
-login quarantine and revoked authority end it. Stop an exact watch with
+and revoked authority end it. Stop an exact watch with
 `preview_watch_stop`. The event queue lives in the server process: restart,
 unknown watches, invalid cursors, terminal state and overflow produce explicit
 errors. Reconcile your application's state before registering again; a new

@@ -297,7 +297,7 @@ integration(
 );
 
 integration(
-  "native watches terminate on malformed JSON, overflow, navigation, close, human takeover, login and policy revocation",
+  "native watches terminate on malformed JSON, overflow, navigation, close, human takeover and policy revocation",
   () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -343,16 +343,6 @@ integration(
         });
         yield* viewer.input({ type: "takeControl" });
         yield* assertTerminal(takeover, "ownership");
-        const login = yield* f.open();
-        const quarantined = yield* f.start(login, "(emit) => () => {}");
-        yield* f
-          .invoke(
-            "fillCredential",
-            { item: "synthetic-missing-item", field: "username", selector: "input" },
-            login,
-          )
-          .pipe(Effect.result);
-        yield* assertTerminal(quarantined, "login");
         const revokedTab = yield* f.open();
         const revoked = yield* f.start(
           revokedTab,

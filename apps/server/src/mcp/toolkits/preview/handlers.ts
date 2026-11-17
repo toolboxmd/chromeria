@@ -24,7 +24,6 @@ import {
   type ToolActivityIcon,
   type ThreadId,
   type PreviewAutomationOperation,
-  type PreviewAutomationEndLoginResult,
   type PreviewAutomationFillCredentialResult,
   type PreviewAutomationOpenInput,
   type PreviewAutomationRecordingStatus,
@@ -120,7 +119,12 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
           ),
         }
       : response;
-  if (["status", "open", "navigate", "snapshot", "recordingStop"].includes(operation))
+  // A fill's result carries only vault data, so no live page URL rides along with it.
+  if (
+    ["status", "open", "navigate", "snapshot", "recordingStop", "fillCredential"].includes(
+      operation,
+    )
+  )
     return { result };
   const statusTabId =
     (operation !== "evaluate" && typeof result === "object" && result !== null
@@ -146,11 +150,11 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
 
 const authorizeVaultLogin = Effect.gen(function* () {
   const caller = yield* loadCaller();
-  // Browser consent grants neither destination vault use nor profile-wide login effects.
+  // Browser consent does not grant use of the destination's vault.
   if (callerLinkOrigin(caller) !== undefined)
     return yield* new OrchestratorMcpFailure({
       code: "capability_denied",
-      message: "Linked callers cannot use this environment's credential vault or end its logins.",
+      message: "Linked callers cannot use this environment's credential vault.",
     });
 });
 
@@ -514,14 +518,6 @@ const handlers = {
           ),
         );
       }),
-    "external-unknown",
-  ),
-  preview_end_login: McpToolAccess.actsOnResource(
-    "preview",
-    (input) =>
-      authorizeVaultLogin.pipe(
-        Effect.andThen(invokeTargeted<PreviewAutomationEndLoginResult>("endLogin", input ?? {})),
-      ),
     "external-unknown",
   ),
   preview_upload: McpToolAccess.actsOnResource(

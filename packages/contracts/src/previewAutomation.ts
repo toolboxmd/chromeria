@@ -57,7 +57,6 @@ export const PREVIEW_AUTOMATION_SERVER_OPERATIONS = [
   "drag",
   "readPage",
   "fillCredential",
-  "endLogin",
   "watchStart",
   "watchStop",
 ] as const;
@@ -145,7 +144,6 @@ export class PreviewWatchError extends Schema.TaggedError<PreviewWatchError>()(
       "navigation",
       "closed",
       "ownership",
-      "login",
       "revoked",
       "thread_deleted",
       "capacity",
@@ -209,8 +207,6 @@ export const PreviewAutomationStatus = Schema.Struct({
   fileChooser: Schema.optional(
     Schema.NullOr(Schema.Struct({ multiple: Schema.Boolean, accept: Schema.String })),
   ),
-  /** A login after preview_fill_credential: URL, title and page content are withheld. */
-  loginInProgress: Schema.optional(Schema.Boolean),
   downloads: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -235,7 +231,6 @@ export const PreviewAutomationStatus = Schema.Struct({
         ownedByCaller: Schema.optional(Schema.Boolean),
         visible: Schema.optional(Schema.Boolean.annotate({ description: VISIBLE_DESCRIPTION })),
         profileId: Schema.optional(BrowserProfileId),
-        loginInProgress: Schema.optional(Schema.Boolean),
       }),
     ),
   ),
