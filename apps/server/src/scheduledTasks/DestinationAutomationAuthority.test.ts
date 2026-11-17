@@ -1,11 +1,15 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { AuthSessionId, EnvironmentId, ProjectId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 import * as TestClock from "effect/testing/TestClock";
+import * as NodeSqlite from "node:sqlite";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as Authority from "./DestinationAutomationAuthority.ts";
 
@@ -142,6 +146,47 @@ it.effect(
       yield* accept(value);
       expect((yield* authority.claim(value.id)).id).toBe(value.id);
     }).pipe(Effect.provide(fixture)),
+);
+
+it.effect("a first-thread bind committing mid-claim cannot tear the accepted schedule check", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const filename = `${yield* fs.makeTempDirectoryScoped({ prefix: "automation-claim-snapshot-" })}/state.sqlite`;
+    yield* Effect.gen(function* () {
+      const authority = yield* Authority.DestinationAutomationAuthority;
+      const value = certificate();
+      yield* accept(value);
+      const other = new NodeSqlite.DatabaseSync(filename);
+      yield* Effect.addFinalizer(() => Effect.sync(() => other.close()));
+      let bound = false;
+      // Another connection commits the bind between the claim's certificate read and its schedule read.
+      const bindMidClaim: Statement.Transformer = (statement) =>
+        Effect.sync(() => {
+          if (!bound && statement.compile()[0].includes("FROM fork_automation_bindings")) {
+            bound = true;
+            other.exec(`BEGIN IMMEDIATE;
+              UPDATE scheduled_tasks SET thread_id='thread-384' WHERE task_id='task-384';
+              UPDATE fork_automation_certificates SET certificate_json=json_set(certificate_json,'$.binding.threadId','thread-384') WHERE id='accepted-384';
+              COMMIT;`);
+          }
+          return statement;
+        });
+      expect(
+        (yield* authority
+          .claim(value.id)
+          .pipe(Effect.provideService(Statement.CurrentTransformer, bindMidClaim))).binding
+          .threadId,
+      ).toBeNull();
+      expect(bound).toBe(true);
+      expect((yield* authority.claim(value.id)).binding.threadId).toBe("thread-384");
+    }).pipe(
+      Effect.provide(
+        Layer.provideMerge(Authority.layer, Sqlite.layerFromPath(filename)).pipe(
+          Layer.provide(NodeServices.layer),
+        ),
+      ),
+    );
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 it.effect(
