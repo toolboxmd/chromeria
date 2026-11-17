@@ -82,6 +82,7 @@ import {
   instanceId,
   json,
   makeNode,
+  narrowConsent,
   nativeCall,
   nativeInvalidParams,
   seedParent,
@@ -4197,6 +4198,8 @@ it.live("reviewer382-r2: manual admission rechecks a replacement schedule target
       yield* seedParent(a, parent);
       yield* seedParent(c, other);
       yield* seedParent(b, local);
+      yield* narrowConsent(a, parent, b);
+      yield* narrowConsent(c, other, b);
       const fields = {
         purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
         title: "Original",
@@ -4309,6 +4312,8 @@ it.live(
         yield* seedParent(a, parent);
         yield* seedParent(c, other);
         yield* seedParent(b, local);
+        yield* narrowConsent(a, parent, b);
+        yield* narrowConsent(c, other, b);
         const fields = {
           purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           title: "Original",

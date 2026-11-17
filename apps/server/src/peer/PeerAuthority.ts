@@ -38,6 +38,7 @@ import {
   PeerAuthorityEnvelope,
   PeerCeiling,
   PeerGrant,
+  uniformPeerGrant,
   PeerGrantSummary,
   PeerReturnPair,
   type PeerTaskLifecycleRequest,
@@ -672,13 +673,10 @@ const make = Effect.gen(function* () {
       yield* activeSession(sessionId);
       if (peer.environmentId === here)
         return yield* denied("A peer cannot bind this environment to itself.");
+      // A link its owner created with full access trusts this peer fully from the start.
       const initial: PeerGrant = {
         sessionId: AuthSessionId.make(sessionId),
-        resourceScope: "created-work",
-        onward: false,
-        preview: false,
-        device: false,
-        browserExport: false,
+        ...uniformPeerGrant(scope.client.access === "full-access"),
       };
       yield* sql`INSERT INTO peer_authority_sessions (session_id, environment_id, generation, grant_json) VALUES (${sessionId}, ${peer.environmentId}, ${peer.generation}, ${json(initial)}) ON CONFLICT DO NOTHING`.pipe(
         Effect.mapError(unavailable),

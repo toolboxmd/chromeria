@@ -9,7 +9,7 @@ import * as PeerLinkEvents from "./PeerLinkEvents.ts";
 import * as Environment from "../environment/ServerEnvironment.ts";
 import * as PubSub from "effect/PubSub";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
-import { SecretRef } from "@t3tools/contracts";
+import { SecretRef, uniformPeerGrant } from "@t3tools/contracts";
 import * as ScheduleMutation from "../scheduledTasks/mutationReceipts.ts";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Sink from "effect/Sink";
@@ -57,6 +57,7 @@ import {
   instanceId,
   json,
   makeNode,
+  narrowConsent,
   nativeCall,
   nativeInvalidParams,
   seedParent,
@@ -233,6 +234,7 @@ it.live(
         yield* linkTo(a.links, b, "full-access");
         const parent = ThreadId.make("automation384-parent");
         yield* seedParent(a, parent);
+        yield* narrowConsent(a, parent, b);
         const signingRef = "cccccccccccccccccccccccccccccccc";
         yield* Context.get(b.services, Secrets.ServerSecretStore).set(
           `secret-request-${signingRef}`,
@@ -601,6 +603,7 @@ it.live.each(["fresh_session", "continue"] as const)(
         yield* linkTo(a.links, b, "full-access");
         const parent = ThreadId.make("binding-parent");
         yield* seedParent(a, parent);
+        yield* narrowConsent(a, parent, b);
         const created = yield* nativeCall(a, parent, "schedule_task", {
           environmentId: b.environmentId,
           projectId: b.project.id,
@@ -1950,10 +1953,9 @@ it.live.each(["non-turn", "non-turn-offline", "policy", "onward"] as const)(
         const originalGrant = (yield* b.authority.grants)[0]!;
         const grant = {
           ...originalGrant,
+          ...uniformPeerGrant(false),
           resourceScope:
-            scenario === "onward"
-              ? ("environment-resources" as const)
-              : originalGrant.resourceScope,
+            scenario === "onward" ? ("environment-resources" as const) : ("created-work" as const),
           preview: true,
           onward: true,
         };

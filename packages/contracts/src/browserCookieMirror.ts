@@ -6,6 +6,8 @@ import { BrowserProfileId, BrowserProfileName } from "./browserProfile.ts";
 export const COOKIE_MIRROR_PATH = "/api/browser-cookie-mirror";
 export const COOKIE_MIRROR_GRANT_PATH = `${COOKIE_MIRROR_PATH}/grant`;
 export const COOKIE_MIRROR_MAX_MUTATIONS = 256;
+/** Subject prefix of the short-lived child session a mirror grant mints for its parent session. */
+export const COOKIE_MIRROR_CHILD_SUBJECT_PREFIX = "cookie-mirror:";
 
 export const ChromeCookieKeyCommand = Schema.Array(Schema.String).check(Schema.isMaxLength(128));
 export type ChromeCookieKeyCommand = typeof ChromeCookieKeyCommand.Type;

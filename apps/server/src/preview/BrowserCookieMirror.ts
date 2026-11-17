@@ -3,6 +3,7 @@ import {
   DEFAULT_PERSON,
   CookieMirrorError,
   type AuthSessionId,
+  COOKIE_MIRROR_CHILD_SUBJECT_PREFIX,
   CookieMirrorBatch,
   type CookieMirrorGrant,
 } from "@t3tools/contracts";
@@ -65,7 +66,7 @@ const make = Effect.gen(function* () {
       yield* owner(session.sessionId);
       const child = yield* sessions
         .issue({
-          subject: `cookie-mirror:${session.sessionId}`,
+          subject: `${COOKIE_MIRROR_CHILD_SUBJECT_PREFIX}${session.sessionId}`,
           method: "bearer-access-token",
           scopes: [AuthCookieMirrorWriteScope],
           ttl: Duration.minutes(10),

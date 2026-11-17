@@ -53,6 +53,7 @@ import {
   WS_METHODS,
   SourceControlProviderError,
   SourceControlProviderKind,
+  uniformPeerGrant,
 } from "@t3tools/contracts";
 import * as PendingRequests from "../childThreads/PendingRequestService.ts";
 import * as AttachmentStaging from "../assets/AttachmentStaging.ts";
@@ -3093,6 +3094,22 @@ export const nativeCall = (...input: Parameters<typeof nativeRpcCall>) =>
     Effect.flatMap(sendResult),
     Effect.map((reply) => reply.result),
   );
+
+/** Enrolls `source` at `destination` and turns every grant off, since a full-access link starts with all on. */
+export const narrowConsent = Effect.fn("PeerAuthority.narrowConsent")(function* (
+  source: Node,
+  parent: ThreadId,
+  destination: Node,
+) {
+  yield* nativeCall(source, parent, "t3_project_list", {
+    environmentId: destination.environmentId,
+  });
+  const grant = (yield* destination.authority.grants).find(
+    (entry) => entry.environmentId === source.environmentId,
+  );
+  if (grant === undefined) return yield* Effect.die("Missing enrolled peer grant");
+  yield* destination.authority.setGrant({ ...grant, ...uniformPeerGrant(false) });
+});
 
 const decodeNativeInvalidParams = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
