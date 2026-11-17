@@ -19,8 +19,7 @@ export function preferences(settings: ServerSettings) {
     enableProviderUpdateChecks,
     backgroundActivity,
     sourceControlWritingStyle,
-    loadBalancingEnabled,
-    loadBalancingWeights,
+    autoBalance,
   } = settings;
   const characters = Array.from(sourceControlWritingStyle.customInstructions);
   return {
@@ -34,7 +33,7 @@ export function preferences(settings: ServerSettings) {
       truncated: characters.length > 4000,
     },
     // Fork: Auto balance, which also places this machine's worktree delegations.
-    loadBalancing: { enabled: loadBalancingEnabled, weights: loadBalancingWeights },
+    loadBalancing: autoBalance ?? { enabled: false, weights: {} },
   };
 }
 const access = Effect.gen(function* () {

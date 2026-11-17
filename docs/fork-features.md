@@ -2049,7 +2049,9 @@ sources and reasons.
     "packages/client-runtime/src/state/peerGrants.test.ts",
     "apps/web/src/components/device/deviceStreamSession.browser.test.ts",
     "apps/web/src/state/previewStream.browser.test.tsx",
-    "packages/shared/src/loadBalancing.ts"
+    "packages/shared/src/loadBalancing.ts",
+    "apps/web/src/hooks/useAutoBalance.ts",
+    "packages/shared/src/loadBalancing.test.ts"
   ],
   "upstreamFiles": [
     "apps/web/src/components/device/deviceStreamSession.ts",
@@ -2220,7 +2222,7 @@ sources and reasons.
     "apps/server/src/mcp/toolkits/environment/handlers.test.ts",
     "packages/client-runtime/src/load-balancing.ts",
     "apps/web/src/components/settings/LoadBalancingSettings.tsx",
-    "apps/desktop/src/settings/DesktopClientSettings.test.ts"
+    "apps/web/src/appInit.tsx"
   ],
   "sharedFiles": [
     "vite.config.ts",

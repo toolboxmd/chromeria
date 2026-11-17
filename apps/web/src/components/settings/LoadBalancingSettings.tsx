@@ -1,10 +1,7 @@
 import { resolveEnvironmentMachineKind } from "@t3tools/contracts";
 
-import {
-  usePrimarySettings,
-  usePrimarySettingsAvailable,
-  useUpdatePrimarySettings,
-} from "~/hooks/useSettings";
+import { useAutoBalance } from "~/hooks/useAutoBalance";
+import { useClientSettingsHydrated } from "~/hooks/useSettings";
 import type { EnvironmentPresentation } from "~/state/environments";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
@@ -49,13 +46,13 @@ export function LoadBalancingSettings({
 }: {
   environments: ReadonlyArray<EnvironmentPresentation>;
 }) {
-  // Saved on this app's machine, whose agents' worktree delegations balance with it too.
-  const settings = usePrimarySettings((current) => ({
-    loadBalancingEnabled: current.loadBalancingEnabled,
-    loadBalancingWeights: current.loadBalancingWeights,
-  }));
-  const settingsHydrated = usePrimarySettingsAvailable();
-  const updateSettings = useUpdatePrimarySettings();
+  // Fork: saved on this app's primary machine, whose agents' delegations balance with it too.
+  const { autoBalance, update } = useAutoBalance();
+  const settings = {
+    loadBalancingEnabled: autoBalance.enabled,
+    loadBalancingWeights: autoBalance.weights,
+  };
+  const settingsHydrated = useClientSettingsHydrated();
 
   if (environments.length < 2) return null;
 
@@ -74,7 +71,7 @@ export function LoadBalancingSettings({
           aria-label="Automatically balance load"
           checked={settings.loadBalancingEnabled}
           disabled={!settingsHydrated}
-          onCheckedChange={(loadBalancingEnabled) => updateSettings({ loadBalancingEnabled })}
+          onCheckedChange={(enabled) => update({ enabled })}
         />
       }
     >
@@ -97,11 +94,8 @@ export function LoadBalancingSettings({
             disabled={!settingsHydrated || !settings.loadBalancingEnabled}
             onValueChange={(value) => {
               if (value === null) return;
-              updateSettings({
-                loadBalancingWeights: {
-                  ...settings.loadBalancingWeights,
-                  [environment.environmentId]: value,
-                },
+              update({
+                weights: { ...settings.loadBalancingWeights, [environment.environmentId]: value },
               });
             }}
           >

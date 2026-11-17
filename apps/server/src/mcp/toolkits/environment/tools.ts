@@ -1,5 +1,6 @@
 import * as McpRouting from "../../McpRouting.ts";
 import {
+  AutoBalanceSettings,
   BackgroundActivityProfile,
   BackgroundActivityProfileSelection,
   ExecutionEnvironmentDescriptor,
@@ -31,12 +32,7 @@ const PreferenceFields = {
     truncated: Schema.Boolean,
   }),
   // Older linked environments omit it.
-  loadBalancing: Schema.optionalKey(
-    Schema.Struct({
-      enabled: ServerSettings.fields.loadBalancingEnabled,
-      weights: ServerSettings.fields.loadBalancingWeights,
-    }),
-  ),
+  loadBalancing: Schema.optionalKey(AutoBalanceSettings),
 };
 const shared = {
   failure: OrchestratorMcpFailure,

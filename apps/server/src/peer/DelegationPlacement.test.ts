@@ -85,6 +85,8 @@ interface Box {
     | "refused, records unreadable";
   /** Clone attempts there that fail before one succeeds. */
   readonly cloneFailures: number;
+  /** Registrations of a finished clone that fail before one succeeds. */
+  readonly registerFailures: number;
 }
 
 const healthyBox: Box = {
@@ -97,6 +99,7 @@ const healthyBox: Box = {
   slow: false,
   launch: "accepted",
   cloneFailures: 0,
+  registerFailures: 0,
 };
 
 const harness = (options: {
@@ -131,6 +134,8 @@ const harness = (options: {
     const reading = yield* Deferred.make<void>();
     const cloneAttempts = yield* Queue.unbounded<void>();
     const cloneFailures = yield* Ref.make(boxState.cloneFailures);
+    const registerFailures = yield* Ref.make(boxState.registerFailures);
+    const registrations = yield* Queue.unbounded<void>();
     const home = checkouts.parent.slice(0, checkouts.parent.lastIndexOf("/"));
     const layer = DelegationPlacement.layer.pipe(
       Layer.provide(
@@ -139,8 +144,10 @@ const harness = (options: {
             getSettings: Effect.succeed({
               ...DEFAULT_SERVER_SETTINGS,
               linkedEnvironmentsEnabled: true,
-              loadBalancingEnabled: options.autoBalance ?? true,
-              loadBalancingWeights: { [box]: boxState.weight },
+              autoBalance: {
+                enabled: options.autoBalance ?? true,
+                weights: { [box]: boxState.weight },
+              },
             }),
           }),
           Layer.mock(PeerLinks.PeerLinks)({
@@ -189,6 +196,20 @@ const harness = (options: {
                                 }),
                               )
                             : Effect.succeed({ cwd: "/box/home/app" }),
+                        ),
+                      );
+                    case "t3_project_create":
+                      return Queue.offer(registrations, undefined).pipe(
+                        Effect.andThen(Ref.getAndUpdate(registerFailures, (left) => left - 1)),
+                        Effect.flatMap((left) =>
+                          left > 0
+                            ? Effect.fail(
+                                new OrchestratorMcpFailure({
+                                  code: "orchestration_error",
+                                  message: "Registration failed.",
+                                }),
+                              )
+                            : Effect.succeed({}),
                         ),
                       );
                     default:
@@ -265,7 +286,7 @@ const harness = (options: {
       yield* Layer.build(layer),
       DelegationPlacement.DelegationPlacement,
     );
-    return { placement, delegated, forwarded, reading, cloneAttempts };
+    return { placement, delegated, forwarded, reading, cloneAttempts, registrations };
   });
 
 it.effect.each([
@@ -375,4 +396,22 @@ it.effect("a refusal whose record cannot be read fails instead of running here",
     const failed = yield* Effect.flip(placement.delegate(scope, task, false));
     expect(failed.message).toBe("The box refused.");
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "a clone whose registration failed is registered by a later child, not cloned again",
+  () =>
+    Effect.gen(function* () {
+      const { placement, cloneAttempts, registrations } = yield* harness({
+        box: { hasProject: false, registerFailures: 1 },
+      });
+      expect(yield* placement.delegate(scope, task, false)).toBeUndefined();
+      yield* Queue.take(registrations);
+      expect(
+        yield* placement.delegate(scope, { ...task, clientRequestId: "next" }, false),
+      ).toBeUndefined();
+      yield* Queue.take(registrations);
+      // One clone, two registrations.
+      expect(yield* Queue.size(cloneAttempts)).toBe(1);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

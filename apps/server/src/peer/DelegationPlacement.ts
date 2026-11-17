@@ -77,6 +77,8 @@ const make = Effect.gen(function* () {
   const home = yield* HostProcess.HomeDirectory;
   const clones = yield* Scope.Scope;
   const cloning = new Set<string>();
+  // A clone that succeeded there; a later child only registers it if registration failed.
+  const clonedAt = new Map<string, string>();
 
   const gitOut = (cwd: string, args: ReadonlyArray<string>) =>
     git.execute({ operation: "DelegationPlacement.git", cwd, args, allowNonZeroExit: true }).pipe(
@@ -164,15 +166,16 @@ const make = Effect.gen(function* () {
       return Effect.void;
     cloning.add(key);
     return Effect.gen(function* () {
-      const cloned = yield* forwarding.call(
-        scope,
-        ProjectToolkit.tools.t3_project_clone,
-        environmentId,
-        { remoteUrl: withoutCredentials(remoteUrl), destinationPath: `~/${relative}` },
-      );
+      const cwd =
+        clonedAt.get(key) ??
+        (yield* forwarding.call(scope, ProjectToolkit.tools.t3_project_clone, environmentId, {
+          remoteUrl: withoutCredentials(remoteUrl),
+          destinationPath: `~/${relative}`,
+        })).cwd;
+      clonedAt.set(key, cwd);
       yield* forwarding.call(scope, ProjectToolkit.tools.t3_project_create, environmentId, {
         title: path.basename(workspaceRoot),
-        workspaceRoot: cloned.cwd,
+        workspaceRoot: cwd,
       });
     }).pipe(
       Effect.catchCause((cause) =>
@@ -214,7 +217,7 @@ const make = Effect.gen(function* () {
     }
     if (acceptedHere) return undefined;
     const current = yield* settings.getSettings.pipe(Effect.orElseSucceed(() => undefined));
-    if (current?.loadBalancingEnabled !== true || !current.linkedEnvironmentsEnabled)
+    if (current?.autoBalance?.enabled !== true || !current.linkedEnvironmentsEnabled)
       return undefined;
     const clientRequestId = input.clientRequestId ?? (yield* random.uuidV4());
 
@@ -258,7 +261,8 @@ const make = Effect.gen(function* () {
       scope.authority?.ceiling,
     ).runtimeMode;
     // The same per-machine weights the composer's Auto balance uses; 0 is Manual only.
-    const weightOf = (environmentId: string) => current.loadBalancingWeights[environmentId] ?? 50;
+    const { weights } = current.autoBalance;
+    const weightOf = (environmentId: string) => weights[environmentId] ?? 50;
     const eligible = (yield* links.list.pipe(Effect.orElseSucceed(() => []))).filter(
       (link) =>
         link.status === "reachable" &&

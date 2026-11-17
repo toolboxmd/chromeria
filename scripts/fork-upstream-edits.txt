@@ -746,4 +746,4 @@ apps/server/src/device/DeviceHubProxy.stream.test.ts
 apps/server/src/mcp/toolkits/environment/handlers.test.ts
 packages/client-runtime/src/load-balancing.ts
 apps/web/src/components/settings/LoadBalancingSettings.tsx
-apps/desktop/src/settings/DesktopClientSettings.test.ts
+apps/web/src/appInit.tsx

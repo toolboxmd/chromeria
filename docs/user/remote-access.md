@@ -500,9 +500,10 @@ this machine also start their worktree tasks on whichever machine has the most
 free CPU and memory, this one included, using the same per-machine preferences;
 **Manual only** never receives them. A task moves only when its branch is pushed
 and the agent names no machine. Auto balance is saved on the machine your app
-runs on, so turn it on in each machine's app whose agents should balance. If the
-chosen machine lacks the project, it starts cloning it in the background and the
-task runs here.
+runs on (an app's earlier choice moves there the first time it connects), so
+turn it on in each machine's app whose agents should balance. If the chosen
+machine lacks the project, it starts cloning it in the background and the task
+runs here.
 
 ## Manage or revoke access
 

@@ -1,4 +1,8 @@
-import type { HostResourcesSnapshot } from "@t3tools/contracts";
+import type {
+  AutoBalanceSettings,
+  HostResourcesSnapshot,
+  ServerSettingsPatch,
+} from "@t3tools/contracts";
 
 /** Callers supply only connected machines hosting the project and selected provider. */
 export function chooseLoadBalancedEnvironment(
@@ -37,4 +41,14 @@ export function chooseLoadBalancedEnvironment(
     }
   }
   return selected;
+}
+
+/** Moves a client's own Auto balance onto its server once; default choices claim nothing. */
+export function autoBalanceMigrationPatch(
+  server: AutoBalanceSettings | null,
+  legacy: AutoBalanceSettings,
+): ServerSettingsPatch | null {
+  return server === null && (legacy.enabled || Object.keys(legacy.weights).length > 0)
+    ? { migrateAutoBalance: legacy }
+    : null;
 }
