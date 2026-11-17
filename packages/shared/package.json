@@ -63,6 +63,10 @@
       "types": "./src/mobileSourceMaps.ts",
       "import": "./src/mobileSourceMaps.ts"
     },
+    "./loadBalancing": {
+      "types": "./src/loadBalancing.ts",
+      "import": "./src/loadBalancing.ts"
+    },
     "./model": {
       "types": "./src/model.ts",
       "import": "./src/model.ts"

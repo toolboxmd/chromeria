@@ -188,6 +188,7 @@ import { assertTargetWithinLimits, threadNotFound } from "./threadAccess.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
+import * as DelegationPlacement from "../peer/DelegationPlacement.ts";
 
 const isMcpFailure = Schema.is(OrchestratorMcpFailure);
 
@@ -1369,6 +1370,7 @@ const make = Effect.gen(function* () {
   const gitDriver = yield* GitVcsDriver.GitVcsDriver;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
+  const delegationPlacement = yield* Effect.serviceOption(DelegationPlacement.DelegationPlacement);
   const fileSystem = yield* FileSystem.FileSystem;
 
   const bareTarget = Effect.fnUntraced(function* (selection: ModelSelection) {
@@ -3618,6 +3620,25 @@ const make = Effect.gen(function* () {
         return yield* input.mode === "wait"
           ? awaitTask(scope, taskId, taskId, input.timeoutMs)
           : readTask(scope, taskId, false, true);
+      }
+      // Fork: an unnamed worktree child may run on a less loaded linked machine.
+      if (Option.isSome(delegationPlacement) && input.isolation === "worktree") {
+        yield* requireCapability(callerScope);
+        const scope = yield* requireThreadScope(callerScope, "delegate_task");
+        const acceptedHere =
+          input.clientRequestId !== undefined &&
+          (yield* threadManagement.hasReceipt(
+            stableCommandId({
+              scope,
+              requestKey: input.clientRequestId,
+              operation: "delegate-task",
+            }),
+          ));
+        const taskId = yield* delegationPlacement.value.delegate(scope, input, acceptedHere);
+        if (taskId !== undefined)
+          return yield* input.mode === "wait"
+            ? awaitTask(scope, taskId, taskId, input.timeoutMs)
+            : readTask(scope, taskId, false, true);
       }
       const { scope, parent } = yield* loadThreadCaller(callerScope, "delegate_task");
       if (

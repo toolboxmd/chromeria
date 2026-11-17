@@ -5,6 +5,7 @@ import { CurrentRequest, externalDispatch, externalReplay } from "../../McpReque
 import * as Option from "effect/Option";
 import * as Environment from "../../../environment/ServerEnvironment.ts";
 import * as ThreadCommandExecutor from "../../../orchestration-v2/ThreadCommandExecutor.ts";
+import * as HostResources from "../../../resourceTelemetry/HostResources.ts";
 import * as Settings from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
@@ -18,6 +19,8 @@ export function preferences(settings: ServerSettings) {
     enableProviderUpdateChecks,
     backgroundActivity,
     sourceControlWritingStyle,
+    loadBalancingEnabled,
+    loadBalancingWeights,
   } = settings;
   const characters = Array.from(sourceControlWritingStyle.customInstructions);
   return {
@@ -30,6 +33,8 @@ export function preferences(settings: ServerSettings) {
       customInstructions: characters.slice(0, 4000).join(""),
       truncated: characters.length > 4000,
     },
+    // Fork: Auto balance, which also places this machine's worktree delegations.
+    loadBalancing: { enabled: loadBalancingEnabled, weights: loadBalancingWeights },
   };
 }
 const access = Effect.gen(function* () {
@@ -48,12 +53,14 @@ export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
     Effect.gen(function* () {
       const { descriptor, settings } = yield* access;
       const current = yield* settings.getSettings.pipe(Effect.mapError(unavailable));
+      const hostResources = yield* (yield* HostResources.HostResources).read;
       return {
         environmentId: descriptor.environmentId,
         label: descriptor.label,
         serverVersion: descriptor.serverVersion,
         platform: descriptor.platform,
         preferences: preferences(current),
+        hostResources,
       };
     }),
   ),

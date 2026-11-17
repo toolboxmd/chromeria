@@ -104,6 +104,7 @@ import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as PeerAuthority from "./peer/PeerAuthority.ts";
 import * as PeerNoticeDelivery from "./peer/PeerNoticeDelivery.ts";
 import * as RemoteDelegation from "./peer/RemoteDelegation.ts";
+import * as DelegationPlacement from "./peer/DelegationPlacement.ts";
 import * as PeerLinkRequests from "./peer/PeerLinkRequests.ts";
 import * as PeerLinks from "./peer/PeerLinks.ts";
 import * as PeerMcpClient from "./peer/PeerMcpClient.ts";
@@ -1398,6 +1399,8 @@ const layerMakeServer = Layer.unwrap(
       // The authenticated transport requires the runtime's real lifecycle dependencies.
       Layer.provide(PendingRequestService.layer),
       Layer.provide(PeerTaskLifecycle.layer),
+      // Fork: places agents' unnamed worktree delegations on linked machines.
+      Layer.provide(DelegationPlacement.layer),
       // Source clients, MCP and startup recovery share one remote lifecycle owner.
       Layer.provide(
         RemoteDelegation.layer.pipe(

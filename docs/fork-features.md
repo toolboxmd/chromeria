@@ -1943,7 +1943,7 @@ sources and reasons.
 ```json
 {
   "id": "peer-links",
-  "purpose": "Port upstream server peer links and record-first remote delegation until absorption replaces the port; retain permanent pairing-code sessions, target Prism launch intent and recovery-aware waits. Extend routing to all MCP toolkit groups while retaining caller capabilities and link-mode narrowing. Own explicit peer consent, including its mobile settings entry and destination permission checks. Replay delegated lifecycle results durably and open qualified destination work through the source client connection. Bind negotiated requests to verified durable caller identity, transfer attachment bytes through destination staging, reconcile native acceptance and retain truthful unknown outcomes for unreconcilable effects. Surface qualified descendant questions and approvals through verified mixed ancestry and the authenticated source client, with native revision guards and receipt replay. Keep source viewers and question choices readable across clients, with exact transport diagnostics behind a disclosure. Align sparse remote follow-up selection with full projections so initial work appears once. Execute typed device commands on their exact native session with current originating authority, pre-open authenticated command discovery and qualified native artifact output. Retain real remote-parent provenance in client shells, hide destination delegated children from default navigation and keep them in scoped existing search even when the parent is offline. Apply default-child hiding to phone Home, Promachos conversations and legacy rendered/jump lists while keeping existing search on full qualified shells. Open source-owned browser and device viewers through current resource-bound relays, acquire verified qualified inputs and results, and preserve exact session lifecycle across web, desktop and mobile. Keep accepted destination schedules and Spectrum rounds local within immutable contributor bounds, and recover exact disable acknowledgements after ordinary link retirement.",
+  "purpose": "Port upstream server peer links and record-first remote delegation until absorption replaces the port; retain permanent pairing-code sessions, target Prism launch intent and recovery-aware waits. Extend routing to all MCP toolkit groups while retaining caller capabilities and link-mode narrowing. Own explicit peer consent, including its mobile settings entry and destination permission checks. Replay delegated lifecycle results durably and open qualified destination work through the source client connection. Bind negotiated requests to verified durable caller identity, transfer attachment bytes through destination staging, reconcile native acceptance and retain truthful unknown outcomes for unreconcilable effects. Surface qualified descendant questions and approvals through verified mixed ancestry and the authenticated source client, with native revision guards and receipt replay. Keep source viewers and question choices readable across clients, with exact transport diagnostics behind a disclosure. Align sparse remote follow-up selection with full projections so initial work appears once. Execute typed device commands on their exact native session with current originating authority, pre-open authenticated command discovery and qualified native artifact output. Retain real remote-parent provenance in client shells, hide destination delegated children from default navigation and keep them in scoped existing search even when the parent is offline. Apply default-child hiding to phone Home, Promachos conversations and legacy rendered/jump lists while keeping existing search on full qualified shells. Open source-owned browser and device viewers through current resource-bound relays, acquire verified qualified inputs and results, and preserve exact session lifecycle across web, desktop and mobile. Keep accepted destination schedules and Spectrum rounds local within immutable contributor bounds, and recover exact disable acknowledgements after ordinary link retirement. Place agents' unnamed worktree delegations on the least loaded eligible linked machine, governed by Auto balance and its weights, kept in server settings so the composer and delegation read one fact, with host load read through t3_environment_read.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/164",
     "https://github.com/toolboxmd/chromeria/issues/302",
@@ -1955,7 +1955,9 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/issues/383",
     "https://github.com/toolboxmd/chromeria/issues/379",
     "https://github.com/toolboxmd/chromeria/issues/386",
-    "https://github.com/toolboxmd/chromeria/issues/384"
+    "https://github.com/toolboxmd/chromeria/issues/384",
+    "https://github.com/toolboxmd/chromeria/issues/487",
+    "https://github.com/toolboxmd/chromeria/issues/773"
   ],
   "prs": [
     "https://github.com/pingdotgg/t3code/pull/16653",
@@ -1975,7 +1977,9 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/pull/546",
     "https://github.com/toolboxmd/chromeria/pull/534",
     "https://github.com/toolboxmd/chromeria/pull/555",
-    "https://github.com/toolboxmd/chromeria/pull/632"
+    "https://github.com/toolboxmd/chromeria/pull/632",
+    "https://github.com/toolboxmd/chromeria/pull/777",
+    "https://github.com/pingdotgg/t3code/pull/34293"
   ],
   "newFiles": [
     "apps/server/src/testUtils/loopbackHttpServer.ts",
@@ -2044,7 +2048,8 @@ sources and reasons.
     "packages/client-runtime/src/state/peerGrants.ts",
     "packages/client-runtime/src/state/peerGrants.test.ts",
     "apps/web/src/components/device/deviceStreamSession.browser.test.ts",
-    "apps/web/src/state/previewStream.browser.test.tsx"
+    "apps/web/src/state/previewStream.browser.test.tsx",
+    "packages/shared/src/loadBalancing.ts"
   ],
   "upstreamFiles": [
     "apps/web/src/components/device/deviceStreamSession.ts",
@@ -2211,7 +2216,11 @@ sources and reasons.
     "apps/web/src/components/chat/useThreadLifecycle.tsx",
     "apps/mobile/vite.config.ts",
     "apps/web/src/components/chat/ThreadLineageWorkflowRow.tsx",
-    "apps/web/src/components/chat/useThreadLifecycle.browser.test.tsx"
+    "apps/web/src/components/chat/useThreadLifecycle.browser.test.tsx",
+    "apps/server/src/mcp/toolkits/environment/handlers.test.ts",
+    "packages/client-runtime/src/load-balancing.ts",
+    "apps/web/src/components/settings/LoadBalancingSettings.tsx",
+    "apps/desktop/src/settings/DesktopClientSettings.test.ts"
   ],
   "sharedFiles": [
     "vite.config.ts",

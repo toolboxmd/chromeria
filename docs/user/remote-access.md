@@ -492,6 +492,18 @@ ends, as for any delegated task. It keeps following the task across restarts.
 If the other machine revokes the link, or the link is removed here, the task
 fails with that reason.
 
+To choose between machines, an agent can read each one's current CPU and memory
+load with `t3_environment_read`.
+
+With **Auto balance** on (**Settings → Connections → Load balancing**), agents on
+this machine also start their worktree tasks on whichever machine has the most
+free CPU and memory, this one included, using the same per-machine preferences;
+**Manual only** never receives them. A task moves only when its branch is pushed
+and the agent names no machine. Auto balance is saved on the machine your app
+runs on, so turn it on in each machine's app whose agents should balance. If the
+chosen machine lacks the project, it starts cloning it in the background and the
+task runs here.
+
 ## Manage or revoke access
 
 On the host, **Settings → Sharing & access** lets authorized administrators create
