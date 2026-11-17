@@ -12135,7 +12135,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   /**
    * A member whose cancel identity an individual cancel already recorded keeps that cancel's
-   * outcome: still open, the group adopts it; accepted, the member is given up now; refused or
+   * outcome: still open, the group adopts it; accepted, the member is marked now; refused or
    * replaced, nothing changes. Its Stop is never recorded or sent again. A changed reason
    * leaves the member as it is, and its entry reports the conflict.
    */
@@ -12144,7 +12144,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       OrchestrationV2ServerCommand,
       { readonly type: "delegated_task.group-cancel" }
     >,
-    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     member: OrchestrationV2Subagent,
     remote: OrchestrationV2RemoteTaskChild,
     admitted: { readonly cancelRequestId: string; readonly reason?: string | undefined },
@@ -12178,26 +12177,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (stop?.state === "acknowledged" ||
           stop?.state === "confirmed" ||
           stop?.state === "not_started"));
-    if (!applied) return unchanged;
-    if (
-      member.completionDelivery?.state !== "disposed" ||
-      member.completionDelivery.disposedBy !== undefined
-    )
-      yield* dispatchDelegatedTaskCompletionDeliveryResolution(
-        {
-          type: "delegated_task.completion-delivery.dispose",
-          commandId: command.commandId,
-          parentThreadId: command.parentThreadId,
-          taskId: member.id,
-        },
-        events,
-      );
-    return {
-      ...member,
-      groupCancel: { commandId: command.commandId },
-      completionDelivery: { state: "disposed" as const, observedByRunId: null },
-      updatedAt: now,
-    };
+    // Marked as a local member is; its entry's continuation then withdraws its wake.
+    return applied
+      ? { ...member, groupCancel: { commandId: command.commandId }, updatedAt: now }
+      : unchanged;
   });
 
   // A whole-group task_cancel records its id on every member before any member
@@ -12230,7 +12213,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Remote Run group member ${member.id} has no cancel request.`,
         });
       if (remote !== undefined && admitted !== undefined) {
-        const adopted = yield* adoptRecordedCancel(command, events, member, remote, admitted, now);
+        const adopted = yield* adoptRecordedCancel(command, member, remote, admitted, now);
         if (adopted !== undefined) {
           yield* emitEvent({
             type: "subagent.updated",

@@ -33,12 +33,14 @@ import {
   activate,
   caller,
   decodeTaskReceipt,
+  delegate,
   finishLifecycleRun,
   instanceId,
   json,
   makeNode,
   nativeCall,
   seedParent,
+  seedPending369,
   type Node,
 } from "./PeerAuthority.workflow.fixture.ts";
 
@@ -1241,4 +1243,233 @@ it.live("runGroups751: a destination rejects an argument it does not declare", (
       expect(yield* destinationThreads(b)).toBe(0);
     }),
   ).pipe(Effect.provide(services)),
+);
+
+it.live("runGroups751: adopting every member's accepted cancel withdraws their queued wake", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { a, b, parentId } = yield* pair("rg-adopt-all");
+      const { groupId, members } = yield* startGroup(a, b, parentId, "rg-adopt-all");
+      // Each member's own cancel, with the identity the group cancel derives, is accepted.
+      for (const [index, task] of members.entries()) {
+        const own = yield* memberEntry(a, parentId, task, "G", index, "Enough");
+        expect(own.isError, json(own.content)).not.toBe(true);
+      }
+      for (const [index, task] of members.entries())
+        yield* finishLifecycleRun(b, childOf(task), `rg-adopt-all-${index}`);
+      for (const task of members)
+        yield* recorded(a, parentId, task.id, (current) => current.result !== null);
+      // Individually cancelled members still owe the group its one wake.
+      expect((yield* committedWakes(a, parentId, ids(members))).size).toBe(1);
+      const stops = yield* destinationStops(b);
+      const group = yield* nativeCall(a, parentId, "task_cancel", {
+        taskId: groupId,
+        clientRequestId: "G",
+        reason: "Enough",
+      });
+      expect(group.isError, json(group.content)).not.toBe(true);
+      // Both are given up: the queued wake is withdrawn whole, with no Stop sent again.
+      expect((yield* committedWakes(a, parentId, ids(members))).size).toBe(0);
+      const parent = yield* a.orchestrator.getThreadProjection(parentId);
+      expect(
+        parent.runs.flatMap((run) => run.delegatedCompletion?.delivery?.taskIds ?? []),
+      ).toEqual([]);
+      for (const task of yield* tasksOf(a, parentId))
+        expect(task).toMatchObject({
+          groupCancel: { commandId: expect.any(String) },
+          completionDelivery: { state: "disposed" },
+        });
+      expect(yield* destinationStops(b)).toBe(stops);
+    }),
+  ).pipe(Effect.provide(services)),
+);
+
+it.live.each(["accepted", "refused"] as const)(
+  "runGroups751: a parent Stop %s before a member's entry resolves its group cancel",
+  (outcome) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const name = `rg-parent-stop-${outcome}`;
+        const { a, b, parentId } = yield* pair(name);
+        const { groupId, members } = yield* startGroup(a, b, parentId, name);
+        if (outcome === "refused")
+          yield* a.threads.dispatch({
+            type: "thread.runtime-mode.set",
+            threadId: parentId,
+            commandId: CommandId.make(`${name}-lower`),
+            runtimeMode: "auto",
+          });
+        // The parent's Stop reaches every running member and stays unanswered past the cancel.
+        yield* a.stopConnections;
+        yield* a.threads.stopDelegatedTasks({
+          threadId: parentId,
+          commandId: CommandId.make(`${name}-stop`),
+        });
+        for (const task of members)
+          yield* recorded(
+            a,
+            parentId,
+            task.id,
+            (current) =>
+              current.remoteChild?.stop !== undefined &&
+              current.remoteChild.stop.requestId.length > 0,
+          );
+        yield* admitGroupCancel(a, parentId, groupId, members, "rg-parent-stop-stop");
+        yield* restart(a);
+        for (const [index, task] of members.entries())
+          yield* recorded(
+            a,
+            parentId,
+            task.id,
+            (current) =>
+              current.remoteChild?.cancelResolution?.requestId ===
+                RemoteDelegation.cancelRequestId(
+                  namespaceOf(a, parentId),
+                  `rg-parent-stop-stop:${index}`,
+                ) &&
+              current.remoteChild.cancelResolution.outcome ===
+                (outcome === "accepted" ? "applied" : "refused"),
+          );
+        const stops = yield* destinationStops(b);
+        for (const [index, task] of members.entries()) {
+          const entry = yield* memberEntry(a, parentId, task, "rg-parent-stop-stop", index);
+          expect(entry.isError).toBe(outcome === "refused");
+          // The parent's Stop resolved the cancel; the cancel's own Stop is never recorded.
+          expect(
+            yield* stopRecords(
+              a,
+              parentId,
+              task.id,
+              RemoteDelegation.cancelRequestId(
+                namespaceOf(a, parentId),
+                `rg-parent-stop-stop:${index}`,
+              ),
+            ),
+          ).toBe(0);
+        }
+        expect(yield* destinationStops(b)).toBe(stops);
+        // A parent Stop gives up the parent's wakes, as locally.
+        expect((yield* committedWakes(a, parentId, ids(members))).size).toBe(0);
+      }),
+    ).pipe(Effect.provide(services)),
+);
+
+it.live("runGroups751: a retired parent sends nothing until it is reopened", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { a, b, parentId } = yield* pair("rg-retired");
+      const { groupId, members } = yield* startGroup(a, b, parentId, "rg-retired");
+      yield* a.stopConnections;
+      yield* admitGroupCancel(a, parentId, groupId, members, "rg-retired-stop");
+      yield* a.threads.dispatch({
+        type: "thread.archive",
+        commandId: CommandId.make("rg-retired-archive"),
+        threadId: parentId,
+      });
+      yield* restart(a);
+      // The intents stay recorded; nothing reaches the destination while the parent is archived.
+      for (const task of yield* tasksOf(a, parentId))
+        expect(task.remoteChild?.cancelIntent?.groupCancelId).toBeDefined();
+      expect(yield* destinationStops(b)).toBe(0);
+      yield* a.threads.dispatch({
+        type: "thread.unarchive",
+        commandId: CommandId.make("rg-retired-unarchive"),
+        threadId: parentId,
+      });
+      yield* restart(a);
+      for (const task of members)
+        yield* recorded(
+          a,
+          parentId,
+          task.id,
+          (current) =>
+            current.groupCancel !== undefined &&
+            current.remoteChild?.cancelResolution?.outcome === "applied",
+        );
+      expect(yield* destinationStops(b)).toBe(2);
+      for (const [index, task] of members.entries())
+        yield* finishLifecycleRun(b, childOf(task), `rg-retired-${index}`);
+      for (const task of members)
+        yield* recorded(a, parentId, task.id, (current) => current.result !== null);
+      expect((yield* committedWakes(a, parentId, ids(members))).size).toBe(0);
+    }),
+  ).pipe(Effect.provide(services)),
+);
+
+it.live("runGroups751: a group's results join a wake already queued for another task", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { a, b, parentId } = yield* pair("rg-merge");
+      const single = yield* delegate(a, b, parentId, "rg-merge-single");
+      yield* finishLifecycleRun(b, single.childId, "rg-merge-single");
+      yield* recorded(a, parentId, single.taskId, (task) => task.result !== null);
+      const queued = yield* committedWakes(a, parentId, [single.taskId]);
+      expect(queued.size).toBe(1);
+      const { members } = yield* startGroup(a, b, parentId, "rg-merge");
+      for (const [index, task] of members.entries())
+        yield* finishLifecycleRun(b, childOf(task), `rg-merge-${index}`);
+      for (const task of members)
+        yield* recorded(a, parentId, task.id, (current) => current.result !== null);
+      // One wake carries the earlier task and every member.
+      const all = [single.taskId, ...ids(members)];
+      expect(yield* committedWakes(a, parentId, all)).toEqual(queued);
+      const delivery = (yield* a.orchestrator.getThreadProjection(parentId)).runs.flatMap(
+        (run) => run.delegatedCompletion?.delivery ?? [],
+      )[0];
+      expect([...(delivery?.taskIds ?? [])].toSorted()).toEqual(all.toSorted());
+    }),
+  ).pipe(Effect.provide(services)),
+);
+
+it.live(
+  "runGroups751: mode wait ends when a member asks a question, then the group wakes once",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parentId } = yield* pair("rg-question");
+        const waiting = yield* nativeCall(a, parentId, "delegate_task", {
+          task: "Review the plan.",
+          prismRole: "reviewer",
+          target: { environmentId: b.environmentId, projectId: b.project.id },
+          clientRequestId: "rg-question",
+          mode: "wait",
+          timeoutMs: 600_000,
+        }).pipe(Effect.forkScoped);
+        const seen = new Map<string, OrchestrationV2Subagent>();
+        yield* a.orchestrator
+          .streamStoredEventsFrom({
+            threadId: parentId,
+            afterSequence: 0,
+            eventType: "subagent.updated",
+          })
+          .pipe(
+            Stream.filter((stored) => {
+              if (stored.event.type !== "subagent.updated") return false;
+              const task = stored.event.payload;
+              if (task.runGroupId !== undefined && task.remoteChild?.threadId !== undefined)
+                seen.set(task.id, task);
+              return seen.size === 2;
+            }),
+            Stream.runHead,
+          );
+        const members = [...seen.values()];
+        // The first member asks its user a question there.
+        yield* activate(b, childOf(members[0]!));
+        yield* seedPending369(b, childOf(members[0]!), "rg-question");
+        const answered = yield* decodeGroup((yield* Fiber.join(waiting)).structuredContent);
+        expect(answered.status).toBe("running");
+        expect(answered.waitTimedOut).toBe(false);
+        expect(answered.tasks.some((task) => task.hasPendingQuestion === true)).toBe(true);
+        // The wait gave the group back its wake: it wakes once when every member ends.
+        yield* finishLifecycleRun(b, childOf(members[1]!), "rg-question-1");
+        yield* recorded(a, parentId, members[1]!.id, (task) => task.result !== null);
+        expect((yield* committedWakes(a, parentId, ids(members))).size).toBe(0);
+        const cancel = yield* nativeCall(b, childOf(members[0]!), "t3_thread_interrupt", {
+          threadId: childOf(members[0]!),
+        });
+        expect(cancel.isError, json(cancel.content)).not.toBe(true);
+        yield* recorded(a, parentId, members[0]!.id, (task) => task.result !== null);
+        expect((yield* committedWakes(a, parentId, ids(members))).size).toBe(1);
+      }),
+    ).pipe(Effect.provide(services)),
 );

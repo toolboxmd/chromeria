@@ -2891,29 +2891,45 @@ const make = Effect.gen(function* () {
                         ),
                       ),
                   ),
-                  // A remote member is given up when its destination accepts the Stop.
+                  // A remote member is given up when its destination accepts the Stop, which
+                  // marks it; one whose own earlier cancel was already accepted is marked now.
                   Effect.tap(() =>
-                    member.remoteChild !== undefined
-                      ? Effect.void
-                      : threadManagement
-                          .dispatch({
-                            type: "delegated_task.completion-delivery.dispose",
-                            commandId: stableCommandId({
-                              scope,
-                              requestKey: `${key}:${index}`,
-                              operation: "cancel-run-group-delivery",
-                            }),
-                            parentThreadId: scope.thread.threadId,
-                            taskId: member.id,
-                          })
-                          .pipe(
-                            Effect.mapError((error) =>
-                              failure(
-                                "orchestration_error",
-                                `Unable to dispose delegated task ${member.id} completion delivery: ${errorMessage(error)}`,
-                              ),
+                    (member.remoteChild === undefined
+                      ? Effect.succeed(true)
+                      : loadTasks(scope.thread.threadId, [member.id]).pipe(
+                          Effect.map((tasks) =>
+                            tasks.some(
+                              (task) =>
+                                task.id === member.id &&
+                                task.groupCancel?.commandId === groupCancelId,
                             ),
                           ),
+                        )
+                    ).pipe(
+                      Effect.flatMap((givenUp) =>
+                        !givenUp
+                          ? Effect.void
+                          : threadManagement
+                              .dispatch({
+                                type: "delegated_task.completion-delivery.dispose",
+                                commandId: stableCommandId({
+                                  scope,
+                                  requestKey: `${key}:${index}`,
+                                  operation: "cancel-run-group-delivery",
+                                }),
+                                parentThreadId: scope.thread.threadId,
+                                taskId: member.id,
+                              })
+                              .pipe(
+                                Effect.mapError((error) =>
+                                  failure(
+                                    "orchestration_error",
+                                    `Unable to dispose delegated task ${member.id} completion delivery: ${errorMessage(error)}`,
+                                  ),
+                                ),
+                              ),
+                      ),
+                    ),
                   ),
                 ),
             ),
