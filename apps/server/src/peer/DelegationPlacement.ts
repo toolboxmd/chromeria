@@ -97,7 +97,14 @@ const make = Effect.gen(function* () {
               `delegate:${scope.thread.threadId}:${clientRequestId}`,
           )?.remoteChild,
       ),
-      Effect.orElseSucceed(() => undefined),
+      // An unreadable record is not proof that nothing was sent there.
+      Effect.mapError(
+        () =>
+          new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: "Unable to read prior delegated launches.",
+          }),
+      ),
     );
 
   /** Reads one linked machine's load and matching project; undefined when it does not answer in time. */
@@ -169,7 +176,10 @@ const make = Effect.gen(function* () {
       });
     }).pipe(
       Effect.catchCause((cause) =>
-        Effect.logWarning("Background clone for delegation placement failed", cause),
+        Effect.logWarning("Background clone for delegation placement failed", cause).pipe(
+          // A later child may try again once that machine recovers.
+          Effect.andThen(Effect.sync(() => cloning.delete(key))),
+        ),
       ),
       Effect.forkIn(clones),
       Effect.asVoid,
@@ -183,20 +193,17 @@ const make = Effect.gen(function* () {
       input.isolation !== "worktree" ||
       input.target?.environmentId !== undefined ||
       input.projectId !== undefined ||
-      input.workspaceStrategy !== undefined ||
-      acceptedHere
+      input.workspaceStrategy !== undefined
     )
       return undefined;
-    const current = yield* settings.getSettings.pipe(Effect.orElseSucceed(() => undefined));
-    if (current?.loadBalancingEnabled !== true || !current.linkedEnvironmentsEnabled)
-      return undefined;
-    const clientRequestId = input.clientRequestId ?? (yield* random.uuidV4());
-    // A retry lands where the first request was recorded.
-    const recorded = yield* remoteTaskFor(scope, clientRequestId);
+    // A retry lands where the first request was recorded, whatever the settings say now.
+    const recorded =
+      input.clientRequestId === undefined
+        ? undefined
+        : yield* remoteTaskFor(scope, input.clientRequestId);
     if (recorded?.launch !== undefined) {
       const { taskId } = yield* remote.delegate(scope, {
         ...input,
-        clientRequestId,
         target: {
           ...input.target,
           environmentId: recorded.environmentId,
@@ -205,6 +212,11 @@ const make = Effect.gen(function* () {
       });
       return taskId;
     }
+    if (acceptedHere) return undefined;
+    const current = yield* settings.getSettings.pipe(Effect.orElseSucceed(() => undefined));
+    if (current?.loadBalancingEnabled !== true || !current.linkedEnvironmentsEnabled)
+      return undefined;
+    const clientRequestId = input.clientRequestId ?? (yield* random.uuidV4());
 
     const parent = yield* threads
       .getThreadRecords(scope.thread.threadId, ["runs"])
@@ -298,6 +310,7 @@ const make = Effect.gen(function* () {
         Effect.catch((error) =>
           remoteTaskFor(scope, clientRequestId).pipe(
             Effect.flatMap((task) => (task === undefined ? Effect.undefined : Effect.fail(error))),
+            Effect.mapError(() => error),
           ),
         ),
       );

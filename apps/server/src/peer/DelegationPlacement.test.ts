@@ -18,6 +18,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import { TestClock } from "effect/testing";
 
@@ -77,7 +78,13 @@ interface Box {
   readonly hasProject: boolean;
   /** Never answers its environment read. */
   readonly slow: boolean;
-  readonly launch: "accepted" | "refused before recording" | "refused after recording";
+  readonly launch:
+    | "accepted"
+    | "refused before recording"
+    | "refused after recording"
+    | "refused, records unreadable";
+  /** Clone attempts there that fail before one succeeds. */
+  readonly cloneFailures: number;
 }
 
 const healthyBox: Box = {
@@ -89,6 +96,7 @@ const healthyBox: Box = {
   hasProject: true,
   slow: false,
   launch: "accepted",
+  cloneFailures: 0,
 };
 
 const harness = (options: {
@@ -96,6 +104,8 @@ const harness = (options: {
   readonly autoBalance?: boolean;
   readonly hereLoad?: number;
   readonly unpushed?: boolean;
+  /** This request was already recorded on the box. */
+  readonly recordedBefore?: boolean;
 }) =>
   Effect.gen(function* () {
     const checkouts = yield* pushedCheckouts;
@@ -104,9 +114,23 @@ const harness = (options: {
     const boxState: Box = { ...healthyBox, ...options.box };
     const delegated = yield* Ref.make<ReadonlyArray<OrchestratorMcpDelegateTaskInput>>([]);
     const forwarded = yield* Ref.make<ReadonlyArray<string>>([]);
-    const recorded = yield* Ref.make<ReadonlyArray<unknown>>([]);
+    const recordOf = (clientRequestId: string | undefined) => ({
+      id: remoteTaskId,
+      remoteChild: {
+        environmentId: box,
+        launch: {
+          clientRequestId: `delegate:${parentThreadId}:${clientRequestId}`,
+          projectId: boxProject,
+        },
+      },
+    });
+    const recorded = yield* Ref.make<ReadonlyArray<unknown>>(
+      options.recordedBefore === true ? [recordOf(task.clientRequestId)] : [],
+    );
+    const recordsBroken = yield* Ref.make(false);
     const reading = yield* Deferred.make<void>();
-    const cloned = yield* Deferred.make<void>();
+    const cloneAttempts = yield* Queue.unbounded<void>();
+    const cloneFailures = yield* Ref.make(boxState.cloneFailures);
     const home = checkouts.parent.slice(0, checkouts.parent.lastIndexOf("/"));
     const layer = DelegationPlacement.layer.pipe(
       Layer.provide(
@@ -154,8 +178,18 @@ const harness = (options: {
                         nextCursor: null,
                       });
                     case "t3_project_clone":
-                      return Deferred.succeed(cloned, undefined).pipe(
-                        Effect.as({ cwd: "/box/home/app" }),
+                      return Queue.offer(cloneAttempts, undefined).pipe(
+                        Effect.andThen(Ref.getAndUpdate(cloneFailures, (left) => left - 1)),
+                        Effect.flatMap((left) =>
+                          left > 0
+                            ? Effect.fail(
+                                new OrchestratorMcpFailure({
+                                  code: "orchestration_error",
+                                  message: "Clone failed.",
+                                }),
+                              )
+                            : Effect.succeed({ cwd: "/box/home/app" }),
+                        ),
                       );
                     default:
                       return Effect.succeed({});
@@ -171,18 +205,9 @@ const harness = (options: {
                     ? Effect.succeed({ taskId: remoteTaskId })
                     : Effect.gen(function* () {
                         if (boxState.launch === "refused after recording")
-                          yield* Ref.set(recorded, [
-                            {
-                              id: remoteTaskId,
-                              remoteChild: {
-                                environmentId: box,
-                                launch: {
-                                  clientRequestId: `delegate:${parentThreadId}:${input.clientRequestId}`,
-                                  projectId: boxProject,
-                                },
-                              },
-                            },
-                          ]);
+                          yield* Ref.set(recorded, [recordOf(input.clientRequestId)]);
+                        if (boxState.launch === "refused, records unreadable")
+                          yield* Ref.set(recordsBroken, true);
                         return yield* new OrchestratorMcpFailure({
                           code: "orchestration_error",
                           message: "The box refused.",
@@ -192,8 +217,19 @@ const harness = (options: {
               ),
           }),
           Layer.mock(ThreadManagement.ThreadManagementService)({
-            getThreadRecords: () =>
-              Ref.get(recorded).pipe(
+            // The store's own error type is irrelevant here: any read failure must fail closed.
+            getThreadRecords: (() =>
+              Ref.get(recordsBroken).pipe(
+                Effect.flatMap((broken) =>
+                  broken
+                    ? Effect.fail(
+                        new OrchestratorMcpFailure({
+                          code: "orchestration_error",
+                          message: "The database is busy.",
+                        }),
+                      )
+                    : Ref.get(recorded),
+                ),
                 Effect.map(
                   (subagents) =>
                     ({
@@ -207,7 +243,7 @@ const harness = (options: {
                       subagents,
                     }) as never,
                 ),
-              ),
+              )) as never,
           }),
           Layer.mock(ProjectService.ProjectService)({
             getById: () => Effect.succeedSome({ workspaceRoot: checkouts.parent } as never),
@@ -229,7 +265,7 @@ const harness = (options: {
       yield* Layer.build(layer),
       DelegationPlacement.DelegationPlacement,
     );
-    return { placement, delegated, forwarded, reading, cloned };
+    return { placement, delegated, forwarded, reading, cloneAttempts };
   });
 
 it.effect.each([
@@ -294,9 +330,16 @@ it.effect("only worktree tasks without a named machine or project are placed", (
 
 it.effect("a box without the project starts a background clone and the task stays here", () =>
   Effect.gen(function* () {
-    const { placement, delegated, cloned } = yield* harness({ box: { hasProject: false } });
+    const { placement, delegated, cloneAttempts } = yield* harness({
+      box: { hasProject: false, cloneFailures: 1 },
+    });
     expect(yield* placement.delegate(scope, task, false)).toBeUndefined();
-    yield* Deferred.await(cloned);
+    yield* Queue.take(cloneAttempts);
+    // That clone failed, so the next child tries again instead of waiting for a restart.
+    expect(
+      yield* placement.delegate(scope, { ...task, clientRequestId: "next" }, false),
+    ).toBeUndefined();
+    yield* Queue.take(cloneAttempts);
     expect(yield* Ref.get(delegated)).toEqual([]);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
@@ -315,5 +358,21 @@ it.effect("a retry lands on the machine its first request was recorded on", () =
       box,
       box,
     ]);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("a request recorded there replays there even after Auto balance is turned off", () =>
+  Effect.gen(function* () {
+    const { placement, delegated } = yield* harness({ autoBalance: false, recordedBefore: true });
+    expect(yield* placement.delegate(scope, task, false)).toBe(remoteTaskId);
+    expect((yield* Ref.get(delegated)).map((input) => input.target?.environmentId)).toEqual([box]);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("a refusal whose record cannot be read fails instead of running here", () =>
+  Effect.gen(function* () {
+    const { placement } = yield* harness({ box: { launch: "refused, records unreadable" } });
+    const failed = yield* Effect.flip(placement.delegate(scope, task, false));
+    expect(failed.message).toBe("The box refused.");
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
