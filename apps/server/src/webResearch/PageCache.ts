@@ -145,17 +145,25 @@ const make = Effect.gen(function* () {
         operation: "read",
         cause: new Error("Invalid cache id."),
       });
-    const compressed = yield* fs
-      .readFile(path.join(directory, `${id}.gz`))
-      .pipe(Effect.mapError((cause) => new PageCacheError({ operation: "read", cause })));
-    const json = yield* Effect.tryPromise({
-      try: () => gunzip(compressed, { maxOutputLength: MAX_CACHE_JSON_BYTES }),
-      catch: (cause) => new PageCacheError({ operation: "read", cause }),
-    });
-    const page = yield* decode(json.toString("utf8")).pipe(
+    const blob = path.join(directory, `${id}.gz`);
+    const page = yield* fs.readFile(blob).pipe(
+      Effect.flatMap((compressed) =>
+        Effect.tryPromise({
+          try: () => gunzip(compressed, { maxOutputLength: MAX_CACHE_JSON_BYTES }),
+          catch: (cause) => new PageCacheError({ operation: "read", cause }),
+        }),
+      ),
+      Effect.flatMap((json) => decode(json.toString("utf8"))),
+      Effect.option,
+    );
+    if (page._tag === "Some") return page.value.sourceRung === "tinyfish" ? null : page.value;
+    // A missing or unreadable body is a miss: drop the entry so the fetch ladder replaces it.
+    yield* Effect.logWarning("Dropping unreadable research page cache entry.", { id });
+    yield* sql`DELETE FROM pages WHERE id = ${id}`.pipe(
       Effect.mapError((cause) => new PageCacheError({ operation: "read", cause })),
     );
-    return page.sourceRung === "tinyfish" ? null : page;
+    yield* fs.remove(blob, { force: true }).pipe(Effect.ignore);
+    return null;
   });
   const put = Effect.fn("PageCache.put")(function* (page: CachedPage) {
     const json = yield* encode(page).pipe(
@@ -190,9 +198,15 @@ const make = Effect.gen(function* () {
       try: () => gzip(json),
       catch: (cause) => new PageCacheError({ operation: "write", cause }),
     });
-    yield* fs
-      .writeFile(path.join(directory, `${page.cacheId}.gz`), body)
-      .pipe(Effect.mapError((cause) => new PageCacheError({ operation: "write", cause })));
+    const blob = path.join(directory, `${page.cacheId}.gz`);
+    // The index row is durable once SQLite commits, so the body must reach disk first:
+    // an unsynced body comes back empty after a crash while its row survives.
+    yield* fs.open(blob, { flag: "w" }).pipe(
+      Effect.flatMap((file) => file.writeAll(body).pipe(Effect.andThen(file.sync))),
+      Effect.scoped,
+      Effect.tapError(() => fs.remove(blob, { force: true }).pipe(Effect.ignore)),
+      Effect.mapError((cause) => new PageCacheError({ operation: "write", cause })),
+    );
     // Publish the index after the body exists. Cache ids are immutable across refreshes.
     // Redirects may reuse an older target body; index order follows publication, not body age.
     const indexedAt = yield* Clock.currentTimeMillis;
