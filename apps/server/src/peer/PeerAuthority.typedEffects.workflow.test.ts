@@ -18,6 +18,7 @@ import {
   caller,
   json,
   decodeLaunchReceipt,
+  narrowConsent,
   nativeCall,
   decodePendingWsReply,
   decodeDeviceViewerAccess,
@@ -71,6 +72,7 @@ import {
   EventId,
   ProviderInstanceId,
   TurnItemId,
+  uniformPeerGrant,
 } from "@t3tools/contracts";
 import * as AttachmentUpload from "../assets/AttachmentUpload.ts";
 import { resolveAttachmentPathById, resolveAttachmentPath } from "../attachmentStore.ts";
@@ -1490,6 +1492,7 @@ it.live(
         yield* linkTo(a.links, b, "full-access");
         const parent = ThreadId.make("png382-parent");
         yield* seedParent(a, parent);
+        yield* narrowConsent(a, parent, b);
         const launch = yield* nativeCall(a, parent, "t3_thread_launch", {
           environmentId: b.environmentId,
           projectId: b.project.id,
@@ -1761,6 +1764,7 @@ it.live(
         yield* linkTo(a.links, b, "full-access");
         const parent = ThreadId.make("recording382-parent");
         yield* seedParent(a, parent);
+        yield* narrowConsent(a, parent, b);
         const launched = yield* nativeCall(a, parent, "t3_thread_launch", {
           environmentId: b.environmentId,
           projectId: b.project.id,
@@ -4425,7 +4429,7 @@ it.live(
           (current) => current.sessionId !== grant.sessionId,
         )!;
         expect(replacement).toBeDefined();
-        yield* b.authority.setGrant({ ...replacement, device: true });
+        yield* b.authority.setGrant({ ...replacement, ...uniformPeerGrant(false), device: true });
         const reopenViewer = () =>
           http.execute(
             HttpClientRequest.post(`${a.url}/api/device-hub/viewer/open`).pipe(

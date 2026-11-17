@@ -57,6 +57,7 @@ import {
   instanceId,
   json,
   makeNode,
+  narrowConsent,
   nativeCall,
   nativeInvalidParams,
   seedParent,
@@ -2076,6 +2077,7 @@ it.live.each(["split", "consolidated"] as const)(
         yield* seedParent(a, promachos, undefined, "promachos");
         yield* seedParent(a, worker);
         yield* seedParent(b, target);
+        yield* narrowConsent(a, promachos, b);
         const requestId = yield* seedPending369(b, target);
         const args = {
           environmentId: b.environmentId,
@@ -2083,7 +2085,7 @@ it.live.each(["split", "consolidated"] as const)(
           requestId,
           requestTarget: { environmentId: b.environmentId, threadId: target },
         };
-        // A full runtime mode does not widen the default created-work resource grant.
+        // A full runtime mode does not widen a created-work resource grant.
         expect((yield* readRequest(promachos, args)).isError).toBe(true);
         const grant = (yield* b.authority.grants)[0];
         if (grant === undefined) return yield* Effect.die("Missing fixture grant");

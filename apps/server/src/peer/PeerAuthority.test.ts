@@ -235,7 +235,7 @@ it.live(
         const third = yield* makeDestination(true, c);
         const target = yield* makeDestination();
         const source = yield* makeSource();
-        yield* linkTo(source.links, target, "full-access");
+        yield* linkTo(source.links, target, "auto");
         yield* source.forwarding.call(
           scope,
           ProjectToolkit.tools.t3_project_list,

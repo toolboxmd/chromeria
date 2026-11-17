@@ -177,7 +177,7 @@ it.live("delegates A to B to C and returns notices using each parent's own task 
       const b = yield* makeNode(descriptorOf("onward-b", "B", { peerAuthority: 1 }));
       const a = yield* makeNode(descriptorOf("onward-a", "A", { peerAuthority: 1 }));
       yield* linkTo(a.links, b, "full-access");
-      yield* linkTo(b.links, c, "full-access");
+      yield* linkTo(b.links, c, "auto");
       const parentId = ThreadId.make("onward-parent");
       yield* seedParent(a, parentId);
       yield* a.forwarding.call(
