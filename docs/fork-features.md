@@ -2815,6 +2815,7 @@ sources and reasons.
     "apps/server/src/webResearch/ResearchHost.test.ts",
     "apps/server/src/webResearch/ResearchHost.ts",
     "apps/server/src/webResearch/WebResearch.ts",
+    "apps/server/src/webResearch/durableWrite.ts",
     "apps/server/src/webResearch/extract.ts",
     "apps/server/src/webResearch/schemas.ts",
     "packages/contracts/src/researchHost.test.ts"
