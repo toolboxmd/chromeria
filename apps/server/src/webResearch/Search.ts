@@ -20,6 +20,7 @@ import * as Secrets from "../auth/ServerSecretStore.ts";
 import * as Config from "../config.ts";
 import * as Settings from "../serverSettings.ts";
 import { TREG_SECRET_NAME } from "./TinyFish.ts";
+import { writeFileDurably } from "./durableWrite.ts";
 import { extract } from "./extract.ts";
 
 const TINYFISH_URL = "https://treg.to/call/tinyfish.web.search";
@@ -182,8 +183,8 @@ const make = Effect.gen(function* () {
       const filename = path.join(directory, `search-${source}-quota.json`);
       states[source].quota = quota;
       yield* fs.makeDirectory(directory, { recursive: true });
-      yield* fs.writeFileString(`${filename}.tmp`, yield* encodeQuota(quota), { mode: 0o600 });
-      yield* fs.rename(`${filename}.tmp`, filename);
+      const encoded = new TextEncoder().encode(yield* encodeQuota(quota));
+      yield* writeFileDurably(fs, filename, encoded, 0o600);
     },
     Effect.mapError(
       () =>
@@ -203,8 +204,10 @@ const make = Effect.gen(function* () {
         .pipe(
           Effect.catchIf(
             (error) => error.reason._tag === "NotFound",
-            () => Effect.succeed('{"starts":[],"blockedUntil":0}'),
+            () => Effect.succeed(""),
           ),
+          // An empty file is a crash remnant, not corruption, so it starts a fresh quota like a missing one.
+          Effect.map((text) => (text === "" ? '{"starts":[],"blockedUntil":0}' : text)),
           Effect.mapError(
             () =>
               new ProviderFailure({

@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off - fixtures build gzip bodies directly.
+import * as NodeZlib from "node:zlib";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -137,4 +140,57 @@ it.effect(
         });
       }).pipe(Effect.provide(f.layer));
     }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+const indexRows = (directory: string) =>
+  SqlClient.SqlClient.use((sql) => sql<{ readonly id: string }>`SELECT id FROM pages`).pipe(
+    Effect.provide(NodeSqliteClient.layer({ filename: `${directory}/index.sqlite` })),
+  );
+
+it.effect("treats a missing, empty, truncated or undecodable body as a miss and drops it", () =>
+  Effect.gen(function* () {
+    const f = yield* setup;
+    const notAPage = NodeZlib.gzipSync(JSON.stringify({ not: "a cached page" }));
+    const corruptions: ReadonlyArray<Uint8Array | null> = [
+      null,
+      new Uint8Array(),
+      NodeZlib.gzipSync("x".repeat(4096)).subarray(0, 20),
+      notAPage,
+    ];
+    for (const [index, body] of corruptions.entries()) {
+      const local = page(index + 1, "http", `LOCAL-${index}`);
+      const blob = `${f.directory}/${local.cacheId}.gz`;
+      yield* Effect.gen(function* () {
+        const cache = yield* PageCache.PageCache;
+        yield* cache.put(local);
+        if (body === null) yield* f.fs.remove(blob);
+        else yield* f.fs.writeFile(blob, body);
+        expect(yield* cache.get({ url: local.url })).toBeNull();
+        expect(yield* indexRows(f.directory)).toEqual([]);
+        expect(yield* f.fs.exists(blob)).toBe(false);
+        yield* cache.put(local);
+        expect(yield* cache.get({ cacheId: local.cacheId })).toEqual(local);
+        yield* f.fs.writeFile(blob, new Uint8Array());
+        expect(yield* cache.get({ cacheId: local.cacheId })).toBeNull();
+        expect(yield* indexRows(f.directory)).toEqual([]);
+      }).pipe(Effect.provide(Layer.fresh(f.layer)));
+    }
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("publishes no index row or partial body when a write fails", () =>
+  Effect.gen(function* () {
+    const f = yield* setup;
+    const local = page(1, "http");
+    // A directory at the body path makes the body write fail.
+    yield* f.fs.makeDirectory(`${f.directory}/${local.cacheId}.gz`, { recursive: true });
+    yield* Effect.gen(function* () {
+      const cache = yield* PageCache.PageCache;
+      expect(yield* Effect.result(cache.put(local))).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "PageCacheError", operation: "write" },
+      });
+    }).pipe(Effect.provide(f.layer));
+    expect(yield* indexRows(f.directory)).toEqual([]);
+  }).pipe(Effect.provide(NodeServices.layer)),
 );
