@@ -977,6 +977,8 @@ const make = Effect.gen(function* () {
   // Jobs with nothing left to do there still watch for later work on their
   // own permits, so however many finish, they never hold back live work.
   const settledSlots = yield* Semaphore.make(8);
+  // Stops wait for an answer on permits of their own, so unanswered ones never hold back results.
+  const stopSlots = yield* Semaphore.make(8);
   const activeFollowers = new Set<NodeId>();
   const acknowledgedCursors = new Map<NodeId, number>();
   /**
@@ -1324,14 +1326,18 @@ const make = Effect.gen(function* () {
         });
         return yield* negotiation.failure;
       }
-      const answer = yield* lifecycle(remote.environmentId, remote.launch.linkIdentity, {
-        pair: pairFor(parentThreadId, task),
-        operation: {
-          type: "stop",
-          requestId: stop.requestId,
-          ...(stop.reason === undefined ? {} : { reason: stop.reason }),
+      const answer = yield* lifecycleIn(stopSlots)(
+        remote.environmentId,
+        remote.launch.linkIdentity,
+        {
+          pair: pairFor(parentThreadId, task),
+          operation: {
+            type: "stop",
+            requestId: stop.requestId,
+            ...(stop.reason === undefined ? {} : { reason: stop.reason }),
+          },
         },
-      }).pipe(Effect.result);
+      ).pipe(Effect.result);
       if (answer._tag === "Success" && answer.success.type === "stop") {
         yield* observe(parentThreadId, taskId, {
           stop: { ...stop, state: "acknowledged", destinationCommandId: answer.success.commandId },
@@ -1398,10 +1404,13 @@ const make = Effect.gen(function* () {
       }
       if (stopOwed(remote) && !stopsInFlight.has(task.id)) {
         // Observation never waits on the Stop: its answer is recorded, and wakes this follower,
-        // whenever it comes; a failed attempt is retried on a later look.
+        // whenever it comes. A failed attempt is retried on the follower's backoff until the Stop
+        // is answered or no longer owed.
         stopsInFlight.add(task.id);
         yield* stopAttempt(parentThreadId, task.id).pipe(
-          Effect.catch((error) => Effect.logDebug("A remote Stop attempt failed", error)),
+          Effect.tapError((error) => Effect.logDebug("A remote Stop attempt failed", error)),
+          Effect.retry({ schedule: followRetry }),
+          Effect.ignore,
           Effect.ensuring(Effect.sync(() => stopsInFlight.delete(task.id))),
           Effect.forkIn(followers),
         );

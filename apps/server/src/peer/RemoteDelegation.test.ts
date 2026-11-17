@@ -178,6 +178,9 @@ interface BoxThread {
   /** While set, the box holds its observation reply until `releaseObservation`. */
   readonly holdObservation: Ref.Ref<boolean>;
   readonly releaseObservation: Deferred.Deferred<void>;
+  /** The next this many observations answer at once with a newer snapshot and no result. */
+  readonly observationUpdates: Ref.Ref<number>;
+  readonly observationUpdatesServed: Deferred.Deferred<void>;
 }
 
 const makeBoxThread = Effect.gen(function* () {
@@ -224,6 +227,8 @@ const makeBoxThread = Effect.gen(function* () {
     loseStopReply: yield* Ref.make(false),
     holdObservation: yield* Ref.make(false),
     releaseObservation: yield* Deferred.make<void>(),
+    observationUpdates: yield* Ref.make(0),
+    observationUpdatesServed: yield* Deferred.make<void>(),
   } satisfies BoxThread;
 });
 
@@ -661,6 +666,32 @@ const boxToolkitLayer = (
         if (operation.type !== "observe") return HttpServerResponse.empty({ status: 409 });
         yield* Ref.update(thread.waitedFor, (seen) => [...seen, boxRunId]);
         if (yield* Ref.get(thread.gone)) return HttpServerResponse.empty({ status: 403 });
+        const updates = yield* Ref.get(thread.observationUpdates);
+        if (updates > 0) {
+          yield* Ref.set(thread.observationUpdates, updates - 1);
+          if (updates === 1) yield* Deferred.succeed(thread.observationUpdatesServed, undefined);
+          const sequence = (operation.afterSnapshot ?? 0) + 1;
+          return HttpServerResponse.jsonUnsafe({
+            type: "observation",
+            observation: {
+              cursor: operation.after,
+              snapshot: {
+                sequence,
+                observedAt: "2026-10-17T00:00:00Z",
+                title: "Fixture",
+                workState: "working",
+                pendingChildren: 0,
+                queuedRuns: 0,
+                recoveryWaiting: false,
+                incomplete: false,
+                executionSettled: false,
+                pendingQuestions: 0,
+                requestCount: 0,
+                requests: [],
+              },
+            },
+          });
+        }
         let result: PeerTaskLifecycleResult;
         if (actual !== undefined) {
           const before = yield* actual.threads.getThreadEventSequence(input.pair.childThreadId);
@@ -4980,4 +5011,26 @@ it.effect("a result that arrives while the Stop is unanswered wakes the parent a
       expect(yield* committedWakes(a, taskId)).toBe(0);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "a Stop that keeps failing is retried on the follower's backoff, not on each observation",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { thread, a } = yield* laptopHarness;
+        // An older box denies the Stop without a typed outcome, so each attempt fails.
+        yield* Ref.set(thread.typedOutcomes, false);
+        yield* Ref.set(thread.refuseStop, "runtime_mode");
+        const { taskId } = yield* delegateToBox(a);
+        const cancel = yield* a.call("task_cancel", { taskId });
+        expect(cancel.structuredContent).toMatchObject({ stopState: "unconfirmed" });
+        const sent = (yield* Ref.get(thread.stopRequests)).length;
+        // Observations keep arriving at once; none of them sends the Stop again.
+        yield* Ref.set(thread.observationUpdates, 6);
+        yield* Deferred.await(thread.observationUpdatesServed);
+        yield* remoteState(a, taskId, (task) => (task.remoteChild?.snapshot?.sequence ?? 0) >= 6);
+        expect((yield* Ref.get(thread.stopRequests)).length).toBeLessThanOrEqual(sent + 1);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
