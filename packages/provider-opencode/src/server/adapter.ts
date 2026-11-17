@@ -70,6 +70,7 @@ import * as Stream from "effect/Stream";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { mcpToolPresentation } from "@t3tools/provider-core/server/mcpToolPresentation";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import { MCP_TOOL_EXPOSURE_HEADER } from "@t3tools/provider-core/server/mcpSession";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import {
   structuralProtocolMethod,
@@ -1231,7 +1232,10 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               config: {
                 type: "remote",
                 url: mcpSession.endpoint,
-                headers: { Authorization: mcpSession.authorizationHeader },
+                headers: {
+                  Authorization: mcpSession.authorizationHeader,
+                  [MCP_TOOL_EXPOSURE_HEADER]: "deferred",
+                },
                 oauth: false,
               },
             }),

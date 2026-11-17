@@ -10,6 +10,7 @@ import type { OpencodeClient, ToolPart } from "@opencode-ai/sdk/v2";
 import { toolOutputImages } from "@t3tools/shared/toolOutput";
 import {
   CheckpointId,
+  EnvironmentId,
   NodeId,
   ProjectId,
   ProviderInstanceId,
@@ -328,6 +329,61 @@ describe("OpenCodeAdapterV2", () => {
         ),
       );
     }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
+    ),
+  );
+
+  it.effect("registers the T3 MCP server with deferred tool exposure", () =>
+    Effect.gen(function* () {
+      const nativeEvents = asyncEventStream();
+      yield* Effect.addFinalizer(() => Effect.sync(() => nativeEvents.close()));
+      const added: Array<unknown> = [];
+      yield* McpProviderSessions.McpProviderSessions.use((sessions) =>
+        sessions.set({
+          environmentId: EnvironmentId.make("environment-opencode-mcp"),
+          threadId: ThreadId.make("thread-opencode-mcp-exposure"),
+          providerSessionId: "session-opencode-mcp-exposure",
+          providerInstanceId: ProviderInstanceId.make("opencode-mcp-exposure"),
+          endpoint: "http://t3.invalid/mcp",
+          authorizationHeader: "Bearer t3-token",
+          browserToolsAvailable: false,
+        }),
+      );
+      yield* makeOpenCodeRuntimeHarness(
+        "mcp-exposure",
+        "ses_mcp",
+        {
+          event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
+          session: {
+            create: async () => ({ data: { id: "ses_mcp", time: { created: 1, updated: 1 } } }),
+          },
+          mcp: {
+            add: async (input: unknown) => {
+              added.push(input);
+              return { data: true };
+            },
+          },
+        },
+        {},
+        undefined,
+        undefined,
+        { exitCode: Effect.never },
+      );
+      assert.deepStrictEqual(added, [
+        {
+          name: "t3-code",
+          config: {
+            type: "remote",
+            url: "http://t3.invalid/mcp",
+            headers: { Authorization: "Bearer t3-token", "t3-tool-exposure": "deferred" },
+            oauth: false,
+          },
+        },
+      ]);
+    }).pipe(
+      Effect.scoped,
       Effect.provide(
         Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
       ),
