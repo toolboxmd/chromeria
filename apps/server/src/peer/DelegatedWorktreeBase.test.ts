@@ -62,8 +62,13 @@ it.each([
     "https://github.com/org/repo.git",
   ],
   ["ssh://git:secret@example.com/org/repo.git", "ssh://example.com/org/repo.git"],
+  ["https://github.com/org/repo.git#synthetic-secret", "https://github.com/org/repo.git"],
   ["git@github.com:org/repo.git", "git@github.com:org/repo.git"],
   ["https://github.com/org/repo.git", "https://github.com/org/repo.git"],
-])("names a remote %s without its credentials", (url, shown) => {
-  expect(DelegatedWorktreeBase.redactRemoteUrl(url)).toBe(shown);
+  // Forms Git accepts that the URL parser rejects or reads as opaque are not shown at all.
+  ["http://user:synthetic-secret@[::1%25lo0]:63666/repo.git", undefined],
+  ["http::http://user:synthetic-secret@[::1]:64875/repo.git", undefined],
+  ["user:synthetic-secret@example.com:org/repo.git", undefined],
+])("shows the remote %s without credentials", (url, shown) => {
+  expect(DelegatedWorktreeBase.displayRemoteUrl(url)).toBe(shown);
 });

@@ -3292,7 +3292,7 @@ it.live.each(["pushed", "unpushed", "missing there"] as const)(
             state === "unpushed"
               ? "git push -u"
               : // The parent names the remote its branch is on, which that checkout lacks.
-                "Add the remote this branch is pushed to there: origin (",
+                "Add the remote this branch is pushed to there: origin.",
           );
           expect(yield* Ref.get(thread.launchIds)).toEqual([]);
           return;
