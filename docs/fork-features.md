@@ -1000,6 +1000,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/childThreads/requestWake.noRequests.test.ts"
   ],
   "upstreamFiles": [
+    "packages/provider-core/src/server/IdAllocator.ts",
     "apps/server/src/orchestration-v2/BackgroundWorkStop.integration.test.ts",
     "packages/client-runtime/src/state/threadDetail.ts",
     "apps/server/src/mcp/OrchestratorMcpService.activity.test.ts",

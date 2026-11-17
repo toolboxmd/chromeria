@@ -1,3 +1,4 @@
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type { ProviderOptionSelection } from "@t3tools/contracts";
 import * as RemoteSecretRequests from "../secrets/RemoteSecretRequests.ts";
 import * as RemoteSecretRelay from "../secrets/RemoteSecretRelay.ts";
@@ -865,10 +866,10 @@ function stableThreadId(input: {
   readonly requestKey: string;
   readonly index: number;
 }): ThreadId {
-  return ThreadId.make(
+  // The verbatim rest always holds two ":" separators; the digest form holds none.
+  return IdAllocator.boundedThreadId(
+    "thread:mcp:",
     [
-      "thread",
-      "mcp",
       stablePart(requestNamespace(input.scope)),
       stablePart(input.requestKey),
       String(input.index),
@@ -4141,12 +4142,11 @@ const make = Effect.gen(function* () {
                 operation: "create-thread",
                 index,
               });
-              const threadId = stableThreadId({
-                scope,
-                requestKey: key,
-                index,
-              });
-              const isRetryOfAcceptedCreation = yield* threadManagement.hasReceipt(commandId);
+              const acceptedThreadId = yield* threadManagement.receiptThreadId(commandId);
+              const isRetryOfAcceptedCreation = acceptedThreadId !== undefined;
+              // A retry addresses the thread its first call created, even if minting changed since.
+              const threadId =
+                acceptedThreadId ?? stableThreadId({ scope, requestKey: key, index });
               const committedThread = isRetryOfAcceptedCreation
                 ? yield* threadManagement
                     .getThreadShell(threadId)

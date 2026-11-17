@@ -4200,6 +4200,139 @@ it.effect(
   },
 );
 
+it.effect.each([
+  { name: "a UUID", key: "6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f" },
+  { name: "the longest reserved-character", key: ":".repeat(256) },
+])(
+  "MCP thread ids for $name key stay route-sized at any depth and retries keep the first thread",
+  ({ key }) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const h = makeHarness({
+        bare: true,
+        providers: [
+          {
+            instanceId: modelSelection.instanceId,
+            driver: ProviderDriverKind.make("codex"),
+            enabled: true,
+            installed: true,
+            version: "test",
+            checkedAt: "2026-10-14T00:00:00Z",
+            slashCommands: [],
+            skills: [],
+            status: "ready",
+            auth: { status: "authenticated" },
+            models: [
+              { slug: modelSelection.model, name: "Test", isCustom: false, capabilities: null },
+            ],
+          },
+        ],
+      });
+      const mcp = OrchestratorMcpService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            h.layer,
+            h.bareLayer,
+            NodeCrypto.layer,
+            Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+            Layer.mock(ScheduledTasks.ScheduledTaskService)({}),
+            Layer.mock(SecretRequests.SecretRequests)({}),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO projection_projects (project_id,title,workspace_root,scripts_json,created_at,updated_at)
+        VALUES (${projectId},${project.title},${root},'[]',${project.createdAt},${project.updatedAt})`;
+        const rootId = ThreadId.make("mcp:depth:root");
+        yield* threads.dispatch({
+          ...launchInput({ command: "mcp:depth:create-root", thread: rootId }),
+          type: "thread.create",
+          branch: null,
+          worktreePath: root,
+        });
+        const scopeFor = (threadId: ThreadId): Invocation.McpInvocationScope => ({
+          environmentId: EnvironmentId.make("depth:mcp"),
+          requestNamespace: "depth:mcp",
+          thread: {
+            threadId,
+            providerInstanceId: modelSelection.instanceId,
+            providerSessionId: `session:${threadId}`,
+          },
+          capabilities: new Set(["orchestration"]),
+          client: undefined,
+          issuedAt: 1,
+        });
+        const start = (threadId: ThreadId) =>
+          threads.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(`mcp:depth:start:${threadId}`),
+            threadId,
+            messageId: MessageId.make(`mcp:depth:input:${threadId}`),
+            text: "Delegate deeper",
+            attachments: [],
+            dispatchMode: { type: "start_immediately" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+        let parentId = rootId;
+        for (let depth = 1; depth <= 8; depth++) {
+          yield* start(parentId);
+          const intent = {
+            task: `Depth ${depth}`,
+            role: "implementation" as const,
+            clientRequestId: key,
+            target: { providerInstanceId: modelSelection.instanceId, model: modelSelection.model },
+          };
+          const delegated = yield* service.delegateTask(scopeFor(parentId), intent);
+          const childId = delegated.childThreadId!;
+          expect(encodeURIComponent(childId).length).toBeLessThan(512);
+          expect((yield* service.delegateTask(scopeFor(parentId), intent)).childThreadId).toBe(
+            childId,
+          );
+          parentId = childId;
+        }
+
+        yield* start(parentId);
+        const deep = scopeFor(parentId);
+        const batch = { clientRequestId: key, threads: [{ title: "Deep batch" }] };
+        const created = (yield* service.createThreads(deep, batch)).threads[0]!.threadId;
+        expect(encodeURIComponent(created).length).toBeLessThan(512);
+        expect((yield* service.createThreads(deep, batch)).threads[0]!.threadId).toBe(created);
+
+        // A thread created before ids were bounded keeps its stored id on retry.
+        const namespace = encodeURIComponent(`thread:${deep.environmentId}:${parentId}`);
+        const legacyKey = "accepted-before-bound-".repeat(8);
+        const legacyThreadId = `thread:mcp:${namespace}:${legacyKey}:0`;
+        expect(encodeURIComponent(legacyThreadId).length).toBeGreaterThan(256);
+        yield* threads.dispatch({
+          ...launchInput({
+            command: `command:mcp:${namespace}:create-thread:${legacyKey}:0`,
+            thread: legacyThreadId,
+          }),
+          type: "thread.create",
+          branch: null,
+          worktreePath: root,
+        });
+        const retried = yield* service.createThreads(deep, {
+          clientRequestId: legacyKey,
+          threads: [{ title: "Deep batch" }],
+        });
+        expect(retried.threads[0]!.threadId).toBe(legacyThreadId);
+      }).pipe(Effect.provide(Layer.merge(h.layer, mcp)));
+    }).pipe(
+      Effect.provide(
+        Layer.merge(
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
+          DocumentText.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
+        ),
+      ),
+    ),
+);
+
 it.effect.each(["full-access", "approval-required"] as const)(
   "MCP delegate and batch launches retain bare intent and the %s caller ceiling",
   (mode) =>
