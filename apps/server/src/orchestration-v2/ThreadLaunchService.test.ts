@@ -1531,6 +1531,40 @@ it.effect("re-bases a stored base that no longer exists on the remote default br
   ),
 );
 
+it.effect("fails a pinned commit that is gone instead of re-basing", () =>
+  withRealGitRepo(({ directory, cwd, worktreePath, command, harness }) =>
+    Effect.gen(function* () {
+      const remote = `${directory}/remote.git`;
+      yield* command(cwd, ["commit", "--allow-empty", "-m", "initial"]);
+      yield* command(cwd, ["init", "--bare", remote]);
+      yield* command(cwd, ["remote", "add", "origin", remote]);
+      yield* command(cwd, ["push", "-u", "origin", "beta"]);
+      yield* command(cwd, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/beta"]);
+      // Accepted while present, then gone before preparation ran (a retry or recovery).
+      const pinned = "0123456789abcdef0123456789abcdef01234567";
+      const projection = yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const launched = yield* launches.launch(
+          launchInput({
+            command: "command:launch:pinned-gone",
+            thread: "thread:launch:pinned-gone",
+            message: "Build the feature",
+            workspace: {
+              type: "worktree",
+              baseRef: pinned,
+              branch: "feature",
+              startFromOrigin: false,
+            },
+          }),
+        );
+        return yield* preparationSettled(launched.threadId);
+      }).pipe(Effect.provide(harness().layer));
+      assert.notEqual(projection.runs[0]?.status, "starting");
+      assert.isFalse(yield* (yield* FileSystem.FileSystem).exists(worktreePath));
+    }),
+  ),
+);
+
 it.effect("keeps a `:/` commit-search base instead of re-basing", () =>
   withRealGitRepo(({ cwd, worktreePath, command, harness }) =>
     Effect.gen(function* () {
