@@ -2875,6 +2875,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           NodeCrypto.layer,
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             hasReceipt: () => Effect.succeed(false),
+            receiptThreadId: () => Effect.undefined,
             assertProviderInstanceEnabled: () => Effect.void,
             getThreadRecords: (threadId) =>
               Effect.succeed(threadId === parentThreadId ? parentProjection([]) : childShell),
@@ -3775,6 +3776,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             NodeCrypto.layer,
             mockThreads({
               hasReceipt: () => Effect.succeed(false),
+              receiptThreadId: () => Effect.undefined,
               assertProviderInstanceEnabled: () => Effect.void,
               isProviderInstanceEnabledForProject: () => Effect.succeed(true),
               readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
