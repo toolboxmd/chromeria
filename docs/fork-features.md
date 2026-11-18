@@ -2508,7 +2508,8 @@ sources and reasons.
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/compare/main...feat/289-bare-launch",
-    "https://github.com/toolboxmd/chromeria/pull/632"
+    "https://github.com/toolboxmd/chromeria/pull/632",
+    "https://github.com/toolboxmd/chromeria/pull/814"
   ],
   "newFiles": [
     "apps/server/src/mcp/t3ToolNames.ts",
