@@ -1,8 +1,6 @@
 import * as CommandReceiptStore from "../../../orchestration-v2/CommandReceiptStore.ts";
-import * as DateTime from "effect/DateTime";
 import * as Digest from "effect/crypto/Digest";
 import * as Hex from "effect/encoding/Hex";
-import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import { BareLaunchError } from "@t3tools/provider-core/server/bareLaunch";
 import { ToolPolicyError } from "@t3tools/provider-core/server/toolPolicy";
 import * as Schema from "effect/Schema";
@@ -22,6 +20,8 @@ import {
   ProjectId,
   T3_PROJECT_FILE_NAME,
   threadOwner,
+  isPrismRunGroupRole,
+  OrchestratorMcpRunGroupMember,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -42,6 +42,7 @@ import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.t
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as PeerAuthority from "../../../peer/PeerAuthority.ts";
 import * as DelegatedWorktreeBase from "../../../peer/DelegatedWorktreeBase.ts";
+import { interactiveAuthority } from "../../../peer/PeerAuthorityRecord.ts";
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
@@ -214,12 +215,34 @@ const remoteTarget = (input: { readonly environmentId?: EnvironmentId | undefine
       target: PeerForwarding.remoteTarget(scope, input.environmentId),
     })),
   );
+const decodeRunGroupMember = Schema.decodeUnknownOption(OrchestratorMcpRunGroupMember);
 export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   t3_thread_launch: McpToolAccess.startsThreads(
     (input) => input,
     (input, { runtimeMode, interactionMode, linkOrigin }) =>
       Effect.gen(function* () {
         const { scope, target } = yield* remoteTarget(input);
+        // Only a linked environment's delegation owner launches a Run group member, with the kit
+        // it read here when it recorded the group; an agent cannot supply one.
+        const runGroupMember =
+          input.runGroupMember === undefined
+            ? undefined
+            : Option.getOrUndefined(decodeRunGroupMember(input.runGroupMember));
+        if (
+          input.runGroupMember !== undefined &&
+          (runGroupMember === undefined ||
+            target !== undefined ||
+            scope.client?.linked !== true ||
+            input.delegatedFrom === undefined ||
+            interactiveAuthority(scope.authority)?.envelope.pair === undefined ||
+            input.prismRole === undefined ||
+            !isPrismRunGroupRole(input.prismRole) ||
+            input.modelSelection === undefined)
+        )
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "runGroupMember is set only by a linked environment's Run group launch.",
+          });
         if (target !== undefined) {
           // The call carries the caller's modes, so omitted modes inherit
           // them there too, capped by the link's access.
@@ -405,18 +428,8 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 input.modelSelection ??
                 caller?.modelSelection ??
                 (projectDefaults
-                  ? resolveNewThreadModelSelection({
-                      defaultSelection: projectDefaults.defaultModelSelection,
-                      fallbackSelection: projectDefaults.fallbackModelSelection,
-                      providers: yield* ProviderRegistry.ProviderRegistry.pipe(
-                        Effect.flatMap((registry) => registry.getProviders),
-                      ),
-                      settings: projectDefaults,
-                      projectId,
-                      now: DateTime.toEpochMillis(yield* DateTime.now),
-                    }).selection
-                  : null) ??
-                undefined;
+                  ? yield* Prism.projectDefaultSelection(projectId, projectDefaults)
+                  : undefined);
 
               const prism = yield* Prism.PrismService;
               const adapters = yield* ProviderAdapterRegistryV2;
@@ -507,7 +520,9 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                       initialMessage: {
                         messageId,
                         ...(caller === undefined ? {} : { senderThreadId: caller.id }),
-                        text: [kitText, input.message ?? ""].filter(Boolean).join("\n\n"),
+                        text: [runGroupMember?.kitText ?? kitText, input.message ?? ""]
+                          .filter(Boolean)
+                          .join("\n\n"),
                         attachments,
                       },
                     }),

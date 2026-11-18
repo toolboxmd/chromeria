@@ -30,6 +30,7 @@ const toolkit = Toolkit.make(
   tool("t3_thread_organize"),
   tool("t3_thread_interrupt"),
   tool("t3_project_read"),
+  tool("orchestrator_capabilities"),
   tool("unknown_tool"),
 );
 const scope = (operations: ReadonlyArray<AuthMcpOperation>): Invocation.McpInvocationScope => ({
@@ -76,6 +77,10 @@ it.effect.each([
   ["t3_thread_organize", { threadId: "other", action: "settle" }, ["settle"], false],
   ["t3_thread_organize", { threadId: "venue", action: "archive" }, ["settle"], false],
   ["t3_project_read", { projectId: "other" }, ["read"], false],
+  // A Run group's Color read names a project: only the approved one.
+  ["orchestrator_capabilities", {}, ["read"], true],
+  ["orchestrator_capabilities", { prismColors: { projectId: "wedding" } }, ["read"], true],
+  ["orchestrator_capabilities", { prismColors: { projectId: "other" } }, ["read"], false],
   ["unknown_tool", {}, ["read", "launch", "send", "settle", "interrupt"], false],
   ["t3_thread_read", { threadId: "venue" }, [], false],
 ] as const)("enforces outside grant for %s %j with %j", ([name, params, operations, allowed]) =>

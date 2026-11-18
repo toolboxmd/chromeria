@@ -13,6 +13,7 @@ import {
   OrchestrationV2RemoteTaskLaunch,
   OrchestrationV2Command,
   type PeerTaskLifecycleResult,
+  type ModelSelection,
 } from "@t3tools/contracts";
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
@@ -275,10 +276,11 @@ const serveBox = (
   >,
   /** The box project's real Git checkout. */
   checkout?: string,
+  reviewers?: ReadonlyArray<ModelSelection>,
 ) => {
   return servePeer(
     box,
-    boxToolkitLayer(thread, undefined, lifecycleSupported, catalog, checkout),
+    boxToolkitLayer(thread, undefined, lifecycleSupported, catalog, checkout, reviewers),
   ).pipe(
     Effect.tap((peer) =>
       peer.settings.updateSettings({
@@ -312,6 +314,8 @@ const boxToolkitLayer = (
     ProviderRegistry.ProviderRegistry | ProviderAdapterRegistry.ProviderAdapterRegistryV2
   >,
   checkout?: string,
+  /** The box's reviewer Colors, for a Run group sent there. */
+  reviewers: ReadonlyArray<ModelSelection> = [modelSelection],
 ) => {
   const runId = boxRunId;
   const interrupts = new Set<string>();
@@ -873,7 +877,7 @@ const boxToolkitLayer = (
           worker: {
             lanes: { medium: [modelSelection], hard: [{ instanceId, model: "box-prism" }] },
           },
-          reviewer: { models: [modelSelection] },
+          reviewer: { models: [...reviewers] },
           roast: { models: [{ instanceId, model: "box-prism" }] },
         },
       }),
@@ -4966,11 +4970,18 @@ it.effect("a recorded cancel without its Stop never displaces an unresolved owed
       const applied = yield* readTask(a, taskId);
       expect(applied.remoteChild?.cancelIntent).toBeUndefined();
       expect(applied.completionDelivery?.state).toBe("disposed");
-      // With no unresolved Stop, the cancel's own Stop is recorded.
+      // With no unresolved Stop, an entry still records nothing; recovery records the Stop.
       yield* seedIntent("i3", "second");
+      const settled = (yield* readTask(a, taskId)).remoteChild!.stop;
+      yield* observeTask(a, taskId, "i3-entry", {
+        stop: { requestId: "i3", reason: "group", state: "pending" },
+        cancel: true,
+      });
+      expect((yield* readTask(a, taskId)).remoteChild?.stop).toEqual(settled);
       yield* observeTask(a, taskId, "i3", {
         stop: { requestId: "i3", reason: "group", state: "pending" },
         cancel: true,
+        recovery: true,
       });
       expect((yield* readTask(a, taskId)).remoteChild).toMatchObject({
         stop: { requestId: "i3", state: "pending" },
@@ -5188,4 +5199,213 @@ it.effect(
         expect(yield* Ref.get(thread.stopRequests)).toHaveLength(3);
       }),
     ).pipe(Effect.provide(layerLoopbackServerTest)),
+);
+
+/** The box's Codex instance offers every mode; its Claude instance only asks first. */
+const layerBoxModesCatalog = Layer.unwrap(
+  Effect.gen(function* () {
+    const usual = yield* layerBoxClaudeCatalog.pipe(Layer.build);
+    const providers = Context.get(usual, ProviderRegistry.ProviderRegistry);
+    return Layer.merge(
+      Layer.mock(ProviderRegistry.ProviderRegistry)({
+        getProviders: providers.getProviders.pipe(
+          Effect.map((listed) =>
+            listed.map((provider) =>
+              provider.instanceId === boxClaude.instanceId
+                ? { ...provider, supportedRuntimeModes: ["approval-required" as const] }
+                : provider,
+            ),
+          ),
+        ),
+      }),
+      Layer.succeedContext(Context.pick(ProviderAdapterRegistry.ProviderAdapterRegistryV2)(usual)),
+    );
+  }),
+);
+
+it.effect(
+  "a remote Run group resolves each member's mode from its Color there, as a local group does",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread, true, layerBoxModesCatalog, undefined, [
+          modelSelection,
+          { instanceId: boxClaude.instanceId, model: "claude-sonnet-4-6" },
+        ]);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+        const group = (key: string, runtimeMode?: "full-access") => {
+          const commandId = CommandId.make(`command:modes:${key}`);
+          return a.remote.delegateGroup(
+            parentScope as McpInvocationContext.McpThreadInvocationScope,
+            {
+              task: "Review the plan.",
+              prismRole: "reviewer",
+              target: { environmentId: box.environmentId, projectId: boxProject },
+              ...(runtimeMode === undefined ? {} : { runtimeMode }),
+            },
+            {
+              commandId,
+              groupId: NodeId.make(`run-group:${commandId}`),
+              key,
+              role: "reviewer",
+              run: 2,
+            },
+          );
+        };
+        // Inherited: the Codex member keeps the parent's mode, the Claude one steps down.
+        const members = yield* group("inherited");
+        const recorded = (yield* a.threads.getThreadRecords(parentThreadId, ["subagents"]))
+          .subagents;
+        expect(
+          members.map((id) => {
+            const launch = recorded.find((task) => task.id === id)!.remoteChild!.launch!;
+            return [launch.modelSelection?.instanceId, launch.runtimeMode];
+          }),
+        ).toEqual([
+          [instanceId, "full-access"],
+          [boxClaude.instanceId, "approval-required"],
+        ]);
+        // Explicit: a mode one Color does not offer refuses the whole group before anything is kept.
+        const launchesBefore = (yield* Ref.get(thread.launchIds)).length;
+        const refused = yield* group("explicit", "full-access").pipe(Effect.flip);
+        expect(refused).toMatchObject({ code: "invalid_request" });
+        expect(refused.message).toContain("does not offer runtime mode full-access");
+        expect(
+          (yield* a.threads.getThreadRecords(parentThreadId, ["subagents"])).subagents,
+        ).toHaveLength(2);
+        expect(yield* Ref.get(thread.launchIds)).toHaveLength(launchesBefore);
+      }),
+    ).pipe(Effect.provide(layerLoopbackServerTest)),
+);
+
+it.effect("an explicit mode above the link's access refuses a remote Run group before commit", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread, true, layerBoxModesCatalog, undefined, [
+        modelSelection,
+        { instanceId: boxClaude.instanceId, model: "claude-sonnet-4-6" },
+      ]);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "auto");
+      yield* seedParent(a);
+      const group = (key: string, runtimeMode?: "full-access") => {
+        const commandId = CommandId.make(`command:link-modes:${key}`);
+        return a.remote.delegateGroup(
+          parentScope as McpInvocationContext.McpThreadInvocationScope,
+          {
+            task: "Review the plan.",
+            prismRole: "reviewer",
+            target: { environmentId: box.environmentId, projectId: boxProject },
+            ...(runtimeMode === undefined ? {} : { runtimeMode }),
+          },
+          {
+            commandId,
+            groupId: NodeId.make(`run-group:${commandId}`),
+            key,
+            role: "reviewer",
+            run: 2,
+          },
+        );
+      };
+      const refused = yield* group("explicit", "full-access").pipe(Effect.flip);
+      expect(refused).toMatchObject({ code: "runtime_mode_escalation_denied" });
+      expect((yield* a.threads.getThreadRecords(parentThreadId, ["subagents"])).subagents).toEqual(
+        [],
+      );
+      expect(yield* Ref.get(thread.launchIds)).toEqual([]);
+      // Inherited, every member stays within the link's access.
+      const members = yield* group("inherited");
+      const recorded = (yield* a.threads.getThreadRecords(parentThreadId, ["subagents"])).subagents;
+      expect(
+        members.map(
+          (id) => recorded.find((task) => task.id === id)!.remoteChild!.launch!.runtimeMode,
+        ),
+      ).toEqual(["auto", "approval-required"]);
+    }),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
+);
+
+it.effect("a group cancel enters every remote member at once", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { thread, a } = yield* laptopHarness;
+      const link = Option.getOrThrow(yield* a.links.get(box.environmentId));
+      const commandId = CommandId.make("command:concurrent-group");
+      const groupId = NodeId.make(`run-group:${commandId}`);
+      const members = [0, 1].map((index) => ({
+        modelSelection,
+        remoteChild: {
+          environmentId: box.environmentId,
+          label: link.label,
+          title: "Concurrent",
+          launch: {
+            lifecycleVersion: 1 as const,
+            requestNamespace: `thread:${laptop.environmentId}:${parentThreadId}`,
+            clientRequestId: `delegate-group:${parentThreadId}:concurrent:${index}`,
+            linkIdentity: link.launchIdentity,
+            capabilities: ["orchestration" as const],
+            projectId: boxProject,
+            title: "Concurrent",
+            modelSelection,
+            prismRole: "reviewer" as const,
+            runtimeMode: "full-access" as const,
+            interactionMode: "default" as const,
+            delegatedFrom: {
+              environmentId: laptop.environmentId,
+              threadId: parentThreadId,
+              title: "Laptop parent",
+            },
+          },
+        },
+      }));
+      yield* a.orchestrator.dispatch({
+        type: "delegated_task.remote.group.request",
+        commandId,
+        parentThreadId,
+        parentRunId,
+        parentNodeId: parentRootNode,
+        groupId,
+        task: "Review the plan.",
+        driver: ProviderDriverKind.make("remote"),
+        members: [members[0]!, members[1]!],
+        completionWake: "always",
+      });
+      const recorded = (yield* a.threads.getThreadRecords(parentThreadId, [
+        "subagents",
+      ])).subagents.filter((task) => task.runGroupId === groupId);
+      const [launched, unsent] = recorded;
+      // One member runs on the box; the other was never sent.
+      yield* a.remote.ensureFollowing(parentThreadId, [launched!.id]);
+      yield* Deferred.await(thread.launchAccepted);
+      yield* remoteState(a, launched!.id, (task) => task.remoteChild?.threadId !== undefined);
+      // The launched member's Stop hangs on the box; the clock never moves past its inline wait.
+      yield* Ref.set(thread.holdStop, true);
+      const cancelling = yield* a
+        .call("task_cancel", { taskId: groupId, clientRequestId: "concurrent" })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(thread.stopStarted);
+      // The unsent member's entry ran beside the held one and settled it.
+      yield* remoteState(a, unsent!.id, (task) => task.status === "cancelled");
+      expect(yield* readTask(a, unsent!.id)).toMatchObject({
+        groupCancel: { commandId: expect.any(String) },
+        remoteChild: { stop: { state: "not_started" } },
+      });
+      yield* Deferred.succeed(thread.releaseStop, undefined);
+      const answered = yield* Fiber.join(cancelling);
+      expect(answered.isError, JSON.stringify(answered.content)).toBe(false);
+      expect(yield* Ref.get(thread.launchIds)).toHaveLength(1);
+    }),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );

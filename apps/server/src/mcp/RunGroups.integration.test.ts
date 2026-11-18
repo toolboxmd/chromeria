@@ -1559,42 +1559,67 @@ describe("Run groups", () => {
     ),
   );
 
-  it.live.each([
-    { target: { environmentId: "environment:elsewhere" }, message: "linked environment" },
-    { target: { projectId: "project:elsewhere" }, message: "Omit target.projectId" },
-  ])("a Run group to another destination is refused: $target", ({ target, message }) =>
+  it.live("the Color read answers a linked environment's Run group as a project read", () =>
     withParent(
       roastRun([codexColor, claudeColor], 2),
       () => Effect.succeed<TurnOutcome>("hang"),
-      ({ orchestrator, invoke }) =>
+      ({ invoke }) =>
         Effect.gen(function* () {
-          const refused = yield* invoke("delegate_task", {
-            task: "Attack this plan.",
-            prismRole: "roast",
-            target,
+          const missing = yield* invoke("orchestrator_capabilities", {
+            prismColors: { projectId: "project:missing", role: "roast", count: 2 },
           });
-          expect(declaredFailure(refused)).toMatchObject({ code: "invalid_request" });
-          expect(declaredFailure(refused).message).toContain(message);
-          expect((yield* orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(
-            0,
-          );
-          const accepted = yield* invoke("delegate_task", {
-            task: "Attack this plan here.",
-            prismRole: "roast",
-            target: { projectId },
-            clientRequestId: "same-project",
+          expect(declaredFailure(missing)).toMatchObject({
+            code: "invalid_request",
+            message: "The project was not found.",
           });
-          expect(accepted.isError).toBe(false);
-          expect(accepted.structuredContent).toHaveProperty("groupId");
-          const retried = yield* invoke("delegate_task", {
-            task: "Attack this plan here.",
-            prismRole: "roast",
-            target: { projectId: "project:elsewhere" },
-            clientRequestId: "same-project",
+          const read = yield* invoke("orchestrator_capabilities", {
+            prismColors: { projectId, role: "roast", count: 2 },
           });
-          expect(declaredFailure(retried)).toMatchObject({ code: "invalid_request" });
-          expect(declaredFailure(retried).message).toContain("Omit target.projectId");
+          expect(read.structuredContent).toMatchObject({
+            runGroupColors: 1,
+            prismColors: {
+              colors: [{ modelSelection: codexColor }, { modelSelection: claudeColor }],
+            },
+          });
         }),
     ),
+  );
+
+  it.live.each([{ target: { projectId: "project:elsewhere" }, message: "Omit target.projectId" }])(
+    "a Run group to another destination is refused: $target",
+    ({ target, message }) =>
+      withParent(
+        roastRun([codexColor, claudeColor], 2),
+        () => Effect.succeed<TurnOutcome>("hang"),
+        ({ orchestrator, invoke }) =>
+          Effect.gen(function* () {
+            const refused = yield* invoke("delegate_task", {
+              task: "Attack this plan.",
+              prismRole: "roast",
+              target,
+            });
+            expect(declaredFailure(refused)).toMatchObject({ code: "invalid_request" });
+            expect(declaredFailure(refused).message).toContain(message);
+            expect(
+              (yield* orchestrator.getThreadProjection(parentThreadId)).subagents,
+            ).toHaveLength(0);
+            const accepted = yield* invoke("delegate_task", {
+              task: "Attack this plan here.",
+              prismRole: "roast",
+              target: { projectId },
+              clientRequestId: "same-project",
+            });
+            expect(accepted.isError).toBe(false);
+            expect(accepted.structuredContent).toHaveProperty("groupId");
+            const retried = yield* invoke("delegate_task", {
+              task: "Attack this plan here.",
+              prismRole: "roast",
+              target: { projectId: "project:elsewhere" },
+              clientRequestId: "same-project",
+            });
+            expect(declaredFailure(retried)).toMatchObject({ code: "invalid_request" });
+            expect(declaredFailure(retried).message).toContain("Omit target.projectId");
+          }),
+      ),
   );
 });
