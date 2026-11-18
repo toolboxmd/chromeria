@@ -300,6 +300,35 @@ const makeReplayAdapter = (
     ).pipe(Effect.provideService(OpenCode2Server.OpenCode2Server, server));
   });
 
+/** An adapter whose sessions each run on their own replayed server, as spawned OpenCode processes do. */
+/** An adapter on the given server, with the replay host's services. */
+export const openCode2AdapterOn = (server: OpenCode2Server.OpenCode2Server["Service"]) =>
+  OpenCode2Adapter.make(ProviderInstanceId.make("opencode")).pipe(
+    Effect.provideService(OpenCode2Server.OpenCode2Server, server),
+    Effect.provide(
+      Layer.mergeAll(layerReplayHost, IdAllocator.layer, NodeServices.layer, NodeCrypto.layer),
+    ),
+  );
+
+/** An adapter whose sessions each run on their own replayed server, as spawned OpenCode processes do. */
+export const openCode2SessionServersReplayAdapter = (
+  sessions: ReadonlyMap<string, ReadonlyArray<ProviderReplayEntry>>,
+) =>
+  openCode2AdapterOn(
+    OpenCode2Server.OpenCode2Server.of({
+      withConnection: () => Effect.die(new Error("Sessions borrow only their own server.")),
+      forget: Effect.void,
+      forSession: (threadId) =>
+        replayServer({
+          provider: OPENCODE_PROVIDER,
+          protocol: OPENCODE2_HTTP_PROTOCOL,
+          version: "2.0.18",
+          scenario: threadId,
+          entries: sessions.get(threadId) ?? [],
+        }).pipe(Effect.orDie),
+    }),
+  );
+
 const layerReplayHost = TestProviderHost.layer().pipe(
   Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );

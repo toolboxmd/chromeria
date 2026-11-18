@@ -56,9 +56,16 @@ import {
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import * as OpenCode2Client from "@t3tools/provider-opencode/server/v2/OpenCode2Client";
 import * as OpenCode2Server from "@t3tools/provider-opencode/server/v2/OpenCode2Server";
+import * as OpenCodeRuntime from "@t3tools/provider-opencode/server/OpenCodeRuntime";
 import * as OpenCode2AdapterV2 from "@t3tools/provider-opencode/server/v2/adapter";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
-import { openCode2ReplayRuntime } from "./OpenCode2AdapterV2.testkit.ts";
+import {
+  OPENCODE2_HTTP_PROTOCOL,
+  openCode2AdapterOn,
+  openCode2ReplayRuntime,
+  openCode2SessionServersReplayAdapter,
+  replayServer,
+} from "./OpenCode2AdapterV2.testkit.ts";
 import {
   makeProviderReplayGate,
   type ProviderReplayGate,
@@ -6398,6 +6405,211 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
       assert.equal((yield* Fiber.join(terminal))?.status, "completed");
       yield* runtime.unloadThread!({ providerThread: thread });
     }),
+  );
+
+  // Per-thread server names made every thread's prompt differ, so none hit the prefix cache.
+  it.effect(
+    "runs each thread on its own server under one T3 MCP name with its own credential",
+    () =>
+      Effect.gen(function* () {
+        const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+        const threads = [ThreadId.make("thread:first"), ThreadId.make("thread:second")];
+        for (const [index, id] of threads.entries()) {
+          yield* mcpSessions.set({
+            environmentId: EnvironmentId.make("environment:opencode2-adapter"),
+            threadId: id,
+            providerSessionId: `mcp:${id}`,
+            providerInstanceId: instanceId,
+            endpoint: "http://127.0.0.1:3773/mcp",
+            authorizationHeader: `Bearer credential-${index}`,
+            browserToolsAvailable: false,
+          });
+          yield* Effect.addFinalizer(() => mcpSessions.clear(id));
+        }
+        const entries = (index: number) =>
+          withInstructions([
+            ...opening,
+            out("session.get", { sessionID: SESSION }),
+            replyData(
+              "session.get",
+              sessionInfo({
+                permissions: [
+                  { action: "*", resource: "*", effect: "allow" },
+                  { action: "t3-code-*", resource: "*", effect: "deny" },
+                  { action: "t3-code_*", resource: "*", effect: "allow" },
+                ],
+              }),
+            ),
+            ...noOpenRequests,
+            out("mcp.add", {
+              server: "t3-code",
+              "location[directory]": WORK,
+              config: {
+                type: "remote",
+                url: "http://127.0.0.1:3773/mcp",
+                headers: {
+                  Authorization: `Bearer credential-${index}`,
+                  "t3-tool-exposure": "deferred",
+                },
+                oauth: false,
+              },
+            }),
+            reply("mcp.add", null),
+            out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+            promptAccepted,
+            event("session.execution.succeeded", { sessionID: SESSION }),
+            out("mcp.remove", { server: "t3-code", "location[directory]": WORK }),
+            reply("mcp.remove", null),
+          ]);
+        const adapter = yield* openCode2SessionServersReplayAdapter(
+          new Map(threads.map((id, index) => [id, entries(index)])),
+        );
+        assert.isFalse(
+          (yield* adapter.getCapabilities()).sessions.supportsMultipleProviderThreadsPerSession,
+        );
+        const runtimes = yield* Effect.forEach(threads, (id) =>
+          adapter.openSession({
+            threadId: id,
+            providerSessionId: ProviderSessionId.make(`provider-session:${id}`),
+            modelSelection: bigPickle,
+            runtimePolicy: policy(),
+          }),
+        );
+        for (const [index, id] of threads.entries()) {
+          const runtime = runtimes[index]!;
+          assert.isFalse(
+            runtime.providerSession.capabilities.sessions.supportsMultipleProviderThreadsPerSession,
+          );
+          const thread = yield* runtime.resumeThread({
+            providerThread: { ...providerThread(yield* DateTime.now), appThreadId: id },
+            threadId: id,
+            modelSelection: bigPickle,
+            runtimePolicy: policy(),
+          });
+          const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
+          const started = yield* runtime
+            .startTurn({ ...turnInput(thread), threadId: id })
+            .pipe(Effect.forkScoped);
+          yield* TestClock.adjust("250 millis");
+          yield* Fiber.join(started);
+          assert.equal((yield* Fiber.join(terminal))?.status, "completed");
+          yield* runtime.unloadThread!({ providerThread: thread });
+        }
+      }),
+  );
+
+  // Disabling or replacing the instance interrupts a session server's startup.
+  it.effect("fails a session open when its instance closes during server startup", () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const unused = () =>
+        Effect.fail(
+          new OpenCodeRuntime.OpenCodeRuntimeError({ operation: "unused", detail: "unused" }),
+        );
+      const runtime: OpenCodeRuntime.OpenCodeRuntime["Service"] = {
+        startOpenCodeServerProcess: () =>
+          Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)),
+        connectToOpenCodeServer: unused,
+        runOpenCodeCommand: unused,
+        createOpenCodeSdkClient: () => ({}) as never,
+        loadOpenCodeInventory: unused,
+        loadOpenCodeSkills: unused,
+      };
+      const instance = yield* Scope.make();
+      const server = yield* OpenCode2Server.make({
+        binaryPath: "opencode",
+        serverUrl: "",
+        serverPassword: "",
+        directory: WORK,
+        environment: {},
+      }).pipe(
+        Effect.provideService(Scope.Scope, instance),
+        Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime),
+        Effect.provide(
+          Layer.mergeAll(
+            OpenCode2Client.layer.pipe(
+              Layer.provide(
+                Layer.succeed(
+                  HttpClient.HttpClient,
+                  HttpClient.make(() => Effect.die("no HTTP")),
+                ),
+              ),
+            ),
+            NodeCrypto.layer,
+          ),
+        ),
+      );
+      const adapter = yield* openCode2AdapterOn(server);
+      const opening = yield* adapter
+        .openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session:closing"),
+          modelSelection: bigPickle,
+          runtimePolicy: policy(),
+        })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(entered);
+      yield* Scope.close(instance, Exit.void);
+      const settled = yield* Fiber.await(opening).pipe(
+        Effect.timeoutOption("1 second"),
+        Effect.forkScoped,
+      );
+      yield* TestClock.adjust("1 second");
+      const exit = yield* Fiber.join(settled);
+      assert.isTrue(Option.isSome(exit), "the session open never settled");
+      if (Option.isSome(exit)) {
+        assert.isTrue(Exit.isFailure(exit.value));
+        if (Exit.isFailure(exit.value)) assert.isFalse(Cause.hasInterruptsOnly(exit.value.cause));
+      }
+    }),
+  );
+
+  // Threads that shared an instance's session before per-thread processes cannot share one now.
+  it.effect(
+    "refuses the instance's legacy shared session on its own process, not on a shared server",
+    () =>
+      Effect.gen(function* () {
+        const legacy = IdAllocator.derive.providerSession({ providerInstanceId: instanceId });
+        const open = (adapter: ProviderAdapter.ProviderAdapterV2["Service"]) =>
+          adapter.openSession({
+            threadId,
+            providerSessionId: legacy,
+            modelSelection: bigPickle,
+            runtimePolicy: policy(),
+          });
+        const started: Array<string> = [];
+        const ownProcesses = yield* openCode2AdapterOn(
+          OpenCode2Server.OpenCode2Server.of({
+            withConnection: () => Effect.die(new Error("Sessions borrow only their own server.")),
+            forget: Effect.void,
+            forSession: (id) =>
+              Effect.sync(() => started.push(id)).pipe(
+                Effect.andThen(Effect.die(new Error("A refused session started a process."))),
+              ),
+          }),
+        );
+        const refused = yield* open(ownProcesses).pipe(Effect.flip);
+        assert.equal(refused._tag, "ProviderAdapterOpenSessionError");
+        assert.instanceOf(refused.cause, OpenCode2AdapterV2.OpenCode2LegacySharedSessionError);
+        assert.include(String(refused.cause), "Start a new thread.");
+        assert.deepEqual(started, []);
+
+        // A configured serverUrl still serves every thread of the instance from one session.
+        const shared = yield* openCode2AdapterOn(
+          yield* replayServer(
+            {
+              provider: OPENCODE_PROVIDER,
+              protocol: OPENCODE2_HTTP_PROTOCOL,
+              version: "2.0.18",
+              scenario: "legacy-shared-server",
+              entries: opening,
+            },
+            { external: true },
+          ),
+        );
+        const runtime = yield* open(shared);
+        assert.equal(runtime.providerSessionId, legacy);
+      }),
   );
 
   // regression: #16142 OpenCode 2 threads were missing T3 Code's MCP tools

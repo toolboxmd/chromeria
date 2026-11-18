@@ -2,12 +2,15 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
+import * as Scope from "effect/Scope";
 import * as TestClock from "effect/testing/TestClock";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
@@ -222,25 +225,72 @@ server.listen(0, "127.0.0.1", () => {
 });
 `;
 
+// OpenCode 2.3.2's output when its port is already bound, written by the first launch only.
+const PORT_TAKEN_ONCE = `import { existsSync, writeFileSync } from "node:fs";
+const bound = new URL("./port-taken", import.meta.url);
+if (!existsSync(bound)) {
+  writeFileSync(bound, "");
+  process.stderr.write("ServeError:\\n  [cause]: Error: Failed to start server. Is port 4096 in use?\\n");
+  process.exit(1);
+}
+`;
+
+const verifyLive = (connection: OpenCode2Server.OpenCode2Connection) =>
+  OpenCode2Server.verifyServer(connection.client);
+
+const writeFakeOpenCode = (script: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const platform = yield* HostProcess.Platform;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode2-fake-" });
+    const isWindows = platform === "win32";
+    const binaryPath = path.join(directory, isWindows ? "opencode.cmd" : "opencode");
+    const scriptPath = path.join(directory, "opencode.mjs");
+    yield* fs.writeFileString(scriptPath, script);
+    yield* fs.writeFileString(
+      binaryPath,
+      isWindows
+        ? `@echo off\r\n"${yield* HostProcess.ExecutablePath}" "${scriptPath}" %*\r\n`
+        : `#!/bin/sh\nexec "${yield* HostProcess.ExecutablePath}" "${scriptPath}" "$@"\n`,
+    );
+    if (!isWindows) yield* fs.chmod(binaryPath, 0o755);
+    return { binaryPath, directory };
+  });
+
+const layerSpawning = (
+  wrapped?: Array<{ readonly threadId?: string; readonly shared?: boolean }>,
+  stopped?: Array<string>,
+) =>
+  Layer.mergeAll(
+    OpenCode2Client.layer,
+    OpenCodeRuntime.layer.pipe(
+      Layer.provide(OpenCodeServerLedger.layerTest),
+      Layer.provide(
+        wrapped === undefined
+          ? Layer.empty
+          : Layer.succeed(AgentScope, {
+              ...AgentScope.defaultValue(),
+              wrap: ({ command, args, threadId, shared }) =>
+                Effect.sync(() => {
+                  wrapped.push({
+                    ...(threadId === undefined ? {} : { threadId }),
+                    ...(shared === undefined ? {} : { shared }),
+                  });
+                  return { command, args, unit: `unit:${threadId ?? "instance"}` };
+                }),
+              stop: (unit) => Effect.sync(() => void stopped?.push(unit)),
+            }),
+      ),
+    ),
+  ).pipe(
+    Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, FetchHttpClient.layer)),
+  );
+
 describe("OpenCode2Server spawned server", () => {
   it.live("is ready once /api/info accepts the generated password", () =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const platform = yield* HostProcess.Platform;
-      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode2-fake-" });
-      const isWindows = platform === "win32";
-      const binaryPath = path.join(directory, isWindows ? "opencode.cmd" : "opencode");
-      const scriptPath = path.join(directory, "opencode.mjs");
-      yield* fs.writeFileString(scriptPath, FAKE_SERVER);
-      yield* fs.writeFileString(
-        binaryPath,
-        isWindows
-          ? `@echo off\r\n"${yield* HostProcess.ExecutablePath}" "${scriptPath}" %*\r\n`
-          : `#!/bin/sh\nexec "${yield* HostProcess.ExecutablePath}" "${scriptPath}" "$@"\n`,
-      );
-      if (!isWindows) yield* fs.chmod(binaryPath, 0o755);
-
+      const { binaryPath, directory } = yield* writeFakeOpenCode(FAKE_SERVER);
       const server = yield* OpenCode2Server.make({
         binaryPath,
         serverUrl: "",
@@ -256,19 +306,81 @@ describe("OpenCode2Server spawned server", () => {
       if (first.processExit === undefined)
         return yield* Effect.die("Missing owned process lifetime");
       return first.processExit;
-    }).pipe(
-      Effect.scoped,
-      Effect.flatten,
-      Effect.provide(
-        Layer.mergeAll(
-          OpenCode2Client.layer,
-          OpenCodeRuntime.layer.pipe(Layer.provide(OpenCodeServerLedger.layerTest)),
-        ).pipe(
-          Layer.provideMerge(
-            Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, FetchHttpClient.layer),
-          ),
-        ),
-      ),
-    ),
+    }).pipe(Effect.scoped, Effect.flatten, Effect.provide(layerSpawning())),
   );
+
+  // The launcher picks a free port before OpenCode binds it, so a concurrent spawn can take it first.
+  it.live("starts again when another process took its port first", () =>
+    Effect.gen(function* () {
+      const { binaryPath, directory } = yield* writeFakeOpenCode(PORT_TAKEN_ONCE + FAKE_SERVER);
+      const server = yield* OpenCode2Server.make({
+        binaryPath,
+        serverUrl: "",
+        serverPassword: "",
+        directory,
+        environment: yield* HostProcess.Environment,
+      });
+      const version = yield* server.withConnection((connection) =>
+        Effect.succeed(connection.version),
+      );
+      assert.strictEqual(version, "2.0.18");
+    }).pipe(Effect.scoped, Effect.provide(layerSpawning())),
+  );
+
+  it.live("runs each session on its own process until its session or the instance closes", () => {
+    const wrapped: Array<{ readonly threadId?: string; readonly shared?: boolean }> = [];
+    const stopped: Array<string> = [];
+    return Effect.gen(function* () {
+      const { binaryPath, directory } = yield* writeFakeOpenCode(FAKE_SERVER);
+      const instance = yield* Scope.make();
+      const server = yield* OpenCode2Server.make({
+        binaryPath,
+        serverUrl: "",
+        serverPassword: "",
+        directory,
+        environment: yield* HostProcess.Environment,
+      }).pipe(Effect.provideService(Scope.Scope, instance));
+      const forSession = server.forSession;
+      if (forSession === undefined) return yield* Effect.die("Sessions share the server");
+      const firstScope = yield* Scope.make();
+      const secondScope = yield* Scope.make();
+      const first = yield* forSession("thread:first").pipe(
+        Effect.provideService(Scope.Scope, firstScope),
+      );
+      const second = yield* forSession("thread:second").pipe(
+        Effect.provideService(Scope.Scope, secondScope),
+      );
+      const connect = (session: OpenCode2Server.OpenCode2SessionServer) =>
+        session.withConnection((connection) => Effect.succeed(connection));
+      const one = yield* connect(first);
+      const two = yield* connect(second);
+      assert.notStrictEqual(one.url, two.url);
+      // A reconnect borrows the session's running process again.
+      assert.strictEqual((yield* connect(first)).url, one.url);
+      // Each process runs in its thread's scope, so Force stop can reach it.
+      assert.deepStrictEqual(wrapped, [
+        { threadId: "thread:first" },
+        { threadId: "thread:second" },
+      ]);
+      if (one.processExit === undefined || two.processExit === undefined)
+        return yield* Effect.die("Missing owned process lifetime");
+
+      yield* Scope.close(firstScope, Exit.void);
+      yield* one.processExit;
+      // On Linux the systemd scope also holds descendants that left the process group.
+      assert.deepStrictEqual(stopped, ["unit:thread:first"]);
+      assert.strictEqual(
+        yield* second.withConnection((connection) => verifyLive(connection)),
+        "2.0.18",
+      );
+
+      // Disabling or replacing the instance stops sessions that are still open.
+      yield* Scope.close(instance, Exit.void);
+      yield* two.processExit;
+      const error = yield* connect(second).pipe(Effect.flip);
+      assert.include(error.detail, "closed");
+      assert.lengthOf(wrapped, 2);
+      assert.deepStrictEqual(stopped, ["unit:thread:first", "unit:thread:second"]);
+    }).pipe(Effect.scoped, Effect.provide(layerSpawning(wrapped, stopped)));
+  });
 });
