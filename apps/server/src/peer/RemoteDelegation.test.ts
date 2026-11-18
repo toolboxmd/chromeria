@@ -3311,7 +3311,7 @@ it.live.each(["pushed", "unpushed", "missing there"] as const)(
         // The box's clone predates that commit; it fetched it before accepting the launch.
         expect(git(checkouts.box, "rev-parse", "--verify", `${head}^{commit}`)).toBe(head);
       }),
-    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect.each(["lowered parent", "revoked link"] as const)(
