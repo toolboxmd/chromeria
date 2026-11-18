@@ -17,10 +17,12 @@ import {
 import { useStableCallback } from "../../hooks/useStableCallback";
 import { useDeadlinePassed, useNowAfter } from "../../hooks/useDeadline";
 import type { usePendingThreadRequests } from "./usePendingThreadRequests";
+import { useStartTurnWithPurpose } from "./useStartTurnWithPurpose";
 import {
   AuthOrchestrationOperateScope,
   AuthSourceControlWriteScope,
   type EnvironmentId,
+  type OrchestrationV2Subagent,
   type ScopedThreadRef,
   type ThreadId,
   ProviderInteractionMode,
@@ -59,8 +61,14 @@ import { composerDraftHasUserContent, useComposerDraftStore } from "../../compos
 import { useEnvironmentScope } from "~/state/session";
 import { threadEnvironment } from "../../state/threads";
 import { vcsEnvironment } from "../../state/vcs";
-import { useChildThreadInputs, readThreadShell, waitForThreadShell } from "../../state/entities";
+import {
+  useChildThreadInputs,
+  readThreadShell,
+  useServerConfigs,
+  waitForThreadShell,
+} from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
+import { useSubagentOpen } from "./useSubagentOpen";
 import { environmentShell } from "../../state/shell";
 import { ThreadStatusLine } from "./ThreadStatusLine";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
@@ -80,6 +88,7 @@ import type { RunStopPresentation } from "@t3tools/client-runtime/state/thread-e
 import { Atom } from "effect/reactivity";
 import { environmentThreadDetails } from "../../state/threads";
 import { resolveThreadOpenRoute } from "../../lib/sideChatPane";
+import { remoteInputBannerItem, remoteInputTask } from "./ThreadActivityBanners";
 import type { useLocalDispatchState } from "./useLocalDispatchState";
 const RELATED_THREAD_SHELL_WAIT_MS = 1_000;
 
@@ -95,6 +104,7 @@ type LocalDispatchState = ReturnType<typeof useLocalDispatchState>;
 
 interface ThreadLifecycleInput {
   readonly environmentId: EnvironmentId;
+  readonly serverSubagents: ReadonlyArray<OrchestrationV2Subagent> | undefined;
   readonly routeThreadKey: string;
   readonly currentRouteThreadKeyRef: { readonly current: string | null };
   readonly canOperateThread: boolean;
@@ -199,9 +209,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
   const regenerateThreadTitle = useOrchestrationCommand(threadEnvironment.regenerateTitle, {
     reportFailure: false,
   });
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
-    reportFailure: false,
-  });
+  const startThreadTurn = useStartTurnWithPurpose();
   const interruptThreadTurn = useOrchestrationCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
@@ -512,17 +520,36 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     });
   };
   const onOpenRelatedThreadStable = useStableCallback(onOpenRelatedThread);
+  // Disabled environments drop out of the server configs, so their children cannot open.
+  const reachableEnvironments = useServerConfigs();
   const childThreadInputs = useChildThreadInputs(activeThreadRef);
-  const childInputNow = childInputNowItem(
-    {
-      childThreadInputs,
-      parentAwaitingUser: Boolean(
-        activePendingApproval || activePendingUserInput || activeThreadShell?.hasPendingUserInput,
-      ),
-      onOpenThread: onOpenRelatedThreadStable,
-    },
-    messages,
+  const parentAwaitingUser = Boolean(
+    activePendingApproval || activePendingUserInput || activeThreadShell?.hasPendingUserInput,
   );
+  const pendingRemoteInputTask = remoteInputTask(input.serverSubagents);
+  const remoteInputOpen = useSubagentOpen(
+    activeThreadRef,
+    pendingRemoteInputTask,
+    onOpenRelatedThreadStable,
+  );
+  // A local child's question comes first; a remote task's request shows when there is none.
+  const childInputNow =
+    childInputNowItem(
+      {
+        childThreadInputs,
+        parentAwaitingUser,
+        onOpenThread: onOpenRelatedThreadStable,
+      },
+      messages,
+    ) ??
+    (childThreadInputs.length === 0
+      ? remoteInputBannerItem({
+          task: pendingRemoteInputTask,
+          parentAwaitingUser,
+          viewer: remoteInputOpen.viewer,
+          onOpen: remoteInputOpen.open,
+        })
+      : null);
 
   const sendStandaloneCommand = async (text: string, failureMessage: string) => {
     if (!activeThread || !clientSettingsHydrated || sendInFlightRef.current) return;
@@ -627,6 +654,8 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
           stopping: isStoppingBackgroundWork,
           onStop: handleStopBackgroundWorkStable,
           onOpenThread: onOpenRelatedThreadStable,
+          reachableEnvironments,
+          parentRef: activeThreadRef,
         },
         messages,
       )

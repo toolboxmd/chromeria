@@ -361,6 +361,23 @@ export function summarizeT3ToolCalls(
           );
       break;
     }
+    case "queue-resume": {
+      const count = countEntities(threadIds);
+      label = done
+        ? resolve(
+            msg(
+              "{count, plural, one {Resumed {count} held queue} other {Resumed {count} held queues}}",
+              { count },
+            ),
+          )
+        : resolve(
+            msg(
+              "{count, plural, one {Tried to resume {count} held queue} other {Tried to resume {count} held queues}}",
+              { count },
+            ),
+          );
+      break;
+    }
     case "queue-reorder": {
       const count = countEntities(entityIds("queuedRunId"));
       label = done
@@ -424,6 +441,23 @@ export function summarizeT3ToolCalls(
         : resolve(
             msg(
               "{count, plural, one {Tried to answer {count} pending question request} other {Tried to answer {count} pending question requests}}",
+              { count },
+            ),
+          );
+      break;
+    }
+    case "question-dismiss": {
+      const count = countEntities(entityIds("requestId"));
+      label = done
+        ? resolve(
+            msg(
+              "{count, plural, one {Dismissed {count} pending question request} other {Dismissed {count} pending question requests}}",
+              { count },
+            ),
+          )
+        : resolve(
+            msg(
+              "{count, plural, one {Tried to dismiss {count} pending question request} other {Tried to dismiss {count} pending question requests}}",
               { count },
             ),
           );
@@ -550,30 +584,92 @@ export function summarizeT3ToolCalls(
       label = done
         ? resolve(
             msg(
-              "{count, plural, one {Asked to link {count} environment} other {Asked to link {count} environments}}",
+              "{count, plural, one {Linked {count} environment} other {Linked {count} environments}}",
               { count },
             ),
           )
         : resolve(
             msg(
-              "{count, plural, one {Tried to ask to link {count} environment} other {Tried to ask to link {count} environments}}",
+              "{count, plural, one {Tried to link {count} environment} other {Tried to link {count} environments}}",
               { count },
             ),
           );
       break;
     }
     case "environment-unlink": {
-      const count = countEntities(entityIds("environmentId"));
+      const count = selected.length;
       label = done
         ? resolve(
             msg(
-              "{count, plural, one {Forgot {count} linked environment} other {Forgot {count} linked environments}}",
+              "{count, plural, one {Unlinked {count} environment} other {Unlinked {count} environments}}",
               { count },
             ),
           )
         : resolve(
             msg(
-              "{count, plural, one {Tried to forget {count} linked environment} other {Tried to forget {count} linked environments}}",
+              "{count, plural, one {Tried to unlink {count} environment} other {Tried to unlink {count} environments}}",
+              { count },
+            ),
+          );
+      break;
+    }
+    case "attachment-inspect": {
+      const capabilitiesOnly = selected.every(
+        (call) => asRecord(call.input?.source)?.type === "capabilities",
+      );
+      if (capabilitiesOnly) {
+        const count = selected.length;
+        label = done
+          ? resolve(
+              msg(
+                "{count, plural, one {Checked attachment transfer support {count} time} other {Checked attachment transfer support {count} times}}",
+                { count },
+              ),
+            )
+          : resolve(
+              msg(
+                "{count, plural, one {Tried to check attachment transfer support {count} time} other {Tried to check attachment transfer support {count} times}}",
+                { count },
+              ),
+            );
+        break;
+      }
+      const count = countEntities(
+        selected.map((call) => id(asRecord(call.input?.source)?.attachmentId)),
+      );
+      label = done
+        ? resolve(
+            msg(
+              "{count, plural, one {Inspected {count} attachment upload} other {Inspected {count} attachment uploads}}",
+              { count },
+            ),
+          )
+        : resolve(
+            msg(
+              "{count, plural, one {Tried to inspect {count} attachment upload} other {Tried to inspect {count} attachment uploads}}",
+              { count },
+            ),
+          );
+      break;
+    }
+    case "attachment-acquire": {
+      const count = countEntities(
+        selected.map(
+          (call) =>
+            id(asRecord(asRecord(call.output?.resource)?.reference)?.attachmentId) ??
+            id(call.input?.clientRequestId),
+        ),
+      );
+      label = done
+        ? resolve(
+            msg(
+              "{count, plural, one {Recorded acquisition of {count} attachment} other {Recorded acquisition of {count} attachments}}",
+              { count },
+            ),
+          )
+        : resolve(
+            msg(
+              "{count, plural, one {Tried to acquire {count} attachment} other {Tried to acquire {count} attachments}}",
               { count },
             ),
           );
