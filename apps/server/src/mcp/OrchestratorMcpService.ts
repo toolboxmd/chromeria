@@ -2506,12 +2506,28 @@ const make = Effect.gen(function* () {
       MAX_WAIT_TIMEOUT_MS,
       Math.max(1, requestedTimeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS),
     );
-    const deadline = (yield* Clock.currentTimeMillis) + timeoutMs;
-    for (const member of members) {
-      const remaining = deadline - (yield* Clock.currentTimeMillis);
-      const waited =
-        remaining <= 0 ? Option.none() : yield* waitForTask(scope, member.id, remaining);
-      if (Option.isSome(waited) && isTerminalTaskStatus(waited.value.status)) continue;
+    // Every member is watched at once: any one's question ends the wait, whatever its Color.
+    const ended = yield* Effect.forEach(
+      members,
+      (member) =>
+        waitForTask(scope, member.id, timeoutMs).pipe(
+          Effect.flatMap((waited) =>
+            Option.isSome(waited) && isTerminalTaskStatus(waited.value.status)
+              ? Effect.void
+              : Effect.fail({
+                  _tag: "RunGroupWaitEnded",
+                  timedOut: Option.isNone(waited),
+                } as const),
+          ),
+        ),
+      { concurrency: "unbounded", discard: true },
+    ).pipe(
+      Effect.as(Option.none<boolean>()),
+      Effect.catchTags({
+        RunGroupWaitEnded: (end) => Effect.succeedSome(end.timedOut),
+      }),
+    );
+    if (Option.isSome(ended)) {
       for (const pending of members)
         yield* threadManagement
           .dispatch({
@@ -2526,7 +2542,7 @@ const make = Effect.gen(function* () {
             completionWake: "always",
           })
           .pipe(Effect.ignoreCause({ log: true }));
-      return yield* readRunGroup(scope, groupId, members, Option.isNone(waited));
+      return yield* readRunGroup(scope, groupId, members, ended.value);
     }
     return yield* readRunGroup(scope, groupId, members);
   });
