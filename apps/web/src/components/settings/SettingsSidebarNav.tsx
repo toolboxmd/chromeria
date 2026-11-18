@@ -10,6 +10,7 @@ import {
 import {
   ArchiveIcon,
   FlaskConicalIcon,
+  RouteIcon,
   BotIcon,
   createLucideIcon,
   CalendarClockIcon,
@@ -61,6 +62,7 @@ import {
 import { useAvailableSettingsSearchItems } from "./useAvailableSettingsSearchItems";
 import { handleSettingsSectionKeyDown } from "./settingsSectionNavigation";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
+import { ChromeriaFeatureMark } from "../ChromeriaFeatureMark";
 
 const SnapShotIcon = createLucideIcon("snap-shot", [
   [
@@ -101,6 +103,9 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/threads": MessagesSquareIcon,
   "/settings/browser": GlobeIcon,
   "/settings/devices": SmartphoneIcon,
+  "/settings/prism": RouteIcon,
+  "/settings/promachos": BotIcon,
+  "/settings/spectrum": PaletteIcon,
   "/settings/scheduled-tasks": CalendarClockIcon,
   "/settings/source-control": GitBranchIcon,
   "/settings/worktrees": FolderTreeIcon,
@@ -352,8 +357,13 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                     >
                       <SettingsSectionIcon to={item.to} />
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium text-sidebar-foreground">
-                          {m(item.title)}
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <span className="block min-w-0 flex-1 truncate text-sm font-medium text-sidebar-foreground">
+                            {m(item.title)}
+                          </span>
+                          {item.forkAdded === true ? (
+                            <ChromeriaFeatureMark focusable={false} />
+                          ) : null}
                         </span>
                         <span className="block truncate text-2xs text-sidebar-muted-foreground/75">
                           {m(SETTINGS_SECTION_LABELS[item.to])}
@@ -415,6 +425,11 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                                   >
                                     {m(SETTINGS_SECTION_LABELS[to])}
                                   </span>
+                                  {to === "/settings/prism" ||
+                                  to === "/settings/promachos" ||
+                                  to === "/settings/spectrum" ? (
+                                    <ChromeriaFeatureMark focusable={false} />
+                                  ) : null}
                                 </SidebarMenuButton>
                               </SidebarMenuItem>
                             );
