@@ -57,6 +57,8 @@ vi.mock("./components/SettingsEnvironmentFilterHeader", () => ({
   useSettingsEnvironmentMenu: () => null,
 }));
 vi.mock("./components/ScheduledTaskPromptField", () => ({ ScheduledTaskPromptField: () => null }));
+vi.mock("../threads/ExecutionPurposePicker", () => ({ ExecutionPurposePicker: () => null }));
+vi.mock("./spectrumReportAction", () => ({ useAbandonReport: () => ({}) }));
 vi.mock("../layout/workspace/useSelectWorkspaceDetail", () => ({
   useSelectWorkspaceDetail: () => vi.fn(),
 }));
@@ -180,7 +182,12 @@ beforeEach(() => {
   startScheduledTaskEditor({
     environmentId: EnvironmentId.make("environment"),
     environmentLabel: "Environment",
-    draft: { ...draft, schedule: { ...draft.schedule, intervalMinutes: "60" } },
+    // The fork asks a legacy task for its purpose before saving; this task chose unscoped work.
+    draft: {
+      ...draft,
+      purposeScope: { type: "unscoped", reason: "deliberate" },
+      schedule: { ...draft.schedule, intervalMinutes: "60" },
+    },
   });
   act(() =>
     root.render(
