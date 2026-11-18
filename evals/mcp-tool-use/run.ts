@@ -2464,6 +2464,10 @@ const isRockyProxy = (base: string) => {
   const url = new URL(anthropicEndpoint(base));
   return url.hostname === "100.77.241.44" && url.port === "8317";
 };
+class OpenBaoReadError extends Schema.TaggedError<OpenBaoReadError>()("OpenBaoReadError", {
+  message: Schema.String,
+}) {}
+const isOpenBaoReadError = Schema.is(OpenBaoReadError);
 /** Rocky has `bao-agent`. The other machines have `bao`, which reads Rocky over SSH. */
 const readOpenBaoField = (secretPath: string, field: string) =>
   Effect.try({
@@ -2477,12 +2481,15 @@ const readOpenBaoField = (secretPath: string, field: string) =>
           return NodeChildProcess.execFileSync(command, args, { encoding: "utf8" }).trim();
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-          throw new Error(`OpenBao read of ${secretPath} ${field} failed via ${command}.`);
+          throw new OpenBaoReadError({
+            message: `OpenBao read of ${secretPath} ${field} failed via ${command}.`,
+          });
         }
       }
-      throw new Error("Neither bao-agent nor bao is installed.");
+      throw new OpenBaoReadError({ message: "Neither bao-agent nor bao is installed." });
     },
-    catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+    catch: (error) =>
+      isOpenBaoReadError(error) ? error : new OpenBaoReadError({ message: String(error) }),
   });
 
 const PositiveInt = Schema.FiniteFromString.check(Schema.isInt(), Schema.isGreaterThan(0));
