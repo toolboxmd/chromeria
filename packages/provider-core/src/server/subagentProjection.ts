@@ -23,7 +23,26 @@ import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import { derive } from "./IdAllocator.ts";
-import { isOrchestrationV2WorkActive, latestProviderTurnForAttempt } from "@t3tools/contracts";
+import {
+  isOrchestrationV2WorkActive,
+  latestProviderTurnForAttempt,
+  threadOwner,
+} from "@t3tools/contracts";
+import { restartCutView } from "@t3tools/shared/restartCut";
+
+/** Include the earlier outputs a restart replacement can refer to without a provider start. */
+export function restartResultRunIds(
+  runs: ReadonlyArray<OrchestrationV2Run>,
+  resultRunIds: ReadonlyArray<OrchestrationV2Run["id"]>,
+) {
+  const ids = new Set(resultRunIds);
+  const byId = new Map(runs.map((run) => [run.id, run]));
+  for (const id of ids) {
+    const source = byId.get(id)?.restartContinuationOfRunId;
+    if (source !== undefined) ids.add(source);
+  }
+  return [...ids];
+}
 
 function trimmed(value: string | null | undefined): string | undefined {
   const result = value?.trim();
@@ -66,6 +85,9 @@ export function makeSubagentChildThread(input: {
   const { delegatedFrom: _delegatedFrom, ...inherited } = input.parentThread;
   return {
     ...inherited,
+    // Fork: children belong to the parent's owner and start unshared (toolboxmd/chromeria#170).
+    owner: threadOwner(input.parentThread),
+    coOwners: [],
     createdBy: input.createdBy,
     creationSource: input.creationSource,
     id: input.childThreadId,
@@ -249,16 +271,20 @@ export function delegatedTaskReportRuns(
 }
 
 /**
- * `runs` scopes where a run that completed without saying anything finds its report, see
- * `delegatedTaskReportRuns`. The projection must hold the assistant records of every run given.
+ * `reportRuns` (default: `delegatedTaskReportRuns` over `projection.runs`) scopes where a run
+ * that completed without saying anything finds its report. The projection must hold the
+ * assistant records of every run given; `runs` stays complete for restart cuts.
  */
 export function subagentResultForRun(
-  projection: Pick<OrchestrationV2ThreadProjection, "messages" | "turnItems" | "providerTurns"> & {
-    readonly runs?: ReadonlyArray<OrchestrationV2Run>;
-  },
+  projection: Pick<
+    OrchestrationV2ThreadProjection,
+    "messages" | "turnItems" | "runs" | "providerTurns"
+  >,
   run: OrchestrationV2Run,
+  resolvedCut?: ReturnType<typeof restartCutView>,
+  reportRuns?: ReadonlyArray<OrchestrationV2Run>,
 ) {
-  const result = resultOfRun(projection, run);
+  const result = resultOfRun(projection, run, resolvedCut);
   if (
     run.status !== "completed" ||
     result.messageId !== null ||
@@ -266,10 +292,8 @@ export function subagentResultForRun(
     stopNotice(projection, run) !== undefined
   )
     return result;
-  for (const earlier of delegatedTaskReportRuns(
-    { runs: projection.runs ?? [], messages: projection.messages },
-    run,
-  )) {
+  for (const earlier of reportRuns ??
+    delegatedTaskReportRuns({ runs: projection.runs, messages: projection.messages }, run)) {
     const report = resultOfRun(projection, earlier);
     if (report.messageId !== null || report.turnItemId !== null) return report;
   }
@@ -277,12 +301,17 @@ export function subagentResultForRun(
 }
 
 function resultOfRun(
-  projection: Pick<OrchestrationV2ThreadProjection, "messages" | "turnItems" | "providerTurns">,
+  projection: Pick<
+    OrchestrationV2ThreadProjection,
+    "messages" | "turnItems" | "runs" | "providerTurns"
+  >,
   run: OrchestrationV2Run,
+  resolvedCut?: ReturnType<typeof restartCutView>,
 ): {
   readonly text: string;
   readonly messageId: OrchestrationV2ConversationMessage["id"] | null;
   readonly turnItemId: OrchestrationV2TurnItem["id"] | null;
+  readonly restartNote: string | null;
 } {
   const turnItem =
     projection.turnItems
@@ -320,7 +349,7 @@ function resultOfRun(
     failure !== undefined && turnItem !== null && turnItem.ordinal < failure.ordinal
       ? (message?.text ?? turnItem.text)
       : undefined;
-  const text =
+  const resultText =
     (failure?.type === "error"
       ? reportBeforeFailure === undefined
         ? failure.failure.message
@@ -333,15 +362,65 @@ function resultOfRun(
           .filter((part) => part !== undefined)
           .join("\n\n")
       : `Child task ended with status ${run.status}.`);
+  const cut = resolvedCut ?? restartCutView(run, projection.runs);
+  const restartNote =
+    cut !== undefined
+      ? cut.state === "declined"
+        ? `A server restart cut this task and it was not continued: ${cut.reason}`
+        : cut.state === "continuation_pending"
+          ? "A server restart cut this task; its continuation is pending."
+          : "A server restart cut this task; its continuation started."
+      : run.restartContinuationOfRunId !== undefined &&
+          ["completed", "failed", "cancelled", "interrupted"].includes(run.status)
+        ? `A server restart cut this task; its continuation ${run.status} ${run.startedAt === null ? "before starting" : "after starting"}.`
+        : null;
+  let partial = message?.text ?? turnItem?.text;
+  if (restartNote !== null && run.startedAt === null && partial === undefined) {
+    const sources = restartResultRunIds(projection.runs, [run.id]).filter((id) => id !== run.id);
+    for (const sourceId of sources) {
+      const sourceMessage = projection.messages
+        .filter(
+          (candidate) =>
+            candidate.runId === sourceId &&
+            candidate.role === "assistant" &&
+            candidate.text.trim().length > 0,
+        )
+        .toSorted(
+          (a, b) => DateTime.toEpochMillis(b.updatedAt) - DateTime.toEpochMillis(a.updatedAt),
+        )[0];
+      const sourceItem = projection.turnItems
+        .filter(
+          (item): item is Extract<OrchestrationV2TurnItem, { type: "assistant_message" }> =>
+            item.runId === sourceId &&
+            item.type === "assistant_message" &&
+            item.text.trim().length > 0,
+        )
+        .toSorted((a, b) => b.ordinal - a.ordinal)[0];
+      partial = sourceMessage?.text ?? sourceItem?.text;
+      if (partial !== undefined) break;
+    }
+  }
   const executedModel = latestProviderTurnForAttempt(
     projection.providerTurns,
     run.activeAttemptId,
   )?.model;
+  const modelText =
+    executedModel === undefined
+      ? resultText
+      : withExecutedModelNote(resultText, run.modelSelection.model, executedModel);
+  const text =
+    restartNote === null
+      ? modelText
+      : run.restartContinuationOfRunId !== undefined &&
+          run.startedAt !== null &&
+          run.status !== "cancelled"
+        ? `${restartNote}\n\n${modelText}`
+        : partial === undefined
+          ? restartNote
+          : `${restartNote}\n\nLast output before the restart:\n${partial}`;
   return {
-    text:
-      executedModel === undefined
-        ? text
-        : withExecutedModelNote(text, run.modelSelection.model, executedModel),
+    text,
+    restartNote,
     messageId: failure === undefined ? (message?.id ?? turnItem?.messageId ?? null) : null,
     turnItemId: failure?.id ?? turnItem?.id ?? null,
   };
@@ -387,7 +466,14 @@ export function delegatedTaskProgress(projection: {
       backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []),
     );
   const resultRun = workRuns
-    .filter((run) => terminal(run.status) && (run.startedAt !== null || run.ordinal === 1))
+    .filter(
+      (run) =>
+        terminal(run.status) &&
+        (run.startedAt !== null ||
+          run.ordinal === 1 ||
+          run.restartContinuationOfRunId !== undefined ||
+          (run.status === "cancelled" && run.restartCut !== undefined)),
+    )
     .toSorted((a, b) => (runRanAfter(a, b) ? -1 : runRanAfter(b, a) ? 1 : 0))[0];
   return {
     state:
