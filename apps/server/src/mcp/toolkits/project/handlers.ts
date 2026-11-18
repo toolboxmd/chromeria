@@ -349,6 +349,8 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               const requestedStrategy =
                 input.workspaceStrategy === undefined &&
                 caller === undefined &&
+                // Fork: a forwarded peer launch without isolation keeps the root checkout.
+                linkOrigin === undefined &&
                 (projectSettings.defaultThreadEnvMode ??
                   (yield* projectFileThreadEnvMode(project.workspaceRoot))) === "worktree"
                   ? yield* defaultWorktreeStrategy(project.workspaceRoot)
