@@ -41,6 +41,7 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as Tracer from "effect/Tracer";
 import { McpSchema, McpServer } from "effect/ai";
 
 import { ClaudeProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
@@ -1250,20 +1251,37 @@ describe("Run groups", () => {
             : Effect.succeed<TurnOutcome>("complete"),
         ({ orchestrator, invoke, drain }) =>
           Effect.gen(function* () {
+            // The first member watch to finish is Color 1's; Color 0's runs until the cancel.
+            const watched = yield* Deferred.make<void>();
+            const tracer = Tracer.make({
+              span(options) {
+                const span = new Tracer.NativeSpan(options);
+                const end = span.end.bind(span);
+                span.end = (time, exit) => {
+                  end(time, exit);
+                  if (
+                    options.name === "OrchestratorMcpService.waitForTask" &&
+                    exit._tag === "Success"
+                  )
+                    Deferred.doneUnsafe(watched, Effect.void);
+                };
+                return span;
+              },
+            });
             const waiting = yield* invoke("delegate_task", {
               task: "Attack this plan.",
               prismRole: "roast",
               clientRequestId: "roast-cancelled-wait",
               mode: "wait",
               timeoutMs: 600_000,
-            }).pipe(Effect.forkChild);
+            }).pipe(Effect.withTracer(tracer), Effect.forkChild);
             // Color 1 ends while the call still waits on Color 0; then the call is cancelled.
             const held = yield* waitForProjection(orchestrator, parentThreadId, (projection) =>
               projection.subagents.some(
                 (task) => task.providerInstanceId === claude && task.status === "completed",
               ),
             );
-            yield* drain;
+            yield* Deferred.await(watched);
             yield* Fiber.interrupt(waiting);
             yield* Deferred.succeed(codexDone, undefined);
             const members = held.subagents.filter((task) => task.runGroupId !== undefined);
