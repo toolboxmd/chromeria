@@ -600,7 +600,7 @@ it.live.each(["closing", "open"] as const)(
     };
     return Effect.gen(function* () {
       const peer = yield* Effect.acquireRelease(
-        Effect.sync(() => new NodeWS.WebSocketServer({ port: 0 })),
+        Effect.sync(() => new NodeWS.WebSocketServer({ host: "127.0.0.1", port: 0 })),
         (server) =>
           Effect.promise(
             () =>

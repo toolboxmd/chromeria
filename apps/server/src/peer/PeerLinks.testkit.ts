@@ -1,4 +1,3 @@
-// @effect-diagnostics nodeBuiltinImport:off -- The loopback test server needs node:http's createServer.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import type * as SqlClient from "effect/sql/SqlClient";
