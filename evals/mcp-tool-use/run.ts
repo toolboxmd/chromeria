@@ -60,6 +60,7 @@ import { HtmlToolkit } from "../../apps/server/src/mcp/toolkits/html/tools.ts";
 import { MessageToolkit } from "../../apps/server/src/mcp/toolkits/message/tools.ts";
 import { OrchestratorToolkit } from "../../apps/server/src/mcp/toolkits/orchestrator/tools.ts";
 import { PreviewToolkit } from "../../apps/server/src/mcp/toolkits/preview/tools.ts";
+import { LoginImportToolkit } from "../../apps/server/src/mcp/toolkits/loginImport/tools.ts";
 import { PreviewControlsToolkit } from "../../apps/server/src/mcp/toolkits/previewControls/tools.ts";
 import { ProjectToolkit } from "../../apps/server/src/mcp/toolkits/project/tools.ts";
 import {
@@ -312,6 +313,8 @@ export const McpToolUseCase = Schema.Struct({
     linkedEnvironments: Schema.optional(Schema.Boolean),
     /** delegate_task `role` for a delegated child. T3 builds the child's first message from it. */
     delegateRole: Schema.optional(OrchestratorMcpTaskRole),
+    /** delegate_task `prismRole` for a delegated child, which can also shape its first message. */
+    delegatePrismRole: Schema.optional(Contracts.PrismDelegateRoleInput),
     context: Schema.optional(Schema.String),
     priorTurns: Schema.optional(
       Schema.Array(
@@ -458,6 +461,7 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   WorktreeToolkit,
   PullRequestsToolkit,
   PreviewToolkit,
+  LoginImportToolkit,
   DeviceToolkit,
   HtmlToolkit,
   MessageToolkit,
@@ -478,7 +482,7 @@ const t3Tools: ReadonlyArray<ApiTool> = t3SourceTools.map((tool) => ({
 }));
 // T3 gates these on the `preview` capability, which agent browser access decides.
 const PREVIEW_TOOLS = new Set(
-  [PreviewToolkit, PreviewControlsToolkit].flatMap((toolkit) =>
+  [PreviewToolkit, PreviewControlsToolkit, LoginImportToolkit].flatMap((toolkit) =>
     Object.values(toolkit.tools).map((tool: Tool.Any) => tool.name),
   ),
 );
@@ -1033,7 +1037,7 @@ export const buildMessages = (sample: Sample) => {
     if (last?.role !== role) messages.push({ role, content: blocks });
     else messages[messages.length - 1] = { role, content: [...last.content, ...blocks] };
   };
-  const { role, context, delegateRole, priorTurns = [] } = testCase.setup;
+  const { role, context, delegateRole, delegatePrismRole, priorTurns = [] } = testCase.setup;
   const sideChat = testCase.setup.sideChat;
   if (testCase.prompt === "" && (role !== "top" || sideChat !== undefined)) {
     throw new Error(
@@ -1101,7 +1105,8 @@ export const buildMessages = (sample: Sample) => {
       : projectComposerContextForProvider({ text: testCase.prompt, ...testCase.promptContext });
   const prompt =
     sideChatContext === undefined ? userText : withInlineContext(sideChatContext, userText);
-  const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });
+  const childPrompt = () =>
+    taskPrompt({ task: prompt, role: delegateRole, prismRole: delegatePrismRole });
   if (testCase.prompt !== "")
     push("user", text(role === "delegated-child" ? childPrompt() : prompt));
   // Claude Code gives a subagent its SubagentStart hooks' context as a reminder after the task.
@@ -1585,10 +1590,13 @@ export const mockOutput = (sample: Sample, command: string) =>
     : sample.testCase.setup.shellMocks?.find((mock) => new RegExp(mock.match).test(command))
         ?.output;
 
+type ModelEndpoint = { readonly url: string; readonly headers: Readonly<Record<string, string>> };
 type Config = {
   readonly apiKey: string;
   readonly model: Model;
-  readonly proxy?: { readonly url: string; readonly headers: Readonly<Record<string, string>> };
+  readonly proxy?: ModelEndpoint;
+  /** Set only by `--anthropic-base-url`. Claude calls go here instead of api.anthropic.com. */
+  readonly claudeProxy?: ModelEndpoint;
   readonly effort: string;
   readonly maxSteps: number;
   readonly shellModel: ShellModel;
@@ -1614,7 +1622,11 @@ const simulate = Effect.fn("evaluateMcpToolUse.simulate")(function* (
   if (output === undefined) {
     const body = shellRequest(sample, call, config.shellModel);
     const response = isPricedModel(config.shellModel)
-      ? yield* callModel(config.apiKey, body, config.apiKey ? undefined : config.proxy)
+      ? yield* callModel(
+          config.apiKey,
+          body,
+          config.claudeProxy ?? (config.apiKey ? undefined : config.proxy),
+        )
       : yield* callCodex(config, shellResponsesRequest(body));
     addUsage(sample.shellUsage, response.usage);
     output = shellOutput(response.content);
@@ -2114,7 +2126,7 @@ const RETRY = Schedule.min([Schedule.exponential("2 seconds"), Schedule.spaced("
 const postModel = Effect.fn("evaluateMcpToolUse.postModel")(function* (
   apiKey: string,
   body: unknown,
-  proxy?: Config["proxy"],
+  proxy?: ModelEndpoint,
   responses = false,
 ) {
   const client = (yield* HttpClient.HttpClient).pipe(
@@ -2147,7 +2159,7 @@ const postModel = Effect.fn("evaluateMcpToolUse.postModel")(function* (
   }
   return yield* response.text;
 });
-const callModel = (apiKey: string, body: unknown, proxy?: Config["proxy"]) =>
+const callModel = (apiKey: string, body: unknown, proxy?: ModelEndpoint) =>
   postModel(apiKey, body, proxy).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(ApiResponse))),
   );
@@ -2213,7 +2225,11 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   for (let step = 0; step < maxSteps; step++) {
     const response = input
       ? yield* callCodex(config, codexRequest(base, input))
-      : yield* callModel(config.apiKey, requestBody(sample, config.effort, messages));
+      : yield* callModel(
+          config.apiKey,
+          requestBody(sample, config.effort, messages),
+          config.claudeProxy,
+        );
     addUsage(usage, response.usage);
     if ("raw" in response) {
       input?.push(...response.raw);
@@ -2424,6 +2440,25 @@ export const summarize = (
   ].join("\n");
 };
 
+/** Largest planned samples without an explicit --max-samples. */
+export const DEFAULT_MAX_SAMPLES = 30;
+/** Worst case without --samples: a case whose 2 samples disagree gets a 3rd. */
+export const plannedSamples = (caseCount: number, samples: number | undefined) =>
+  caseCount * (samples ?? 3);
+/** Refusal message when a run plans more samples than the cap, else undefined. */
+export const sampleCapMessage = (planned: number, maxSamples: number | undefined) => {
+  const max = maxSamples ?? DEFAULT_MAX_SAMPLES;
+  return planned > max
+    ? `Planned ${planned} samples exceeds the cap of ${max}. Pass --max-samples <n> to raise it for an approved run.`
+    : undefined;
+};
+
+/** `postModel` appends `/messages`, so the base ends in `/v1`. */
+const anthropicEndpoint = (base: string) => {
+  const trimmed = base.trim().replace(/\/+$/, "");
+  return trimmed.endsWith("/v1") ? trimmed : `${trimmed}/v1`;
+};
+
 const PositiveInt = Schema.FiniteFromString.check(Schema.isInt(), Schema.isGreaterThan(0));
 const PositiveIntOrZero = Schema.FiniteFromString.check(
   Schema.isInt(),
@@ -2439,6 +2474,7 @@ const Flags = Schema.Struct({
   samples: Schema.optional(PositiveInt),
   concurrency: PositiveInt,
   "max-steps": Schema.optional(PositiveInt),
+  "max-samples": Schema.optional(PositiveInt),
   effort: Schema.optional(Schema.Literals(EFFORTS)),
   "shell-model": Schema.Literals([
     ...(Object.keys(PRICES) as Array<PricedModel>),
@@ -2449,6 +2485,7 @@ const Flags = Schema.Struct({
   "stop-on-regression": Schema.Boolean,
   "regression-budget": Schema.optional(PositiveIntOrZero),
   context: Schema.Boolean,
+  "anthropic-base-url": Schema.optional(Schema.String),
 });
 const decodeFlags = Schema.decodeUnknownEffect(Flags);
 const decodeCapture = Schema.decodeUnknownEffect(Schema.fromJsonString(Capture));
@@ -2481,6 +2518,8 @@ const main = Effect.gen(function* () {
       concurrency: { ...string, default: "8" },
       // Unset: 6 for Claude, 10 for Codex, whose code-mode cells take more steps.
       "max-steps": string,
+      // Unset: 30.
+      "max-samples": string,
       effort: string,
       "shell-model": { ...string, default: "claude-haiku-5-5" },
       // T3's text must work for every user, so the captured CLAUDE.md is dropped by default.
@@ -2490,6 +2529,8 @@ const main = Effect.gen(function* () {
       "regression-budget": string,
       // Prints the size of T3's text and tool schemas, then exits. Needs no template or key.
       context: { type: "boolean", default: false },
+      // Opt-in. ANTHROPIC_BASE_URL stays ignored so a shell setting cannot redirect a paid run.
+      "anthropic-base-url": string,
     },
   });
   const flags = yield* decodeFlags({ template: "", ...values });
@@ -2524,6 +2565,14 @@ const main = Effect.gen(function* () {
       (setup.harness === undefined || setup.harness === harness),
   );
   if (selectedCases.length === 0) return yield* Effect.die(new Error("No case matches --case."));
+  // Dry runs make no model calls, so the cap does not apply.
+  if (!flags["dry-run"]) {
+    const overCap = sampleCapMessage(
+      plannedSamples(selectedCases.length, flags.samples),
+      flags["max-samples"],
+    );
+    if (overCap !== undefined) return yield* Effect.die(new Error(overCap));
+  }
   const selected = yield* Effect.forEach(selectedCases, (testCase) =>
     Effect.gen(function* () {
       const priorTurns = yield* Effect.forEach(testCase.setup.priorTurns ?? [], (turn) =>
@@ -2630,12 +2679,22 @@ const main = Effect.gen(function* () {
   const out = flags.out;
   if ((!apiKey && !codex) || out === undefined) {
     const message =
-      "Set ANTHROPIC_API_KEY and pass --out <directory>. ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL are never used.";
+      "Set ANTHROPIC_API_KEY and pass --out <directory>. ANTHROPIC_AUTH_TOKEN is ignored. Pass --anthropic-base-url to send Claude calls to that server; ANTHROPIC_BASE_URL is still ignored.";
     return yield* Effect.die(new Error(message));
   }
+  if (flags["anthropic-base-url"] !== undefined && codex) {
+    return yield* Effect.die(
+      new Error("--anthropic-base-url applies to Claude models. Codex already uses its own proxy."),
+    );
+  }
+  const claudeProxy =
+    flags["anthropic-base-url"] === undefined
+      ? undefined
+      : { url: anthropicEndpoint(flags["anthropic-base-url"]), headers: {} };
   const config: Config = {
     apiKey,
     model: flags.model,
+    ...(claudeProxy ? { claudeProxy } : {}),
     ...(codex || !isPricedModel(flags["shell-model"]) ? { proxy: proxyConfig() } : {}),
     effort,
     maxSteps: flags["max-steps"] ?? (codex ? 10 : 6),
@@ -2666,7 +2725,11 @@ const main = Effect.gen(function* () {
     const { id, kind, pattern } = testCase;
     const identity = { id, kind, pattern, role: testCase.setup.role };
     const usage = { usage: emptyUsage(), shellUsage: emptyUsage() };
-    const privateValues = [config.apiKey, ...Object.values(config.proxy?.headers ?? {})]
+    const privateValues = [
+      config.apiKey,
+      ...Object.values(config.proxy?.headers ?? {}),
+      ...Object.values(config.claudeProxy?.headers ?? {}),
+    ]
       .flatMap((value) => [value, value.replace(/^Bearer /i, "")])
       .filter(Boolean);
     return runSample(testCase, config, baseFor(testCase), usage).pipe(
@@ -2739,7 +2802,8 @@ const main = Effect.gen(function* () {
     { concurrency: flags.concurrency, discard: true },
   ).pipe(Effect.ignore);
   const samples = flags.samples === undefined ? "2-3 (adaptive)" : flags.samples;
-  const header = `Commit \`${commit}\`, ${flags.model} at ${effort} effort, user instructions ${flags["user-instructions"]}, ${samples} samples per case, template \`${path.basename(templatePath)}\``;
+  const via = config.claudeProxy ? ` via ${config.claudeProxy.url}` : "";
+  const header = `Commit \`${commit}\`, ${flags.model} at ${effort} effort${via}, user instructions ${flags["user-instructions"]}, ${samples} samples per case, template \`${path.basename(templatePath)}\``;
   const finished = new Set(rows.map((row) => row.id)).size;
   const stopped =
     regressions.length === 0
