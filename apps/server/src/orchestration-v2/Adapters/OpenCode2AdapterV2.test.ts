@@ -4199,6 +4199,9 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
           ...inventory("plugin.list", []),
           ...inventory("mcp.list", []),
           ...inventory("skill.list", []),
+          out("config.get", "<any>"),
+          // `config.get` answers with the documents themselves, without a `data` wrapper.
+          reply("config.get", [{ type: "document", info: { instructions: [] } }]),
           out("session.create", {
             location: { directory: WORK },
             model: { providerID: "opencode", id: "big-pickle" },
@@ -4234,6 +4237,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
           ["plugins", "observed_clean"],
           ["mcp", "observed_clean"],
           ["skills", "observed_clean"],
+          ["instructions", "observed_clean"],
         ],
       );
       assert.deepEqual(receipt.nativeRecord, {

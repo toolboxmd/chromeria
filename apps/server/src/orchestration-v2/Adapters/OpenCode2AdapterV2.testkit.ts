@@ -104,6 +104,7 @@ const operationOf = (
     };
   }
   if (method === "GET" && path === "/api/skill") return { type: "skill.list", input: query };
+  if (method === "GET" && path === "/api/config") return { type: "config.get", input: query };
   if (session !== null) {
     const [, sessionID, rest = ""] = session;
     // The client sends absent optional fields as `null`; recordings omit them.
