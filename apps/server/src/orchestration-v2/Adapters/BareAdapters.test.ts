@@ -449,6 +449,8 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
             OPENCODE_CONFIG: "/unwanted/config",
             OPENCODE_CONFIG_DIR: "/unwanted",
             KEY_PATH: "/secrets/key",
+            // An ordinary value that looks like a file placeholder must not be refused.
+            OMLX_KEY: "q0t3q1t3q2t3",
             ...environment,
           },
         });
@@ -522,6 +524,19 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
         `{ "providers": { "local": { "settings": { "apiKey": "{env:OMLX_KEY}" } } }, "instructions": [] /* {file:/c} */ }`,
       );
       expect((yield* Effect.flip(prepare())).message).toBe(outsideString);
+      yield* fs.writeFileString(
+        `${real}/opencode/opencode.jsonc`,
+        `{ "providers": { "local": { "name": "q0t3" /* {file:/break} */ } } }`,
+      );
+      expect((yield* Effect.flip(prepare())).message).toBe(outsideString);
+      // Bare picks provider sections before substitution, so an env-built key must be refused.
+      yield* fs.writeFileString(
+        `${real}/opencode/opencode.jsonc`,
+        `{ "providers": {}, "{env:SECTION}": { "local": { "name": "Local" } } }`,
+      );
+      expect((yield* Effect.flip(prepare({ SECTION: "provider" }))).message).toBe(
+        refused("has an {env:} value that changes the provider structure."),
+      );
       yield* fs.writeFileString(
         `${real}/opencode/opencode.jsonc`,
         `{ "provider": { "omlx": { "options": {} /* {file:./key} */ } } }`,

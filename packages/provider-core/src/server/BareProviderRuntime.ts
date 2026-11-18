@@ -2,6 +2,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as NodeOS from "node:os";
 import * as Effect from "effect/Effect";
+import * as Random from "effect/Random";
 import * as FileSystem from "effect/FileSystem";
 import { parseTree, type Node, type ParseError } from "jsonc-parser";
 import { type ProviderInstanceId } from "@t3tools/contracts";
@@ -136,24 +137,38 @@ const parses = (text: string) => {
 
 /**
  * Parses OpenCode's raw `{env:...}` expansion with each `{file:...}` held by a unique placeholder,
- * only when every placeholder lands inside a JSON string: file content then cannot change the
+ * only when each placeholder lands once inside a JSON string: file content then cannot change the
  * parse. A placeholder after a lone backslash is an invalid escape, so that case fails too.
  */
-const parseExpanded = (text: string, environment: NodeJS.ProcessEnv) => {
-  let files = 0;
+const parseExpanded = (text: string, environment: NodeJS.ProcessEnv, nonce: string) => {
+  const markers: Array<string> = [];
   const tree = parses(
     text
       .replace(ENV_TOKEN, (_, variable: string) => environment[variable] || "")
-      .replace(FILE_TOKEN, () => `q${files++}t3`),
+      .replace(FILE_TOKEN, () => {
+        markers.push(`q${nonce}x${markers.length}`);
+        return markers.at(-1)!;
+      }),
   );
-  const strings = (node: Node | undefined): number =>
+  const strings = (node: Node | undefined): Array<string> =>
     node === undefined
-      ? 0
+      ? []
       : node.type === "string"
-        ? (String(node.value).match(/q\d+t3/g) ?? []).length
-        : (node.children ?? []).reduce((count, child) => count + strings(child), 0);
-  return tree !== undefined && strings(tree) === files ? tree : undefined;
+        ? [String(node.value)]
+        : (node.children ?? []).flatMap(strings);
+  const values = strings(tree);
+  return tree !== undefined &&
+    markers.every(
+      (marker) => values.reduce((count, value) => count + value.split(marker).length - 1, 0) === 1,
+    )
+    ? tree
+    : undefined;
 };
+
+const topLevelKeys = (tree: Node | undefined) =>
+  (tree?.type === "object" ? (tree.children ?? []) : []).map((property) =>
+    String(property.children?.[0]?.value),
+  );
 
 /**
  * Bare keeps provider definitions as raw text per document so OpenCode substitutes them itself,
@@ -205,19 +220,22 @@ const shadowOpenCodeProviders = Effect.fn("BareProviderRuntime.openCodeProviders
       return yield* refuse(
         "has a provider {file:} path relative to its folder, which bare cannot read; use an absolute or ~/ path.",
       );
-    const expanded = parseExpanded(document, original);
-    if (
-      (text!.includes("{env:") && parseExpanded(text!, original) === undefined) ||
-      expanded === undefined
-    )
+    // Random, so no value in the user's config can pose as a placeholder.
+    const nonce = (yield* Effect.all([Random.next, Random.next]))
+      .map((value) => value.toString(36).slice(2))
+      .join("");
+    const expanded = parseExpanded(document, original, nonce);
+    const whole = text!.includes("{env:") ? parseExpanded(text!, original, nonce) : tree;
+    if (whole === undefined || expanded === undefined)
       return yield* refuse(
         "has an {env:} value that is not plain JSON string content, or a {file:} token outside a JSON string, which bare cannot copy.",
       );
+    // An env value must not add, remove or rename keys, here or in the fields bare drops.
+    const keys = topLevelKeys(expanded);
     if (
-      (expanded.children ?? []).length !== sections.length ||
-      (expanded.children ?? []).some(
-        (property) => !OPEN_CODE_PROVIDER_KEYS.has(String(property.children?.[0]?.value)),
-      )
+      keys.length !== sections.length ||
+      keys.some((key) => !OPEN_CODE_PROVIDER_KEYS.has(key)) ||
+      topLevelKeys(whole).join("\n") !== topLevelKeys(tree).join("\n")
     )
       return yield* refuse("has an {env:} value that changes the provider structure.");
     yield* writeBareConfig(shadow, document);
