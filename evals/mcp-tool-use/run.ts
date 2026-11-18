@@ -7,7 +7,6 @@
  */
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
-import * as NodeOS from "node:os";
 import * as NodeUtil from "node:util";
 import * as NodeVM from "node:vm";
 import * as NodeZlib from "node:zlib";
@@ -2465,6 +2464,26 @@ const isRockyProxy = (base: string) => {
   const url = new URL(anthropicEndpoint(base));
   return url.hostname === "100.77.241.44" && url.port === "8317";
 };
+/** Rocky has `bao-agent`. The other machines have `bao`, which reads Rocky over SSH. */
+const readOpenBaoField = (secretPath: string, field: string) =>
+  Effect.try({
+    try: () => {
+      const attempts: ReadonlyArray<readonly [string, ReadonlyArray<string>]> = [
+        ["bao-agent", ["kv", "get", `-field=${field}`, secretPath]],
+        ["bao", ["get", secretPath, field]],
+      ];
+      for (const [command, args] of attempts) {
+        try {
+          return NodeChildProcess.execFileSync(command, args, { encoding: "utf8" }).trim();
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+          throw new Error(`OpenBao read of ${secretPath} ${field} failed via ${command}.`);
+        }
+      }
+      throw new Error("Neither bao-agent nor bao is installed.");
+    },
+    catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+  });
 
 const PositiveInt = Schema.FiniteFromString.check(Schema.isInt(), Schema.isGreaterThan(0));
 const PositiveIntOrZero = Schema.FiniteFromString.check(
@@ -2694,10 +2713,13 @@ const main = Effect.gen(function* () {
       : { url: anthropicEndpoint(requestedBase), headers: {} };
   let apiKey = yield* Config.String("ANTHROPIC_API_KEY").pipe(Config.withDefault(""));
   if (claudeProxy !== undefined && isRockyProxy(claudeProxy.url)) {
-    const keyPath = path.join(NodeOS.homedir(), ".config", "cliproxyapi", "api-key");
-    apiKey = (yield* fs.readFileString(keyPath).pipe(Effect.orElseSucceed(() => ""))).trim();
+    apiKey = yield* readOpenBaoField("shared/cliproxyapi", "api_key");
     if (apiKey === "") {
-      return yield* Effect.die(new Error(`Claude evals use ${ROCKY_PROXY} and need ${keyPath}.`));
+      return yield* Effect.die(
+        new Error(
+          `Claude evals use ${ROCKY_PROXY} and need shared/cliproxyapi api_key in OpenBao.`,
+        ),
+      );
     }
   }
   const out = flags.out;
