@@ -166,6 +166,23 @@ const parseExpanded = (text: string, environment: NodeJS.ProcessEnv, nonce: stri
     : undefined;
 };
 
+/** Every value at `path` over all duplicate keys; `*` matches any key. */
+const valuesAt = (node: Node | undefined, [key, ...rest]: ReadonlyArray<string>): Array<Node> =>
+  node === undefined
+    ? []
+    : key === undefined
+      ? [node]
+      : node.type === "object"
+        ? (node.children ?? []).flatMap(({ children: [name, value] = [] }) =>
+            key === "*" || name?.value === key ? valuesAt(value, rest) : [],
+          )
+        : [];
+// OpenCode 1.x `provider` entries keep settings in `options`, OpenCode 2 `providers` in `settings`.
+const CREDENTIAL_PATHS = ["options", "settings"].flatMap((group) => [
+  ["*", group, "apiKey"],
+  ["*", group, "headers", "*"],
+]);
+
 const topLevelKeys = (tree: Node | undefined) =>
   (tree?.type === "object" ? (tree.children ?? []) : []).map((property) =>
     String(property.children?.[0]?.value),
@@ -243,6 +260,18 @@ const shadowOpenCodeProviders = Effect.fn("BareProviderRuntime.openCodeProviders
     const keys = topLevelKeys(expanded);
     if (keys.length !== sections.length || keys.some((key) => !OPEN_CODE_PROVIDER_KEYS.has(key)))
       return yield* restructured;
+    // API keys never land in T3 state, so a credential must stay a reference OpenCode resolves.
+    const literal = CREDENTIAL_PATHS.flatMap((credential) =>
+      (tree?.children ?? []).flatMap(({ children: [key, value] = [] }) =>
+        OPEN_CODE_PROVIDER_KEYS.has(String(key?.value)) ? valuesAt(value, credential) : [],
+      ),
+    ).some((node) => node.type !== "null" && !/\{(env|file):[^}]+\}/.test(String(node.value)));
+    if (literal) {
+      if (yield* fs.exists(shadow)) yield* fs.remove(shadow);
+      return yield* refuse(
+        "has a provider with a literal apiKey or header value, which bare will not copy into T3 state; use {env:VAR}, {file:path} or `opencode auth login` instead.",
+      );
+    }
     yield* writeBareConfig(shadow, document);
   }
 });

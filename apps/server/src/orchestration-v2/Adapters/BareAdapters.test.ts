@@ -551,6 +551,17 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
       expect(yield* read("opencode.jsonc")).toBe(
         `{\n"provider": { "old": { "name": "Old" } },\n"provider": null\n}\n`,
       );
+      // API keys never land in T3 state: a literal key or header refuses and drops the old shadow,
+      // while env and file references, as above, are copied.
+      const literalKey = `OpenCode config ${real}/opencode/opencode.jsonc has a provider with a literal apiKey or header value, which bare will not copy into T3 state; use {env:VAR}, {file:path} or \`opencode auth login\` instead.`;
+      for (const document of [
+        `{ "provider": { "omlx": { "options": { "apiKey": "sk-literal" } } } }`,
+        `{ "providers": { "omlx": { "settings": { "headers": { "a": "{env:OMLX_KEY}", "b": "Bearer x" } } } } }`,
+      ]) {
+        yield* fs.writeFileString(`${real}/opencode/opencode.jsonc`, document);
+        expect((yield* Effect.flip(prepare())).message).toBe(literalKey);
+        expect(yield* fs.exists(`${shadow}/opencode.jsonc`)).toBe(false);
+      }
       // Placeholder numbers must not prefix each other: eleven file tokens in strings are
       // accepted, and the same with the second one in a comment is refused.
       const headers = (second: string) =>
