@@ -3,6 +3,7 @@ import {
   ThreadId,
   type OrchestrationV2ThreadShell,
   type PullRequestUnavailableError,
+  type SavedPurposeIntent,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -69,6 +70,9 @@ export class PullRequestWatchService extends Context.Service<
       readonly threadId: ThreadId;
       readonly target: PullRequestTarget;
       readonly watching: boolean;
+      /** Fork: a caller-derived id keeps a replayed MCP request idempotent. */
+      readonly commandId?: CommandId | undefined;
+      readonly purposeIntent?: SavedPurposeIntent | undefined;
     }) => Effect.Effect<
       ResolvedTarget & { readonly watching: boolean; readonly wasWatching: boolean },
       | PullRequestWatchFailedError
@@ -104,6 +108,8 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly target: PullRequestTarget;
     readonly watching: boolean;
+    readonly commandId?: CommandId | undefined;
+    readonly purposeIntent?: SavedPurposeIntent | undefined;
   }) {
     const { watching } = input;
     const thread = yield* requireThread(input.threadId);
@@ -147,11 +153,16 @@ const make = Effect.gen(function* () {
           }),
         );
     }
-    const uuid = yield* random.uuidV4().pipe(Effect.orDie);
+    const commandId =
+      input.commandId ??
+      CommandId.make(
+        `server:mcp-pr-watch:${thread.id}:${yield* random.uuidV4().pipe(Effect.orDie)}`,
+      );
     yield* engine
       .dispatch({
         type: "thread.pull-request.watch",
-        commandId: CommandId.make(`server:mcp-pr-watch:${thread.id}:${uuid}`),
+        ...(input.purposeIntent === undefined ? {} : { purposeIntent: input.purposeIntent }),
+        commandId,
         threadId: thread.id,
         host: target.host,
         repository: target.repository,

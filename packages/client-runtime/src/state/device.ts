@@ -1,4 +1,5 @@
-import { type DeviceToolVersions, WS_METHODS } from "@t3tools/contracts";
+import { createResourceViewerAccessAtomFamily } from "./deviceHubAccess.ts";
+import { type DeviceToolVersions, WS_METHODS, DeviceViewerOpenInput } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
@@ -35,6 +36,14 @@ export function createDeviceEnvironmentAtoms<R, E>(
     }) =>
       JSON.stringify([environmentId, "open", input.threadId, input.hostId ?? null, input.deviceId]),
   };
+  const viewerOpen = createEnvironmentRpcCommand(runtime, {
+    label: "environment-data:device:viewer-open",
+    tag: WS_METHODS.deviceViewerOpen,
+  });
+  const viewerClose = createEnvironmentRpcCommand(runtime, {
+    label: "environment-data:device:viewer-close",
+    tag: WS_METHODS.deviceViewerClose,
+  });
   return {
     state: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:device:state",
@@ -65,6 +74,14 @@ export function createDeviceEnvironmentAtoms<R, E>(
       tag: WS_METHODS.deviceOpen,
       scheduler,
       concurrency: openConcurrency,
+    }),
+    viewerOpen,
+    viewerClose,
+    viewerAccess: createResourceViewerAccessAtomFamily(runtime, {
+      input: DeviceViewerOpenInput,
+      open: viewerOpen,
+      renew: viewerOpen,
+      close: viewerClose,
     }),
     close: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:device:close",

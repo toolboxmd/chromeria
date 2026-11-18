@@ -442,6 +442,7 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
 }): CommandPaletteActionItem[] {
   const delegatedUnderParent = input.delegatedUnderParent ?? NO_THREAD_KEYS;
   // Callers order these: recents by last use, search results by rank.
+  // Fork: only native subagents are hidden; remote children stay searchable.
   const visibleThreads = input.threads.filter(
     (thread) =>
       thread.archivedAt === null &&
