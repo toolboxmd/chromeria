@@ -348,7 +348,9 @@ packages/provider-cursor/src/server/adapter.ts
 packages/provider-grok/package.json
 packages/provider-grok/src/server/acpSupport.ts
 packages/provider-opencode/src/server/OpenCodeRuntime.ts
+packages/provider-opencode/src/server/driver.test.ts
 packages/provider-opencode/src/server/driver.ts
+apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.testkit.ts
 # Urgent interruption (#285)
 apps/server/src/orchestration-v2/ProviderTurnControlService.ts
 apps/server/src/orchestration-v2/RunExecutionService.test.ts

@@ -263,8 +263,9 @@ context needs its body again.
 The thread shows a bare receipt with its permissions, planned stripping, native
 evidence, unobserved categories and native record location. Native content that
 cannot be disabled remains disclosed there. Cursor's custom prompt access remains
-unverified. OpenCode 2, external OpenCode servers, Antigravity and generic ACP
-adapters currently refuse bare launches.
+unverified. On OpenCode 2, bare runs on a private OpenCode server and keeps the
+model identity, date and environment block that OpenCode always adds. External
+OpenCode servers, Antigravity and generic ACP adapters currently refuse bare launches.
 
 Bare is fixed when the thread starts. Native forks inherit it; importing or
 transferring portable history is unsupported. Start a normal thread to use ordinary

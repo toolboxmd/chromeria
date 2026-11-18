@@ -6,6 +6,7 @@ import {
   ProviderSessionId,
   ThreadId,
   type ProviderReplayTranscript,
+  type ThreadBare,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -78,6 +79,11 @@ const operationOf = (
   if (method === "GET" && path === "/api/event") return { type: "event.subscribe" };
   if (method === "GET" && path === "/api/model") return { type: "model.list", input: query };
   if (method === "GET" && path === "/api/agent") return { type: "agent.list", input: query };
+  const agent = /^\/api\/agent\/([^/]+)$/.exec(path);
+  if (method === "GET" && agent !== null)
+    return { type: "agent.get", input: { agentID: agent[1], ...query } };
+  if (method === "GET" && path === "/api/plugin") return { type: "plugin.list", input: query };
+  if (method === "GET" && path === "/api/mcp") return { type: "mcp.list", input: query };
   if (method === "POST" && path === "/api/session") return { type: "session.create", input: body };
   if (method === "GET" && path === "/api/session/active") return { type: "session.active" };
   if (method === "GET" && path === "/api/command") return { type: "command.list", input: query };
@@ -282,13 +288,15 @@ const makeReplayAdapter = (
     readonly onPrompt?: (input: unknown) => void;
     readonly replayGate?: ProviderReplayGate;
     readonly borrowers?: { current: number };
+    readonly bare?: ThreadBare;
   },
 ) =>
   Effect.gen(function* () {
     const server = yield* replayServer(transcript, options);
-    return yield* OpenCode2Adapter.make(ProviderInstanceId.make("opencode")).pipe(
-      Effect.provideService(OpenCode2Server.OpenCode2Server, server),
-    );
+    return yield* OpenCode2Adapter.make(
+      ProviderInstanceId.make("opencode"),
+      options?.bare === undefined ? undefined : { root: "/opencode-data" },
+    ).pipe(Effect.provideService(OpenCode2Server.OpenCode2Server, server));
   });
 
 const layerReplayHost = TestProviderHost.layer().pipe(
@@ -341,6 +349,7 @@ export const openCode2ReplayRuntime = (
     readonly attachmentsDir?: string;
     readonly resolveExtractedTextPath?: (path: string) => Effect.Effect<string | undefined>;
     readonly fileSystem?: FileSystem.FileSystem;
+    readonly bare?: ThreadBare;
   },
 ) =>
   Effect.gen(function* () {
@@ -366,6 +375,7 @@ export const openCode2ReplayRuntime = (
         runtimeMode: "full-access",
         interactionMode: "default",
         cwd: "/work/opencode2",
+        ...(options?.bare === undefined ? {} : { bare: options.bare }),
       },
     });
   }).pipe(

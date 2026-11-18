@@ -121,7 +121,13 @@ export const OPEN_CODE_BARE_CONFIG = {
   },
 };
 export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.openCode")(
-  function* (input: { home: string; environment: NodeJS.ProcessEnv; namedMcp?: boolean }) {
+  function* (input: {
+    home: string;
+    environment: NodeJS.ProcessEnv;
+    namedMcp?: boolean;
+    /** OpenCode 2 reads its own config shape and restricts tools per session instead. */
+    config?: unknown;
+  }) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const source =
@@ -158,7 +164,7 @@ export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.ope
       OPENCODE_DISABLE_EXTERNAL_SKILLS: "1",
       OPENCODE_DISABLE_PROJECT_CONFIG: "1",
       OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
-      OPENCODE_CONFIG_CONTENT: yield* encodeConfig(config).pipe(Effect.orDie),
+      OPENCODE_CONFIG_CONTENT: yield* encodeConfig(input.config ?? config).pipe(Effect.orDie),
     };
     // These discovery selectors could otherwise escape the isolated config root.
     delete environment.OPENCODE_CONFIG;

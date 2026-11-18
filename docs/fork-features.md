@@ -2498,7 +2498,10 @@ sources and reasons.
 {
   "id": "bare-launch",
   "purpose": "Strip removable harness context, admit only named additions within caller permissions, and retain durable intent and honest native receipts across launch and recovery paths.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/289"],
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/289",
+    "https://github.com/toolboxmd/chromeria/issues/320"
+  ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/compare/main...feat/289-bare-launch",
     "https://github.com/toolboxmd/chromeria/pull/632"
@@ -2518,6 +2521,8 @@ sources and reasons.
     "packages/contracts/src/bareLaunch.ts",
     "packages/provider-core/src/server/BareProviderRuntime.ts",
     "packages/provider-core/src/server/bareLaunch.ts",
+    "packages/provider-opencode/src/server/v2/bare.test.ts",
+    "packages/provider-opencode/src/server/v2/bare.ts",
     "packages/provider-grok/src/server/GrokBareRuntime.test.ts",
     "packages/provider-grok/src/server/GrokBareRuntime.ts"
   ],
@@ -2546,11 +2551,15 @@ sources and reasons.
     "packages/provider-opencode/src/server/OpenCodeRuntime.ts",
     "packages/provider-opencode/src/server/adapter.test.ts",
     "packages/provider-opencode/src/server/adapter.ts",
+    "packages/provider-opencode/src/server/driver.test.ts",
     "packages/provider-opencode/src/server/driver.ts",
+    "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.testkit.ts",
     "apps/server/src/scheduledTasks/ScheduledTaskService.interval.test.ts",
     "apps/server/src/mcp/TaskCancelUsageLimit.integration.test.ts"
   ],
   "sharedFiles": [
+    "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts",
+    "packages/provider-opencode/src/server/v2/adapter.ts",
     "apps/server/src/peer/PeerForwarding.bare.test.ts",
     "GLOSSARY.md",
     "apps/server/src/mcp/OrchestratorMcpService.activity.test.ts",

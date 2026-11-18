@@ -64,7 +64,7 @@ flowchart TD
     WG["Wight mode"]
     %% WG: #117
     BL["Bare launch and receipts"]
-    %% BL: #289 PR #335 PR #467 PR #469 PR #480 #316
+    %% BL: #289 PR #335 PR #467 PR #469 PR #480 #316 #320 PR #801
     TL["Opt-in thread tool allowlist"]
     %% TL: #552
     DR["Drafters in any project"]
