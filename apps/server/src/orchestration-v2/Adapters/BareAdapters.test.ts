@@ -464,12 +464,27 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
           `${stale}/${name}`,
           `{ "provider": { "x": { "options": { "apiKey": "sk-stale" } } } }`,
         );
+      // An interrupted earlier write left its temporary copy in a directory of its own.
+      yield* fs.makeDirectory(`${stale}/.bare-config-abc`);
+      yield* fs.writeFileString(`${stale}/.bare-config-abc/123`, "sk-stale");
+      yield* fs.writeFileString(`${stale}/.bare-config-def`, "sk-stale");
       // OpenCode deep-merges documents, which one config content cannot, so bare refuses
       // providers spread over several files.
       expect((yield* Effect.flip(prepare())).message).toBe(
         `OpenCode configs ${real}/opencode/config.json and ${real}/opencode/opencode.json and ${real}/opencode/opencode.jsonc both define providers, which bare cannot combine; keep them in one file.`,
       );
       expect(yield* fs.readDirectory(stale)).toEqual([]);
+      // OpenCode 2 ignores the legacy `config.json`, so bare does too.
+      const openCode2 = yield* Effect.flip(
+        prepareOpenCodeBareEnvironment({
+          home: `${root}/bare2`,
+          environment: { HOME: root, XDG_CONFIG_HOME: real, OMLX_KEY: "k", KEY_PATH: "/k" },
+          config: { mcp: {} },
+        }),
+      );
+      expect(openCode2.message).toBe(
+        `OpenCode configs ${real}/opencode/opencode.json and ${real}/opencode/opencode.jsonc both define providers, which bare cannot combine; keep them in one file.`,
+      );
       yield* fs.writeFileString(`${real}/opencode/config.json`, JSON.stringify({ theme: "dark" }));
       yield* fs.writeFileString(
         `${real}/opencode/opencode.json`,
@@ -605,6 +620,18 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
           yield* fs.readLink(`${casedEnvironment.XDG_CONFIG_HOME}/opencode`).pipe(Effect.option),
         ),
       ).toBe(true);
+
+      // Stale cleanup never follows a link out of the bare home.
+      const victim = `${root}/victim`;
+      yield* fs.makeDirectory(`${victim}/opencode`, { recursive: true });
+      yield* fs.writeFileString(`${victim}/opencode/opencode.json`, user);
+      yield* fs.makeDirectory(`${root}/bare-linked`);
+      yield* fs.symlink(victim, `${root}/bare-linked/xdg-config`);
+      yield* prepareOpenCodeBareEnvironment({
+        home: `${root}/bare-linked`,
+        environment: { HOME: root, XDG_CONFIG_HOME: `${root}/empty` },
+      });
+      expect(yield* fs.readFileString(`${victim}/opencode/opencode.json`)).toBe(user);
 
       yield* fs.remove(`${real}/opencode/config.json`);
       yield* fs.writeFileString(`${real}/opencode/opencode.jsonc`, `{ "theme": "dark" }`);

@@ -123,8 +123,9 @@ export const OPEN_CODE_BARE_CONFIG = {
     title: { disable: true },
   },
 };
-// OpenCode 1.x reads all three in this order; OpenCode 2 reads the last two.
-const OPEN_CODE_GLOBAL_CONFIG_FILES = ["config.json", "opencode.json", "opencode.jsonc"];
+// OpenCode 1.x reads all three in this order; OpenCode 2 reads the last two (config/discovery.ts).
+const OPEN_CODE_1_GLOBAL_CONFIG_FILES = ["config.json", "opencode.json", "opencode.jsonc"];
+const OPEN_CODE_2_GLOBAL_CONFIG_FILES = ["opencode.json", "opencode.jsonc"];
 const OPEN_CODE_PROVIDER_KEYS = new Set(["provider", "providers"]);
 
 const ENV_TOKEN = /\{env:([^}]+)\}/g;
@@ -178,13 +179,14 @@ const topLevelKeys = (tree: Node | undefined) =>
  */
 const openCodeProviderSections = Effect.fn("BareProviderRuntime.openCodeProviders")(function* (
   source: string,
+  names: ReadonlyArray<string>,
   original: NodeJS.ProcessEnv,
   bare: NodeJS.ProcessEnv,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const copied: Array<{ file: string; sections: Array<string> }> = [];
-  for (const name of OPEN_CODE_GLOBAL_CONFIG_FILES) {
+  for (const name of names) {
     const file = path.join(source, name);
     const refuse = (reason: string) =>
       new BareLaunchError({ reason: `OpenCode config ${file} ${reason}` });
@@ -278,9 +280,35 @@ export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.ope
         Option.isSome(yield* fs.readLink(path.join(target, entry)).pipe(Effect.option))
       )
         yield* fs.remove(path.join(target, entry));
-    // Earlier builds wrote provider copies here; they may hold credentials.
-    for (const name of OPEN_CODE_GLOBAL_CONFIG_FILES)
-      yield* fs.remove(path.join(target, "opencode", name), { force: true });
+    // Earlier builds wrote provider copies, and interrupted writes left temporary ones, here; they
+    // may hold credentials. Cleanup never follows a link and removes only regular files.
+    const stale = path.join(target, "opencode");
+    const type = (item: string) =>
+      fs.lstat(item).pipe(
+        Effect.map((info) => info.type),
+        Effect.orElseSucceed(() => undefined),
+      );
+    const removeFile = Effect.fnUntraced(function* (item: string) {
+      if ((yield* type(item)) === "File") yield* fs.remove(item);
+    });
+    if (
+      (yield* type(input.home)) === "Directory" &&
+      (yield* type(target)) === "Directory" &&
+      (yield* type(stale)) === "Directory"
+    )
+      for (const entry of yield* fs.readDirectory(stale)) {
+        const item = path.join(stale, entry);
+        if (OPEN_CODE_1_GLOBAL_CONFIG_FILES.includes(entry)) yield* removeFile(item);
+        else if (entry.startsWith(".bare-config-")) {
+          if ((yield* type(item)) !== "Directory") yield* removeFile(item);
+          else {
+            for (const inner of yield* fs.readDirectory(item))
+              yield* removeFile(path.join(item, inner));
+            if ((yield* fs.readDirectory(item)).length === 0)
+              yield* fs.remove(item, { recursive: true });
+          }
+        }
+      }
     if (yield* fs.exists(source)) {
       for (const entry of yield* fs.readDirectory(source)) {
         // Case-insensitive filesystems treat any case of this name as the shadow directory.
@@ -317,6 +345,10 @@ export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.ope
     delete environment.OPENCODE_CONFIG_DIR;
     const sections = yield* openCodeProviderSections(
       path.join(source, "opencode"),
+      // Only OpenCode 2 passes its own config shape.
+      input.config === undefined
+        ? OPEN_CODE_1_GLOBAL_CONFIG_FILES
+        : OPEN_CODE_2_GLOBAL_CONFIG_FILES,
       input.environment,
       environment,
     );
