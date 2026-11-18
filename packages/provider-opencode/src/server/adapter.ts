@@ -7,6 +7,7 @@ import * as Path from "effect/Path";
 import * as FileSystem from "effect/FileSystem";
 import {
   bareHome,
+  bareRoot,
   prepareOpenCodeBareEnvironment,
 } from "@t3tools/provider-core/server/BareProviderRuntime";
 import {
@@ -1178,6 +1179,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               }),
             });
           environment = yield* prepareOpenCodeBareEnvironment({
+            root: bareRoot(host.paths.stateDir),
             home,
             environment,
             namedMcp: namesT3Mcp(bare),

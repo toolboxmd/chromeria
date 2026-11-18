@@ -9,6 +9,7 @@ import { ProviderAdapterOpenSessionError } from "@t3tools/provider-core/server/P
 import { BareLaunchError, unsupportedBare } from "@t3tools/provider-core/server/bareLaunch";
 import {
   bareHome,
+  bareRoot,
   prepareOpenCodeBareEnvironment,
 } from "@t3tools/provider-core/server/BareProviderRuntime";
 import { OpenCodeSettings } from "../settings.ts";
@@ -436,6 +437,7 @@ export const OpenCodeDriver: ProviderDriver<
     const secureRandom = yield* SecureRandom.SecureRandom;
     const instanceScope = yield* Effect.scope;
     const bareOpenCode2Server = yield* prepareOpenCodeBareEnvironment({
+      root: bareRoot(host.paths.stateDir),
       home: bareHome(host.paths.stateDir, instanceId, "opencode2"),
       environment: processEnv,
       config: OpenCode2Bare.OPEN_CODE_2_BARE_CONFIG,
