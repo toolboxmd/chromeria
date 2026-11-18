@@ -166,43 +166,26 @@ const parseExpanded = (text: string, environment: NodeJS.ProcessEnv, nonce: stri
     : undefined;
 };
 
-/** Every value at `path` over all duplicate keys; `*` matches any key. */
-const valuesAt = (node: Node | undefined, [key, ...rest]: ReadonlyArray<string>): Array<Node> =>
-  node === undefined
-    ? []
-    : key === undefined
-      ? [node]
-      : node.type === "object"
-        ? (node.children ?? []).flatMap(({ children: [name, value] = [] }) =>
-            key === "*" || name?.value === key ? valuesAt(value, rest) : [],
-          )
-        : [];
-// OpenCode 1.x `provider` entries keep settings in `options`, OpenCode 2 `providers` in `settings`.
-const CREDENTIAL_PATHS = ["options", "settings"].flatMap((group) => [
-  ["*", group, "apiKey"],
-  ["*", group, "headers", "*"],
-]);
-
 const topLevelKeys = (tree: Node | undefined) =>
   (tree?.type === "object" ? (tree.children ?? []) : []).map((property) =>
     String(property.children?.[0]?.value),
   );
 
 /**
- * Bare keeps provider definitions as raw text per document so OpenCode substitutes them itself,
- * and refuses anything that would make the copy read differently from the original.
+ * Bare passes provider definitions as raw text, in memory, so OpenCode substitutes them itself and
+ * nothing from the user's config is written to T3 state. It refuses anything that would make the
+ * copy read differently from the original.
  */
-const shadowOpenCodeProviders = Effect.fn("BareProviderRuntime.openCodeProviders")(function* (
+const openCodeProviderSections = Effect.fn("BareProviderRuntime.openCodeProviders")(function* (
   source: string,
-  target: string,
   original: NodeJS.ProcessEnv,
   bare: NodeJS.ProcessEnv,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const copied: Array<{ file: string; sections: Array<string> }> = [];
   for (const name of OPEN_CODE_GLOBAL_CONFIG_FILES) {
     const file = path.join(source, name);
-    const shadow = path.join(target, name);
     const refuse = (reason: string) =>
       new BareLaunchError({ reason: `OpenCode config ${file} ${reason}` });
     const text = (yield* fs.exists(file)) ? yield* fs.readFileString(file) : undefined;
@@ -238,17 +221,14 @@ const shadowOpenCodeProviders = Effect.fn("BareProviderRuntime.openCodeProviders
     // Substitution must not add, remove or rename top-level keys, even in fields bare drops.
     if (topLevelKeys(whole).join("\n") !== topLevelKeys(tree).join("\n"))
       return yield* restructured;
-    if (sections.length === 0) {
-      if (yield* fs.exists(shadow)) yield* fs.remove(shadow);
-      continue;
-    }
+    if (sections.length === 0) continue;
     const document = `{\n${sections.join(",\n")}\n}\n`;
     const changed = Array.from(document.matchAll(ENV_TOKEN), ([, variable]) => variable!).find(
       (variable) => (original[variable] || "") !== (bare[variable] || ""),
     );
     if (changed !== undefined)
       return yield* refuse(`has a provider using {env:${changed}}, which bare changes.`);
-    // A relative path would resolve beside the copy.
+    // A relative path would no longer resolve beside the config file.
     const relative = Array.from(
       document
         .replace(ENV_TOKEN, (_, variable: string) => original[variable] || "")
@@ -263,20 +243,14 @@ const shadowOpenCodeProviders = Effect.fn("BareProviderRuntime.openCodeProviders
     const keys = topLevelKeys(expanded);
     if (keys.length !== sections.length || keys.some((key) => !OPEN_CODE_PROVIDER_KEYS.has(key)))
       return yield* restructured;
-    // API keys never land in T3 state, so a credential must stay a reference OpenCode resolves.
-    const literal = CREDENTIAL_PATHS.flatMap((credential) =>
-      (tree?.children ?? []).flatMap(({ children: [key, value] = [] }) =>
-        OPEN_CODE_PROVIDER_KEYS.has(String(key?.value)) ? valuesAt(value, credential) : [],
-      ),
-    ).some((node) => node.type !== "null" && !/\{(env|file):[^}]+\}/.test(String(node.value)));
-    if (literal) {
-      if (yield* fs.exists(shadow)) yield* fs.remove(shadow);
-      return yield* refuse(
-        "has a provider with a literal apiKey or header value, which bare will not copy into T3 state; use {env:VAR}, {file:path} or `opencode auth login` instead.",
-      );
-    }
-    yield* writeBareConfig(shadow, document);
+    copied.push({ file, sections });
   }
+  // OpenCode deep-merges documents but one config content keeps only a duplicate key's last value.
+  if (copied.length > 1)
+    return yield* new BareLaunchError({
+      reason: `OpenCode configs ${copied.map(({ file }) => file).join(" and ")} both define providers, which bare cannot combine; keep them in one file.`,
+    });
+  return copied[0]?.sections;
 });
 
 export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.openCode")(
@@ -296,6 +270,17 @@ export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.ope
     yield* fs.makeDirectory(target, { recursive: true, mode: 0o700 });
     yield* fs.chmod(input.home, 0o700);
     yield* fs.chmod(target, 0o700);
+    // An earlier mirror may hold a case variant that aliases the shadow directory; unlinking
+    // removes only the link, never the user's directory.
+    for (const entry of yield* fs.readDirectory(target))
+      if (
+        entry.toLowerCase() === "opencode" &&
+        Option.isSome(yield* fs.readLink(path.join(target, entry)).pipe(Effect.option))
+      )
+        yield* fs.remove(path.join(target, entry));
+    // Earlier builds wrote provider copies here; they may hold credentials.
+    for (const name of OPEN_CODE_GLOBAL_CONFIG_FILES)
+      yield* fs.remove(path.join(target, "opencode", name), { force: true });
     if (yield* fs.exists(source)) {
       for (const entry of yield* fs.readDirectory(source)) {
         // Case-insensitive filesystems treat any case of this name as the shadow directory.
@@ -317,6 +302,7 @@ export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.ope
         plan: { ...OPEN_CODE_BARE_CONFIG.agent.plan, tools },
       },
     };
+    const content = yield* encodeConfig(input.config ?? config).pipe(Effect.orDie);
     const environment: NodeJS.ProcessEnv = {
       ...input.environment,
       XDG_CONFIG_HOME: target,
@@ -324,25 +310,19 @@ export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.ope
       OPENCODE_DISABLE_EXTERNAL_SKILLS: "1",
       OPENCODE_DISABLE_PROJECT_CONFIG: "1",
       OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
-      OPENCODE_CONFIG_CONTENT: yield* encodeConfig(input.config ?? config).pipe(Effect.orDie),
+      OPENCODE_CONFIG_CONTENT: content,
     };
     // These discovery selectors could otherwise escape the isolated config root.
     delete environment.OPENCODE_CONFIG;
     delete environment.OPENCODE_CONFIG_DIR;
-    // An earlier mirror may hold a case variant that aliases the shadow directory; unlinking
-    // removes only the link, never the user's directory.
-    for (const entry of yield* fs.readDirectory(target))
-      if (
-        entry.toLowerCase() === "opencode" &&
-        Option.isSome(yield* fs.readLink(path.join(target, entry)).pipe(Effect.option))
-      )
-        yield* fs.remove(path.join(target, entry));
-    yield* shadowOpenCodeProviders(
+    const sections = yield* openCodeProviderSections(
       path.join(source, "opencode"),
-      path.join(target, "opencode"),
       input.environment,
       environment,
     );
+    // Raw text, so OpenCode substitutes the provider sections itself.
+    if (sections !== undefined)
+      environment.OPENCODE_CONFIG_CONTENT = `{\n${sections.join(",\n")},\n${content.slice(1)}`;
     return environment;
   },
   Effect.provide(Path.layer),

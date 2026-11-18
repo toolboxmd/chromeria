@@ -455,35 +455,38 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
             ...environment,
           },
         });
+      // Earlier builds wrote provider copies, possibly with keys, into T3 state; any launch,
+      // even a refused one, removes them first.
+      const stale = `${root}/bare/xdg-config/opencode`;
+      yield* fs.makeDirectory(stale, { recursive: true });
+      for (const name of ["config.json", "opencode.json", "opencode.jsonc"])
+        yield* fs.writeFileString(
+          `${stale}/${name}`,
+          `{ "provider": { "x": { "options": { "apiKey": "sk-stale" } } } }`,
+        );
+      // OpenCode deep-merges documents, which one config content cannot, so bare refuses
+      // providers spread over several files.
+      expect((yield* Effect.flip(prepare())).message).toBe(
+        `OpenCode configs ${real}/opencode/config.json and ${real}/opencode/opencode.json and ${real}/opencode/opencode.jsonc both define providers, which bare cannot combine; keep them in one file.`,
+      );
+      expect(yield* fs.readDirectory(stale)).toEqual([]);
+      yield* fs.writeFileString(`${real}/opencode/config.json`, JSON.stringify({ theme: "dark" }));
+      yield* fs.writeFileString(
+        `${real}/opencode/opencode.json`,
+        JSON.stringify({ mcp: { secret: { type: "local", command: ["serve"] } } }),
+      );
       const environment = yield* prepare();
       expect(yield* fs.readLink(`${environment.XDG_CONFIG_HOME}/gh`)).toBe(`${real}/gh`);
       expect(environment.HOME).toBe(root);
       expect(environment).not.toHaveProperty("OPENCODE_CONFIG");
-      const config = yield* decodeAgentplanprompt(environment.OPENCODE_CONFIG_CONTENT);
-      expect(config.agent.plan.prompt).toBe(".");
-      expect(JSON.parse(environment.OPENCODE_CONFIG_CONTENT ?? "{}")).toEqual(
-        OPEN_CODE_BARE_CONFIG,
-      );
-      // Each document keeps only its raw provider sections, so OpenCode still orders,
+      // The raw provider sections travel in memory beside the bare config, so OpenCode still
       // normalizes and substitutes them; absolute and home file paths read the same file.
-      const shadow = `${environment.XDG_CONFIG_HOME}/opencode`;
-      const read = (name: string) => fs.readFileString(`${shadow}/${name}`);
-      expect((yield* fs.readDirectory(shadow)).toSorted()).toEqual([
-        "config.json",
-        "opencode.json",
-        "opencode.jsonc",
-      ]);
-      expect((yield* fs.stat(`${shadow}/opencode.jsonc`)).mode & 0o777).toBe(0o600);
-      expect(JSON.parse(yield* read("config.json"))).toEqual({
-        provider: { legacy: { name: "Legacy" } },
-      });
-      expect(JSON.parse(yield* read("opencode.json"))).toEqual({
-        providers: { omlx: { name: "old", settings: { baseURL: "http://old/v1" } } },
-      });
-      expect(yield* read("opencode.jsonc")).toBe(`{\n"provider": ${provider}\n}\n`);
+      const strip = JSON.stringify(OPEN_CODE_BARE_CONFIG).slice(1);
+      expect(environment.OPENCODE_CONFIG_CONTENT).toBe(`{\n"provider": ${provider},\n${strip}`);
+      const content = (sections: string) => `{\n${sections},\n${strip}`;
 
-      // A relative path would resolve beside the shadow copy, so bare refuses it, even when
-      // only an env value or a commented token makes it relative.
+      // A relative path would no longer resolve beside its config file, so bare refuses it,
+      // even when only an env value makes it relative.
       const relative = `OpenCode config ${real}/opencode/opencode.jsonc has a provider {file:} path relative to its folder, which bare cannot read; use an absolute or ~/ path.`;
       expect((yield* Effect.flip(prepare({ KEY_PATH: "./key" }))).message).toBe(relative);
       const refused = (reason: string) =>
@@ -547,30 +550,23 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
         `${real}/opencode/opencode.jsonc`,
         `{ "provider": { "old": { "name": "Old" } }, "provider": null }`,
       );
-      yield* prepare();
-      expect(yield* read("opencode.jsonc")).toBe(
-        `{\n"provider": { "old": { "name": "Old" } },\n"provider": null\n}\n`,
+      expect((yield* prepare()).OPENCODE_CONFIG_CONTENT).toBe(
+        content(`"provider": { "old": { "name": "Old" } },\n"provider": null`),
       );
-      // API keys never land in T3 state: a literal key or header refuses and drops the old shadow,
-      // while env and file references, as above, are copied.
-      const literalKey = `OpenCode config ${real}/opencode/opencode.jsonc has a provider with a literal apiKey or header value, which bare will not copy into T3 state; use {env:VAR}, {file:path} or \`opencode auth login\` instead.`;
-      for (const document of [
-        `{ "provider": { "omlx": { "options": { "apiKey": "sk-literal" } } } }`,
-        `{ "providers": { "omlx": { "settings": { "headers": { "a": "{env:OMLX_KEY}", "b": "Bearer x" } } } } }`,
-      ]) {
-        yield* fs.writeFileString(`${real}/opencode/opencode.jsonc`, document);
-        expect((yield* Effect.flip(prepare())).message).toBe(literalKey);
-        expect(yield* fs.exists(`${shadow}/opencode.jsonc`)).toBe(false);
-      }
+      // Nothing from the user's config is written to T3 state, so a literal key stays in memory,
+      // and comments, which could hold an old key, are dropped.
       yield* fs.writeFileString(
         `${real}/opencode/opencode.jsonc`,
-        `{ "provider": { "omlx": {\n// "apiKey": "sk-commented",\n"name": "oMLX" /* old */ } } }`,
+        `{ "provider": { "omlx": {\n// "apiKey": "sk-commented",\n"options": { "apiKey": "sk-literal" } /* old */ } } }`,
       );
-      yield* prepare();
-      expect(JSON.parse(yield* read("opencode.jsonc"))).toEqual({
-        provider: { omlx: { name: "oMLX" } },
-      });
-      expect(yield* read("opencode.jsonc")).not.toContain("sk-commented");
+      expect((yield* prepare()).OPENCODE_CONFIG_CONTENT).toBe(
+        content(`"provider": { "omlx": {\n\n"options": { "apiKey": "sk-literal" }  } }`),
+      );
+      for (const entry of yield* fs.readDirectory(`${root}/bare`, { recursive: true })) {
+        const file = `${root}/bare/${entry}`;
+        if ((yield* fs.stat(file)).type === "File")
+          expect(yield* fs.readFileString(file)).not.toContain("sk-literal");
+      }
       // Placeholder numbers must not prefix each other: eleven file tokens in strings are
       // accepted, and the same with the second one in a comment is refused.
       const headers = (second: string) =>
@@ -592,7 +588,7 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
       expect((yield* Effect.flip(prepare())).message).toBe(outsideString);
 
       // On case-insensitive filesystems a mirrored `OpenCode` would alias the shadow directory,
-      // so bare must neither mirror it nor write through an existing link to it.
+      // so bare must neither mirror it nor remove files through an existing link to it.
       const cased = `${root}/cased`;
       yield* fs.makeDirectory(`${cased}/OpenCode`, { recursive: true });
       yield* fs.makeDirectory(`${root}/bare-cased/xdg-config`, { recursive: true });
@@ -620,15 +616,6 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
       expect(malformed.message).toBe(
         `OpenCode config ${real}/opencode/opencode.json is not valid JSONC before {env:} substitution.`,
       );
-      expect(yield* fs.exists(`${shadow}/config.json`)).toBe(false);
     }),
   );
 });
-
-const decodeAgentplanprompt = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(
-    Schema.Struct({
-      agent: Schema.Struct({ plan: Schema.Struct({ prompt: Schema.String }) }),
-    }),
-  ),
-);
