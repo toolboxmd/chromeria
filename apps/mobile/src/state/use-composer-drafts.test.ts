@@ -2578,6 +2578,7 @@ describe("mobile composer drafts", () => {
       attachments: [],
       runtimeMode: "full-access",
       interactionMode: "default",
+      bare: true,
     };
 
     const edited: ComposerDraft = {
@@ -2585,6 +2586,7 @@ describe("mobile composer drafts", () => {
       attachments: [],
       runtimeMode: "full-access",
       interactionMode: "plan",
+      bare: true,
     };
 
     expect(undoComposerDraftMergeState({ [draftKey]: edited }, draftKey, snapshot, merged)).toEqual(
@@ -2597,6 +2599,16 @@ describe("mobile composer drafts", () => {
         },
       },
     );
+    // A Bare toggle made during the merge is the user's, so rollback keeps it.
+    const plainMerge: ComposerDraft = { ...merged, bare: undefined };
+    expect(
+      undoComposerDraftMergeState(
+        { [draftKey]: { ...plainMerge, bare: true } },
+        draftKey,
+        snapshot,
+        plainMerge,
+      )[draftKey]?.bare,
+    ).toBe(true);
   });
 
   it("takes out only what the merge inserted when the user edited during it", () => {

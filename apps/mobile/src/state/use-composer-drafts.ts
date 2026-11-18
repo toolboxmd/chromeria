@@ -1886,6 +1886,7 @@ export function sameComposerDraftState(a: ComposerDraft, b: ComposerDraft): bool
     a.runtimeMode === b.runtimeMode &&
     a.interactionMode === b.interactionMode &&
     a.freshContext === b.freshContext &&
+    a.bare === b.bare &&
     a.workspaceSelection === b.workspaceSelection
   );
 }
@@ -1916,6 +1917,7 @@ export function undoComposerDraftMergeState(
       | "runtimeMode"
       | "interactionMode"
       | "freshContext"
+      | "bare"
       | "workspaceSelection",
   >(
     key: K,
@@ -1937,6 +1939,7 @@ export function undoComposerDraftMergeState(
     runtimeMode: undoSetting("runtimeMode"),
     interactionMode: undoSetting("interactionMode"),
     freshContext: undoSetting("freshContext"),
+    bare: undoSetting("bare"),
     workspaceSelection: undoSetting("workspaceSelection"),
   };
   return withComposerDraft(current, draftKey, draft);
