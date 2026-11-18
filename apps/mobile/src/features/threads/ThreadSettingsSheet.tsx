@@ -100,6 +100,7 @@ import { environmentServerConfigsAtom, serverEnvironment } from "../../state/ser
 import { mobilePreferencesAtom } from "../../state/preferences";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useNewTaskFlow } from "./new-task-flow-provider";
+import { NewTaskBareRow, useNewTaskBareToggle } from "./NewTaskBareRow";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import {
   createProviderCatalogRefreshRunner,
@@ -287,6 +288,8 @@ type ThreadSettingsSessionProps = {
   readonly onUpdateOptionSelections: (selections: ReadonlyArray<ProviderOptionSelection>) => void;
   readonly runtimeMode: RuntimeMode;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
+  /** Fork: the Bare row for a new task (toolboxmd/chromeria#319). */
+  readonly bareOption?: ReactNode;
 };
 
 /** The composer draft the sheet edits: the thread's own, or a queued message being edited. */
@@ -331,6 +334,7 @@ type ThreadSettingsSessionValue = {
   readonly toggleProvider: (providerKey: string) => void;
   /** The provider whose catalog for this folder the picker keeps fresh. */
   readonly workspaceScan: { readonly instanceId: ProviderInstanceId; readonly cwd: string } | null;
+  readonly bareOption: ReactNode;
 };
 
 const ThreadSettingsSessionContext = createContext<ThreadSettingsSessionValue | null>(null);
@@ -654,6 +658,7 @@ function ThreadSettingsSessionProvider(
     toggleProvider,
     toggleFavorite,
     workspaceScan,
+    bareOption: props.bareOption ?? null,
   } satisfies ThreadSettingsSessionValue;
 
   return (
@@ -936,6 +941,7 @@ function ThreadSettingsOptionsItem(props: {
             </Animated.View>
           );
         })}
+        {session.bareOption}
         <Animated.View layout={THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION}>
           <DisclosureRow
             isLast
@@ -1475,6 +1481,10 @@ export function ExistingThreadSettingsRouteScreen({
 /** RNS owns nested sheet dismissal; Reasoning and Runtime remain ordinary pushes. */
 export function NewTaskThreadSettingsRouteScreen() {
   const flow = useNewTaskFlow();
+  const bare = useNewTaskBareToggle({
+    draftKey: flow.draftKey,
+    provider: flow.selectedProviderStatus,
+  });
   const navigation = useNavigation<NativeStackNavigationProp<Record<string, object | undefined>>>();
   const optionDescriptors = resolveProviderOptionDescriptors({
     capabilities: flow.selectedModelOption?.capabilities,
@@ -1497,6 +1507,7 @@ export function NewTaskThreadSettingsRouteScreen() {
       onUpdateOptionSelections={flow.setSelectedModelOptions}
       runtimeMode={flow.runtimeMode}
       onUpdateRuntimeMode={flow.setRuntimeMode}
+      bareOption={<NewTaskBareRow state={bare.state} onToggle={bare.toggle} />}
       onClose={() => navigation.goBack()}
     />
   );

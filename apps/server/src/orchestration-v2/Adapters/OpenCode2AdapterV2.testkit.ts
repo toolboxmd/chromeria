@@ -6,6 +6,7 @@ import {
   ProviderSessionId,
   ThreadId,
   type ProviderReplayTranscript,
+  type ThreadBare,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -78,6 +79,11 @@ const operationOf = (
   if (method === "GET" && path === "/api/event") return { type: "event.subscribe" };
   if (method === "GET" && path === "/api/model") return { type: "model.list", input: query };
   if (method === "GET" && path === "/api/agent") return { type: "agent.list", input: query };
+  const agent = /^\/api\/agent\/([^/]+)$/.exec(path);
+  if (method === "GET" && agent !== null)
+    return { type: "agent.get", input: { agentID: agent[1], ...query } };
+  if (method === "GET" && path === "/api/plugin") return { type: "plugin.list", input: query };
+  if (method === "GET" && path === "/api/mcp") return { type: "mcp.list", input: query };
   if (method === "POST" && path === "/api/session") return { type: "session.create", input: body };
   if (method === "GET" && path === "/api/session/active") return { type: "session.active" };
   if (method === "GET" && path === "/api/command") return { type: "command.list", input: query };
@@ -98,6 +104,7 @@ const operationOf = (
     };
   }
   if (method === "GET" && path === "/api/skill") return { type: "skill.list", input: query };
+  if (method === "GET" && path === "/api/config") return { type: "config.get", input: query };
   if (session !== null) {
     const [, sessionID, rest = ""] = session;
     // The client sends absent optional fields as `null`; recordings omit them.
@@ -282,14 +289,45 @@ const makeReplayAdapter = (
     readonly onPrompt?: (input: unknown) => void;
     readonly replayGate?: ProviderReplayGate;
     readonly borrowers?: { current: number };
+    readonly bare?: ThreadBare;
   },
 ) =>
   Effect.gen(function* () {
     const server = yield* replayServer(transcript, options);
-    return yield* OpenCode2Adapter.make(ProviderInstanceId.make("opencode")).pipe(
-      Effect.provideService(OpenCode2Server.OpenCode2Server, server),
-    );
+    return yield* OpenCode2Adapter.make(
+      ProviderInstanceId.make("opencode"),
+      options?.bare === undefined ? undefined : { root: "/opencode-data" },
+    ).pipe(Effect.provideService(OpenCode2Server.OpenCode2Server, server));
   });
+
+/** An adapter whose sessions each run on their own replayed server, as spawned OpenCode processes do. */
+/** An adapter on the given server, with the replay host's services. */
+export const openCode2AdapterOn = (server: OpenCode2Server.OpenCode2Server["Service"]) =>
+  OpenCode2Adapter.make(ProviderInstanceId.make("opencode")).pipe(
+    Effect.provideService(OpenCode2Server.OpenCode2Server, server),
+    Effect.provide(
+      Layer.mergeAll(layerReplayHost, IdAllocator.layer, NodeServices.layer, NodeCrypto.layer),
+    ),
+  );
+
+/** An adapter whose sessions each run on their own replayed server, as spawned OpenCode processes do. */
+export const openCode2SessionServersReplayAdapter = (
+  sessions: ReadonlyMap<string, ReadonlyArray<ProviderReplayEntry>>,
+) =>
+  openCode2AdapterOn(
+    OpenCode2Server.OpenCode2Server.of({
+      withConnection: () => Effect.die(new Error("Sessions borrow only their own server.")),
+      forget: Effect.void,
+      forSession: (threadId) =>
+        replayServer({
+          provider: OPENCODE_PROVIDER,
+          protocol: OPENCODE2_HTTP_PROTOCOL,
+          version: "2.0.18",
+          scenario: threadId,
+          entries: sessions.get(threadId) ?? [],
+        }).pipe(Effect.orDie),
+    }),
+  );
 
 const layerReplayHost = TestProviderHost.layer().pipe(
   Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
@@ -341,6 +379,7 @@ export const openCode2ReplayRuntime = (
     readonly attachmentsDir?: string;
     readonly resolveExtractedTextPath?: (path: string) => Effect.Effect<string | undefined>;
     readonly fileSystem?: FileSystem.FileSystem;
+    readonly bare?: ThreadBare;
   },
 ) =>
   Effect.gen(function* () {
@@ -366,6 +405,7 @@ export const openCode2ReplayRuntime = (
         runtimeMode: "full-access",
         interactionMode: "default",
         cwd: "/work/opencode2",
+        ...(options?.bare === undefined ? {} : { bare: options.bare }),
       },
     });
   }).pipe(
