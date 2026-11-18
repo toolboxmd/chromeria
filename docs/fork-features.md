@@ -3376,6 +3376,7 @@ sources and reasons.
     "apps/server/src/secrets/SecretRequests.ts",
     "docs/map.md",
     "docs/user/browser.md",
+    "evals/mcp-tool-use/run.test.ts",
     "packages/contracts/src/previewAutomation.ts",
     "packages/contracts/src/previewCredential.ts",
     "packages/shared/src/t3McpToolPresentation.ts"
