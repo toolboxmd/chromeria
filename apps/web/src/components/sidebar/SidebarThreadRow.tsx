@@ -126,6 +126,7 @@ import { MiddleTruncate } from "../ui/middle-truncate";
 import { ActivityShimmerOverlay } from "../chat/TimelineRowParts";
 import { observeVisibleAnimation } from "~/lib/visibleAnimation";
 import { useThreadHasUnsentDraft } from "../../composerDraftStore";
+import { SharedThreadLabel } from "../people/SharedThreadLabel";
 
 // The fields thread rows show. Provider status pushes refresh `checkedAt`,
 // status and auth on every provider; leaving those out keeps each
@@ -1289,6 +1290,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               )}
               {draftIndicator}
               {title}
+              <SharedThreadLabel coOwners={thread.source.coOwners} />
               {multiline ? titleLineIcons : null}
               {pinIndicator}
               {multiline ? null : terminalStatusIcon}
@@ -1485,6 +1487,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               ) : (
                 <span className="flex-1" />
               )}
+              <SharedThreadLabel coOwners={thread.source.coOwners} />
               {sortable?.isDragging ? (
                 dragDestination
               ) : (
