@@ -535,12 +535,22 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
       for (const document of [
         `{ "providers": {}, "{env:SECTION}": { "local": { "name": "Local" } } }`,
         `{ "{env:SECTION}": { "local": { "name": "Local" } } }`,
+        `{ "{file:/section}": { "local": { "name": "Local" } } }`,
       ]) {
         yield* fs.writeFileString(`${real}/opencode/opencode.jsonc`, document);
         expect((yield* Effect.flip(prepare({ SECTION: "provider" }))).message).toBe(
           refused("has an {env:} value that changes the provider structure."),
         );
       }
+      // A later `null` overrides an earlier provider object in OpenCode, so it is copied too.
+      yield* fs.writeFileString(
+        `${real}/opencode/opencode.jsonc`,
+        `{ "provider": { "old": { "name": "Old" } }, "provider": null }`,
+      );
+      yield* prepare();
+      expect(yield* read("opencode.jsonc")).toBe(
+        `{\n"provider": { "old": { "name": "Old" } },\n"provider": null\n}\n`,
+      );
       // Placeholder numbers must not prefix each other: eleven file tokens in strings are
       // accepted, and the same with the second one in a comment is refused.
       const headers = (second: string) =>
@@ -559,7 +569,7 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
         `${real}/opencode/opencode.jsonc`,
         `{ "provider": { "omlx": { "options": {} /* {file:./key} */ } } }`,
       );
-      expect((yield* Effect.flip(prepare())).message).toBe(relative);
+      expect((yield* Effect.flip(prepare())).message).toBe(outsideString);
 
       // On case-insensitive filesystems a mirrored `OpenCode` would alias the shadow directory,
       // so bare must neither mirror it nor write through an existing link to it.

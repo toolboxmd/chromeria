@@ -195,8 +195,9 @@ const shadowOpenCodeProviders = Effect.fn("BareProviderRuntime.openCodeProviders
       return yield* refuse("is not valid JSONC before {env:} substitution.");
     const sections = (tree?.type === "object" ? (tree.children ?? []) : []).flatMap((property) => {
       const [key, value] = property.children ?? [];
+      // Every occurrence, whatever its value, so JSONC's last-key rule still picks the same one.
       return key !== undefined &&
-        value?.type === "object" &&
+        value !== undefined &&
         OPEN_CODE_PROVIDER_KEYS.has(String(key.value))
         ? [`"${key.value}": ${text!.slice(value.offset, value.offset + value.length)}`]
         : [];
@@ -205,13 +206,16 @@ const shadowOpenCodeProviders = Effect.fn("BareProviderRuntime.openCodeProviders
     const nonce = (yield* Effect.all([Random.next, Random.next]))
       .map((value) => value.toString(36).slice(2))
       .join("");
-    const whole = text?.includes("{env:") ? parseExpanded(text, original, nonce) : tree;
+    const whole =
+      text !== undefined && /\{(env|file):/.test(text)
+        ? parseExpanded(text, original, nonce)
+        : tree;
     const unparsable = refuse(
       "has an {env:} value that is not plain JSON string content, or a {file:} token outside a JSON string, which bare cannot copy.",
     );
     const restructured = refuse("has an {env:} value that changes the provider structure.");
     if (whole === undefined && text !== undefined) return yield* unparsable;
-    // An env value must not add, remove or rename top-level keys, even in fields bare drops.
+    // Substitution must not add, remove or rename top-level keys, even in fields bare drops.
     if (topLevelKeys(whole).join("\n") !== topLevelKeys(tree).join("\n"))
       return yield* restructured;
     if (sections.length === 0) {
