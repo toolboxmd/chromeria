@@ -865,6 +865,15 @@ const make = Effect.gen(function* () {
               refName: startRef === "-" ? "@{-1}" : startRef,
             })
             .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId))));
+        // Fork: a full commit id is an exact base, such as a linked parent's commit; another
+        // commit would silently replace the work it names.
+        if (!recordedBaseResolves && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(requestedBaseRef))
+          return yield* new ThreadLaunchBaseRefError({
+            projectId: project.id,
+            projectTitle: project.title,
+            workspaceRoot: project.workspaceRoot,
+            baseRef: requestedBaseRef,
+          }).pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
         if (!recordedBaseResolves) {
           const remoteName =
             remote?.remoteName ??

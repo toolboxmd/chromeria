@@ -74,6 +74,8 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
+import * as DelegatedWorktreeBase from "./DelegatedWorktreeBase.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 
 /** How long one follow of a remote task waits on its thread there before checking again. */
@@ -201,11 +203,42 @@ const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const random = yield* SecureRandom.SecureRandom;
+  const git = yield* GitVcsDriver.GitVcsDriver;
   const hereId = yield* ServerEnvironment.ServerEnvironment.pipe(
     Effect.flatMap((environment) => environment.getEnvironmentId),
   );
   // Followers live as long as this service, so shutting down stops them.
   const followers = yield* Scope.Scope;
+
+  /** A refusal for a pinned commit no remote there has, naming the remote this branch is on. */
+  const withParentRemote = (parentThreadId: ThreadId, error: OrchestratorMcpFailure) =>
+    !error.message.includes(DelegatedWorktreeBase.MISSING_BASE_REFUSAL)
+      ? Effect.succeed(error)
+      : Effect.gen(function* () {
+          const parent = yield* threads.getThreadRecords(parentThreadId, ["runs"]);
+          const checkout =
+            parent.thread.worktreePath ??
+            Option.getOrUndefined(yield* projects.getById(parent.thread.projectId))?.workspaceRoot;
+          const remote =
+            checkout === undefined
+              ? undefined
+              : yield* DelegatedWorktreeBase.upstreamRemote(checkout).pipe(
+                  Effect.provideService(GitVcsDriver.GitVcsDriver, git),
+                );
+          return remote === undefined
+            ? error
+            : new OrchestratorMcpFailure({
+                code: error.code,
+                message: `${error.message} Add the remote this branch is pushed to there: ${remote}.`,
+                ...(error.requestId === undefined ? {} : { requestId: error.requestId }),
+                ...(error.lastConfirmedStage === undefined
+                  ? {}
+                  : { lastConfirmedStage: error.lastConfirmedStage }),
+                ...(error.launchReceipt === undefined
+                  ? {}
+                  : { launchReceipt: error.launchReceipt }),
+              });
+        }).pipe(Effect.orElseSucceed(() => error));
 
   /** The peer's project with this thread's repository, or the one the caller named. */
   const resolveRemoteProject = Effect.fn("RemoteDelegation.resolveRemoteProject")(function* (
@@ -396,6 +429,27 @@ const make = Effect.gen(function* () {
         });
       if (existing === undefined || existing.remoteChild?.launch?.lifecycleVersion === 1)
         yield* requireLifecycle(target.environmentId, link.launchIdentity);
+      // A worktree there starts at this checkout's exact commit, as a task here does. A
+      // retry replays the recorded launch, so only the first request resolves it.
+      const isolated = input.isolation === "worktree" && existing === undefined;
+      const parentCheckout = isolated
+        ? (parent.thread.worktreePath ??
+          (yield* projects.getById(parent.thread.projectId).pipe(
+            Effect.map(Option.getOrUndefined),
+            Effect.orElseSucceed(() => undefined),
+          ))?.workspaceRoot)
+        : undefined;
+      if (isolated && parentCheckout === undefined)
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "Unable to resolve the parent checkout commit.",
+        });
+      const worktreeBase =
+        parentCheckout === undefined
+          ? undefined
+          : yield* DelegatedWorktreeBase.resolveBase(parentCheckout).pipe(
+              Effect.provideService(GitVcsDriver.GitVcsDriver, git),
+            );
       // Keep the original inherited modes across recovery, even if the parent
       // is later raised. Forwarding still checks the current parent's limits.
       const linkRuntimeMode =
@@ -495,9 +549,17 @@ const make = Effect.gen(function* () {
         ...(modelSelection === undefined ? {} : { modelSelection }),
         prismRole,
         ...(input.lane === undefined ? {} : { lane: input.lane }),
-        ...(input.workspaceStrategy === undefined
-          ? {}
-          : { workspaceStrategy: input.workspaceStrategy }),
+        ...(worktreeBase !== undefined
+          ? {
+              workspaceStrategy: {
+                type: "worktree" as const,
+                baseRef: worktreeBase,
+                startFromOrigin: false,
+              },
+            }
+          : input.workspaceStrategy === undefined
+            ? {}
+            : { workspaceStrategy: input.workspaceStrategy }),
         runtimeMode: runtimeMode ?? inheritedRuntimeMode,
         interactionMode: interactionMode ?? parentModes.interactionMode,
         delegatedFrom: {
@@ -789,6 +851,10 @@ const make = Effect.gen(function* () {
           },
         );
       }).pipe(
+        // The destination cannot name the remote it lacks; this checkout's branch can.
+        Effect.catchTags({
+          OrchestratorMcpFailure: (error) => Effect.flip(withParentRemote(parentThreadId, error)),
+        }),
         Effect.catchTags({
           OrchestratorMcpFailure: (error) => {
             if ((firstAttempt && dispatch.stage !== "sent") || error.launchReceipt === "absent") {

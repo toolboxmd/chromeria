@@ -92,6 +92,7 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as SourceControlRepositoryService from "../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import { git, layerRealGit, pushedCheckouts } from "./DelegatedWorktreeBase.testkit.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
@@ -277,8 +278,13 @@ const serveBox = (
   catalog?: Layer.Layer<
     ProviderRegistry.ProviderRegistry | ProviderAdapterRegistry.ProviderAdapterRegistryV2
   >,
+  /** The box project's real Git checkout. */
+  checkout?: string,
 ) => {
-  return servePeer(box, boxToolkitLayer(thread, undefined, lifecycleSupported, catalog)).pipe(
+  return servePeer(
+    box,
+    boxToolkitLayer(thread, undefined, lifecycleSupported, catalog, checkout),
+  ).pipe(
     Effect.tap((peer) =>
       peer.settings.updateSettings({
         prismRoles: {
@@ -310,6 +316,7 @@ const boxToolkitLayer = (
   catalog?: Layer.Layer<
     ProviderRegistry.ProviderRegistry | ProviderAdapterRegistry.ProviderAdapterRegistryV2
   >,
+  checkout?: string,
 ) => {
   const runId = boxRunId;
   const interrupts = new Set<string>();
@@ -524,6 +531,7 @@ const boxToolkitLayer = (
   });
   const layerBoxLaunches = Layer.mock(ThreadLaunch.ThreadLaunchService)({
     replayOrLaunch: (_input, launch) => launch,
+    checkWorktreeBase: () => Effect.void,
     launch: (input) =>
       Ref.get(thread.runless).pipe(
         Effect.flatMap((runless) =>
@@ -902,7 +910,9 @@ const boxToolkitLayer = (
     Layer.provide(
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/p" }),
     ),
-    Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+    Layer.provide(
+      checkout === undefined ? Layer.mock(GitVcsDriver.GitVcsDriver)({}) : layerRealGit,
+    ),
     Layer.provide(Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({})),
     Layer.provide(
       ServerConfig.layerTest(process.cwd(), { prefix: "t3-remote-delegation-box-" }).pipe(
@@ -914,7 +924,11 @@ const boxToolkitLayer = (
     Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
     Layer.provide(
       Layer.mock(ProjectService.ProjectService)({
-        getById: () => Effect.succeedSome({ defaultModelSelection: modelSelection } as never),
+        getById: () =>
+          Effect.succeedSome({
+            defaultModelSelection: modelSelection,
+            ...(checkout === undefined ? {} : { title: "app", workspaceRoot: checkout }),
+          } as never),
         // More than a page, so finding the project with this repository pages.
         listPage: ({ cursor, limit }) =>
           Effect.succeed({
@@ -1096,8 +1110,11 @@ const makeLaptop = (
     ThreadManagement.ThreadManagementService
   > = Layer.empty as never,
   requestReceipts = false,
+  /** The parent project's real Git checkout. */
+  checkout?: string,
 ) =>
   Effect.gen(function* () {
+    const workspaceRoot = checkout ?? "/home/me/app";
     const linking = kept ?? (yield* layerLinkingEnvironment(laptop).pipe(Layer.build));
     const layerDatabase = Layer.succeedContext(database);
     const layerOrchestrator = Layer.mergeAll(
@@ -1138,12 +1155,13 @@ const makeLaptop = (
               ),
             ),
           ),
+          Layer.provide(checkout === undefined ? Layer.empty : layerRealGit),
           Layer.provide(
             Layer.mock(ProjectService.ProjectService)({
               // A cold enrichment cache: the project itself reports no identity yet.
               getById: () =>
                 Effect.succeedSome({
-                  workspaceRoot: "/home/me/app",
+                  workspaceRoot,
                   repositoryIdentity: null,
                 } as never),
             }),
@@ -1152,7 +1170,7 @@ const makeLaptop = (
             Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
               resolve: (cwd) =>
                 Effect.succeed(
-                  cwd === "/home/me/app"
+                  cwd === workspaceRoot
                     ? ({ canonicalKey: "github.com/acme/app" } as RepositoryIdentity)
                     : null,
                 ),
@@ -3228,6 +3246,72 @@ it.effect.each([false, true])(
         expect(yield* after.projections.getOpenRemoteDelegatedTasks).toEqual([]);
       }),
     ).pipe(Effect.provide(layerLoopbackServerTest)),
+);
+
+it.live.each(["pushed", "unpushed", "missing there"] as const)(
+  "a worktree task there starts at the parent's exact pushed commit (%s)",
+  (state) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const checkouts = yield* pushedCheckouts;
+        if (state === "unpushed") git(checkouts.parent, "commit", "-q", "--allow-empty", "-m", "x");
+        const head = git(checkouts.parent, "rev-parse", "HEAD");
+        // A checkout there without commits whose only remote never had the parent's commit.
+        const lonely = `${checkouts.box}-lonely`;
+        if (state === "missing there") {
+          git(checkouts.box, "init", "-q", "--bare", `${lonely}-origin.git`);
+          git(checkouts.box, "init", "-q", lonely);
+          git(lonely, "remote", "add", "origin", `${lonely}-origin.git`);
+        }
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(
+          thread,
+          true,
+          undefined,
+          state === "missing there" ? lonely : checkouts.box,
+        );
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(
+          database,
+          offers,
+          undefined,
+          undefined,
+          false,
+          checkouts.parent,
+        );
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+        const response = yield* a.call("delegate_task", {
+          task: "Fix it in your own checkout there.",
+          target: { environmentId: box.environmentId },
+          isolation: "worktree",
+          mode: "async",
+          clientRequestId: "isolated-on-box",
+        });
+        if (state !== "pushed") {
+          expect(response.isError).toBe(true);
+          expect(JSON.stringify(response.content)).toContain(
+            state === "unpushed"
+              ? "git push -u"
+              : // The parent names the remote its branch is on, which that checkout lacks.
+                "Add the remote this branch is pushed to there: origin.",
+          );
+          expect(yield* Ref.get(thread.launchIds)).toEqual([]);
+          return;
+        }
+        expect(response.isError, JSON.stringify(response.content)).toBe(false);
+        expect((yield* Ref.get(thread.launchedWith))?.workspaceStrategy).toEqual({
+          type: "worktree",
+          baseRef: head,
+          startFromOrigin: false,
+        });
+        // The box's clone predates that commit; it fetched it before accepting the launch.
+        expect(git(checkouts.box, "rev-parse", "--verify", `${head}^{commit}`)).toBe(head);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect.each(["lowered parent", "revoked link"] as const)(
