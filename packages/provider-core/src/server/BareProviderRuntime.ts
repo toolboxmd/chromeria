@@ -300,8 +300,11 @@ export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.ope
     });
     const relative = NodePath.relative(input.root, target);
     if (relative.startsWith("..") || NodePath.isAbsolute(relative)) return yield* outside;
-    // One level at a time below the root, so nothing is created through a link there.
-    yield* fs.makeDirectory(input.root, { recursive: true, mode: 0o700 });
+    // The root itself and then one level at a time below it, so nothing is created or cleaned
+    // through a link. Links above the root are the user's own layout and stay allowed.
+    if ((yield* type(input.root)) === undefined)
+      yield* fs.makeDirectory(input.root, { recursive: true, mode: 0o700 });
+    if ((yield* type(input.root)) !== "Directory") return yield* outside;
     let level = input.root;
     for (const part of relative.split(NodePath.sep)) {
       level = NodePath.join(level, part);

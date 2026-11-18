@@ -662,6 +662,29 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
         );
       expect(yield* fs.readFileString(`${victim}/xdg-config/opencode/opencode.json`)).toBe(user);
       expect(yield* fs.readDirectory(outside)).toEqual([]);
+      // The bare root itself may be a link too: nothing is created there on a first run, and a
+      // config file already there survives a retry.
+      const linkedTarget = `${root}/linked-target`;
+      yield* fs.makeDirectory(linkedTarget);
+      yield* fs.makeDirectory(`${root}/linked-state`);
+      yield* fs.symlink(linkedTarget, `${root}/linked-state/bare`);
+      const prepareLinkedRoot = Effect.flip(
+        prepareOpenCodeBareEnvironment({
+          root: `${root}/linked-state/bare`,
+          home: `${root}/linked-state/bare/instance/opencode`,
+          environment: { HOME: root, XDG_CONFIG_HOME: `${root}/empty` },
+        }),
+      );
+      const linkedRootRefusal = `Bare OpenCode home ${root}/linked-state/bare/instance/opencode/xdg-config must be a real directory inside ${root}/linked-state/bare, not reached through a link.`;
+      expect((yield* prepareLinkedRoot).message).toBe(linkedRootRefusal);
+      expect(yield* fs.readDirectory(linkedTarget)).toEqual([]);
+      const linkedConfig = `${linkedTarget}/instance/opencode/xdg-config/opencode/opencode.json`;
+      yield* fs.makeDirectory(`${linkedTarget}/instance/opencode/xdg-config/opencode`, {
+        recursive: true,
+      });
+      yield* fs.writeFileString(linkedConfig, user);
+      expect((yield* prepareLinkedRoot).message).toBe(linkedRootRefusal);
+      expect(yield* fs.readFileString(linkedConfig)).toBe(user);
       // A linked config file inside the bare home is unlinked, so OpenCode never loads it, and
       // its target survives.
       yield* fs.writeFileString(`${real}/opencode/opencode.jsonc`, `{ "theme": "dark" }`);
