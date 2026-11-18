@@ -1,4 +1,9 @@
 {
+  "6e9ecf09743f277b": "Démarrer ce fil sans instructions, plugins, serveurs MCP ni skills.",
+  "b1f983b1624fa15f": "Ce serveur ne peut pas démarrer de fils Bare.",
+  "880f20369ca9f313": "Bare n’est pas disponible pour ce fournisseur : {reason}",
+  "d94ca1971519158e": "Bare",
+  "e18687dd153fda62": "Démarré en mode Bare, sans instructions, plugins, serveurs MCP ni skills. L’avis dans la chronologie indique ce qui a été retiré.",
   "0a75e464d833bca8": "Paramètres",
   "6aa1c88c4fa5be28": "Diagnostics",
   "fb29e435b1219373": "Licences open source",

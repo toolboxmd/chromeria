@@ -1,5 +1,6 @@
 import * as CodexErrors from "effect-codex-app-server/errors";
 import { vi } from "vite-plus/test";
+import { unsupportedBare } from "@t3tools/provider-core/server/bareLaunch";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as CodexInstallation from "./CodexInstallation.ts";
 import * as CodexManagedTokenBroker from "./CodexManagedTokenBroker.ts";
@@ -3457,6 +3458,7 @@ it.layer(
             withBundledCompatibility({
               ...refreshedProvider,
               models: [...initialProvider.models],
+              bare: unsupportedBare(refreshedProvider.driver),
             }),
           );
         }).pipe(Effect.provide(runtimeServices));
@@ -3833,15 +3835,13 @@ it.layer(
         yield* Effect.gen(function* () {
           const registry = yield* ProviderRegistry.ProviderRegistry;
 
-          assert.deepStrictEqual(yield* registry.getProviders, [
-            withBundledCompatibility(cachedProvider),
-          ]);
-          assert.deepStrictEqual(yield* registry.refresh(codexDriver), [
-            withBundledCompatibility(cachedProvider),
-          ]);
-          assert.deepStrictEqual(yield* registry.refreshInstance(codexInstanceId), [
-            withBundledCompatibility(cachedProvider),
-          ]);
+          const expected = withBundledCompatibility({
+            ...cachedProvider,
+            bare: unsupportedBare(codexDriver),
+          });
+          assert.deepStrictEqual(yield* registry.getProviders, [expected]);
+          assert.deepStrictEqual(yield* registry.refresh(codexDriver), [expected]);
+          assert.deepStrictEqual(yield* registry.refreshInstance(codexInstanceId), [expected]);
         }).pipe(Effect.provide(runtimeServices));
       }),
     );

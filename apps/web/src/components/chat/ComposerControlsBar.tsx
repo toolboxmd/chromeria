@@ -30,6 +30,7 @@ import {
 } from "./ComposerModelEffort";
 import type { useComposerProviderModel } from "./useComposerProviderModel";
 import { resolveComposerControlsOwnership } from "./composerControlsOwnership";
+import { ComposerBareControl, useComposerBareToggle } from "./ComposerBareControl";
 
 /**
  * The composer footer controls: the model picker (which also holds effort, speed and
@@ -162,6 +163,12 @@ export function ComposerControlsBar(props: {
     onPromptEdit,
   });
   const effort = describeComposerEffort(traitsInput, props.effortDisplay, controlSize);
+  const bare = useComposerBareToggle({
+    // Multiple-model launches start several threads and do not carry bare.
+    draftId: routeKind === "draft" && !multipleModelSelections ? draftId : null,
+    provider: providerInstanceEntries.find((entry) => entry.instanceId === selectedInstanceId)
+      ?.snapshot,
+  });
   const restingBlockDefs = showModeBlock
     ? [
         {
@@ -228,6 +235,7 @@ export function ComposerControlsBar(props: {
           runtimeMode={compatibleRuntimeMode}
           runtimeModeOptions={compatibleRuntimeModeOptions}
           onRuntimeModeChange={handleRuntimeModeChange}
+          bareControl={<ComposerBareControl state={bare.state} onToggle={bare.toggle} />}
         />
       }
       terminalOpen={terminalOpen}

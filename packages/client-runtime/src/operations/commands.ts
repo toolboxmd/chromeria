@@ -185,6 +185,8 @@ interface StartThreadBootstrap {
 
 export interface StartThreadTurnInput extends ThreadCommandInput {
   readonly purposeIntent?: import("@t3tools/contracts").PurposeIntent | undefined;
+  /** Fork: starts a new thread bare; ignored without `bootstrap` (toolboxmd/chromeria#319). */
+  readonly bare?: import("@t3tools/contracts").BareLaunchRequest | undefined;
   readonly prismRole?: "promachos";
   readonly manualContinuationOfRunId?: RunId;
   readonly message: {
@@ -799,6 +801,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
             };
     return yield* request(ORCHESTRATION_V2_WS_METHODS.launchThread, {
       ...(input.purposeIntent === undefined ? {} : { purposeIntent: input.purposeIntent }),
+      ...(input.bare === undefined ? {} : { bare: input.bare }),
       ...(input.prismRole === undefined ? {} : { prismRole: input.prismRole }),
       commandId,
       creationSource: input.creationSource ?? "web",

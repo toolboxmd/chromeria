@@ -1,3 +1,4 @@
+import { bareDraftIntent } from "@t3tools/client-runtime/bare-launch";
 import { DraftEnvironmentControl } from "./DraftEnvironmentControl";
 import { NativeScrollEdgeEffectsContext } from "../../native/NativeScrollViewMarker";
 import { DraftThreadHeader } from "./DraftThreadHeader";
@@ -691,6 +692,7 @@ export function NewTaskDraftScreen(props: {
     // The composer has moved to the submitted thread; a pick still converting
     // would otherwise resurrect this draft.
     abortComposerDraftOperations(draftKey);
+    bareDraftIntent.set(draftKey, false);
     const draftSnapshot = getComposerDraftSnapshot(draftKey);
     // The queued message owns the attachments now, so the sweep is deferred
     // until the write confirms it.

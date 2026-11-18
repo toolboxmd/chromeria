@@ -2503,7 +2503,8 @@ sources and reasons.
   "purpose": "Strip removable harness context, admit only named additions within caller permissions, and retain durable intent and honest native receipts across launch and recovery paths.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/289",
-    "https://github.com/toolboxmd/chromeria/issues/320"
+    "https://github.com/toolboxmd/chromeria/issues/320",
+    "https://github.com/toolboxmd/chromeria/issues/319"
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/compare/main...feat/289-bare-launch",
@@ -2527,7 +2528,14 @@ sources and reasons.
     "packages/provider-opencode/src/server/v2/bare.test.ts",
     "packages/provider-opencode/src/server/v2/bare.ts",
     "packages/provider-grok/src/server/GrokBareRuntime.test.ts",
-    "packages/provider-grok/src/server/GrokBareRuntime.ts"
+    "packages/provider-grok/src/server/GrokBareRuntime.ts",
+    "apps/mobile/src/features/threads/NewTaskBareRow.tsx",
+    "apps/server/src/provider/providerBareSupport.test.ts",
+    "apps/server/src/provider/providerBareSupport.ts",
+    "apps/web/src/components/chat/ComposerBareControl.tsx",
+    "apps/web/src/components/chat/ThreadBareBadge.tsx",
+    "packages/client-runtime/src/bareLaunch.test.ts",
+    "packages/client-runtime/src/bareLaunch.ts"
   ],
   "upstreamFiles": [
     "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
@@ -2558,7 +2566,25 @@ sources and reasons.
     "packages/provider-opencode/src/server/driver.ts",
     "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.testkit.ts",
     "apps/server/src/scheduledTasks/ScheduledTaskService.interval.test.ts",
-    "apps/server/src/mcp/TaskCancelUsageLimit.integration.test.ts"
+    "apps/server/src/mcp/TaskCancelUsageLimit.integration.test.ts",
+    "apps/mobile/src/features/threads/ThreadSettingsSheet.tsx",
+    "apps/mobile/src/features/threads/new-task-flow-provider.tsx",
+    "apps/mobile/src/i18n/translations/de.json",
+    "apps/mobile/src/i18n/translations/en.json",
+    "apps/mobile/src/i18n/translations/es.json",
+    "apps/mobile/src/i18n/translations/fr.json",
+    "apps/mobile/src/i18n/translations/ja.json",
+    "apps/mobile/src/i18n/translations/ko.json",
+    "apps/mobile/src/i18n/translations/pt-BR.json",
+    "apps/mobile/src/i18n/translations/ru.json",
+    "apps/mobile/src/i18n/translations/zh.json",
+    "apps/mobile/src/lib/projectThreadStartTurn.test.ts",
+    "apps/mobile/src/lib/projectThreadStartTurn.ts",
+    "apps/server/src/provider/ProviderRegistry.test.ts",
+    "apps/server/src/provider/ProviderRegistry.ts",
+    "apps/web/src/components/chat/ComposerControlsBar.tsx",
+    "apps/web/src/components/chat/ComposerModelEffort.tsx",
+    "packages/contracts/src/server.ts"
   ],
   "sharedFiles": [
     "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts",
@@ -2637,7 +2663,17 @@ sources and reasons.
     "packages/provider-acp/src/server/adapter.ts",
     "packages/provider-core/src/server/ProviderAdapter.ts",
     "packages/provider-grok/src/server/adapter.ts",
-    "pnpm-lock.yaml"
+    "pnpm-lock.yaml",
+    "apps/mobile/src/features/threads/NewTaskDraftScreen.tsx",
+    "apps/mobile/src/features/threads/ThreadRouteScreen.tsx",
+    "apps/mobile/src/state/thread-outbox-model.ts",
+    "apps/mobile/src/state/threadOutboxDelivery.ts",
+    "apps/web/src/components/ChatView.tsx",
+    "apps/web/src/components/chat/ChatHeader.tsx",
+    "apps/web/src/components/chat/useComposerSend.ts",
+    "packages/client-runtime/package.json",
+    "packages/client-runtime/src/operations/commands.test.ts",
+    "packages/client-runtime/src/operations/commands.ts"
   ],
   "keywords": [
     "BareLaunch",
