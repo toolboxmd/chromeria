@@ -43,6 +43,7 @@ import * as ServerConfig from "../config.ts";
 import * as Environment from "../environment/ServerEnvironment.ts";
 import * as Settings from "../serverSettings.ts";
 import * as Manager from "./Manager.ts";
+import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
 import * as Desktop from "./DesktopBrowserChannel.ts";
@@ -123,6 +124,7 @@ const fixture = () =>
         attached: Stream.never,
       }),
       Layer.mock(Vault.CredentialVault)({ uris: () => Effect.succeed([]) }),
+      Layer.mock(SecretRequests.SecretRequests)({}),
     ).pipe(Layer.provideMerge(Database.layerMemory));
     const authority = PeerAuthority.layer.pipe(
       Layer.provideMerge(PeerLinks.layer),

@@ -643,6 +643,43 @@ it.effect("a pasted secret keeps its exact bytes from the tool input to the file
   }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
 );
 
+it.effect("a captured value gets a fresh owner-only file that no pasted key names", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "secret-files-test-" });
+    const { files, abandoned } = yield* withService(
+      ({ service }) =>
+        Effect.gen(function* () {
+          const first = yield* service.saveCaptured({ threadId, value: "sk_test_capture" });
+          const again = yield* service.saveCaptured({ threadId, value: "sk_test_capture" });
+          const pasted = yield* service.savePasted({
+            threadId,
+            requestNamespace: "captured",
+            requestKey: path.basename(first),
+            value: "pasted",
+          });
+          assert.equal(path.dirname(first), path.join(directory, "files"));
+          assert.match(path.basename(first), /^[0-9a-f]{32}$/);
+          assert.equal(new Set([first, again, pasted]).size, 3);
+          assert.equal(yield* fs.readFileString(first), "sk_test_capture");
+          assert.equal(yield* fs.readFileString(again), "sk_test_capture");
+          if ((yield* HostProcess.Platform) !== "win32")
+            assert.equal((yield* fs.stat(first)).mode & 0o777, 0o600);
+          // A write cut short leaves its partial file for the sweep.
+          const abandoned = `${first}.partial`;
+          yield* fs.writeFileString(abandoned, "sk_test_cut");
+          return { files: [first, again, pasted], abandoned };
+        }),
+      { directory },
+    );
+    const { mtime } = yield* fs.stat(abandoned);
+    yield* TestClock.setTime(Option.getOrThrow(mtime).getTime() + SECRET_FILE_TTL_MS + 1);
+    yield* withService(() => Effect.void, { directory });
+    for (const file of [...files, abandoned]) assert.isFalse(yield* fs.exists(file), file);
+  }).pipe(Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
+);
+
 it.effect("a pasted secret is refused without a secrets directory", () =>
   withService(({ service }) =>
     Effect.gen(function* () {

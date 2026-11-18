@@ -44,6 +44,7 @@ import * as CredentialVault from "./CredentialVault.ts";
 import * as DesktopChannel from "./DesktopBrowserChannel.ts";
 import * as Manager from "./Manager.ts";
 import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
+import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
 import { settlementLayer, settleThread } from "./BrowserSettlement.testkit.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
@@ -474,6 +475,7 @@ const dependencies = Layer.mergeAll(
       ),
   }),
   Manager.layer,
+  Layer.mock(SecretRequests.SecretRequests)({}),
   Layer.succeed(ServerEnvironment.ServerEnvironment, {
     getEnvironmentId: Effect.succeed(scope.environmentId),
     getDescriptor: Effect.die("unused descriptor"),

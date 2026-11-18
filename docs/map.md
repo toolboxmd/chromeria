@@ -54,6 +54,9 @@ flowchart TD
     VCF["Vault sign-in for agents"]
     %% VCF: #557 #772
     T3M --> VCF --> PBI
+    PSS["Page values saved to private files"]
+    %% PSS: #799
+    T3M --> PSS --> PBI
 
     PZ["Prism routing"]
     %% PZ: #92 #625 #616 #579 #573 #568 #564 PR #556 #554 PR #408 PR #430 PR #479 PR #489 PR #512 PR #471 PR #476 PR #539 #515 #636 PR #637

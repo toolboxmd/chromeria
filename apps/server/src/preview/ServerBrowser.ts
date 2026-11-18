@@ -36,6 +36,8 @@ import {
   type PreviewAutomationDragInput,
   type PreviewAutomationEvaluateInput,
   type PreviewAutomationFillCredentialInput,
+  type PreviewAutomationSaveSecretInput,
+  PreviewTabId,
   type PreviewAutomationHoverInput,
   type PreviewAutomationLoadError,
   type PreviewAutomationNavigateInput,
@@ -105,7 +107,9 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import { fillCredential, serverBrowserOnly } from "./CredentialFill.ts";
-import { CredentialVault } from "./CredentialVault.ts";
+import { CredentialVault, protocolLoggingEnabled } from "./CredentialVault.ts";
+import { saveSecret, saveSecretServerBrowserOnly } from "./SecretCapture.ts";
+import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as DesktopBrowserChannel from "./DesktopBrowserChannel.ts";
 import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
 import * as PreviewManager from "./Manager.ts";
@@ -762,6 +766,8 @@ const make = Effect.gen(function* () {
   const desktopChannel = yield* DesktopBrowserChannel.DesktopBrowserChannel;
   const agentTurns = yield* (yield* PreviewAgentActivity.PreviewAgentActivity).changes;
   const vault = yield* CredentialVault;
+  const secrets = yield* SecretRequests.SecretRequests;
+  const protocolLogging = yield* protocolLoggingEnabled;
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
   const runSyncExit = Effect.runSyncExitWith(yield* Effect.context<never>());
@@ -3603,6 +3609,19 @@ const make = Effect.gen(function* () {
         );
       case "fillCredential":
         return fillInTab(tab, input as PreviewAutomationFillCredentialInput, authorize);
+      case "saveSecret": {
+        if (tab.desktop) throw saveSecretServerBrowserOnly();
+        return recordAction(tab, "saveSecret", () =>
+          saveSecret({
+            tabId: PreviewTabId.make(tab.tabId),
+            request: input as PreviewAutomationSaveSecretInput,
+            protocolLogging,
+            locate: (locator) => ServerBrowserPage.targetLocator(tab.page, { locator })!,
+            beforeSave: authorize,
+            save: (value) => runPromise(secrets.saveCaptured({ threadId: tab.threadId, value })),
+          }),
+        );
+      }
       case "watchStart": {
         const input = decodeWatchStart({
           ...(request.input as object),

@@ -25,6 +25,7 @@ import {
   type ThreadId,
   type PreviewAutomationOperation,
   type PreviewAutomationFillCredentialResult,
+  type PreviewAutomationSaveSecretResult,
   type PreviewAutomationOpenInput,
   type PreviewAutomationRecordingStatus,
   type PreviewAutomationResizeResult,
@@ -121,9 +122,15 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
       : response;
   // A fill's result carries only vault data, so no live page URL rides along with it.
   if (
-    ["status", "open", "navigate", "snapshot", "recordingStop", "fillCredential"].includes(
-      operation,
-    )
+    [
+      "status",
+      "open",
+      "navigate",
+      "snapshot",
+      "recordingStop",
+      "fillCredential",
+      "saveSecret",
+    ].includes(operation)
   )
     return { result };
   const statusTabId =
@@ -517,6 +524,33 @@ const handlers = {
             audit(null, error._tag === "PreviewCredentialError" ? error.reason : error._tag),
           ),
         );
+      }),
+    "external-unknown",
+  ),
+  // The path names a file on this machine, so a call forwarded from a linked environment is refused.
+  preview_save_secret: McpToolAccess.actsOnResource(
+    "preview",
+    ({ tabId, ...input }) =>
+      Effect.gen(function* () {
+        const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
+        if (scope.client?.linked === true)
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message:
+              "Calls from a linked environment cannot save page values on this machine, which they cannot read.",
+          });
+        const { result } = yield* invoke<PreviewAutomationSaveSecretResult>(
+          "saveSecret",
+          input,
+          input.timeoutMs,
+          tabId,
+        );
+        return {
+          saved: true as const,
+          path: result.path,
+          length: result.length,
+          tabId: result.tabId,
+        };
       }),
     "external-unknown",
   ),

@@ -1,6 +1,11 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
+import * as ConfigProvider from "effect/ConfigProvider";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as SecretRequests from "../secrets/SecretRequests.ts";
 // @effect-diagnostics nodeBuiltinImport:off - Finds Playwright's installed headless shell for a real Chromium run.
 import * as NodeEvents from "node:events";
 import * as NodePath from "node:path";
@@ -10,6 +15,8 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
   PreviewCredentialError,
+  PreviewSaveSecretError,
+  type PreviewSaveSecretReason,
   PreviewTabId,
   ProviderInstanceId,
   ThreadId,
@@ -85,6 +92,30 @@ const LOGIN_PAGE = `<title>Login</title>
 <button id="plain-popup" onclick="window.open('/child')">Open blank popup</button>
 <script>for (const id of ['pw','user','otp']) document.getElementById(id).addEventListener('input', e => { document.title = e.target.value; });</script>`;
 
+// Fake keys a page shows; the shown one carries invisible characters the saved one drops.
+const KEY = "sk_test_51Save+Key/=42";
+const FIELD_KEY = "rk_test_Field-Value_77";
+const PAGE_VALUES = [
+  KEY,
+  FIELD_KEY,
+  "sk_test_hidden_9",
+  "sk_test_frame_3",
+  "sk_test_dup_1",
+  "sk_test_dup_2",
+];
+const KEY_PAGE = `<title>Keys</title>
+<code id=key>&#8203;${KEY}&shy;</code>
+<input id=field value="${FIELD_KEY}">
+<span id=hidden hidden>sk_test_hidden_9</span>
+<div id=lines>first<br>second</div>
+<input id=blank>
+<iframe srcdoc="<span id=inner>sk_test_frame_3</span>"></iframe>
+<p>sk_test_dup_1</p><p>sk_test_dup_2</p>`;
+const expectNoPageValue = (value: unknown) => {
+  const text = JSON.stringify(value);
+  for (const secret of PAGE_VALUES) expect(text).not.toContain(secret);
+};
+
 const vault = {
   password: PASSWORD,
   uris: ["example.test"] as ReadonlyArray<string>,
@@ -155,8 +186,12 @@ vi.spyOn(ServerBrowserContexts.prototype, "contextFor").mockImplementation(async
         );
       if (url.pathname === "/child" || url.pathname === "/done")
         return page("<title>Child</title><h1>Child</h1>");
+      if (url.pathname === "/keys") return page(KEY_PAGE);
       return page(LOGIN_PAGE);
     });
+    await context.route("http://**/*", (route) =>
+      route.fulfill({ contentType: "text/html", body: KEY_PAGE }),
+    );
   }
   return context;
 });
@@ -253,11 +288,19 @@ const dependencies = Layer.mergeAll(
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-credential-login-" })),
   Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
 );
-const layer = ServerBrowser.layer.pipe(
-  Layer.provide(PreviewAgentActivity.layer),
-  Layer.provideMerge(ServerSettings.layerTest()),
-  Layer.provideMerge(dependencies),
+const secretsLayer = SecretRequests.layer.pipe(
+  Layer.provide(Layer.mock(SecretResolver.SecretResolver)({})),
+  Layer.provide(Layer.mock(ThreadManagementService.ThreadManagementService)({})),
+  Layer.provideMerge(ServerSecretStore.layer),
 );
+const browserLayer = (browser: typeof ServerBrowser.layer) =>
+  browser.pipe(
+    Layer.provide(PreviewAgentActivity.layer),
+    Layer.provideMerge(ServerSettings.layerTest()),
+    Layer.provideMerge(secretsLayer),
+    Layer.provideMerge(dependencies),
+  );
+const layer = browserLayer(ServerBrowser.layer);
 
 type BrokerService = Broker.PreviewAutomationBroker["Service"];
 const invoke =
@@ -605,4 +648,175 @@ describe.skipIf(!executable)("credential login in a real browser", () => {
       Effect.provide(mcpLayer),
     );
   });
+});
+
+const saveClient = McpSchema.McpServerClient.of({
+  clientId: 1,
+  clientCapabilities: {},
+  clientInfo: { name: "save-secret-test", version: "1" },
+  protocolVersion: "2025-06-18",
+  initializePayload: {
+    protocolVersion: "2025-06-18",
+    capabilities: {},
+    clientInfo: { name: "save-secret-test", version: "1" },
+  },
+  getClient: Effect.die("unused"),
+});
+const withMcp = <A, E, R>(effect: Effect.Effect<A, E, R>, browser = layer) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* ServerBrowser.ServerBrowser;
+      yield* Effect.yieldNow;
+      return yield* effect;
+    }),
+  ).pipe(
+    Effect.ensuring(
+      Effect.sync(() => {
+        desktop.enabled = false;
+        desktop.page = undefined;
+        desktop.disconnected = undefined;
+      }),
+    ),
+    Effect.provide(
+      McpHttpServer.layerPreviewToolkit.pipe(
+        Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
+        Layer.provideMerge(browser),
+      ),
+    ),
+  );
+const saveSecret = (args: object, invocation: McpInvocationContext.McpInvocationScope = scope) =>
+  McpServer.McpServer.pipe(
+    Effect.flatMap((server) => server.callTool({ name: "preview_save_secret", arguments: args })),
+    Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+    Effect.provideService(McpSchema.McpServerClient, saveClient),
+  );
+const savedFiles = Effect.gen(function* () {
+  const config = yield* ServerConfig.ServerConfig;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const dir = NodePath.join(config.secretsDir, "files");
+  return (yield* fileSystem.readDirectory(dir).pipe(Effect.orElseSucceed(() => []))).map((name) =>
+    NodePath.join(dir, name),
+  );
+});
+/** The MCP result carries only the error's message, fixed per reason. */
+const expectRefused = (
+  result: { readonly isError?: boolean | undefined },
+  reason: PreviewSaveSecretReason | "linked",
+) => {
+  expect(result.isError).toBe(true);
+  expectNoPageValue(result);
+  expect(JSON.stringify(result)).toContain(
+    JSON.stringify(
+      reason === "linked"
+        ? "Calls from a linked environment cannot save page values"
+        : new PreviewSaveSecretError({ reason }).message,
+    ).slice(1, -1),
+  );
+};
+
+describe.skipIf(!executable)("saving a page value in a real browser", () => {
+  it.live("writes the shown value to an owner-only file and returns only its path", () =>
+    withMcp(
+      Effect.gen(function* () {
+        const broker = yield* Broker.PreviewAutomationBroker;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const config = yield* ServerConfig.ServerConfig;
+        const tabId = yield* openTab(broker, "https://keys.example.test/keys");
+        const saved = [];
+        for (const [locator, value] of [
+          ["#key", KEY],
+          ["#field", FIELD_KEY],
+        ] as const) {
+          const result = yield* saveSecret({ tabId, locator });
+          expect(result.isError, JSON.stringify(result)).toBe(false);
+          expectNoPageValue(result);
+          const { path, ...rest } = result.structuredContent as { path: string };
+          expect(rest).toEqual({ saved: true, length: value.length, tabId });
+          expect(NodePath.dirname(path)).toBe(NodePath.join(config.secretsDir, "files"));
+          expect(yield* fileSystem.readFileString(path)).toBe(value);
+          expect((yield* fileSystem.stat(path)).mode & 0o777).toBe(0o600);
+          saved.push(path);
+        }
+        for (const [args, reason] of [
+          [{ locator: "#hidden" }, "elementHidden"],
+          [{ locator: "#lines" }, "multiLine"],
+          [{ locator: "#blank" }, "emptyValue"],
+          // Playwright lists every match with its text below its error's first line.
+          [{ locator: "text=/sk_test_dup/" }, "elementNotFound"],
+          [{ locator: "#missing", timeoutMs: 1 }, "elementNotFound"],
+          [{ locator: "iframe >> internal:control=enter-frame >> #inner" }, "insecureOrigin"],
+        ] as const)
+          expectRefused(yield* saveSecret({ tabId, ...args }), reason);
+        expect((yield* savedFiles).toSorted()).toEqual(saved.toSorted());
+        const snapshot = yield* invoke(broker)<{ actionTimeline: Array<{ status: string }> }>(
+          tabId,
+          "snapshot",
+          { pixelsRequired: false },
+        );
+        expect(snapshot.actionTimeline.filter((event) => event.status === "failed")).toHaveLength(
+          6,
+        );
+        expectNoPageValue(snapshot.actionTimeline);
+      }),
+    ),
+  );
+
+  it.live("refuses an http page and a call from a linked environment, writing nothing", () =>
+    withMcp(
+      Effect.gen(function* () {
+        const broker = yield* Broker.PreviewAutomationBroker;
+        const plain = yield* openTab(broker, "http://keys.example.test/keys");
+        expectRefused(yield* saveSecret({ tabId: plain, locator: "#key" }), "insecureOrigin");
+        const secure = yield* openTab(broker, "https://keys.example.test/keys");
+        const linked = yield* saveSecret(
+          { tabId: secure, locator: "#key" },
+          {
+            ...scope,
+            client: { sessionId: "peer", label: "Peer", access: "full-access", linked: true },
+          },
+        );
+        expectRefused(linked, "linked");
+        expect(yield* savedFiles).toEqual([]);
+      }),
+    ),
+  );
+
+  it.live("refuses a desktop-hosted tab", () => {
+    desktop.enabled = true;
+    return withMcp(
+      Effect.gen(function* () {
+        const opened = yield* (yield* Manager.PreviewManager).open({
+          threadId: scope.thread.threadId,
+          url: "https://login.example.test/",
+          runtime: "server",
+        });
+        expectRefused(
+          yield* saveSecret({ tabId: opened.tabId, locator: "#user" }),
+          "serverBrowserOnly",
+        );
+        expect(yield* savedFiles).toEqual([]);
+      }),
+    );
+  });
+
+  it.live("reads nothing while Playwright protocol logging is on", () =>
+    withMcp(
+      Effect.gen(function* () {
+        const broker = yield* Broker.PreviewAutomationBroker;
+        const tabId = yield* openTab(broker, "https://keys.example.test/keys");
+        expectRefused(yield* saveSecret({ tabId, locator: "#key" }), "protocolLogging");
+        expect(yield* savedFiles).toEqual([]);
+      }),
+      browserLayer(
+        ServerBrowser.layer.pipe(
+          Layer.provide(
+            ConfigProvider.layer(
+              ConfigProvider.fromEnv({ env: { ...process.env, DEBUG: "pw:api" } }),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
 });

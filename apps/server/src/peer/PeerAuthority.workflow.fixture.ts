@@ -1545,6 +1545,7 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
                 read: () => Effect.die("No real vault access in the peer authority fixture"),
               }),
             ),
+            Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
             Layer.provideMerge(NativePreviewManager.layer),
             Layer.provide(NativeDesktopChannel.layer),
             Layer.provide(Layer.succeed(BrowserBroker.PreviewAutomationBroker, browser)),

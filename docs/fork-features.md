@@ -3360,6 +3360,40 @@ sources and reasons.
 }
 ```
 
+## preview-save-secret
+
+```json
+{
+  "id": "preview-save-secret",
+  "purpose": "preview_save_secret saves the value one element shows in a server browser tab to a new owner-only file through SecretRequests.saveCaptured, swept after 24 hours, and returns only the path and length. It refuses desktop-hosted tabs, frames that are not https, Playwright protocol logging and calls forwarded from a linked environment, each with a fixed message. Drop when upstream moves page values into agents' files without exposing them.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/799"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...feat/preview-save-secret"],
+  "newFiles": ["apps/server/src/preview/SecretCapture.ts"],
+  "upstreamFiles": ["evals/mcp-tool-use/cases/secrets.ndjson"],
+  "sharedFiles": [
+    "apps/server/src/mcp/PreviewAutomationBroker.ts",
+    "apps/server/src/mcp/toolkits/preview/handlers.ts",
+    "apps/server/src/mcp/toolkits/preview/tools.ts",
+    "apps/server/src/peer/PeerAuthority.workflow.fixture.ts",
+    "apps/server/src/preview/CredentialLogin.integration.test.ts",
+    "apps/server/src/preview/CredentialVault.ts",
+    "apps/server/src/preview/PageSubscriptions.integration.test.ts",
+    "apps/server/src/preview/ServerBrowser.test.ts",
+    "apps/server/src/preview/ServerBrowser.ts",
+    "apps/server/src/provider/agentContextBudget.json",
+    "apps/server/src/secrets/SecretRequests.test.ts",
+    "apps/server/src/secrets/SecretRequests.ts",
+    "docs/map.md",
+    "docs/user/browser.md",
+    "evals/mcp-tool-use/run.test.ts",
+    "packages/contracts/src/previewAutomation.ts",
+    "packages/contracts/src/previewCredential.ts",
+    "packages/shared/src/t3McpToolPresentation.ts"
+  ],
+  "keywords": ["preview_save_secret", "saveSecret", "saveCaptured", "PreviewSaveSecretError"]
+}
+```
+
 ## remote-secret-requests
 
 ```json

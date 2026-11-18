@@ -25,6 +25,8 @@ import {
   PreviewAutomationEvaluateInput,
   PreviewAutomationFillCredentialInput,
   PreviewAutomationFillCredentialResult,
+  PreviewAutomationSaveSecretInput,
+  PreviewAutomationSaveSecretResult,
   PreviewAutomationNavigateInput,
   PreviewAutomationOpenInput,
   PreviewAutomationRecordingArtifact,
@@ -183,7 +185,7 @@ const PreviewSetAppearanceTool = safeBrowserTool(
 export const PreviewSnapshotTool = safeBrowserTool(
   Tool.make("preview_snapshot", {
     description:
-      "Use it only when the current request asks for browser work, including checking an edit in the browser. Never use it unasked to verify your own edit, or to repeat a snapshot from an earlier turn. Works on a tab the user is driving. Returns page state, elements, diagnostics, and screenshot size. Target one element with `locator='aria-ref=<ref>'` from `accessibilityTree`, even in frames. Refs die on navigation, a new snapshot, or handoff. Text caps near 20 KB; on your own or an unclaimed tab, `preview_evaluate` reads more. To show a screenshot: `save=true`, then embed ![alt](screenshotPath)." +
+      "Use it only when the current request asks for browser work, including checking an edit in the browser. Never use it unasked to verify your own edit, or to repeat a snapshot from an earlier turn. Works on a tab the user is driving. Returns page state, elements, diagnostics, and screenshot size. Target one element with `locator='aria-ref=<ref>'` from `accessibilityTree`, even in frames. Refs die on navigation, a new snapshot, or handoff. Text caps near 20 KB; on your own or an unclaimed tab, `preview_evaluate` reads more. To show a screenshot: `save=true`, then embed ![alt](screenshotPath). Save a secret the page shows, such as an API key, with `preview_save_secret` instead of reading it." +
       COMPUTER_USE_HINT,
     parameters: McpRouting.parameters(
       Schema.Struct({
@@ -326,6 +328,18 @@ const PreviewFillCredentialTool = browserTool(
   }).annotate(Tool.Title, "Fill credential in preview page"),
 );
 
+const PreviewSaveSecretTool = browserTool(
+  Tool.make("preview_save_secret", {
+    description:
+      "Save the value one element shows, such as an API key on a dashboard, to a private file without it entering your context. Reads the tab selected by tabId, or this agent session's current tab when omitted: an input's or textarea's value, otherwise the element's visible text, one line up to 4 KB. Locate the element with a ref from a snapshot taken before the value was revealed, or a unique selector that does not contain the value (text=/sk_test_/ is fine). The element's page and frame must be https. Returns only the file's path and the value's length. The file is owner-only on this environment's machine: read it inside commands (KEY=\"$(cat <path>)\"), never print it, delete it when done; it expires after 24 hours. This tool keeps the value out of its own result only: after revealing a value, do not snapshot, evaluate or record that page. Server browser tabs only, and not for calls from linked environments." +
+      COMPUTER_USE_HINT,
+    parameters: McpRouting.parameters(PreviewAutomationSaveSecretInput),
+    success: PreviewAutomationSaveSecretResult,
+    failure: PreviewToolFailure,
+    dependencies,
+  }).annotate(Tool.Title, "Save value from preview page"),
+);
+
 const PreviewActTool = browserTool(
   Tool.make("preview_act", {
     description:
@@ -352,7 +366,7 @@ export const PreviewEvaluateResult = Schema.Struct({
 const PreviewEvaluateTool = browserTool(
   Tool.make("preview_evaluate", {
     description:
-      "Run JavaScript in the page. It can change page state. Returns `{value}`, up to 64 KB. Needs your tab, or an unclaimed one. To read a tab the user drives, use `preview_snapshot`. Page tools write only on user request. Show results with `html_render`, never page tools." +
+      "Run JavaScript in the page. It can change page state. Returns `{value}`, up to 64 KB. Needs your tab, or an unclaimed one. To read a tab the user drives, use `preview_snapshot`. Page tools write only on user request. Show results with `html_render`, never page tools. Save a secret the page shows, such as an API key, with `preview_save_secret` instead of reading it." +
       COMPUTER_USE_HINT,
     parameters: McpRouting.parameters(PreviewAutomationEvaluateInput),
     success: PreviewEvaluateResult,
@@ -423,6 +437,7 @@ export const PreviewToolkit = Toolkit.make(
   PreviewDragTool,
   PreviewUploadTool,
   PreviewFillCredentialTool,
+  PreviewSaveSecretTool,
   PreviewEvaluateTool,
   PreviewWaitForTool,
   PreviewRecordingStartTool,
@@ -446,6 +461,7 @@ export const PreviewStandardToolkit = Toolkit.make(
   PreviewDragTool,
   PreviewUploadTool,
   PreviewFillCredentialTool,
+  PreviewSaveSecretTool,
   PreviewEvaluateTool,
   PreviewWaitForTool,
   PreviewRecordingStartTool,

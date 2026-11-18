@@ -265,6 +265,11 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     "browser",
     "browser",
   ),
+  preview_save_secret: tool(
+    ["Save", "Saving", "Saved", "a value from the preview browser to a private file"],
+    "browser",
+    "browser",
+  ),
   preview_upload: tool(
     ["Upload", "Uploading", "Uploaded", "files to the preview browser"],
     "browser",

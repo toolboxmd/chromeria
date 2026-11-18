@@ -58,6 +58,18 @@ logins that cannot move between devices. The agent's rbw login tool,
 desktop tabs. It fills only on https pages in the same registrable domain as one
 of the vault item's URIs, so `www.example.com` covers `portal.example.com`.
 
+## Values an agent sees on a page
+
+When an agent shows a value such as an API key in an agent-browser tab, it can
+save it with `preview_save_secret` instead of asking you to copy it. The value
+goes to a private file on the environment's machine and never into the
+conversation; the agent gets the file's path and reads it inside commands. The
+file is deleted after 24 hours.
+
+The tool reads only https pages in agent-browser tabs, and refuses calls from an
+agent on another linked environment. It keeps the value out of its own answer
+only: a snapshot or recording of the page afterwards still shows it.
+
 ## Work together
 
 On an agent tab, choose **Take control** before interacting with the page.

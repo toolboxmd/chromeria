@@ -749,3 +749,4 @@ apps/server/src/mcp/toolkits/environment/handlers.test.ts
 packages/client-runtime/src/load-balancing.ts
 apps/web/src/components/settings/LoadBalancingSettings.tsx
 apps/web/src/appInit.tsx
+evals/mcp-tool-use/cases/secrets.ndjson

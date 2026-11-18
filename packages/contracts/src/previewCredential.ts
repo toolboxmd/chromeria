@@ -121,3 +121,78 @@ export class PreviewCredentialError extends Schema.TaggedError<PreviewCredential
     return REASON_MESSAGES[this.reason];
   }
 }
+
+const SAVE_LOCATOR_GUIDANCE =
+  "The element that shows the value: locator='aria-ref=<ref>' from a snapshot taken before the value was revealed, or a unique Playwright selector that does not contain the value, such as text=/sk_test_/.";
+
+export const PreviewAutomationSaveSecretInput = Schema.Struct({
+  tabId: Schema.optional(
+    PreviewTabId.annotate({
+      description:
+        "Exact browser tab to read. Omit to use this agent session's current tab (see preview_status tabs).",
+    }),
+  ),
+  locator: Schema.String.check(Schema.isTrimmed())
+    .check(Schema.isNonEmpty({ description: SAVE_LOCATOR_GUIDANCE }))
+    .annotateKey({ description: SAVE_LOCATOR_GUIDANCE }),
+  timeoutMs: Schema.optional(
+    Schema.Int.check(Schema.isGreaterThan(0))
+      .check(Schema.isLessThanOrEqualTo(60_000))
+      .annotate({ description: TIMEOUT_GUIDANCE }),
+  ).annotate({ description: TIMEOUT_GUIDANCE }),
+}).annotate({
+  description:
+    "Saves the value one element shows to a private file. The value never enters the request or the result.",
+});
+export type PreviewAutomationSaveSecretInput = typeof PreviewAutomationSaveSecretInput.Type;
+
+export const PreviewAutomationSaveSecretResult = Schema.Struct({
+  saved: Schema.Literal(true),
+  path: Schema.String.annotate({
+    description: "Absolute path of the owner-only file holding the value, on this machine.",
+  }),
+  length: Schema.Int.annotate({ description: "Number of characters saved." }),
+  tabId: PreviewTabId,
+});
+export type PreviewAutomationSaveSecretResult = typeof PreviewAutomationSaveSecretResult.Type;
+
+export const PreviewSaveSecretReason = Schema.Literals([
+  "serverBrowserOnly",
+  "insecureOrigin",
+  "protocolLogging",
+  "elementNotFound",
+  "elementHidden",
+  "readFailed",
+  "emptyValue",
+  "multiLine",
+  "tooLong",
+  "storeFailed",
+]);
+export type PreviewSaveSecretReason = typeof PreviewSaveSecretReason.Type;
+
+const SAVE_REASON_MESSAGES: Record<PreviewSaveSecretReason, string> = {
+  serverBrowserOnly:
+    "Values are saved only from server browser tabs, not from tabs the desktop app hosts. Open the page with preview_open.",
+  insecureOrigin: "The element's page or frame is not https, so nothing was read or saved.",
+  protocolLogging:
+    "Browser protocol logging (DEBUG=pw:*) is on in this server, so nothing was read or saved.",
+  elementNotFound:
+    "No single element matches this locator, so nothing was saved. Use a ref from a snapshot taken before the value was revealed, or a unique selector that does not contain the value.",
+  elementHidden: "The element is not visible, so nothing was saved.",
+  readFailed: "The element's value could not be read, so nothing was saved.",
+  emptyValue: "The element shows no value, so nothing was saved.",
+  multiLine:
+    "The element shows more than one line, so nothing was saved. Locate the element that holds only the value.",
+  tooLong:
+    "The element shows more than 4 KB, so nothing was saved. Locate the element that holds only the value.",
+  storeFailed: "The value could not be written to a private file, so nothing was saved.",
+};
+
+export class PreviewSaveSecretError extends Schema.TaggedError<PreviewSaveSecretError>()(
+  "PreviewSaveSecretError",
+  { reason: PreviewSaveSecretReason },
+) {
+  override get message(): string {
+    return SAVE_REASON_MESSAGES[this.reason];
+  }
+}
