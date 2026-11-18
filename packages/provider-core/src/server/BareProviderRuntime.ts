@@ -128,11 +128,14 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const OPEN_CODE_GLOBAL_CONFIG_FILES = ["config.json", "opencode.json", "opencode.jsonc"];
 const OPEN_CODE_PROVIDER_KEYS = ["provider", "providers"];
 
-/** OpenCode resolves a relative `{file:...}` beside its config document, which bare moves. */
+/**
+ * OpenCode resolves a relative `{file:...}` beside its config document, which bare moves.
+ * A path starting with `{env:...}` is left alone: OpenCode expands it before deciding relativity.
+ */
 const anchorFileReferences = (value: unknown, directory: string, path: Path.Path): unknown =>
   typeof value === "string"
     ? value.replace(/\{file:([^}]+)\}/g, (reference, file: string) =>
-        file.startsWith("~") || path.isAbsolute(file)
+        file.startsWith("~") || file.startsWith("{") || path.isAbsolute(file)
           ? reference
           : `{file:${path.resolve(directory, file)}}`,
       )
@@ -168,17 +171,24 @@ const shadowOpenCodeProviders = Effect.fn("BareProviderRuntime.openCodeProviders
     // OpenCode rejects a malformed document; a recovered partial one must not reach bare.
     if (errors.length > 0)
       return yield* new BareLaunchError({ reason: `OpenCode config ${file} is not valid JSON.` });
-    const providers = isRecord(document)
+    const original = isRecord(document)
       ? Object.fromEntries(
           OPEN_CODE_PROVIDER_KEYS.flatMap((key) =>
-            isRecord(document[key])
-              ? [[key, anchorFileReferences(document[key], source, path)]]
-              : [],
+            isRecord(document[key]) ? [[key, document[key]]] : [],
           ),
         )
       : {};
-    if (Object.keys(providers).length > 0)
-      yield* writeBareConfig(shadow, yield* encodeConfig(providers).pipe(Effect.orDie));
+    const providers = anchorFileReferences(original, source, path);
+    const [anchored, raw] = yield* Effect.all([
+      encodeConfig(providers),
+      encodeConfig(original),
+    ]).pipe(Effect.orDie);
+    // OpenCode substitutes `{file:...}` in raw text, so a JSON-escaped directory names another file.
+    if (anchored !== raw && /["\\\u0000-\u001f]/.test(source))
+      return yield* new BareLaunchError({
+        reason: `OpenCode config ${file} uses a relative {file:} path that bare cannot move.`,
+      });
+    if (Object.keys(original).length > 0) yield* writeBareConfig(shadow, anchored);
     else if (yield* fs.exists(shadow)) yield* fs.remove(shadow);
   }
 });

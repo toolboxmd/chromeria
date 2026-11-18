@@ -431,7 +431,13 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
           "provider": { "omlx": { "options": {
             "baseURL": "http://new/v1",
             "apiKey": "{env:OMLX_KEY}",
-            "headers": { "a": "{file:./key}", "b": "{file:~/key}", "c": "{file:/abs/key}" },
+            "headers": {
+              "a": "{file:./key}",
+              "b": "{file:~/key}",
+              "c": "{file:/abs/key}",
+              "d": "{file:{env:KEY_PATH}}",
+              "e": "{file:./{env:SUB}/key}",
+            },
           } } },
           "instructions": ["AGENTS.md"],
           "plugin": ["some-plugin"],
@@ -480,6 +486,8 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
                 a: `{file:${root}/real/opencode/key}`,
                 b: "{file:~/key}",
                 c: "{file:/abs/key}",
+                d: "{file:{env:KEY_PATH}}",
+                e: `{file:${root}/real/opencode/{env:SUB}/key}`,
               },
             },
           },
@@ -496,6 +504,23 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
         `OpenCode config ${root}/real/opencode/opencode.json is not valid JSON.`,
       );
       expect(yield* fs.exists(`${shadow}/config.json`)).toBe(false);
+
+      // A JSON-escaped directory would change the raw path OpenCode reads, so bare refuses it.
+      const quoted = `${root}/q"uote`;
+      yield* fs.makeDirectory(`${quoted}/opencode`, { recursive: true });
+      yield* fs.writeFileString(
+        `${quoted}/opencode/opencode.json`,
+        JSON.stringify({ provider: { omlx: { options: { apiKey: "{file:./key}" } } } }),
+      );
+      const escaped = yield* Effect.flip(
+        prepareOpenCodeBareEnvironment({
+          home: `${root}/bare-quoted`,
+          environment: { HOME: root, XDG_CONFIG_HOME: quoted },
+        }),
+      );
+      expect(escaped.message).toBe(
+        `OpenCode config ${quoted}/opencode/opencode.json uses a relative {file:} path that bare cannot move.`,
+      );
     }),
   );
 });
