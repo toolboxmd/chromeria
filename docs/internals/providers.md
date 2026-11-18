@@ -23,9 +23,10 @@ directory must not share one T3 MCP entry.
   [server process](../../packages/provider-opencode/src/server/v2/OpenCode2Server.ts), so every thread
   registers T3 as `t3-code` and threads with identical context hit the model's prefix cache. The process
   stops with its session and when the instance is disabled or replaced; catalog and workspace reads use
-  the instance's own server. A configured `serverUrl` and bare share one server, so there each thread
-  registers its own `t3-code-<thread>` entry and session permission rules deny every other thread's
-  entry. See the [2.x adapter](../../packages/provider-opencode/src/server/v2/adapter.ts).
+  the instance's own server. A thread still stored on the instance's old shared session id is
+  refused with an error asking for a new thread. A configured `serverUrl` and bare share one server,
+  so there each thread registers its own `t3-code-<thread>` entry and session permission rules deny
+  every other thread's entry. See the [2.x adapter](../../packages/provider-opencode/src/server/v2/adapter.ts).
 
 External OpenCode servers remain externally owned and can require an external restart to pick up
 configuration changes. OpenCode stores "always" approval grants for the whole project. Automatic

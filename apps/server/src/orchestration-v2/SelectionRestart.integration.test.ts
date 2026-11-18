@@ -39,10 +39,6 @@ import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
-import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
-import { rebindOpenCode2SharedSessions } from "../fork/opencode2SessionRebind.ts";
-import * as ServerSettings from "../serverSettings.ts";
-import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 
 const driver = ProviderDriverKind.make("codex");
 const providerInstanceId = ProviderInstanceId.make("codex-restart-test");
@@ -94,18 +90,14 @@ interface RestartAdapterState {
 
 function makeRestartAdapter(
   state: Ref.Ref<RestartAdapterState>,
-  sessionCapabilities:
-    | OrchestrationV2ProviderCapabilities
-    | (() => OrchestrationV2ProviderCapabilities) = pooledCapabilities,
+  sessionCapabilities: OrchestrationV2ProviderCapabilities = pooledCapabilities,
   providerInstanceId = initialSelection.instanceId,
   replacementGate?: { entered: Deferred.Deferred<void>; release: Deferred.Deferred<void> },
 ): ProviderAdapter.ProviderAdapterV2["Service"] {
-  const capabilitiesNow = () =>
-    typeof sessionCapabilities === "function" ? sessionCapabilities() : sessionCapabilities;
   return {
     instanceId: providerInstanceId,
     driver,
-    getCapabilities: () => Effect.sync(capabilitiesNow),
+    getCapabilities: () => Effect.succeed(sessionCapabilities),
     planSelectionTransition: ({ current, target }) =>
       Effect.succeed(
         current.model === target.model
@@ -150,7 +142,7 @@ function makeRestartAdapter(
           status: "ready",
           cwd: sessionInput.runtimePolicy.cwd ?? "/fallback",
           model: sessionInput.modelSelection.model,
-          capabilities: capabilitiesNow(),
+          capabilities: sessionCapabilities,
           createdAt: now,
           updatedAt: now,
           lastError: null,
@@ -461,134 +453,6 @@ it.live.each(["unchanged", "messageId", "mode", "legacy"] as const)(
         }).pipe(Effect.provide(layer));
       }),
     ),
-);
-
-// Local OpenCode 2 threads shared their instance's session before each got its own process.
-it.live("Force stop on one rebound legacy thread leaves the other thread's session running", () =>
-  Effect.gen(function* () {
-    const cwd = yield* checkpointWorkspace("opencode2-session-rebind");
-    const projectId = ProjectId.make("project:opencode2-session-rebind");
-    const [first, second] = [
-      ThreadId.make("thread:opencode2-session-rebind:a"),
-      ThreadId.make("thread:opencode2-session-rebind:b"),
-    ];
-    const state = yield* Ref.make<RestartAdapterState>({
-      activeTurn: null,
-      opened: [],
-      started: [],
-      closedSessionCount: 0,
-      failedReplacementOpen: false,
-    });
-    let capabilities = pooledCapabilities;
-    const shared = IdAllocator.derive.providerSession({ providerInstanceId });
-    const database = Persistence.layerMemory;
-    yield* Effect.gen(function* () {
-      const orchestrator = yield* Orchestrator.OrchestratorV2;
-      const threads = yield* ThreadManagement.ThreadManagementService;
-      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-      const eventSink = yield* EventSink.EventSinkV2;
-      const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
-      const turn = (
-        threadId: ThreadId,
-        label: string,
-        selection: ModelSelection,
-        until: ReadonlyArray<string>,
-      ) =>
-        Effect.gen(function* () {
-          const reached = yield* eventSink
-            .stream({ threadId, afterSequence: yield* eventSink.latestSequence({ threadId }) })
-            .pipe(
-              Stream.map((stored) => stored.event),
-              Stream.filter(
-                (event) =>
-                  event.type === "run.updated" &&
-                  [...until, "failed", "interrupted", "cancelled"].includes(event.payload.status),
-              ),
-              Stream.take(1),
-              Stream.runCollect,
-              Effect.forkScoped,
-            );
-          yield* orchestrator.dispatch({
-            type: "message.dispatch",
-            createdBy: "user",
-            creationSource: "web",
-            commandId: CommandId.make(`command:${threadId}:${label}`),
-            threadId,
-            messageId: MessageId.make(`message:${threadId}:${label}`),
-            text: label,
-            attachments: [],
-            modelSelection: selection,
-            dispatchMode: { type: "start_immediately" },
-          });
-          const [event] = yield* Fiber.join(reached);
-          return event?.type === "run.updated" ? event.payload.status : undefined;
-        });
-      const sessionOf = (threadId: ThreadId) =>
-        orchestrator
-          .getThreadProjection(threadId)
-          .pipe(Effect.map((projection) => projection.providerThreads[0]!));
-      for (const threadId of [first, second]) {
-        yield* orchestrator.dispatch({
-          type: "thread.create",
-          createdBy: "user",
-          creationSource: "web",
-          commandId: CommandId.make(`command:${threadId}:create`),
-          threadId,
-          projectId,
-          title: "OpenCode 2 session rebind",
-          modelSelection: seedSelection,
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          branch: null,
-          worktreePath: cwd,
-        });
-        assert.equal(yield* turn(threadId, "before", seedSelection, ["completed"]), "completed");
-      }
-      yield* worker.drain();
-      const before = [yield* sessionOf(first), yield* sessionOf(second)];
-      for (const providerThread of before) assert.equal(providerThread.providerSessionId, shared);
-
-      // An upgrade restarts the server: the shared session ends and the startup backfill runs.
-      yield* sessions.close(shared);
-      capabilities = exclusiveCapabilities;
-      yield* rebindOpenCode2SharedSessions().pipe(
-        Effect.provide(
-          ServerSettings.layerTest({
-            providerInstances: { [providerInstanceId]: { driver: "opencode", config: {} } },
-          }),
-        ),
-      );
-      const rebound = [yield* sessionOf(first), yield* sessionOf(second)];
-      assert.notEqual(rebound[0]!.providerSessionId, shared);
-      assert.notEqual(rebound[1]!.providerSessionId, shared);
-      assert.notEqual(rebound[0]!.providerSessionId, rebound[1]!.providerSessionId);
-      assert.deepEqual(rebound[0]!.nativeThreadRef, before[0]!.nativeThreadRef);
-
-      assert.equal(yield* turn(first, "after", initialSelection, ["running"]), "running");
-      assert.equal(yield* turn(second, "after", initialSelection, ["running"]), "running");
-      yield* threads.forceStopThread({ threadId: second });
-      yield* worker.drain();
-      assert.isTrue(
-        yield* sessions.isLive(rebound[0]!.providerSessionId!),
-        "Force stop on the second thread ended the first thread's session",
-      );
-      assert.isFalse(yield* sessions.isLive(shared));
-      const firstRun = (yield* orchestrator.getThreadProjection(first)).runs.at(-1);
-      assert.equal(firstRun?.status, "running");
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          ProviderReplayHarness.layerWithRegistry(
-            { name: "opencode2-session-rebind" },
-            ProviderAdapterRegistry.layerSingle(makeRestartAdapter(state, () => capabilities)),
-            { databaseLayer: database },
-          ),
-          database,
-        ),
-      ),
-      Effect.scoped,
-    );
-  }),
 );
 
 it.live("retries a failed selection restart session open before completing", () =>

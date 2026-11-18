@@ -684,6 +684,16 @@ class OpenCode2ServerExitedError extends Schema.TaggedError<OpenCode2ServerExite
   "OpenCode2ServerExitedError",
   {},
 ) {}
+
+/** Threads of one instance once shared a session id; each now owns a process, so none may share it. */
+export class OpenCode2LegacySharedSessionError extends Schema.TaggedError<OpenCode2LegacySharedSessionError>()(
+  "OpenCode2LegacySharedSessionError",
+  {},
+) {
+  override get message() {
+    return "This OpenCode thread predates per-thread OpenCode processes and cannot continue. Start a new thread.";
+  }
+}
 const LOST_BACKGROUND =
   "T3 Code lost its connection to OpenCode while this subagent ran, so its result is not shown.";
 const INVENTORY_TIMEOUT = "5 seconds";
@@ -5957,6 +5967,12 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (
     // idle-stopped under a long tool call. Its own process, if any, lives as long as the session.
     openSession: Effect.fn("OpenCode2Adapter.borrowAndOpenSession")(
       function* (input) {
+        if (
+          server.forSession !== undefined &&
+          input.providerSessionId ===
+            IdAllocator.derive.providerSession({ providerInstanceId: instanceId })
+        )
+          return yield* new OpenCode2LegacySharedSessionError();
         const sessionServer =
           server.forSession === undefined ? server : yield* server.forSession(input.threadId);
         const scope = yield* Scope.make();

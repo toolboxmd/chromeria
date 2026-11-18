@@ -60,9 +60,11 @@ import * as OpenCodeRuntime from "@t3tools/provider-opencode/server/OpenCodeRunt
 import * as OpenCode2AdapterV2 from "@t3tools/provider-opencode/server/v2/adapter";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import {
+  OPENCODE2_HTTP_PROTOCOL,
   openCode2AdapterOn,
   openCode2ReplayRuntime,
   openCode2SessionServersReplayAdapter,
+  replayServer,
 } from "./OpenCode2AdapterV2.testkit.ts";
 import {
   makeProviderReplayGate,
@@ -6560,6 +6562,54 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
         if (Exit.isFailure(exit.value)) assert.isFalse(Cause.hasInterruptsOnly(exit.value.cause));
       }
     }),
+  );
+
+  // Threads that shared an instance's session before per-thread processes cannot share one now.
+  it.effect(
+    "refuses the instance's legacy shared session on its own process, not on a shared server",
+    () =>
+      Effect.gen(function* () {
+        const legacy = IdAllocator.derive.providerSession({ providerInstanceId: instanceId });
+        const open = (adapter: ProviderAdapter.ProviderAdapterV2["Service"]) =>
+          adapter.openSession({
+            threadId,
+            providerSessionId: legacy,
+            modelSelection: bigPickle,
+            runtimePolicy: policy(),
+          });
+        const started: Array<string> = [];
+        const ownProcesses = yield* openCode2AdapterOn(
+          OpenCode2Server.OpenCode2Server.of({
+            withConnection: () => Effect.die(new Error("Sessions borrow only their own server.")),
+            forget: Effect.void,
+            forSession: (id) =>
+              Effect.sync(() => started.push(id)).pipe(
+                Effect.andThen(Effect.die(new Error("A refused session started a process."))),
+              ),
+          }),
+        );
+        const refused = yield* open(ownProcesses).pipe(Effect.flip);
+        assert.equal(refused._tag, "ProviderAdapterOpenSessionError");
+        assert.instanceOf(refused.cause, OpenCode2AdapterV2.OpenCode2LegacySharedSessionError);
+        assert.include(String(refused.cause), "Start a new thread.");
+        assert.deepEqual(started, []);
+
+        // A configured serverUrl still serves every thread of the instance from one session.
+        const shared = yield* openCode2AdapterOn(
+          yield* replayServer(
+            {
+              provider: OPENCODE_PROVIDER,
+              protocol: OPENCODE2_HTTP_PROTOCOL,
+              version: "2.0.18",
+              scenario: "legacy-shared-server",
+              entries: opening,
+            },
+            { external: true },
+          ),
+        );
+        const runtime = yield* open(shared);
+        assert.equal(runtime.providerSessionId, legacy);
+      }),
   );
 
   // regression: #16142 OpenCode 2 threads were missing T3 Code's MCP tools
