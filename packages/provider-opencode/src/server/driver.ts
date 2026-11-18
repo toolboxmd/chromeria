@@ -2,14 +2,22 @@ import { resolveProviderProbeTimeoutMs } from "@t3tools/provider-core/server/sna
 import {
   ProviderDriverKind,
   settingsSecretLiteral,
+  type BareSupport,
   type ServerProviderModel,
 } from "@t3tools/contracts";
 import { ProviderAdapterOpenSessionError } from "@t3tools/provider-core/server/ProviderAdapter";
-import { BareLaunchError } from "@t3tools/provider-core/server/bareLaunch";
+import { BareLaunchError, unsupportedBare } from "@t3tools/provider-core/server/bareLaunch";
+import {
+  bareHome,
+  prepareOpenCodeBareEnvironment,
+} from "@t3tools/provider-core/server/BareProviderRuntime";
 import { OpenCodeSettings } from "../settings.ts";
 import * as Digest from "effect/crypto/Digest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
+import * as Exit from "effect/Exit";
+import * as Scope from "effect/Scope";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Equal from "effect/Equal";
@@ -62,6 +70,7 @@ import * as OpenCodeServerOwner from "./OpenCodeServerOwner.ts";
 import * as OpenCode2Client from "./v2/OpenCode2Client.ts";
 import * as OpenCode2Server from "./v2/OpenCode2Server.ts";
 import { replaceOutdatedService } from "./v2/OpenCode2Service.ts";
+import * as OpenCode2Bare from "./v2/bare.ts";
 import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
@@ -169,22 +178,24 @@ function selectOpenCodeRuntimeAdapter(input: {
   readonly resolve: Effect.Effect<ProbedOpenCode, OpenCodeRuntime.OpenCodeRuntimeError>;
   readonly v1: ProviderAdapter.ProviderAdapterV2["Service"];
   readonly v2: ProviderAdapter.ProviderAdapterV2["Service"];
+  /** Runs bare 2.x sessions on a private server; absent when only an external server is configured. */
+  readonly v2Bare: ProviderAdapter.ProviderAdapterV2["Service"] | undefined;
 }): ProviderAdapter.ProviderAdapterV2["Service"] {
+  const v2BareSupport: BareSupport =
+    input.v2Bare === undefined
+      ? { supported: false, reason: "Bare OpenCode cannot isolate an external serverUrl." }
+      : { supported: true };
+  const bareSupportOf = (adapter: ProviderAdapter.ProviderAdapterV2["Service"]) =>
+    adapter === input.v2
+      ? Effect.succeed(v2BareSupport)
+      : (adapter.bareSupport ?? Effect.succeed(unsupportedBare(DRIVER_KIND)));
   const pick = <PE>(probed: Effect.Effect<ProbedOpenCode | undefined, PE>) =>
     byOpenCodeRuntime(probed, { v1: Effect.succeed(input.v1), v2: Effect.succeed(input.v2) });
   const hot = pick(Effect.map(input.probe.lastSuccess, Option.getOrUndefined));
   return {
     instanceId: input.v1.instanceId,
     driver: DRIVER_KIND,
-    bareSupport: Effect.flatMap(
-      hot,
-      (adapter) =>
-        adapter.bareSupport ??
-        Effect.succeed({
-          supported: false as const,
-          reason: "OpenCode 2.x has no demonstrated bare stripping interface.",
-        }),
-    ),
+    bareSupport: Effect.flatMap(hot, bareSupportOf),
     getCapabilities: Effect.fn("OpenCodeDriver.getCapabilities")(function* () {
       const probed = Option.getOrUndefined(yield* input.probe.lastSuccess);
       const adapter = yield* pick(Effect.succeed(probed));
@@ -204,22 +215,17 @@ function selectOpenCodeRuntimeAdapter(input: {
     openSession: (session) =>
       Effect.flatMap(pick(input.resolve), (adapter) =>
         Effect.gen(function* () {
-          if (session.runtimePolicy.bare !== undefined) {
-            const support =
-              adapter.bareSupport === undefined
-                ? {
-                    supported: false as const,
-                    reason: "OpenCode 2.x has no demonstrated bare stripping interface.",
-                  }
-                : yield* adapter.bareSupport;
-            if (!support.supported)
-              return yield* new ProviderAdapterOpenSessionError({
-                driver: DRIVER_KIND,
-                providerSessionId: session.providerSessionId,
-                cause: new BareLaunchError({ reason: support.reason }),
-              });
-          }
-          return yield* adapter.openSession(session);
+          if (session.runtimePolicy.bare === undefined) return yield* adapter.openSession(session);
+          const support = yield* bareSupportOf(adapter);
+          if (!support.supported)
+            return yield* new ProviderAdapterOpenSessionError({
+              driver: DRIVER_KIND,
+              providerSessionId: session.providerSessionId,
+              cause: new BareLaunchError({ reason: support.reason }),
+            });
+          return yield* (adapter === input.v2 ? (input.v2Bare ?? adapter) : adapter).openSession(
+            session,
+          );
         }),
       ),
   };
@@ -406,18 +412,47 @@ export const OpenCodeDriver: ProviderDriver<
           }),
       ),
     );
-    const openCode2Server = yield* OpenCode2Server.make({
-      binaryPath: effectiveConfig.binaryPath,
+    const openCode2Client = yield* OpenCode2Client.make.pipe(
+      Effect.provideService(HttpClient.HttpClient, httpClient),
+    );
+    const makeOpenCode2Server = (server: {
+      readonly serverUrl: string;
+      readonly environment: NodeJS.ProcessEnv;
+    }) =>
+      OpenCode2Server.make({
+        binaryPath: effectiveConfig.binaryPath,
+        serverPassword: effectiveConfig.serverPassword,
+        directory: host.paths.cwd,
+        ...server,
+      }).pipe(
+        Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, openCodeRuntime),
+        Effect.provideService(OpenCode2Client.OpenCode2Client, openCode2Client),
+      );
+    const openCode2Server = yield* makeOpenCode2Server({
       serverUrl: effectiveConfig.serverUrl,
-      serverPassword: effectiveConfig.serverPassword,
-      directory: host.paths.cwd,
       environment: processEnv,
+    });
+    // Bare needs its own config, so it gets a private server, started at its first open.
+    const secureRandom = yield* SecureRandom.SecureRandom;
+    const instanceScope = yield* Effect.scope;
+    const bareOpenCode2Server = yield* prepareOpenCodeBareEnvironment({
+      home: bareHome(host.paths.stateDir, instanceId, "opencode2"),
+      environment: processEnv,
+      config: OpenCode2Bare.OPEN_CODE_2_BARE_CONFIG,
     }).pipe(
-      Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, openCodeRuntime),
-      Effect.provideService(
-        OpenCode2Client.OpenCode2Client,
-        yield* OpenCode2Client.make.pipe(Effect.provideService(HttpClient.HttpClient, httpClient)),
+      Effect.mapError(
+        (cause) =>
+          new OpenCodeRuntime.OpenCodeRuntimeError({
+            operation: "bare.prepare",
+            detail: "Could not prepare the bare OpenCode home.",
+            cause,
+          }),
       ),
+      Effect.flatMap((environment) => makeOpenCode2Server({ serverUrl: "", environment })),
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(SecureRandom.SecureRandom, secureRandom),
+      Effect.provideService(Scope.Scope, instanceScope),
+      Effect.cachedWithTTL((exit) => (Exit.isSuccess(exit) ? Duration.infinity : Duration.zero)),
     );
     const orchestrationAdapter = selectOpenCodeRuntimeAdapter({
       probe: runtimeProbe,
@@ -426,6 +461,22 @@ export const OpenCodeDriver: ProviderDriver<
       v2: yield* OpenCode2AdapterV2.make(instanceId).pipe(
         Effect.provideService(OpenCode2Server.OpenCode2Server, openCode2Server),
       ),
+      v2Bare:
+        effectiveConfig.serverUrl.trim().length > 0
+          ? undefined
+          : yield* OpenCode2AdapterV2.make(instanceId, {
+              root: `${processEnv.XDG_DATA_HOME ?? `${processEnv.HOME ?? "~"}/.local/share`}/opencode`,
+            }).pipe(
+              Effect.provideService(
+                OpenCode2Server.OpenCode2Server,
+                OpenCode2Server.OpenCode2Server.of({
+                  withConnection: Effect.fn("OpenCodeDriver.bareWithConnection")(function* (use) {
+                    return yield* (yield* bareOpenCode2Server).withConnection(use);
+                  }),
+                  forget: Effect.void,
+                }),
+              ),
+            ),
     });
     const loadOpenCode2Models = yield* makeOpenCode2ModelLoader(
       // An external server may not have the host's cwd; without a location it uses its own default.

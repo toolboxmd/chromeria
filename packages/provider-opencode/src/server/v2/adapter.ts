@@ -64,6 +64,8 @@ import * as Stream from "effect/Stream";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as OpenCode2Client from "./OpenCode2Client.ts";
 import * as OpenCode2Server from "./OpenCode2Server.ts";
+import * as OpenCode2Bare from "./bare.ts";
+import { BareLaunchError, namesT3Mcp } from "@t3tools/provider-core/server/bareLaunch";
 import * as OpenCodeRuntime from "../OpenCodeRuntime.ts";
 import { readableProviderErrorMessage } from "../providerErrorMessage.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -816,7 +818,11 @@ const turnTokenUsage = (turn: ActiveTurn, status: OrchestrationV2ProviderTurn["s
       };
 };
 
-export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: ProviderInstanceId) {
+/** `bareServer` marks the adapter of the instance's private bare server and names its native record. */
+export const make = Effect.fn("OpenCode2Adapter.make")(function* (
+  instanceId: ProviderInstanceId,
+  bareServer?: { readonly root: string },
+) {
   const server = yield* OpenCode2Server.OpenCode2Server;
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const host = yield* ProviderHost.ProviderHost;
@@ -854,6 +860,11 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
     },
   ) {
     let connection = initial.connection;
+    const bare = input.runtimePolicy.bare;
+    if ((bare !== undefined) !== (bareServer !== undefined))
+      return yield* new BareLaunchError({
+        reason: "A bare OpenCode 2 session must run on its instance's private bare server.",
+      });
     const supportsNativeGoals = () => compareSemverVersions(connection.version, "2.2.5") >= 0;
     nativeGoalSupport = supportsNativeGoals();
     const goalHoldsTurn = (state: ThreadState) =>
@@ -4382,6 +4393,8 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
     const readModelsOnce = (cwd: string | null | undefined) =>
       contextWindows.has(directoryOf(cwd)) ? Effect.void : readModels(directoryOf(cwd));
     yield* readModels(session.cwd);
+    const bareEvidence =
+      bare === undefined ? [] : yield* OpenCode2Bare.inspect(client, session.cwd);
 
     const agentRules = new Map<string, ReadonlyMap<string, ReadonlyArray<Rule>>>();
     const pathsFor = Effect.fnUntraced(function* (
@@ -4430,12 +4443,14 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         policy.runtimeMode === "full-access" && !plan
           ? []
           : yield* pathsFor(thread.directory, plan ? [thread.agent, "plan"] : [thread.agent]);
-      return sessionRules(
+      const mcpServerName = appThreadId === null ? null : yield* mcpServerNameFor(appThreadId);
+      const rules = sessionRules(
         policy,
         paths,
         policy.runtimeMode === "full-access" ? [] : thread.grants,
-        appThreadId === null ? null : yield* mcpServerNameFor(appThreadId),
+        mcpServerName,
       );
+      return bare === undefined ? rules : OpenCode2Bare.sessionRules(rules, bare, mcpServerName);
     });
 
     const writeRules = Effect.fnUntraced(function* (state: ThreadState, policy: RulesPolicy) {
@@ -4710,7 +4725,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       const name = yield* mcpServerNameFor(turnInput.threadId);
       // An external server may not reach T3's MCP endpoint, as with 1.x.
       const wanted =
-        mcpSession === undefined || connection.external
+        mcpSession === undefined || connection.external || (bare !== undefined && !namesT3Mcp(bare))
           ? undefined
           : { name, directory, credential: mcpSession.authorizationHeader };
       if (
@@ -4762,7 +4777,8 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       ]
         .filter((part) => part !== undefined && part.length > 0)
         .join("\n\n");
-      if (instructions !== state.instructions) {
+      // Bare sends no T3 Code instructions, as on 1.x.
+      if (bare === undefined && instructions !== state.instructions) {
         yield* client.session.instructions.entry.put({
           sessionID: Session.ID.make(sessionId),
           key: INSTRUCTIONS_KEY,
@@ -5079,6 +5095,25 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
     });
 
     const runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
+      ...(bare === undefined || bareServer === undefined
+        ? {}
+        : {
+            getBareReceipt: Effect.fn("OpenCode2Adapter.getBareReceipt")(function* (
+              thread: OrchestrationV2ProviderThread,
+            ) {
+              const nativeId = thread.nativeThreadRef?.nativeId ?? null;
+              return OpenCode2Bare.receipt({
+                bare,
+                mode: input.runtimePolicy.runtimeMode,
+                agent: (nativeId === null ? undefined : threads.get(nativeId)?.agent) ?? "build",
+                mcpServerName:
+                  thread.appThreadId === null ? null : yield* mcpServerNameFor(thread.appThreadId),
+                root: bareServer.root,
+                sessionId: nativeId,
+                evidence: bareEvidence,
+              });
+            }),
+          }),
       instanceId,
       driver,
       providerSessionId: input.providerSessionId,
