@@ -125,50 +125,43 @@ export const OPEN_CODE_BARE_CONFIG = {
 const OPEN_CODE_GLOBAL_CONFIG_FILES = ["config.json", "opencode.json", "opencode.jsonc"];
 const OPEN_CODE_PROVIDER_KEYS = new Set(["provider", "providers"]);
 
-const expandEnv = (text: string, environment: NodeJS.ProcessEnv, escape: boolean) =>
-  text.replace(/\{env:([^}]+)\}/g, (_, variable: string) => {
-    const value = environment[variable] || "";
-    return escape ? JSON.stringify(value).slice(1, -1) : value;
-  });
+const ENV_TOKEN = /\{env:([^}]+)\}/g;
+const FILE_TOKEN = /\{file:([^}]+)\}/g;
+
+/** OpenCode's raw `{env:...}` expansion, with file tokens held by a placeholder valid only in strings. */
+const expandEnv = (text: string, environment: NodeJS.ProcessEnv) =>
+  text
+    .replace(ENV_TOKEN, (_, variable: string) => environment[variable] || "")
+    .replace(FILE_TOKEN, "t3-file");
+
+const parses = (text: string) => {
+  const errors: Array<ParseError> = [];
+  const tree = parseTree(text, errors, { allowTrailingComma: true });
+  return errors.length > 0 ? undefined : tree;
+};
 
 /**
- * Whether OpenCode could resolve a `{file:...}` in this text beside its document. Both env
- * expansions OpenCode may choose are checked, and commented tokens count, so this never misses one.
- */
-const readsRelativeFile = (
-  text: string,
-  environment: NodeJS.ProcessEnv,
-  isAbsolute: (path: string) => boolean,
-) =>
-  [false, true].some((escape) =>
-    Array.from(expandEnv(text, environment, escape).matchAll(/\{file:([^}]+)\}/g)).some(
-      ([, reference]) => !reference!.startsWith("~/") && !isAbsolute(reference!),
-    ),
-  );
-
-/**
- * Provider definitions are model plumbing, not prompt context, so bare keeps them. Each global
- * document keeps its provider sections as raw text, so OpenCode still orders, normalizes and
- * substitutes them itself; `{env:...}` and `{file:...}` never resolve in T3 Code. A relative
- * `{file:...}` would resolve beside the shadow copy instead, so bare refuses it.
+ * Bare keeps provider definitions as raw text per document so OpenCode substitutes them itself,
+ * and refuses anything that would make the copy read differently from the original.
  */
 const shadowOpenCodeProviders = Effect.fn("BareProviderRuntime.openCodeProviders")(function* (
   source: string,
   target: string,
-  environment: NodeJS.ProcessEnv,
+  original: NodeJS.ProcessEnv,
+  bare: NodeJS.ProcessEnv,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   for (const name of OPEN_CODE_GLOBAL_CONFIG_FILES) {
     const file = path.join(source, name);
     const shadow = path.join(target, name);
-    const errors: Array<ParseError> = [];
+    const refuse = (reason: string) =>
+      new BareLaunchError({ reason: `OpenCode config ${file} ${reason}` });
     const text = (yield* fs.exists(file)) ? yield* fs.readFileString(file) : undefined;
-    const tree =
-      text === undefined ? undefined : parseTree(text, errors, { allowTrailingComma: true });
+    const tree = text === undefined ? undefined : parses(text);
     // Bare reads the document before OpenCode substitutes it, so it must already be valid JSONC.
-    if (errors.length > 0)
-      return yield* new BareLaunchError({ reason: `OpenCode config ${file} is not valid JSONC.` });
+    if (text !== undefined && tree === undefined)
+      return yield* refuse("is not valid JSONC before {env:} substitution.");
     const sections = (tree?.type === "object" ? (tree.children ?? []) : []).flatMap((property) => {
       const [key, value] = property.children ?? [];
       return key !== undefined &&
@@ -182,10 +175,36 @@ const shadowOpenCodeProviders = Effect.fn("BareProviderRuntime.openCodeProviders
       continue;
     }
     const document = `{\n${sections.join(",\n")}\n}\n`;
-    if (readsRelativeFile(document, environment, path.isAbsolute))
-      return yield* new BareLaunchError({
-        reason: `OpenCode config ${file} has a provider {file:} path relative to its folder, which bare cannot read; use an absolute or ~/ path.`,
-      });
+    const changed = Array.from(document.matchAll(ENV_TOKEN), ([, variable]) => variable!).find(
+      (variable) => (original[variable] || "") !== (bare[variable] || ""),
+    );
+    if (changed !== undefined)
+      return yield* refuse(`has a provider using {env:${changed}}, which bare changes.`);
+    const expanded = parses(expandEnv(document, original));
+    if (
+      (text!.includes("{env:") && parses(expandEnv(text!, original)) === undefined) ||
+      expanded === undefined
+    )
+      return yield* refuse(
+        "has an {env:} value or {file:} token that is not plain JSON string content, which bare cannot copy.",
+      );
+    if (
+      (expanded.children ?? []).length !== sections.length ||
+      (expanded.children ?? []).some(
+        (property) => !OPEN_CODE_PROVIDER_KEYS.has(String(property.children?.[0]?.value)),
+      )
+    )
+      return yield* refuse("has an {env:} value that changes the provider structure.");
+    // A relative path would resolve beside the copy; commented tokens count, to never miss one.
+    const relative = Array.from(
+      document
+        .replace(ENV_TOKEN, (_, variable: string) => original[variable] || "")
+        .matchAll(FILE_TOKEN),
+    ).some(([, reference]) => !reference!.startsWith("~/") && !path.isAbsolute(reference!));
+    if (relative)
+      return yield* refuse(
+        "has a provider {file:} path relative to its folder, which bare cannot read; use an absolute or ~/ path.",
+      );
     yield* writeBareConfig(shadow, document);
   }
 });
@@ -242,6 +261,7 @@ export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.ope
     yield* shadowOpenCodeProviders(
       path.join(source, "opencode"),
       path.join(target, "opencode"),
+      input.environment,
       environment,
     );
     return environment;

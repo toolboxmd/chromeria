@@ -266,9 +266,10 @@ cannot be disabled remains disclosed there. Cursor's custom prompt access remain
 unverified. On OpenCode 2, bare runs on a private OpenCode server and keeps the
 model identity, date and environment block that OpenCode always adds. Bare OpenCode
 keeps the providers defined in your global OpenCode config, so local models work bare;
-the launch fails before inference when a global config file is not valid JSONC before
-`{env:}` substitution, or when a provider reads a `{file:}` path relative to the config
-folder. Use an absolute or `~/` path for provider files. External
+the launch fails before inference, naming the config file, when that file is not valid
+JSONC before `{env:}` substitution, when an `{env:}` value would change its JSON structure
+or uses a variable bare overrides such as `XDG_CONFIG_HOME`, or when a provider uses a
+`{file:}` path relative to the config folder. Use an absolute or `~/` path for provider files. External
 OpenCode servers, Antigravity and generic ACP adapters currently refuse bare launches.
 
 To start a bare thread yourself, turn on **Bare** in the model picker of a new

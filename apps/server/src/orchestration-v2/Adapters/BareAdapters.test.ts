@@ -483,6 +483,30 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
       // only an env value or a commented token makes it relative.
       const relative = `OpenCode config ${real}/opencode/opencode.jsonc has a provider {file:} path relative to its folder, which bare cannot read; use an absolute or ~/ path.`;
       expect((yield* Effect.flip(prepare({ KEY_PATH: "./key" }))).message).toBe(relative);
+      const refused = (reason: string) =>
+        `OpenCode config ${real}/opencode/opencode.jsonc ${reason}`;
+      // OpenCode 2 re-expands the whole document escaped when a raw value breaks it, so
+      // bare refuses a value that is not plain string content anywhere in the document.
+      expect((yield* Effect.flip(prepare({ OMLX_KEY: 'say "hi"' }))).message).toBe(
+        refused(
+          "has an {env:} value or {file:} token that is not plain JSON string content, which bare cannot copy.",
+        ),
+      );
+      expect(
+        (yield* Effect.flip(
+          prepare({
+            OMLX_KEY:
+              'k"}}},"instructions":["/context.md"],"provider":{"x":{"options":{"apiKey":"z',
+          }),
+        )).message,
+      ).toBe(refused("has an {env:} value that changes the provider structure."));
+      yield* fs.writeFileString(
+        `${real}/opencode/opencode.jsonc`,
+        `{ "provider": { "omlx": { "options": { "apiKey": "{file:{env:XDG_CONFIG_HOME}/key}" } } } }`,
+      );
+      expect((yield* Effect.flip(prepare())).message).toBe(
+        refused("has a provider using {env:XDG_CONFIG_HOME}, which bare changes."),
+      );
       yield* fs.writeFileString(
         `${real}/opencode/opencode.jsonc`,
         `{ "provider": { "omlx": { "options": {} /* {file:./key} */ } } }`,
@@ -497,7 +521,7 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
       );
       const malformed = yield* Effect.flip(prepare());
       expect(malformed.message).toBe(
-        `OpenCode config ${real}/opencode/opencode.json is not valid JSONC.`,
+        `OpenCode config ${real}/opencode/opencode.json is not valid JSONC before {env:} substitution.`,
       );
       expect(yield* fs.exists(`${shadow}/config.json`)).toBe(false);
     }),
