@@ -448,6 +448,8 @@ export interface ComposerDraft {
   readonly interactionMode?: ProviderInteractionMode;
   /** `/clear` armed this draft: its next message starts a fresh provider session. */
   readonly freshContext?: boolean;
+  /** Fork (toolboxmd/chromeria#319): this new task starts bare. */
+  readonly bare?: boolean;
   readonly workspaceSelection?: ComposerDraftWorkspaceSelection;
   readonly project?: ComposerDraftProject;
 }
@@ -485,6 +487,7 @@ export type ComposerDraftSettingsUpdate = Pick<
   | "runtimeMode"
   | "interactionMode"
   | "freshContext"
+  | "bare"
   | "workspaceSelection"
   | "project"
 >;
@@ -519,6 +522,7 @@ const ComposerDraftSchema = Schema.Struct({
   runtimeMode: Schema.optional(RuntimeModeSchema),
   interactionMode: Schema.optional(ProviderInteractionModeSchema),
   freshContext: Schema.optional(Schema.Boolean),
+  bare: Schema.optional(Schema.Boolean),
   workspaceSelection: Schema.optional(ComposerDraftWorkspaceSelectionSchema),
   project: Schema.optional(ComposerDraftProjectSchema),
 });
@@ -699,6 +703,7 @@ function isEmptyDraft(draft: ComposerDraft): boolean {
     draft.runtimeMode === undefined &&
     draft.interactionMode === undefined &&
     draft.freshContext !== true &&
+    draft.bare !== true &&
     draft.workspaceSelection === undefined
   );
 }
@@ -1714,6 +1719,8 @@ export function clearComposerDraftContentState(
     modelSelection,
     workspaceSelection,
     project: _project,
+    // A sent task's Bare intent never carries into the next new task.
+    bare: _bare,
     ...retained
   } = existing;
   const draft = {

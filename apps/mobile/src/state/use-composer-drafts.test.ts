@@ -1016,6 +1016,22 @@ describe("mobile composer drafts", () => {
     expect(getComposerDraftSnapshot(draftKey).context).toBeUndefined();
   });
 
+  it("keeps a new task's Bare through persistence and drops it once sent", () => {
+    const draftKey = "new-task:bare-project";
+    updateComposerDraftSettings(draftKey, { bare: true });
+    const draft = getComposerDraftSnapshot(draftKey);
+    expect(draft.bare).toBe(true);
+    const decoded = decodePersistedComposerState(
+      JSON.parse(JSON.stringify({ schemaVersion: 1, drafts: { [draftKey]: draft } })),
+    ).drafts[draftKey];
+    expect(decoded?.bare).toBe(true);
+    const sent = clearComposerDraftContentState(
+      { [draftKey]: { ...decoded!, text: "Task", runtimeMode: "full-access" } },
+      draftKey,
+    );
+    expect(sent[draftKey]?.bare).toBeUndefined();
+  });
+
   it("keeps each draft's caret when another composer moves its own caret", () => {
     const threadKey = "caret-environment:caret-thread";
     const newTaskKey = "caret-environment:new-task:caret-draft";

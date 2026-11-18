@@ -35,7 +35,6 @@ import { createDebugLogger } from "../lib/debugLog";
 import type { DraftComposerAttachment } from "../lib/composerImages";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { buildProjectThreadStartTurnInput } from "../lib/projectThreadStartTurn";
-import { bareDraftIntent } from "@t3tools/client-runtime/bare-launch";
 import { serializeComposerMessageForServer, uploadedComposerContext } from "../lib/composerContext";
 import { prepareTurnAttachments } from "../lib/attachmentUpload";
 import { randomHex } from "../lib/uuid";
@@ -524,6 +523,7 @@ export const restoreRejectedQueuedMessage = Effect.fn("ThreadOutbox.restoreRejec
           ? { interactionMode: queuedMessage.interactionMode }
           : {}),
         ...(queuedMessage.freshContext ? { freshContext: true } : {}),
+        ...(queuedMessage.creation?.bare ? { bare: true } : {}),
         ...(queuedMessage.creation
           ? {
               workspaceSelection: {
@@ -550,7 +550,6 @@ export const restoreRejectedQueuedMessage = Effect.fn("ThreadOutbox.restoreRejec
       if (!removed) return yield* withdraw(restoredDraft);
       // After queue removal, the draft owns content and must never roll back.
       rollback = null;
-      if (queuedMessage.creation?.bare) bareDraftIntent.set(draftKey, true);
       if (queuedMessage.creation) {
         clearThreadComposerError(threadKey, queuedMessage.messageId);
         recordPendingThreadCreationOutcome({

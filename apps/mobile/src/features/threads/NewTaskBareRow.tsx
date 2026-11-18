@@ -1,33 +1,26 @@
-import {
-  bareDraftIntent,
-  resolveBareToggle,
-  type BareToggleState,
-} from "@t3tools/client-runtime/bare-launch";
+import { resolveBareToggle, type BareToggleState } from "@t3tools/client-runtime/bare-launch";
 import type { ServerProvider } from "@t3tools/contracts";
 import { useGT } from "gt-react-native";
-import { useSyncExternalStore } from "react";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
+import { updateComposerDraftSettings, useComposerDraft } from "../../state/use-composer-drafts";
 
-/** Fork (toolboxmd/chromeria#319): the Bare toggle's state for a new task's draft. */
+/** Fork (toolboxmd/chromeria#319): the Bare toggle, kept on the persisted new-task draft. */
 export function useNewTaskBareToggle(input: {
   readonly draftKey: string | null;
   readonly provider: Pick<ServerProvider, "bare"> | null | undefined;
 }) {
   const { draftKey } = input;
-  const requested = useSyncExternalStore(
-    bareDraftIntent.subscribe,
-    () => draftKey !== null && bareDraftIntent.get(draftKey),
-  );
+  const requested = useComposerDraft(draftKey).bare === true;
   const state = resolveBareToggle({
     isNewThread: draftKey !== null,
     provider: input.provider,
     requested,
   });
   const toggle = (on: boolean) => {
-    if (draftKey !== null) bareDraftIntent.set(draftKey, on);
+    if (draftKey !== null) updateComposerDraftSettings(draftKey, { bare: on ? true : undefined });
   };
   return { state, toggle };
 }

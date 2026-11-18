@@ -2585,7 +2585,10 @@ sources and reasons.
     "apps/server/src/provider/ProviderRegistry.ts",
     "apps/web/src/components/chat/ComposerControlsBar.tsx",
     "apps/web/src/components/chat/ComposerModelEffort.tsx",
-    "packages/contracts/src/server.ts"
+    "packages/contracts/src/server.ts",
+    "apps/mobile/src/state/threadOutboxDelivery.test.ts",
+    "apps/mobile/src/state/use-composer-drafts.test.ts",
+    "apps/mobile/src/state/use-composer-drafts.ts"
   ],
   "sharedFiles": [
     "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts",
@@ -2665,7 +2668,6 @@ sources and reasons.
     "packages/provider-core/src/server/ProviderAdapter.ts",
     "packages/provider-grok/src/server/adapter.ts",
     "pnpm-lock.yaml",
-    "apps/mobile/src/features/threads/NewTaskDraftScreen.tsx",
     "apps/mobile/src/features/threads/ThreadRouteScreen.tsx",
     "apps/mobile/src/state/thread-outbox-model.ts",
     "apps/mobile/src/state/threadOutboxDelivery.ts",

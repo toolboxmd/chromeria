@@ -722,6 +722,9 @@ apps/server/src/provider/ProviderRegistry.ts
 apps/web/src/components/chat/ComposerControlsBar.tsx
 apps/web/src/components/chat/ComposerModelEffort.tsx
 packages/contracts/src/server.ts
+apps/mobile/src/state/threadOutboxDelivery.test.ts
+apps/mobile/src/state/use-composer-drafts.test.ts
+apps/mobile/src/state/use-composer-drafts.ts
 apps/web/src/components/chat/ThreadLineageWorkflowRow.tsx
 apps/web/src/components/chat/useThreadLifecycle.browser.test.tsx
 
