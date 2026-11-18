@@ -2223,7 +2223,7 @@ const make = Effect.gen(function* () {
     const delivered = (waited: Option.Option<OrchestratorMcpDelegateTaskResult>) =>
       Option.isSome(waited) && isTerminalTaskStatus(waited.value.status);
     // The finalizer runs uninterruptibly, so a cancel right after the wait returns still upgrades.
-    const waited = yield* waitForTask(scope, taskId, timeoutMs).pipe(
+    const waited = yield* waitForTask(scope, taskId, timeoutMs, true).pipe(
       Effect.onExit((exit) =>
         Exit.isSuccess(exit) && delivered(exit.value) ? Effect.void : upgradeWake,
       ),
@@ -2366,7 +2366,13 @@ const make = Effect.gen(function* () {
   });
 
   const waitForTask = Effect.fn("OrchestratorMcpService.waitForTask")(
-    function* (scope: McpThreadInvocationScope, taskId: NodeId, _timeoutMs: number) {
+    function* (
+      scope: McpThreadInvocationScope,
+      taskId: NodeId,
+      _timeoutMs: number,
+      // A Run group's watchers only read; its response acknowledges what it returns.
+      acknowledgeTerminal: boolean,
+    ) {
       const streamError = (error: unknown) =>
         failure(
           "orchestration_error",
@@ -2376,7 +2382,7 @@ const make = Effect.gen(function* () {
       const afterSequence = yield* threadManagement
         .getThreadEventSequence(scope.thread.threadId)
         .pipe(Effect.mapError(streamError));
-      const initial = yield* readTask(scope, taskId, false, true);
+      const initial = yield* readTask(scope, taskId, false, acknowledgeTerminal);
       if (endsTaskWait(initial)) {
         return Option.some(initial);
       }
@@ -2410,12 +2416,12 @@ const make = Effect.gen(function* () {
         { concurrency: "unbounded" },
       ).pipe(
         Stream.mapError(streamError),
-        Stream.mapEffect(() => readTask(scope, taskId, false, true)),
+        Stream.mapEffect(() => readTask(scope, taskId, false, acknowledgeTerminal)),
         Stream.filter(endsTaskWait),
         Stream.runHead,
       );
     },
-    (effect, _scope, _taskId, timeoutMs) =>
+    (effect, _scope, _taskId, timeoutMs, _acknowledgeTerminal) =>
       effect.pipe(Effect.timeoutOption(Duration.millis(timeoutMs)), Effect.map(Option.flatten)),
   );
 
@@ -2510,7 +2516,7 @@ const make = Effect.gen(function* () {
     const ended = yield* Effect.forEach(
       members,
       (member) =>
-        waitForTask(scope, member.id, timeoutMs).pipe(
+        waitForTask(scope, member.id, timeoutMs, false).pipe(
           Effect.flatMap((waited) =>
             Option.isSome(waited) && isTerminalTaskStatus(waited.value.status)
               ? Effect.void
