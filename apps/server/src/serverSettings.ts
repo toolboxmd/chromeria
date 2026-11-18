@@ -57,6 +57,8 @@ import {
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as ManagedPolicy from "./policy/ManagedPolicy.ts";
 import { secretProviderDefinitions } from "./secrets/secretProviderDefinitions.ts";
+import { migratePrismRoleOverrides } from "./prism/PrismRoleOverrides.ts";
+import { savesSpectrumWhiteLabel } from "./spectrum/settings.ts";
 import {
   readSecretFieldValues,
   sourceControlHostSecretName,
@@ -77,7 +79,7 @@ export {
 } from "@t3tools/shared/serverSettings";
 
 const encodeServerSettings = Schema.encodeEffect(ServerSettings);
-const encodeServerSettingsJson = Schema.encodeUnknownEffect(fromJsonStringPretty(ServerSettings));
+const encodeSettingsFileJson = Schema.encodeUnknownEffect(fromJsonStringPretty(Schema.Unknown));
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
 
 const textEncoder = new TextEncoder();
@@ -727,8 +729,11 @@ const make = Effect.gen(function* () {
 
   const writeSettingsAtomically = Effect.fnUntraced(
     function* (settings: ServerSettings) {
-      const stripped = stripDefaultServerSettings(settings, managed.defaults) ?? {};
-      const sparseSettingsJson = yield* encodeServerSettingsJson(
+      const encoded = yield* encodeServerSettings(settings);
+      const defaults = yield* encodeServerSettings(managed.defaults);
+      // Whole-value checks require complete settings before default subfields are omitted.
+      const stripped = stripDefaultServerSettings(encoded, defaults) ?? {};
+      const sparseSettingsJson = yield* encodeSettingsFileJson(
         managed.keepStored === undefined
           ? stripped
           : managed.keepStored(stripped, settings, yield* readStoredSettings, (key) =>
@@ -789,9 +794,11 @@ const make = Effect.gen(function* () {
     let legacyProviders: Readonly<Record<string, unknown>> | undefined;
     let legacySourceControl: Parameters<typeof migrateLegacySourceControlSettings>[1] = {};
     let parseFailure = Option.none<unknown>();
+    let spectrumWhiteLabel = false;
 
     if (yield* readConfigExists) {
       const raw = yield* readRawConfig;
+      spectrumWhiteLabel = savesSpectrumWhiteLabel(raw);
       const parsed = decodeSettingsFileJsonExit(raw);
       const decoded = Exit.isFailure(parsed)
         ? parsed
@@ -888,7 +895,7 @@ const make = Effect.gen(function* () {
         : migrateLegacyProviderSettings(settings, legacyProviders, providerHistory),
     );
     const folded = settingsFileTrusted
-      ? foldLegacyProjectSettings(loaded, legacyProjectRows)
+      ? migratePrismRoleOverrides(foldLegacyProjectSettings(loaded, legacyProjectRows))
       : loaded;
     // Remove retired keys only after copying secrets and writing the new file; failures retry on next load.
     const legacySecretsCopied = yield* Effect.forEach(
@@ -920,7 +927,7 @@ const make = Effect.gen(function* () {
       : folded;
     if (
       migrated !== loaded ||
-      (settingsFileTrusted && legacyProviders !== undefined) ||
+      (settingsFileTrusted && (legacyProviders !== undefined || spectrumWhiteLabel)) ||
       hasLegacySourceControl
     ) {
       yield* writeSettingsAtomically(migrated);
