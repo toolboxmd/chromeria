@@ -3311,10 +3311,11 @@ sources and reasons.
 ```json
 {
   "id": "preview-credential-fill",
-  "purpose": "preview_fill_credential fills a login input in a server browser tab from the environment's rbw vault (credentialVault server setting) after an https and item-origin check, and returns only the outcome. The fill puts the tab's opener group in a login: every read is refused and session state shows Login in progress, until preview_end_login closes those tabs. Each attempt appends a value-free audit line. Drop when upstream fills credentials without exposing them to agents.",
+  "purpose": "preview_fill_credential fills a login input in a server browser tab from the environment's rbw vault (credentialVault server setting) after an https and item-origin check, and returns only the outcome; the page stays readable while the agent signs in. Each attempt appends a value-free audit line. Drop when upstream fills credentials without exposing them to agents.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/557",
-    "https://github.com/toolboxmd/chromeria/issues/692"
+    "https://github.com/toolboxmd/chromeria/issues/692",
+    "https://github.com/toolboxmd/chromeria/issues/772"
   ],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/561"],
   "newFiles": [
@@ -3461,7 +3462,7 @@ sources and reasons.
 ```json
 {
   "id": "preview-tab-settlement",
-  "purpose": "Close a settled thread's unwatched agent tabs through the existing browser cleanup path, preserving human tabs and profile login quarantine. Drop when upstream closes equivalent tabs on thread settlement.",
+  "purpose": "Close a settled thread's unwatched agent tabs through the existing browser cleanup path, preserving human tabs. Drop when upstream closes equivalent tabs on thread settlement.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/601"],
   "prs": ["https://github.com/toolboxmd/chromeria/compare/main...agent/601-close-tabs-on-settle"],
   "newFiles": ["apps/server/src/preview/BrowserSettlement.testkit.ts"],

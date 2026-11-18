@@ -103,25 +103,17 @@ not `evilshopify.com`. Public suffixes such as `github.io` or `co.uk` never wide
 
 Fills run only in the server's own browser tabs, not in tabs the desktop app hosts.
 
-A fill starts a login for the whole browser profile the agent's tab uses, even if the fill then
-fails. The login uses that profile's sign-ins and cookies. Until it ends, no tab in the profile can
-be read: no snapshots, screenshots, page text, scripts, recordings, console or network entries,
-downloads, URLs or titles. That includes other agents' tabs in the same profile, which are paused,
-and tabs opened meanwhile. Keep logins short. Chromeria shows these tabs as **Login in progress**.
-
-During a login the agent can still fill, click and type by locator, press keys and wait for an
-element, URL or text. It ends the login with `preview_end_login`, which closes the profile's
-browser, with every tab in it, and waits until it has closed. The next tab opens the profile
-again, signed in through its saved cookies. Cookies a site sets without an expiry, which
-browsers keep only until they close, do not survive this, so such a site needs a new sign-in. A
-login in an incognito profile loses its session when it ends.
-
-You still see the page in the live view.
+The agent keeps reading the page while it signs in, so it sees what the site asks after the
+password, such as a passkey error, a "Try another way" link or a one-time code step, and finishes
+the sign-in in the same tab. Password fields stay masked in its snapshots and screenshots, and the
+fill's result never contains the value.
 
 Each attempt appends a line to `credential-fills.jsonl` in the `userdata` directory. The line
 records the time, environment, thread, item, field, the vault site that matched and the outcome,
 but never the value or anything from the page.
 
-This keeps values out of agent transcripts and logs, and stops fills on the wrong site. It does
-not stop an agent with shell access from running `rbw` itself, or the agent using the signed-in
-session afterwards.
+This keeps values out of the fill's results and audit line, and stops fills on the wrong site. It
+does not hide a value the page itself shows, such as a username or one-time code in a visible
+field, or a value the site copies into its URL or title. It also does not stop an agent from
+reading a field with a page script (`preview_evaluate`), running `rbw` itself when it has shell
+access, or using the signed-in session afterwards.

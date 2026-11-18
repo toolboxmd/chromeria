@@ -83,9 +83,6 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
       await desktopConnectionGate?.promise;
       return { browser, page: context.page as unknown as Page };
     }
-    async closeContext(context: { close: () => Promise<void> }) {
-      await context.close();
-    }
     async close() {
       for (const context of contexts) await context.close();
     }
@@ -412,10 +409,6 @@ let contextFailure: Error | null = null;
 let pageSetupFailure: Error | null = null;
 let initialNavigation: (() => Promise<void>) | null = null;
 let vaultValue: string | null = null;
-const vaultReads: { gate: Promise<void> | null; started: (() => void) | null } = {
-  gate: null,
-  started: null,
-};
 let desktopRendersNext = false;
 let desktopPageUrl = "about:blank";
 let desktopConnectionGate: PromiseWithResolvers<void> | null = null;
@@ -474,15 +467,10 @@ const dependencies = Layer.mergeAll(
   Layer.succeed(CredentialVault.CredentialVault, {
     uris: () => Effect.succeed(["example.test"]),
     read: () =>
-      Effect.promise(async () => {
-        vaultReads.started?.();
-        await vaultReads.gate;
-      }).pipe(
-        Effect.flatMap(() =>
-          vaultValue === null
-            ? Effect.fail(new PreviewCredentialError({ reason: "vaultNotConfigured" }))
-            : Effect.succeed(vaultValue),
-        ),
+      Effect.suspend(() =>
+        vaultValue === null
+          ? Effect.fail(new PreviewCredentialError({ reason: "vaultNotConfigured" }))
+          : Effect.succeed(vaultValue),
       ),
   }),
   Manager.layer,
@@ -635,8 +623,6 @@ beforeEach(() => {
   pageSetupFailure = null;
   initialNavigation = null;
   vaultValue = null;
-  vaultReads.gate = null;
-  vaultReads.started = null;
   pageCopy = "";
   keyCopy = "";
   focusedFrame = null;
@@ -4954,46 +4940,13 @@ const fillPassword = (broker: Broker.PreviewAutomationBroker["Service"], tabId: 
     input: { item: "Example", field: "password", locator: "#pw" },
   });
 
-const READS = [
-  { operation: "snapshot", input: {} },
-  { operation: "evaluate", input: { expression: "document.body.innerText" } },
-  { operation: "recordingStart", input: {} },
-  { operation: "navigate", input: { url: "https://login.example.test/next" } },
-  { operation: "hover", input: { locator: "#pw" } },
-  { operation: "scroll", input: { deltaY: 10 } },
-  { operation: "select", input: { locator: "#pw", values: [] } },
-  { operation: "drag", input: { source: "#pw", target: "#pw" } },
-  { operation: "upload", input: { paths: [] } },
-  { operation: "resize", input: { mode: "fill" } },
-  { operation: "setColorScheme", input: { colorScheme: "dark" } },
-  { operation: "click", input: { x: 1, y: 1 } },
-  { operation: "readPage", input: { url: "https://login.example.test/", profileId: "default" } },
-] as const;
-
-const expectReadsRefused = (
-  broker: Broker.PreviewAutomationBroker["Service"],
-  tabId: PreviewTabId,
-) =>
-  Effect.forEach(READS, ({ operation, input }) =>
-    broker.invoke<void>({ scope, tabId, operation, input }).pipe(
-      Effect.flip,
-      Effect.map((error) => {
-        expect(error, operation).toMatchObject({
-          _tag: "PreviewCredentialError",
-          reason: "loginInProgress",
-        });
-        return error;
-      }),
-    ),
-  );
-
-it.effect("a fill puts its tab in a login: every read refused, actions content-free", () =>
+it.effect("a fill leaves its tab and related tabs readable and returns no value", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const { broker, tabId } = yield* ready;
-      const manager = yield* Manager.PreviewManager;
       vaultValue = SENTINEL;
       const input = fakeLoginInput(contexts[0]!.page);
+      const popup = yield* openPopup(contexts[0]!.page, tabId);
       const filled = yield* fillPassword(broker, tabId);
       expect(filled).toEqual({
         filled: true,
@@ -5002,57 +4955,32 @@ it.effect("a fill puts its tab in a login: every read refused, actions content-f
         site: "example.test",
         tabId,
       });
+      expectNoSentinel(filled);
       expect(input.value()).toBe(SENTINEL);
-
-      // The page now shows the value in its URL and title, as a GET login destination would.
-      const events = yield* manager.subscribeEvents;
-      const page = contexts[0]!.page;
-      page.title.mockResolvedValue(`Welcome ${SENTINEL}`);
-      // The destination adds a history entry, so the masked status still changes and publishes.
-      const session = contexts[0]!.sessions[0]!;
-      const send = session.send.getMockImplementation()!;
-      session.send.mockImplementation(async (method, params) =>
-        method === "Page.getNavigationHistory"
-          ? { currentIndex: 1, entries: [{}, {}] }
-          : send(method, params),
-      );
-      yield* Effect.promise(() =>
-        page.goto(`https://login.example.test/session?pw=${encodeURIComponent(SENTINEL)}`),
-      );
-      let event = yield* PubSub.take(events);
-      while (event.type !== "navigated") event = yield* PubSub.take(events);
-      expect(event.snapshot.navStatus).toEqual({
-        _tag: "Success",
-        url: "about:blank",
-        title: "Login in progress",
-      });
-
-      const refusals = yield* expectReadsRefused(broker, tabId);
-      const status = yield* broker.invoke<PreviewAutomationStatus>({
-        scope,
-        tabId,
-        operation: "status",
-        input: {},
-      });
-      expect(status).toMatchObject({ url: null, title: null, loginInProgress: true });
-      expect(status.tabs).toEqual([
-        expect.objectContaining({ tabId, url: null, loginInProgress: true }),
-      ]);
-
-      // Allowed: more fills, and actions by locator that return no page content.
-      const actions = [
-        yield* broker.invoke({ scope, tabId, operation: "click", input: { locator: "#go" } }),
-        yield* broker.invoke({ scope, tabId, operation: "press", input: { key: "Enter" } }),
-        yield* broker.invoke({ scope, tabId, operation: "waitFor", input: { locator: "#go" } }),
-        yield* fillPassword(broker, tabId),
-      ];
-      expect(input.locator.click).toHaveBeenCalled();
-      expectNoSentinel([
-        refusals,
-        status,
-        actions,
-        (yield* manager.list({ threadId: scope.thread.threadId })).sessions,
-      ]);
+      for (const target of [tabId, popup.tabId]) {
+        const status = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          tabId: target,
+          operation: "status",
+          input: {},
+        });
+        expect(status.tabId).toBe(target);
+        const snapshot = yield* broker.invoke<PreviewAutomationSnapshot>({
+          scope,
+          tabId: target,
+          operation: "snapshot",
+          input: {},
+        });
+        expect(snapshot.screenshot.data).toBe(PNG_HEADER);
+        expect(
+          yield* broker.invoke({
+            scope,
+            tabId: target,
+            operation: "evaluate",
+            input: { expression: "1" },
+          }),
+        ).toBe("evaluated");
+      }
     }),
   ).pipe(Effect.provide(layer)),
 );
@@ -5240,119 +5168,6 @@ it.live("a page's title change without navigation reaches its session", () =>
       });
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.scoped),
-);
-
-it.effect("a login holds every related tab until preview_end_login closes them", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const { broker, tabId } = yield* ready;
-      const manager = yield* Manager.PreviewManager;
-      vaultValue = SENTINEL;
-      fakeLoginInput(contexts[0]!.page);
-      // A opened B and B opened C before the fill. Popups opened after it join through
-      // their shared browser context, which CredentialLogin.integration.test.ts covers.
-      const b = yield* openPopup(contexts[0]!.page, tabId);
-      const c = yield* openPopup(b.popup.page, b.tabId);
-      yield* fillPassword(broker, tabId);
-      for (const target of [b.tabId, c.tabId]) yield* expectReadsRefused(broker, target);
-
-      // Closing B, the tab between A and C, leaves C in the login.
-      const events = yield* manager.subscribeEvents;
-      yield* Effect.promise(() => b.popup.page.close());
-      let event = yield* PubSub.take(events);
-      while (event.type !== "closed" || event.tabId !== b.tabId) event = yield* PubSub.take(events);
-      yield* expectReadsRefused(broker, c.tabId);
-
-      const ended = yield* broker.invoke<{ closed: Array<string> }>({
-        scope,
-        tabId: c.tabId,
-        operation: "endLogin",
-        input: {},
-      });
-      expect([...ended.closed].toSorted()).toEqual([tabId, c.tabId].toSorted());
-      expect((yield* manager.list({ threadId: scope.thread.threadId })).sessions).toEqual([]);
-
-      // A fresh tab is not in the login and reads normally.
-      const opened = yield* broker.invoke<PreviewAutomationStatus>({
-        scope,
-        operation: "open",
-        input: { reuseExistingTab: false, show: false },
-      });
-      const fresh = PreviewTabId.make(opened.tabId!);
-      expect(opened.loginInProgress).toBeUndefined();
-      expect(
-        yield* broker.invoke({
-          scope,
-          tabId: fresh,
-          operation: "evaluate",
-          input: { expression: "1" },
-        }),
-      ).toBe("evaluated");
-      expect(
-        (yield* broker.invoke<PreviewAutomationSnapshot>({
-          scope,
-          tabId: fresh,
-          operation: "snapshot",
-          input: {},
-        })).screenshot.data,
-      ).toBe(PNG_HEADER);
-      expect(
-        yield* broker.invoke<{ closed: Array<string> }>({
-          scope,
-          tabId: fresh,
-          operation: "endLogin",
-          input: {},
-        }),
-      ).toEqual({ closed: [] });
-    }),
-  ).pipe(Effect.provide(layer)),
-);
-
-it.effect("a recording cannot start in a related tab once a fill has begun", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const { broker, tabId } = yield* ready;
-      vaultValue = SENTINEL;
-      fakeLoginInput(contexts[0]!.page);
-      const popup = yield* openPopup(contexts[0]!.page, tabId);
-      const gate = Promise.withResolvers<void>();
-      const started = Promise.withResolvers<void>();
-      vaultReads.gate = gate.promise;
-      vaultReads.started = started.resolve;
-      const fill = yield* fillPassword(broker, tabId).pipe(Effect.forkScoped);
-      yield* Effect.promise(() => started.promise);
-      // The vault has not answered yet, and the group is already in the login.
-      const racing = yield* broker
-        .invoke<void>({ scope, tabId: popup.tabId, operation: "recordingStart", input: {} })
-        .pipe(Effect.flip);
-      expect(racing).toMatchObject({ _tag: "PreviewCredentialError", reason: "loginInProgress" });
-      gate.resolve();
-      yield* Fiber.join(fill);
-      yield* expectReadsRefused(broker, popup.tabId);
-    }),
-  ).pipe(Effect.provide(layer)),
-);
-
-it.effect("a fill refused before typing still leaves the tab in its login", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const { broker, tabId } = yield* ready;
-      fakeLoginInput(contexts[0]!.page);
-      const refused = yield* broker
-        .invoke<void>({
-          scope,
-          tabId,
-          operation: "fillCredential",
-          input: { item: "Example", field: "password", locator: "#pw" },
-        })
-        .pipe(Effect.flip);
-      expect(refused).toMatchObject({
-        _tag: "PreviewCredentialError",
-        reason: "vaultNotConfigured",
-      });
-      yield* expectReadsRefused(broker, tabId);
-    }),
-  ).pipe(Effect.provide(layer)),
 );
 
 it.effect("a tab whose renderer crashes stays open instead of vanishing", () =>

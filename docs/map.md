@@ -52,7 +52,7 @@ flowchart TD
     BLM --> PLI
 
     VCF["Vault sign-in for agents"]
-    %% VCF: #557
+    %% VCF: #557 #772
     T3M --> VCF --> PBI
 
     PZ["Prism routing"]

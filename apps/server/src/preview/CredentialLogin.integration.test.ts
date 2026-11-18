@@ -13,6 +13,7 @@ import {
   PreviewTabId,
   ProviderInstanceId,
   ThreadId,
+  type PreviewAutomationSnapshot,
   type PreviewAutomationStatus,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -21,7 +22,6 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
-import * as PubSub from "effect/PubSub";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/ai";
@@ -35,13 +35,13 @@ import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as McpToolAccessTestkit from "../mcp/McpToolAccess.testkit.ts";
 import * as Broker from "../mcp/PreviewAutomationBroker.ts";
 import { CREDENTIAL_AUDIT_FILE } from "./CredentialAudit.ts";
-import { expectFullChrome, testChromium } from "./ChromeForTesting.testkit.ts";
+import { testChromium } from "./ChromeForTesting.testkit.ts";
 import * as CredentialVault from "./CredentialVault.ts";
 import * as DesktopChannel from "./DesktopBrowserChannel.ts";
 import * as Manager from "./Manager.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
-import { settlementLayer, settleThread } from "./BrowserSettlement.testkit.ts";
+import { settlementLayer } from "./BrowserSettlement.testkit.ts";
 import { ServerBrowserContexts } from "./ServerBrowserContexts.ts";
 
 const executable = testChromium;
@@ -54,7 +54,14 @@ vi.stubEnv("T3CODE_SERVER_BROWSER_SANDBOX", "0");
 const PASSWORD = `LOGIN-Password+&=#?% 42<"'>`;
 const USERNAME = "LOGIN-user@example.test";
 const CODE = "826493";
-const SECRETS = [PASSWORD, USERNAME, CODE, encodeURIComponent(PASSWORD)];
+const SECRETS = [
+  PASSWORD,
+  USERNAME,
+  CODE,
+  encodeURIComponent(PASSWORD),
+  // As JSON.stringify writes it, since the password holds a quote.
+  JSON.stringify(PASSWORD).slice(1, -1),
+];
 /** Also decoded: Chromium escapes a URL its own way, such as ' as %27. */
 const expectNoSecret = (value: unknown) => {
   const text = JSON.stringify(value);
@@ -92,6 +99,7 @@ const desktop = {
   bus: new NodeEvents.EventEmitter(),
 };
 const contexts: Array<BrowserContext> = [];
+const posts: Array<{ readonly path: string; readonly body: string }> = [];
 
 const routedContextFor = ServerBrowserContexts.prototype.contextFor;
 vi.spyOn(ServerBrowserContexts.prototype, "contextFor").mockImplementation(async function (
@@ -104,6 +112,22 @@ vi.spyOn(ServerBrowserContexts.prototype, "contextFor").mockImplementation(async
     await context.route("https://**/*", (route) => {
       const url = new URL(route.request().url());
       const page = (body: string) => route.fulfill({ contentType: "text/html", body });
+      // A site whose passkey step fails after the password, then offers a one-time code.
+      if (url.pathname === "/passkey")
+        return page(
+          "<title>Sign in</title><form method=post action=/passkey-error><label>Password<input type=password name=password></label><button>Continue</button></form>",
+        );
+      if (route.request().method() === "POST")
+        posts.push({ path: url.pathname, body: route.request().postData() ?? "" });
+      if (url.pathname === "/passkey-error") {
+        return page(
+          "<title>Passkey</title><p role=alert>This passkey can't be used on this device.</p><a href=/otp>Try another way</a>",
+        );
+      }
+      if (url.pathname === "/otp")
+        return page(
+          "<title>Authenticator</title><form method=post action=/signed><label>Code<input name=code autocomplete=one-time-code></label><button>Verify</button></form>",
+        );
       if (url.pathname === "/step1")
         return page(
           "<form action=/step2><input type=email name=email><button>Continue</button></form>",
@@ -175,6 +199,16 @@ const scope = {
   requestNamespace: "login",
   capabilities: new Set(["preview"] as const),
   issuedAt: 1,
+};
+
+const otherAgent = {
+  ...scope,
+  thread: {
+    threadId: ThreadId.make("other-login-thread"),
+    providerSessionId: "other-login-session",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+  },
+  requestNamespace: "other-login",
 };
 
 const dependencies = Layer.mergeAll(
@@ -249,16 +283,6 @@ const fillPassword = (broker: BrokerService, tabId: PreviewTabId, locator = "#pw
     field: "password",
     locator,
   });
-const expectLogin = (error: unknown) =>
-  expect(error).toMatchObject({ _tag: "PreviewCredentialError", reason: "loginInProgress" });
-const refusedRead = (broker: BrokerService, tabId: PreviewTabId) =>
-  Effect.gen(function* () {
-    for (const [operation, input] of [
-      ["snapshot", {}],
-      ["evaluate", { expression: "document.title" }],
-    ] as const)
-      expectLogin(yield* invoke(broker)<void>(tabId, operation, input).pipe(Effect.flip));
-  });
 /** The next tab the Manager opens, other than `besides`. */
 const nextOpened = (besides: string) =>
   Effect.gen(function* () {
@@ -301,6 +325,7 @@ const withBrowser = <A, E>(
         vault.fail = false;
         vault.password = PASSWORD;
         vault.uris = ["example.test"];
+        posts.length = 0;
         desktop.enabled = false;
         desktop.page = undefined;
         desktop.disconnected = undefined;
@@ -310,280 +335,81 @@ const withBrowser = <A, E>(
   );
 
 describe.skipIf(!executable)("credential login in a real browser", () => {
-  it.live(
-    "settlement leaves an in-progress login quarantined until endLogin closes its context",
-    () =>
-      withBrowser(
-        Effect.gen(function* () {
-          const broker = yield* Broker.PreviewAutomationBroker;
-          const manager = yield* Manager.PreviewManager;
-          const tabId = yield* openTab(broker);
-          const loginPage = pageAt("/");
-          yield* fillPassword(broker, tabId);
-          const disposable = yield* broker.invoke<PreviewAutomationStatus>({
-            scope,
+  it.live("a sign-in stays readable from the password through a one-time code step", () =>
+    withBrowser(
+      Effect.gen(function* () {
+        const broker = yield* Broker.PreviewAutomationBroker;
+        const act = invoke(broker);
+        const tabId = yield* openTab(broker, "https://login.example.test/passkey");
+        // Another agent's tab in the same browser profile.
+        const other = PreviewTabId.make(
+          (yield* broker.invoke<PreviewAutomationStatus>({
+            scope: otherAgent,
             operation: "open",
-            input: { profileId: "incognito", reuseExistingTab: false, show: false },
-          });
-          const events = yield* manager.subscribeEvents;
-          yield* settleThread(scope.thread.threadId);
-          let event = yield* PubSub.take(events);
-          while (event.type !== "closed" || event.tabId !== disposable.tabId)
-            event = yield* PubSub.take(events);
-          expect(loginPage.isClosed()).toBe(false);
-          yield* refusedRead(broker, tabId);
-          const status = yield* invoke(broker)<PreviewAutomationStatus>(tabId, "status");
-          expect(status.loginInProgress).toBe(true);
-          expectNoSecret(status);
-          const ended = yield* invoke(broker)<{ closed: Array<string> }>(tabId, "endLogin");
-          expect(ended.closed).toContain(tabId);
-          expect(loginPage.isClosed()).toBe(true);
-          expect((yield* manager.list({ threadId: scope.thread.threadId })).sessions).toEqual([]);
-          const fresh = yield* openTab(broker, "https://login.example.test/account");
-          expect(yield* invoke(broker)(fresh, "evaluate", { expression: "1" })).toBe(1);
-        }),
-      ),
-  );
-
-  it.live("a status read that began before a fill returns without the filled title", () =>
-    withBrowser(
-      Effect.gen(function* () {
-        const broker = yield* Broker.PreviewAutomationBroker;
-        const tabId = yield* openTab(broker);
-        const page = pageAt("/");
-        yield* Effect.promise(() => expectFullChrome(page));
-        const entered = Promise.withResolvers<void>();
-        const gate = Promise.withResolvers<void>();
-        const title = page.title.bind(page);
-        let held = false;
-        vi.spyOn(page, "title").mockImplementation(async () => {
-          if (!held) {
-            held = true;
-            entered.resolve();
-            await gate.promise;
-          }
-          return title();
-        });
-        const status = yield* invoke(broker)<PreviewAutomationStatus>(tabId, "status").pipe(
-          Effect.forkScoped,
+            input: {
+              url: "https://login.example.test/child",
+              profileId: "default",
+              show: false,
+              reuseExistingTab: false,
+            },
+          })).tabId!,
         );
-        yield* Effect.promise(() => entered.promise);
-        yield* fillPassword(broker, tabId);
-        // The page copied the password into its title.
-        expect(yield* Effect.promise(() => title())).toBe(PASSWORD);
-        gate.resolve();
-        const result = yield* Fiber.join(status);
-        expect(result).toMatchObject({ title: null, url: null, loginInProgress: true });
-        expectNoSecret(result);
-      }),
-    ),
-  );
-
-  it.live("a failed follow-up fill keeps a popup opened during it in the login", () =>
-    withBrowser(
-      Effect.gen(function* () {
-        const broker = yield* Broker.PreviewAutomationBroker;
-        const tabId = yield* openTab(broker);
-        const page = pageAt("/");
-        yield* fillPassword(broker, tabId);
-        const gate = Promise.withResolvers<void>();
-        const entered = Promise.withResolvers<void>();
-        vault.gate = gate.promise;
-        vault.entered = entered.resolve;
-        vault.fail = true;
-        const retry = yield* fillPassword(broker, tabId).pipe(Effect.flip, Effect.forkScoped);
-        yield* Effect.promise(() => entered.promise);
-        const popupOpened = yield* nextOpened(tabId);
-        yield* Effect.promise(() => page.evaluate(`window.open("/child")`));
-        const popup = yield* popupOpened;
-        yield* refusedRead(broker, popup);
-        gate.resolve();
-        expect(yield* Fiber.join(retry)).toMatchObject({ reason: "vaultUnavailable" });
-        yield* refusedRead(broker, tabId);
-        yield* refusedRead(broker, popup);
-      }),
-    ),
-  );
-
-  it.live("a failed first fill keeps its group in the login after a related fill succeeds", () =>
-    withBrowser(
-      Effect.gen(function* () {
-        const broker = yield* Broker.PreviewAutomationBroker;
-        const tabId = yield* openTab(broker);
-        const popupOpened = yield* nextOpened(tabId);
-        yield* invoke(broker)(tabId, "click", { locator: "#plain-popup" });
-        const popup = yield* popupOpened;
-        yield* invoke(broker)(popup, "evaluate", {
-          expression:
-            "document.body.insertAdjacentHTML('beforeend', '<input id=pw type=password>')",
+        const filled = yield* fillPassword(broker, tabId, "input[type=password]");
+        expect(filled).toEqual({
+          filled: true,
+          item: "Example",
+          field: "password",
+          site: "example.test",
+          tabId,
         });
-        const gate = Promise.withResolvers<void>();
-        const entered = Promise.withResolvers<void>();
-        vault.gate = gate.promise;
-        vault.entered = entered.resolve;
-        const first = yield* fillPassword(broker, tabId).pipe(Effect.flip, Effect.forkScoped);
-        yield* Effect.promise(() => entered.promise);
-        // The popup's own fill reads the vault without waiting, and succeeds.
-        vault.gate = undefined;
-        vault.entered = undefined;
-        expect((yield* fillPassword(broker, popup)).site).toBe("example.test");
-        vault.fail = true;
-        gate.resolve();
-        expect(yield* Fiber.join(first)).toMatchObject({ reason: "vaultUnavailable" });
-        yield* refusedRead(broker, tabId);
-        yield* refusedRead(broker, popup);
-        const status = yield* invoke(broker)<PreviewAutomationStatus>(popup, "status");
-        expect(status).toMatchObject({ title: null, loginInProgress: true });
-        expectNoSecret(status);
-      }),
-    ),
-  );
-
-  it.live("a popup still being set up when a fill begins joins the login", () =>
-    withBrowser(
-      Effect.gen(function* () {
-        const broker = yield* Broker.PreviewAutomationBroker;
-        const tabId = yield* openTab(broker);
-        const opener = pageAt("/");
-        const context = opener.context();
-        const attach = context.newCDPSession.bind(context);
-        const gate = Promise.withResolvers<void>();
-        const entered = Promise.withResolvers<void>();
-        let held = false;
-        // Hold the popup's setup after its session exists, before it is published.
-        vi.spyOn(context, "newCDPSession").mockImplementation(async (target) => {
-          const session = await attach(target);
-          if (target !== opener && "mainFrame" in target && !held) {
-            held = true;
-            const resize = target.setViewportSize.bind(target);
-            vi.spyOn(target, "setViewportSize").mockImplementation(async (size) => {
-              entered.resolve();
-              await gate.promise;
-              return resize(size);
-            });
-          }
-          return session;
+        // Readable at once, with the filled password masked.
+        const before = yield* act<PreviewAutomationSnapshot>(tabId, "snapshot");
+        expect(before.visibleText).toContain("Password");
+        expectNoSecret({ ...before, screenshot: undefined });
+        const otherRead = yield* broker.invoke<PreviewAutomationSnapshot>({
+          scope: otherAgent,
+          tabId: other,
+          operation: "snapshot",
+          input: {},
         });
-        const popupOpened = yield* nextOpened(tabId);
-        yield* invoke(broker)(tabId, "click", { locator: "#plain-popup" });
-        const popup = yield* popupOpened;
-        yield* Effect.promise(() => entered.promise);
-        yield* fillPassword(broker, tabId);
-        gate.resolve();
-        yield* refusedRead(broker, popup);
-      }),
-    ),
-  );
+        expect(otherRead.visibleText).toContain("Child");
 
-  it.live("a tab opened in the same profile during a login starts in it", () =>
-    withBrowser(
-      Effect.gen(function* () {
-        const broker = yield* Broker.PreviewAutomationBroker;
-        const tabId = yield* openTab(broker);
-        yield* fillPassword(broker, tabId);
-        const other = yield* openTab(broker, "https://login.example.test/account");
-        yield* refusedRead(broker, other);
-        const ended = yield* invoke(broker)<{ closed: Array<string> }>(tabId, "endLogin");
-        expect([...ended.closed].toSorted()).toEqual([tabId, other].toSorted());
-        const fresh = yield* openTab(broker, "https://login.example.test/account");
-        expect(yield* invoke(broker)(fresh, "evaluate", { expression: "1" })).toBe(1);
-      }),
-    ),
-  );
-
-  it.live(
-    "a cookie batch racing the end of a login lands in the fresh context without leaking a page",
-    () =>
-      withBrowser(
-        Effect.gen(function* () {
-          const broker = yield* Broker.PreviewAutomationBroker;
-          const browser = yield* ServerBrowser.ServerBrowser;
-          const tabId = yield* openTab(broker);
-          yield* fillPassword(broker, tabId);
-          const loginContext = pageAt("/").context();
-          const mirrored = yield* browser
-            .mirrorCookies({
-              environmentId: scope.environmentId,
-              sequence: 0,
-              profile: { id: "default", name: "Default", kind: "persistent" },
-              mutations: [
-                {
-                  type: "set",
-                  cookie: {
-                    name: "mirrored",
-                    value: "from-desktop",
-                    domain: "login.example.test",
-                    path: "/",
-                    secure: true,
-                    httpOnly: false,
-                    sameSite: "lax",
-                    // 2100-01-01: persisted, so it survives the login's context.
-                    expires: 4_102_444_800,
-                  },
-                },
-              ],
-            })
-            .pipe(Effect.result, Effect.forkScoped);
-          const ended = yield* invoke(broker)<{ closed: Array<string> }>(tabId, "endLogin");
-          expect(ended.closed).toEqual([tabId]);
-          const result = yield* Fiber.join(mirrored);
-          const fresh = yield* openTab(broker);
-          expect(yield* invoke(broker)(fresh, "evaluate", { expression: "1" })).toBe(1);
-          const context = pageAt("/").context();
-          expect(context).not.toBe(loginContext);
-          // The reserved page and the new tab, nothing the mirror left behind.
-          expect(context.pages()).toHaveLength(2);
-          const cookies = yield* Effect.promise(() =>
-            context.cookies("https://login.example.test/"),
-          );
-          if (result._tag === "Success") {
-            expect(cookies.map((cookie) => cookie.name)).toContain("mirrored");
-          } else {
-            expect(result.failure._tag).toBe("CookieMirrorError");
-          }
-        }),
-      ),
-  );
-
-  it.live("a popup still attaching when its filled opener closes stays in the login", () =>
-    withBrowser(
-      Effect.gen(function* () {
-        const broker = yield* Broker.PreviewAutomationBroker;
-        const tabId = yield* openTab(broker);
-        const opener = pageAt("/");
-        yield* fillPassword(broker, tabId);
-        const context = opener.context();
-        const attach = context.newCDPSession.bind(context);
-        const gate = Promise.withResolvers<void>();
-        const entered = Promise.withResolvers<void>();
-        let held = false;
-        vi.spyOn(context, "newCDPSession").mockImplementation(async (target) => {
-          // The popup's own page session, not a frame session of the opener.
-          if (target !== opener && "mainFrame" in target && !held) {
-            held = true;
-            entered.resolve();
-            await gate.promise;
-          }
-          return attach(target);
+        yield* act(tabId, "click", { locator: "button" });
+        yield* act(tabId, "waitFor", { text: "Try another way" });
+        const prompt = yield* act<PreviewAutomationSnapshot>(tabId, "snapshot");
+        expect(prompt.visibleText).toContain("This passkey can't be used on this device.");
+        // One password submission, carrying the vault's password.
+        expect(posts).toEqual([
+          { path: "/passkey-error", body: new URLSearchParams({ password: PASSWORD }).toString() },
+        ]);
+        const status = yield* act<PreviewAutomationStatus>(tabId, "status");
+        expect(status).toMatchObject({
+          url: "https://login.example.test/passkey-error",
+          title: "Passkey",
         });
-        const popupOpened = yield* nextOpened(tabId);
-        yield* invoke(broker)(tabId, "click", { locator: "#popup" });
-        const popup = yield* popupOpened;
-        yield* Effect.promise(() => entered.promise);
-        // The opener's session closes before the popup finishes attaching.
+
+        yield* act(tabId, "click", { locator: "text=Try another way" });
+        yield* act(tabId, "waitFor", { locator: "input[autocomplete=one-time-code]" });
+        const code = yield* act(tabId, "fillCredential", {
+          item: "Example",
+          field: "totp",
+          locator: "input[autocomplete=one-time-code]",
+        });
+        expectNoSecret(code);
+        yield* act(tabId, "click", { locator: "button" });
+        yield* act(tabId, "waitFor", { text: "Signed in", urlIncludes: "/signed" });
+        expect(yield* act<PreviewAutomationStatus>(tabId, "status")).toMatchObject({
+          tabId,
+          title: "Account",
+        });
+        expect(posts.map((post) => post.path)).toEqual(["/passkey-error", "/signed"]);
+        expect(posts[1]!.body).toBe(`code=${CODE}`);
         const manager = yield* Manager.PreviewManager;
-        const closed = Promise.withResolvers<void>();
-        yield* manager.events.pipe(
-          Stream.filter((event) => event.type === "closed" && event.tabId === tabId),
-          Stream.take(1),
-          Stream.runForEach(() => Effect.sync(() => closed.resolve())),
-          Effect.forkScoped,
-        );
-        yield* invoke(broker)(tabId, "close");
-        yield* Effect.promise(() => closed.promise);
-        gate.resolve();
-        yield* refusedRead(broker, popup);
-        expectNoSecret(yield* invoke(broker)(popup, "status"));
+        expect(
+          (yield* manager.list({ threadId: scope.thread.threadId })).sessions.map(
+            (session) => session.tabId,
+          ),
+        ).toEqual([tabId]);
       }),
     ),
   );
@@ -609,174 +435,6 @@ describe.skipIf(!executable)("credential login in a real browser", () => {
       }),
     );
   });
-
-  it.live("ending a login closes a popup that was still attaching", () =>
-    withBrowser(
-      Effect.gen(function* () {
-        const broker = yield* Broker.PreviewAutomationBroker;
-        const tabId = yield* openTab(broker);
-        const opener = pageAt("/");
-        yield* fillPassword(broker, tabId);
-        const context = opener.context();
-        const attach = context.newCDPSession.bind(context);
-        const gate = Promise.withResolvers<void>();
-        const entered = Promise.withResolvers<void>();
-        let held = false;
-        vi.spyOn(context, "newCDPSession").mockImplementation(async (target) => {
-          if (target !== opener && "mainFrame" in target && !held) {
-            held = true;
-            entered.resolve();
-            await gate.promise;
-          }
-          return attach(target);
-        });
-        const popupOpened = yield* nextOpened(tabId);
-        // The profile's reserved keep-alive page is open too; the popup is the new one.
-        const before = new Set(context.pages());
-        // The popup's URL carries the filled password.
-        yield* invoke(broker)(tabId, "click", { locator: "#popup" });
-        const popup = yield* popupOpened;
-        yield* Effect.promise(() => entered.promise);
-        const popupPage = context.pages().find((page) => !before.has(page))!;
-        // End the login while the popup is still attaching, then let it finish.
-        const ending = yield* invoke(broker)<{ closed: Array<string> }>(tabId, "endLogin").pipe(
-          Effect.forkScoped,
-        );
-        gate.resolve();
-        expect(yield* Fiber.join(ending)).toEqual({ closed: [tabId] });
-        expect(popupPage.isClosed()).toBe(true);
-        // The popup's page closed with its context. Its session, if read again, opens a
-        // blank tab in the profile's fresh context.
-        const read = yield* invoke(broker)<string>(popup, "evaluate", {
-          expression: "location.href",
-        }).pipe(Effect.result);
-        expectNoSecret(read);
-        // The profile is free again once nothing of the login is left.
-        const fresh = yield* openTab(broker);
-        expect(yield* invoke(broker)(fresh, "evaluate", { expression: "1" })).toBe(1);
-      }),
-    ),
-  );
-
-  it.live("the login lasts until the profile's context has fully closed", () =>
-    withBrowser(
-      Effect.gen(function* () {
-        const broker = yield* Broker.PreviewAutomationBroker;
-        const tabId = yield* openTab(broker);
-        const page = pageAt("/");
-        // The page answers any same-origin tab with its password input.
-        yield* invoke(broker)(tabId, "evaluate", {
-          expression:
-            "globalThis.channel = new BroadcastChannel('login'); channel.onmessage = () => channel.postMessage(document.getElementById('pw').value)",
-        });
-        yield* fillPassword(broker, tabId);
-        const context = page.context();
-        const close = context.close.bind(context);
-        const gate = Promise.withResolvers<void>();
-        const entered = Promise.withResolvers<void>();
-        vi.spyOn(context, "close").mockImplementation(async (options) => {
-          entered.resolve();
-          await gate.promise;
-          return close(options);
-        });
-        const ending = yield* invoke(broker)<{ closed: Array<string> }>(tabId, "endLogin").pipe(
-          Effect.forkScoped,
-        );
-        yield* Effect.promise(() => entered.promise);
-        // While the context closes, reading the tab is refused, as it is in a login or
-        // already gone, and a new tab of the profile waits for the close.
-        expect(page.isClosed()).toBe(false);
-        const during = yield* invoke(broker)<string>(tabId, "evaluate", {
-          expression: "document.getElementById('pw').value",
-        }).pipe(Effect.flip);
-        expect(["PreviewCredentialError", "PreviewAutomationTabNotFoundError"]).toContain(
-          during._tag,
-        );
-        expectNoSecret(during);
-        const opening = yield* openTab(broker).pipe(Effect.forkScoped);
-        gate.resolve();
-        expect(yield* Fiber.join(ending)).toEqual({ closed: [tabId] });
-        expect(page.isClosed()).toBe(true);
-        const fresh = yield* Fiber.join(opening);
-        const answer = yield* invoke(broker)<string>(fresh, "evaluate", {
-          expression:
-            "new Promise(resolve => { const channel = new BroadcastChannel('login'); channel.onmessage = e => resolve(e.data); channel.postMessage('ask'); setTimeout(() => resolve('no answer'), 500) })",
-        });
-        expect(answer).toBe("no answer");
-      }),
-    ),
-  );
-
-  it.live("a tab still attaching when its profile's login ends does not open", () =>
-    withBrowser(
-      Effect.gen(function* () {
-        const broker = yield* Broker.PreviewAutomationBroker;
-        const tabId = yield* openTab(broker);
-        const opener = pageAt("/");
-        yield* fillPassword(broker, tabId);
-        const context = opener.context();
-        const attach = context.newCDPSession.bind(context);
-        const gate = Promise.withResolvers<void>();
-        const entered = Promise.withResolvers<void>();
-        let held = false;
-        vi.spyOn(context, "newCDPSession").mockImplementation(async (target) => {
-          if (target !== opener && "mainFrame" in target && !held) {
-            held = true;
-            entered.resolve();
-            await gate.promise;
-          }
-          return attach(target);
-        });
-        // The profile's reserved keep-alive page is open too; the tab is the new one.
-        const before = new Set(context.pages());
-        // An ordinary new tab in the same profile, not a popup.
-        const opening = yield* openTab(broker).pipe(Effect.result, Effect.forkScoped);
-        yield* Effect.promise(() => entered.promise);
-        const pending = context.pages().find((page) => !before.has(page))!;
-        expect(yield* invoke(broker)<{ closed: Array<string> }>(tabId, "endLogin")).toEqual({
-          closed: [tabId],
-        });
-        gate.resolve();
-        expect((yield* Fiber.join(opening))._tag).toBe("Failure");
-        expect(pending.isClosed()).toBe(true);
-      }),
-    ),
-  );
-
-  it.live("a popup from another tab of the profile publishes no URL during a login", () =>
-    withBrowser(
-      Effect.gen(function* () {
-        const broker = yield* Broker.PreviewAutomationBroker;
-        const manager = yield* Manager.PreviewManager;
-        const first = yield* openTab(broker);
-        const second = yield* openTab(broker);
-        // The first page keeps what is typed; the second puts it in a popup's URL.
-        yield* invoke(broker)(first, "evaluate", {
-          expression:
-            "document.getElementById('pw').addEventListener('input', e => { localStorage.echo = e.target.value })",
-        });
-        yield* invoke(broker)(second, "evaluate", {
-          expression:
-            "document.getElementById('popup').onclick = () => window.open('/child?pw=' + encodeURIComponent(localStorage.echo))",
-        });
-        yield* fillPassword(broker, first);
-        // The whole profile is in the login, the unrelated second tab included.
-        yield* refusedRead(broker, second);
-        const events: Array<unknown> = [];
-        yield* manager.events.pipe(
-          Stream.runForEach((event) => Effect.sync(() => events.push(event))),
-          Effect.forkScoped,
-        );
-        const popupOpened = yield* nextOpened(first);
-        yield* invoke(broker)(second, "click", { locator: "#popup" });
-        const popup = yield* popupOpened;
-        yield* refusedRead(broker, popup);
-        expectNoSecret(events);
-        expectNoSecret((yield* manager.list({ threadId: scope.thread.threadId })).sessions);
-        expectNoSecret(yield* invoke(broker)(popup, "status"));
-      }),
-    ),
-  );
 
   it.live("a later fill names the vault host, never a live origin that carries a value", () =>
     withBrowser(
@@ -947,42 +605,4 @@ describe.skipIf(!executable)("credential login in a real browser", () => {
       Effect.provide(mcpLayer),
     );
   });
-
-  it.live("a three-step sign-in finishes inside the login and a fresh tab keeps its cookie", () =>
-    withBrowser(
-      Effect.gen(function* () {
-        const broker = yield* Broker.PreviewAutomationBroker;
-        const tabId = yield* openTab(broker, "https://login.example.test/step1");
-        const act = invoke(broker);
-        const results = [
-          yield* act(tabId, "fillCredential", {
-            item: "Example",
-            field: "username",
-            locator: "input[type=email]",
-          }),
-          yield* act(tabId, "click", { locator: "button" }),
-          yield* act(tabId, "waitFor", { locator: "input[type=password]" }),
-          yield* fillPassword(broker, tabId, "input[type=password]"),
-          yield* act(tabId, "click", { locator: "button" }),
-          yield* act(tabId, "waitFor", { locator: "input[autocomplete=one-time-code]" }),
-          yield* act(tabId, "fillCredential", {
-            item: "Example",
-            field: "totp",
-            locator: "input[autocomplete=one-time-code]",
-          }),
-          yield* act(tabId, "click", { locator: "button" }),
-          yield* act(tabId, "waitFor", { text: "Signed in", urlIncludes: "/signed" }),
-        ];
-        expectNoSecret(results);
-        yield* refusedRead(broker, tabId);
-        expect(yield* act<{ closed: Array<string> }>(tabId, "endLogin")).toEqual({
-          closed: [tabId],
-        });
-        const fresh = yield* openTab(broker, "https://login.example.test/account");
-        expect(yield* act(fresh, "evaluate", { expression: "document.body.innerText" })).toContain(
-          "Account signed in",
-        );
-      }),
-    ),
-  );
 });

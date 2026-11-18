@@ -14,7 +14,6 @@ import type { ServerCookieMirror } from "./ServerCookieMirror.ts";
 export type LoginRefusal =
   | "unknown_profile"
   | "incognito_profile"
-  | "login_in_progress"
   | "device_bound"
   | "too_many_cookies";
 
@@ -25,7 +24,6 @@ export const loginRefusal = (reason: LoginRefusal, profileId?: string) =>
     message: {
       unknown_profile: `unknown_profile: No browser profile has id "${profileId}". Use an id preview_status lists.`,
       incognito_profile: "incognito_profile: An incognito profile keeps no logins to copy.",
-      login_in_progress: `login_in_progress: Profile "${profileId}" is in a login. End it with preview_end_login first.`,
       device_bound:
         "device_bound: Google sign-in is bound to each machine. Sign in here with preview_fill_credential.",
       too_many_cookies:
@@ -36,7 +34,6 @@ export const loginRefusal = (reason: LoginRefusal, profileId?: string) =>
 export interface LoginProfiles {
   /** The known profile with exactly this id; names are not accepted here. */
   readonly find: (profileId: string) => BrowserProfile | undefined;
-  readonly inLogin: (profileId: string) => boolean;
 }
 
 /** Runs before any browser context opens, so a refused id creates nothing. */
@@ -45,7 +42,6 @@ const checkLoginProfile = (profiles: LoginProfiles, profileId: string) => {
   if (profile === undefined) return loginRefusal("unknown_profile", profileId);
   if (profile.kind === "incognito" || profileId === INCOGNITO_BROWSER_PROFILE_ID)
     return loginRefusal("incognito_profile");
-  if (profiles.inLogin(profileId)) return loginRefusal("login_in_progress", profileId);
   return undefined;
 };
 
@@ -68,10 +64,7 @@ export class ServerLoginCookies {
     readonly hosts: ReadonlyArray<string>;
   }): Promise<PreviewLoginExportResult> {
     this.check(input.profileId);
-    // A login may start while the read waits in the queue or the context opens.
-    const cookies = await this.mirror.readProfile(input.profileId, () =>
-      this.check(input.profileId),
-    );
+    const cookies = await this.mirror.readProfile(input.profileId);
     const selection = selectLoginCookies({ cookies, hosts: input.hosts, registrableDomain });
     if (selection._tag === "refused") throw loginRefusal(selection.reason);
     return { cookies: selection.cookies, skipped: selection.skipped };
@@ -85,8 +78,6 @@ export class ServerLoginCookies {
   }): Promise<PreviewLoginImportResult> {
     this.check(input.profileId);
     return this.mirror.writeProfile(input.profileId, (current) => {
-      // A login may have started while the context opened.
-      this.check(input.profileId);
       const plan = planLoginImport({
         current,
         snapshot: input.cookies,
