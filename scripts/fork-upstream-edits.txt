@@ -742,3 +742,4 @@ apps/web/src/i18n/translations/zh.json
 apps/server/src/http.test.ts
 apps/server/src/observability/OtlpEndpointCheck.test.ts
 apps/server/src/telemetry/AnalyticsService.test.ts
+apps/server/src/device/DeviceHubProxy.stream.test.ts
