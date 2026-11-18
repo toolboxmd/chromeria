@@ -411,34 +411,43 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const root = yield* fs.makeTempDirectoryScoped();
-      yield* fs.makeDirectory(`${root}/real/opencode`, { recursive: true });
-      yield* fs.makeDirectory(`${root}/real/gh`);
+      // OpenCode's `{file:}` matcher stops at `}` and reads raw text, so the path must stay out of it.
+      const real = `${root}/re}a"l`;
+      yield* fs.makeDirectory(`${real}/opencode/nested`, { recursive: true });
+      yield* fs.makeDirectory(`${real}/opencode/rel`);
+      yield* fs.makeDirectory(`${real}/gh`);
+      yield* fs.writeFileString(`${real}/opencode/key`, "key-1");
+      yield* fs.writeFileString(`${real}/opencode/nested/key`, "key-2");
+      yield* fs.writeFileString(`${real}/opencode/rel/key`, "key-3");
       yield* fs.writeFileString(
-        `${root}/real/opencode/config.json`,
+        `${real}/opencode/config.json`,
         JSON.stringify({ provider: { legacy: { name: "Legacy" } }, theme: "dark" }),
       );
       yield* fs.writeFileString(
-        `${root}/real/opencode/opencode.json`,
+        `${real}/opencode/opencode.json`,
         JSON.stringify({
           providers: { omlx: { name: "old", settings: { baseURL: "http://old/v1" } } },
           mcp: { secret: { type: "local", command: ["serve"] } },
         }),
       );
-      yield* fs.writeFileString(
-        `${root}/real/opencode/opencode.jsonc`,
-        `{
-          // the user's local model server
-          "provider": { "omlx": { "options": {
+      const provider = `{ "omlx": { "options": {
             "baseURL": "http://new/v1",
             "apiKey": "{env:OMLX_KEY}",
             "headers": {
               "a": "{file:./key}",
               "b": "{file:~/key}",
               "c": "{file:/abs/key}",
-              "d": "{file:{env:KEY_PATH}}",
-              "e": "{file:./{env:SUB}/key}",
+              "d": "{file:{env:REL}}",
+              "e": "{file:./{env:UP}/key}",
+              "f": "{file:./nested/{env:NAME}}",
+              // "g": "{file:./ghost}",
             },
-          } } },
+          } } }`;
+      yield* fs.writeFileString(
+        `${real}/opencode/opencode.jsonc`,
+        `{
+          // the user's local model server
+          "provider": ${provider},
           "instructions": ["AGENTS.md"],
           "plugin": ["some-plugin"],
           "agent": { "build": { "prompt": "user prompt" } },
@@ -448,13 +457,16 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
         home: `${root}/bare`,
         environment: {
           HOME: root,
-          XDG_CONFIG_HOME: `${root}/real`,
+          XDG_CONFIG_HOME: real,
           OPENCODE_CONFIG: "/unwanted/config",
           OPENCODE_CONFIG_DIR: "/unwanted",
+          REL: "./rel/key",
+          UP: "missing/..",
+          NAME: "key",
         },
       });
       const environment = yield* prepare;
-      expect(yield* fs.readLink(`${environment.XDG_CONFIG_HOME}/gh`)).toBe(`${root}/real/gh`);
+      expect(yield* fs.readLink(`${environment.XDG_CONFIG_HOME}/gh`)).toBe(`${real}/gh`);
       expect(environment.HOME).toBe(root);
       expect(environment).not.toHaveProperty("OPENCODE_CONFIG");
       const config = yield* decodeAgentplanprompt(environment.OPENCODE_CONFIG_CONTENT);
@@ -462,65 +474,51 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
       expect(JSON.parse(environment.OPENCODE_CONFIG_CONTENT ?? "{}")).toEqual(
         OPEN_CODE_BARE_CONFIG,
       );
-      // Each document keeps only its provider keys, so OpenCode still orders and normalizes them.
+      // Each document keeps only its raw provider sections, so OpenCode still orders, normalizes
+      // and substitutes them, and each relative file reference reads the original file.
       const shadow = `${environment.XDG_CONFIG_HOME}/opencode`;
-      const read = (name: string) =>
-        fs.readFileString(`${shadow}/${name}`).pipe(Effect.map((text) => JSON.parse(text)));
       expect((yield* fs.readDirectory(shadow)).toSorted()).toEqual([
         "config.json",
+        "key",
+        "nested",
         "opencode.json",
         "opencode.jsonc",
+        "rel",
       ]);
       expect((yield* fs.stat(`${shadow}/opencode.jsonc`)).mode & 0o777).toBe(0o600);
-      expect(yield* read("config.json")).toEqual({ provider: { legacy: { name: "Legacy" } } });
-      expect(yield* read("opencode.json")).toEqual({
+      const read = (name: string) => fs.readFileString(`${shadow}/${name}`);
+      expect(JSON.parse(yield* read("config.json"))).toEqual({
+        provider: { legacy: { name: "Legacy" } },
+      });
+      expect(JSON.parse(yield* read("opencode.json"))).toEqual({
         providers: { omlx: { name: "old", settings: { baseURL: "http://old/v1" } } },
       });
-      expect(yield* read("opencode.jsonc")).toEqual({
-        provider: {
-          omlx: {
-            options: {
-              baseURL: "http://new/v1",
-              apiKey: "{env:OMLX_KEY}",
-              headers: {
-                a: `{file:${root}/real/opencode/key}`,
-                b: "{file:~/key}",
-                c: "{file:/abs/key}",
-                d: "{file:{env:KEY_PATH}}",
-                e: `{file:${root}/real/opencode/{env:SUB}/key}`,
-              },
-            },
-          },
-        },
-      });
+      expect(yield* read("opencode.jsonc")).toBe(`{\n"provider": ${provider}\n}\n`);
+      expect([yield* read("key"), yield* read("nested/key"), yield* read("rel/key")]).toEqual([
+        "key-1",
+        "key-2",
+        "key-3",
+      ]);
 
-      yield* fs.remove(`${root}/real/opencode/config.json`);
       yield* fs.writeFileString(
-        `${root}/real/opencode/opencode.json`,
+        `${real}/opencode/config.json`,
+        JSON.stringify({ provider: { up: { options: { apiKey: "{file:../../outside}" } } } }),
+      );
+      const outside = yield* Effect.flip(prepare);
+      expect(outside.message).toBe(
+        `OpenCode config ${real}/opencode/config.json reads a file outside its config root that bare cannot reach.`,
+      );
+
+      yield* fs.remove(`${real}/opencode/config.json`);
+      yield* fs.writeFileString(
+        `${real}/opencode/opencode.json`,
         `{ "providers": { "omlx": { "name": "cut`,
       );
       const malformed = yield* Effect.flip(prepare);
       expect(malformed.message).toBe(
-        `OpenCode config ${root}/real/opencode/opencode.json is not valid JSON.`,
+        `OpenCode config ${real}/opencode/opencode.json is not valid JSON.`,
       );
       expect(yield* fs.exists(`${shadow}/config.json`)).toBe(false);
-
-      // A JSON-escaped directory would change the raw path OpenCode reads, so bare refuses it.
-      const quoted = `${root}/q"uote`;
-      yield* fs.makeDirectory(`${quoted}/opencode`, { recursive: true });
-      yield* fs.writeFileString(
-        `${quoted}/opencode/opencode.json`,
-        JSON.stringify({ provider: { omlx: { options: { apiKey: "{file:./key}" } } } }),
-      );
-      const escaped = yield* Effect.flip(
-        prepareOpenCodeBareEnvironment({
-          home: `${root}/bare-quoted`,
-          environment: { HOME: root, XDG_CONFIG_HOME: quoted },
-        }),
-      );
-      expect(escaped.message).toBe(
-        `OpenCode config ${quoted}/opencode/opencode.json uses a relative {file:} path that bare cannot move.`,
-      );
     }),
   );
 });

@@ -264,7 +264,10 @@ The thread shows a bare receipt with its permissions, planned stripping, native
 evidence, unobserved categories and native record location. Native content that
 cannot be disabled remains disclosed there. Cursor's custom prompt access remains
 unverified. On OpenCode 2, bare runs on a private OpenCode server and keeps the
-model identity, date and environment block that OpenCode always adds. External
+model identity, date and environment block that OpenCode always adds. Bare OpenCode
+keeps the providers defined in your global OpenCode config, so local models work bare;
+a malformed config file, or a relative provider `{file:}` path that leaves your config
+directory (`~/.config` or `$XDG_CONFIG_HOME`), fails the launch before inference. External
 OpenCode servers, Antigravity and generic ACP adapters currently refuse bare launches.
 
 To start a bare thread yourself, turn on **Bare** in the model picker of a new
