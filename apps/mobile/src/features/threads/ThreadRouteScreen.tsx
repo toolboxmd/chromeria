@@ -1,3 +1,4 @@
+import { useGT } from "gt-react-native";
 import * as Dialog from "../../components/ui/Dialog";
 import { useRememberThreadProject } from "./useRememberThreadProject";
 import { executionPurposeOf, savedPurposeIntentForScope } from "@t3tools/contracts";
@@ -538,7 +539,10 @@ function ThreadRouteContent(
       : scopeThreadRef(delegatedFrom.environmentId, delegatedFrom.threadId);
   // The title it had at delegation, until this client sees the parent itself.
   const delegatedFromThread = useThreadShell(delegatedFromRef);
+  const gt = useGT();
   const headerSubtitle = [
+    // Fork (toolboxmd/chromeria#319): the thread started as a bare launch.
+    selectedThreadDetail?.thread.bare ? gt("Bare") : null,
     selectedThreadProject?.title ?? null,
     selectedEnvironmentConnection?.environmentLabel ?? null,
     // A linked environment's delegated task names its parent; other linked work its origin.
@@ -922,6 +926,7 @@ function ThreadRouteContent(
           worktreePath: null,
           startFromOrigin: false,
           worktreeBranchName: "",
+          bare: selectedThreadDetail?.thread.bare !== undefined,
         }),
         purposeIntent: savedPurposeIntentForScope(
           executionPurposeOf(

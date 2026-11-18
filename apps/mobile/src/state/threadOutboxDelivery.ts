@@ -523,6 +523,7 @@ export const restoreRejectedQueuedMessage = Effect.fn("ThreadOutbox.restoreRejec
           ? { interactionMode: queuedMessage.interactionMode }
           : {}),
         ...(queuedMessage.freshContext ? { freshContext: true } : {}),
+        ...(queuedMessage.creation?.bare ? { bare: true } : {}),
         ...(queuedMessage.creation
           ? {
               workspaceSelection: {
@@ -1175,6 +1176,7 @@ export function createThreadOutboxDelivery(): {
         worktreePath: workspace.worktreePath,
         startFromOrigin: workspace.startFromOrigin ?? false,
         worktreeBranchName: buildTemporaryWorktreeBranchName(randomHex),
+        ...(creation.bare ? { bare: true } : {}),
       }),
     });
     if (AsyncResult.isFailure(deliveryResult) && !hasAccess()) return;

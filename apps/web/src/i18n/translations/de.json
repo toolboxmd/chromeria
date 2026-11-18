@@ -1,4 +1,9 @@
 {
+  "6e9ecf09743f277b": "Diesen Thread ohne Anweisungen, Plugins, MCP-Server oder Skills starten.",
+  "b1f983b1624fa15f": "Dieser Server kann keine Bare-Threads starten.",
+  "880f20369ca9f313": "Bare ist für diesen Anbieter nicht verfügbar: {reason}",
+  "d94ca1971519158e": "Bare",
+  "e18687dd153fda62": "Bare gestartet, ohne Anweisungen, Plugins, MCP-Server oder Skills. Der Hinweis im Verlauf zeigt, was entfernt wurde.",
   "0a75e464d833bca8": "Einstellungen",
   "6aa1c88c4fa5be28": "Diagnose",
   "fb29e435b1219373": "Open-Source-Lizenzen",

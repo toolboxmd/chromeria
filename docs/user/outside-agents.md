@@ -267,6 +267,11 @@ unverified. On OpenCode 2, bare runs on a private OpenCode server and keeps the
 model identity, date and environment block that OpenCode always adds. External
 OpenCode servers, Antigravity and generic ACP adapters currently refuse bare launches.
 
+To start a bare thread yourself, turn on **Bare** in the model picker of a new
+thread, or in a new task's options on mobile. It starts off for every new thread
+and is unavailable, with the reason, where the selected provider refuses bare
+launches. The thread header then shows **Bare**.
+
 Bare is fixed when the thread starts. Native forks inherit it; importing or
 transferring portable history is unsupported. Start a normal thread to use ordinary
 context. A bare schedule without an explicit bind starts a fresh thread each time.

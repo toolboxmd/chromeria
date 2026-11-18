@@ -92,6 +92,7 @@ import {
 import { isSameRepository, resolveEnvironmentProjectMatch } from "./new-task-project-selection";
 import { useNewTaskProjectDefaults } from "./use-new-task-project-defaults";
 import { resolveNewThreadRuntimeMode } from "./thread-settings-options";
+import { bareLaunchRequest, resolveBareToggle } from "@t3tools/client-runtime/bare-launch";
 import { resolveProjectThreadCreationBranch } from "./projectThreadCreationValidation";
 import {
   INACTIVE_FLOW_KEY,
@@ -786,6 +787,17 @@ export function NewTaskFlowProvider(
         worktreePath: mode === "worktree" ? null : (workspaceSelection?.worktreePath ?? null),
         ...((workspaceSelection?.startFromOrigin ?? startFromOrigin)
           ? { startFromOrigin: true }
+          : {}),
+        ...(bareLaunchRequest(
+          resolveBareToggle({
+            isNewThread: true,
+            provider: selectedEnvironmentServerConfig?.providers.find(
+              (provider) => provider.instanceId === draftModelSelection.instanceId,
+            ),
+            requested: draft.bare === true,
+          }),
+        )
+          ? { bare: true }
           : {}),
       },
       createdAt: metadata.createdAt,

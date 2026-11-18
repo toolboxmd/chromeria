@@ -1,4 +1,9 @@
 {
+  "6e9ecf09743f277b": "Start this thread without instructions, plugins, MCP servers or skills.",
+  "b1f983b1624fa15f": "This server cannot start bare threads.",
+  "880f20369ca9f313": "Bare is not available for this provider: {reason}",
+  "d94ca1971519158e": "Bare",
+  "e18687dd153fda62": "Started bare, without instructions, plugins, MCP servers or skills. The timeline notice lists what was removed.",
   "0a75e464d833bca8": "Settings",
   "6aa1c88c4fa5be28": "Diagnostics",
   "fb29e435b1219373": "Open source licenses",

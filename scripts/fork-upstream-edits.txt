@@ -704,6 +704,27 @@ apps/server/src/storageCleanup.test.ts
 apps/desktop/src/app/DesktopApp.test.ts
 apps/mobile/src/features/threads/useThreadListV2.test.tsx
 apps/server/src/mcp/TaskCancelUsageLimit.integration.test.ts
+apps/mobile/src/features/threads/ThreadSettingsSheet.tsx
+apps/mobile/src/features/threads/new-task-flow-provider.tsx
+apps/mobile/src/i18n/translations/de.json
+apps/mobile/src/i18n/translations/en.json
+apps/mobile/src/i18n/translations/es.json
+apps/mobile/src/i18n/translations/fr.json
+apps/mobile/src/i18n/translations/ja.json
+apps/mobile/src/i18n/translations/ko.json
+apps/mobile/src/i18n/translations/pt-BR.json
+apps/mobile/src/i18n/translations/ru.json
+apps/mobile/src/i18n/translations/zh.json
+apps/mobile/src/lib/projectThreadStartTurn.test.ts
+apps/mobile/src/lib/projectThreadStartTurn.ts
+apps/server/src/provider/ProviderRegistry.test.ts
+apps/server/src/provider/ProviderRegistry.ts
+apps/web/src/components/chat/ComposerControlsBar.tsx
+apps/web/src/components/chat/ComposerModelEffort.tsx
+packages/contracts/src/server.ts
+apps/mobile/src/state/threadOutboxDelivery.test.ts
+apps/mobile/src/state/use-composer-drafts.test.ts
+apps/mobile/src/state/use-composer-drafts.ts
 apps/web/src/components/chat/ThreadLineageWorkflowRow.tsx
 apps/web/src/components/chat/useThreadLifecycle.browser.test.tsx
 

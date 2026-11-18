@@ -30,6 +30,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as ModelManifest from "./ModelManifest.ts";
 import { applyProviderCompatibility } from "./providerCompatibility.ts";
+import { withBareSupport } from "./providerBareSupport.ts";
 import * as ServerConfig from "../config.ts";
 import { refreshWindowsPath } from "../os-jank.ts";
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
@@ -385,13 +386,14 @@ const snapshotInstanceKey = (provider: ServerProvider): ProviderInstanceId => {
 };
 
 // Rebuilt instances have new PubSubs; capture their fresh closures instead of a closed source.
-const buildSnapshotSource = (instance: ProviderInstance): ProviderSnapshotSource => ({
-  instanceId: instance.instanceId,
-  driverKind: instance.driverKind,
-  getSnapshot: instance.snapshot.getSnapshot,
-  refresh: instance.snapshot.refresh,
-  streamChanges: instance.snapshot.streamChanges,
-});
+const buildSnapshotSource = (instance: ProviderInstance): ProviderSnapshotSource =>
+  withBareSupport(instance, {
+    instanceId: instance.instanceId,
+    driverKind: instance.driverKind,
+    getSnapshot: instance.snapshot.getSnapshot,
+    refresh: instance.snapshot.refresh,
+    streamChanges: instance.snapshot.streamChanges,
+  });
 
 export const layer = Layer.effect(
   ProviderRegistry,

@@ -1,4 +1,9 @@
 {
+  "6e9ecf09743f277b": "Inicia este hilo sin instrucciones, plugins, servidores MCP ni skills.",
+  "b1f983b1624fa15f": "Este servidor no puede iniciar hilos Bare.",
+  "880f20369ca9f313": "Bare no está disponible para este proveedor: {reason}",
+  "d94ca1971519158e": "Bare",
+  "e18687dd153fda62": "Iniciado en modo Bare, sin instrucciones, plugins, servidores MCP ni skills. El aviso de la cronología indica qué se quitó.",
   "0a75e464d833bca8": "Ajustes",
   "6aa1c88c4fa5be28": "Diagnóstico",
   "fb29e435b1219373": "Licencias de código abierto",

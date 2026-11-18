@@ -260,6 +260,7 @@ describe("V2 environment commands", () => {
       yield* startThreadTurn({
         commandId: CommandId.make("launch-existing-worktree"),
         prismRole: "promachos",
+        bare: {},
         threadId: v2ThreadId,
         message: {
           messageId: MessageId.make("message-existing-worktree"),
@@ -286,6 +287,7 @@ describe("V2 environment commands", () => {
 
       expect(launches[0]).toMatchObject({
         prismRole: "promachos",
+        bare: {},
         threadId: v2ThreadId,
         title: "Continue here",
         generateTitle: true,

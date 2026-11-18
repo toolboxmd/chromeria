@@ -1,6 +1,7 @@
 import { isClearComposerCommand, parseSideChatCommand } from "@t3tools/shared/composerTrigger";
 import { armFreshSession, disarmFreshSession, readFreshSessionArm } from "./freshSessionArms";
 import { withPromachosStart } from "../promachos/promachosStart";
+import { draftBareLaunchRequest } from "@t3tools/client-runtime/bare-launch";
 import {
   mergeDirectPreviewAnnotation,
   resolveBackgroundDraftWorkspaceOptions,
@@ -1340,6 +1341,15 @@ export function useComposerSend(input: ComposerSendInput) {
           )
         : null;
       if (backgroundThreadRef) beginBackgroundDraftSubmissionByRef(backgroundThreadRef);
+      const bare =
+        isLocalDraftThread && draftId !== null
+          ? draftBareLaunchRequest({
+              draftKey: draftId,
+              provider: providerInstanceEntries.find(
+                (entry) => entry.instanceId === ctxSelectedModelSelection.instanceId,
+              )?.snapshot,
+            })
+          : undefined;
       const startPromise = withPromachosStart(
         startThreadTurn,
         promachosModels ?? null,
@@ -1365,6 +1375,7 @@ export function useComposerSend(input: ComposerSendInput) {
           dispatchMode: turnDispatchMode,
           ...(freshArm === undefined ? {} : { freshContext: true }),
           ...(bootstrap ? { bootstrap } : {}),
+          ...(bare === undefined ? {} : { bare }),
           createdAt: messageCreatedAt,
         },
       });

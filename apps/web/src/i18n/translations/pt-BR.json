@@ -1,4 +1,9 @@
 {
+  "6e9ecf09743f277b": "Iniciar esta conversa sem instruções, plugins, servidores MCP ou skills.",
+  "b1f983b1624fa15f": "Este servidor não consegue iniciar conversas Bare.",
+  "880f20369ca9f313": "Bare não está disponível para este provedor: {reason}",
+  "d94ca1971519158e": "Bare",
+  "e18687dd153fda62": "Iniciada em modo Bare, sem instruções, plugins, servidores MCP ou skills. O aviso na linha do tempo lista o que foi removido.",
   "0a75e464d833bca8": "Configurações",
   "6aa1c88c4fa5be28": "Diagnóstico",
   "fb29e435b1219373": "Licenças de código aberto",
