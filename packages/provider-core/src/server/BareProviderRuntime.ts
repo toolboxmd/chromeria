@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 import * as NodeOS from "node:os";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import { parseTree, type ParseError } from "jsonc-parser";
+import { parseTree, type Node, type ParseError } from "jsonc-parser";
 import { type ProviderInstanceId } from "@t3tools/contracts";
 import { BareLaunchError, writeBareConfig } from "./bareLaunch.ts";
 
@@ -128,16 +128,31 @@ const OPEN_CODE_PROVIDER_KEYS = new Set(["provider", "providers"]);
 const ENV_TOKEN = /\{env:([^}]+)\}/g;
 const FILE_TOKEN = /\{file:([^}]+)\}/g;
 
-/** OpenCode's raw `{env:...}` expansion, with file tokens held by a placeholder valid only in strings. */
-const expandEnv = (text: string, environment: NodeJS.ProcessEnv) =>
-  text
-    .replace(ENV_TOKEN, (_, variable: string) => environment[variable] || "")
-    .replace(FILE_TOKEN, "t3-file");
-
 const parses = (text: string) => {
   const errors: Array<ParseError> = [];
   const tree = parseTree(text, errors, { allowTrailingComma: true });
   return errors.length > 0 ? undefined : tree;
+};
+
+/**
+ * Parses OpenCode's raw `{env:...}` expansion with each `{file:...}` held by a unique placeholder,
+ * only when every placeholder lands inside a JSON string: file content then cannot change the
+ * parse. A placeholder after a lone backslash is an invalid escape, so that case fails too.
+ */
+const parseExpanded = (text: string, environment: NodeJS.ProcessEnv) => {
+  let files = 0;
+  const tree = parses(
+    text
+      .replace(ENV_TOKEN, (_, variable: string) => environment[variable] || "")
+      .replace(FILE_TOKEN, () => `q${files++}t3`),
+  );
+  const strings = (node: Node | undefined): number =>
+    node === undefined
+      ? 0
+      : node.type === "string"
+        ? (String(node.value).match(/q\d+t3/g) ?? []).length
+        : (node.children ?? []).reduce((count, child) => count + strings(child), 0);
+  return tree !== undefined && strings(tree) === files ? tree : undefined;
 };
 
 /**
@@ -180,21 +195,6 @@ const shadowOpenCodeProviders = Effect.fn("BareProviderRuntime.openCodeProviders
     );
     if (changed !== undefined)
       return yield* refuse(`has a provider using {env:${changed}}, which bare changes.`);
-    const expanded = parses(expandEnv(document, original));
-    if (
-      (text!.includes("{env:") && parses(expandEnv(text!, original)) === undefined) ||
-      expanded === undefined
-    )
-      return yield* refuse(
-        "has an {env:} value or {file:} token that is not plain JSON string content, which bare cannot copy.",
-      );
-    if (
-      (expanded.children ?? []).length !== sections.length ||
-      (expanded.children ?? []).some(
-        (property) => !OPEN_CODE_PROVIDER_KEYS.has(String(property.children?.[0]?.value)),
-      )
-    )
-      return yield* refuse("has an {env:} value that changes the provider structure.");
     // A relative path would resolve beside the copy; commented tokens count, to never miss one.
     const relative = Array.from(
       document
@@ -205,6 +205,21 @@ const shadowOpenCodeProviders = Effect.fn("BareProviderRuntime.openCodeProviders
       return yield* refuse(
         "has a provider {file:} path relative to its folder, which bare cannot read; use an absolute or ~/ path.",
       );
+    const expanded = parseExpanded(document, original);
+    if (
+      (text!.includes("{env:") && parseExpanded(text!, original) === undefined) ||
+      expanded === undefined
+    )
+      return yield* refuse(
+        "has an {env:} value that is not plain JSON string content, or a {file:} token outside a JSON string, which bare cannot copy.",
+      );
+    if (
+      (expanded.children ?? []).length !== sections.length ||
+      (expanded.children ?? []).some(
+        (property) => !OPEN_CODE_PROVIDER_KEYS.has(String(property.children?.[0]?.value)),
+      )
+    )
+      return yield* refuse("has an {env:} value that changes the provider structure.");
     yield* writeBareConfig(shadow, document);
   }
 });

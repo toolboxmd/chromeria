@@ -489,7 +489,7 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
       // bare refuses a value that is not plain string content anywhere in the document.
       expect((yield* Effect.flip(prepare({ OMLX_KEY: 'say "hi"' }))).message).toBe(
         refused(
-          "has an {env:} value or {file:} token that is not plain JSON string content, which bare cannot copy.",
+          "has an {env:} value that is not plain JSON string content, or a {file:} token outside a JSON string, which bare cannot copy.",
         ),
       );
       expect(
@@ -507,6 +507,21 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
       expect((yield* Effect.flip(prepare())).message).toBe(
         refused("has a provider using {env:XDG_CONFIG_HOME}, which bare changes."),
       );
+      // File content replaces a token before OpenCode parses, so one outside a string, even in a
+      // comment of a dropped field, could reshape the document or flip OpenCode 2's escaping.
+      const outsideString = refused(
+        "has an {env:} value that is not plain JSON string content, or a {file:} token outside a JSON string, which bare cannot copy.",
+      );
+      yield* fs.writeFileString(
+        `${real}/opencode/opencode.jsonc`,
+        `{ "providers": { /* {file:/break} */ "local": { "name": "Local" } } }`,
+      );
+      expect((yield* Effect.flip(prepare())).message).toBe(outsideString);
+      yield* fs.writeFileString(
+        `${real}/opencode/opencode.jsonc`,
+        `{ "providers": { "local": { "settings": { "apiKey": "{env:OMLX_KEY}" } } }, "instructions": [] /* {file:/c} */ }`,
+      );
+      expect((yield* Effect.flip(prepare())).message).toBe(outsideString);
       yield* fs.writeFileString(
         `${real}/opencode/opencode.jsonc`,
         `{ "provider": { "omlx": { "options": {} /* {file:./key} */ } } }`,
