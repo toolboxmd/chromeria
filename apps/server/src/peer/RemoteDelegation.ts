@@ -1197,7 +1197,7 @@ const make = Effect.gen(function* () {
   ) {
     let reply: OrchestratorMcpThreadTimelineItem | undefined;
     let error: OrchestratorMcpThreadTimelineItem | undefined;
-    let afterPosition: number | undefined;
+    let afterPosition = -1;
     let run: OrchestratorMcpThreadRun | undefined;
     while (true) {
       const read = yield* forwarding.readThread(scope, remote.environmentId, {
@@ -1206,7 +1206,7 @@ const make = Effect.gen(function* () {
         limit: 100,
         runLimit: 50,
         maxCharsPerItem: 20_000,
-        ...(afterPosition === undefined ? {} : { afterPosition }),
+        afterPosition,
       });
       run ??= read.recentRuns.find((candidate) => candidate.runId === runId);
       reply =
