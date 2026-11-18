@@ -40,7 +40,8 @@ jobs:
 
             if (context.eventName === "issue_comment") {
               const issue = context.payload.issue;
-              const body = context.payload.comment?.body ?? "";
+              // Match the case-insensitive job gate.
+              const body = (context.payload.comment?.body ?? "").toLowerCase();
               if (!issue?.pull_request || !body.includes("/recheck-vouch")) {
                 core.setOutput("targets", "[]");
                 return;
