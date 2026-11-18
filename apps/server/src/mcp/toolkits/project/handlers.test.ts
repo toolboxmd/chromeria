@@ -550,6 +550,8 @@ const clientLaunchHarness = (input: {
   readonly hostedAppUrl?: string;
   /** The orchestrator refuses the new thread's mode, as under a managed ceiling. */
   readonly refusedByCeiling?: true;
+  /** The caller is another environment's peer link forwarding a launch. */
+  readonly linked?: true;
 }) => {
   const projectId = ProjectId.make("project:client-target");
   const modelSelection = {
@@ -610,6 +612,7 @@ const clientLaunchHarness = (input: {
         label: "Claude Code",
         access: input.runtimeModeCeiling,
         hostedAppUrl: input.hostedAppUrl,
+        linked: input.linked,
       },
       issuedAt: 0,
       capabilities: new Set(["orchestration" as const]),
@@ -1246,7 +1249,12 @@ it.effect("a worktree launch that omits startFromOrigin follows the new-worktree
 it.effect("a launch that omits its workspace follows the new-threads-in-a-worktree default", () =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
-    for (const source of ["setting", "t3.json"] as const) {
+    for (const [source, linked] of [
+      ["setting", false],
+      ["t3.json", false],
+      // A forwarded peer launch keeps the checkout its caller chose.
+      ["setting", true],
+    ] as const) {
       const repo = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-launch-env-mode-" });
       const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
       const { projectId, dependencies } = clientLaunchHarness({
@@ -1254,6 +1262,7 @@ it.effect("a launch that omits its workspace follows the new-threads-in-a-worktr
         launched,
         workspaceRoot: repo,
         ...(source === "setting" ? { defaultThreadEnvMode: "worktree" as const } : {}),
+        ...(linked ? { linked } : {}),
       });
       const git = yield* GitVcsDriver.GitVcsDriver.pipe(Effect.provide(dependencies));
       for (const args of [
@@ -1286,8 +1295,8 @@ it.effect("a launch that omits its workspace follows the new-threads-in-a-worktr
 
       expect(
         launched.map((launch) => launch.workspaceStrategy.type),
-        source,
-      ).toEqual(["worktree", "root"]);
+        `${source}${linked ? " linked" : ""}`,
+      ).toEqual([linked ? "root" : "worktree", "root"]);
     }
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
