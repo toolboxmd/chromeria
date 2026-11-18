@@ -3356,7 +3356,7 @@ sources and reasons.
 ```json
 {
   "id": "preview-save-secret",
-  "purpose": "preview_save_secret saves the value one element shows in a server browser tab to a new owner-only file through SecretRequests.saveCaptured, swept after 24 hours, and returns only the path and length. It refuses desktop-hosted tabs, frames that are not https, tabs in a login, Playwright protocol logging and calls forwarded from a linked environment, each with a fixed message. Drop when upstream moves page values into agents' files without exposing them.",
+  "purpose": "preview_save_secret saves the value one element shows in a server browser tab to a new owner-only file through SecretRequests.saveCaptured, swept after 24 hours, and returns only the path and length. It refuses desktop-hosted tabs, frames that are not https, Playwright protocol logging and calls forwarded from a linked environment, each with a fixed message. Drop when upstream moves page values into agents' files without exposing them.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/799"],
   "prs": ["https://github.com/toolboxmd/chromeria/compare/main...feat/preview-save-secret"],
   "newFiles": ["apps/server/src/preview/SecretCapture.ts"],
