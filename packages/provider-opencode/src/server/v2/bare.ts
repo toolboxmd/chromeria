@@ -71,13 +71,14 @@ export const inspect = Effect.fn("OpenCode2Bare.inspect")(function* (
   directory: string,
 ) {
   const location = { directory };
-  const { agents, plugins, mcp, skills } = yield* Effect.all({
+  const { agents, plugins, mcp, skills, config } = yield* Effect.all({
     agents: Effect.forEach(["build", "plan"], (id) =>
       client.agent.get({ agentID: Agent.ID.make(id), location }),
     ),
     plugins: client.plugin.list({ location }),
     mcp: client.mcp.list({ location }),
     skills: client.skill.list({ location }),
+    config: client.config.get({ location }),
   }).pipe(
     Effect.mapError(
       (cause) =>
@@ -123,6 +124,13 @@ export const inspect = Effect.fn("OpenCode2Bare.inspect")(function* (
       skills.data.map((skill) => skill.id),
       [],
       "OpenCode skill.list before inference",
+    ),
+    // OpenCode unions instructions over every document, including managed config bare cannot disable.
+    bareInventoryEvidence(
+      "instructions",
+      config.flatMap((entry) => (entry.type === "document" ? (entry.info.instructions ?? []) : [])),
+      [],
+      "OpenCode config.get before inference",
     ),
   ];
   const unexpected = evidence.filter((entry) => entry.status === "observed_unexpected");
