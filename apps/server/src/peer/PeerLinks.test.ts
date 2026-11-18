@@ -39,8 +39,8 @@ import {
   layerLinkingEnvironment,
   servePeer,
   type ServedPeer,
-  layerLoopbackServerTest,
 } from "./PeerLinks.testkit.ts";
+import { layerLoopbackServerTest } from "../testUtils/loopbackHttpServer.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
 
 import { layerReaderDatabase, traceSqlRouting } from "../persistence/testkit/SqliteRouting.ts";

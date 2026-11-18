@@ -1,8 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- The loopback test server needs node:http's createServer.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
-import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import * as NodeHttp from "node:http";
 import type * as SqlClient from "effect/sql/SqlClient";
 import * as PeerAuthority from "./PeerAuthority.ts";
 import * as PeerNoticeDelivery from "./PeerNoticeDelivery.ts";
@@ -70,19 +68,6 @@ export const descriptorOf = (
     ...capabilities,
   },
 });
-
-/**
- * `NodeHttpServer.layerTest` bound to 127.0.0.1, where `servePeer` is dialled. Its wildcard
- * bind leaves 127.0.0.1 on the same port free, so on macOS another process can take the probe.
- */
-export const layerLoopbackServerTest = HttpServer.layerTestClient.pipe(
-  Layer.provide(
-    Layer.fresh(FetchHttpClient.layer).pipe(
-      Layer.provide(Layer.succeed(FetchHttpClient.RequestInit)({ keepalive: false })),
-    ),
-  ),
-  Layer.provideMerge(NodeHttpServer.layer(NodeHttp.createServer, { port: 0, host: "127.0.0.1" })),
-);
 
 /**
  * The environment a link points at, as it runs: its descriptor, MCP OAuth,

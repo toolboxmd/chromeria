@@ -40,7 +40,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as Adapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as PeerAuthority from "./PeerAuthority.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
-import { descriptorOf, linkTo, layerLoopbackServerTest } from "./PeerLinks.testkit.ts";
+import { descriptorOf, linkTo } from "./PeerLinks.testkit.ts";
+import { layerLoopbackServerTest } from "../testUtils/loopbackHttpServer.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
 import {

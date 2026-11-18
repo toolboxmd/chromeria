@@ -34,8 +34,8 @@ import {
   layerLinkingEnvironment,
   linkTo,
   servePeer,
-  layerLoopbackServerTest,
 } from "../peer/PeerLinks.testkit.ts";
+import { layerLoopbackServerTest } from "../testUtils/loopbackHttpServer.ts";
 import * as Settings from "../serverSettings.ts";
 import * as PageCache from "./PageCache.ts";
 import * as PublicHttp from "./PublicHttp.ts";

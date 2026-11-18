@@ -1,12 +1,12 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 // @effect-diagnostics nodeBuiltinImport:off - the test writes a ContextMD store on disk, reads the serving log and runs a fake Cue service.
+import { layerLoopbackServerTest } from "../testUtils/loopbackHttpServer.ts";
 import * as NodeFS from "node:fs";
 import * as NodeHttp from "node:http";
 import type * as NodeNet from "node:net";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 
-import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it, vi } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
@@ -345,7 +345,7 @@ const serve = <R>(
             ConfigProvider.fromUnknown({ CONTEXTMD_SERVING_CONFIG: store.config }),
           ),
         ),
-        Layer.provideMerge(NodeHttpServer.layerTest),
+        Layer.provideMerge(layerLoopbackServerTest),
       ),
     );
     const client = Context.get(services, HttpClient.HttpClient);

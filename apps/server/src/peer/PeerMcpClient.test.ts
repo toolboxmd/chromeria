@@ -31,13 +31,8 @@ import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../mcp/McpToolAccess.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
-import {
-  descriptorOf,
-  layerLinkingEnvironment,
-  linkTo,
-  servePeer,
-  layerLoopbackServerTest,
-} from "./PeerLinks.testkit.ts";
+import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
+import { layerLoopbackServerTest } from "../testUtils/loopbackHttpServer.ts";
 
 const Result = Schema.Struct({ modes: Schema.String });
 const toolkit = Toolkit.make(

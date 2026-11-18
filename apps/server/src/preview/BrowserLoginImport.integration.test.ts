@@ -30,12 +30,8 @@ import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import * as PeerAuthority from "../peer/PeerAuthority.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
-import {
-  descriptorOf,
-  linkTo,
-  servePeer,
-  layerLoopbackServerTest,
-} from "../peer/PeerLinks.testkit.ts";
+import { descriptorOf, linkTo, servePeer } from "../peer/PeerLinks.testkit.ts";
+import { layerLoopbackServerTest } from "../testUtils/loopbackHttpServer.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as Settings from "../serverSettings.ts";

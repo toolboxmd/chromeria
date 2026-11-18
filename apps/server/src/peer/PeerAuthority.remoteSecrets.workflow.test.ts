@@ -50,7 +50,8 @@ import { RuntimeRequestId, ProviderSessionId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-import { descriptorOf, linkTo, layerLoopbackServerTest } from "./PeerLinks.testkit.ts";
+import { descriptorOf, linkTo } from "./PeerLinks.testkit.ts";
+import { layerLoopbackServerTest } from "../testUtils/loopbackHttpServer.ts";
 import {
   caller,
   makeNode,

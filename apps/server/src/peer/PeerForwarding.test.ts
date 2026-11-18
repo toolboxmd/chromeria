@@ -1,7 +1,8 @@
 import * as DocumentText from "../provider/DocumentText.ts";
 import * as Database from "../persistence/Sqlite.ts";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
-import { layerLaunchCatalog, layerLoopbackServerTest } from "./PeerLinks.testkit.ts";
+import { layerLaunchCatalog } from "./PeerLinks.testkit.ts";
+import { layerLoopbackServerTest } from "../testUtils/loopbackHttpServer.ts";
 
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";

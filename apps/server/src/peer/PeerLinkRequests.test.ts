@@ -62,8 +62,8 @@ import {
   linkTo,
   servePeer,
   type ServedPeer,
-  layerLoopbackServerTest,
 } from "./PeerLinks.testkit.ts";
+import { layerLoopbackServerTest } from "../testUtils/loopbackHttpServer.ts";
 import * as RemoteDelegation from "./RemoteDelegation.ts";
 
 // The laptop's agent asks the user to link the box. The laptop is its real

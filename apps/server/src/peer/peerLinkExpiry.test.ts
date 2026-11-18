@@ -7,12 +7,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import * as PeerLinks from "./PeerLinks.ts";
-import {
-  descriptorOf,
-  layerLinkingEnvironment,
-  servePeer,
-  layerLoopbackServerTest,
-} from "./PeerLinks.testkit.ts";
+import { descriptorOf, layerLinkingEnvironment, servePeer } from "./PeerLinks.testkit.ts";
+import { layerLoopbackServerTest } from "../testUtils/loopbackHttpServer.ts";
 import { peerLinkExpiry } from "./peerLinkExpiry.ts";
 
 it.effect("stores the capped expiry after linking to a peer whose clock is behind", () =>

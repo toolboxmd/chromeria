@@ -12,7 +12,8 @@ import { Command } from "effect/cli";
 import type * as CliError from "effect/cli/CliError";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import { cli } from "../binCli.ts";
-import { descriptorOf, servePeer, layerLoopbackServerTest } from "./PeerLinks.testkit.ts";
+import { descriptorOf, servePeer } from "./PeerLinks.testkit.ts";
+import { layerLoopbackServerTest } from "../testUtils/loopbackHttpServer.ts";
 
 const run = (
   args: ReadonlyArray<string>,

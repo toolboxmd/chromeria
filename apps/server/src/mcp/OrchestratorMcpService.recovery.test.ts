@@ -1,7 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import { layerLoopbackServerTest } from "../testUtils/loopbackHttpServer.ts";
 import * as PeerLinkRequests from "../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
-import { NodeHttpServer } from "@effect/platform-node";
 import { HttpBody, HttpClient, HttpRouter } from "effect/http";
 import * as Schema from "effect/Schema";
 import * as McpHttpServer from "./McpHttpServer.ts";
@@ -145,7 +145,7 @@ const read = Effect.scoped(
     const body = yield* decodeReadResponse(yield* response.text);
     return body.result.structuredContent;
   }),
-).pipe(Effect.provide(NodeHttpServer.layerTest));
+).pipe(Effect.provide(layerLoopbackServerTest));
 const processLayer = (path: string) => {
   const database = Persistence.layerFromPath(path).pipe(Layer.provide(NodeServices.layer));
   const stores = Layer.mergeAll(

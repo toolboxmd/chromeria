@@ -26,6 +26,7 @@ import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { layerLaunchCatalog } from "./PeerLinks.testkit.ts";
+import { layerLoopbackServerTest } from "../testUtils/loopbackHttpServer.ts";
 import * as Settings from "../serverSettings.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -96,13 +97,7 @@ import { git, layerRealGit, pushedCheckouts } from "./DelegatedWorktreeBase.test
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
-import {
-  descriptorOf,
-  layerLinkingEnvironment,
-  layerLoopbackServerTest,
-  linkTo,
-  servePeer,
-} from "./PeerLinks.testkit.ts";
+import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
 import * as RemoteDelegation from "./RemoteDelegation.ts";
 
 // The laptop's agent delegates a task to the box through a link. The box is

@@ -1,4 +1,5 @@
 import { PreviewWatchToolkit } from "./toolkits/preview/tools.ts";
+import { layerLoopbackServerTest } from "../testUtils/loopbackHttpServer.ts";
 import * as Option from "effect/Option";
 import { McpSavedSnapshotReceipt } from "@t3tools/contracts";
 import * as PlatformError from "effect/PlatformError";
@@ -9,7 +10,6 @@ import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { expect, it } from "@effect/vitest";
-import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -1237,7 +1237,7 @@ it.effect("terminates HTTP MCP sessions with DELETE", () =>
       });
       expect(reusedSessionResponse.status).toBe(404);
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect("answers 2026-07-28 discovery and keeps 2025-06-18 as the initialize fallback", () =>
@@ -1355,7 +1355,7 @@ it.effect("answers 2026-07-28 discovery and keeps 2025-06-18 as the initialize f
       };
       expect(initialized.result.protocolVersion).toBe("2025-06-18");
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect("admits provider and OAuth client credentials and points only clients at OAuth", () =>
@@ -1560,7 +1560,7 @@ it.effect("admits provider and OAuth client credentials and points only clients 
       expect((yield* foreignOrigin("POST", undefined)).status).toBe(403);
       expect((yield* foreignOrigin("OPTIONS", undefined)).status).toBe(403);
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect("accepts case-insensitive MCP bearer schemes and diagnoses rejected credentials", () => {
@@ -1658,7 +1658,7 @@ it.effect("accepts case-insensitive MCP bearer schemes and diagnoses rejected cr
   ).pipe(
     Effect.provide(
       layerAuth.pipe(
-        Layer.provideMerge(NodeHttpServer.layerTest),
+        Layer.provideMerge(layerLoopbackServerTest),
         Layer.provideMerge(Logger.layer([logger], { mergeWithExisting: false })),
       ),
     ),
@@ -1763,7 +1763,7 @@ it.effect("gives outside clients an upload URL on the origin their request reach
       const proxied = yield* prepareUpload({ "x-forwarded-proto": "https" });
       expect(new URL(proxied.uploadUrl).protocol).toBe("https:");
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect("hides tools for links and refuses another environment while the beta is off", () =>
@@ -1886,7 +1886,7 @@ it.effect("hides tools for links and refuses another environment while the beta 
         code: "orchestration_error",
       });
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect("lists pull request watch tools only to threads that are not delegated children", () =>
@@ -1977,7 +1977,7 @@ it.effect("lists pull request watch tools only to threads that are not delegated
       expect(childTools).not.toContain("watch_pull_request");
       expect(childTools).not.toContain("unwatch_pull_request");
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect(
@@ -2122,7 +2122,7 @@ it.effect(
         expect(yield* start("auto/default/extra")).toBe(400);
         expect(yield* start("root/default")).toBe(400);
       }),
-    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect("lists optional tools to a deferring client only after tool_search loads them", () =>
@@ -2248,7 +2248,7 @@ it.effect("lists optional tools to a deferring client only after tool_search loa
       expect(yield* deferring.listed).toEqual(["delegate_task", "preview_open", "tool_search"]);
       expect(yield* other.listed).toEqual(["delegate_task", "preview_open", "schedule_task"]);
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 // Fork: only a peer link may say its caller is the Promachos (toolboxmd/chromeria#532).

@@ -86,13 +86,8 @@ import * as HtmlHandlers from "../mcp/toolkits/html/handlers.ts";
 import { HtmlPreviewToolkit, HtmlRenderToolkit } from "../mcp/toolkits/html/tools.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
-import {
-  descriptorOf,
-  layerLinkingEnvironment,
-  linkTo,
-  servePeer,
-  layerLoopbackServerTest,
-} from "./PeerLinks.testkit.ts";
+import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
+import { layerLoopbackServerTest } from "../testUtils/loopbackHttpServer.ts";
 
 const laptop = descriptorOf("routing-laptop", "Laptop");
 const box = descriptorOf("routing-box", "Box");
