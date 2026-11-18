@@ -739,3 +739,6 @@ apps/web/src/i18n/translations/ko.json
 apps/web/src/i18n/translations/pt-BR.json
 apps/web/src/i18n/translations/ru.json
 apps/web/src/i18n/translations/zh.json
+apps/server/src/http.test.ts
+apps/server/src/observability/OtlpEndpointCheck.test.ts
+apps/server/src/telemetry/AnalyticsService.test.ts

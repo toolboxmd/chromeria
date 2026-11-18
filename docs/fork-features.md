@@ -1978,6 +1978,7 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/pull/632"
   ],
   "newFiles": [
+    "apps/server/src/testUtils/loopbackHttpServer.ts",
     "apps/server/src/scheduledTasks/DestinationAutomationAuthority.ts",
     "apps/server/src/scheduledTasks/DestinationAutomationAuthority.test.ts",
     "packages/contracts/src/peerTask.ts",
@@ -2070,6 +2071,9 @@ sources and reasons.
     "packages/client-runtime/src/state/commandPermissions.test.ts",
     "apps/server/src/auth/McpOAuth.ts",
     "apps/server/src/mcp/McpHttpServer.test.ts",
+    "apps/server/src/http.test.ts",
+    "apps/server/src/observability/OtlpEndpointCheck.test.ts",
+    "apps/server/src/telemetry/AnalyticsService.test.ts",
     "apps/server/src/mcp/McpInvocationContext.ts",
     "apps/server/src/mcp/McpToolAccess.test.ts",
     "apps/server/src/mcp/McpToolAccess.ts",
