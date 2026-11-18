@@ -13,7 +13,7 @@ pnpm mcp-tool-use --model claude-opus-5-5 --max-samples 696 --out runs/opus
 ```
 
 - `ANTHROPIC_API_KEY` in the repo root `.env` pays for Claude models and the Haiku shell simulator.
-- On a host named `rocky`, Claude evals use `http://127.0.0.1:8317` and the key in `~/.config/cliproxyapi/api-key` with no flag. The summary names that URL. `--anthropic-base-url https://api.anthropic.com` sends the run to the API instead, using `ANTHROPIC_API_KEY`. `ANTHROPIC_BASE_URL` stays ignored.
+- On every machine, Claude evals use `http://100.77.241.44:8317` and the key in `~/.config/cliproxyapi/api-key` with no flag. The summary names that URL. `--anthropic-base-url https://api.anthropic.com` sends the run to the API instead, using `ANTHROPIC_API_KEY`. `ANTHROPIC_BASE_URL` stays ignored.
 - Codex models (`gpt-*` in `MODELS` in `run.ts`) go through a CLIProxyAPI server, set up as the `vibeproxy` model provider in `~/.codex/config.toml`. Keep the proxy under about 12 samples in flight across all runs.
 - `--shell-model` picks the model that plays the shell: `claude-haiku-5-5` by default, or `gpt-6.1-terra` / `gpt-6-luna` through the same proxy, so Codex runs need no Anthropic key. Prefer Terra: Luna often contradicts the case's world (it calls named checkouts missing or files empty). Compare runs only when they used the same shell model.
 - Flags: `--case <ids>`, `--cases <file.ndjson>`, `--samples <n>` (default 2, and a 3rd when the first 2 disagree), `--max-samples <n>` (default 30: a run planning more samples refuses), `--concurrency <n>` (samples in flight, default 8), `--max-steps <n>`, `--effort <level>`, `--dry-run` (prints request bodies, no model calls), and `--context` (prints the size of T3's text and schemas, no key needed).

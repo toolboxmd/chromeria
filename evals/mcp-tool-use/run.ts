@@ -2459,12 +2459,11 @@ const anthropicEndpoint = (base: string) => {
   const trimmed = base.trim().replace(/\/+$/, "");
   return trimmed.endsWith("/v1") ? trimmed : `${trimmed}/v1`;
 };
-/** This Mac's CLIProxyAPI. Other hosts keep api.anthropic.com unless a flag says otherwise. */
-const ROCKY_PROXY = "http://127.0.0.1:8317";
-const onRocky = () => /^(rocky)(\.|$)/i.test(NodeOS.hostname());
+/** Rocky's CLIProxyAPI on the tailnet. The IP works on machines that do not resolve MagicDNS. */
+const ROCKY_PROXY = "http://100.77.241.44:8317";
 const isRockyProxy = (base: string) => {
   const url = new URL(anthropicEndpoint(base));
-  return url.hostname === "127.0.0.1" && url.port === "8317";
+  return url.hostname === "100.77.241.44" && url.port === "8317";
 };
 
 const PositiveInt = Schema.FiniteFromString.check(Schema.isInt(), Schema.isGreaterThan(0));
@@ -2683,8 +2682,7 @@ const main = Effect.gen(function* () {
     }
     return;
   }
-  const requestedBase =
-    flags["anthropic-base-url"] ?? (!codex && onRocky() ? ROCKY_PROXY : undefined);
+  const requestedBase = flags["anthropic-base-url"] ?? (!codex ? ROCKY_PROXY : undefined);
   if (requestedBase !== undefined && codex) {
     return yield* Effect.die(
       new Error("--anthropic-base-url applies to Claude models. Codex already uses its own proxy."),
@@ -2699,15 +2697,13 @@ const main = Effect.gen(function* () {
     const keyPath = path.join(NodeOS.homedir(), ".config", "cliproxyapi", "api-key");
     apiKey = (yield* fs.readFileString(keyPath).pipe(Effect.orElseSucceed(() => ""))).trim();
     if (apiKey === "") {
-      return yield* Effect.die(
-        new Error(`Claude evals on rocky use ${ROCKY_PROXY} and need ${keyPath}.`),
-      );
+      return yield* Effect.die(new Error(`Claude evals use ${ROCKY_PROXY} and need ${keyPath}.`));
     }
   }
   const out = flags.out;
   if ((!apiKey && !codex) || out === undefined) {
     const message =
-      "Set ANTHROPIC_API_KEY and pass --out <directory>. ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL are ignored. On rocky, Claude evals use http://127.0.0.1:8317. --anthropic-base-url overrides that.";
+      "Set ANTHROPIC_API_KEY and pass --out <directory>. ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL are ignored. Claude evals use http://100.77.241.44:8317. --anthropic-base-url overrides that.";
     return yield* Effect.die(new Error(message));
   }
   const config: Config = {
