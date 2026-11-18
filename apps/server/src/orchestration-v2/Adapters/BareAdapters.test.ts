@@ -413,6 +413,24 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
       const root = yield* fs.makeTempDirectoryScoped();
       yield* fs.makeDirectory(`${root}/real/opencode`, { recursive: true });
       yield* fs.makeDirectory(`${root}/real/gh`);
+      yield* fs.writeFileString(
+        `${root}/real/opencode/opencode.json`,
+        JSON.stringify({
+          providers: { hosted: { name: "Hosted" } },
+          provider: { omlx: { name: "old", options: { baseURL: "http://old/v1" } } },
+          mcp: { secret: { type: "local", command: ["serve"] } },
+        }),
+      );
+      yield* fs.writeFileString(
+        `${root}/real/opencode/opencode.jsonc`,
+        `{
+          // the user's local model server
+          "provider": { "omlx": { "options": { "apiKey": "{env:OMLX_KEY}" }, "models": { "gemma": {} } } },
+          "instructions": ["AGENTS.md"],
+          "plugin": ["some-plugin"],
+          "agent": { "build": { "prompt": "user prompt" } },
+        }`,
+      );
       const environment = yield* prepareOpenCodeBareEnvironment({
         home: `${root}/bare`,
         environment: {
@@ -428,6 +446,18 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
       expect(environment).not.toHaveProperty("OPENCODE_CONFIG");
       const config = yield* decodeAgentplanprompt(environment.OPENCODE_CONFIG_CONTENT);
       expect(config.agent.plan.prompt).toBe(".");
+      // Only provider definitions cross over, merged in OpenCode's file order, placeholders unresolved.
+      expect(JSON.parse(environment.OPENCODE_CONFIG_CONTENT ?? "{}")).toEqual({
+        ...OPEN_CODE_BARE_CONFIG,
+        provider: {
+          omlx: {
+            name: "old",
+            options: { baseURL: "http://old/v1", apiKey: "{env:OMLX_KEY}" },
+            models: { gemma: {} },
+          },
+        },
+        providers: { hosted: { name: "Hosted" } },
+      });
     }),
   );
 });

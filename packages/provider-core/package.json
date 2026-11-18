@@ -207,7 +207,8 @@
   "dependencies": {
     "@t3tools/contracts": "workspace:*",
     "@t3tools/shared": "workspace:*",
-    "effect": "catalog:"
+    "effect": "catalog:",
+    "jsonc-parser": "3.3.1"
   },
   "devDependencies": {
     "@effect/platform-node": "catalog:",
