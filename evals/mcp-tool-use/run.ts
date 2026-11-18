@@ -7,6 +7,7 @@
  */
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
+import * as NodeOS from "node:os";
 import * as NodeUtil from "node:util";
 import * as NodeVM from "node:vm";
 import * as NodeZlib from "node:zlib";
@@ -2458,6 +2459,13 @@ const anthropicEndpoint = (base: string) => {
   const trimmed = base.trim().replace(/\/+$/, "");
   return trimmed.endsWith("/v1") ? trimmed : `${trimmed}/v1`;
 };
+/** This Mac's CLIProxyAPI. Other hosts keep api.anthropic.com unless a flag says otherwise. */
+const ROCKY_PROXY = "http://127.0.0.1:8317";
+const onRocky = () => /^(rocky)(\.|$)/i.test(NodeOS.hostname());
+const isRockyProxy = (base: string) => {
+  const url = new URL(anthropicEndpoint(base));
+  return url.hostname === "127.0.0.1" && url.port === "8317";
+};
 
 const PositiveInt = Schema.FiniteFromString.check(Schema.isInt(), Schema.isGreaterThan(0));
 const PositiveIntOrZero = Schema.FiniteFromString.check(
@@ -2675,22 +2683,33 @@ const main = Effect.gen(function* () {
     }
     return;
   }
-  const apiKey = yield* Config.String("ANTHROPIC_API_KEY").pipe(Config.withDefault(""));
-  const out = flags.out;
-  if ((!apiKey && !codex) || out === undefined) {
-    const message =
-      "Set ANTHROPIC_API_KEY and pass --out <directory>. ANTHROPIC_AUTH_TOKEN is ignored. Pass --anthropic-base-url to send Claude calls to that server; ANTHROPIC_BASE_URL is still ignored.";
-    return yield* Effect.die(new Error(message));
-  }
-  if (flags["anthropic-base-url"] !== undefined && codex) {
+  const requestedBase =
+    flags["anthropic-base-url"] ?? (!codex && onRocky() ? ROCKY_PROXY : undefined);
+  if (requestedBase !== undefined && codex) {
     return yield* Effect.die(
       new Error("--anthropic-base-url applies to Claude models. Codex already uses its own proxy."),
     );
   }
   const claudeProxy =
-    flags["anthropic-base-url"] === undefined
+    requestedBase === undefined
       ? undefined
-      : { url: anthropicEndpoint(flags["anthropic-base-url"]), headers: {} };
+      : { url: anthropicEndpoint(requestedBase), headers: {} };
+  let apiKey = yield* Config.String("ANTHROPIC_API_KEY").pipe(Config.withDefault(""));
+  if (claudeProxy !== undefined && isRockyProxy(claudeProxy.url)) {
+    const keyPath = path.join(NodeOS.homedir(), ".config", "cliproxyapi", "api-key");
+    apiKey = (yield* fs.readFileString(keyPath).pipe(Effect.orElseSucceed(() => ""))).trim();
+    if (apiKey === "") {
+      return yield* Effect.die(
+        new Error(`Claude evals on rocky use ${ROCKY_PROXY} and need ${keyPath}.`),
+      );
+    }
+  }
+  const out = flags.out;
+  if ((!apiKey && !codex) || out === undefined) {
+    const message =
+      "Set ANTHROPIC_API_KEY and pass --out <directory>. ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL are ignored. On rocky, Claude evals use http://127.0.0.1:8317. --anthropic-base-url overrides that.";
+    return yield* Effect.die(new Error(message));
+  }
   const config: Config = {
     apiKey,
     model: flags.model,
