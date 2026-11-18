@@ -3732,7 +3732,7 @@ sources and reasons.
   "id": "opencode2-session-process",
   "purpose": "Each local OpenCode 2 provider session runs its own `opencode serve` process and registers T3's MCP server as `t3-code`, so threads in one project, including concurrent ones, send identical context and hit the model's prefix cache. A thread that ran on the instance's shared session moves to its own session when it resumes. A configured serverUrl and bare keep their shared server and per-thread names. Drop when upstream runs OpenCode 2 sessions per thread or names T3's MCP server identically across threads.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/806"],
-  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...opencode2-process-per-thread"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/817"],
   "newFiles": [],
   "upstreamFiles": [
     "packages/provider-opencode/src/server/OpenCodeServerOwner.ts",
