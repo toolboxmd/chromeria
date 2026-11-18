@@ -25,6 +25,8 @@ import {
   PreviewAutomationEvaluateInput,
   PreviewAutomationFillCredentialInput,
   PreviewAutomationFillCredentialResult,
+  PreviewAutomationSaveSecretInput,
+  PreviewAutomationSaveSecretResult,
   PreviewAutomationNavigateInput,
   PreviewAutomationOpenInput,
   PreviewAutomationRecordingArtifact,
@@ -326,6 +328,18 @@ const PreviewFillCredentialTool = browserTool(
   }).annotate(Tool.Title, "Fill credential in preview page"),
 );
 
+const PreviewSaveSecretTool = browserTool(
+  Tool.make("preview_save_secret", {
+    description:
+      "Save the value one element shows, such as an API key on a dashboard, to a private file without it entering your context. Reads the tab selected by tabId, or this agent session's current tab when omitted: an input's or textarea's value, otherwise the element's visible text, one line up to 4 KB. Locate the element with a ref from a snapshot taken before the value was revealed, or a unique selector that does not contain the value (text=/sk_test_/ is fine). The element's page and frame must be https. Returns only the file's path and the value's length. The file is owner-only on this environment's machine: read it inside commands (KEY=\"$(cat <path>)\"), never print it, delete it when done; it expires after 24 hours. This tool keeps the value out of its own result only: after revealing a value, do not snapshot, evaluate or record that page. Server browser tabs only, and not for calls from linked environments." +
+      COMPUTER_USE_HINT,
+    parameters: McpRouting.parameters(PreviewAutomationSaveSecretInput),
+    success: PreviewAutomationSaveSecretResult,
+    failure: PreviewToolFailure,
+    dependencies,
+  }).annotate(Tool.Title, "Save value from preview page"),
+);
+
 const PreviewActTool = browserTool(
   Tool.make("preview_act", {
     description:
@@ -423,6 +437,7 @@ export const PreviewToolkit = Toolkit.make(
   PreviewDragTool,
   PreviewUploadTool,
   PreviewFillCredentialTool,
+  PreviewSaveSecretTool,
   PreviewEvaluateTool,
   PreviewWaitForTool,
   PreviewRecordingStartTool,
@@ -446,6 +461,7 @@ export const PreviewStandardToolkit = Toolkit.make(
   PreviewDragTool,
   PreviewUploadTool,
   PreviewFillCredentialTool,
+  PreviewSaveSecretTool,
   PreviewEvaluateTool,
   PreviewWaitForTool,
   PreviewRecordingStartTool,

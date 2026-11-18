@@ -23,6 +23,7 @@ import {
   PreviewAutomationTimeoutDetail,
   PreviewAutomationUnsupportedClientError,
   PreviewCredentialError,
+  PreviewSaveSecretError,
   PreviewTabId,
   type PreviewAutomationError,
   type PreviewAutomationOperation,
@@ -201,6 +202,7 @@ const hostAssignmentKey = (scope: McpInvocationContext.McpThreadInvocationScope)
 const isPreviewTabId = Schema.is(PreviewTabId);
 const decodeControlReason = Schema.decodeUnknownOption(PreviewAutomationControlReason);
 const decodeCredentialError = Schema.decodeUnknownOption(PreviewCredentialError);
+const decodeSaveSecretError = Schema.decodeUnknownOption(PreviewSaveSecretError);
 const decodeWatchError = Schema.decodeUnknownOption(PreviewWatchError);
 
 const readResultTabId = (result: unknown): PreviewTabId | null | undefined => {
@@ -394,6 +396,15 @@ const classifyResponseError = (
         _tag: error._tag,
       });
       if (Option.isSome(credential)) return credential.value;
+      return new PreviewAutomationExecutionError({ ...context, ...remoteDiagnostics });
+    }
+    case "PreviewSaveSecretError": {
+      // Only the fixed reason crosses, as for credential errors.
+      const saveError = decodeSaveSecretError({
+        ...(typeof error.detail === "object" && error.detail !== null ? error.detail : {}),
+        _tag: error._tag,
+      });
+      if (Option.isSome(saveError)) return saveError.value;
       return new PreviewAutomationExecutionError({ ...context, ...remoteDiagnostics });
     }
     case "PreviewAutomationUnavailableError":

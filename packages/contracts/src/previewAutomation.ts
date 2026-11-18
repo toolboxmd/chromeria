@@ -14,7 +14,7 @@ import {
 } from "./preview.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { BrowserProfileId } from "./browserProfile.ts";
-import { PreviewCredentialError } from "./previewCredential.ts";
+import { PreviewCredentialError, PreviewSaveSecretError } from "./previewCredential.ts";
 
 const BoundedUrl = Schema.String.check(Schema.isTrimmed())
   .check(Schema.isNonEmpty())
@@ -57,6 +57,7 @@ export const PREVIEW_AUTOMATION_SERVER_OPERATIONS = [
   "drag",
   "readPage",
   "fillCredential",
+  "saveSecret",
   "watchStart",
   "watchStop",
 ] as const;
@@ -1174,6 +1175,7 @@ export const PreviewAutomationError = Schema.Union([
   PreviewAutomationRemoteUnavailableError,
   PreviewAutomationMalformedResponseError,
   PreviewCredentialError,
+  PreviewSaveSecretError,
 ]);
 export type PreviewAutomationError = typeof PreviewAutomationError.Type;
 

@@ -53,6 +53,16 @@ export const debugEnables = (debug: string, namespace: string) => {
 // Protocol logs carry the typed text; API logs carry call parameters.
 const LEAKING_NAMESPACES = ["pw:protocol", "pw:api"];
 
+/** `DEBUG`, as this server reads it, turns on Playwright logs that would carry page or typed values. */
+export const protocolLoggingEnabled = Config.String("DEBUG").pipe(
+  Config.option,
+  Config.map(
+    (debug) =>
+      Option.isSome(debug) &&
+      LEAKING_NAMESPACES.some((namespace) => debugEnables(debug.value, namespace)),
+  ),
+);
+
 const fail = (reason: PreviewCredentialReason) => new PreviewCredentialError({ reason });
 
 /** rbw prints the value with one newline; anything else is part of the value. */
@@ -90,7 +100,7 @@ const reasonFromStderr = (stderr: string): PreviewCredentialReason =>
 const make = Effect.gen(function* () {
   const settings = yield* ServerSettings.ServerSettingsService;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const debug = yield* Config.String("DEBUG").pipe(Config.option);
+  const protocolLogging = yield* protocolLoggingEnabled;
 
   const run = (rbwPath: string, args: ReadonlyArray<string>) =>
     Effect.scoped(
@@ -125,11 +135,7 @@ const make = Effect.gen(function* () {
       Effect.mapError(() => fail("vaultUnavailable")),
     )).credentialVault;
     if (vault.kind === "none") return yield* fail("vaultNotConfigured");
-    if (
-      Option.isSome(debug) &&
-      LEAKING_NAMESPACES.some((namespace) => debugEnables(debug.value, namespace))
-    )
-      return yield* fail("protocolLogging");
+    if (protocolLogging) return yield* fail("protocolLogging");
     // The contract checks it too; the argument array must never carry an option or a URI.
     if (!CREDENTIAL_ITEM_PATTERN.test(item)) return yield* fail("itemNotFound");
     // rbw unlocks on demand with pinentry, which an agent can never answer.

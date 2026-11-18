@@ -96,6 +96,11 @@ export class SecretRequests extends Context.Service<
       readonly requestKey: string;
       readonly value: string;
     }) => Effect.Effect<string, SecretRequestError>;
+    /** Writes a value an agent's browser tab showed to a new owner-only file and returns its path. */
+    readonly saveCaptured: (input: {
+      readonly threadId: ThreadId;
+      readonly value: string;
+    }) => Effect.Effect<string, SecretRequestError>;
   }
 >()("t3/secrets/SecretRequests") {}
 
@@ -449,6 +454,19 @@ const make = Effect.gen(function* () {
     }).pipe(consumeLock.withPermits(1));
   });
 
+  const saveCaptured: SecretRequests["Service"]["saveCaptured"] = Effect.fn(
+    "SecretRequests.saveCaptured",
+  )(function* (input) {
+    if (store.directory === undefined)
+      return yield* new SecretRequestError({ reason: "store_failed" });
+    // Its own prefix and a fresh nonce: never the name of a pasted file or of an earlier capture.
+    const nonce = Hex.encode(yield* random.randomBytes(16));
+    const ref = yield* refFor(input.threadId, `captured\u0000${nonce}`);
+    const file = path.join(pastedFilesDir!, ref.slice(SECRET_REF_PREFIX.length));
+    yield* writeSecretFile(pastedFilesDir!, file, input.value);
+    return file;
+  });
+
   const sweepExpired = Effect.gen(function* () {
     if (store.directory === undefined) return;
     const now = yield* Clock.currentTimeMillis;
@@ -521,7 +539,7 @@ const make = Effect.gen(function* () {
     if (pastedFilesDir === undefined || !(yield* fileSystem.exists(pastedFilesDir))) return;
     const now = yield* Clock.currentTimeMillis;
     for (const name of yield* fileSystem.readDirectory(pastedFilesDir)) {
-      if (!/^[0-9a-f]{32}(?:\.tmp)?$/.test(name)) continue;
+      if (!/^[0-9a-f]{32}(?:\.tmp|\.partial)?$/.test(name)) continue;
       const file = path.join(pastedFilesDir, name);
       yield* fileSystem.stat(file).pipe(
         Effect.flatMap((info) =>
@@ -548,6 +566,7 @@ const make = Effect.gen(function* () {
     saved,
     consume,
     savePasted,
+    saveCaptured,
     saveToFile: Effect.fn("SecretRequests.saveToFile")((input) =>
       saved(input).pipe(
         Effect.flatMap((result) =>
