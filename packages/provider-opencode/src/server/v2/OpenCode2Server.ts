@@ -1,12 +1,13 @@
 import { resolveProviderProbeTimeoutMs } from "@t3tools/provider-core/server/snapshotProbe";
-// One OpenCode 2 process serves all directories; share it across instance threads.
 import type { OpenCodeClient } from "@opencode/client/effect";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Base64Url from "effect/encoding/Base64Url";
 import * as P from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
+import * as Scope from "effect/Scope";
 import * as HttpClientError from "effect/http/HttpClientError";
 
 import * as OpenCodeRuntime from "../OpenCodeRuntime.ts";
@@ -23,14 +24,25 @@ export interface OpenCode2Connection extends OpenCode2Client.OpenCode2Api {
   readonly processExit?: Effect.Effect<void>;
 }
 
+export interface OpenCode2SessionServer {
+  readonly withConnection: <A, E, R>(
+    use: (connection: OpenCode2Connection) => Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E | OpenCodeRuntime.OpenCodeRuntimeError, R>;
+}
+
 export class OpenCode2Server extends Context.Service<
   OpenCode2Server,
-  {
-    readonly withConnection: <A, E, R>(
-      use: (connection: OpenCode2Connection) => Effect.Effect<A, E, R>,
-    ) => Effect.Effect<A, E | OpenCodeRuntime.OpenCodeRuntimeError, R>;
+  OpenCode2SessionServer & {
     /** Drops a configured server's verified connection, so the next use reads its version again. */
     readonly forget: Effect.Effect<void>;
+    /**
+     * A private process for one provider session, stopped when the session's scope or the
+     * instance closes. Identical context across threads then hits the model's prefix cache.
+     * Absent when sessions share one server: a configured `serverUrl`, or bare's own server.
+     */
+    readonly forSession?: (
+      threadId: string,
+    ) => Effect.Effect<OpenCode2SessionServer, never, Scope.Scope>;
   }
 >()("@t3tools/provider-opencode/server/v2/OpenCode2Server") {}
 
@@ -122,6 +134,9 @@ export const make = Effect.fn("OpenCode2Server.make")(function* (input: {
   readonly environment: NodeJS.ProcessEnv;
 }) {
   const opencode = yield* OpenCode2Client.OpenCode2Client;
+  const runtime = yield* OpenCodeRuntime.OpenCodeRuntime;
+  const random = yield* SecureRandom.SecureRandom;
+  const instanceScope = yield* Effect.scope;
   const connectTo = Effect.fn("OpenCode2Server.connectTo")(function* (
     url: string,
     password: Redacted.Redacted,
@@ -131,17 +146,16 @@ export const make = Effect.fn("OpenCode2Server.make")(function* (input: {
     const version = yield* verifyServer(api.client, input.environment);
     return { ...api, url, version, external } satisfies OpenCode2Connection;
   });
-  let latest: OpenCode2Connection | undefined;
-  const remember = (connection: OpenCode2Connection) =>
-    Effect.sync(() => {
-      latest = connection;
-      return connection.version;
-    });
 
   const serverUrl = input.serverUrl.trim();
   if (serverUrl.length > 0) {
+    let latest: OpenCode2Connection | undefined;
     const connect = connectTo(serverUrl, Redacted.make(input.serverPassword), true).pipe(
-      Effect.tap(remember),
+      Effect.tap((connection) =>
+        Effect.sync(() => {
+          latest = connection;
+        }),
+      ),
     );
     return OpenCode2Server.of({
       withConnection: Effect.fn("OpenCode2Server.withConnection")(function (use) {
@@ -155,21 +169,45 @@ export const make = Effect.fn("OpenCode2Server.make")(function* (input: {
     });
   }
 
-  const password = yield* generatePassword;
-  const owner = yield* OpenCodeServerOwner.make({
-    binaryPath: input.binaryPath,
-    directory: input.directory,
-    environment: serverEnvironment(input.environment, password),
-    verify: (url) => connectTo(url, password, false).pipe(Effect.flatMap(remember)),
+  const owned = Effect.fn("OpenCode2Server.owned")(function* (threadId?: string) {
+    const password = yield* generatePassword;
+    let latest: OpenCode2Connection | undefined;
+    const owner = yield* OpenCodeServerOwner.make({
+      binaryPath: input.binaryPath,
+      directory: input.directory,
+      environment: serverEnvironment(input.environment, password),
+      verify: (url) =>
+        connectTo(url, password, false).pipe(
+          Effect.map((connection) => {
+            latest = connection;
+            return connection.version;
+          }),
+        ),
+      ...(threadId === undefined ? {} : { threadId }),
+    });
+    return {
+      withConnection: Effect.fn("OpenCode2Server.withConnection")(function (use) {
+        return owner.withServer((server) =>
+          latest?.url === server.url
+            ? use({ ...latest, processExit: server.exitCode.pipe(Effect.asVoid) })
+            : Effect.die(new Error("OpenCode 2 server was lent before verification.")),
+        );
+      }),
+    } satisfies OpenCode2SessionServer;
   });
+  const shared = yield* owned();
   return OpenCode2Server.of({
-    withConnection: Effect.fn("OpenCode2Server.withConnection")(function (use) {
-      return owner.withServer((server) =>
-        latest?.url === server.url
-          ? use({ ...latest, processExit: server.exitCode.pipe(Effect.asVoid) })
-          : Effect.die(new Error("OpenCode 2 server was lent before verification.")),
+    ...shared,
+    forget: Effect.void,
+    forSession: Effect.fn("OpenCode2Server.forSession")(function* (threadId) {
+      // Forked from the instance so disabling or replacing it stops sessions still open.
+      const scope = yield* Scope.fork(instanceScope);
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+      return yield* owned(threadId).pipe(
+        Effect.provideService(Scope.Scope, scope),
+        Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime),
+        Effect.provideService(SecureRandom.SecureRandom, random),
       );
     }),
-    forget: Effect.void,
   });
 });

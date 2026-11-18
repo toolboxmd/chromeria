@@ -1842,6 +1842,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     );
 
+  // A thread that ran on its instance's shared session moves to its own once the provider stops
+  // sharing, so threads resuming after that upgrade do not collide on one session.
+  const reusableProviderSessionId = <E>(input: {
+    readonly providerSessionId: ProviderSessionId | null | undefined;
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly adapter: Effect.Effect<ProviderAdapter.ProviderAdapterV2["Service"], E>;
+  }) => {
+    const stored = input.providerSessionId ?? undefined;
+    return stored !==
+      idAllocator.derive.providerSession({
+        providerInstanceId: input.providerInstanceId,
+      })
+      ? Effect.succeed(stored)
+      : input.adapter.pipe(
+          Effect.flatMap((adapter) => adapter.getCapabilities()),
+          Effect.map((capabilities) =>
+            capabilities.sessions.supportsMultipleProviderThreadsPerSession ? stored : undefined,
+          ),
+        );
+  };
+
   const makeEvent =
     /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
     Effect.fnUntraced(function* <Event extends OrchestrationV2DomainEvent>(
@@ -3228,11 +3249,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ),
           ));
       const providerSessionId =
-        (!canResumeAcrossInstances &&
-        queuedProviderThread.providerSessionId !== null &&
-        !switchPlan?.releaseProviderSessionIds.includes(queuedProviderThread.providerSessionId)
-          ? queuedProviderThread.providerSessionId
-          : null) ??
+        (yield* reusableProviderSessionId({
+          providerSessionId:
+            !canResumeAcrossInstances &&
+            queuedProviderThread.providerSessionId !== null &&
+            !switchPlan?.releaseProviderSessionIds.includes(queuedProviderThread.providerSessionId)
+              ? queuedProviderThread.providerSessionId
+              : null,
+          providerInstanceId: queuedRun.providerInstanceId,
+          adapter: providerAdapters.get(queuedRun.providerInstanceId),
+        }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new OrchestratorDispatchError({
+                commandId,
+                commandType: "message.dispatch",
+                cause,
+              }),
+          ),
+        )) ??
         (yield* providerAdapters.get(queuedRun.providerInstanceId).pipe(
           Effect.flatMap((adapter) =>
             providerSessionIdFor({
@@ -9061,7 +9096,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
       const providerSessionId =
-        reusableProviderThread?.providerSessionId ??
+        (yield* mapDispatchError(command)(
+          reusableProviderSessionId({
+            providerSessionId: reusableProviderThread?.providerSessionId,
+            providerInstanceId: modelSelection.instanceId,
+            adapter: Effect.succeed(adapter),
+          }),
+        )) ??
         (yield* mapDispatchError(command)(
           providerSessionIdFor({
             bare: projection.thread.bare,
@@ -9505,7 +9546,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? rootProviderThreadsForProvider(projection, modelSelection.instanceId)[0]
         : activeProviderThread;
     const providerSessionId =
-      (canResumeAcrossInstances ? undefined : targetProviderThread?.providerSessionId) ??
+      (yield* mapDispatchError(command)(
+        reusableProviderSessionId({
+          providerSessionId: canResumeAcrossInstances
+            ? undefined
+            : targetProviderThread?.providerSessionId,
+          providerInstanceId: modelSelection.instanceId,
+          adapter: Effect.succeed(adapter),
+        }),
+      )) ??
       (yield* mapDispatchError(command)(
         providerSessionIdFor({
           bare: projection.thread.bare,

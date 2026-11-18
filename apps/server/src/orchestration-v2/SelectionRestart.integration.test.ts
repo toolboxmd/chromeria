@@ -36,9 +36,11 @@ import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as Persistence from "../persistence/Sqlite.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
+import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 
 const driver = ProviderDriverKind.make("codex");
 const providerInstanceId = ProviderInstanceId.make("codex-restart-test");
@@ -90,14 +92,18 @@ interface RestartAdapterState {
 
 function makeRestartAdapter(
   state: Ref.Ref<RestartAdapterState>,
-  sessionCapabilities: OrchestrationV2ProviderCapabilities = pooledCapabilities,
+  sessionCapabilities:
+    | OrchestrationV2ProviderCapabilities
+    | (() => OrchestrationV2ProviderCapabilities) = pooledCapabilities,
   providerInstanceId = initialSelection.instanceId,
   replacementGate?: { entered: Deferred.Deferred<void>; release: Deferred.Deferred<void> },
 ): ProviderAdapter.ProviderAdapterV2["Service"] {
+  const capabilitiesNow = () =>
+    typeof sessionCapabilities === "function" ? sessionCapabilities() : sessionCapabilities;
   return {
     instanceId: providerInstanceId,
     driver,
-    getCapabilities: () => Effect.succeed(sessionCapabilities),
+    getCapabilities: () => Effect.sync(capabilitiesNow),
     planSelectionTransition: ({ current, target }) =>
       Effect.succeed(
         current.model === target.model
@@ -142,7 +148,7 @@ function makeRestartAdapter(
           status: "ready",
           cwd: sessionInput.runtimePolicy.cwd ?? "/fallback",
           model: sessionInput.modelSelection.model,
-          capabilities: sessionCapabilities,
+          capabilities: capabilitiesNow(),
           createdAt: now,
           updatedAt: now,
           lastError: null,
@@ -453,6 +459,122 @@ it.live.each(["unchanged", "messageId", "mode", "legacy"] as const)(
         }).pipe(Effect.provide(layer));
       }),
     ),
+);
+
+// A provider that stops sharing one session per instance must not collide threads that ran on it.
+it.live("moves threads off an instance's shared session once its provider stops sharing", () =>
+  Effect.gen(function* () {
+    const cwd = yield* checkpointWorkspace("shared-session-upgrade");
+    const projectId = ProjectId.make("project:shared-session-upgrade");
+    const threadIds = [
+      ThreadId.make("thread:shared-session-upgrade:a"),
+      ThreadId.make("thread:shared-session-upgrade:b"),
+    ];
+    const state = yield* Ref.make<RestartAdapterState>({
+      activeTurn: null,
+      opened: [],
+      started: [],
+      closedSessionCount: 0,
+      failedReplacementOpen: false,
+    });
+    let capabilities = pooledCapabilities;
+    const shared = IdAllocator.derive.providerSession({ providerInstanceId });
+    yield* Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const turn = (threadId: ThreadId, label: string) =>
+        Effect.gen(function* () {
+          const ended = yield* eventSink
+            .stream({ threadId, afterSequence: yield* eventSink.latestSequence({ threadId }) })
+            .pipe(
+              Stream.map((stored) => stored.event),
+              Stream.filter(
+                (event) =>
+                  event.type === "run.updated" &&
+                  ["completed", "failed", "interrupted", "cancelled"].includes(
+                    event.payload.status,
+                  ),
+              ),
+              Stream.take(1),
+              Stream.runCollect,
+              Effect.forkScoped,
+            );
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            createdBy: "user",
+            creationSource: "web",
+            commandId: CommandId.make(`command:${threadId}:${label}`),
+            threadId,
+            messageId: MessageId.make(`message:${threadId}:${label}`),
+            text: label,
+            attachments: [],
+            modelSelection: seedSelection,
+            dispatchMode: { type: "start_immediately" },
+          });
+          const [event] = yield* Fiber.join(ended);
+          return event?.type === "run.updated" ? event.payload.status : undefined;
+        });
+      for (const threadId of threadIds) {
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`command:${threadId}:create`),
+          threadId,
+          projectId,
+          title: "Shared session upgrade",
+          modelSelection: seedSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: cwd,
+        });
+        assert.equal(yield* turn(threadId, "before"), "completed");
+      }
+      yield* worker.drain();
+      const before = yield* Effect.forEach(threadIds, (threadId) =>
+        orchestrator.getThreadProjection(threadId),
+      );
+      for (const projection of before)
+        assert.equal(projection.providerThreads[0]?.providerSessionId, shared);
+
+      // The upgrade restarts the server, which ends the shared session.
+      yield* sessions.close(shared);
+      capabilities = exclusiveCapabilities;
+      const statuses = yield* Effect.forEach(threadIds, (threadId) => turn(threadId, "after"), {
+        concurrency: "unbounded",
+      });
+      assert.deepEqual(statuses, ["completed", "completed"]);
+      yield* worker.drain();
+      const after = yield* Effect.forEach(threadIds, (threadId) =>
+        orchestrator.getThreadProjection(threadId),
+      );
+      const sessionIds = after.map(
+        (projection) => projection.providerThreads[0]?.providerSessionId,
+      );
+      assert.notInclude(sessionIds, shared);
+      assert.equal(new Set(sessionIds).size, threadIds.length);
+      for (const [index, projection] of after.entries()) {
+        assert.lengthOf(projection.providerThreads, 1);
+        // The thread keeps its provider thread and native conversation.
+        assert.equal(projection.providerThreads[0]?.id, before[index]?.providerThreads[0]?.id);
+        assert.deepEqual(
+          projection.providerThreads[0]?.nativeThreadRef,
+          before[index]?.providerThreads[0]?.nativeThreadRef,
+        );
+      }
+    }).pipe(
+      Effect.provide(
+        ProviderReplayHarness.layerWithRegistry(
+          { name: "shared-session-upgrade" },
+          ProviderAdapterRegistry.layerSingle(makeRestartAdapter(state, () => capabilities)),
+        ),
+      ),
+      Effect.scoped,
+    );
+  }),
 );
 
 it.live("retries a failed selection restart session open before completing", () =>

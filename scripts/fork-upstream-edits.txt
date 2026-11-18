@@ -774,3 +774,6 @@ packages/client-runtime/src/load-balancing.ts
 apps/web/src/components/settings/LoadBalancingSettings.tsx
 apps/web/src/appInit.tsx
 evals/mcp-tool-use/cases/secrets.ndjson
+packages/provider-opencode/src/server/OpenCodeServerOwner.ts
+packages/provider-opencode/src/server/v2/OpenCode2Server.ts
+packages/provider-opencode/src/server/v2/OpenCode2Server.test.ts

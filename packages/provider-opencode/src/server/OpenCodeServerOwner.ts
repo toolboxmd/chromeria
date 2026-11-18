@@ -15,6 +15,7 @@ interface OpenCodeServerOwnerState {
   serverScope: Scope.Closeable | null;
   borrowers: number;
   idleCloseFiber: Fiber.Fiber<void, never> | null;
+  closed: boolean;
 }
 
 export class OpenCodeServerOwner extends Context.Service<
@@ -32,6 +33,7 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
   readonly serverPassword?: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly verify?: (url: string) => Effect.Effect<string, OpenCodeRuntime.OpenCodeRuntimeError>;
+  readonly threadId?: string;
 }) {
   const runtime = yield* OpenCodeRuntime.OpenCodeRuntime;
   const ownerScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
@@ -43,6 +45,7 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
     serverScope: null,
     borrowers: 0,
     idleCloseFiber: null,
+    closed: false,
   };
 
   const cancelIdleClose = Effect.fn("OpenCodeServerOwner.cancelIdleClose")(function* () {
@@ -84,6 +87,12 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
 
   const acquireServer = mutex.withPermit(
     Effect.gen(function* () {
+      // A borrower that outlives the owner, such as a reconnect, must not start an unowned process.
+      if (state.closed)
+        return yield* new OpenCodeRuntime.OpenCodeRuntimeError({
+          operation: "startOpenCodeServerProcess",
+          detail: "The OpenCode server was closed with its owner.",
+        });
       yield* cancelIdleClose();
       if (state.server !== null) {
         if (yield* state.server.isRunning) {
@@ -107,6 +116,7 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
                     : {}),
                   ...(input.environment ? { environment: input.environment } : {}),
                   ...(input.verify ? { verify: input.verify } : {}),
+                  ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
                 })
                 .pipe(Effect.provideService(Scope.Scope, serverScope)),
             ),
@@ -158,6 +168,7 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
   yield* Effect.addFinalizer(() =>
     mutex.withPermit(
       Effect.gen(function* () {
+        state.closed = true;
         yield* cancelIdleClose();
         state.borrowers = 0;
         yield* closeServer();

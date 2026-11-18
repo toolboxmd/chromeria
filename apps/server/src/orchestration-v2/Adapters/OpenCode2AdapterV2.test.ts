@@ -58,7 +58,10 @@ import * as OpenCode2Client from "@t3tools/provider-opencode/server/v2/OpenCode2
 import * as OpenCode2Server from "@t3tools/provider-opencode/server/v2/OpenCode2Server";
 import * as OpenCode2AdapterV2 from "@t3tools/provider-opencode/server/v2/adapter";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
-import { openCode2ReplayRuntime } from "./OpenCode2AdapterV2.testkit.ts";
+import {
+  openCode2ReplayRuntime,
+  openCode2SessionServersReplayAdapter,
+} from "./OpenCode2AdapterV2.testkit.ts";
 import {
   makeProviderReplayGate,
   type ProviderReplayGate,
@@ -6398,6 +6401,97 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
       assert.equal((yield* Fiber.join(terminal))?.status, "completed");
       yield* runtime.unloadThread!({ providerThread: thread });
     }),
+  );
+
+  // Per-thread server names made every thread's prompt differ, so none hit the prefix cache.
+  it.effect(
+    "runs each thread on its own server under one T3 MCP name with its own credential",
+    () =>
+      Effect.gen(function* () {
+        const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+        const threads = [ThreadId.make("thread:first"), ThreadId.make("thread:second")];
+        for (const [index, id] of threads.entries()) {
+          yield* mcpSessions.set({
+            environmentId: EnvironmentId.make("environment:opencode2-adapter"),
+            threadId: id,
+            providerSessionId: `mcp:${id}`,
+            providerInstanceId: instanceId,
+            endpoint: "http://127.0.0.1:3773/mcp",
+            authorizationHeader: `Bearer credential-${index}`,
+            browserToolsAvailable: false,
+          });
+          yield* Effect.addFinalizer(() => mcpSessions.clear(id));
+        }
+        const entries = (index: number) =>
+          withInstructions([
+            ...opening,
+            out("session.get", { sessionID: SESSION }),
+            replyData(
+              "session.get",
+              sessionInfo({
+                permissions: [
+                  { action: "*", resource: "*", effect: "allow" },
+                  { action: "t3-code-*", resource: "*", effect: "deny" },
+                  { action: "t3-code_*", resource: "*", effect: "allow" },
+                ],
+              }),
+            ),
+            ...noOpenRequests,
+            out("mcp.add", {
+              server: "t3-code",
+              "location[directory]": WORK,
+              config: {
+                type: "remote",
+                url: "http://127.0.0.1:3773/mcp",
+                headers: {
+                  Authorization: `Bearer credential-${index}`,
+                  "t3-tool-exposure": "deferred",
+                },
+                oauth: false,
+              },
+            }),
+            reply("mcp.add", null),
+            out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+            promptAccepted,
+            event("session.execution.succeeded", { sessionID: SESSION }),
+            out("mcp.remove", { server: "t3-code", "location[directory]": WORK }),
+            reply("mcp.remove", null),
+          ]);
+        const adapter = yield* openCode2SessionServersReplayAdapter(
+          new Map(threads.map((id, index) => [id, entries(index)])),
+        );
+        assert.isFalse(
+          (yield* adapter.getCapabilities()).sessions.supportsMultipleProviderThreadsPerSession,
+        );
+        const runtimes = yield* Effect.forEach(threads, (id) =>
+          adapter.openSession({
+            threadId: id,
+            providerSessionId: ProviderSessionId.make(`provider-session:${id}`),
+            modelSelection: bigPickle,
+            runtimePolicy: policy(),
+          }),
+        );
+        for (const [index, id] of threads.entries()) {
+          const runtime = runtimes[index]!;
+          assert.isFalse(
+            runtime.providerSession.capabilities.sessions.supportsMultipleProviderThreadsPerSession,
+          );
+          const thread = yield* runtime.resumeThread({
+            providerThread: { ...providerThread(yield* DateTime.now), appThreadId: id },
+            threadId: id,
+            modelSelection: bigPickle,
+            runtimePolicy: policy(),
+          });
+          const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
+          const started = yield* runtime
+            .startTurn({ ...turnInput(thread), threadId: id })
+            .pipe(Effect.forkScoped);
+          yield* TestClock.adjust("250 millis");
+          yield* Fiber.join(started);
+          assert.equal((yield* Fiber.join(terminal))?.status, "completed");
+          yield* runtime.unloadThread!({ providerThread: thread });
+        }
+      }),
   );
 
   // regression: #16142 OpenCode 2 threads were missing T3 Code's MCP tools
