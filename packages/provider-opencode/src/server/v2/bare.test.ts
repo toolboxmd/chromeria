@@ -74,6 +74,7 @@ const inventory = (input: {
   readonly system?: string;
   readonly plugins?: ReadonlyArray<unknown>;
   readonly mcp?: ReadonlyArray<string>;
+  readonly instructions?: ReadonlyArray<string>;
 }) =>
   ({
     agent: {
@@ -88,6 +89,15 @@ const inventory = (input: {
     },
     mcp: { list: () => Effect.succeed({ data: (input.mcp ?? []).map((name) => ({ name })) }) },
     skill: { list: () => Effect.succeed({ data: [] }) },
+    // OpenCode 2 unions `instructions` over every document, so bare's empty list clears none.
+    config: {
+      get: () =>
+        Effect.succeed([
+          { type: "document", info: { instructions: [] } },
+          { type: "directory", path: "/home/.config/opencode" },
+          { type: "document", info: { instructions: input.instructions ?? [] } },
+        ]),
+    },
   }) as unknown as OpenCodeClient;
 
 it.effect("bare inspection accepts only built-in plugins and T3 Code MCP servers", () =>
@@ -100,12 +110,14 @@ it.effect("bare inspection accepts only built-in plugins and T3 Code MCP servers
         ["plugins", "observed_clean"],
         ["mcp", "observed_clean"],
         ["skills", "observed_clean"],
+        ["instructions", "observed_clean"],
       ],
     );
     for (const unexpected of [
       inventory({ system: "You are OpenCode" }),
       inventory({ plugins: [{ source: { type: "package", target: "oh-my-opencode" } }] }),
       inventory({ mcp: ["github"] }),
+      inventory({ instructions: ["/Library/Application Support/opencode/AGENTS.md"] }),
     ]) {
       const error = yield* Effect.flip(OpenCode2Bare.inspect(unexpected, "/work"));
       assert.strictEqual(error.operation, "bare.inspect");

@@ -271,7 +271,11 @@ JSONC before `{env:}` substitution, when an `{env:}` value would change its JSON
 or uses a variable bare overrides such as `XDG_CONFIG_HOME`, or when a provider uses a
 `{file:}` path relative to the config folder, or when providers are spread over more than one
 global config file. Use an absolute or `~/` path for provider files.
-On OpenCode 2, bare reads provider changes when the OpenCode provider restarts. External
+On OpenCode 2, bare reads provider changes when the OpenCode provider restarts. OpenCode
+always loads managed config set by an administrator; on OpenCode 2 a bare launch fails
+before inference when that config adds instructions. OpenCode substitutes provider `{file:}`
+paths itself, so if a file is unreadable, OpenCode's own log records the full path,
+including any `{env:}` value inside it; keep secrets out of file paths. External
 OpenCode servers, Antigravity and generic ACP adapters currently refuse bare launches.
 
 To start a bare thread yourself, turn on **Bare** in the model picker of a new

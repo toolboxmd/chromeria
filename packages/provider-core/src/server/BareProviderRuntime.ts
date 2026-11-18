@@ -290,7 +290,33 @@ export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.ope
       input.environment.XDG_CONFIG_HOME ||
       path.join(input.environment.HOME || NodeOS.homedir(), ".config");
     const target = path.join(input.home, "xdg-config");
-    yield* fs.makeDirectory(target, { recursive: true, mode: 0o700 });
+    const type = (item: string) =>
+      fs.lstat(item).pipe(
+        Effect.map((info) => info.type),
+        Effect.orElseSucceed(() => undefined),
+      );
+    const outside = new BareLaunchError({
+      reason: `Bare OpenCode home ${target} must be a real directory inside ${input.root}, not reached through a link.`,
+    });
+    const relative = NodePath.relative(input.root, target);
+    if (relative.startsWith("..") || NodePath.isAbsolute(relative)) return yield* outside;
+    // The root itself and then one level at a time below it, so nothing is created or cleaned
+    // through a link. Links above the root are the user's own layout and stay allowed.
+    if ((yield* type(input.root)) === undefined)
+      yield* fs.makeDirectory(input.root, { recursive: true, mode: 0o700 });
+    if ((yield* type(input.root)) !== "Directory") return yield* outside;
+    let level = input.root;
+    for (const part of relative.split(NodePath.sep)) {
+      level = NodePath.join(level, part);
+      if ((yield* type(level)) === undefined)
+        yield* fs.makeDirectory(level, { mode: 0o700 }).pipe(
+          Effect.catchIf(
+            (error) => error.reason._tag === "AlreadyExists",
+            () => Effect.void,
+          ),
+        );
+      if ((yield* type(level)) !== "Directory") return yield* outside;
+    }
     // Cleanup below deletes files, so a link anywhere from the bare root down must not lead it out.
     if (
       !isRealPathInside(
@@ -301,16 +327,9 @@ export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.ope
         yield* fs.realPath(target),
       )
     )
-      return yield* new BareLaunchError({
-        reason: `Bare OpenCode home ${target} must be a real directory inside ${input.root}, not reached through a link.`,
-      });
+      return yield* outside;
     yield* fs.chmod(input.home, 0o700);
     yield* fs.chmod(target, 0o700);
-    const type = (item: string) =>
-      fs.lstat(item).pipe(
-        Effect.map((info) => info.type),
-        Effect.orElseSucceed(() => undefined),
-      );
     // Unlinks a link itself, never its target, and removes only regular files.
     const discard = Effect.fnUntraced(function* (item: string) {
       const kind = yield* type(item);
@@ -341,8 +360,11 @@ export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.ope
         // Case-insensitive filesystems treat any case of this name as the shadow directory.
         if (entry.toLowerCase() === "opencode") continue;
         const destination = path.join(target, entry);
-        if (!(yield* fs.exists(destination)))
-          yield* fs.symlink(path.join(source, entry), destination);
+        if (yield* fs.exists(destination)) continue;
+        yield* fs.symlink(path.join(source, entry), destination);
+        // The filesystem's own folding decides aliases, such as ext4 casefold ignoring code points.
+        if ((yield* type(path.join(target, "opencode"))) === "SymbolicLink")
+          yield* discard(destination);
       }
     }
     const tools = {
@@ -364,6 +386,8 @@ export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.ope
       OPENCODE_DISABLE_CLAUDE_CODE: "1",
       OPENCODE_DISABLE_EXTERNAL_SKILLS: "1",
       OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+      // OpenCode 2 reads this first, so an inherited value must not re-enable project config.
+      OPENCODE_CONFIG_PROJECT_DISABLE: "1",
       OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
       OPENCODE_CONFIG_CONTENT: content,
     };

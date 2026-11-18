@@ -453,6 +453,8 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
             XDG_CONFIG_HOME: real,
             OPENCODE_CONFIG: "/unwanted/config",
             OPENCODE_CONFIG_DIR: "/unwanted",
+            // OpenCode 2 reads this before the legacy flag, so an inherited 0 must not survive.
+            OPENCODE_CONFIG_PROJECT_DISABLE: "0",
             KEY_PATH: "/secrets/key",
             // An ordinary value that looks like a file placeholder must not be refused.
             OMLX_KEY: "q0t3q1t3q2t3",
@@ -499,6 +501,8 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
       expect(yield* fs.readLink(`${environment.XDG_CONFIG_HOME}/gh`)).toBe(`${real}/gh`);
       expect(environment.HOME).toBe(root);
       expect(environment).not.toHaveProperty("OPENCODE_CONFIG");
+      expect(environment.OPENCODE_CONFIG_PROJECT_DISABLE).toBe("1");
+      expect(environment.OPENCODE_DISABLE_PROJECT_CONFIG).toBe("1");
       // The raw provider sections travel in memory beside the bare config, so OpenCode still
       // normalizes and substitutes them; absolute and home file paths read the same file.
       const strip = JSON.stringify(OPEN_CODE_BARE_CONFIG).slice(1);
@@ -636,9 +640,14 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
       yield* fs.symlink(`${victim}/xdg-config`, `${root}/bare-linked/xdg-config`);
       yield* fs.makeDirectory(`${root}/state/bare`, { recursive: true });
       yield* fs.symlink(victim, `${root}/state/bare/instance`);
+      // Nothing may be created through a link either, even an empty directory.
+      const outside = `${root}/outside`;
+      yield* fs.makeDirectory(outside);
+      yield* fs.symlink(outside, `${root}/state/bare/elsewhere`);
       for (const [bareRoot, home] of [
         [root, `${root}/bare-linked`],
         [`${root}/state/bare`, `${root}/state/bare/instance`],
+        [`${root}/state/bare`, `${root}/state/bare/elsewhere/opencode`],
       ] as const)
         expect(
           (yield* Effect.flip(
@@ -652,6 +661,30 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
           `Bare OpenCode home ${home}/xdg-config must be a real directory inside ${bareRoot}, not reached through a link.`,
         );
       expect(yield* fs.readFileString(`${victim}/xdg-config/opencode/opencode.json`)).toBe(user);
+      expect(yield* fs.readDirectory(outside)).toEqual([]);
+      // The bare root itself may be a link too: nothing is created there on a first run, and a
+      // config file already there survives a retry.
+      const linkedTarget = `${root}/linked-target`;
+      yield* fs.makeDirectory(linkedTarget);
+      yield* fs.makeDirectory(`${root}/linked-state`);
+      yield* fs.symlink(linkedTarget, `${root}/linked-state/bare`);
+      const prepareLinkedRoot = Effect.flip(
+        prepareOpenCodeBareEnvironment({
+          root: `${root}/linked-state/bare`,
+          home: `${root}/linked-state/bare/instance/opencode`,
+          environment: { HOME: root, XDG_CONFIG_HOME: `${root}/empty` },
+        }),
+      );
+      const linkedRootRefusal = `Bare OpenCode home ${root}/linked-state/bare/instance/opencode/xdg-config must be a real directory inside ${root}/linked-state/bare, not reached through a link.`;
+      expect((yield* prepareLinkedRoot).message).toBe(linkedRootRefusal);
+      expect(yield* fs.readDirectory(linkedTarget)).toEqual([]);
+      const linkedConfig = `${linkedTarget}/instance/opencode/xdg-config/opencode/opencode.json`;
+      yield* fs.makeDirectory(`${linkedTarget}/instance/opencode/xdg-config/opencode`, {
+        recursive: true,
+      });
+      yield* fs.writeFileString(linkedConfig, user);
+      expect((yield* prepareLinkedRoot).message).toBe(linkedRootRefusal);
+      expect(yield* fs.readFileString(linkedConfig)).toBe(user);
       // A linked config file inside the bare home is unlinked, so OpenCode never loads it, and
       // its target survives.
       yield* fs.writeFileString(`${real}/opencode/opencode.jsonc`, `{ "theme": "dark" }`);
