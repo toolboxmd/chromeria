@@ -1,5 +1,6 @@
 import { copySnapshot } from "./copySnapshot";
 import { VoiceInputSetup } from "./VoiceInputSetup";
+import { PromachosInlineCard } from "../promachos/PromachosChat";
 import { useComposerTypingGuard } from "./useComposerTypingGuard";
 import { insertAttachmentReferencesForDraft } from "./composerAttachmentReferences";
 import type { ComposerAttachmentInsertion } from "../composerAttachmentInsertion";
@@ -359,6 +360,7 @@ export interface ChatComposerHandle {
 }
 
 export interface ChatComposerProps {
+  inlineCardHost?: HTMLElement | null;
   composerDraftTarget: ScopedThreadRef | DraftId;
   environmentId: EnvironmentId;
   canOperateThread: boolean;
@@ -526,6 +528,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     canSteer,
     environmentUnavailable,
     activePendingApproval: incomingPendingApproval,
+    inlineCardHost = null,
     pendingApprovals,
     onHeldRequestIdsChange,
     pendingUserInputs: incomingPendingUserInputs,
@@ -1186,6 +1189,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeComposerMenuItemRef.current = activeComposerMenuItem;
   });
 
+  const inlineTopDrawer = inlineCardHost !== null && pendingUserInputs.length > 0;
   const isComposerApprovalState = activePendingApproval !== null;
   // A send declines the approvals shown here to redirect the agent, so it steers the waiting
   // turn instead of queueing behind it. Approvals the typing guard holds stay unseen and pending.
@@ -3481,26 +3485,28 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           <ComposerBannerStack items={shelfItems} />
           {showComposerTopDrawer ? (
             <ComposerBanner.Attachment>
-              <ComposerBanner.Root data-chat-composer-top-drawer="true" variant="info">
-                {pendingUserInputs.length > 0 ? (
-                  <ComposerPendingUserInputPanel
-                    pendingUserInputs={pendingUserInputs}
-                    cwd={gitCwd ?? undefined}
-                    threadRef={routeThreadRef}
-                    disabled={!canOperateThread}
-                    respondingRequestIds={
-                      activePendingIsResponding && activePendingUserInput
-                        ? [...respondingRequestIds, activePendingUserInput.requestId]
-                        : respondingRequestIds
-                    }
-                    answers={activePendingDraftAnswers}
-                    questionIndex={activePendingQuestionIndex}
-                    onToggleOption={onSelectActivePendingUserInputOption}
-                    onAdvance={onAdvanceActivePendingUserInput}
-                    onDismiss={onDismissActivePendingUserInput}
-                  />
-                ) : null}
-              </ComposerBanner.Root>
+              <PromachosInlineCard host={inlineTopDrawer ? inlineCardHost : null}>
+                <ComposerBanner.Root data-chat-composer-top-drawer="true" variant="info">
+                  {pendingUserInputs.length > 0 ? (
+                    <ComposerPendingUserInputPanel
+                      pendingUserInputs={pendingUserInputs}
+                      cwd={gitCwd ?? undefined}
+                      threadRef={routeThreadRef}
+                      disabled={!canOperateThread}
+                      respondingRequestIds={
+                        activePendingIsResponding && activePendingUserInput
+                          ? [...respondingRequestIds, activePendingUserInput.requestId]
+                          : respondingRequestIds
+                      }
+                      answers={activePendingDraftAnswers}
+                      questionIndex={activePendingQuestionIndex}
+                      onToggleOption={onSelectActivePendingUserInputOption}
+                      onAdvance={onAdvanceActivePendingUserInput}
+                      onDismiss={onDismissActivePendingUserInput}
+                    />
+                  ) : null}
+                </ComposerBanner.Root>
+              </PromachosInlineCard>
             </ComposerBanner.Attachment>
           ) : null}
         </ComposerBanner.Column>
