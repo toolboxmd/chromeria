@@ -414,10 +414,13 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
       yield* fs.makeDirectory(`${root}/real/opencode`, { recursive: true });
       yield* fs.makeDirectory(`${root}/real/gh`);
       yield* fs.writeFileString(
+        `${root}/real/opencode/config.json`,
+        JSON.stringify({ provider: { legacy: { name: "Legacy" } }, theme: "dark" }),
+      );
+      yield* fs.writeFileString(
         `${root}/real/opencode/opencode.json`,
         JSON.stringify({
-          providers: { hosted: { name: "Hosted" } },
-          provider: { omlx: { name: "old", options: { baseURL: "http://old/v1" } } },
+          providers: { omlx: { name: "old", settings: { baseURL: "http://old/v1" } } },
           mcp: { secret: { type: "local", command: ["serve"] } },
         }),
       );
@@ -425,13 +428,17 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
         `${root}/real/opencode/opencode.jsonc`,
         `{
           // the user's local model server
-          "provider": { "omlx": { "options": { "apiKey": "{env:OMLX_KEY}" }, "models": { "gemma": {} } } },
+          "provider": { "omlx": { "options": {
+            "baseURL": "http://new/v1",
+            "apiKey": "{env:OMLX_KEY}",
+            "headers": { "a": "{file:./key}", "b": "{file:~/key}", "c": "{file:/abs/key}" },
+          } } },
           "instructions": ["AGENTS.md"],
           "plugin": ["some-plugin"],
           "agent": { "build": { "prompt": "user prompt" } },
         }`,
       );
-      const environment = yield* prepareOpenCodeBareEnvironment({
+      const prepare = prepareOpenCodeBareEnvironment({
         home: `${root}/bare`,
         environment: {
           HOME: root,
@@ -440,24 +447,55 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
           OPENCODE_CONFIG_DIR: "/unwanted",
         },
       });
+      const environment = yield* prepare;
       expect(yield* fs.readLink(`${environment.XDG_CONFIG_HOME}/gh`)).toBe(`${root}/real/gh`);
-      expect(yield* fs.exists(`${environment.XDG_CONFIG_HOME}/opencode`)).toBe(false);
       expect(environment.HOME).toBe(root);
       expect(environment).not.toHaveProperty("OPENCODE_CONFIG");
       const config = yield* decodeAgentplanprompt(environment.OPENCODE_CONFIG_CONTENT);
       expect(config.agent.plan.prompt).toBe(".");
-      // Only provider definitions cross over, merged in OpenCode's file order, placeholders unresolved.
-      expect(JSON.parse(environment.OPENCODE_CONFIG_CONTENT ?? "{}")).toEqual({
-        ...OPEN_CODE_BARE_CONFIG,
+      expect(JSON.parse(environment.OPENCODE_CONFIG_CONTENT ?? "{}")).toEqual(
+        OPEN_CODE_BARE_CONFIG,
+      );
+      // Each document keeps only its provider keys, so OpenCode still orders and normalizes them.
+      const shadow = `${environment.XDG_CONFIG_HOME}/opencode`;
+      const read = (name: string) =>
+        fs.readFileString(`${shadow}/${name}`).pipe(Effect.map((text) => JSON.parse(text)));
+      expect((yield* fs.readDirectory(shadow)).toSorted()).toEqual([
+        "config.json",
+        "opencode.json",
+        "opencode.jsonc",
+      ]);
+      expect((yield* fs.stat(`${shadow}/opencode.jsonc`)).mode & 0o777).toBe(0o600);
+      expect(yield* read("config.json")).toEqual({ provider: { legacy: { name: "Legacy" } } });
+      expect(yield* read("opencode.json")).toEqual({
+        providers: { omlx: { name: "old", settings: { baseURL: "http://old/v1" } } },
+      });
+      expect(yield* read("opencode.jsonc")).toEqual({
         provider: {
           omlx: {
-            name: "old",
-            options: { baseURL: "http://old/v1", apiKey: "{env:OMLX_KEY}" },
-            models: { gemma: {} },
+            options: {
+              baseURL: "http://new/v1",
+              apiKey: "{env:OMLX_KEY}",
+              headers: {
+                a: `{file:${root}/real/opencode/key}`,
+                b: "{file:~/key}",
+                c: "{file:/abs/key}",
+              },
+            },
           },
         },
-        providers: { hosted: { name: "Hosted" } },
       });
+
+      yield* fs.remove(`${root}/real/opencode/config.json`);
+      yield* fs.writeFileString(
+        `${root}/real/opencode/opencode.json`,
+        `{ "providers": { "omlx": { "name": "cut`,
+      );
+      const malformed = yield* Effect.flip(prepare);
+      expect(malformed.message).toBe(
+        `OpenCode config ${root}/real/opencode/opencode.json is not valid JSON.`,
+      );
+      expect(yield* fs.exists(`${shadow}/config.json`)).toBe(false);
     }),
   );
 });

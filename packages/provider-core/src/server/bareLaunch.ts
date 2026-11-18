@@ -40,23 +40,24 @@ export function bareT3ToolNames(bare: ThreadBare | undefined): ReadonlyArray<str
 }
 
 /** Reconcile only files owned by the bare runtime. Never copy credentials. */
-export const writeBareConfig = Effect.fn("BareLaunch.writeConfig")(function* (
-  file: string,
-  text: string,
-) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  yield* fs.makeDirectory(path.dirname(file), { recursive: true, mode: 0o700 });
-  if ((yield* fs.exists(file)) && (yield* fs.readFileString(file)) === text) return;
-  const temporary = yield* fs.makeTempFile({
-    directory: path.dirname(file),
-    prefix: ".bare-config-",
-  });
-  yield* fs.writeFileString(temporary, text, { mode: 0o600 });
-  yield* fs
-    .rename(temporary, file)
-    .pipe(Effect.onError(() => fs.remove(temporary).pipe(Effect.ignore)));
-}, Effect.provide(Path.layer));
+export const writeBareConfig = Effect.fn("BareLaunch.writeConfig")(
+  function* (file: string, text: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    yield* fs.makeDirectory(path.dirname(file), { recursive: true, mode: 0o700 });
+    if ((yield* fs.exists(file)) && (yield* fs.readFileString(file)) === text) return;
+    // The temporary file lives in its own directory, which the scope removes after the rename.
+    const temporary = yield* fs.makeTempFileScoped({
+      directory: path.dirname(file),
+      prefix: ".bare-config-",
+    });
+    yield* fs.chmod(temporary, 0o600);
+    yield* fs.writeFileString(temporary, text);
+    yield* fs.rename(temporary, file);
+  },
+  Effect.scoped,
+  Effect.provide(Path.layer),
+);
 
 export function bareReceipt(input: {
   driver: ProviderDriverKind;

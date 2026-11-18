@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 import * as NodeOS from "node:os";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import { parse as parseJsonc } from "jsonc-parser";
+import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 import { type ProviderInstanceId } from "@t3tools/contracts";
 import { BareLaunchError, writeBareConfig } from "./bareLaunch.ts";
 
@@ -124,42 +124,63 @@ export const OPEN_CODE_BARE_CONFIG = {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const mergeDeep = (
-  base: Record<string, unknown>,
-  next: Record<string, unknown>,
-): Record<string, unknown> => {
-  const merged = { ...base };
-  for (const [key, value] of Object.entries(next)) {
-    const current = merged[key];
-    merged[key] = isRecord(current) && isRecord(value) ? mergeDeep(current, value) : value;
-  }
-  return merged;
-};
+// OpenCode 1.x reads all three in this order; OpenCode 2 reads the last two.
+const OPEN_CODE_GLOBAL_CONFIG_FILES = ["config.json", "opencode.json", "opencode.jsonc"];
+const OPEN_CODE_PROVIDER_KEYS = ["provider", "providers"];
+
+/** OpenCode resolves a relative `{file:...}` beside its config document, which bare moves. */
+const anchorFileReferences = (value: unknown, directory: string, path: Path.Path): unknown =>
+  typeof value === "string"
+    ? value.replace(/\{file:([^}]+)\}/g, (reference, file: string) =>
+        file.startsWith("~") || path.isAbsolute(file)
+          ? reference
+          : `{file:${path.resolve(directory, file)}}`,
+      )
+    : Array.isArray(value)
+      ? value.map((entry) => anchorFileReferences(entry, directory, path))
+      : isRecord(value)
+        ? Object.fromEntries(
+            Object.entries(value).map(([key, entry]) => [
+              key,
+              anchorFileReferences(entry, directory, path),
+            ]),
+          )
+        : value;
 
 /**
- * Provider definitions are model plumbing, not prompt context, so bare keeps them. They stay
- * unresolved: `{env:...}` placeholders resolve in the bare server, never in T3 Code.
+ * Provider definitions are model plumbing, not prompt context, so bare keeps them: each global
+ * document keeps only its provider keys, so OpenCode still normalizes and orders the documents.
+ * Values stay unresolved; `{env:...}` and `{file:...}` resolve in the bare server, never here.
  */
-const readOpenCodeProviders = Effect.fn("BareProviderRuntime.openCodeProviders")(function* (
-  directory: string,
+const shadowOpenCodeProviders = Effect.fn("BareProviderRuntime.openCodeProviders")(function* (
+  source: string,
+  target: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  let providers: Record<string, unknown> = {};
-  // OpenCode merges these global documents in this order, later winning.
-  for (const name of ["opencode.json", "opencode.jsonc"]) {
-    const file = path.join(directory, name);
-    if (!(yield* fs.exists(file))) continue;
-    const document: unknown = parseJsonc(yield* fs.readFileString(file), [], {
-      allowTrailingComma: true,
-    });
-    if (!isRecord(document)) continue;
-    for (const key of ["provider", "providers"]) {
-      const entries = document[key];
-      if (isRecord(entries)) providers = mergeDeep(providers, { [key]: entries });
-    }
+  for (const name of OPEN_CODE_GLOBAL_CONFIG_FILES) {
+    const file = path.join(source, name);
+    const shadow = path.join(target, name);
+    const errors: Array<ParseError> = [];
+    const document: unknown = (yield* fs.exists(file))
+      ? parseJsonc(yield* fs.readFileString(file), errors, { allowTrailingComma: true })
+      : undefined;
+    // OpenCode rejects a malformed document; a recovered partial one must not reach bare.
+    if (errors.length > 0)
+      return yield* new BareLaunchError({ reason: `OpenCode config ${file} is not valid JSON.` });
+    const providers = isRecord(document)
+      ? Object.fromEntries(
+          OPEN_CODE_PROVIDER_KEYS.flatMap((key) =>
+            isRecord(document[key])
+              ? [[key, anchorFileReferences(document[key], source, path)]]
+              : [],
+          ),
+        )
+      : {};
+    if (Object.keys(providers).length > 0)
+      yield* writeBareConfig(shadow, yield* encodeConfig(providers).pipe(Effect.orDie));
+    else if (yield* fs.exists(shadow)) yield* fs.remove(shadow);
   }
-  return providers;
 });
 
 export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.openCode")(
@@ -191,7 +212,7 @@ export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.ope
       ...OPEN_CODE_BARE_TOOLS,
       ...(input.namedMcp ? { "t3-code_*": true, "t3_code_*": true } : {}),
     };
-    const providers = yield* readOpenCodeProviders(path.join(source, "opencode"));
+    yield* shadowOpenCodeProviders(path.join(source, "opencode"), path.join(target, "opencode"));
     const config = {
       ...OPEN_CODE_BARE_CONFIG,
       agent: {
@@ -207,10 +228,7 @@ export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.ope
       OPENCODE_DISABLE_EXTERNAL_SKILLS: "1",
       OPENCODE_DISABLE_PROJECT_CONFIG: "1",
       OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
-      OPENCODE_CONFIG_CONTENT: yield* encodeConfig({
-        ...(input.config ?? config),
-        ...providers,
-      }).pipe(Effect.orDie),
+      OPENCODE_CONFIG_CONTENT: yield* encodeConfig(input.config ?? config).pipe(Effect.orDie),
     };
     // These discovery selectors could otherwise escape the isolated config root.
     delete environment.OPENCODE_CONFIG;
