@@ -2223,7 +2223,7 @@ const make = Effect.gen(function* () {
     const delivered = (waited: Option.Option<OrchestratorMcpDelegateTaskResult>) =>
       Option.isSome(waited) && isTerminalTaskStatus(waited.value.status);
     // The finalizer runs uninterruptibly, so a cancel right after the wait returns still upgrades.
-    const waited = yield* waitForTask(scope, taskId, timeoutMs).pipe(
+    const waited = yield* waitForTask(scope, taskId, timeoutMs, true).pipe(
       Effect.onExit((exit) =>
         Exit.isSuccess(exit) && delivered(exit.value) ? Effect.void : upgradeWake,
       ),
@@ -2366,7 +2366,13 @@ const make = Effect.gen(function* () {
   });
 
   const waitForTask = Effect.fn("OrchestratorMcpService.waitForTask")(
-    function* (scope: McpThreadInvocationScope, taskId: NodeId, _timeoutMs: number) {
+    function* (
+      scope: McpThreadInvocationScope,
+      taskId: NodeId,
+      _timeoutMs: number,
+      // A Run group's watchers only read; its response acknowledges what it returns.
+      acknowledgeTerminal: boolean,
+    ) {
       const streamError = (error: unknown) =>
         failure(
           "orchestration_error",
@@ -2376,7 +2382,7 @@ const make = Effect.gen(function* () {
       const afterSequence = yield* threadManagement
         .getThreadEventSequence(scope.thread.threadId)
         .pipe(Effect.mapError(streamError));
-      const initial = yield* readTask(scope, taskId, false, true);
+      const initial = yield* readTask(scope, taskId, false, acknowledgeTerminal);
       if (endsTaskWait(initial)) {
         return Option.some(initial);
       }
@@ -2410,12 +2416,12 @@ const make = Effect.gen(function* () {
         { concurrency: "unbounded" },
       ).pipe(
         Stream.mapError(streamError),
-        Stream.mapEffect(() => readTask(scope, taskId, false, true)),
+        Stream.mapEffect(() => readTask(scope, taskId, false, acknowledgeTerminal)),
         Stream.filter(endsTaskWait),
         Stream.runHead,
       );
     },
-    (effect, _scope, _taskId, timeoutMs) =>
+    (effect, _scope, _taskId, timeoutMs, _acknowledgeTerminal) =>
       effect.pipe(Effect.timeoutOption(Duration.millis(timeoutMs)), Effect.map(Option.flatten)),
   );
 
@@ -2506,12 +2512,28 @@ const make = Effect.gen(function* () {
       MAX_WAIT_TIMEOUT_MS,
       Math.max(1, requestedTimeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS),
     );
-    const deadline = (yield* Clock.currentTimeMillis) + timeoutMs;
-    for (const member of members) {
-      const remaining = deadline - (yield* Clock.currentTimeMillis);
-      const waited =
-        remaining <= 0 ? Option.none() : yield* waitForTask(scope, member.id, remaining);
-      if (Option.isSome(waited) && isTerminalTaskStatus(waited.value.status)) continue;
+    // Every member is watched at once: any one's question ends the wait, whatever its Color.
+    const ended = yield* Effect.forEach(
+      members,
+      (member) =>
+        waitForTask(scope, member.id, timeoutMs, false).pipe(
+          Effect.flatMap((waited) =>
+            Option.isSome(waited) && isTerminalTaskStatus(waited.value.status)
+              ? Effect.void
+              : Effect.fail({
+                  _tag: "RunGroupWaitEnded",
+                  timedOut: Option.isNone(waited),
+                } as const),
+          ),
+        ),
+      { concurrency: "unbounded", discard: true },
+    ).pipe(
+      Effect.as(Option.none<boolean>()),
+      Effect.catchTags({
+        RunGroupWaitEnded: (end) => Effect.succeedSome(end.timedOut),
+      }),
+    );
+    if (Option.isSome(ended)) {
       for (const pending of members)
         yield* threadManagement
           .dispatch({
@@ -2526,7 +2548,7 @@ const make = Effect.gen(function* () {
             completionWake: "always",
           })
           .pipe(Effect.ignoreCause({ log: true }));
-      return yield* readRunGroup(scope, groupId, members, Option.isNone(waited));
+      return yield* readRunGroup(scope, groupId, members, ended.value);
     }
     return yield* readRunGroup(scope, groupId, members);
   });

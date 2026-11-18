@@ -841,6 +841,17 @@ it.live.each([
             current.remoteChild.cancelResolution.outcome ===
               (outcome === "accepted" ? "applied" : "refused"),
         );
+        // The restarted follower also sends the other member's own Stop; its answer settles what
+        // the destination recorded.
+        if (restarted)
+          yield* recorded(
+            a,
+            parentId,
+            members[1]!.id,
+            (current) =>
+              current.remoteChild?.cancelResolution?.requestId ===
+              RemoteDelegation.cancelRequestId(namespaceOf(a, parentId), "rg-owed-stop:1"),
+          );
         const stops = yield* destinationStops(b);
         const entry = yield* memberEntry(a, parentId, members[0]!, "rg-owed-stop", 0);
         expect(entry.isError).toBe(outcome === "refused");
@@ -1453,23 +1464,24 @@ it.live(
             }),
             Stream.runHead,
           );
-        const members = [...seen.values()];
-        // The first member asks its user a question there.
-        yield* activate(b, childOf(members[0]!));
-        yield* seedPending369(b, childOf(members[0]!), "rg-question");
+        // In Color order, so the member that asks is not the first one the wait reads.
+        const members = (yield* tasksOf(a, parentId)).map((task) => seen.get(task.id)!);
+        // The second member asks its user a question there while the first still runs.
+        yield* activate(b, childOf(members[1]!));
+        yield* seedPending369(b, childOf(members[1]!), "rg-question");
         const answered = yield* decodeGroup((yield* Fiber.join(waiting)).structuredContent);
         expect(answered.status).toBe("running");
         expect(answered.waitTimedOut).toBe(false);
         expect(answered.tasks.some((task) => task.hasPendingQuestion === true)).toBe(true);
         // The wait gave the group back its wake: it wakes once when every member ends.
-        yield* finishLifecycleRun(b, childOf(members[1]!), "rg-question-1");
-        yield* recorded(a, parentId, members[1]!.id, (task) => task.result !== null);
+        yield* finishLifecycleRun(b, childOf(members[0]!), "rg-question-0");
+        yield* recorded(a, parentId, members[0]!.id, (task) => task.result !== null);
         expect((yield* committedWakes(a, parentId, ids(members))).size).toBe(0);
-        const cancel = yield* nativeCall(b, childOf(members[0]!), "t3_thread_interrupt", {
-          threadId: childOf(members[0]!),
+        const cancel = yield* nativeCall(b, childOf(members[1]!), "t3_thread_interrupt", {
+          threadId: childOf(members[1]!),
         });
         expect(cancel.isError, json(cancel.content)).not.toBe(true);
-        yield* recorded(a, parentId, members[0]!.id, (task) => task.result !== null);
+        yield* recorded(a, parentId, members[1]!.id, (task) => task.result !== null);
         expect((yield* committedWakes(a, parentId, ids(members))).size).toBe(1);
       }),
     ).pipe(Effect.provide(services)),

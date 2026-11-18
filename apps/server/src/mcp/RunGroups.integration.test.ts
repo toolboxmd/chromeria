@@ -34,12 +34,14 @@ import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as Tracer from "effect/Tracer";
 import { McpSchema, McpServer } from "effect/ai";
 
 import { ClaudeProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
@@ -48,6 +50,7 @@ import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as EffectWorker from "../orchestration-v2/EffectWorker.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import { runGroupWakeDetail } from "../orchestration-v2/RunGroups.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -1235,6 +1238,80 @@ describe("Run groups", () => {
           expect(yield* Ref.get(offers)).toHaveLength(0);
         }),
     ),
+  );
+
+  it.live("a group wait cancelled after one Color ends leaves both results to the wake", () =>
+    Effect.gen(function* () {
+      const codexDone = yield* Deferred.make<void>();
+      yield* withParent(
+        roastRun([codexColor, claudeColor], 2),
+        (_turn, instanceId) =>
+          instanceId === codex
+            ? Deferred.await(codexDone).pipe(Effect.as<TurnOutcome>("complete"))
+            : Effect.succeed<TurnOutcome>("complete"),
+        ({ orchestrator, invoke, drain }) =>
+          Effect.gen(function* () {
+            // The first member watch to finish is Color 1's; Color 0's runs until the cancel.
+            const watched = yield* Deferred.make<void>();
+            const tracer = Tracer.make({
+              span(options) {
+                const span = new Tracer.NativeSpan(options);
+                const end = span.end.bind(span);
+                span.end = (time, exit) => {
+                  end(time, exit);
+                  if (
+                    options.name === "OrchestratorMcpService.waitForTask" &&
+                    exit._tag === "Success"
+                  )
+                    Deferred.doneUnsafe(watched, Effect.void);
+                };
+                return span;
+              },
+            });
+            const waiting = yield* invoke("delegate_task", {
+              task: "Attack this plan.",
+              prismRole: "roast",
+              clientRequestId: "roast-cancelled-wait",
+              mode: "wait",
+              timeoutMs: 600_000,
+            }).pipe(Effect.withTracer(tracer), Effect.forkChild);
+            // Color 1 ends while the call still waits on Color 0; then the call is cancelled.
+            const held = yield* waitForProjection(orchestrator, parentThreadId, (projection) =>
+              projection.subagents.some(
+                (task) => task.providerInstanceId === claude && task.status === "completed",
+              ),
+            );
+            yield* Deferred.await(watched);
+            yield* Fiber.interrupt(waiting);
+            yield* Deferred.succeed(codexDone, undefined);
+            const members = held.subagents.filter((task) => task.runGroupId !== undefined);
+            yield* waitForProjection(orchestrator, parentThreadId, (projection) =>
+              members.every((task) => subagent(projection, task.id)?.status === "completed"),
+            );
+            yield* drain;
+            // No response carried either result, so the wake the group reserved carries both.
+            for (const task of members)
+              yield* orchestrator.dispatch({
+                type: "delegated_task.wake-policy",
+                commandId: CommandId.make(`command:run-group:cancelled-wait-wake:${task.id}`),
+                parentThreadId,
+                taskId: task.id,
+                completionWake: "always",
+              });
+            const woken = yield* waitForProjection(
+              orchestrator,
+              parentThreadId,
+              (projection) =>
+                (projection.runs[0]?.delegatedCompletion?.delivery?.taskIds.length ?? 0) > 0,
+            );
+            expect(new Set(woken.runs[0]?.delegatedCompletion?.delivery?.taskIds)).toEqual(
+              new Set(members.map((task) => task.id)),
+            );
+            const text = runGroupWakeDetail(woken, members[0]!.runGroupId!);
+            for (const task of members) expect(text).toContain(`[${task.id} · `);
+          }),
+      );
+    }),
   );
 
   it.live("members ending after the group cancel is recorded never wake the parent", () =>
