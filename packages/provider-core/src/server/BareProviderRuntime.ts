@@ -3,7 +3,6 @@ import * as Schema from "effect/Schema";
 import * as NodeOS from "node:os";
 import * as Effect from "effect/Effect";
 import * as Random from "effect/Random";
-import * as Option from "effect/Option";
 import * as FileSystem from "effect/FileSystem";
 import { parseTree, stripComments, type Node, type ParseError } from "jsonc-parser";
 import { type ProviderInstanceId } from "@t3tools/contracts";
@@ -11,8 +10,9 @@ import { BareLaunchError, writeBareConfig } from "./bareLaunch.ts";
 
 const encodeConfig = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
+export const bareRoot = (stateDir: string) => `${stateDir}/bare`;
 export const bareHome = (stateDir: string, instanceId: ProviderInstanceId, harness: string) =>
-  `${stateDir}/bare/${encodeURIComponent(instanceId)}/${harness}`;
+  `${bareRoot(stateDir)}/${encodeURIComponent(instanceId)}/${harness}`;
 
 export const CODEX_BARE_CONFIG = `project_doc_max_bytes = 0
 include_permissions_instructions = false
@@ -257,6 +257,8 @@ const openCodeProviderSections = Effect.fn("BareProviderRuntime.openCodeProvider
 
 export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.openCode")(
   function* (input: {
+    /** T3's own bare directory; the home must really live inside it. */
+    root: string;
     home: string;
     environment: NodeJS.ProcessEnv;
     namedMcp?: boolean;
@@ -270,40 +272,43 @@ export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.ope
       path.join(input.environment.HOME || NodeOS.homedir(), ".config");
     const target = path.join(input.home, "xdg-config");
     yield* fs.makeDirectory(target, { recursive: true, mode: 0o700 });
+    // Cleanup below deletes files, so a link anywhere from the bare root down must not lead it out.
+    const relative = path.relative(input.root, target);
+    if (
+      relative.startsWith("..") ||
+      path.isAbsolute(relative) ||
+      (yield* fs.realPath(target)) !== path.join(yield* fs.realPath(input.root), relative)
+    )
+      return yield* new BareLaunchError({
+        reason: `Bare OpenCode home ${target} must be a real directory inside ${input.root}, not reached through a link.`,
+      });
     yield* fs.chmod(input.home, 0o700);
     yield* fs.chmod(target, 0o700);
-    // An earlier mirror may hold a case variant that aliases the shadow directory; unlinking
-    // removes only the link, never the user's directory.
-    for (const entry of yield* fs.readDirectory(target))
-      if (
-        entry.toLowerCase() === "opencode" &&
-        Option.isSome(yield* fs.readLink(path.join(target, entry)).pipe(Effect.option))
-      )
-        yield* fs.remove(path.join(target, entry));
-    // Earlier builds wrote provider copies, and interrupted writes left temporary ones, here; they
-    // may hold credentials. Cleanup never follows a link and removes only regular files.
-    const stale = path.join(target, "opencode");
     const type = (item: string) =>
       fs.lstat(item).pipe(
         Effect.map((info) => info.type),
         Effect.orElseSucceed(() => undefined),
       );
-    const removeFile = Effect.fnUntraced(function* (item: string) {
-      if ((yield* type(item)) === "File") yield* fs.remove(item);
+    // Unlinks a link itself, never its target, and removes only regular files.
+    const discard = Effect.fnUntraced(function* (item: string) {
+      const kind = yield* type(item);
+      if (kind === "SymbolicLink" || kind === "File") yield* fs.remove(item);
     });
-    if (
-      (yield* type(input.home)) === "Directory" &&
-      (yield* type(target)) === "Directory" &&
-      (yield* type(stale)) === "Directory"
-    )
+    // An earlier mirror may hold a case variant that aliases the shadow directory.
+    for (const entry of yield* fs.readDirectory(target))
+      if (entry.toLowerCase() === "opencode") yield* discard(path.join(target, entry));
+    // Earlier builds wrote provider copies, and interrupted writes left temporary ones, here; they
+    // may hold credentials. A linked config file would also be loaded by OpenCode.
+    const stale = path.join(target, "opencode");
+    if ((yield* type(stale)) === "Directory")
       for (const entry of yield* fs.readDirectory(stale)) {
         const item = path.join(stale, entry);
-        if (OPEN_CODE_1_GLOBAL_CONFIG_FILES.includes(entry)) yield* removeFile(item);
+        if (OPEN_CODE_1_GLOBAL_CONFIG_FILES.includes(entry)) yield* discard(item);
         else if (entry.startsWith(".bare-config-")) {
-          if ((yield* type(item)) !== "Directory") yield* removeFile(item);
+          if ((yield* type(item)) !== "Directory") yield* discard(item);
           else {
             for (const inner of yield* fs.readDirectory(item))
-              yield* removeFile(path.join(item, inner));
+              yield* discard(path.join(item, inner));
             if ((yield* fs.readDirectory(item)).length === 0)
               yield* fs.remove(item, { recursive: true });
           }

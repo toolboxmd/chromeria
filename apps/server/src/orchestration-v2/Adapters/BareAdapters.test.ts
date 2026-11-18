@@ -443,6 +443,7 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
       );
       const prepare = (environment: NodeJS.ProcessEnv = {}) =>
         prepareOpenCodeBareEnvironment({
+          root,
           home: `${root}/bare`,
           environment: {
             HOME: root,
@@ -477,6 +478,7 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
       // OpenCode 2 ignores the legacy `config.json`, so bare does too.
       const openCode2 = yield* Effect.flip(
         prepareOpenCodeBareEnvironment({
+          root,
           home: `${root}/bare2`,
           environment: { HOME: root, XDG_CONFIG_HOME: real, OMLX_KEY: "k", KEY_PATH: "/k" },
           config: { mcp: {} },
@@ -611,6 +613,7 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
       const user = JSON.stringify({ provider: { local: { name: "Local" } }, mcp: {} });
       yield* fs.writeFileString(`${cased}/OpenCode/opencode.json`, user);
       const casedEnvironment = yield* prepareOpenCodeBareEnvironment({
+        root,
         home: `${root}/bare-cased`,
         environment: { HOME: root, XDG_CONFIG_HOME: cased },
       });
@@ -621,17 +624,40 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
         ),
       ).toBe(true);
 
-      // Stale cleanup never follows a link out of the bare home.
+      // Cleanup deletes files, so a bare home reached through a link, at any level, refuses the
+      // launch and leaves the linked files alone.
       const victim = `${root}/victim`;
-      yield* fs.makeDirectory(`${victim}/opencode`, { recursive: true });
-      yield* fs.writeFileString(`${victim}/opencode/opencode.json`, user);
+      yield* fs.makeDirectory(`${victim}/xdg-config/opencode`, { recursive: true });
+      yield* fs.writeFileString(`${victim}/xdg-config/opencode/opencode.json`, user);
       yield* fs.makeDirectory(`${root}/bare-linked`);
-      yield* fs.symlink(victim, `${root}/bare-linked/xdg-config`);
-      yield* prepareOpenCodeBareEnvironment({
-        home: `${root}/bare-linked`,
-        environment: { HOME: root, XDG_CONFIG_HOME: `${root}/empty` },
-      });
-      expect(yield* fs.readFileString(`${victim}/opencode/opencode.json`)).toBe(user);
+      yield* fs.symlink(`${victim}/xdg-config`, `${root}/bare-linked/xdg-config`);
+      yield* fs.makeDirectory(`${root}/state/bare`, { recursive: true });
+      yield* fs.symlink(victim, `${root}/state/bare/instance`);
+      for (const [bareRoot, home] of [
+        [root, `${root}/bare-linked`],
+        [`${root}/state/bare`, `${root}/state/bare/instance`],
+      ] as const)
+        expect(
+          (yield* Effect.flip(
+            prepareOpenCodeBareEnvironment({
+              root: bareRoot,
+              home,
+              environment: { HOME: root, XDG_CONFIG_HOME: `${root}/empty` },
+            }),
+          )).message,
+        ).toBe(
+          `Bare OpenCode home ${home}/xdg-config must be a real directory inside ${bareRoot}, not reached through a link.`,
+        );
+      expect(yield* fs.readFileString(`${victim}/xdg-config/opencode/opencode.json`)).toBe(user);
+      // A linked config file inside the bare home is unlinked, so OpenCode never loads it, and
+      // its target survives.
+      yield* fs.writeFileString(`${real}/opencode/opencode.jsonc`, `{ "theme": "dark" }`);
+      yield* fs.symlink(`${victim}/xdg-config/opencode/opencode.json`, `${stale}/opencode.json`);
+      yield* prepare();
+      expect(Option.isNone(yield* fs.lstat(`${stale}/opencode.json`).pipe(Effect.option))).toBe(
+        true,
+      );
+      expect(yield* fs.readFileString(`${victim}/xdg-config/opencode/opencode.json`)).toBe(user);
 
       yield* fs.remove(`${real}/opencode/config.json`);
       yield* fs.writeFileString(`${real}/opencode/opencode.jsonc`, `{ "theme": "dark" }`);
