@@ -2553,10 +2553,12 @@ sources and reasons.
     "packages/provider-opencode/src/server/adapter.ts",
     "packages/provider-opencode/src/server/driver.test.ts",
     "packages/provider-opencode/src/server/driver.ts",
+    "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.testkit.ts",
     "apps/server/src/scheduledTasks/ScheduledTaskService.interval.test.ts",
     "apps/server/src/mcp/TaskCancelUsageLimit.integration.test.ts"
   ],
   "sharedFiles": [
+    "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts",
     "packages/provider-opencode/src/server/v2/adapter.ts",
     "apps/server/src/peer/PeerForwarding.bare.test.ts",
     "GLOSSARY.md",

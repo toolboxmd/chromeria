@@ -71,17 +71,14 @@ export const inspect = Effect.fn("OpenCode2Bare.inspect")(function* (
   directory: string,
 ) {
   const location = { directory };
-  const { agents, plugins, mcp, skills } = yield* Effect.all(
-    {
-      agents: Effect.forEach(["build", "plan"], (id) =>
-        client.agent.get({ agentID: Agent.ID.make(id), location }),
-      ),
-      plugins: client.plugin.list({ location }),
-      mcp: client.mcp.list({ location }),
-      skills: client.skill.list({ location }),
-    },
-    { concurrency: "unbounded" },
-  ).pipe(
+  const { agents, plugins, mcp, skills } = yield* Effect.all({
+    agents: Effect.forEach(["build", "plan"], (id) =>
+      client.agent.get({ agentID: Agent.ID.make(id), location }),
+    ),
+    plugins: client.plugin.list({ location }),
+    mcp: client.mcp.list({ location }),
+    skills: client.skill.list({ location }),
+  }).pipe(
     Effect.mapError(
       (cause) =>
         new OpenCodeRuntime.OpenCodeRuntimeError({

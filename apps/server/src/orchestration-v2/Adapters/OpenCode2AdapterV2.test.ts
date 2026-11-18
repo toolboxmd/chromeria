@@ -4171,6 +4171,79 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     }),
   );
 
+  it.effect("runs a bare session with native-only rules, no T3 instructions and a receipt", () =>
+    Effect.gen(function* () {
+      const inventory = (type: string, data: unknown) => [
+        out(type, "<any>"),
+        reply(type, { location: { directory: WORK }, data }),
+      ];
+      const bareAgent = (id: string) => ({ ...agentList.data[0], id, system: "." });
+      const nativeAllow = ["shell", "read", "edit", "glob", "grep", "external_directory"].map(
+        (action) => ({ action, resource: "*", effect: "allow" }),
+      );
+      const bareRules = [
+        { action: "*", resource: "*", effect: "deny" },
+        { action: "read", resource: "*", effect: "allow" },
+        { action: "glob", resource: "*", effect: "allow" },
+        { action: "grep", resource: "*", effect: "allow" },
+        { action: "read", resource: "*.env", effect: "ask" },
+        { action: "read", resource: "*.env.*", effect: "ask" },
+        { action: "read", resource: "*.env.example", effect: "allow" },
+        ...nativeAllow,
+      ];
+      const runtime = yield* openCode2ReplayRuntime(
+        [
+          ...opening,
+          ...inventory("agent.get", bareAgent("build")),
+          ...inventory("agent.get", bareAgent("plan")),
+          ...inventory("plugin.list", []),
+          ...inventory("mcp.list", []),
+          ...inventory("skill.list", []),
+          out("session.create", {
+            location: { directory: WORK },
+            model: { providerID: "opencode", id: "big-pickle" },
+            permissions: bareRules,
+          }),
+          replyData("session.create", sessionInfo({ permissions: bareRules })),
+          // No session.instructions.entry.put: bare sends no T3 Code instructions.
+          out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+          promptAccepted,
+          event("session.execution.succeeded", { sessionID: SESSION }),
+        ],
+        { bare: { additions: [] } },
+      );
+      const thread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection: bigPickle,
+        runtimePolicy: { ...policy(), bare: { additions: [] } },
+      });
+      const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
+      yield* runtime.startTurn({
+        ...turnInput(thread),
+        runtimePolicy: { ...policy(), bare: { additions: [] } },
+      });
+      assert.equal((yield* Fiber.join(terminal))?.status, "completed");
+      const receipt = yield* runtime.getBareReceipt!(thread);
+      assert.deepEqual(
+        receipt.evidence
+          .filter((entry) => entry.status !== "unobserved" || entry.category === "tools")
+          .map((entry) => [entry.category, entry.status]),
+        [
+          ["tools", "unobserved"],
+          ["system_text", "observed_retained"],
+          ["plugins", "observed_clean"],
+          ["mcp", "observed_clean"],
+          ["skills", "observed_clean"],
+        ],
+      );
+      assert.deepEqual(receipt.nativeRecord, {
+        harness: "opencode",
+        root: "/opencode-data",
+        sessionId: SESSION,
+      });
+    }),
+  );
+
   it.effect("reads the agents again while a fresh server still lists none", () =>
     Effect.gen(function* () {
       // OpenCode 2.0.18 briefly returns no agents on startup; using that response drops agent paths.
