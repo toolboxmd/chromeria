@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Checks bare's real-path containment under node:path's win32 rules.
 import * as Digest from "effect/crypto/Digest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
@@ -10,6 +11,7 @@ import {
   ThreadId,
   type RuntimeMode,
 } from "@t3tools/contracts";
+import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as FileSystem from "effect/FileSystem";
@@ -30,6 +32,7 @@ import { makeCursorAgentOptions } from "../../../../../packages/provider-cursor/
 import { openCodePermissionRules } from "../../../../../packages/provider-opencode/src/server/adapter.ts";
 import {
   CODEX_BARE_CONFIG,
+  isRealPathInside,
   OPEN_CODE_BARE_CONFIG,
   prepareCodexBareHome,
   prepareOpenCodeBareEnvironment,
@@ -658,6 +661,42 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
         true,
       );
       expect(yield* fs.readFileString(`${victim}/xdg-config/opencode/opencode.json`)).toBe(user);
+      // On a case-insensitive volume OpenCode opens a link in any spelling of its config name.
+      yield* fs.writeFileString(`${root}/CaseProbe`, "");
+      if (yield* fs.exists(`${root}/caseprobe`)) {
+        yield* fs.symlink(`${victim}/xdg-config/opencode/opencode.json`, `${stale}/OPENCODE.JSON`);
+        yield* prepare();
+        expect(Option.isNone(yield* fs.lstat(`${stale}/OPENCODE.JSON`).pipe(Effect.option))).toBe(
+          true,
+        );
+        expect(yield* fs.readFileString(`${victim}/xdg-config/opencode/opencode.json`)).toBe(user);
+      }
+      // A fresh home passes the real-path check with this platform's native paths, and Windows
+      // separators, mixed as T3 builds them, compare natively.
+      yield* prepareOpenCodeBareEnvironment({
+        root,
+        home: `${root}/fresh/opencode`,
+        environment: { HOME: root, XDG_CONFIG_HOME: `${root}/empty` },
+      });
+      const windowsRoot = "C:\\Users\\u\\t3\\bare";
+      expect(
+        isRealPathInside(
+          NodePath.win32,
+          windowsRoot,
+          `${windowsRoot}/x/opencode/xdg-config`,
+          windowsRoot,
+          `${windowsRoot}\\x\\opencode\\xdg-config`,
+        ),
+      ).toBe(true);
+      expect(
+        isRealPathInside(
+          NodePath.win32,
+          windowsRoot,
+          `${windowsRoot}/x/opencode/xdg-config`,
+          windowsRoot,
+          "D:\\outside\\xdg-config",
+        ),
+      ).toBe(false);
 
       yield* fs.remove(`${real}/opencode/config.json`);
       yield* fs.writeFileString(`${real}/opencode/opencode.jsonc`, `{ "theme": "dark" }`);

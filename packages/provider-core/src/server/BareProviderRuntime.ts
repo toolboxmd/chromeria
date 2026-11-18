@@ -1,6 +1,8 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Effect's Path layer is POSIX-only; real-path containment needs the platform's native path rules.
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
 import * as Random from "effect/Random";
 import * as FileSystem from "effect/FileSystem";
@@ -255,6 +257,23 @@ const openCodeProviderSections = Effect.fn("BareProviderRuntime.openCodeProvider
   return copied[0]?.sections;
 });
 
+/** Whether `target` really lies at the same place below `root`, in the platform's own path rules. */
+export const isRealPathInside = (
+  paths: NodePath.PlatformPath,
+  root: string,
+  target: string,
+  realRoot: string,
+  realTarget: string,
+) => {
+  const relative = paths.relative(root, target);
+  return (
+    relative !== "" &&
+    !relative.startsWith("..") &&
+    !paths.isAbsolute(relative) &&
+    paths.relative(realRoot, realTarget) === relative
+  );
+};
+
 export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.openCode")(
   function* (input: {
     /** T3's own bare directory; the home must really live inside it. */
@@ -273,11 +292,14 @@ export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.ope
     const target = path.join(input.home, "xdg-config");
     yield* fs.makeDirectory(target, { recursive: true, mode: 0o700 });
     // Cleanup below deletes files, so a link anywhere from the bare root down must not lead it out.
-    const relative = path.relative(input.root, target);
     if (
-      relative.startsWith("..") ||
-      path.isAbsolute(relative) ||
-      (yield* fs.realPath(target)) !== path.join(yield* fs.realPath(input.root), relative)
+      !isRealPathInside(
+        NodePath,
+        input.root,
+        target,
+        yield* fs.realPath(input.root),
+        yield* fs.realPath(target),
+      )
     )
       return yield* new BareLaunchError({
         reason: `Bare OpenCode home ${target} must be a real directory inside ${input.root}, not reached through a link.`,
@@ -294,26 +316,26 @@ export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.ope
       const kind = yield* type(item);
       if (kind === "SymbolicLink" || kind === "File") yield* fs.remove(item);
     });
-    // An earlier mirror may hold a case variant that aliases the shadow directory.
-    for (const entry of yield* fs.readDirectory(target))
-      if (entry.toLowerCase() === "opencode") yield* discard(path.join(target, entry));
+    // Exact names, so on a case-insensitive volume a link in any spelling OpenCode would open is
+    // found too. An earlier mirror may hold a link aliasing the shadow directory.
+    yield* discard(path.join(target, "opencode"));
     // Earlier builds wrote provider copies, and interrupted writes left temporary ones, here; they
     // may hold credentials. A linked config file would also be loaded by OpenCode.
     const stale = path.join(target, "opencode");
-    if ((yield* type(stale)) === "Directory")
+    if ((yield* type(stale)) === "Directory") {
+      // OpenCode 1.x's names include every name OpenCode 2 opens.
+      for (const name of OPEN_CODE_1_GLOBAL_CONFIG_FILES) yield* discard(path.join(stale, name));
       for (const entry of yield* fs.readDirectory(stale)) {
         const item = path.join(stale, entry);
-        if (OPEN_CODE_1_GLOBAL_CONFIG_FILES.includes(entry)) yield* discard(item);
-        else if (entry.startsWith(".bare-config-")) {
-          if ((yield* type(item)) !== "Directory") yield* discard(item);
-          else {
-            for (const inner of yield* fs.readDirectory(item))
-              yield* discard(path.join(item, inner));
-            if ((yield* fs.readDirectory(item)).length === 0)
-              yield* fs.remove(item, { recursive: true });
-          }
+        if (!entry.startsWith(".bare-config-")) continue;
+        if ((yield* type(item)) !== "Directory") yield* discard(item);
+        else {
+          for (const inner of yield* fs.readDirectory(item)) yield* discard(path.join(item, inner));
+          if ((yield* fs.readDirectory(item)).length === 0)
+            yield* fs.remove(item, { recursive: true });
         }
       }
+    }
     if (yield* fs.exists(source)) {
       for (const entry of yield* fs.readDirectory(source)) {
         // Case-insensitive filesystems treat any case of this name as the shadow directory.
