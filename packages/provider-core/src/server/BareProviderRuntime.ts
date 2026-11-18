@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 import * as NodeOS from "node:os";
 import * as Effect from "effect/Effect";
 import * as Random from "effect/Random";
+import * as Option from "effect/Option";
 import * as FileSystem from "effect/FileSystem";
 import { parseTree, type Node, type ParseError } from "jsonc-parser";
 import { type ProviderInstanceId } from "@t3tools/contracts";
@@ -146,7 +147,7 @@ const parseExpanded = (text: string, environment: NodeJS.ProcessEnv, nonce: stri
     text
       .replace(ENV_TOKEN, (_, variable: string) => environment[variable] || "")
       .replace(FILE_TOKEN, () => {
-        markers.push(`q${nonce}x${markers.length}`);
+        markers.push(`q${nonce}x${markers.length}z`);
         return markers.at(-1)!;
       }),
   );
@@ -200,6 +201,19 @@ const shadowOpenCodeProviders = Effect.fn("BareProviderRuntime.openCodeProviders
         ? [`"${key.value}": ${text!.slice(value.offset, value.offset + value.length)}`]
         : [];
     });
+    // Random, so no value in the user's config can pose as a placeholder.
+    const nonce = (yield* Effect.all([Random.next, Random.next]))
+      .map((value) => value.toString(36).slice(2))
+      .join("");
+    const whole = text?.includes("{env:") ? parseExpanded(text, original, nonce) : tree;
+    const unparsable = refuse(
+      "has an {env:} value that is not plain JSON string content, or a {file:} token outside a JSON string, which bare cannot copy.",
+    );
+    const restructured = refuse("has an {env:} value that changes the provider structure.");
+    if (whole === undefined && text !== undefined) return yield* unparsable;
+    // An env value must not add, remove or rename top-level keys, even in fields bare drops.
+    if (topLevelKeys(whole).join("\n") !== topLevelKeys(tree).join("\n"))
+      return yield* restructured;
     if (sections.length === 0) {
       if (yield* fs.exists(shadow)) yield* fs.remove(shadow);
       continue;
@@ -220,24 +234,11 @@ const shadowOpenCodeProviders = Effect.fn("BareProviderRuntime.openCodeProviders
       return yield* refuse(
         "has a provider {file:} path relative to its folder, which bare cannot read; use an absolute or ~/ path.",
       );
-    // Random, so no value in the user's config can pose as a placeholder.
-    const nonce = (yield* Effect.all([Random.next, Random.next]))
-      .map((value) => value.toString(36).slice(2))
-      .join("");
     const expanded = parseExpanded(document, original, nonce);
-    const whole = text!.includes("{env:") ? parseExpanded(text!, original, nonce) : tree;
-    if (whole === undefined || expanded === undefined)
-      return yield* refuse(
-        "has an {env:} value that is not plain JSON string content, or a {file:} token outside a JSON string, which bare cannot copy.",
-      );
-    // An env value must not add, remove or rename keys, here or in the fields bare drops.
+    if (expanded === undefined) return yield* unparsable;
     const keys = topLevelKeys(expanded);
-    if (
-      keys.length !== sections.length ||
-      keys.some((key) => !OPEN_CODE_PROVIDER_KEYS.has(key)) ||
-      topLevelKeys(whole).join("\n") !== topLevelKeys(tree).join("\n")
-    )
-      return yield* refuse("has an {env:} value that changes the provider structure.");
+    if (keys.length !== sections.length || keys.some((key) => !OPEN_CODE_PROVIDER_KEYS.has(key)))
+      return yield* restructured;
     yield* writeBareConfig(shadow, document);
   }
 });
@@ -261,7 +262,8 @@ export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.ope
     yield* fs.chmod(target, 0o700);
     if (yield* fs.exists(source)) {
       for (const entry of yield* fs.readDirectory(source)) {
-        if (entry === "opencode") continue;
+        // Case-insensitive filesystems treat any case of this name as the shadow directory.
+        if (entry.toLowerCase() === "opencode") continue;
         const destination = path.join(target, entry);
         if (!(yield* fs.exists(destination)))
           yield* fs.symlink(path.join(source, entry), destination);
@@ -291,6 +293,14 @@ export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.ope
     // These discovery selectors could otherwise escape the isolated config root.
     delete environment.OPENCODE_CONFIG;
     delete environment.OPENCODE_CONFIG_DIR;
+    // An earlier mirror may hold a case variant that aliases the shadow directory; unlinking
+    // removes only the link, never the user's directory.
+    for (const entry of yield* fs.readDirectory(target))
+      if (
+        entry.toLowerCase() === "opencode" &&
+        Option.isSome(yield* fs.readLink(path.join(target, entry)).pipe(Effect.option))
+      )
+        yield* fs.remove(path.join(target, entry));
     yield* shadowOpenCodeProviders(
       path.join(source, "opencode"),
       path.join(target, "opencode"),

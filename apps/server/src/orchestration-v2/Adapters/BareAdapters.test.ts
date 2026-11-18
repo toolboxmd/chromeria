@@ -11,6 +11,7 @@ import {
   type RuntimeMode,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
@@ -529,19 +530,55 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
         `{ "providers": { "local": { "name": "q0t3" /* {file:/break} */ } } }`,
       );
       expect((yield* Effect.flip(prepare())).message).toBe(outsideString);
-      // Bare picks provider sections before substitution, so an env-built key must be refused.
+      // Bare picks provider sections before substitution, so an env-built key must be refused,
+      // also when it is the document's only provider.
+      for (const document of [
+        `{ "providers": {}, "{env:SECTION}": { "local": { "name": "Local" } } }`,
+        `{ "{env:SECTION}": { "local": { "name": "Local" } } }`,
+      ]) {
+        yield* fs.writeFileString(`${real}/opencode/opencode.jsonc`, document);
+        expect((yield* Effect.flip(prepare({ SECTION: "provider" }))).message).toBe(
+          refused("has an {env:} value that changes the provider structure."),
+        );
+      }
+      // Placeholder numbers must not prefix each other: eleven file tokens in strings are
+      // accepted, and the same with the second one in a comment is refused.
+      const headers = (second: string) =>
+        `{ "provider": { "omlx": { "options": { "headers": { "h0": "{file:/k0}", ${second}, ${Array.from(
+          { length: 9 },
+          (_, index) => `"h${index + 2}": "{file:/k${index + 2}}"`,
+        ).join(", ")} } } } } }`;
+      yield* fs.writeFileString(`${real}/opencode/opencode.jsonc`, headers(`"h1": "{file:/k1}"`));
+      yield* prepare();
       yield* fs.writeFileString(
         `${real}/opencode/opencode.jsonc`,
-        `{ "providers": {}, "{env:SECTION}": { "local": { "name": "Local" } } }`,
+        headers(`/* {file:/k1} */ "h1": "x"`),
       );
-      expect((yield* Effect.flip(prepare({ SECTION: "provider" }))).message).toBe(
-        refused("has an {env:} value that changes the provider structure."),
-      );
+      expect((yield* Effect.flip(prepare())).message).toBe(outsideString);
       yield* fs.writeFileString(
         `${real}/opencode/opencode.jsonc`,
         `{ "provider": { "omlx": { "options": {} /* {file:./key} */ } } }`,
       );
       expect((yield* Effect.flip(prepare())).message).toBe(relative);
+
+      // On case-insensitive filesystems a mirrored `OpenCode` would alias the shadow directory,
+      // so bare must neither mirror it nor write through an existing link to it.
+      const cased = `${root}/cased`;
+      yield* fs.makeDirectory(`${cased}/OpenCode`, { recursive: true });
+      yield* fs.makeDirectory(`${root}/bare-cased/xdg-config`, { recursive: true });
+      yield* fs.symlink(`${cased}/OpenCode`, `${root}/bare-cased/xdg-config/OpenCode`);
+      const user = JSON.stringify({ provider: { local: { name: "Local" } }, mcp: {} });
+      yield* fs.writeFileString(`${cased}/OpenCode/opencode.json`, user);
+      const casedEnvironment = yield* prepareOpenCodeBareEnvironment({
+        home: `${root}/bare-cased`,
+        environment: { HOME: root, XDG_CONFIG_HOME: cased },
+      });
+      expect(yield* fs.readFileString(`${cased}/OpenCode/opencode.json`)).toBe(user);
+      expect(
+        Option.isNone(
+          yield* fs.readLink(`${casedEnvironment.XDG_CONFIG_HOME}/opencode`).pipe(Effect.option),
+        ),
+      ).toBe(true);
 
       yield* fs.remove(`${real}/opencode/config.json`);
       yield* fs.writeFileString(`${real}/opencode/opencode.jsonc`, `{ "theme": "dark" }`);
