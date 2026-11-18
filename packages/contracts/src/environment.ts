@@ -84,6 +84,8 @@ export const ServerSelfUpdateCapability = Schema.Literals([
 export type ServerSelfUpdateCapability = typeof ServerSelfUpdateCapability.Type;
 
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
+  /** Immutable run purpose at native admission; absence means unsupported. */
+  executionPurposeVersions: Schema.optional(Schema.Array(Schema.Literal(1))),
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   connectionProbe: Schema.optionalKey(Schema.Boolean),
   /** A DPoP session from a pairing link renews at /oauth/token; pair with a bearer where absent. */
@@ -148,6 +150,12 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   localServerStop: Schema.optionalKey(Schema.Boolean),
   threadPullRequests: Schema.optionalKey(Schema.Boolean),
   threadPullRequestWatch: Schema.optionalKey(Schema.Boolean),
+  /** Fork: server lists and edits GitHub Issues (`githubIssues.*`, toolboxmd/t3code#27). */
+  githubIssues: Schema.optionalKey(Schema.Boolean),
+  /** Fork: server serves thread ↔ GitHub Issue links (`issueLinks.*`, toolboxmd/t3code#28). */
+  issueLinks: Schema.optionalKey(Schema.Boolean),
+  /** Fork: server reads a project's feature map (`featureMap.read`, toolboxmd/chromeria#235). */
+  featureMap: Schema.optionalKey(Schema.Boolean),
   pullRequestStackActions: Schema.optionalKey(Schema.Boolean),
   serverSelfUpdate: Schema.optionalKey(ServerSelfUpdateCapability),
   /** Server answers server.getNpmRelease using its configured npm registry. */
@@ -210,6 +218,7 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   shellOlderSettled: Schema.optionalKey(Schema.Boolean),
   /** Publishes a pull request refresh when linked-thread answers change; older servers need polling. */
   linkedThreadRefreshes: Schema.optionalKey(Schema.Boolean),
+  peerAuthority: Schema.optionalKey(Schema.Literal(1)),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 
