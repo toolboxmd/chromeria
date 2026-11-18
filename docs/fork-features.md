@@ -309,7 +309,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/chromeria/pull/591",
     "https://github.com/toolboxmd/chromeria/pull/603",
     "https://github.com/toolboxmd/chromeria/pull/632",
-    "https://github.com/toolboxmd/chromeria/pull/725"
+    "https://github.com/toolboxmd/chromeria/pull/725",
+    "https://github.com/toolboxmd/chromeria/pull/804"
   ],
   "newFiles": [
     ".github/workflows/fork.yml",
@@ -358,6 +359,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "knip.jsonc",
     "scripts/dev-runner.ts",
     "scripts/dev-runner.test.ts",
+    "scripts/check-changed.ts",
+    "scripts/check-changed.test.ts",
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",
     "packages/source-control-github/graphql.config.ts",
