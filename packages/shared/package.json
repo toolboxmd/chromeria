@@ -11,6 +11,10 @@
       "types": "./src/pullRequestAnchor.ts",
       "import": "./src/pullRequestAnchor.ts"
     },
+    "./sessionRenewal": {
+      "types": "./src/sessionRenewal.ts",
+      "import": "./src/sessionRenewal.ts"
+    },
     "./changedFileKind": {
       "types": "./src/changedFileKind.ts",
       "import": "./src/changedFileKind.ts"
@@ -58,6 +62,10 @@
     "./mobileSourceMaps": {
       "types": "./src/mobileSourceMaps.ts",
       "import": "./src/mobileSourceMaps.ts"
+    },
+    "./loadBalancing": {
+      "types": "./src/loadBalancing.ts",
+      "import": "./src/loadBalancing.ts"
     },
     "./model": {
       "types": "./src/model.ts",
@@ -630,6 +638,22 @@
     "./paletteSearchCopy": {
       "types": "./src/paletteSearchCopy.ts",
       "import": "./src/paletteSearchCopy.ts"
+    },
+    "./restartCut": {
+      "types": "./src/restartCut.ts",
+      "import": "./src/restartCut.ts"
+    },
+    "./forkToolInstructions": {
+      "types": "./src/forkToolInstructions.ts",
+      "import": "./src/forkToolInstructions.ts"
+    },
+    "./browserCookieMirror": {
+      "types": "./src/browserCookieMirror.ts",
+      "import": "./src/browserCookieMirror.ts"
+    },
+    "./browserLoginImport": {
+      "types": "./src/browserLoginImport.ts",
+      "import": "./src/browserLoginImport.ts"
     }
   },
   "scripts": {
