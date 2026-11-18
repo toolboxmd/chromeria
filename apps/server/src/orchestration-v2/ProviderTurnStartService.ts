@@ -768,7 +768,7 @@ export const layer: Layer.Layer<
         return;
       }
       const inheritedBackgroundTurnItems = selectInheritedBackgroundItems(recoveryResult.success);
-      const providerSessionId = providerThread.providerSessionId;
+      let providerSessionId = providerThread.providerSessionId;
       const runControls = makeRunControls({
         threadId: projection.thread.id,
         runId: run.id,
@@ -946,6 +946,12 @@ export const layer: Layer.Layer<
         return;
       }
       const session = sessionResult.success;
+      // The session manager moves a thread off its instance's legacy shared session id.
+      if (
+        providerSessionId ===
+        idAllocator.derive.providerSession({ providerInstanceId: run.providerInstanceId })
+      )
+        providerSessionId = session.providerSessionId;
       if (!(yield* isCurrentAttemptInStatus("starting"))) return;
       if (contextmd !== undefined && session.driver === "grok") {
         const bound = yield* Effect.result(

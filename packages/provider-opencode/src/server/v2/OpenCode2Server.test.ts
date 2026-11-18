@@ -260,6 +260,7 @@ const writeFakeOpenCode = (script: string) =>
 
 const layerSpawning = (
   wrapped?: Array<{ readonly threadId?: string; readonly shared?: boolean }>,
+  stopped?: Array<string>,
 ) =>
   Layer.mergeAll(
     OpenCode2Client.layer,
@@ -276,8 +277,9 @@ const layerSpawning = (
                     ...(threadId === undefined ? {} : { threadId }),
                     ...(shared === undefined ? {} : { shared }),
                   });
-                  return { command, args };
+                  return { command, args, unit: `unit:${threadId ?? "instance"}` };
                 }),
+              stop: (unit) => Effect.sync(() => void stopped?.push(unit)),
             }),
       ),
     ),
@@ -327,6 +329,7 @@ describe("OpenCode2Server spawned server", () => {
 
   it.live("runs each session on its own process until its session or the instance closes", () => {
     const wrapped: Array<{ readonly threadId?: string; readonly shared?: boolean }> = [];
+    const stopped: Array<string> = [];
     return Effect.gen(function* () {
       const { binaryPath, directory } = yield* writeFakeOpenCode(FAKE_SERVER);
       const instance = yield* Scope.make();
@@ -364,6 +367,8 @@ describe("OpenCode2Server spawned server", () => {
 
       yield* Scope.close(firstScope, Exit.void);
       yield* one.processExit;
+      // On Linux the systemd scope also holds descendants that left the process group.
+      assert.deepStrictEqual(stopped, ["unit:thread:first"]);
       assert.strictEqual(
         yield* second.withConnection((connection) => verifyLive(connection)),
         "2.0.18",
@@ -375,6 +380,7 @@ describe("OpenCode2Server spawned server", () => {
       const error = yield* connect(second).pipe(Effect.flip);
       assert.include(error.detail, "closed");
       assert.lengthOf(wrapped, 2);
-    }).pipe(Effect.scoped, Effect.provide(layerSpawning(wrapped)));
+      assert.deepStrictEqual(stopped, ["unit:thread:first", "unit:thread:second"]);
+    }).pipe(Effect.scoped, Effect.provide(layerSpawning(wrapped, stopped)));
   });
 });

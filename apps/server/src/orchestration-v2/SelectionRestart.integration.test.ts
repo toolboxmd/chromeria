@@ -97,6 +97,8 @@ function makeRestartAdapter(
     | (() => OrchestrationV2ProviderCapabilities) = pooledCapabilities,
   providerInstanceId = initialSelection.instanceId,
   replacementGate?: { entered: Deferred.Deferred<void>; release: Deferred.Deferred<void> },
+  // An adapter can report stale capabilities before its runtime probe; its sessions know.
+  openedCapabilities?: () => OrchestrationV2ProviderCapabilities,
 ): ProviderAdapter.ProviderAdapterV2["Service"] {
   const capabilitiesNow = () =>
     typeof sessionCapabilities === "function" ? sessionCapabilities() : sessionCapabilities;
@@ -148,7 +150,7 @@ function makeRestartAdapter(
           status: "ready",
           cwd: sessionInput.runtimePolicy.cwd ?? "/fallback",
           model: sessionInput.modelSelection.model,
-          capabilities: capabilitiesNow(),
+          capabilities: openedCapabilities?.() ?? capabilitiesNow(),
           createdAt: now,
           updatedAt: now,
           lastError: null,
@@ -461,8 +463,12 @@ it.live.each(["unchanged", "messageId", "mode", "legacy"] as const)(
     ),
 );
 
-// A provider that stops sharing one session per instance must not collide threads that ran on it.
-it.live("moves threads off an instance's shared session once its provider stops sharing", () =>
+// A provider that stops sharing one session per instance must not collide threads that ran on it,
+// and one that still shares must keep them pooled even while it reports pre-probe capabilities.
+it.live.each([
+  { name: "stops sharing", opened: exclusiveCapabilities },
+  { name: "reports exclusive before its probe", opened: pooledCapabilities },
+])("resumes threads stored on an instance's shared session when the provider $name", ({ opened }) =>
   Effect.gen(function* () {
     const cwd = yield* checkpointWorkspace("shared-session-upgrade");
     const projectId = ProjectId.make("project:shared-session-upgrade");
@@ -478,6 +484,7 @@ it.live("moves threads off an instance's shared session once its provider stops 
       failedReplacementOpen: false,
     });
     let capabilities = pooledCapabilities;
+    let openedNow = pooledCapabilities;
     const shared = IdAllocator.derive.providerSession({ providerInstanceId });
     yield* Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -543,6 +550,7 @@ it.live("moves threads off an instance's shared session once its provider stops 
       // The upgrade restarts the server, which ends the shared session.
       yield* sessions.close(shared);
       capabilities = exclusiveCapabilities;
+      openedNow = opened;
       const statuses = yield* Effect.forEach(threadIds, (threadId) => turn(threadId, "after"), {
         concurrency: "unbounded",
       });
@@ -554,8 +562,8 @@ it.live("moves threads off an instance's shared session once its provider stops 
       const sessionIds = after.map(
         (projection) => projection.providerThreads[0]?.providerSessionId,
       );
-      assert.notInclude(sessionIds, shared);
-      assert.equal(new Set(sessionIds).size, threadIds.length);
+      if (opened === pooledCapabilities) assert.deepEqual(sessionIds, [shared, shared]);
+      else assert.equal(new Set(sessionIds).size, threadIds.length);
       for (const [index, projection] of after.entries()) {
         assert.lengthOf(projection.providerThreads, 1);
         // The thread keeps its provider thread and native conversation.
@@ -569,7 +577,15 @@ it.live("moves threads off an instance's shared session once its provider stops 
       Effect.provide(
         ProviderReplayHarness.layerWithRegistry(
           { name: "shared-session-upgrade" },
-          ProviderAdapterRegistry.layerSingle(makeRestartAdapter(state, () => capabilities)),
+          ProviderAdapterRegistry.layerSingle(
+            makeRestartAdapter(
+              state,
+              () => capabilities,
+              providerInstanceId,
+              undefined,
+              () => openedNow,
+            ),
+          ),
         ),
       ),
       Effect.scoped,

@@ -2,8 +2,11 @@ import { it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Scope from "effect/Scope";
 import * as TestClock from "effect/testing/TestClock";
 import { expect } from "vite-plus/test";
 
@@ -205,4 +208,48 @@ it.effect("cleans up an interrupted startup and allows a retry", () =>
       }),
     ).pipe(Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime));
   }),
+);
+
+// Disabling or replacing an instance must not wait out a child that never becomes ready.
+it.effect("stops a startup that never becomes ready when the owner closes", () =>
+  Effect.gen(function* () {
+    const entered = yield* Deferred.make<void>();
+    const stopped = yield* Deferred.make<void>();
+    const runtime: OpenCodeRuntime.OpenCodeRuntime["Service"] = {
+      startOpenCodeServerProcess: () =>
+        Effect.gen(function* () {
+          yield* Effect.addFinalizer(() =>
+            Deferred.succeed(stopped, undefined).pipe(Effect.ignore),
+          );
+          yield* Deferred.succeed(entered, undefined);
+          return yield* Effect.never;
+        }),
+      connectToOpenCodeServer: unusedRuntimeMethod,
+      runOpenCodeCommand: unusedRuntimeMethod,
+      createOpenCodeSdkClient: () => ({}) as never,
+      loadOpenCodeInventory: unusedRuntimeMethod,
+      loadOpenCodeSkills: unusedRuntimeMethod,
+    };
+    const ownerScope = yield* Scope.make();
+    const owner = yield* OpenCodeServerOwner.make({
+      binaryPath: "opencode",
+      directory: "/project",
+    }).pipe(
+      Effect.provideService(Scope.Scope, ownerScope),
+      Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime),
+    );
+    const borrower = yield* owner
+      .withServer((server) => Effect.succeed(server.url))
+      .pipe(Effect.forkChild);
+    yield* Deferred.await(entered);
+    const closing = yield* Scope.close(ownerScope, Exit.void).pipe(Effect.forkChild);
+    const closed = yield* Fiber.await(closing).pipe(
+      Effect.timeoutOption("1 second"),
+      Effect.forkChild,
+    );
+    yield* TestClock.adjust("1 second");
+    expect(Option.isSome(yield* Fiber.join(closed))).toBe(true);
+    expect(yield* Deferred.isDone(stopped)).toBe(true);
+    expect((yield* Fiber.await(borrower))._tag).toBe("Failure");
+  }).pipe(Effect.provide(TestClock.layer())),
 );

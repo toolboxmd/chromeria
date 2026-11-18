@@ -1146,6 +1146,44 @@ it.effect("ProviderSessionManagerV2 opens independent sessions concurrently", ()
   }),
 );
 
+// Threads stored on an instance's shared session before its provider stopped sharing.
+it.effect("ProviderSessionManagerV2 moves a second thread off a legacy shared session", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const effect = Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const now = yield* DateTime.now;
+      const threadIds = [
+        ThreadId.make("thread-provider-session-manager-legacy-a"),
+        ThreadId.make("thread-provider-session-manager-legacy-b"),
+      ];
+      const shared = idAllocator.derive.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+      });
+      yield* eventSink.write({
+        events: yield* Effect.forEach(threadIds, (threadId) =>
+          makeThreadCreatedEvent({ idAllocator, threadId, now }),
+        ),
+      });
+      const [first, second] = yield* Effect.forEach(threadIds, (threadId) =>
+        manager.open({ threadId, providerSessionId: shared, modelSelection, runtimePolicy }),
+      );
+      assert.equal(first?.providerSessionId, shared);
+      assert.notEqual(second?.providerSessionId, shared);
+      assert.notStrictEqual(first, second);
+      assert.equal((yield* Ref.get(state)).openCount, 2);
+    });
+
+    yield* effect.pipe(
+      Effect.provide(
+        layerTest({ state, idleTimeoutMs: 60_000, capabilities: ExclusiveCapabilities }),
+      ),
+    );
+  }),
+);
+
 it.effect("ProviderSessionManagerV2 closes every live session for a provider instance", () =>
   Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);

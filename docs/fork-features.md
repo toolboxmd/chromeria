@@ -3730,23 +3730,27 @@ sources and reasons.
 ```json
 {
   "id": "opencode2-session-process",
-  "purpose": "Each local OpenCode 2 provider session runs its own `opencode serve` process and registers T3's MCP server as `t3-code`, so threads in one project, including concurrent ones, send identical context and hit the model's prefix cache. A thread that ran on the instance's shared session moves to its own session when it resumes. A configured serverUrl and bare keep their shared server and per-thread names. Drop when upstream runs OpenCode 2 sessions per thread or names T3's MCP server identically across threads.",
+  "purpose": "Each local OpenCode 2 provider session runs its own `opencode serve` process and registers T3's MCP server as `t3-code`, so threads in one project, including concurrent ones, send identical context and hit the model's prefix cache. A thread that ran on the instance's shared session moves to its own session when it collides with another thread there. A configured serverUrl and bare keep their shared server and per-thread names. Drop when upstream runs OpenCode 2 sessions per thread or names T3's MCP server identically across threads.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/806"],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/817"],
   "newFiles": [],
   "upstreamFiles": [
     "packages/provider-opencode/src/server/OpenCodeServerOwner.ts",
+    "packages/provider-opencode/src/server/OpenCodeServerOwner.test.ts",
     "packages/provider-opencode/src/server/v2/OpenCode2Server.ts",
-    "packages/provider-opencode/src/server/v2/OpenCode2Server.test.ts"
+    "packages/provider-opencode/src/server/v2/OpenCode2Server.test.ts",
+    "docs/internals/providers.md"
   ],
   "sharedFiles": [
     "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts",
     "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.testkit.ts",
-    "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+    "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+    "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
     "apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts",
     "packages/provider-opencode/src/server/OpenCodeRuntime.ts",
     "packages/provider-opencode/src/server/v2/adapter.ts"
   ],
-  "keywords": ["forSession", "T3_MCP_SERVER_NAME", "reusableProviderSessionId", "portInUse"]
+  "keywords": ["forSession", "T3_MCP_SERVER_NAME", "legacy shared session", "portInUse"]
 }
 ```

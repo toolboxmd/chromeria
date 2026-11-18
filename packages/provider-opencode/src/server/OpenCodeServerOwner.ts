@@ -15,6 +15,10 @@ interface OpenCodeServerOwnerState {
   serverScope: Scope.Closeable | null;
   borrowers: number;
   idleCloseFiber: Fiber.Fiber<void, never> | null;
+  starting: Fiber.Fiber<
+    OpenCodeRuntime.OpenCodeServerProcess,
+    OpenCodeRuntime.OpenCodeRuntimeError
+  > | null;
   closed: boolean;
 }
 
@@ -45,6 +49,7 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
     serverScope: null,
     borrowers: 0,
     idleCloseFiber: null,
+    starting: null,
     closed: false,
   };
 
@@ -105,6 +110,7 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
       return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
           const serverScope = yield* Scope.make();
+          // Startup holds the mutex until readiness, so closing interrupts it through this fiber.
           const started = yield* Effect.exit(
             restore(
               runtime
@@ -118,9 +124,19 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
                   ...(input.verify ? { verify: input.verify } : {}),
                   ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
                 })
-                .pipe(Effect.provideService(Scope.Scope, serverScope)),
+                .pipe(
+                  Effect.provideService(Scope.Scope, serverScope),
+                  Effect.forkChild,
+                  Effect.tap((fiber) =>
+                    Effect.sync(() => {
+                      state.starting = fiber;
+                    }),
+                  ),
+                  Effect.flatMap(Fiber.join),
+                ),
             ),
           );
+          state.starting = null;
           if (Exit.isFailure(started)) {
             yield* Scope.close(serverScope, Exit.void).pipe(Effect.ignore);
             return yield* Effect.failCause(started.cause);
@@ -166,13 +182,19 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
     );
 
   yield* Effect.addFinalizer(() =>
-    mutex.withPermit(
-      Effect.gen(function* () {
-        state.closed = true;
-        yield* cancelIdleClose();
-        state.borrowers = 0;
-        yield* closeServer();
-      }),
+    Effect.suspend(() => {
+      state.closed = true;
+      return state.starting === null ? Effect.void : Fiber.interrupt(state.starting);
+    }).pipe(
+      Effect.andThen(
+        mutex.withPermit(
+          Effect.gen(function* () {
+            yield* cancelIdleClose();
+            state.borrowers = 0;
+            yield* closeServer();
+          }),
+        ),
+      ),
     ),
   );
 

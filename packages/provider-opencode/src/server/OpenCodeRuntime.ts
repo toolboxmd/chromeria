@@ -661,10 +661,14 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       );
 
     // Signals the server's own group and force-kills only what outlives the grace,
-    // so a group that exits promptly does not hold up the scope that closes it.
+    // so a group that exits promptly does not hold up the scope that closes it. The
+    // launcher's systemd scope also holds descendants that left the group with setsid.
     const terminateChild = child
       .kill({ killSignal: "SIGTERM", forceKillAfter: OPENCODE_SERVER_TERMINATE_GRACE })
-      .pipe(Effect.ignore);
+      .pipe(
+        Effect.ignore,
+        Effect.andThen(launch.unit === undefined ? Effect.void : agentScope.stop(launch.unit)),
+      );
     // Registered before recording, so an interrupt while the ledger writes
     // still stops the group.
     yield* Scope.addFinalizer(runtimeScope, terminateChild);

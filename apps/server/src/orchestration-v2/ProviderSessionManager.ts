@@ -3033,7 +3033,7 @@ export const layerWithOptions = (
         ),
       );
 
-      return ProviderSessionManagerV2.of({
+      const manager = ProviderSessionManagerV2.of({
         shutdown,
         open: (input) =>
           sessionOpen.withLock(
@@ -3111,6 +3111,32 @@ export const layerWithOptions = (
                   });
                 const attached = existing.attachedThreadIds.has(input.threadId);
                 if (!attached && !existing.supportsMultipleProviderThreads) {
+                  // Threads kept their instance's shared session id after the provider stopped
+                  // sharing; the live session's capabilities decide, not a pre-probe report.
+                  if (
+                    input.providerSessionId ===
+                    idAllocator.derive.providerSession({
+                      providerInstanceId: existing.runtime.instanceId,
+                    })
+                  )
+                    return yield* manager.open({
+                      ...input,
+                      providerSessionId: yield* idAllocator.allocate
+                        .providerSession({
+                          providerInstanceId: existing.runtime.instanceId,
+                          threadId: input.threadId,
+                        })
+                        .pipe(
+                          Effect.mapError(
+                            (cause) =>
+                              new ProviderSessionOpenError({
+                                instanceId: input.modelSelection.instanceId,
+                                providerSessionId: input.providerSessionId,
+                                cause,
+                              }),
+                          ),
+                        ),
+                    });
                   return yield* new ProviderSessionOpenError({
                     instanceId: input.modelSelection.instanceId,
                     providerSessionId: input.providerSessionId,
@@ -3570,6 +3596,7 @@ export const layerWithOptions = (
             Stream.changes,
           ),
       } satisfies ProviderSessionManagerV2Shape);
+      return manager;
     }),
   );
 
