@@ -2072,6 +2072,7 @@ sources and reasons.
     "apps/server/src/auth/McpOAuth.ts",
     "apps/server/src/mcp/McpHttpServer.test.ts",
     "apps/server/src/http.test.ts",
+    "apps/server/src/device/DeviceHubProxy.stream.test.ts",
     "apps/server/src/observability/OtlpEndpointCheck.test.ts",
     "apps/server/src/telemetry/AnalyticsService.test.ts",
     "apps/server/src/mcp/McpInvocationContext.ts",
