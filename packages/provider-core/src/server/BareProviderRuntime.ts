@@ -5,7 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Random from "effect/Random";
 import * as Option from "effect/Option";
 import * as FileSystem from "effect/FileSystem";
-import { parseTree, type Node, type ParseError } from "jsonc-parser";
+import { parseTree, stripComments, type Node, type ParseError } from "jsonc-parser";
 import { type ProviderInstanceId } from "@t3tools/contracts";
 import { BareLaunchError, writeBareConfig } from "./bareLaunch.ts";
 
@@ -213,10 +213,13 @@ const shadowOpenCodeProviders = Effect.fn("BareProviderRuntime.openCodeProviders
     const sections = (tree?.type === "object" ? (tree.children ?? []) : []).flatMap((property) => {
       const [key, value] = property.children ?? [];
       // Every occurrence, whatever its value, so JSONC's last-key rule still picks the same one.
+      // Comments are dropped so a commented-out key never lands in T3 state.
       return key !== undefined &&
         value !== undefined &&
         OPEN_CODE_PROVIDER_KEYS.has(String(key.value))
-        ? [`"${key.value}": ${text!.slice(value.offset, value.offset + value.length)}`]
+        ? [
+            `"${key.value}": ${stripComments(text!.slice(value.offset, value.offset + value.length))}`,
+          ]
         : [];
     });
     // Random, so no value in the user's config can pose as a placeholder.
@@ -245,7 +248,7 @@ const shadowOpenCodeProviders = Effect.fn("BareProviderRuntime.openCodeProviders
     );
     if (changed !== undefined)
       return yield* refuse(`has a provider using {env:${changed}}, which bare changes.`);
-    // A relative path would resolve beside the copy; commented tokens count, to never miss one.
+    // A relative path would resolve beside the copy.
     const relative = Array.from(
       document
         .replace(ENV_TOKEN, (_, variable: string) => original[variable] || "")

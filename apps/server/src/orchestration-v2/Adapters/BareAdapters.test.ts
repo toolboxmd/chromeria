@@ -562,6 +562,15 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
         expect((yield* Effect.flip(prepare())).message).toBe(literalKey);
         expect(yield* fs.exists(`${shadow}/opencode.jsonc`)).toBe(false);
       }
+      yield* fs.writeFileString(
+        `${real}/opencode/opencode.jsonc`,
+        `{ "provider": { "omlx": {\n// "apiKey": "sk-commented",\n"name": "oMLX" /* old */ } } }`,
+      );
+      yield* prepare();
+      expect(JSON.parse(yield* read("opencode.jsonc"))).toEqual({
+        provider: { omlx: { name: "oMLX" } },
+      });
+      expect(yield* read("opencode.jsonc")).not.toContain("sk-commented");
       // Placeholder numbers must not prefix each other: eleven file tokens in strings are
       // accepted, and the same with the second one in a comment is refused.
       const headers = (second: string) =>
