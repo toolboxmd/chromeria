@@ -19,6 +19,7 @@ import {
   comparisonBase,
   defaultConcurrency,
   docReaderTests,
+  evalCaseTests,
   gitLines,
   ignoredCheckInputs,
   runSteps,
@@ -47,6 +48,18 @@ describe("check:changed", () => {
       "apps/server/src/cloud/ConnectReachability.test.ts",
     ]);
     assert.deepStrictEqual(decide(["docs/user/install.md"], packages, false).affected, []);
+  });
+
+  it("runs an eval's grader tests when only its cases change", () => {
+    assert.deepStrictEqual(
+      evalCaseTests([
+        "evals/mcp-tool-use/cases/secrets.ndjson",
+        "evals/mcp-tool-use/cases/file-links.ndjson",
+        "evals/mcp-tool-use/README.md",
+        "docs/evals/cases/x.ndjson",
+      ]),
+      ["evals/mcp-tool-use/run.test.ts"],
+    );
   });
 
   it.effect(
