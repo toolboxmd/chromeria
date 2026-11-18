@@ -11,10 +11,14 @@ import {
   deleteSelectedThreadEntries,
   getFallbackThreadIdAfterDelete,
   hasUnseenCompletion,
+  isSidebarSubagentThread,
+  filterSidebarV2VisibleThreads,
   orderItemsByPreferredIds,
   pinOrderKeyBetween,
   resolveSidebarSweepKeys,
   resolveSidebarRowStatus,
+  resolveSidebarThreadSection,
+  visibleSidebarShelfThreads,
   resolveSidebarThreadStatus,
   resolveThreadStatusPill,
   resolveWindowTitleThreadStatus,
@@ -60,6 +64,80 @@ import {
 } from "./sidebar/routeReveal";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
+
+describe("No project shelf", () => {
+  it.each([
+    [{ snoozed: false, settled: false, pinned: false }, "no-project"],
+    [{ snoozed: false, settled: false, pinned: true }, "pinned"],
+    [{ snoozed: false, settled: true, pinned: true }, "settled"],
+    [{ snoozed: true, settled: true, pinned: true }, "snoozed"],
+  ] as const)(
+    "preserves explicit lifecycle placement for scratch threads: %j",
+    (state, expected) => {
+      expect(resolveSidebarThreadSection({ ...state, noProject: true })).toBe(expected);
+    },
+  );
+
+  it("keeps regular projects and unknown scratch identity in the active list", () => {
+    expect(resolveSidebarThreadSection({ snoozed: false, settled: false, pinned: false })).toBe(
+      "active",
+    );
+    expect(
+      resolveSidebarThreadSection({
+        snoozed: false,
+        settled: false,
+        pinned: false,
+        noProject: false,
+      }),
+    ).toBe("active");
+  });
+
+  const threads = [
+    { environmentId: "local", id: "same-id", title: "Local confirmation" },
+    { environmentId: "remote", id: "same-id", title: "Remote test" },
+  ];
+  it("excludes collapsed rows from navigation while retaining only the selected environment's row", () => {
+    expect(visibleSidebarShelfThreads(threads, false, null)).toEqual([]);
+    expect(visibleSidebarShelfThreads(threads, false, "remote:same-id")).toEqual([threads[1]]);
+    expect(visibleSidebarShelfThreads(threads, false, "other:same-id")).toEqual([]);
+    expect(visibleSidebarShelfThreads(threads, true, null)).toEqual(threads);
+  });
+
+  it("can search every projectless thread even when no shelf rows are rendered", () => {
+    const searchable = threads.map((thread) => ({
+      ...thread,
+      environmentId: EnvironmentId.make(thread.environmentId),
+      id: ThreadId.make(thread.id),
+      branch: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      latestUserMessageAt: null,
+      latestUserAuthoredMessageAt: null,
+      opens: null,
+    }));
+    expect(visibleSidebarShelfThreads(searchable, false, null)).toEqual([]);
+    expect(searchSidebarThreads(searchable, "Remote test").titleMatches).toEqual([searchable[1]]);
+  });
+
+  it("does not treat the shelf as a lifecycle drop destination or include its rows in active ordering", () => {
+    const items: SidebarListItem[] = [
+      { kind: "marker", marker: "pinned-header" },
+      { kind: "thread", key: "pin", section: "pinned" },
+      { kind: "marker", marker: "pinned-divider" },
+      { kind: "thread", key: "active", section: "active" },
+      { kind: "marker", marker: "no-project-header" },
+      { kind: "thread", key: "scratch", section: "no-project" },
+      { kind: "marker", marker: "settled-header" },
+    ];
+    expect(resolveSidebarDropTarget(items, "active", "scratch")).toBeNull();
+    expect(resolveSidebarDropVerb("active", "no-project")).toBeNull();
+    expect(resolveSidebarDropTarget(items, "pin", "active")).toEqual({
+      section: "active",
+      pinnedOrder: [],
+      activeOrder: ["active", "pin"],
+    });
+  });
+});
 
 describe("deleteSelectedThreadEntries", () => {
   const entries = [{ threadKey: "one" }, { threadKey: "two" }, { threadKey: "three" }] as const;
@@ -134,6 +212,91 @@ describe("deleteSelectedThreadEntries", () => {
       deletedThreadKeys: testCase.deletedThreadKeys,
       firstFailure: testCase.firstFailure,
     });
+  });
+});
+
+describe("sidebar thread lineage helpers", () => {
+  it("hides children shown under their parent but searches destination shells directly", () => {
+    const environmentId = EnvironmentId.make("destination");
+    const projectId = ProjectId.make("project");
+    const raw = makeThreadFixture({ environmentId, projectId, title: "Remote audit" }).source;
+    const child = presentThreadShell(environmentId, {
+      ...raw,
+      delegatedFrom: {
+        environmentId: EnvironmentId.make("offline-parent"),
+        threadId: ThreadId.make("parent"),
+        title: "Parent",
+      },
+    });
+    const ordinary = makeThreadFixture({ environmentId, projectId, id: ThreadId.make("ordinary") });
+    const otherEnvironment = { ...child, environmentId: EnvironmentId.make("other-destination") };
+    const localChild = {
+      ...child,
+      id: ThreadId.make("local-child"),
+      delegatedFrom: undefined,
+      lineage: { ...child.lineage, relationshipToParent: "subagent" as const },
+    };
+    const archived = {
+      ...child,
+      id: ThreadId.make("archived"),
+      archivedAt: "2026-01-02T00:00:00.000Z",
+    };
+    expect(isSidebarSubagentThread(child)).toBe(true);
+    const all = [child, ordinary, otherEnvironment, localChild, archived];
+    const scope = new Set([`${environmentId}:${projectId}`]);
+    const underParent = new Set([`${environmentId}\u0000${child.id}`]);
+    expect(filterSidebarV2VisibleThreads(all, scope, new Set())).toEqual([child, ordinary]);
+    expect(filterSidebarV2VisibleThreads(all, scope, underParent)).toEqual([ordinary]);
+    const searchable = filterSidebarV2VisibleThreads(all, scope, underParent, "Remote audit");
+    expect(searchSidebarThreads(searchable, "Remote audit").titleMatches).toEqual([child]);
+    expect(
+      searchSidebarThreads(
+        filterSidebarV2VisibleThreads(all, scope, underParent, "contents"),
+        "contents",
+        new Set([threadSearchMatchKey({ environmentId, threadId: child.id })]),
+      ).contentMatches,
+    ).toEqual([child]);
+    expect(filterSidebarV2VisibleThreads(all, scope, underParent, "  ")).toEqual([ordinary]);
+    expect(all).toHaveLength(5);
+  });
+
+  it("keeps inherited-provenance user forks in normal navigation and offline search", () => {
+    const environmentId = EnvironmentId.make("destination");
+    const raw = makeThreadFixture({ environmentId, title: "Remote child" }).source;
+    const child = presentThreadShell(environmentId, {
+      ...raw,
+      delegatedFrom: {
+        environmentId: EnvironmentId.make("offline-parent"),
+        threadId: ThreadId.make("parent"),
+        title: "Parent",
+      },
+    });
+    const fork = presentThreadShell(environmentId, {
+      ...child.source,
+      id: ThreadId.make("user-fork"),
+      title: "User fork",
+      lineage: {
+        parentThreadId: child.id,
+        relationshipToParent: "fork",
+        rootThreadId: child.lineage.rootThreadId,
+      },
+      forkedFrom: { type: "run", threadId: child.id, runId: RunId.make("source-run") },
+    });
+    const archivedFork = {
+      ...fork,
+      id: ThreadId.make("archived-fork"),
+      archivedAt: "2026-01-02T00:00:00.000Z",
+    };
+    const all = [child, fork, archivedFork];
+    const underParent = new Set([`${environmentId}\u0000${child.id}`]);
+    expect(filterSidebarV2VisibleThreads(all, null, underParent)).toEqual([fork]);
+    expect(isSidebarSubagentThread(fork)).toBe(false);
+    expect(fork.delegatedFrom).toBe(child.delegatedFrom);
+    const searchable = filterSidebarV2VisibleThreads(all, null, underParent, "User fork");
+    expect(searchSidebarThreads(searchable, "User fork").titleMatches).toEqual([fork]);
+    expect(searchable.filter(isSidebarSubagentThread)).toEqual([child]);
+    expect(searchSidebarThreads(searchable, "Remote child").titleMatches).toEqual([child]);
+    expect(filterSidebarV2VisibleThreads(all, null, underParent, " ")).toEqual([fork]);
   });
 });
 
@@ -1231,13 +1394,17 @@ describe("Working shelf (beta)", () => {
         id: string,
         environmentId = onlineEnvironmentId,
         key: string | null = null,
-      ) => ({
-        id: ThreadId.make(id),
-        environmentId,
-        createdAt: `2026-03-09T${id === "offline" ? "12" : id === "online" ? "11" : "10"}:00:00.000Z`,
-        activeOrderKey: key,
-        pinOrderKey: key,
-      });
+      ) => {
+        const createdAt = `2026-03-09T${id === "offline" ? "12" : id === "online" ? "11" : "10"}:00:00.000Z`;
+        return {
+          id: ThreadId.make(id),
+          environmentId,
+          createdAt,
+          updatedAt: createdAt,
+          activeOrderKey: key,
+          pinOrderKey: key,
+        };
+      };
       const keyOf = (entry: ReturnType<typeof thread>) =>
         scopedThreadKey(scopeThreadRef(entry.environmentId, entry.id));
       const online = thread("online");

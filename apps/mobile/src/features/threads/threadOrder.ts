@@ -1,3 +1,4 @@
+import type { EnvironmentProject } from "@t3tools/client-runtime/state/models";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   generateSpreadPinOrderKeys,
@@ -78,10 +79,25 @@ function rowOrder(row: OrderRow, section: PendingThreadOrder["section"]) {
 
 export function createThreadMovePlanner(input: {
   readonly ordered: readonly OrderRow[];
-  readonly allThreads?: readonly OrderRow[];
+  readonly allThreads?: readonly (OrderRow & Partial<Pick<EnvironmentThreadShell, "projectId">>)[];
+  readonly projects?: ReadonlyArray<Pick<EnvironmentProject, "id" | "environmentId" | "isScratch">>;
   readonly section: PendingThreadOrder["section"];
   readonly reorderableEnvironmentIds: ReadonlySet<EnvironmentId>;
 }) {
+  const scratchProjectKeys = new Set(
+    input.projects
+      ?.filter((project) => project.isScratch === true)
+      .map((project) => `${project.environmentId}:${project.id}`),
+  );
+  const noProjectIds = new Set(
+    input.allThreads
+      ?.filter(
+        (row) =>
+          row.projectId !== undefined &&
+          scratchProjectKeys.has(`${row.environmentId}:${row.projectId}`),
+      )
+      .map(rowId),
+  );
   const orderedIds = input.ordered.map(rowId);
   const keysById = new Map(
     (input.allThreads ?? input.ordered).map((row) => [
@@ -98,6 +114,7 @@ export function createThreadMovePlanner(input: {
     if (!writableIds.has(movedId)) return null;
     const nextIds = threadOrderAfterMove(orderedIds, movedId, direction);
     if (nextIds === null) return null;
+    if (input.section === "active" && noProjectIds.has(movedId)) return [];
     const assignments = planPinnedReorder({ orderedIds: nextIds, keysById, movedId });
     return assignments === null ||
       assignments.length === 0 ||
