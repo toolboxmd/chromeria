@@ -419,6 +419,7 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
       yield* fs.writeFileString(`${real}/opencode/key`, "key-1");
       yield* fs.writeFileString(`${real}/opencode/nested/key`, "key-2");
       yield* fs.writeFileString(`${real}/opencode/rel/key`, "key-3");
+      yield* fs.writeFileString(`${root}/home-key`, "key-4");
       yield* fs.writeFileString(
         `${real}/opencode/config.json`,
         JSON.stringify({ provider: { legacy: { name: "Legacy" } }, theme: "dark" }),
@@ -441,6 +442,8 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
               "e": "{file:./{env:UP}/key}",
               "f": "{file:./nested/{env:NAME}}",
               // "g": "{file:./ghost}",
+              "h": "{file:../../home-key}",
+              "i": "x" /* {env:BREAK} {file:../../../outside} */,
             },
           } } }`;
       yield* fs.writeFileString(
@@ -463,6 +466,8 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
           REL: "./rel/key",
           UP: "missing/..",
           NAME: "key",
+          // Raw expansion comments out the token on its own line, so OpenCode never reads it.
+          BREAK: "\n//",
         },
       });
       const environment = yield* prepare;
@@ -494,22 +499,49 @@ it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("bare homes", (it) =
         providers: { omlx: { name: "old", settings: { baseURL: "http://old/v1" } } },
       });
       expect(yield* read("opencode.jsonc")).toBe(`{\n"provider": ${provider}\n}\n`);
-      expect([yield* read("key"), yield* read("nested/key"), yield* read("rel/key")]).toEqual([
-        "key-1",
-        "key-2",
-        "key-3",
-      ]);
+      expect([
+        yield* read("key"),
+        yield* read("nested/key"),
+        yield* read("rel/key"),
+        yield* read("../../home-key"),
+      ]).toEqual(["key-1", "key-2", "key-3", "key-4"]);
 
       yield* fs.writeFileString(
         `${real}/opencode/config.json`,
-        JSON.stringify({ provider: { up: { options: { apiKey: "{file:../../outside}" } } } }),
+        JSON.stringify({ provider: { up: { name: "{file:./agents/custom.md}" } } }),
+      );
+      const discovered = yield* Effect.flip(prepare);
+      expect(discovered.message).toBe(
+        `OpenCode config ${real}/opencode/config.json reads a file where OpenCode loads context, which bare strips.`,
+      );
+      expect(yield* fs.exists(`${shadow}/agents`)).toBe(false);
+
+      // Links a reference no longer needs are removed.
+      yield* fs.writeFileString(
+        `${real}/opencode/opencode.jsonc`,
+        JSON.stringify({ provider: { omlx: { options: { apiKey: "{file:./rel/key}" } } } }),
+      );
+
+      yield* fs.writeFileString(
+        `${real}/opencode/config.json`,
+        JSON.stringify({ provider: { up: { options: { apiKey: "{file:../../../outside}" } } } }),
       );
       const outside = yield* Effect.flip(prepare);
       expect(outside.message).toBe(
-        `OpenCode config ${real}/opencode/config.json reads a file outside its config root that bare cannot reach.`,
+        `OpenCode config ${real}/opencode/config.json reads a file too far outside its directory for bare.`,
       );
-
       yield* fs.remove(`${real}/opencode/config.json`);
+      yield* prepare;
+      expect((yield* fs.readDirectory(shadow)).toSorted()).toEqual([
+        "nested",
+        "opencode.json",
+        "opencode.jsonc",
+        "rel",
+      ]);
+      expect(yield* fs.readLink(`${shadow}/rel/key`)).toBe(`${real}/opencode/rel/key`);
+      expect(yield* fs.exists(`${shadow}/key`)).toBe(false);
+      expect(yield* fs.exists(`${root}/bare/home-key`)).toBe(false);
+
       yield* fs.writeFileString(
         `${real}/opencode/opencode.json`,
         `{ "providers": { "omlx": { "name": "cut`,

@@ -126,25 +126,56 @@ export const OPEN_CODE_BARE_CONFIG = {
 const OPEN_CODE_GLOBAL_CONFIG_FILES = ["config.json", "opencode.json", "opencode.jsonc"];
 const OPEN_CODE_PROVIDER_KEYS = new Set(["provider", "providers"]);
 
-/** OpenCode 2 retries with JSON-escaped values when raw ones break the document; 1.x does not. */
+// Names OpenCode loads as context from its global config directory; a linked file there would leak.
+const OPEN_CODE_DISCOVERED = new Set([
+  ...OPEN_CODE_GLOBAL_CONFIG_FILES,
+  ...["agent", "mode", "command", "skill", "plugin", "tool"].flatMap((name) => [name, `${name}s`]),
+  "AGENTS.md",
+  "package.json",
+  "node_modules",
+]);
+
 const expandEnv = (text: string, environment: NodeJS.ProcessEnv, escape: boolean) =>
   text.replace(/\{env:([^}]+)\}/g, (_, variable: string) => {
     const value = environment[variable] || "";
     return escape ? JSON.stringify(value).slice(1, -1) : value;
   });
 
+/** The `{file:...}` paths OpenCode reads from a document, in its substitution order. */
+const fileReferences = (document: string, environment: NodeJS.ProcessEnv) => {
+  const raw = expandEnv(document, environment, false);
+  const errors: Array<ParseError> = [];
+  // OpenCode 2 retries with JSON-escaped values only when raw ones break the document.
+  if (document.includes("{env:"))
+    parseTree(raw.replace(/\{file:[^}]+\}/g, ""), errors, { allowTrailingComma: true });
+  const expanded = errors.length > 0 ? expandEnv(document, environment, true) : raw;
+  return Array.from(expanded.matchAll(/\{file:([^}]+)\}/g)).flatMap((match) =>
+    expanded
+      .slice(expanded.lastIndexOf("\n", match.index - 1) + 1, match.index)
+      .trimStart()
+      .startsWith("//")
+      ? []
+      : [match[1]!],
+  );
+};
+
 /**
  * Provider definitions are model plumbing, not prompt context, so bare keeps them. Each global
  * document keeps its provider sections as raw text, so OpenCode still orders, normalizes and
- * substitutes them itself; `{env:...}` and `{file:...}` never resolve in T3 Code.
+ * substitutes them itself; `{env:...}` and `{file:...}` never resolve in T3 Code. A relative
+ * `{file:...}` resolves beside its document, so each one is linked at the same relative path.
  */
 const shadowOpenCodeProviders = Effect.fn("BareProviderRuntime.openCodeProviders")(function* (
   source: string,
-  target: string,
+  home: string,
   environment: NodeJS.ProcessEnv,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const root = path.join(home, "xdg-config");
+  const target = path.join(root, "opencode");
+  const inside = (parent: string, child: string) => child.startsWith(`${parent}${path.sep}`);
+  const links = new Map<string, string>();
   for (const name of OPEN_CODE_GLOBAL_CONFIG_FILES) {
     const file = path.join(source, name);
     const shadow = path.join(target, name);
@@ -152,7 +183,7 @@ const shadowOpenCodeProviders = Effect.fn("BareProviderRuntime.openCodeProviders
     const text = (yield* fs.exists(file)) ? yield* fs.readFileString(file) : undefined;
     const tree =
       text === undefined ? undefined : parseTree(text, errors, { allowTrailingComma: true });
-    // OpenCode rejects a malformed document; a recovered partial one must not reach bare.
+    // Bare reads the document before OpenCode substitutes it, so it must already be valid JSONC.
     if (errors.length > 0)
       return yield* new BareLaunchError({ reason: `OpenCode config ${file} is not valid JSON.` });
     const sections = (tree?.type === "object" ? (tree.children ?? []) : []).flatMap((property) => {
@@ -169,38 +200,44 @@ const shadowOpenCodeProviders = Effect.fn("BareProviderRuntime.openCodeProviders
     }
     const document = `{\n${sections.join(",\n")}\n}\n`;
     yield* writeBareConfig(shadow, document);
-    // OpenCode reads a relative `{file:...}` beside its document, after expanding `{env:...}`:
-    // link each such file into the shadow directory so the same text reads the same file.
-    const references = new Set(
-      [expandEnv(document, environment, false), expandEnv(document, environment, true)].flatMap(
-        (expanded) =>
-          Array.from(expanded.matchAll(/\{file:([^}]+)\}/g)).flatMap((match) =>
-            expanded
-              .slice(expanded.lastIndexOf("\n", match.index - 1) + 1, match.index)
-              .trimStart()
-              .startsWith("//")
-              ? []
-              : [match[1]!],
-          ),
-      ),
-    );
-    for (const reference of references) {
+    for (const reference of fileReferences(document, environment)) {
       if (reference.startsWith("~/") || path.isAbsolute(reference)) continue;
       const link = path.resolve(target, reference);
-      // A path that climbs out lands in the mirrored XDG root, which already links the original.
-      if (!link.startsWith(`${target}${path.sep}`)) {
-        if (link.startsWith(`${path.dirname(target)}${path.sep}`)) continue;
+      if (!inside(home, link))
         return yield* new BareLaunchError({
-          reason: `OpenCode config ${file} reads a file outside its config root that bare cannot reach.`,
+          reason: `OpenCode config ${file} reads a file too far outside its directory for bare.`,
         });
-      }
-      if (OPEN_CODE_GLOBAL_CONFIG_FILES.some((own) => link === path.join(target, own))) continue;
-      const original = path.resolve(source, reference);
-      if (Option.isSome(yield* fs.readLink(link).pipe(Effect.option))) yield* fs.remove(link);
-      yield* fs.makeDirectory(path.dirname(link), { recursive: true, mode: 0o700 });
-      yield* fs.symlink(original, link);
+      // The rest of the XDG root already links each original entry.
+      if (inside(root, link) && !inside(target, link)) continue;
+      if (
+        inside(target, link) &&
+        OPEN_CODE_DISCOVERED.has(path.relative(target, link).split(path.sep)[0]!)
+      )
+        return yield* new BareLaunchError({
+          reason: `OpenCode config ${file} reads a file where OpenCode loads context, which bare strips.`,
+        });
+      links.set(link, path.resolve(source, reference));
     }
   }
+  for (const [link, original] of links) {
+    const current = yield* fs.readLink(link).pipe(Effect.option);
+    if (Option.isSome(current) && current.value === original) continue;
+    if (Option.isSome(current)) yield* fs.remove(link);
+    yield* fs.makeDirectory(path.dirname(link), { recursive: true, mode: 0o700 });
+    yield* fs.symlink(original, link);
+  }
+  // Drop links a reference no longer needs; the mirrored XDG root is maintained elsewhere.
+  const owned = [
+    ...((yield* fs.exists(target)) ? yield* fs.readDirectory(target, { recursive: true }) : []).map(
+      (entry) => path.join(target, entry),
+    ),
+    ...(yield* fs.readDirectory(home, { recursive: true }))
+      .filter((entry) => entry !== "xdg-config" && !entry.startsWith(`xdg-config${path.sep}`))
+      .map((entry) => path.join(home, entry)),
+  ];
+  for (const entry of owned)
+    if (!links.has(entry) && Option.isSome(yield* fs.readLink(entry).pipe(Effect.option)))
+      yield* fs.remove(entry);
 });
 
 export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.openCode")(
@@ -252,11 +289,7 @@ export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.ope
     // These discovery selectors could otherwise escape the isolated config root.
     delete environment.OPENCODE_CONFIG;
     delete environment.OPENCODE_CONFIG_DIR;
-    yield* shadowOpenCodeProviders(
-      path.join(source, "opencode"),
-      path.join(target, "opencode"),
-      environment,
-    );
+    yield* shadowOpenCodeProviders(path.join(source, "opencode"), input.home, environment);
     return environment;
   },
   Effect.provide(Path.layer),
