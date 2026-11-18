@@ -55,6 +55,7 @@ import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Queue from "effect/Queue";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -5040,43 +5041,60 @@ it.effect(
   () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { thread, a } = yield* laptopHarness;
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        // Each Stop retry offers its fiber and waits until the test lets it run.
+        const retrying = yield* Queue.unbounded<Fiber.Fiber<unknown, unknown>>();
+        const proceed = yield* Queue.unbounded<void>();
+        const a = yield* makeLaptop(database, offers).pipe(
+          Effect.provideService(
+            RemoteDelegation.FollowRetrySchedule,
+            Schedule.forever.pipe(
+              Schedule.tap(() =>
+                Effect.gen(function* () {
+                  yield* Queue.offer(retrying, yield* Effect.fiber);
+                  yield* Queue.take(proceed);
+                }),
+              ),
+            ),
+          ),
+        );
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
         yield* Ref.set(thread.typedOutcomes, false);
         yield* Ref.set(thread.refuseStop, "runtime_mode");
         const { taskId } = yield* delegateToBox(a);
         yield* a.call("task_cancel", { taskId });
+        yield* remoteState(a, taskId, (task) => task.remoteChild?.stop?.state === "unconfirmed");
+        // The cancel's own attempt and the follower's were both refused; the follower's retry waits.
+        const retry = yield* Queue.take(retrying);
+        expect(yield* Ref.get(thread.stopRequests)).toHaveLength(2);
         yield* a.orchestrator.dispatch({
           type: "thread.archive",
           commandId: CommandId.make("command:archive:laptop-parent"),
           threadId: parentThreadId,
         });
-        const sent = (yield* Ref.get(thread.stopRequests)).length;
-        // The backoff elapses while the parent is archived: nothing is sent there.
-        yield* TestClock.adjust("10 seconds");
+        // Archived, the retry sends nothing and ends instead of retrying again.
+        yield* Queue.offer(proceed, undefined);
+        const ended = yield* Fiber.await(retry).pipe(
+          Effect.as(true),
+          Effect.raceFirst(Queue.take(retrying).pipe(Effect.as(false))),
+        );
+        expect(ended).toBe(true);
+        expect(yield* Ref.get(thread.stopRequests)).toHaveLength(2);
         yield* a.orchestrator.dispatch({
           type: "thread.unarchive",
           commandId: CommandId.make("command:unarchive:laptop-parent"),
           threadId: parentThreadId,
         });
-        const reopened = yield* a.orchestrator.getThreadEventSequence(parentThreadId);
+        // Reopened, its follower's next look sends the Stop it still owes, refused again.
         yield* finishThere(thread, "Finished while archived.");
-        // Reopened, its follower sends the Stop it still owes.
-        yield* a.orchestrator
-          .streamStoredEventsFrom({
-            threadId: parentThreadId,
-            afterSequence: reopened,
-            eventType: "subagent.updated",
-          })
-          .pipe(
-            Stream.filter(
-              (stored) =>
-                stored.event.type === "subagent.updated" &&
-                stored.event.payload.id === taskId &&
-                stored.event.payload.remoteChild?.stop?.state === "unconfirmed",
-            ),
-            Stream.runHead,
-          );
-        expect(yield* Ref.get(thread.stopRequests)).toHaveLength(sent + 1);
+        yield* Queue.take(retrying);
+        expect(yield* Ref.get(thread.stopRequests)).toHaveLength(3);
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
