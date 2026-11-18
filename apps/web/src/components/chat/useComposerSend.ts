@@ -1,11 +1,7 @@
 import { isClearComposerCommand, parseSideChatCommand } from "@t3tools/shared/composerTrigger";
 import { armFreshSession, disarmFreshSession, readFreshSessionArm } from "./freshSessionArms";
 import { withPromachosStart } from "../promachos/promachosStart";
-import {
-  bareDraftIntent,
-  bareLaunchRequest,
-  resolveBareToggle,
-} from "@t3tools/client-runtime/bare-launch";
+import { draftBareLaunchRequest } from "@t3tools/client-runtime/bare-launch";
 import {
   mergeDirectPreviewAnnotation,
   resolveBackgroundDraftWorkspaceOptions,
@@ -1345,15 +1341,15 @@ export function useComposerSend(input: ComposerSendInput) {
           )
         : null;
       if (backgroundThreadRef) beginBackgroundDraftSubmissionByRef(backgroundThreadRef);
-      const bare = bareLaunchRequest(
-        resolveBareToggle({
-          isNewThread: isLocalDraftThread && draftId !== null,
-          provider: providerInstanceEntries.find(
-            (entry) => entry.instanceId === ctxSelectedModelSelection.instanceId,
-          )?.snapshot,
-          requested: draftId !== null && bareDraftIntent.get(draftId),
-        }),
-      );
+      const bare =
+        isLocalDraftThread && draftId !== null
+          ? draftBareLaunchRequest({
+              draftKey: draftId,
+              provider: providerInstanceEntries.find(
+                (entry) => entry.instanceId === ctxSelectedModelSelection.instanceId,
+              )?.snapshot,
+            })
+          : undefined;
       const startPromise = withPromachosStart(
         startThreadTurn,
         promachosModels ?? null,

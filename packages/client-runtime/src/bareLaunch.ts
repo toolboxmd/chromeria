@@ -42,3 +42,17 @@ export const bareDraftIntent = {
     return () => listeners.delete(listener);
   },
 };
+
+/** The launch request a new thread's draft carries, resolved against its provider at send. */
+export function draftBareLaunchRequest(input: {
+  readonly draftKey: string;
+  readonly provider: Pick<ServerProvider, "bare"> | null | undefined;
+}): BareLaunchRequest | undefined {
+  return bareLaunchRequest(
+    resolveBareToggle({
+      isNewThread: true,
+      provider: input.provider,
+      requested: bareDraftIntent.get(input.draftKey),
+    }),
+  );
+}

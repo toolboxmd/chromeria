@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { bareLaunchRequest, resolveBareToggle } from "./bareLaunch.ts";
+import {
+  bareDraftIntent,
+  bareLaunchRequest,
+  draftBareLaunchRequest,
+  resolveBareToggle,
+} from "./bareLaunch.ts";
 
 const supported = { bare: { supported: true as const } };
 const unsupported = { bare: { supported: false as const, reason: "No stripping interface." } };
@@ -30,5 +35,20 @@ describe("bareLaunchRequest", () => {
     expect(bareLaunchRequest({ kind: "available", on: false })).toBeUndefined();
     expect(bareLaunchRequest({ kind: "unsupported", reason: "x" })).toBeUndefined();
     expect(bareLaunchRequest({ kind: "hidden" })).toBeUndefined();
+  });
+});
+
+describe("draftBareLaunchRequest", () => {
+  it("launches a draft bare only while its toggle is on and the provider supports it", () => {
+    const draftKey = "draft-bare-test";
+    expect(draftBareLaunchRequest({ draftKey, provider: supported })).toBeUndefined();
+    bareDraftIntent.set(draftKey, true);
+    expect(draftBareLaunchRequest({ draftKey, provider: supported })).toEqual({});
+    expect(draftBareLaunchRequest({ draftKey, provider: unsupported })).toBeUndefined();
+    expect(
+      draftBareLaunchRequest({ draftKey: "another-draft", provider: supported }),
+    ).toBeUndefined();
+    bareDraftIntent.set(draftKey, false);
+    expect(draftBareLaunchRequest({ draftKey, provider: supported })).toBeUndefined();
   });
 });

@@ -61,16 +61,3 @@ export function NewTaskBareRow(props: {
     </View>
   );
 }
-
-/** The launch flag a queued new task carries, resolved against the provider at enqueue. */
-export function newTaskBareRequested(input: {
-  readonly draftKey: string;
-  readonly provider: Pick<ServerProvider, "bare"> | null | undefined;
-}): boolean {
-  const state = resolveBareToggle({
-    isNewThread: true,
-    provider: input.provider,
-    requested: bareDraftIntent.get(input.draftKey),
-  });
-  return state.kind === "available" && state.on;
-}
