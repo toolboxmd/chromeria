@@ -56,9 +56,11 @@ import {
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import * as OpenCode2Client from "@t3tools/provider-opencode/server/v2/OpenCode2Client";
 import * as OpenCode2Server from "@t3tools/provider-opencode/server/v2/OpenCode2Server";
+import * as OpenCodeRuntime from "@t3tools/provider-opencode/server/OpenCodeRuntime";
 import * as OpenCode2AdapterV2 from "@t3tools/provider-opencode/server/v2/adapter";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import {
+  openCode2AdapterOn,
   openCode2ReplayRuntime,
   openCode2SessionServersReplayAdapter,
 } from "./OpenCode2AdapterV2.testkit.ts";
@@ -6492,6 +6494,72 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
           yield* runtime.unloadThread!({ providerThread: thread });
         }
       }),
+  );
+
+  // Disabling or replacing the instance interrupts a session server's startup.
+  it.effect("fails a session open when its instance closes during server startup", () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const unused = () =>
+        Effect.fail(
+          new OpenCodeRuntime.OpenCodeRuntimeError({ operation: "unused", detail: "unused" }),
+        );
+      const runtime: OpenCodeRuntime.OpenCodeRuntime["Service"] = {
+        startOpenCodeServerProcess: () =>
+          Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)),
+        connectToOpenCodeServer: unused,
+        runOpenCodeCommand: unused,
+        createOpenCodeSdkClient: () => ({}) as never,
+        loadOpenCodeInventory: unused,
+        loadOpenCodeSkills: unused,
+      };
+      const instance = yield* Scope.make();
+      const server = yield* OpenCode2Server.make({
+        binaryPath: "opencode",
+        serverUrl: "",
+        serverPassword: "",
+        directory: WORK,
+        environment: {},
+      }).pipe(
+        Effect.provideService(Scope.Scope, instance),
+        Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime),
+        Effect.provide(
+          Layer.mergeAll(
+            OpenCode2Client.layer.pipe(
+              Layer.provide(
+                Layer.succeed(
+                  HttpClient.HttpClient,
+                  HttpClient.make(() => Effect.die("no HTTP")),
+                ),
+              ),
+            ),
+            NodeCrypto.layer,
+          ),
+        ),
+      );
+      const adapter = yield* openCode2AdapterOn(server);
+      const opening = yield* adapter
+        .openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session:closing"),
+          modelSelection: bigPickle,
+          runtimePolicy: policy(),
+        })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(entered);
+      yield* Scope.close(instance, Exit.void);
+      const settled = yield* Fiber.await(opening).pipe(
+        Effect.timeoutOption("1 second"),
+        Effect.forkScoped,
+      );
+      yield* TestClock.adjust("1 second");
+      const exit = yield* Fiber.join(settled);
+      assert.isTrue(Option.isSome(exit), "the session open never settled");
+      if (Option.isSome(exit)) {
+        assert.isTrue(Exit.isFailure(exit.value));
+        if (Exit.isFailure(exit.value)) assert.isFalse(Cause.hasInterruptsOnly(exit.value.cause));
+      }
+    }),
   );
 
   // regression: #16142 OpenCode 2 threads were missing T3 Code's MCP tools

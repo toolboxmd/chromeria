@@ -865,6 +865,16 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (
       )
       .pipe(
         Effect.catch((error) => Deferred.fail(lent, error)),
+        // An interrupted startup, as when the instance closes, must still answer the open.
+        Effect.ensuring(
+          Deferred.fail(
+            lent,
+            new OpenCodeRuntime.OpenCodeRuntimeError({
+              operation: "startOpenCodeServerProcess",
+              detail: "The OpenCode server stopped before the session could use it.",
+            }),
+          ),
+        ),
         Effect.forkScoped,
       );
     return yield* Deferred.await(lent);

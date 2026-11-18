@@ -253,3 +253,62 @@ it.effect("stops a startup that never becomes ready when the owner closes", () =
     expect((yield* Fiber.await(borrower))._tag).toBe("Failure");
   }).pipe(Effect.provide(TestClock.layer())),
 );
+
+// A reconnect that is still cleaning up a dead process when shutdown begins must not relaunch.
+it.effect("starts no replacement once the owner begins closing", () =>
+  Effect.gen(function* () {
+    const starts = yield* Ref.make(0);
+    const firstRunning = yield* Ref.make(true);
+    const cleaning = yield* Deferred.make<void>();
+    const finishCleanup = yield* Deferred.make<void>();
+    const closingStarted = yield* Deferred.make<void>();
+    const runtime: OpenCodeRuntime.OpenCodeRuntime["Service"] = {
+      startOpenCodeServerProcess: () =>
+        Effect.gen(function* () {
+          const index = yield* Ref.updateAndGet(starts, (count) => count + 1);
+          if (index === 1)
+            yield* Effect.addFinalizer(() =>
+              Deferred.succeed(cleaning, undefined).pipe(
+                Effect.andThen(Deferred.await(finishCleanup)),
+              ),
+            );
+          return {
+            url: `http://127.0.0.1:${index}`,
+            version: "2.3.2",
+            isRunning: index === 1 ? Ref.get(firstRunning) : Effect.succeed(true),
+            exitCode: Effect.never,
+          };
+        }),
+      connectToOpenCodeServer: unusedRuntimeMethod,
+      runOpenCodeCommand: unusedRuntimeMethod,
+      createOpenCodeSdkClient: () => ({}) as never,
+      loadOpenCodeInventory: unusedRuntimeMethod,
+      loadOpenCodeSkills: unusedRuntimeMethod,
+    };
+    const ownerScope = yield* Scope.make();
+    const owner = yield* OpenCodeServerOwner.make({
+      binaryPath: "opencode",
+      directory: "/project",
+    }).pipe(
+      Effect.provideService(Scope.Scope, ownerScope),
+      Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime),
+    );
+    // Registered after the owner, so it runs first and marks the start of shutdown.
+    yield* Scope.addFinalizer(ownerScope, Deferred.succeed(closingStarted, undefined));
+    yield* owner.withServer((server) => Effect.succeed(server.url));
+    yield* Ref.set(firstRunning, false);
+    const reconnect = yield* owner
+      .withServer((server) => Effect.succeed(server.url))
+      .pipe(Effect.exit, Effect.forkChild);
+    yield* Deferred.await(cleaning);
+    const closing = yield* Scope.close(ownerScope, Exit.void).pipe(Effect.forkChild);
+    yield* Deferred.await(closingStarted);
+    // Let shutdown run on to the lock the reconnect holds before the reconnect resumes.
+    yield* Effect.yieldNow;
+    yield* Deferred.succeed(finishCleanup, undefined);
+    const reconnected = yield* Fiber.join(reconnect);
+    yield* Fiber.join(closing);
+    expect(yield* Ref.get(starts)).toBe(1);
+    expect(reconnected._tag).toBe("Failure");
+  }),
+);

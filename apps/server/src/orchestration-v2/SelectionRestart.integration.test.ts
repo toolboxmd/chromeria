@@ -36,11 +36,13 @@ import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as Persistence from "../persistence/Sqlite.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
-import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import { rebindOpenCode2SharedSessions } from "../fork/opencode2SessionRebind.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 
 const driver = ProviderDriverKind.make("codex");
 const providerInstanceId = ProviderInstanceId.make("codex-restart-test");
@@ -97,8 +99,6 @@ function makeRestartAdapter(
     | (() => OrchestrationV2ProviderCapabilities) = pooledCapabilities,
   providerInstanceId = initialSelection.instanceId,
   replacementGate?: { entered: Deferred.Deferred<void>; release: Deferred.Deferred<void> },
-  // An adapter can report stale capabilities before its runtime probe; its sessions know.
-  openedCapabilities?: () => OrchestrationV2ProviderCapabilities,
 ): ProviderAdapter.ProviderAdapterV2["Service"] {
   const capabilitiesNow = () =>
     typeof sessionCapabilities === "function" ? sessionCapabilities() : sessionCapabilities;
@@ -150,7 +150,7 @@ function makeRestartAdapter(
           status: "ready",
           cwd: sessionInput.runtimePolicy.cwd ?? "/fallback",
           model: sessionInput.modelSelection.model,
-          capabilities: openedCapabilities?.() ?? capabilitiesNow(),
+          capabilities: capabilitiesNow(),
           createdAt: now,
           updatedAt: now,
           lastError: null,
@@ -463,18 +463,14 @@ it.live.each(["unchanged", "messageId", "mode", "legacy"] as const)(
     ),
 );
 
-// A provider that stops sharing one session per instance must not collide threads that ran on it,
-// and one that still shares must keep them pooled even while it reports pre-probe capabilities.
-it.live.each([
-  { name: "stops sharing", opened: exclusiveCapabilities },
-  { name: "reports exclusive before its probe", opened: pooledCapabilities },
-])("resumes threads stored on an instance's shared session when the provider $name", ({ opened }) =>
+// Local OpenCode 2 threads shared their instance's session before each got its own process.
+it.live("Force stop on one rebound legacy thread leaves the other thread's session running", () =>
   Effect.gen(function* () {
-    const cwd = yield* checkpointWorkspace("shared-session-upgrade");
-    const projectId = ProjectId.make("project:shared-session-upgrade");
-    const threadIds = [
-      ThreadId.make("thread:shared-session-upgrade:a"),
-      ThreadId.make("thread:shared-session-upgrade:b"),
+    const cwd = yield* checkpointWorkspace("opencode2-session-rebind");
+    const projectId = ProjectId.make("project:opencode2-session-rebind");
+    const [first, second] = [
+      ThreadId.make("thread:opencode2-session-rebind:a"),
+      ThreadId.make("thread:opencode2-session-rebind:b"),
     ];
     const state = yield* Ref.make<RestartAdapterState>({
       activeTurn: null,
@@ -484,25 +480,29 @@ it.live.each([
       failedReplacementOpen: false,
     });
     let capabilities = pooledCapabilities;
-    let openedNow = pooledCapabilities;
     const shared = IdAllocator.derive.providerSession({ providerInstanceId });
+    const database = Persistence.layerMemory;
     yield* Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threads = yield* ThreadManagement.ThreadManagementService;
       const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
       const eventSink = yield* EventSink.EventSinkV2;
       const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
-      const turn = (threadId: ThreadId, label: string) =>
+      const turn = (
+        threadId: ThreadId,
+        label: string,
+        selection: ModelSelection,
+        until: ReadonlyArray<string>,
+      ) =>
         Effect.gen(function* () {
-          const ended = yield* eventSink
+          const reached = yield* eventSink
             .stream({ threadId, afterSequence: yield* eventSink.latestSequence({ threadId }) })
             .pipe(
               Stream.map((stored) => stored.event),
               Stream.filter(
                 (event) =>
                   event.type === "run.updated" &&
-                  ["completed", "failed", "interrupted", "cancelled"].includes(
-                    event.payload.status,
-                  ),
+                  [...until, "failed", "interrupted", "cancelled"].includes(event.payload.status),
               ),
               Stream.take(1),
               Stream.runCollect,
@@ -517,13 +517,17 @@ it.live.each([
             messageId: MessageId.make(`message:${threadId}:${label}`),
             text: label,
             attachments: [],
-            modelSelection: seedSelection,
+            modelSelection: selection,
             dispatchMode: { type: "start_immediately" },
           });
-          const [event] = yield* Fiber.join(ended);
+          const [event] = yield* Fiber.join(reached);
           return event?.type === "run.updated" ? event.payload.status : undefined;
         });
-      for (const threadId of threadIds) {
+      const sessionOf = (threadId: ThreadId) =>
+        orchestrator
+          .getThreadProjection(threadId)
+          .pipe(Effect.map((projection) => projection.providerThreads[0]!));
+      for (const threadId of [first, second]) {
         yield* orchestrator.dispatch({
           type: "thread.create",
           createdBy: "user",
@@ -531,61 +535,55 @@ it.live.each([
           commandId: CommandId.make(`command:${threadId}:create`),
           threadId,
           projectId,
-          title: "Shared session upgrade",
+          title: "OpenCode 2 session rebind",
           modelSelection: seedSelection,
           runtimeMode: "full-access",
           interactionMode: "default",
           branch: null,
           worktreePath: cwd,
         });
-        assert.equal(yield* turn(threadId, "before"), "completed");
+        assert.equal(yield* turn(threadId, "before", seedSelection, ["completed"]), "completed");
       }
       yield* worker.drain();
-      const before = yield* Effect.forEach(threadIds, (threadId) =>
-        orchestrator.getThreadProjection(threadId),
-      );
-      for (const projection of before)
-        assert.equal(projection.providerThreads[0]?.providerSessionId, shared);
+      const before = [yield* sessionOf(first), yield* sessionOf(second)];
+      for (const providerThread of before) assert.equal(providerThread.providerSessionId, shared);
 
-      // The upgrade restarts the server, which ends the shared session.
+      // An upgrade restarts the server: the shared session ends and the startup backfill runs.
       yield* sessions.close(shared);
       capabilities = exclusiveCapabilities;
-      openedNow = opened;
-      const statuses = yield* Effect.forEach(threadIds, (threadId) => turn(threadId, "after"), {
-        concurrency: "unbounded",
-      });
-      assert.deepEqual(statuses, ["completed", "completed"]);
+      yield* rebindOpenCode2SharedSessions().pipe(
+        Effect.provide(
+          ServerSettings.layerTest({
+            providerInstances: { [providerInstanceId]: { driver: "opencode", config: {} } },
+          }),
+        ),
+      );
+      const rebound = [yield* sessionOf(first), yield* sessionOf(second)];
+      assert.notEqual(rebound[0]!.providerSessionId, shared);
+      assert.notEqual(rebound[1]!.providerSessionId, shared);
+      assert.notEqual(rebound[0]!.providerSessionId, rebound[1]!.providerSessionId);
+      assert.deepEqual(rebound[0]!.nativeThreadRef, before[0]!.nativeThreadRef);
+
+      assert.equal(yield* turn(first, "after", initialSelection, ["running"]), "running");
+      assert.equal(yield* turn(second, "after", initialSelection, ["running"]), "running");
+      yield* threads.forceStopThread({ threadId: second });
       yield* worker.drain();
-      const after = yield* Effect.forEach(threadIds, (threadId) =>
-        orchestrator.getThreadProjection(threadId),
+      assert.isTrue(
+        yield* sessions.isLive(rebound[0]!.providerSessionId!),
+        "Force stop on the second thread ended the first thread's session",
       );
-      const sessionIds = after.map(
-        (projection) => projection.providerThreads[0]?.providerSessionId,
-      );
-      if (opened === pooledCapabilities) assert.deepEqual(sessionIds, [shared, shared]);
-      else assert.equal(new Set(sessionIds).size, threadIds.length);
-      for (const [index, projection] of after.entries()) {
-        assert.lengthOf(projection.providerThreads, 1);
-        // The thread keeps its provider thread and native conversation.
-        assert.equal(projection.providerThreads[0]?.id, before[index]?.providerThreads[0]?.id);
-        assert.deepEqual(
-          projection.providerThreads[0]?.nativeThreadRef,
-          before[index]?.providerThreads[0]?.nativeThreadRef,
-        );
-      }
+      assert.isFalse(yield* sessions.isLive(shared));
+      const firstRun = (yield* orchestrator.getThreadProjection(first)).runs.at(-1);
+      assert.equal(firstRun?.status, "running");
     }).pipe(
       Effect.provide(
-        ProviderReplayHarness.layerWithRegistry(
-          { name: "shared-session-upgrade" },
-          ProviderAdapterRegistry.layerSingle(
-            makeRestartAdapter(
-              state,
-              () => capabilities,
-              providerInstanceId,
-              undefined,
-              () => openedNow,
-            ),
+        Layer.mergeAll(
+          ProviderReplayHarness.layerWithRegistry(
+            { name: "opencode2-session-rebind" },
+            ProviderAdapterRegistry.layerSingle(makeRestartAdapter(state, () => capabilities)),
+            { databaseLayer: database },
           ),
+          database,
         ),
       ),
       Effect.scoped,

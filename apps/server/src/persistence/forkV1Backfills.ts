@@ -8,6 +8,10 @@ import { backfillImportedLineage, lineageBackfillId } from "../childThreads/line
 import type * as EventSink from "../orchestration-v2/EventSink.ts";
 import { backfillThreadPeople } from "./forkThreadPeopleBackfill.ts";
 import {
+  openCode2SessionRebindId,
+  rebindOpenCode2SharedSessions,
+} from "../fork/opencode2SessionRebind.ts";
+import {
   backfillScheduledTasks,
   scheduledTasksBackfillId,
 } from "../scheduledTaskChecks/v1Import.ts";
@@ -53,6 +57,15 @@ export const forkV1Backfills: ReadonlyArray<ForkV1Backfill> = [
     ),
   },
   { id: lineageBackfillId, run: backfillImportedLineage() },
+  {
+    id: openCode2SessionRebindId,
+    run: rebindOpenCode2SharedSessions().pipe(
+      Effect.catchTags({
+        OpenCode2SessionRebindError: () =>
+          Effect.fail(new ForkV1BackfillStepError({ backfillId: openCode2SessionRebindId })),
+      }),
+    ),
+  },
   {
     id: scheduledTasksBackfillId,
     run: backfillScheduledTasks.pipe(

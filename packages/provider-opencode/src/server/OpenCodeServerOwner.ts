@@ -90,14 +90,15 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
     );
   });
 
+  // A borrower that outlives the owner, such as a reconnect, must not start an unowned process.
+  const closedError = new OpenCodeRuntime.OpenCodeRuntimeError({
+    operation: "startOpenCodeServerProcess",
+    detail: "The OpenCode server was closed with its owner.",
+  });
+
   const acquireServer = mutex.withPermit(
     Effect.gen(function* () {
-      // A borrower that outlives the owner, such as a reconnect, must not start an unowned process.
-      if (state.closed)
-        return yield* new OpenCodeRuntime.OpenCodeRuntimeError({
-          operation: "startOpenCodeServerProcess",
-          detail: "The OpenCode server was closed with its owner.",
-        });
+      if (state.closed) return yield* closedError;
       yield* cancelIdleClose();
       if (state.server !== null) {
         if (yield* state.server.isRunning) {
@@ -106,6 +107,8 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
         }
         yield* closeServer(state.server);
       }
+      // Shutdown may have begun while the dead process was cleaned up.
+      if (state.closed) return yield* closedError;
 
       return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
@@ -127,9 +130,11 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
                 .pipe(
                   Effect.provideService(Scope.Scope, serverScope),
                   Effect.forkChild,
+                  // Shutdown that began before this registration finds no startup to stop.
                   Effect.tap((fiber) =>
-                    Effect.sync(() => {
+                    Effect.suspend(() => {
                       state.starting = fiber;
+                      return state.closed ? Fiber.interrupt(fiber) : Effect.void;
                     }),
                   ),
                   Effect.flatMap(Fiber.join),
