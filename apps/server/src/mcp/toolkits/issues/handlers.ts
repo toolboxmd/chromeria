@@ -20,6 +20,7 @@ import {
   IssueProjectRequiredError,
   IssuesToolkit,
   IssueTargetIncompleteError,
+  IssueTrackerToolkit,
   type IssueTargetInput,
   IssueThreadNotFoundError,
   IssueThreadRequiredError,
@@ -302,3 +303,17 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = McpToolAccess.toLayer(IssuesToolkit, make);
+
+// Fork: tracker tools only; the fork's issueLinks toolkit owns the thread link tools.
+export const trackerLayer = McpToolAccess.toLayer(
+  IssueTrackerToolkit,
+  Effect.map(
+    make,
+    ({
+      link_issue: _linkIssue,
+      unlink_issue: _unlinkIssue,
+      list_thread_issues: _listThreadIssues,
+      ...tracker
+    }) => tracker,
+  ),
+);

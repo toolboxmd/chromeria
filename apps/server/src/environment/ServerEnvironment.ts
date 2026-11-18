@@ -266,11 +266,17 @@ export const make = Effect.gen(function* () {
       threadVisitedTracking: true,
       threadPullRequests: true,
       threadPullRequestWatch: true,
+      // Fork: GitHub Issues (toolboxmd/t3code#27) and their thread links (toolboxmd/t3code#28).
+      githubIssues: true,
+      issueLinks: true,
+      // Fork: feature map (toolboxmd/chromeria#235).
+      featureMap: true,
       pullRequestStackActions: true,
       threadPullRequestLinking: true,
       serverResolvedCommandContext: true,
       threadStop: true,
       ...(hostPlatform === "win32" ? {} : { localServerStop: true }),
+      executionPurposeVersions: [1],
       environmentIcon: true,
       projectCloneTracking: true,
       projectOrganization: true,
@@ -299,6 +305,7 @@ export const make = Effect.gen(function* () {
       mcpHostedApproval: true,
       shellThreadFamilies: true,
       shellOlderSettled: true,
+      peerAuthority: 1,
     },
   };
 
