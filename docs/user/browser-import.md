@@ -51,7 +51,7 @@ Some sessions cannot be copied:
 - Google sign-in is bound to each machine. Sign in on each machine separately.
 - Partitioned cookies belong to another site's embeds and stay behind.
 - Work that another environment started cannot copy sessions. Its parent runs a computer-use agent on the machine with your logins instead.
-- Incognito profiles, profiles in a login, and profile ids the receiving environment does not know are refused.
+- Incognito profiles and profile ids the receiving environment does not know are refused.
 
 Each copy appends a line to `login-imports.jsonl` in the `userdata` directory of both environments. The line records the time, environments, thread, profiles, hosts, counts and outcome, never a cookie name or value. The agent sees only counts.
 
