@@ -72,6 +72,12 @@ export const ApplicationProjectDeletedPayload = Schema.Struct({
 });
 export type ApplicationProjectDeletedPayload = typeof ApplicationProjectDeletedPayload.Type;
 
+export const ApplicationProjectRestoredPayload = Schema.Struct({
+  projectId: ProjectId,
+  restoredAt: IsoDateTime,
+});
+export type ApplicationProjectRestoredPayload = typeof ApplicationProjectRestoredPayload.Type;
+
 const ApplicationProjectEventBaseFields = {
   sequence: NonNegativeInt,
   eventId: EventId,
@@ -105,10 +111,18 @@ export const ApplicationProjectDeletedEvent = Schema.Struct({
 });
 export type ApplicationProjectDeletedEvent = typeof ApplicationProjectDeletedEvent.Type;
 
+export const ApplicationProjectRestoredEvent = Schema.Struct({
+  ...ApplicationProjectEventBaseFields,
+  type: Schema.Literal("project.restored"),
+  payload: ApplicationProjectRestoredPayload,
+});
+export type ApplicationProjectRestoredEvent = typeof ApplicationProjectRestoredEvent.Type;
+
 export const ApplicationProjectEvent = Schema.Union([
   ApplicationProjectCreatedEvent,
   ApplicationProjectMetaUpdatedEvent,
   ApplicationProjectDeletedEvent,
+  ApplicationProjectRestoredEvent,
 ]);
 export type ApplicationProjectEvent = typeof ApplicationProjectEvent.Type;
 
