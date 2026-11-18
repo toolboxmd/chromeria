@@ -358,6 +358,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "knip.jsonc",
     "scripts/dev-runner.ts",
     "scripts/dev-runner.test.ts",
+    "scripts/check-changed.ts",
+    "scripts/check-changed.test.ts",
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",
     "packages/source-control-github/graphql.config.ts",

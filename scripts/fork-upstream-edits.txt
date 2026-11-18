@@ -277,6 +277,9 @@ pnpm-workspace.yaml
 # Isolated dev backend Serve configuration (#287), owned by fork-maintenance.
 scripts/dev-runner.ts
 scripts/dev-runner.test.ts
+# check:changed runs an eval's grader tests for changed cases (#803), owned by fork-maintenance.
+scripts/check-changed.ts
+scripts/check-changed.test.ts
 # Full MCP capability forwarding (#302)
 apps/server/src/mcp/McpSessionRegistry.test.ts
 apps/server/src/mcp/McpSessionRegistry.testkit.ts
