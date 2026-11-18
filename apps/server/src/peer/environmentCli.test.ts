@@ -1,6 +1,5 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { NodeHttpServer } from "@effect/platform-node";
 import { assert, it } from "@effect/vitest";
 import * as Net from "@t3tools/shared/Net";
 import * as Duration from "effect/Duration";
@@ -14,6 +13,7 @@ import type * as CliError from "effect/cli/CliError";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import { cli } from "../binCli.ts";
 import { descriptorOf, servePeer } from "./PeerLinks.testkit.ts";
+import { layerLoopbackServerTest } from "../testUtils/loopbackHttpServer.ts";
 
 const run = (
   args: ReadonlyArray<string>,
@@ -88,7 +88,7 @@ it.effect("links, lists and unlinks headlessly; CLI revocation cuts off a perman
       Layer.mergeAll(
         NodeServices.layer,
         NodeCrypto.layer,
-        NodeHttpServer.layerTest,
+        layerLoopbackServerTest,
         Net.layer,
         TestConsole.layer,
       ),

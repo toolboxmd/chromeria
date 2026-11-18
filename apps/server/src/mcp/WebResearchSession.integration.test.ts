@@ -10,7 +10,6 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as RequestReceipts from "./McpRequestReceipts.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
-import { NodeHttpServer } from "@effect/platform-node";
 import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
@@ -37,6 +36,7 @@ import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import { descriptorOf, linkTo, servePeer } from "../peer/PeerLinks.testkit.ts";
+import { layerLoopbackServerTest } from "../testUtils/loopbackHttpServer.ts";
 import * as Settings from "../serverSettings.ts";
 import * as PageCache from "../webResearch/PageCache.ts";
 import * as PublicHttp from "../webResearch/PublicHttp.ts";
@@ -552,7 +552,7 @@ it.effect(
       const browser = yield* attachBrowser(
         Context.get(ownerCommon, Broker.PreviewAutomationBroker),
       );
-      const httpServer = yield* Layer.build(NodeHttpServer.layerTest);
+      const httpServer = yield* Layer.build(layerLoopbackServerTest);
       const peer = yield* servePeer(
         owner,
         McpHttpServer.layerWebResearchToolkit.pipe(

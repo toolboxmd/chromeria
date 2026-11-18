@@ -1,5 +1,4 @@
 import * as Search from "./Search.ts";
-import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -35,6 +34,7 @@ import {
   linkTo,
   servePeer,
 } from "../peer/PeerLinks.testkit.ts";
+import { layerLoopbackServerTest } from "../testUtils/loopbackHttpServer.ts";
 import * as Settings from "../serverSettings.ts";
 import * as PageCache from "./PageCache.ts";
 import * as PublicHttp from "./PublicHttp.ts";
@@ -124,7 +124,7 @@ const fixture = Effect.fnUntraced(function* (
   const hostScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
     Scope.close(scope, Exit.void),
   );
-  const hostServer = yield* Layer.build(NodeHttpServer.layerTest).pipe(
+  const hostServer = yield* Layer.build(layerLoopbackServerTest).pipe(
     Effect.provideService(Scope.Scope, hostScope),
   );
   const host = yield* servePeer(

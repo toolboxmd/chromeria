@@ -1,5 +1,4 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
-import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
@@ -32,6 +31,7 @@ import * as PeerAuthority from "../peer/PeerAuthority.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import { descriptorOf, linkTo, servePeer } from "../peer/PeerLinks.testkit.ts";
+import { layerLoopbackServerTest } from "../testUtils/loopbackHttpServer.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as Settings from "../serverSettings.ts";
@@ -147,7 +147,7 @@ const setup = (callerShell = shell) =>
       LoginImportHandlers.layerExport,
     ).pipe(Layer.provide(hooked), Layer.provide(rockyBrowser), Layer.provide(threads));
     const projectionContext = yield* projections.pipe(Layer.build);
-    const serverContext = yield* NodeHttpServer.layerTest.pipe(Layer.fresh, Layer.build);
+    const serverContext = yield* layerLoopbackServerTest.pipe(Layer.fresh, Layer.build);
     const target = yield* servePeer(rocky, tools, {
       database: Layer.succeedContext(rockyDatabase),
       serverConfig: Context.get(rockyConfig, ServerConfig.ServerConfig),

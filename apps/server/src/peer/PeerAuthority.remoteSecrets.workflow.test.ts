@@ -14,7 +14,6 @@ import { EventId } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Independent HMAC oracle for isolated webhook bytes.
 import * as NodeCrypto from "node:crypto";
 import * as Ref from "effect/Ref";
-import { NodeHttpServer } from "@effect/platform-node";
 import {
   SecretRequestClientRpcGroup,
   WS_METHODS,
@@ -52,6 +51,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { descriptorOf, linkTo } from "./PeerLinks.testkit.ts";
+import { layerLoopbackServerTest } from "../testUtils/loopbackHttpServer.ts";
 import {
   caller,
   makeNode,
@@ -163,7 +163,7 @@ const pair = (id: string) =>
 
 const privateClient = (a: import("./PeerAuthority.workflow.fixture.ts").Node) =>
   Effect.gen(function* () {
-    const server = yield* NodeHttpServer.layerTest.pipe(Layer.fresh, Layer.build);
+    const server = yield* layerLoopbackServerTest.pipe(Layer.fresh, Layer.build);
     const secretService = Option.getOrThrow(
       Context.getOption(a.nativeSecrets, SecretRequests.SecretRequests),
     );
