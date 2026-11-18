@@ -1,5 +1,4 @@
 import { expect, it } from "@effect/vitest";
-import { NodeHttpServer } from "@effect/platform-node";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -8,7 +7,12 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import * as PeerLinks from "./PeerLinks.ts";
-import { descriptorOf, layerLinkingEnvironment, servePeer } from "./PeerLinks.testkit.ts";
+import {
+  descriptorOf,
+  layerLinkingEnvironment,
+  servePeer,
+  layerLoopbackServerTest,
+} from "./PeerLinks.testkit.ts";
 import { peerLinkExpiry } from "./peerLinkExpiry.ts";
 
 it.effect("stores the capped expiry after linking to a peer whose clock is behind", () =>
@@ -39,7 +43,7 @@ it.effect("stores the capped expiry after linking to a peer whose clock is behin
       const [listed] = yield* links.list;
       expect(DateTime.formatIso(listed!.expiresAt)).toBe("9999-12-31T23:59:59.999Z");
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it("caps permanent links when the source clock is ahead of the target", () => {

@@ -1,5 +1,4 @@
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
-import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -63,6 +62,7 @@ import {
   linkTo,
   servePeer,
   type ServedPeer,
+  layerLoopbackServerTest,
 } from "./PeerLinks.testkit.ts";
 import * as RemoteDelegation from "./RemoteDelegation.ts";
 
@@ -446,7 +446,7 @@ const withBoth = <A, E, R>(body: (a: Laptop, b: ServedPeer) => Effect.Effect<A, 
       const a = yield* makeLaptop;
       return yield* body(a, b);
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest));
+  ).pipe(Effect.provide(layerLoopbackServerTest));
 
 it.live("the agent asks without waiting, and the user links the box after its turn ended", () =>
   withBoth((a, b) =>
@@ -791,7 +791,7 @@ it.live("a slow machine holds up only its own card's answer", () =>
         // A machine that takes the descriptor request and answers when the test says.
         const reached = yield* Deferred.make<void>();
         const release = yield* Deferred.make<void>();
-        const slow = yield* Layer.build(Layer.fresh(NodeHttpServer.layerTest));
+        const slow = yield* Layer.build(Layer.fresh(layerLoopbackServerTest));
         const server = Context.get(slow, HttpServer.HttpServer);
         yield* server.serve(
           Deferred.succeed(reached, undefined).pipe(
@@ -1320,7 +1320,7 @@ const withHeldLinks = <A, E, R>(
       }));
       return yield* body(a, b);
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest));
+  ).pipe(Effect.provide(layerLoopbackServerTest));
 
 it.live("an older card answered while a newer one links the same machine keeps its own link", () =>
   Effect.gen(function* () {

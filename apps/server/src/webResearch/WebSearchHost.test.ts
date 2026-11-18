@@ -1,4 +1,3 @@
-import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
@@ -35,6 +34,7 @@ import {
   layerLinkingEnvironment,
   linkTo,
   servePeer,
+  layerLoopbackServerTest,
 } from "../peer/PeerLinks.testkit.ts";
 import * as Settings from "../serverSettings.ts";
 import * as PageCache from "./PageCache.ts";
@@ -118,7 +118,7 @@ const fixture = Effect.gen(function* () {
   const hostScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
     Scope.close(scope, Exit.void),
   );
-  const server = yield* Layer.build(NodeHttpServer.layerTest).pipe(
+  const server = yield* Layer.build(layerLoopbackServerTest).pipe(
     Effect.provideService(Scope.Scope, hostScope),
   );
   // Inspect caller identity at authorization, before the shared query strips per-caller context.

@@ -28,7 +28,6 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as HttpBody from "effect/http/HttpBody";
 import * as Schema from "effect/Schema";
-import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { CommandId, OrchestratorMcpFailure, ThreadId } from "@t3tools/contracts";
@@ -41,7 +40,7 @@ import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Adapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as PeerForwarding from "./PeerForwarding.ts";
-import { descriptorOf, linkTo } from "./PeerLinks.testkit.ts";
+import { descriptorOf, linkTo, layerLoopbackServerTest } from "./PeerLinks.testkit.ts";
 import * as Secrets from "../auth/ServerSecretStore.ts";
 import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
 import { OrchestratorToolkit } from "../mcp/toolkits/orchestrator/tools.ts";
@@ -154,7 +153,7 @@ it.live.each([false, true])(
         if (upsertRpc === undefined || upsertRpc._tag !== WS_METHODS.scheduledTasksUpsert)
           return yield* Effect.die("Missing production scheduled-upsert RPC");
         const group = RpcGroup.make(upsertRpc);
-        const server = yield* NodeHttpServer.layerTest.pipe(Layer.fresh, Layer.build);
+        const server = yield* layerLoopbackServerTest.pipe(Layer.fresh, Layer.build);
         const route = HttpRouter.add(
           "GET",
           "/ws",

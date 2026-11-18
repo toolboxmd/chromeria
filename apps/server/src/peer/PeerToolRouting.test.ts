@@ -3,7 +3,6 @@ import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as DocumentText from "../provider/DocumentText.ts";
 import * as PeerLinkRequests from "./PeerLinkRequests.ts";
 import * as Database from "../persistence/Sqlite.ts";
-import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -87,7 +86,13 @@ import * as HtmlHandlers from "../mcp/toolkits/html/handlers.ts";
 import { HtmlPreviewToolkit, HtmlRenderToolkit } from "../mcp/toolkits/html/tools.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
-import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
+import {
+  descriptorOf,
+  layerLinkingEnvironment,
+  linkTo,
+  servePeer,
+  layerLoopbackServerTest,
+} from "./PeerLinks.testkit.ts";
 
 const laptop = descriptorOf("routing-laptop", "Laptop");
 const box = descriptorOf("routing-box", "Box");
@@ -730,7 +735,7 @@ it.effect("native guide tools reach the peer without broadening their capability
         expect(yield* Ref.get(f.seen)).toEqual([]);
       }
     }),
-  ).pipe(Effect.provide(Layer.merge(NodeHttpServer.layerTest, McpProviderSessions.layer))),
+  ).pipe(Effect.provide(Layer.merge(layerLoopbackServerTest, McpProviderSessions.layer))),
 );
 
 it.effect("new native tools retain local execution when no environment is selected", () =>
@@ -760,7 +765,7 @@ it.effect("new native tools retain local execution when no environment is select
         { operation: "guide-read", environmentId: laptop.environmentId },
       ]);
     }),
-  ).pipe(Effect.provide(Layer.merge(NodeHttpServer.layerTest, McpProviderSessions.layer))),
+  ).pipe(Effect.provide(Layer.merge(layerLoopbackServerTest, McpProviderSessions.layer))),
 );
 
 it.effect(
@@ -782,7 +787,7 @@ it.effect(
         );
         expect(yield* Ref.get(f.seen)).toEqual(before);
       }),
-    ).pipe(Effect.provide(Layer.merge(NodeHttpServer.layerTest, McpProviderSessions.layer))),
+    ).pipe(Effect.provide(Layer.merge(layerLoopbackServerTest, McpProviderSessions.layer))),
 );
 
 // Lawful linked close/reopen is exercised with the actual authority owner in
@@ -824,7 +829,7 @@ it.effect(
         expect(noPreview.isError).toBe(true);
         expect(yield* Ref.get(f.seen)).toEqual([]);
       }),
-    ).pipe(Effect.provide(Layer.merge(NodeHttpServer.layerTest, McpProviderSessions.layer))),
+    ).pipe(Effect.provide(Layer.merge(layerLoopbackServerTest, McpProviderSessions.layer))),
 );
 
 const automationCases = cases.filter(
@@ -849,7 +854,7 @@ it.effect.each(automationCases)(
           expect(yield* Ref.get(f.seen)).toEqual(before);
         }
       }),
-    ).pipe(Effect.provide(Layer.merge(NodeHttpServer.layerTest, McpProviderSessions.layer))),
+    ).pipe(Effect.provide(Layer.merge(layerLoopbackServerTest, McpProviderSessions.layer))),
 );
 
 it.effect.each(cases.filter((test) => !automationCases.includes(test)))(
@@ -871,7 +876,7 @@ it.effect.each(cases.filter((test) => !automationCases.includes(test)))(
         expect(yield* Ref.get(f.seen)).toEqual(before);
         expect((yield* Ref.get(f.b.bearers)).length).toBeGreaterThan(0);
       }),
-    ).pipe(Effect.provide(Layer.merge(NodeHttpServer.layerTest, McpProviderSessions.layer))),
+    ).pipe(Effect.provide(Layer.merge(layerLoopbackServerTest, McpProviderSessions.layer))),
 );
 
 it.effect("remote reads return the destination's state", () =>
@@ -908,7 +913,7 @@ it.effect("remote reads return the destination's state", () =>
         JSON.stringify(yield* Ref.get(f.seen)),
       ).toBe(true);
     }),
-  ).pipe(Effect.provide(Layer.merge(NodeHttpServer.layerTest, McpProviderSessions.layer))),
+  ).pipe(Effect.provide(Layer.merge(layerLoopbackServerTest, McpProviderSessions.layer))),
 );
 
 it.effect("destination contexts retain capability grants and link ownership", () =>
@@ -935,7 +940,7 @@ it.effect("destination contexts retain capability grants and link ownership", ()
       expect(wrong.isError).toBe(true);
       expect(yield* Ref.get(f.seen)).toEqual([]);
     }),
-  ).pipe(Effect.provide(Layer.merge(NodeHttpServer.layerTest, McpProviderSessions.layer))),
+  ).pipe(Effect.provide(Layer.merge(layerLoopbackServerTest, McpProviderSessions.layer))),
 );
 
 it.effect(
@@ -956,7 +961,7 @@ it.effect(
         const refused = yield* f.call("t3_attachment_prepare_upload", args);
         expect(refused.isError).toBe(true);
       }),
-    ).pipe(Effect.provide(Layer.merge(NodeHttpServer.layerTest, McpProviderSessions.layer))),
+    ).pipe(Effect.provide(Layer.merge(layerLoopbackServerTest, McpProviderSessions.layer))),
 );
 
 it.effect("peer screenshots preserve PNG bytes through the production image registration", () =>
@@ -969,7 +974,7 @@ it.effect("peer screenshots preserve PNG bytes through the production image regi
       const image = result.content.find((part) => part.type === "image");
       expect(image?.data).toEqual(new Uint8Array([1, 2, 3]));
     }),
-  ).pipe(Effect.provide(Layer.merge(NodeHttpServer.layerTest, McpProviderSessions.layer))),
+  ).pipe(Effect.provide(Layer.merge(layerLoopbackServerTest, McpProviderSessions.layer))),
 );
 
 it.effect("forwarded HTML is a consumable source-thread attachment with peer images", () =>
@@ -1004,7 +1009,7 @@ it.effect("forwarded HTML is a consumable source-thread attachment with peer ima
       expect(stored.match(/id="t3-theme"/g)).toHaveLength(1);
       expect(yield* fs.readDirectory(remote.attachmentsDir)).toEqual(["peer.png"]);
     }),
-  ).pipe(Effect.provide(Layer.merge(NodeHttpServer.layerTest, McpProviderSessions.layer))),
+  ).pipe(Effect.provide(Layer.merge(layerLoopbackServerTest, McpProviderSessions.layer))),
 );
 
 it.effect("Spectrum refuses to use a caller belonging to another link", () =>
@@ -1027,7 +1032,7 @@ it.effect("Spectrum refuses to use a caller belonging to another link", () =>
         expect.objectContaining({ operation: "spectrum-start" }),
       );
     }),
-  ).pipe(Effect.provide(Layer.merge(NodeHttpServer.layerTest, McpProviderSessions.layer))),
+  ).pipe(Effect.provide(Layer.merge(layerLoopbackServerTest, McpProviderSessions.layer))),
 );
 
 it.effect("remote secret routing rejects a destination context before either generic handler", () =>
@@ -1043,5 +1048,5 @@ it.effect("remote secret routing rejects a destination context before either gen
       expect(result.isError).toBe(true);
       expect(yield* Ref.get(f.seen)).toEqual([]);
     }),
-  ).pipe(Effect.provide(Layer.merge(NodeHttpServer.layerTest, McpProviderSessions.layer))),
+  ).pipe(Effect.provide(Layer.merge(layerLoopbackServerTest, McpProviderSessions.layer))),
 );

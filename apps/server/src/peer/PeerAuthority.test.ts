@@ -8,7 +8,6 @@ import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Settings from "../serverSettings.ts";
 import * as Repositories from "../sourceControl/SourceControlRepositoryService.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
-import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Invocation from "../mcp/McpInvocationContext.ts";
 import { expect, it } from "@effect/vitest";
@@ -22,7 +21,7 @@ import * as PeerAuthority from "./PeerAuthority.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
 import * as PeerLinks from "./PeerLinks.ts";
-import { descriptorOf, linkTo, servePeer } from "./PeerLinks.testkit.ts";
+import { descriptorOf, linkTo, servePeer, layerLoopbackServerTest } from "./PeerLinks.testkit.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
@@ -131,7 +130,7 @@ const makeDestination = (modern = true, environment = b, controlStreamUnavailabl
       ),
     );
     const projectionContext = yield* projections.pipe(Layer.build);
-    const serverContext = yield* NodeHttpServer.layerTest.pipe(Layer.fresh, Layer.build);
+    const serverContext = yield* layerLoopbackServerTest.pipe(Layer.fresh, Layer.build);
     const peer = yield* servePeer(
       environment,
       tools,

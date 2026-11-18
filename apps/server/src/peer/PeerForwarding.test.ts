@@ -1,9 +1,8 @@
 import * as DocumentText from "../provider/DocumentText.ts";
 import * as Database from "../persistence/Sqlite.ts";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
-import { layerLaunchCatalog } from "./PeerLinks.testkit.ts";
+import { layerLaunchCatalog, layerLoopbackServerTest } from "./PeerLinks.testkit.ts";
 
-import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -521,7 +520,7 @@ it.effect("an agent here works on a linked environment's threads within its own 
         clientRequestId: "disabled-recovery-stop",
       });
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect("keeps a forwarded wait short and its retries scoped to the caller", () =>
@@ -580,7 +579,7 @@ it.effect("keeps a forwarded wait short and its retries scoped to the caller", (
       expect(other).not.toBe(first);
       expect(first).not.toContain("same-key");
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect("launches in a linked environment with the caller's modes, retry-safe", () =>
@@ -633,7 +632,7 @@ it.effect("launches in a linked environment with the caller's modes, retry-safe"
       expect(yield* Ref.get(b.bearers)).toEqual([]);
       expect((yield* Ref.get(seen)).launches).toHaveLength(2);
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect("brings a repository to a linked environment, only through full access", () =>
@@ -683,7 +682,7 @@ it.effect("brings a repository to a linked environment, only through full access
       expect((yield* Ref.get(seen)).clones).toHaveLength(1);
       expect((yield* Ref.get(seen)).projects).toHaveLength(1);
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect("runs any tool that takes a linked environment there", () =>
@@ -718,7 +717,7 @@ it.effect("runs any tool that takes a linked environment there", () =>
         runtimeMode: "full-access",
       });
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect("refuses what a linked environment cannot take before anything leaves", () =>
@@ -790,7 +789,7 @@ it.effect("refuses what a linked environment cannot take before anything leaves"
       }
       expect(yield* Ref.get(b.bearers)).toEqual([]);
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect("refuses a launch there above the link's access, naming the link", () =>
@@ -823,5 +822,5 @@ it.effect("refuses a launch there above the link's access, naming the link", () 
       yield* TestClock.adjust(Duration.days(31));
       expect(failureOf(yield* launchAboveLink).message).toContain('"Box"');
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );

@@ -98,7 +98,7 @@ import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
-import { descriptorOf, linkTo } from "./PeerLinks.testkit.ts";
+import { descriptorOf, linkTo, layerLoopbackServerTest } from "./PeerLinks.testkit.ts";
 import * as Config from "../config.ts";
 import * as Secrets from "../auth/ServerSecretStore.ts";
 import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
@@ -142,8 +142,6 @@ import {
 import { vi } from "vite-plus/test";
 
 import * as Clock from "effect/Clock";
-
-import { NodeHttpServer } from "@effect/platform-node";
 
 import * as DateTime from "effect/DateTime";
 import * as Scope from "effect/Scope";
@@ -4597,7 +4595,7 @@ it.live(
           platform: "ios" as const,
           ...target,
         };
-        const server = yield* NodeHttpServer.layerTest.pipe(Layer.fresh, Layer.build);
+        const server = yield* layerLoopbackServerTest.pipe(Layer.fresh, Layer.build);
         const route = HttpRouter.add(
           "GET",
           "/ws",

@@ -19,7 +19,6 @@ import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionMana
 import * as Deferred from "effect/Deferred";
 import * as Ref from "effect/Ref";
 import * as EffectWorker from "../orchestration-v2/EffectWorker.ts";
-import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
@@ -41,7 +40,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as Adapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as PeerAuthority from "./PeerAuthority.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
-import { descriptorOf, linkTo } from "./PeerLinks.testkit.ts";
+import { descriptorOf, linkTo, layerLoopbackServerTest } from "./PeerLinks.testkit.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
 import {
@@ -1110,7 +1109,7 @@ it.live(
         const child = yield* delegate(a, b, parent, "pending369-ws-child");
         yield* activate(b, child.childId);
         const requestId = yield* seedPending369(b, child.childId);
-        const server = yield* NodeHttpServer.layerTest.pipe(Layer.fresh, Layer.build);
+        const server = yield* layerLoopbackServerTest.pipe(Layer.fresh, Layer.build);
         const route = HttpRouter.add(
           "GET",
           "/ws",

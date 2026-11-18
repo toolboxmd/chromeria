@@ -1,7 +1,6 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
-import { NodeHttpServer } from "@effect/platform-node";
 import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
@@ -32,7 +31,13 @@ import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../mcp/McpToolAccess.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
-import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
+import {
+  descriptorOf,
+  layerLinkingEnvironment,
+  linkTo,
+  servePeer,
+  layerLoopbackServerTest,
+} from "./PeerLinks.testkit.ts";
 
 const Result = Schema.Struct({ modes: Schema.String });
 const toolkit = Toolkit.make(
@@ -164,7 +169,7 @@ it.layer(NodeCrypto.layer)("peer MCP client", (it) => {
         const broken = yield* call({ sender: { ...sender, title: "Review \ud800" } });
         expect(broken.senderThread?.title).toBe("Review \ufffd");
       }),
-    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    ).pipe(Effect.provide(layerLoopbackServerTest)),
   );
 
   it.effect.each([false, true])(
@@ -224,7 +229,7 @@ it.layer(NodeCrypto.layer)("peer MCP client", (it) => {
           yield* Deferred.succeed(release, undefined);
           if (!cancelFirst) expect(yield* Fiber.join(held)).toEqual({ modes: "auto/default" });
         }),
-      ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+      ).pipe(Effect.provide(layerLoopbackServerTest)),
   );
 
   it.effect("keeps a link healthy when the peer refuses a call", () =>
@@ -258,7 +263,7 @@ it.layer(NodeCrypto.layer)("peer MCP client", (it) => {
         const link = yield* links.get(box.environmentId);
         expect(link._tag === "Some" ? link.value.lastError : "missing").toBeNull();
       }),
-    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    ).pipe(Effect.provide(layerLoopbackServerTest)),
   );
 
   it.effect("does not follow mutation POST redirects below the dispatch observer", () =>
@@ -310,7 +315,7 @@ it.layer(NodeCrypto.layer)("peer MCP client", (it) => {
         expect(yield* Ref.get(redirected)).toBe(0);
         expect(result._tag).toBe("Failure");
       }),
-    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    ).pipe(Effect.provide(layerLoopbackServerTest)),
   );
 
   it.effect("renews a missing peer session once and reuses its replacement", () =>
