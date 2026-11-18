@@ -1,4 +1,5 @@
 import * as AssetSigner from "../assets/AssetSigner.ts";
+import * as HostResources from "../resourceTelemetry/HostResources.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as DocumentText from "../provider/DocumentText.ts";
 import * as PeerLinkRequests from "./PeerLinkRequests.ts";
@@ -223,6 +224,15 @@ const makeFixture = (realHtml = false) =>
         Layer.mock(Providers.ProviderRegistry)({}),
         Layer.mock(Repositories.SourceControlRepositoryService)({}),
         Layer.mock(Git.GitVcsDriver)({}),
+        Layer.mock(HostResources.HostResources)({
+          read: Effect.succeed({
+            sampledAt: 0,
+            cpuUtilization: 0.5,
+            cpuCount: 4,
+            availableMemoryBytes: 1,
+            totalMemoryBytes: 2,
+          }),
+        }),
         Layer.mock(GitWorkflow.GitWorkflowService)({}),
         Layer.mock(Engine.OrchestratorV2)({
           getThreadShell: () => shell,

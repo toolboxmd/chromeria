@@ -418,6 +418,9 @@ export function applyServerSettingsPatch(
     projectScriptOverrides: _legacyScripts,
     // A write declaration, not a value: only a declared write sets the marker.
     prismRoleOverridesPartial: partialPrismRoles,
+    // Fork: replaced whole; a migration fills it only while unset.
+    autoBalance: autoBalancePatch,
+    migrateAutoBalance,
     ...patchForMerge
   } = patch;
   const currentBackgroundActivity = normalizeServerBackgroundActivitySettings(current);
@@ -512,6 +515,10 @@ export function applyServerSettingsPatch(
     ...next,
     favorites,
     providerModelPreferences: nextModelPreferences,
+    autoBalance:
+      autoBalancePatch !== undefined
+        ? autoBalancePatch
+        : (current.autoBalance ?? migrateAutoBalance ?? null),
     ...(worktreeCleanupPatch === undefined
       ? {}
       : {

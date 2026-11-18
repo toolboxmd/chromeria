@@ -1,4 +1,5 @@
 import * as AssetSigner from "../assets/AssetSigner.ts";
+import * as HostResources from "../resourceTelemetry/HostResources.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as SecretResolver from "../secrets/SecretResolver.ts";
@@ -499,6 +500,15 @@ export const layerFixtureHostServices = Layer.mergeAll(
   McpProviderSessions.layer,
   // Fixture repositories have no forge; pull request reads are mocked per test.
   Layer.succeed(BuiltInDrivers.SourceControlDrivers, []),
+  Layer.mock(HostResources.HostResources)({
+    read: Effect.succeed({
+      sampledAt: 0,
+      cpuUtilization: 0.5,
+      cpuCount: 4,
+      availableMemoryBytes: 1,
+      totalMemoryBytes: 2,
+    }),
+  }),
 );
 
 export const makeNode = Effect.fn("PeerAuthority.makeNode")(

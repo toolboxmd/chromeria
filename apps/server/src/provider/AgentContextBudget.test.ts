@@ -1,4 +1,5 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import { HostResources } from "../resourceTelemetry/HostResources.ts";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as IssueLinks from "../issueLinks/IssueLinks.ts";
 import * as SpectrumLaunchService from "../spectrum/LaunchService.ts";
@@ -68,6 +69,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(GitWorkflowService)({}),
   Layer.mock(IssueService)({}),
   Layer.mock(ManagedProjectFolders)({ namedProjectsRoot: "" }),
+  Layer.mock(HostResources)({}),
   Layer.mock(McpProviderSessions)({}),
   Layer.mock(OrchestratorV2)({}),
   Layer.mock(PeerForwarding)({}),

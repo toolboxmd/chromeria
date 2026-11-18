@@ -225,11 +225,8 @@ import {
   resolveProjectDefaultProviderModelSelection,
   shouldShowInstanceBadge,
 } from "../providerInstances";
-import {
-  useClientSettings,
-  useClientSettingsHydrated,
-  useEnvironmentSettings,
-} from "../hooks/useSettings";
+import { useClientSettingsHydrated, useEnvironmentSettings } from "../hooks/useSettings";
+import { useAutoBalance } from "../hooks/useAutoBalance";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { usePanelAnimationSettings, usePanelPresence } from "../panelAnimations";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
@@ -1327,10 +1324,11 @@ export default function ChatView(props: ChatViewProps) {
   const canChangeEnvironment =
     hasMultipleEnvironments && !envLocked && draftId !== null && !draftThread?.promotedTo;
 
-  const loadBalancingSettings = useClientSettings((settings) => ({
-    loadBalancingEnabled: settings.loadBalancingEnabled,
-    loadBalancingWeights: settings.loadBalancingWeights,
-  }));
+  const { autoBalance } = useAutoBalance();
+  const loadBalancingSettings = {
+    loadBalancingEnabled: autoBalance.enabled,
+    loadBalancingWeights: autoBalance.weights,
+  };
   const automaticEnvironment = Boolean(
     clientSettingsHydrated &&
     draftId &&
