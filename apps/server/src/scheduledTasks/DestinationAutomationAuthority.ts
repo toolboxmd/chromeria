@@ -9,6 +9,7 @@ import {
   ScheduledTaskId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -447,9 +448,22 @@ const claimCertificate: (
   return certificate;
 });
 
-const claimBirthCertificate = (id: string) => claimCertificate(id, new Set(), "birth");
+// A claim compares the certificate with the live schedule or Spectrum row, so it reads one
+// snapshot: a first-thread bind committing between those reads would pair old with new.
+const claimSnapshot = Effect.fn("DestinationAutomationAuthority.claimSnapshot")(function* (
+  id: string,
+  purpose: "execution" | "birth",
+) {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql.withTransaction(claimCertificate(id, new Set(), purpose)).pipe(
+    NodeSqliteClient.readOnly,
+    Effect.mapError((cause) => (isOrchestratorMcpFailure(cause) ? cause : unavailable(cause))),
+  );
+});
 
-export const claimAutomationCertificate = (id: string) => claimCertificate(id, new Set());
+const claimBirthCertificate = (id: string) => claimSnapshot(id, "birth");
+
+export const claimAutomationCertificate = (id: string) => claimSnapshot(id, "execution");
 
 export const currentAutomationCertificate = Effect.fn(
   "DestinationAutomationAuthority.currentAutomationCertificate",
