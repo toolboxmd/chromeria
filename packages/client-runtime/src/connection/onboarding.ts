@@ -160,12 +160,14 @@ export const preparePairingRegistration = Effect.fn(
     return yield* compatibilityError;
   }
   const renewal = yield* Effect.serviceOption(SessionRenewal.SessionRenewal);
-  // Fork: a client with the paired-session renewal store keeps its bearer renewal. Elsewhere a
-  // key-bound session renews itself, but only on a host that can renew it. The proof is made
-  // before the one-time code is sent, so a device that cannot sign keeps the code for bearer.
-  const signer = Option.isNone(renewal)
-    ? yield* Effect.serviceOption(ManagedRelay.ManagedRelayDpopSigner)
-    : Option.none<ManagedRelay.ManagedRelayDpopSigner["Service"]>();
+  // Fork: with the renewal store, a Chromeria host (fork-only `githubIssues`, which implies
+  // `renewSession`) keeps bearer renewal, since older Chromeria clients read only bearer
+  // credentials. Elsewhere a host that renews gets a key-bound session; the proof is made before
+  // the one-time code is sent, so a device that cannot sign keeps the code for bearer.
+  const signer =
+    Option.isNone(renewal) || descriptor.capabilities.githubIssues !== true
+      ? yield* Effect.serviceOption(ManagedRelay.ManagedRelayDpopSigner)
+      : Option.none<ManagedRelay.ManagedRelayDpopSigner["Service"]>();
   const dpopProof =
     descriptor.capabilities.accessTokenRenewal === true && Option.isSome(signer)
       ? yield* signer.value
