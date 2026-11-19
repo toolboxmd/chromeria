@@ -67,6 +67,7 @@ function layerPairingHttp(
     readonly grantScopes?: ReadonlyArray<AuthEnvironmentScope>;
     readonly exchangeGate?: { readonly reached: () => void; readonly release: Promise<void> };
     readonly accessTokenRenewal?: boolean;
+    readonly chromeria?: boolean;
   },
 ) {
   const grantScopes = options?.grantScopes ?? AuthStandardClientScopes;
@@ -95,6 +96,7 @@ function layerPairingHttp(
             repositoryIdentity: true,
             ...(options?.selfUpdate === true ? { serverSelfUpdate: "boot-service" } : {}),
             ...(options?.accessTokenRenewal === true ? { accessTokenRenewal: true } : {}),
+            ...(options?.chromeria === true ? { githubIssues: true } : {}),
           },
         }),
       );
@@ -585,15 +587,30 @@ describe("connection onboarding", () => {
     { name: "a host that renews, with a device key", renews: true, signer: true, dpop: true },
     { name: "a host that renews, without a device key", renews: true, signer: false, dpop: false },
     { name: "an older host, with a device key", renews: false, signer: true, dpop: false },
-    // Fork: the paired-session renewal store wins over DPoP pairing.
+    // Fork: on a Chromeria host the paired-session renewal store wins over DPoP pairing.
     {
-      name: "a renewal store, a host that renews and a device key",
+      name: "a renewal store, a Chromeria host that renews and a device key",
       renews: true,
       signer: true,
       dpop: false,
       store: true,
+      chromeria: true,
     },
-  ])("pairs with $name as DPoP: $dpop", ({ renews, signer, dpop, store }) => {
+    {
+      name: "a renewal store, an upstream host that renews and a device key",
+      renews: true,
+      signer: true,
+      dpop: true,
+      store: true,
+    },
+    {
+      name: "a renewal store, an upstream host that renews, without a device key",
+      renews: true,
+      signer: false,
+      dpop: false,
+      store: true,
+    },
+  ])("pairs with $name as DPoP: $dpop", ({ renews, signer, dpop, store, chromeria }) => {
     const calls: Array<{ readonly url: string; readonly init: RequestInit }> = [];
     return Effect.gen(function* () {
       const registration = yield* preparePairingRegistration({
@@ -605,14 +622,17 @@ describe("connection onboarding", () => {
           ? { _tag: "DpopConnectionCredential", accessToken: "dpop-token" }
           : { _tag: "BearerConnectionCredential", token: "bearer-token" },
       );
-      if (store)
+      if (store && !dpop)
         expect(
           calls.some((call) => String(call.init.body).includes(renewalCommitment("slot-secret"))),
         ).toBe(true);
     }).pipe(
       Effect.provide(
         Layer.mergeAll(
-          layerPairingOnboarding({ accessTokenRenewal: renews }, calls),
+          layerPairingOnboarding(
+            { accessTokenRenewal: renews, chromeria: chromeria === true },
+            calls,
+          ),
           store
             ? Layer.mock(SessionRenewal.SessionRenewal)({
                 stage: (input) =>
