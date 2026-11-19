@@ -3777,7 +3777,7 @@
       "k": "_gt_value_1",
       "v": "v"
     },
-    " · change it on desktop or the web"
+    " · auf dem Desktop oder im Web ändern"
   ],
   "71aadfe707274ded": [
     {
@@ -3785,7 +3785,7 @@
       "k": "_gt_value_1",
       "v": "v"
     },
-    " · change it through an agent"
+    " · über einen Agent ändern"
   ],
   "3d6b0d3f296a27d0": "Jede Woche",
   "e7f1de16fdf4fcad": "{count, plural, one {{count} Woche} other {{count} Wochen}}",
@@ -4063,7 +4063,7 @@
   "4936a9b65bdb3283": "Issue- oder PR-URL",
   "2f8a5e3da046daba": "Gib eine gültige Issue- oder PR-URL ein.",
   "3634db477160377f": [
-    "Purpose: ",
+    "Zweck: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4073,14 +4073,13 @@
   "f5dd3e2057a645bc": "Zweck auswählen",
   "86471023f632fc60": "Zweck entfernen",
   "3172975f984af1aa": [
-    "Run ",
+    "Lauf ",
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    ":",
-    " ",
+    ": ",
     {
       "i": 2,
       "k": "_gt_value_2",
@@ -4396,7 +4395,7 @@
   "1093eb399fa06fb5": "Nächste Nachrichten",
   "95cf0a2cb821c39a": "Remote-Arbeit stoppen",
   "18e3287951607400": [
-    "Stop: ",
+    "Stopp: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4406,14 +4405,13 @@
   "ff40e2c87dddc26f": "Remote-Arbeit ist nicht verfügbar. Die letzte Beobachtung ist möglicherweise veraltet. Aktualisiere, um es erneut zu versuchen.",
   "823ad49748e45a52": "Ursprüngliches Ergebnis",
   "e1b96227c9376bd5": [
-    "Latest received result (",
+    "Zuletzt empfangenes Ergebnis (",
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    "):",
-    " ",
+    "): ",
     {
       "i": 2,
       "k": "_gt_value_2",
@@ -4421,7 +4419,7 @@
     }
   ],
   "e53981dd27ca71a4": [
-    "Environment: ",
+    "Umgebung: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4437,7 +4435,7 @@
     }
   ],
   "6ae3d44b4e7f2e07": [
-    "Observed: ",
+    "Beobachtet: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4445,7 +4443,7 @@
     }
   ],
   "ae7ad46f116619ff": [
-    "Latest run: ",
+    "Letzter Lauf: ",
     {
       "i": 1,
       "k": "_gt_value_1",

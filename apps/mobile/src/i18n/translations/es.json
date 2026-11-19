@@ -3772,7 +3772,7 @@
       "k": "_gt_value_1",
       "v": "v"
     },
-    " · change it on desktop or the web"
+    " · cámbialo en el escritorio o en la web"
   ],
   "71aadfe707274ded": [
     {
@@ -3780,7 +3780,7 @@
       "k": "_gt_value_1",
       "v": "v"
     },
-    " · change it through an agent"
+    " · cámbialo mediante un agente"
   ],
   "3d6b0d3f296a27d0": "Cada semana",
   "e7f1de16fdf4fcad": "{count, plural, one {{count} semana} other {{count} semanas}}",
@@ -4058,7 +4058,7 @@
   "4936a9b65bdb3283": "URL de issue o PR",
   "2f8a5e3da046daba": "Introduce una URL válida de issue o PR.",
   "3634db477160377f": [
-    "Purpose: ",
+    "Propósito: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4068,14 +4068,13 @@
   "f5dd3e2057a645bc": "Seleccionar propósito",
   "86471023f632fc60": "Borrar propósito",
   "3172975f984af1aa": [
-    "Run ",
+    "Ejecución ",
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    ":",
-    " ",
+    ": ",
     {
       "i": 2,
       "k": "_gt_value_2",
@@ -4389,7 +4388,7 @@
   "1093eb399fa06fb5": "Mensajes siguientes",
   "95cf0a2cb821c39a": "Detener trabajo remoto",
   "18e3287951607400": [
-    "Stop: ",
+    "Detención: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4399,14 +4398,13 @@
   "ff40e2c87dddc26f": "El trabajo remoto no está disponible. La última observación puede estar desactualizada. Actualiza para reintentar.",
   "823ad49748e45a52": "Resultado original",
   "e1b96227c9376bd5": [
-    "Latest received result (",
+    "Último resultado recibido (",
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    "):",
-    " ",
+    "): ",
     {
       "i": 2,
       "k": "_gt_value_2",
@@ -4414,7 +4412,7 @@
     }
   ],
   "e53981dd27ca71a4": [
-    "Environment: ",
+    "Entorno: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4422,7 +4420,7 @@
     }
   ],
   "61b48c84f3d88e9b": [
-    "Thread: ",
+    "Hilo: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4430,7 +4428,7 @@
     }
   ],
   "6ae3d44b4e7f2e07": [
-    "Observed: ",
+    "Observado: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4438,7 +4436,7 @@
     }
   ],
   "ae7ad46f116619ff": [
-    "Latest run: ",
+    "Última ejecución: ",
     {
       "i": 1,
       "k": "_gt_value_1",

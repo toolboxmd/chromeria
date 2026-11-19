@@ -3044,8 +3044,7 @@
   "739e6f9ca0eaf70f": "Nekar…",
   "1017e5f07acb58b8": "Stäng den här sidan och starta inloggningen igen från din agent.",
   "1d12ffd2a0e53b4b": [
-    "Choose which threads this agent may use on",
-    " ",
+    "Välj vilka trådar den här agenten får använda på ",
     {
       "t": "span",
       "i": 1,
@@ -3055,8 +3054,7 @@
         "v": "v"
       }
     },
-    " ",
-    "(",
+    " (",
     {
       "i": 3,
       "k": "_gt_value_3",
@@ -3065,8 +3063,7 @@
     ")."
   ],
   "920053d20acd738b": [
-    "Choose which threads this agent may use on",
-    " ",
+    "Välj vilka trådar den här agenten får använda på ",
     {
       "t": "span",
       "i": 1,
@@ -3521,7 +3518,7 @@
   "95e6dcde2bc3700d": "Syftet kunde inte sparas. Uppdatera urvalet och försök igen.",
   "2f8a5e3da046daba": "Ange en giltig URL till ett ärende eller en PR.",
   "3634db477160377f": [
-    "Purpose: ",
+    "Syfte: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -3529,33 +3526,31 @@
     }
   ],
   "010645f9db807b2f": [
-    "Running: ",
+    "Körs: ",
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    ". Send queues the selected purpose; Steer keeps the running purpose."
+    ". Skicka köar det valda syftet; Styr om behåller det pågående syftet."
   ],
   "fa0082a13ae471d0": "URL till ärende eller PR",
   "f5dd3e2057a645bc": "Välj syfte",
   "86471023f632fc60": "Rensa syfte",
   "70844e73360eb056": [
-    "Run ",
+    "Körning ",
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    ":",
-    " ",
+    ": ",
     {
       "i": 2,
       "k": "_gt_value_2",
       "v": "v"
     },
-    " ",
-    "(",
+    " (",
     {
       "i": 3,
       "k": "_gt_value_3",
@@ -3986,7 +3981,7 @@
   "b9fac056b33f0839": "Uppdatera begäran",
   "fdb447d042454cd7": "Begärandets detaljer",
   "8012d368f0e8e258": [
-    "Environment: ",
+    "Miljö: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -3996,7 +3991,7 @@
       "t": "br",
       "i": 2
     },
-    "Thread: ",
+    "Tråd: ",
     {
       "i": 3,
       "k": "_gt_value_3",
@@ -4006,7 +4001,7 @@
       "t": "br",
       "i": 4
     },
-    "Request: ",
+    "Begäran: ",
     {
       "i": 5,
       "k": "_gt_value_5",
@@ -4035,7 +4030,7 @@
   "01723ffeb20db412": "Uppgiftsdetaljer",
   "dcdbbb17ef896418": "Nästlad uppgift",
   "18e3287951607400": [
-    "Stop: ",
+    "Stopp: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4044,7 +4039,7 @@
   ],
   "ff40e2c87dddc26f": "Fjärrarbetet är inte tillgängligt. Den senaste observationen kan vara inaktuell. Uppdatera för att försöka igen.",
   "324a56a8d8ac88df": [
-    "Original result: ",
+    "Ursprungligt resultat: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4052,14 +4047,13 @@
     }
   ],
   "e1b96227c9376bd5": [
-    "Latest received result (",
+    "Senast mottagna resultat (",
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    "):",
-    " ",
+    "): ",
     {
       "i": 2,
       "k": "_gt_value_2",
@@ -4067,7 +4061,7 @@
     }
   ],
   "e53981dd27ca71a4": [
-    "Environment: ",
+    "Miljö: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4075,7 +4069,7 @@
     }
   ],
   "61b48c84f3d88e9b": [
-    "Thread: ",
+    "Tråd: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4083,7 +4077,7 @@
     }
   ],
   "6ae3d44b4e7f2e07": [
-    "Observed: ",
+    "Observerad: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4091,7 +4085,7 @@
     }
   ],
   "ae7ad46f116619ff": [
-    "Latest run: ",
+    "Senaste körning: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4760,7 +4754,7 @@
   "45449c4d2c7bcee3": "Skickar ”continue” med tiden när den här tråden är inaktiv. Om du stänger av det eller timern når sitt slut får den aktuella omgången slutföras.",
   "0fd99b1d5575808a": "Timer i timmar",
   "8bbf22dc0a6ac6d6": [
-    "Timer ended ",
+    "Timern tog slut ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -5606,7 +5600,7 @@
   "8ddfdd7674148986": "Den här tråden har inget projekt.",
   "8025d1e544432b3f": "Okänt: den här servern kan inte läsa en funktionskarta.",
   "8d43b16e449488ff": [
-    "Some servers could not say which threads are working: ",
+    "Vissa servrar kunde inte ange vilka trådar som arbetar: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -5625,8 +5619,7 @@
         "v": "v"
       }
     },
-    " ",
-    "on ",
+    " på ",
     {
       "i": 3,
       "k": "_gt_value_3",
@@ -6152,8 +6145,7 @@
       "k": "_gt_value_1",
       "v": "v"
     },
-    " · opened by",
-    " ",
+    " · öppnat av ",
     {
       "i": 2,
       "k": "_gt_value_2",
@@ -6441,7 +6433,7 @@
   "a506c135c2183ac3": "{count, plural, one {{count} mapp} other {{count} mappar}}",
   "efc48b9736a534bc": "nu",
   "ee8d164144fc4b9d": [
-    "Welcome to ",
+    "Välkommen till ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -6755,7 +6747,7 @@
       "k": "_gt_value_1",
       "v": "v"
     },
-    ": folder for the new home"
+    ": mapp för det nya hemmet"
   ],
   "c2db1203be9ee89a": "Behöver dig",
   "ad78fae7d373cf21": "Arbetar",
@@ -7534,7 +7526,7 @@
   "e18c90152452a50e": "{openCount, plural, one {{openCount} öppen} other {{openCount} öppna}} · {linkCount, plural, one {{linkCount} länkad} other {{linkCount} länkade}}",
   "106c1bf3308a8c33": "Bevakar: agenten vaknar när kontrollerna är klara, någon kommenterar eller grenen får konflikter",
   "a3b710205aa61722": [
-    "Linked by child thread ",
+    "Länkad av undertråden ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -8390,11 +8382,11 @@
       "k": "_gt_value_1",
       "v": "v"
     },
-    " (unavailable)"
+    " (inte tillgänglig)"
   ],
   "3615dcb11a6f2aa9": "Standardansträngning",
   "82a80dbc1b7e3fed": [
-    "Default ",
+    "Standard: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -11982,7 +11974,7 @@
   "5f2fff4d0a9f543a": "Dag 31 eller den sista dagen",
   "a3655bf64692b0ee": "Dag {day}",
   "94078c7666a39802": [
-    "Could not load the output: ",
+    "Det gick inte att läsa in utdata: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -11996,7 +11988,7 @@
       "k": "_gt_value_1",
       "v": "v"
     },
-    " · change it through an agent"
+    " · ändra det via en agent"
   ],
   "fece6da0e7bd4192": "Tidszon",
   "55fafcde4fb0414c": "Även kl.",

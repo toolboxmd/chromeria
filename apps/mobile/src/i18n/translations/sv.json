@@ -3778,7 +3778,7 @@
       "k": "_gt_value_1",
       "v": "v"
     },
-    " · change it on desktop or the web"
+    " · ändra det på datorn eller webben"
   ],
   "71aadfe707274ded": [
     {
@@ -3786,7 +3786,7 @@
       "k": "_gt_value_1",
       "v": "v"
     },
-    " · change it through an agent"
+    " · ändra det via en agent"
   ],
   "3d6b0d3f296a27d0": "Varje vecka",
   "e7f1de16fdf4fcad": "{count, plural, one {{count} vecka} other {{count} veckor}}",
@@ -4064,7 +4064,7 @@
   "4936a9b65bdb3283": "URL till ärende eller PR",
   "2f8a5e3da046daba": "Ange en giltig URL till ett ärende eller en PR.",
   "3634db477160377f": [
-    "Purpose: ",
+    "Syfte: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4074,14 +4074,13 @@
   "f5dd3e2057a645bc": "Välj syfte",
   "86471023f632fc60": "Rensa syfte",
   "3172975f984af1aa": [
-    "Run ",
+    "Körning ",
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    ":",
-    " ",
+    ": ",
     {
       "i": 2,
       "k": "_gt_value_2",
@@ -4396,7 +4395,7 @@
   "1093eb399fa06fb5": "Nästa meddelanden",
   "95cf0a2cb821c39a": "Stoppa fjärrarbete",
   "18e3287951607400": [
-    "Stop: ",
+    "Stopp: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4406,14 +4405,13 @@
   "ff40e2c87dddc26f": "Fjärrarbetet är inte tillgängligt. Den senaste observationen kan vara inaktuell. Uppdatera för att försöka igen.",
   "823ad49748e45a52": "Ursprungligt resultat",
   "e1b96227c9376bd5": [
-    "Latest received result (",
+    "Senast mottagna resultat (",
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    "):",
-    " ",
+    "): ",
     {
       "i": 2,
       "k": "_gt_value_2",
@@ -4421,7 +4419,7 @@
     }
   ],
   "e53981dd27ca71a4": [
-    "Environment: ",
+    "Miljö: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4429,7 +4427,7 @@
     }
   ],
   "61b48c84f3d88e9b": [
-    "Thread: ",
+    "Tråd: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4437,7 +4435,7 @@
     }
   ],
   "6ae3d44b4e7f2e07": [
-    "Observed: ",
+    "Observerad: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4445,7 +4443,7 @@
     }
   ],
   "ae7ad46f116619ff": [
-    "Latest run: ",
+    "Senaste körning: ",
     {
       "i": 1,
       "k": "_gt_value_1",

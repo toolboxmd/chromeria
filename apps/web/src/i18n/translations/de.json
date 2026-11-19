@@ -3045,8 +3045,7 @@
   "739e6f9ca0eaf70f": "Wird abgelehnt…",
   "1017e5f07acb58b8": "Schließe diese Seite und starte die Anmeldung erneut über deinen Agenten.",
   "1d12ffd2a0e53b4b": [
-    "Choose which threads this agent may use on",
-    " ",
+    "Wähle, welche Threads dieser Agent auf ",
     {
       "t": "span",
       "i": 1,
@@ -3056,18 +3055,16 @@
         "v": "v"
       }
     },
-    " ",
-    "(",
+    " (",
     {
       "i": 3,
       "k": "_gt_value_3",
       "v": "v"
     },
-    ")."
+    ") verwenden darf."
   ],
   "920053d20acd738b": [
-    "Choose which threads this agent may use on",
-    " ",
+    "Wähle, welche Threads dieser Agent auf ",
     {
       "t": "span",
       "i": 1,
@@ -3077,7 +3074,7 @@
         "v": "v"
       }
     },
-    "."
+    " verwenden darf."
   ],
   "06c894eff8be1d35": "App",
   "4fbde10ab07d40dd": [
@@ -3522,7 +3519,7 @@
   "95e6dcde2bc3700d": "Der Zweck konnte nicht gespeichert werden. Aktualisiere die Auswahl und versuche es erneut.",
   "2f8a5e3da046daba": "Gib eine gültige Issue- oder PR-URL ein.",
   "3634db477160377f": [
-    "Purpose: ",
+    "Zweck: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -3530,33 +3527,31 @@
     }
   ],
   "010645f9db807b2f": [
-    "Running: ",
+    "Läuft: ",
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    ". Send queues the selected purpose; Steer keeps the running purpose."
+    ". Senden reiht den gewählten Zweck ein; Umlenken behält den laufenden Zweck."
   ],
   "fa0082a13ae471d0": "Issue- oder PR-URL",
   "f5dd3e2057a645bc": "Zweck auswählen",
   "86471023f632fc60": "Zweck entfernen",
   "70844e73360eb056": [
-    "Run ",
+    "Lauf ",
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    ":",
-    " ",
+    ": ",
     {
       "i": 2,
       "k": "_gt_value_2",
       "v": "v"
     },
-    " ",
-    "(",
+    " (",
     {
       "i": 3,
       "k": "_gt_value_3",
@@ -3989,7 +3984,7 @@
   "b9fac056b33f0839": "Anfrage aktualisieren",
   "fdb447d042454cd7": "Anfragedetails",
   "8012d368f0e8e258": [
-    "Environment: ",
+    "Umgebung: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4009,7 +4004,7 @@
       "t": "br",
       "i": 4
     },
-    "Request: ",
+    "Anfrage: ",
     {
       "i": 5,
       "k": "_gt_value_5",
@@ -4038,7 +4033,7 @@
   "01723ffeb20db412": "Aufgabendetails",
   "dcdbbb17ef896418": "Verschachtelte Aufgabe",
   "18e3287951607400": [
-    "Stop: ",
+    "Stopp: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4047,7 +4042,7 @@
   ],
   "ff40e2c87dddc26f": "Remote-Arbeit ist nicht verfügbar. Die letzte Beobachtung ist möglicherweise veraltet. Aktualisiere, um es erneut zu versuchen.",
   "324a56a8d8ac88df": [
-    "Original result: ",
+    "Ursprüngliches Ergebnis: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4055,14 +4050,13 @@
     }
   ],
   "e1b96227c9376bd5": [
-    "Latest received result (",
+    "Zuletzt empfangenes Ergebnis (",
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    "):",
-    " ",
+    "): ",
     {
       "i": 2,
       "k": "_gt_value_2",
@@ -4070,7 +4064,7 @@
     }
   ],
   "e53981dd27ca71a4": [
-    "Environment: ",
+    "Umgebung: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4086,7 +4080,7 @@
     }
   ],
   "6ae3d44b4e7f2e07": [
-    "Observed: ",
+    "Beobachtet: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4094,7 +4088,7 @@
     }
   ],
   "ae7ad46f116619ff": [
-    "Latest run: ",
+    "Letzter Lauf: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4762,7 +4756,7 @@
   "45449c4d2c7bcee3": "Sendet „continue“ mit der Uhrzeit, sobald dieser Thread untätig ist. Beim Ausschalten oder Ablauf des Timers wird die aktuelle Runde noch beendet.",
   "0fd99b1d5575808a": "Timer in Stunden",
   "8bbf22dc0a6ac6d6": [
-    "Timer ended ",
+    "Timer abgelaufen am ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -5606,7 +5600,7 @@
   "8ddfdd7674148986": "Dieser Thread hat kein Projekt.",
   "8025d1e544432b3f": "Unbekannt: Dieser Server kann keine Funktionskarte lesen.",
   "8d43b16e449488ff": [
-    "Some servers could not say which threads are working: ",
+    "Einige Server konnten nicht melden, welche Threads arbeiten: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -5625,8 +5619,7 @@
         "v": "v"
       }
     },
-    " ",
-    "on ",
+    " auf ",
     {
       "i": 3,
       "k": "_gt_value_3",
@@ -6152,8 +6145,7 @@
       "k": "_gt_value_1",
       "v": "v"
     },
-    " · opened by",
-    " ",
+    " · geöffnet von ",
     {
       "i": 2,
       "k": "_gt_value_2",
@@ -6441,7 +6433,7 @@
   "a506c135c2183ac3": "{count, plural, one {{count} Ordner} other {{count} Ordner}}",
   "efc48b9736a534bc": "jetzt",
   "ee8d164144fc4b9d": [
-    "Welcome to ",
+    "Willkommen bei ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -6752,7 +6744,7 @@
       "k": "_gt_value_1",
       "v": "v"
     },
-    ": folder for the new home"
+    ": Ordner für das neue Zuhause"
   ],
   "c2db1203be9ee89a": "Braucht dich",
   "ad78fae7d373cf21": "Arbeitet",
@@ -7527,7 +7519,7 @@
   "e18c90152452a50e": "{openCount, plural, one {{openCount} offen} other {{openCount} offen}} · {linkCount, plural, one {{linkCount} verknüpft} other {{linkCount} verknüpft}}",
   "106c1bf3308a8c33": "Beobachtet: Der Agent wird geweckt, wenn Checks fertig sind, jemand kommentiert oder der Branch Konflikte hat",
   "a3b710205aa61722": [
-    "Linked by child thread ",
+    "Verknüpft durch Kind-Thread ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -8385,11 +8377,11 @@
       "k": "_gt_value_1",
       "v": "v"
     },
-    " (unavailable)"
+    " (nicht verfügbar)"
   ],
   "3615dcb11a6f2aa9": "Standardaufwand",
   "82a80dbc1b7e3fed": [
-    "Default ",
+    "Standard: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -11976,7 +11968,7 @@
   "5f2fff4d0a9f543a": "Tag 31 oder der letzte Tag",
   "a3655bf64692b0ee": "Tag {day}",
   "94078c7666a39802": [
-    "Could not load the output: ",
+    "Die Ausgabe konnte nicht geladen werden: ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -11990,7 +11982,7 @@
       "k": "_gt_value_1",
       "v": "v"
     },
-    " · change it through an agent"
+    " · über einen Agent ändern"
   ],
   "fece6da0e7bd4192": "Zeitzone",
   "55fafcde4fb0414c": "Auch um",

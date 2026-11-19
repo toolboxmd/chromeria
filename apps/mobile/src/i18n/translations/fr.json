@@ -3772,7 +3772,7 @@
       "k": "_gt_value_1",
       "v": "v"
     },
-    " · change it on desktop or the web"
+    " · modifiez-le sur ordinateur ou sur le web"
   ],
   "71aadfe707274ded": [
     {
@@ -3780,7 +3780,7 @@
       "k": "_gt_value_1",
       "v": "v"
     },
-    " · change it through an agent"
+    " · modifiez-le via un agent"
   ],
   "3d6b0d3f296a27d0": "Toutes les semaines",
   "e7f1de16fdf4fcad": "{count, plural, one {{count} semaine} other {{count} semaines}}",
@@ -4058,7 +4058,7 @@
   "4936a9b65bdb3283": "URL du ticket ou de la PR",
   "2f8a5e3da046daba": "Saisissez une URL de ticket ou de PR valide.",
   "3634db477160377f": [
-    "Purpose: ",
+    "Objectif : ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4068,14 +4068,13 @@
   "f5dd3e2057a645bc": "Choisir l’objectif",
   "86471023f632fc60": "Effacer l’objectif",
   "3172975f984af1aa": [
-    "Run ",
+    "Exécution ",
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    ":",
-    " ",
+    " : ",
     {
       "i": 2,
       "k": "_gt_value_2",
@@ -4390,7 +4389,7 @@
   "1093eb399fa06fb5": "Messages suivants",
   "95cf0a2cb821c39a": "Arrêter le travail distant",
   "18e3287951607400": [
-    "Stop: ",
+    "Arrêt : ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4400,14 +4399,13 @@
   "ff40e2c87dddc26f": "Le travail distant est indisponible. La dernière observation est peut-être obsolète. Actualisez pour réessayer.",
   "823ad49748e45a52": "Résultat d’origine",
   "e1b96227c9376bd5": [
-    "Latest received result (",
+    "Dernier résultat reçu (",
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    "):",
-    " ",
+    ") : ",
     {
       "i": 2,
       "k": "_gt_value_2",
@@ -4415,7 +4413,7 @@
     }
   ],
   "e53981dd27ca71a4": [
-    "Environment: ",
+    "Environnement : ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4423,7 +4421,7 @@
     }
   ],
   "61b48c84f3d88e9b": [
-    "Thread: ",
+    "Fil : ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4431,7 +4429,7 @@
     }
   ],
   "6ae3d44b4e7f2e07": [
-    "Observed: ",
+    "Observé : ",
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -4439,7 +4437,7 @@
     }
   ],
   "ae7ad46f116619ff": [
-    "Latest run: ",
+    "Dernière exécution : ",
     {
       "i": 1,
       "k": "_gt_value_1",
