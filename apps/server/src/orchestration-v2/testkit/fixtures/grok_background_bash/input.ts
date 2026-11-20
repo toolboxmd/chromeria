@@ -8,6 +8,8 @@ export const GROK_BACKGROUND_BASH_PROMPT =
 const GROK_BACKGROUND_BASH_WAKE_LABEL =
   "notification:session/update:agent_thought_chunk:task-completed-00000000-0000-4000-8000-000000000002";
 
+// The root reply settles while the command still runs. Grok's later reply to
+// the finished command replays as one continuation run.
 export function grokBackgroundBashInput(): OrchestratorFixtureInput {
   return {
     steps: [
