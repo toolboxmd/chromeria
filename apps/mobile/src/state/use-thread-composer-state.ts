@@ -2,6 +2,7 @@ import { useComposerAttachmentActions } from "./use-composer-attachment-actions"
 import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import * as Effect from "effect/Effect";
 import * as Dialog from "../components/ui/Dialog";
+import { purposeSelectionOf } from "@t3tools/contracts";
 import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import { readEnvironmentScope } from "./session";
 import { useAtomValue } from "@effect/atom-react";
@@ -873,11 +874,16 @@ export function useThreadComposerState(input: {
     // Steering uses "auto" so an ended turn queues a run instead of restoring the draft.
     // An approval redirect must steer the waiting turn instead of queueing behind it.
     const activeTurnDefault = beforeDispatch !== undefined ? "steer" : followUpBehavior;
-    const followUpAction = resolveComposerDispatchMode({
-      running: activeThreadBusy && canSteerActiveTurn,
-      alternateModifier: followUpOverride !== undefined && followUpOverride !== activeTurnDefault,
-      activeTurnDefault,
-    });
+    // A redirect belongs to the approval it answers; the armed session waits for the next message.
+    const freshContext = beforeDispatch === undefined && isFreshSessionPending(threadKey);
+    const followUpAction = freshContext
+      ? "queue"
+      : resolveComposerDispatchMode({
+          running: activeThreadBusy && canSteerActiveTurn,
+          alternateModifier:
+            followUpOverride !== undefined && followUpOverride !== activeTurnDefault,
+          activeTurnDefault,
+        });
     const setupRunning = [selectedThreadActivityRun?.status, selectedThreadRuntime?.status].some(
       (status) => status === "preparing" || status === "starting",
     );
@@ -887,10 +893,8 @@ export function useThreadComposerState(input: {
         ? null
         : followUpAction === "queue"
           ? "queue"
-          : "auto";
+          : "steer";
 
-    // A redirect belongs to the approval it answers; the armed session waits for the next message.
-    const freshContext = beforeDispatch === undefined && isFreshSessionPending(threadKey);
     const metadata = makeQueuedMessageMetadata();
     // A fresh session drops the context a compaction would summarize. Only a send the notice
     // announced compacts, since the notice's minute clock can trail the exact deadline.
@@ -904,6 +908,20 @@ export function useThreadComposerState(input: {
     onWillEnqueue?.();
     clearThreadComposerError(threadKey);
     const enqueuePromise = enqueueThreadOutboxMessage({
+      ...(serverConfig?.environment.capabilities.executionPurposeVersions?.includes(1) !== true
+        ? {}
+        : {
+            purposeIntent: {
+              version: 1,
+              intent:
+                followUpAction === "steer"
+                  ? { type: "target" }
+                  : {
+                      type: "selection",
+                      expectedRevision: purposeSelectionOf(selectedThreadShell).revision,
+                    },
+            },
+          }),
       environmentId: selectedThreadShell.environmentId,
       threadId: selectedThreadShell.id,
       messageId,
