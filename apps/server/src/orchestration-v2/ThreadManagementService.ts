@@ -1052,7 +1052,7 @@ const make = Effect.gen(function* () {
     const notice =
       remote !== undefined
         ? {
-            text: input.text,
+            text: `[From thread ${remote.threadId} on environment ${remote.environmentId}]\n\n${input.text}`,
             notification: {
               source: { kind: "delegated_task" as const, taskIds: [remote.taskId] },
               outcome: "updated" as const,

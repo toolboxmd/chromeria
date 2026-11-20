@@ -122,7 +122,9 @@ it.live(
           "runs",
           "subagents",
         ]);
-        const notices = records.messages.filter((message) => message.text === "Evidence from B");
+        const notices = records.messages.filter(
+          (message) => message.notification?.detail === "Evidence from B",
+        );
         expect(notices).toHaveLength(1);
         expect(notices[0]?.notification?.source).toEqual({
           kind: "delegated_task",
@@ -214,11 +216,12 @@ it.live("delegates A to B to C and returns notices using each parent's own task 
       const aMessages = (yield* a.threads.getThreadRecords(parentId, ["messages"])).messages;
       const bMessages = (yield* b.threads.getThreadRecords(first.childId, ["messages"])).messages;
       expect(
-        aMessages.find((message) => message.text === "B evidence including C")?.notification
-          ?.source,
+        aMessages.find((message) => message.notification?.detail === "B evidence including C")
+          ?.notification?.source,
       ).toEqual({ kind: "delegated_task", taskIds: [first.taskId] });
       expect(
-        bMessages.find((message) => message.text === "C evidence")?.notification?.source,
+        bMessages.find((message) => message.notification?.detail === "C evidence")?.notification
+          ?.source,
       ).toEqual({ kind: "delegated_task", taskIds: [second.taskId] });
       const unrelated = yield* c.forwarding
         .call(
@@ -229,7 +232,9 @@ it.live("delegates A to B to C and returns notices using each parent's own task 
         )
         .pipe(Effect.flip);
       expect(unrelated.code).toBe("capability_denied");
-      expect(aMessages.some((message) => message.text === "Cannot skip my parent")).toBe(false);
+      expect(aMessages.some((message) => message.text.includes("Cannot skip my parent"))).toBe(
+        false,
+      );
       // A later new job on A is ancestry, not a repeated hop in this operation's route.
       yield* linkTo(b.links, a, "full-access");
       const back = yield* delegate(b, a, first.childId, "later-b-a-job");
@@ -260,7 +265,7 @@ it.live("persists an offline return and resumes it from stored links without a n
       expect(pending.delivery).toBe("pending");
       expect(
         (yield* a.threads.getThreadRecords(parentId, ["messages"])).messages.some(
-          (message) => message.text === "Queued while A is offline",
+          (message) => message.notification?.detail === "Queued while A is offline",
         ),
       ).toBe(false);
       const reconnected = yield* a.reconnect();
@@ -275,7 +280,7 @@ it.live("persists an offline return and resumes it from stored links without a n
           Stream.filter(
             (stored) =>
               stored.event.type === "message.updated" &&
-              stored.event.payload.text === "Queued while A is offline",
+              stored.event.payload.notification?.detail === "Queued while A is offline",
           ),
           Stream.runHead,
           Effect.flatMap(Effect.fromOption),
@@ -292,7 +297,7 @@ it.live("persists an offline return and resumes it from stored links without a n
       expect(acknowledged.messageId).toBe(pending.messageId);
       expect(
         (yield* a.threads.getThreadRecords(parentId, ["messages"])).messages.filter(
-          (message) => message.text === "Queued while A is offline",
+          (message) => message.notification?.detail === "Queued while A is offline",
         ),
       ).toHaveLength(1);
     }),

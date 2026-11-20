@@ -3206,7 +3206,9 @@ export const awaitNotice = (node: Node, threadId: ThreadId, text: string) =>
     .streamStoredEventsFrom({ threadId, afterSequence: 0, eventType: "message.updated" })
     .pipe(
       Stream.filter(
-        (stored) => stored.event.type === "message.updated" && stored.event.payload.text === text,
+        (stored) =>
+          stored.event.type === "message.updated" &&
+          stored.event.payload.notification?.detail === text,
       ),
       Stream.runHead,
       Effect.flatMap(Effect.fromOption),

@@ -2,11 +2,14 @@ import { expect, it } from "@effect/vitest";
 import {
   ChatAttachmentId,
   CommandId,
+  EnvironmentId,
   EventId,
   MessageId,
+  NodeId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  RunId,
   ThreadId,
   type OrchestrationV2AppThread,
 } from "@t3tools/contracts";
@@ -124,8 +127,22 @@ it.effect("an idle ancestor receives a persisted content-bearing notice and no u
     });
     expect(result.message.notification?.summary).toMatch(/^The UI proof is ready\./);
     expect(result.message.notification?.detail).toBe(sendInput("idle").text);
-    expect(result.message.text).toContain(childId);
+    expect(result.message.text).toMatch(new RegExp(`^\\[From thread ${childId} `));
     expect(result.message.text).toContain(sendInput("idle").text);
+    const { senderThreadId: _sender, ...remoteInput } = sendInput("remote");
+    const remote = yield* threads.sendToThread({
+      ...remoteInput,
+      remoteDescendant: {
+        taskId: NodeId.make("ancestor:remote-task"),
+        environmentId: EnvironmentId.make("ancestor:remote-env"),
+        threadId: ThreadId.make("ancestor:remote-child"),
+        runId: RunId.make("ancestor:remote-run"),
+      },
+    });
+    expect(remote.message.text).toBe(
+      `[From thread ancestor:remote-child on environment ancestor:remote-env]\n\n${remoteInput.text}`,
+    );
+    expect(remote.message.notification?.detail).toBe(remoteInput.text);
     expect(result.message.delegatedCompletion).toBeUndefined();
     expect(result.run.userMessageId).toBe(result.message.id);
     const after = yield* orchestrator.getThreadProjection(parentId);
