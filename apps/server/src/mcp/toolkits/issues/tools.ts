@@ -383,3 +383,12 @@ export const IssuesToolkit = Toolkit.make(
   UnlinkIssueTool,
   ListThreadIssuesTool,
 );
+
+// Fork: the fork's issueLinks toolkit owns link_issue, unlink_issue and list_thread_issues.
+export const IssueTrackerToolkit = Toolkit.make(
+  ListIssuesTool,
+  ReadIssueTool,
+  CreateIssueTool,
+  CommentOnIssueTool,
+  SetIssueStateTool,
+);
