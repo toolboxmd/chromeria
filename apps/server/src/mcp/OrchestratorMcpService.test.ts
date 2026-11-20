@@ -3035,7 +3035,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           })
           .pipe(Effect.flip);
         assert.equal(refused.code, "model_unavailable");
-        assert.include(refused.message, `Project "Dest" (${destinationRoot}) does not list it`);
+        assert.include(refused.message, `runs in project "Dest" (${destinationRoot})`);
         assert.equal(commands.length, 1);
         yield* service.delegateTask(scope, {
           task: "Review the change.",

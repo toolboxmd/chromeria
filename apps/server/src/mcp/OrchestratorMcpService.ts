@@ -3944,7 +3944,7 @@ const make = Effect.gen(function* () {
                 crossProject !== undefined && error.code === "model_unavailable"
                   ? failure(
                       error.code,
-                      `${error.message} Project "${crossProject.title}" (${cwd}) does not list it; a task in another project can use only that project's models.`,
+                      `${error.message} This task runs in project "${crossProject.title}" (${cwd}), so that project's model configuration applies.`,
                     )
                   : error,
               ),
