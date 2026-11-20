@@ -560,7 +560,6 @@ only when that file set changes; this is not an exhaustive history of follow-ups
   "upstreamFiles": [
     "packages/provider-grok/src/server/driver.test.ts",
     "packages/provider-core/src/server/maintenanceResolver.test.ts",
-    "packages/provider-core/src/server/maintenanceResolver.ts",
     "apps/server/src/server.ts",
     "apps/server/src/ws.ts",
     "apps/web/src/components/settings/ProviderSettingsPanel.tsx",
@@ -3068,7 +3067,6 @@ sources and reasons.
   "upstreamFiles": [
     "apps/mobile/src/features/threads/useStartSideChat.ts",
     "apps/web/src/components/chat/useMultipleModelSend.ts",
-    "apps/web/src/components/chat/useProposedPlanSend.ts",
     "apps/mobile/src/state/threadOutboxDelivery.ts",
     "apps/mobile/src/features/threads/McpAppWebView.tsx",
     "apps/mobile/src/features/threads/NewTaskDraftScreen.tsx",

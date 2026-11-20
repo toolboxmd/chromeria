@@ -77,7 +77,6 @@ apps/server/src/persistence/initializeV2Database.test.ts
 apps/server/src/project/RepositoryIdentityResolver.test.ts
 packages/provider-grok/src/server/driver.test.ts
 packages/provider-core/src/server/maintenanceResolver.test.ts
-packages/provider-core/src/server/maintenanceResolver.ts
 apps/server/src/pullRequest/PullRequestService.test.ts
 apps/server/src/pullRequest/PullRequestService.ts
 apps/server/src/relay/AgentAwarenessRelay.test.ts
@@ -651,7 +650,6 @@ apps/web/src/components/chat/TimelineWorkGroupRows.tsx
 apps/web/src/components/chat/timelineRowContext.ts
 apps/web/src/components/chat/useComposerSend.ts
 apps/web/src/components/chat/useMultipleModelSend.ts
-apps/web/src/components/chat/useProposedPlanSend.ts
 apps/web/src/components/chat/useThreadLifecycle.tsx
 apps/web/src/components/device/DevicePanel.tsx
 apps/web/src/components/device/DeviceSetup.test.ts
