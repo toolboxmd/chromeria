@@ -15,6 +15,7 @@ import {
   type ToolActivitySource,
   type ThreadId,
   type TurnItemId,
+  requestAnsweredByLabel,
 } from "@t3tools/contracts";
 import { extractToolActivityPresentation } from "@t3tools/client-runtime/work-log/tool-presentation";
 import { classifyToolActivity, collectToolFilePaths } from "@t3tools/shared/toolActivity";
@@ -511,7 +512,11 @@ function projectedWorkEntry(
     case "approval_request":
       return {
         ...common,
-        label: title ?? resolve(msg("Approval requested")),
+        label:
+          title ??
+          (item.answeredBy
+            ? requestAnsweredByLabel(item.answeredBy)
+            : resolve(msg("Approval requested"))),
         detail: item.prompt ?? item.requestKind,
         toolData: item,
       };
@@ -520,9 +525,11 @@ function projectedWorkEntry(
         ...common,
         label:
           title ??
-          (item.questionAnswer
-            ? resolve(msg("Answered questions"))
-            : resolve(msg("Input requested"))),
+          (item.answeredBy
+            ? requestAnsweredByLabel(item.answeredBy)
+            : item.questionAnswer
+              ? resolve(msg("Answered questions"))
+              : resolve(msg("Input requested"))),
         ...(item.questionAnswer ? { questionAnswer: item.questionAnswer } : {}),
         toolData: item,
       };
