@@ -1,3 +1,4 @@
+import { APP_BASE_NAME } from "../branding";
 import type { DesktopBridge, DesktopUpdateState } from "@t3tools/contracts";
 
 const FALLBACK_TRIAGE_COMMAND = "npx t3 triage";
@@ -255,7 +256,7 @@ function mountUpdateButton(
 }
 
 export function showBootError(error: unknown) {
-  console.error("T3 Code failed to start.", error);
+  console.error(`${APP_BASE_NAME} failed to start.`, error);
   const bootShell = document.getElementById("boot-shell");
   if (!bootShell) return;
 
@@ -274,7 +275,7 @@ export function showBootError(error: unknown) {
   };
 
   const message = element("div", {}, [
-    element("h1", { textContent: "T3 Code failed to start" }),
+    element("h1", { textContent: `${APP_BASE_NAME} failed to start` }),
     element("p", {
       textContent: offline
         ? "This browser appears to be offline. Check the connection, then reload."
