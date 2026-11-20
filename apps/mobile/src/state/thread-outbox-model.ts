@@ -16,6 +16,7 @@ import {
   ModelSelection,
   OrchestrationMessageContext,
   ProjectId,
+  PurposeIntent,
   ProviderInteractionMode,
   RuntimeMode,
   ThreadId,
@@ -47,9 +48,11 @@ const QueuedThreadCreationSchema = Schema.Struct({
   worktreePath: Schema.NullOr(Schema.String),
   startFromOrigin: Schema.optional(Schema.Boolean),
   pullRequestReference: Schema.optional(Schema.String),
+  bare: Schema.optional(Schema.Boolean),
 });
 
 export const QueuedThreadMessageSchema = Schema.Struct({
+  purposeIntent: Schema.optional(PurposeIntent),
   schemaVersion: Schema.Literals([1, 2, THREAD_OUTBOX_SCHEMA_VERSION, 4]),
   environmentId: EnvironmentId,
   threadId: ThreadId,
@@ -81,9 +84,12 @@ export interface QueuedThreadCreation {
   readonly worktreePath: string | null;
   readonly startFromOrigin?: boolean;
   readonly pullRequestReference?: string;
+  /** Fork: start the thread bare (toolboxmd/chromeria#319). */
+  readonly bare?: boolean;
 }
 
 export interface QueuedThreadMessage {
+  readonly purposeIntent?: import("@t3tools/contracts").PurposeIntent | undefined;
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly messageId: MessageId;
