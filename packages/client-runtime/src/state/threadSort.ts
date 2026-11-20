@@ -134,12 +134,13 @@ export function getThreadSortTimestamp(
   return getLatestUserMessageTimestamp(thread);
 }
 
-function activeThreadAnchorTimestampMs(thread: {
-  readonly createdAt: string;
-  readonly unsettledAt?: string | null | undefined;
-}): number {
+// A thread reopened from Settled rises to the top under either sort order.
+function activeThreadAnchorTimestampMs(
+  thread: ThreadSortInput & { readonly unsettledAt?: string | null | undefined },
+  sortOrder: SidebarThreadSortOrder,
+): number {
   return Math.max(
-    toSortableTimestamp(thread.createdAt) ?? 0,
+    getThreadSortTimestamp(thread, sortOrder),
     toSortableTimestamp(thread.unsettledAt ?? undefined) ?? 0,
   );
 }
@@ -251,20 +252,20 @@ export function sortPinnedThreadsByOrderKey<
   return [...keyed, ...keyless];
 }
 
+/** Dragged threads keep their saved order; the rest lead it, newest first by `sortOrder`. */
 export function sortActiveThreadsByOrderKey<
-  T extends {
+  T extends ThreadSortInput & {
     readonly id: string;
-    readonly createdAt: string;
     readonly unsettledAt?: string | null | undefined;
     readonly activeOrderKey?: string | null | undefined;
     readonly environmentId?: string | undefined;
   },
->(threads: readonly T[]): T[] {
+>(threads: readonly T[], sortOrder: SidebarThreadSortOrder = "created_at"): T[] {
   if (threads.length < 2) return [...threads];
   const timestamps = new Map<T, number>();
   for (const thread of threads) {
     if (thread.activeOrderKey == null) {
-      timestamps.set(thread, activeThreadAnchorTimestampMs(thread));
+      timestamps.set(thread, activeThreadAnchorTimestampMs(thread, sortOrder));
     }
   }
   return [...threads].sort((left, right) => {

@@ -254,27 +254,124 @@ describe("generateSpreadPinOrderKeys", () => {
 });
 
 describe("sortActiveThreadsByOrderKey", () => {
+  const mixedActiveThreads = [
+    {
+      id: "dragged-last",
+      createdAt: "2026-03-09T12:30:00.000Z",
+      updatedAt: "2026-03-09T12:30:00.000Z",
+      activeOrderKey: "t",
+    },
+    {
+      id: "old-recently-messaged",
+      createdAt: "2026-03-09T09:00:00.000Z",
+      updatedAt: "2026-03-09T12:00:00.000Z",
+      latestUserAuthoredMessageAt: "2026-03-09T12:00:00.000Z",
+    },
+    {
+      id: "dragged-first",
+      createdAt: "2026-03-09T08:00:00.000Z",
+      updatedAt: "2026-03-09T13:00:00.000Z",
+      latestUserAuthoredMessageAt: "2026-03-09T13:00:00.000Z",
+      activeOrderKey: "f",
+    },
+    {
+      id: "new-never-messaged",
+      createdAt: "2026-03-09T11:00:00.000Z",
+      updatedAt: "2026-03-09T11:00:00.000Z",
+      latestUserAuthoredMessageAt: null,
+    },
+    {
+      id: "agent-posted-last",
+      createdAt: "2026-03-09T10:00:00.000Z",
+      updatedAt: "2026-03-09T14:00:00.000Z",
+      latestUserMessageAt: "2026-03-09T14:00:00.000Z",
+      latestUserAuthoredMessageAt: "2026-03-09T10:30:00.000Z",
+    },
+  ];
+
+  it("orders undragged threads by the user's latest message under Last user message", () => {
+    expect(
+      sortActiveThreadsByOrderKey(mixedActiveThreads, "updated_at").map((thread) => thread.id),
+    ).toEqual([
+      "old-recently-messaged",
+      "new-never-messaged",
+      "agent-posted-last",
+      "dragged-first",
+      "dragged-last",
+    ]);
+  });
+
+  it("orders undragged threads by creation under Created", () => {
+    expect(
+      sortActiveThreadsByOrderKey(mixedActiveThreads, "created_at").map((thread) => thread.id),
+    ).toEqual([
+      "new-never-messaged",
+      "agent-posted-last",
+      "old-recently-messaged",
+      "dragged-first",
+      "dragged-last",
+    ]);
+  });
+
+  it("lifts a thread reopened from Settled under Last user message", () => {
+    const sorted = sortActiveThreadsByOrderKey(
+      [
+        ...mixedActiveThreads,
+        {
+          id: "reopened",
+          createdAt: "2026-03-01T09:00:00.000Z",
+          updatedAt: "2026-03-09T15:00:00.000Z",
+          latestUserAuthoredMessageAt: "2026-03-02T09:00:00.000Z",
+          unsettledAt: "2026-03-09T15:00:00.000Z",
+        },
+      ],
+      "updated_at",
+    );
+    expect(sorted[0]?.id).toBe("reopened");
+  });
+
+  it("breaks equal latest user messages by thread then environment", () => {
+    const threads = [
+      { id: "thread-b", environmentId: "env-a" },
+      { id: "thread-a", environmentId: "env-b" },
+      { id: "thread-a", environmentId: "env-a" },
+    ].map((thread, index) => ({
+      ...thread,
+      createdAt: `2026-03-09T0${2 - index}:00:00.000Z`,
+      updatedAt: "2026-03-09T10:00:00.000Z",
+      latestUserAuthoredMessageAt: "2026-03-09T10:00:00.000Z",
+    }));
+    expect(
+      sortActiveThreadsByOrderKey(threads, "updated_at").map(
+        (thread) => `${thread.id}:${thread.environmentId}`,
+      ),
+    ).toEqual(["thread-a:env-a", "thread-a:env-b", "thread-b:env-a"]);
+  });
   it("keeps new and reopened threads ahead of the saved order", () => {
     const sorted = sortActiveThreadsByOrderKey([
       {
         id: "arranged-first",
         createdAt: "2026-03-09T09:00:00.000Z",
+        updatedAt: "2026-03-09T09:00:00.000Z",
         activeOrderKey: "f",
       },
       {
         id: "new",
         createdAt: "2026-03-09T11:00:00.000Z",
+        updatedAt: "2026-03-09T11:00:00.000Z",
         activeOrderKey: null,
       },
       {
         id: "arranged-last",
         createdAt: "2026-03-09T12:00:00.000Z",
+        updatedAt: "2026-03-09T12:00:00.000Z",
         unsettledAt: "2026-03-09T13:00:00.000Z",
         activeOrderKey: "t",
       },
       {
         id: "reopened",
         createdAt: "2026-03-01T09:00:00.000Z",
+        updatedAt: "2026-03-01T09:00:00.000Z",
         unsettledAt: "2026-03-09T12:00:00.000Z",
       },
     ]);
@@ -295,6 +392,7 @@ describe("sortActiveThreadsByOrderKey", () => {
       ].map((thread) => ({
         ...thread,
         createdAt: "2026-03-09T10:00:00.000Z",
+        updatedAt: "2026-03-09T10:00:00.000Z",
         activeOrderKey,
       }));
       expect(
@@ -309,6 +407,7 @@ describe("sortActiveThreadsByOrderKey", () => {
     const threads = Array.from({ length: 1_200 }, (_, index) => ({
       id: String(index),
       createdAt: "2026-03-09T10:00:00.000Z",
+      updatedAt: "2026-03-09T10:00:00.000Z",
       activeOrderKey: null as string | null,
     }));
     const orderedIds = threads.map((thread) => thread.id).toReversed();
