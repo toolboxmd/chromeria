@@ -2922,6 +2922,8 @@ describe("OrchestratorMcpService provider resolution", () => {
       const destinationId = ProjectId.make("project:destination");
       const destinationRoot = "/work/dest";
       const destinationModel = "dest/small-local";
+      const worktreeRoot = "/work/uni-feature";
+      const worktreeModel = "feature/branch-local";
       const machineModels = [
         { slug: "opencode/big-pickle", name: "Big Pickle", isCustom: false, capabilities: null },
       ];
@@ -2950,6 +2952,16 @@ describe("OrchestratorMcpService provider resolution", () => {
             models: [
               ...machineModels,
               { slug: destinationModel, name: "Small Local", isCustom: false, capabilities: null },
+            ],
+          },
+          {
+            cwd: worktreeRoot,
+            checkedAt: "2026-09-13T00:00:00.000Z",
+            slashCommands: [],
+            skills: [],
+            models: [
+              ...machineModels,
+              { slug: worktreeModel, name: "Branch Local", isCustom: false, capabilities: null },
             ],
           },
         ],
@@ -3001,6 +3013,10 @@ describe("OrchestratorMcpService provider resolution", () => {
             ),
           workspaceScanDirectory: (cwd) => Effect.succeed(cwd),
         }),
+        Layer.mock(GitVcsDriver.GitVcsDriver)({
+          listWorktreePaths: (cwd) =>
+            Effect.succeed(cwd === workspaceRoot ? [workspaceRoot, worktreeRoot] : [cwd]),
+        }),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
@@ -3047,6 +3063,17 @@ describe("OrchestratorMcpService provider resolution", () => {
         assert.deepEqual((commands[1] as { modelSelection: unknown }).modelSelection, {
           instanceId: opencodeInstanceId,
           model: destinationModel,
+        });
+        yield* service.delegateTask(scope, {
+          task: "Review the change.",
+          workspaceStrategy: { type: "existing_worktree", worktreePath: worktreeRoot },
+          target: { providerInstanceId: opencodeInstanceId, model: worktreeModel },
+          mode: "async",
+          clientRequestId: "same-project-worktree-model",
+        });
+        assert.deepEqual((commands[2] as { modelSelection: unknown }).modelSelection, {
+          instanceId: opencodeInstanceId,
+          model: worktreeModel,
         });
       }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
     }),
