@@ -1,6 +1,7 @@
 import { msg, T, useGT, useMessages } from "gt-react";
 import { m, type MessageResolver } from "../i18n/messages";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
+import { parseIssueUrl } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   threadRuntimeIsActive,
@@ -39,7 +40,9 @@ import { restrictToFirstScrollableAncestor, restrictToHorizontalAxis } from "@dn
 import { horizontalListSortingStrategy, SortableContext, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
+  CircleDot,
   CircleDotIcon,
+  Network,
   Smartphone,
   ChevronDown,
   ChevronLeft,
@@ -151,6 +154,8 @@ export interface RightPanelTabsProps {
   onAddDevice: () => void;
   /** Absent where side chats are not offered. */
   onAddSideChat?: (() => void) | undefined;
+  /** Fork: the project's feature map (toolboxmd/chromeria#235); absent where there is none. */
+  onAddMap?: () => void;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
@@ -161,6 +166,7 @@ export interface RightPanelTabsProps {
   sideChatAvailable?: boolean;
   /** Overrides the default reason while side chats are available but cannot start. */
   sideChatDisabledReason?: string | null;
+  mapAvailable?: boolean;
   pullRequestStatusSeeds?: Readonly<Record<string, PullRequestTabStatusSeed>>;
   children: ReactNode;
 }
@@ -188,6 +194,7 @@ const SURFACE_DISABLED_REASONS = {
   pullRequests: msg("This thread has no linked items."),
   device: msg("Devices are only available from a thread."),
   sideChat: msg("Side chats start after the first message."),
+  map: msg("The map is only available for a GitHub project on a server that reads it."),
 } as const;
 
 // Closed keepMounted popups must stop blocking shortcuts once their exit transition ends.
@@ -213,6 +220,7 @@ const SURFACE_UNAVAILABLE_HINTS = {
   pullRequests: msg("No linked items available."),
   device: msg("Available from a thread."),
   sideChat: msg("Available after the first message."),
+  map: msg("Available for GitHub projects."),
 } as const;
 
 type TabContextMenuAction =
@@ -335,6 +343,8 @@ function RightPanelEmptyState(props: {
   onAddDevice: () => void;
   /** Absent where side chats are not offered. */
   onAddSideChat?: (() => void) | undefined;
+  /** Fork: the project's feature map (toolboxmd/chromeria#235); absent where there is none. */
+  onAddMap?: () => void;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
@@ -344,6 +354,7 @@ function RightPanelEmptyState(props: {
   deviceAvailable: boolean;
   sideChatAvailable: boolean;
   sideChatDisabledReason: string | null;
+  mapAvailable?: boolean;
 }) {
   const gt = useGT();
   const messages = useMessages();
@@ -421,6 +432,15 @@ function RightPanelEmptyState(props: {
           },
         ]
       : []),
+    {
+      // Fork: the project's feature map (toolboxmd/chromeria#235).
+      label: msg("Map", { $context: "right panel surface showing the project feature map" }),
+      icon: Network,
+      shortcut: "A",
+      available: props.mapAvailable === true && props.onAddMap !== undefined,
+      disabledReason: messages(SURFACE_UNAVAILABLE_HINTS.map),
+      onClick: () => props.onAddMap?.(),
+    },
   ] as const;
 
   type SurfaceAction = (typeof actions)[number];
@@ -610,6 +630,14 @@ function surfaceTitle(
     case "issue":
       // A git host numbers its issues; a tracker with keys of its own, such as Linear, names them.
       return /^\d+$/.test(surface.key) ? `#${surface.key}` : surface.key;
+    case "github-issue": {
+      const issue = parseIssueUrl(surface.url);
+      return issue === null ? resolve(msg("Issue")) : `#${issue.number}`;
+    }
+    case "map":
+      return resolve(
+        msg("Map", { $context: "right panel surface showing the project feature map" }),
+      );
     case "device":
       return surface.title ?? surface.target?.name ?? resolve(msg("Device"));
     case "side-chat":
@@ -706,6 +734,10 @@ function SurfaceIcon({
       return <IssueSurfaceIcon surface={surface} environmentId={environmentId} />;
     case "side-chat":
       return <SideChatTabIcon environmentId={environmentId} threadId={surface.threadId} />;
+    case "github-issue":
+      return <CircleDot className="size-3 shrink-0" />;
+    case "map":
+      return <Network className="size-3 shrink-0" />;
     case "device":
       return surface.target?.platform === "ios" ? (
         <AppleIcon className="size-3 shrink-0" />
@@ -1238,6 +1270,15 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
           },
         ]
       : []),
+    {
+      // Fork: the project's feature map (toolboxmd/chromeria#235).
+      label: msg("Map", { $context: "right panel surface showing the project feature map" }),
+      icon: Network,
+      shortcut: "A",
+      available: props.mapAvailable === true && props.onAddMap !== undefined,
+      disabledReason: messages(SURFACE_DISABLED_REASONS.map),
+      onClick: () => props.onAddMap?.(),
+    },
   ] as const;
 
   const handleAddSurfaceMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -1643,6 +1684,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddPullRequests={props.onAddPullRequests}
             onAddDevice={props.onAddDevice}
             onAddSideChat={props.onAddSideChat}
+            {...(props.onAddMap === undefined ? {} : { onAddMap: props.onAddMap })}
             browserAvailable={props.browserAvailable}
             terminalAvailable={props.terminalAvailable}
             diffAvailable={props.diffAvailable}
@@ -1652,6 +1694,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             deviceAvailable={props.deviceAvailable}
             sideChatAvailable={props.sideChatAvailable === true}
             sideChatDisabledReason={props.sideChatDisabledReason ?? null}
+            mapAvailable={props.mapAvailable === true}
           />
         ) : (
           props.children
