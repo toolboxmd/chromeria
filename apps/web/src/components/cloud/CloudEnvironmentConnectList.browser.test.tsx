@@ -42,7 +42,7 @@ function discovered(
       endpoint: {
         httpBaseUrl: `https://${environmentId}.relay.test`,
         wsBaseUrl: `wss://${environmentId}.relay.test`,
-        providerKind: "t3_relay",
+        providerKind: "cloudflare_tunnel",
       },
       linkedAt: "2026-10-01T00:00:00.000Z",
     },
