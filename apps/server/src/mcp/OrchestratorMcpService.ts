@@ -3916,12 +3916,12 @@ const make = Effect.gen(function* () {
         operation: "delegate-task",
       });
       const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
-      // A child in another project runs that project's folder config, so its models decide.
+      // The child runs its destination checkout's folder config, so that checkout's models decide.
       const cwd =
-        crossProject === undefined
-          ? yield* parentWorkspaceCwd(parent)
-          : input.workspaceStrategy?.type === "existing_worktree"
-            ? input.workspaceStrategy.worktreePath
+        input.workspaceStrategy?.type === "existing_worktree"
+          ? input.workspaceStrategy.worktreePath
+          : crossProject === undefined
+            ? yield* parentWorkspaceCwd(parent)
             : crossProject.workspaceRoot;
       const prismRole =
         input.prismRole === undefined
