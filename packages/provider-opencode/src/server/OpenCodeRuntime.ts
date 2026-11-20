@@ -102,7 +102,7 @@ export interface OpenCodeServerConnection {
 }
 
 const OPENCODE_RUNTIME_ERROR_TAG = "OpenCodeRuntimeError";
-const OpenCodeStartupFailureReason = Schema.Literal("databaseLocked");
+const OpenCodeStartupFailureReason = Schema.Literals(["databaseLocked", "portInUse"]);
 export type OpenCodeStartupFailureReason = typeof OpenCodeStartupFailureReason.Type;
 
 export class OpenCodeRuntimeError extends Schema.TaggedError<OpenCodeRuntimeError>()(
@@ -117,7 +117,8 @@ export class OpenCodeRuntimeError extends Schema.TaggedError<OpenCodeRuntimeErro
 
 // Classify stderr database locks at exit so callers need not parse diagnostics.
 function classifyStartupExit(stderr: string): OpenCodeStartupFailureReason | undefined {
-  return /SQLITE_BUSY|database is locked/i.test(stderr) ? "databaseLocked" : undefined;
+  if (/SQLITE_BUSY|database is locked/i.test(stderr)) return "databaseLocked";
+  return /Is port \d+ in use\?|EADDRINUSE/i.test(stderr) ? "portInUse" : undefined;
 }
 
 export const isOpenCodeRuntimeError = (u: unknown): u is OpenCodeRuntimeError =>
@@ -326,10 +327,13 @@ export class OpenCodeRuntime extends Context.Service<
       readonly directory: string;
       readonly serverPassword?: string;
       readonly environment?: NodeJS.ProcessEnv;
+      readonly pure?: boolean;
       readonly port?: number;
       readonly hostname?: string;
       readonly timeoutMs?: number;
       readonly verify?: (url: string) => Effect.Effect<string, OpenCodeRuntimeError>;
+      /** Runs the server in this thread's scope; without one it serves the whole instance. */
+      readonly threadId?: string;
     }) => Effect.Effect<OpenCodeServerProcess, OpenCodeRuntimeError, Scope.Scope>;
     readonly connectToOpenCodeServer: (input: {
       readonly binaryPath: string;
@@ -337,6 +341,7 @@ export class OpenCodeRuntime extends Context.Service<
       readonly serverUrl?: string | null;
       readonly serverPassword?: string;
       readonly environment?: NodeJS.ProcessEnv;
+      readonly pure?: boolean;
       readonly port?: number;
       readonly hostname?: string;
       readonly timeoutMs?: number;
@@ -598,13 +603,18 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
         DEFAULT_OPENCODE_SERVER_TIMEOUT_MS,
         input.environment,
       );
-    const args = ["serve", `--hostname=${hostname}`, `--port=${port}`];
+    const args = [
+      "serve",
+      ...(input.pure ? ["--pure"] : []),
+      `--hostname=${hostname}`,
+      `--port=${port}`,
+    ];
     const launch = yield* agentScope.wrap({
       command: input.binaryPath,
       args,
       name: "opencode",
       env: input.environment,
-      shared: true,
+      ...(input.threadId === undefined ? { shared: true } : { threadId: input.threadId }),
     });
     const spawnCommand = yield* resolveCommand(launch.command, launch.args, input.environment);
     const serverPassword = resolveOpenCodeServerPassword({
@@ -644,10 +654,14 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       );
 
     // Signals the server's own group and force-kills only what outlives the grace,
-    // so a group that exits promptly does not hold up the scope that closes it.
+    // so a group that exits promptly does not hold up the scope that closes it. The
+    // launcher's systemd scope also holds descendants that left the group with setsid.
     const terminateChild = child
       .kill({ killSignal: "SIGTERM", forceKillAfter: OPENCODE_SERVER_TERMINATE_GRACE })
-      .pipe(Effect.ignore);
+      .pipe(
+        Effect.ignore,
+        Effect.andThen(launch.unit === undefined ? Effect.void : agentScope.stop(launch.unit)),
+      );
     // Registered before recording, so an interrupt while the ledger writes
     // still stops the group.
     yield* Scope.addFinalizer(runtimeScope, terminateChild);
@@ -796,12 +810,15 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
           ),
         );
       });
-      // Shared opencode.db locks are transient; retry those, not configuration/executable errors.
+      // Shared opencode.db locks are transient, and a picked free port can be taken before
+      // OpenCode binds it; retry those, not configuration/executable errors.
       return yield* attempt.pipe(
         Effect.retry({
           times: 3,
           schedule: Schedule.spaced("250 millis"),
-          while: (error) => error.reason === "databaseLocked",
+          while: (error) =>
+            error.reason === "databaseLocked" ||
+            (error.reason === "portInUse" && input.port === undefined),
         }),
       );
     });
@@ -836,6 +853,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     return startOpenCodeServerProcess({
       binaryPath: input.binaryPath,
       directory: input.directory,
+      ...(input.pure === undefined ? {} : { pure: input.pure }),
       ...(input.serverPassword !== undefined ? { serverPassword: input.serverPassword } : {}),
       ...(input.environment !== undefined ? { environment: input.environment } : {}),
       ...(input.port !== undefined ? { port: input.port } : {}),
