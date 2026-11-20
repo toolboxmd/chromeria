@@ -2914,11 +2914,14 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
   );
 
-  it.effect("delegates to a model only the parent project's folder config advertises", () =>
+  it.effect("delegates to a model only the destination project's folder config advertises", () =>
     Effect.gen(function* () {
       const opencodeInstanceId = ProviderInstanceId.make("opencode");
       const workspaceRoot = "/work/uni";
       const model = "uni/medium-local";
+      const destinationId = ProjectId.make("project:destination");
+      const destinationRoot = "/work/dest";
+      const destinationModel = "dest/small-local";
       const machineModels = [
         { slug: "opencode/big-pickle", name: "Big Pickle", isCustom: false, capabilities: null },
       ];
@@ -2937,6 +2940,16 @@ describe("OrchestratorMcpService provider resolution", () => {
             models: [
               ...machineModels,
               { slug: model, name: "Medium Local", isCustom: false, capabilities: null },
+            ],
+          },
+          {
+            cwd: destinationRoot,
+            checkedAt: "2026-09-13T00:00:00.000Z",
+            slashCommands: [],
+            skills: [],
+            models: [
+              ...machineModels,
+              { slug: destinationModel, name: "Small Local", isCustom: false, capabilities: null },
             ],
           },
         ],
@@ -2980,7 +2993,13 @@ describe("OrchestratorMcpService provider resolution", () => {
         }),
         adapterRegistryLayer([opencodeInstanceId]),
         Layer.mock(ProjectService.ProjectService)({
-          getById: () => Effect.succeedSome({ id: projectId, workspaceRoot } as never),
+          getById: (id) =>
+            Effect.succeedSome(
+              (id === destinationId
+                ? { id, title: "Dest", workspaceRoot: destinationRoot }
+                : { id: projectId, workspaceRoot }) as never,
+            ),
+          workspaceScanDirectory: (cwd) => Effect.succeed(cwd),
         }),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
@@ -3005,6 +3024,29 @@ describe("OrchestratorMcpService provider resolution", () => {
         assert.deepEqual((commands[0] as { modelSelection: unknown }).modelSelection, {
           instanceId: opencodeInstanceId,
           model,
+        });
+        const refused = yield* service
+          .delegateTask(scope, {
+            task: "Review the change.",
+            projectId: destinationId,
+            target: { providerInstanceId: opencodeInstanceId, model },
+            mode: "async",
+            clientRequestId: "parent-only-model-in-destination",
+          })
+          .pipe(Effect.flip);
+        assert.equal(refused.code, "model_unavailable");
+        assert.include(refused.message, `runs in project "Dest" (${destinationRoot})`);
+        assert.equal(commands.length, 1);
+        yield* service.delegateTask(scope, {
+          task: "Review the change.",
+          projectId: destinationId,
+          target: { providerInstanceId: opencodeInstanceId, model: destinationModel },
+          mode: "async",
+          clientRequestId: "destination-only-model",
+        });
+        assert.deepEqual((commands[1] as { modelSelection: unknown }).modelSelection, {
+          instanceId: opencodeInstanceId,
+          model: destinationModel,
         });
       }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
     }),

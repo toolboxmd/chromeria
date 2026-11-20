@@ -3892,8 +3892,12 @@ const make = Effect.gen(function* () {
           "Delegated tasks require an active run owned by this MCP provider session.",
         );
       }
+      const crossProject =
+        input.projectId !== undefined && input.projectId !== parent.thread.projectId
+          ? yield* requireProject(input.projectId)
+          : undefined;
       if (input.projectId !== undefined || input.workspaceStrategy !== undefined) {
-        const destination = yield* requireProject(input.projectId ?? parent.thread.projectId);
+        const destination = crossProject ?? (yield* requireProject(parent.thread.projectId));
         if (input.workspaceStrategy?.type === "existing_worktree") {
           yield* assertProjectWorktree(
             destination.workspaceRoot,
@@ -3912,7 +3916,13 @@ const make = Effect.gen(function* () {
         operation: "delegate-task",
       });
       const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
-      const cwd = yield* parentWorkspaceCwd(parent);
+      // A child in another project runs that project's folder config, so its models decide.
+      const cwd =
+        crossProject === undefined
+          ? yield* parentWorkspaceCwd(parent)
+          : input.workspaceStrategy?.type === "existing_worktree"
+            ? input.workspaceStrategy.worktreePath
+            : crossProject.workspaceRoot;
       const prismRole =
         input.prismRole === undefined
           ? Prism.delegatedPrismRole(input.role)
@@ -3929,7 +3939,16 @@ const make = Effect.gen(function* () {
               providers,
               cwd,
               skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
-            });
+            }).pipe(
+              Effect.mapError((error) =>
+                crossProject !== undefined && error.code === "model_unavailable"
+                  ? failure(
+                      error.code,
+                      `${error.message} This task runs in project "${crossProject.title}" (${cwd}), so that project's model configuration applies.`,
+                    )
+                  : error,
+              ),
+            );
       let runtimeTarget = explicitTarget;
       const target = yield* prism.resolve({
         bare: input.bare !== undefined,
