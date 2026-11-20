@@ -1,8 +1,10 @@
 import { msg } from "gt-i18n";
 import { detailFromError, translatableDetail } from "../errors/translatable.ts";
+import * as SessionRenewal from "../authorization/renewal.ts";
+import { renewalCommitment } from "@t3tools/shared/sessionRenewal";
+import * as Clock from "effect/Clock";
 import type { DesktopSshEnvironmentTarget, EnvironmentId } from "@t3tools/contracts";
 import { resolveRemotePairingTarget } from "@t3tools/shared/remote";
-import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -157,9 +159,15 @@ export const preparePairingRegistration = Effect.fn(
   if (compatibilityError !== null && compatibilityError.serverUpdateRequired !== true) {
     return yield* compatibilityError;
   }
-  // A key-bound session renews itself, but only on a host that can renew it. The proof is made
-  // before the one-time code is sent, so a device that cannot sign keeps the code for bearer.
-  const signer = yield* Effect.serviceOption(ManagedRelay.ManagedRelayDpopSigner);
+  const renewal = yield* Effect.serviceOption(SessionRenewal.SessionRenewal);
+  // Fork: with the renewal store, a Chromeria host (fork-only `githubIssues`, which implies
+  // `renewSession`) keeps bearer renewal, since older Chromeria clients read only bearer
+  // credentials. Elsewhere a host that renews gets a key-bound session; the proof is made before
+  // the one-time code is sent, so a device that cannot sign keeps the code for bearer.
+  const signer =
+    Option.isNone(renewal) || descriptor.capabilities.githubIssues !== true
+      ? yield* Effect.serviceOption(ManagedRelay.ManagedRelayDpopSigner)
+      : Option.none<ManagedRelay.ManagedRelayDpopSigner["Service"]>();
   const dpopProof =
     descriptor.capabilities.accessTokenRenewal === true && Option.isSome(signer)
       ? yield* signer.value
@@ -184,11 +192,32 @@ export const preparePairingRegistration = Effect.fn(
       }),
     });
   }
+  const slot = Option.isSome(renewal)
+    ? yield* renewal.value
+        .stage({
+          key: connectionId,
+          environmentId: descriptor.environmentId,
+          origin: target.httpBaseUrl,
+          kind: "bearer",
+        })
+        .pipe(Effect.asSome)
+    : Option.none();
+  const issuedAt = yield* Clock.currentTimeMillis;
   const access = yield* bootstrapRemoteBearerSession({
     httpBaseUrl: target.httpBaseUrl,
     credential: target.credential,
+    ...(Option.isSome(slot) ? { renewalCommitment: renewalCommitment(slot.value.current) } : {}),
     clientMetadata: presentation.metadata,
   }).pipe(Effect.mapError(mapRemoteEnvironmentError));
+  if (Option.isSome(renewal) && Option.isSome(slot) && access.renewAfter !== undefined) {
+    yield* renewal.value
+      .complete(connectionId, slot.value.epoch, {
+        accessToken: access.access_token,
+        expiresAt: issuedAt + access.expires_in * 1000,
+        renewAfter: access.renewAfter,
+      })
+      .pipe(Effect.ignore);
+  }
 
   return new BearerConnectionRegistration({
     ...route,
