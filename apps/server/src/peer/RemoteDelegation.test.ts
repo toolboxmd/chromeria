@@ -3992,63 +3992,6 @@ it.effect("a task cancelled while the box is unreachable is stopped there after 
   ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
-it.effect("a task whose thread there has no run ends with its last reply", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const thread = yield* makeBoxThread;
-      const b = yield* serveBox(thread);
-      const offers = yield* SubscriptionRef.make<
-        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
-      >([]);
-      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-      const a = yield* makeLaptop(database, offers);
-      yield* linkTo(a.links, b, "full-access");
-      yield* seedParent(a);
-      // As a task recorded before its run was kept, whose thread there is idle.
-      yield* Ref.set(thread.runless, true);
-      yield* Ref.set(thread.reply, "Done before it was followed.");
-
-      const legacyThread = ThreadId.make("legacy-box-thread");
-      yield* Ref.set(thread.launched, legacyThread);
-      const recorded = yield* a.orchestrator.dispatch({
-        type: "delegated_task.remote.request",
-        commandId: CommandId.make("legacy-runless-import"),
-        parentThreadId,
-        parentRunId,
-        parentNodeId: parentRootNode,
-        task: "Imported remote work",
-        driver: ProviderDriverKind.make("remote"),
-        remoteChild: { environmentId: box.environmentId, threadId: legacyThread, label: "Box" },
-      });
-      const created = recorded.storedEvents.find(
-        (stored) => stored.event.type === "subagent.updated",
-      );
-      if (created?.event.type !== "subagent.updated")
-        return yield* Effect.die("Expected legacy task");
-      const taskId = created.event.payload.id;
-      yield* a.remote.start();
-      expect(yield* taskResult(a, taskId)).toMatchObject({
-        status: "completed",
-        result: "Done before it was followed.",
-      });
-      expect((yield* taskResult(a, taskId))?.remoteChild?.latestResult).toBeUndefined();
-      // Imported provenance stays unknown; no real run identity is invented.
-      expect(yield* Ref.get(thread.waitedFor)).toEqual([undefined]);
-      const cancelled = yield* a.call("task_cancel", {
-        taskId,
-        clientRequestId: "legacy-unconfirmed",
-      });
-      expect(cancelled.structuredContent).toMatchObject({
-        taskId,
-        status: "completed",
-        stopState: "unconfirmed",
-      });
-      expect(yield* Ref.get(thread.stops)).toEqual([]);
-      expect((yield* taskResult(a, taskId))?.result).toBe("Done before it was followed.");
-    }),
-  ).pipe(Effect.provide(layerLoopbackServerTest)),
-);
-
 /** Every `t3_thread_read` the laptop sends the box, as its arguments. */
 const captureThreadReads = (nativeFetch: typeof globalThis.fetch) => {
   const reads: Array<OrchestratorMcpThreadReadInput> = [];
@@ -4109,6 +4052,45 @@ const historyOf =
       text,
       type: errorAt?.(index) === true ? "error" : "assistant_message",
     }));
+
+it.effect("a task whose thread there has no run ends with its last reply", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      // As a task recorded before its run was kept, whose thread there is idle.
+      yield* Ref.set(thread.runless, true);
+      yield* Ref.set(thread.reply, "Done before it was followed.");
+
+      const taskId = yield* importBoxTask(a, thread, "legacy-runless-import");
+      expect(yield* taskResult(a, taskId)).toMatchObject({
+        status: "completed",
+        result: "Done before it was followed.",
+      });
+      expect((yield* taskResult(a, taskId))?.remoteChild?.latestResult).toBeUndefined();
+      // Imported provenance stays unknown; no real run identity is invented.
+      expect(yield* Ref.get(thread.waitedFor)).toEqual([undefined]);
+      const cancelled = yield* a.call("task_cancel", {
+        taskId,
+        clientRequestId: "legacy-unconfirmed",
+      });
+      expect(cancelled.structuredContent).toMatchObject({
+        taskId,
+        status: "completed",
+        stopState: "unconfirmed",
+      });
+      expect(yield* Ref.get(thread.stops)).toEqual([]);
+      expect((yield* taskResult(a, taskId))?.result).toBe("Done before it was followed.");
+    }),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
+);
 
 it.effect.each(["tail-error", "middle-error", "reply-fallback"] as const)(
   "an imported task reads its failed run through full activity pages (%s)",
@@ -4217,6 +4199,17 @@ it.effect.each([
             type: "assistant_message",
           },
           ...(middle ? history(200, boxLaterRunId, "later") : []),
+          // With no run to name, the result is the thread's last reply from any run.
+          ...(scenario === "no-run"
+            ? [
+                {
+                  id: TurnItemId.make("latest"),
+                  runId: boxRunId,
+                  text: "Latest reply.",
+                  type: "assistant_message" as const,
+                },
+              ]
+            : []),
         ];
         yield* Ref.set(thread.timeline, timeline);
         yield* Ref.set(thread.pageSize, 100);
@@ -4242,13 +4235,15 @@ it.effect.each([
           status,
           result: modelNote
             ? `Requested model gpt-5.4; the provider reported running gpt-5.4-mini.\n\n${result}`
-            : result,
+            : scenario === "no-run"
+              ? "Latest reply."
+              : result,
         });
 
         const pages = reads.filter((read) => read.itemId === undefined && read.limit === 100);
         // The thread's final page starts at its canonical 100-item boundary.
         const tailPosition = Math.floor((timeline.length - 1) / 100) * 100 - 1;
-        expect(pages.at(0)?.afterPosition ?? -1).toBe(-1);
+        expect(pages[0]?.afterPosition).toBe(-1);
         expect(
           pages.every(
             (read) =>
