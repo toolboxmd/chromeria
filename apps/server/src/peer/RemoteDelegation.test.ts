@@ -48,6 +48,7 @@ import {
   type ExecutionPurpose,
   LEGACY_EXECUTION_PURPOSE,
   OrchestratorMcpThreadSendResult,
+  type OrchestratorMcpThreadReadInput,
   RunId,
   ThreadId,
   TurnItemId,
@@ -66,6 +67,7 @@ import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as RequestReceipts from "../mcp/McpRequestReceipts.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, McpServer } from "effect/ai";
@@ -121,8 +123,20 @@ type LaunchedWith = Pick<
   "modelSelection" | "runtimeMode" | "interactionMode" | "workspaceStrategy"
 >;
 
+interface TimelineEntry {
+  readonly id: TurnItemId;
+  readonly runId: RunId;
+  readonly text: string;
+  readonly type: "assistant_message" | "error";
+}
+
 /** The thread the box launches for the task, which the test finishes. */
 interface BoxThread {
+  /** Replaces the timeline built from the reply refs below. */
+  readonly timeline: Ref.Ref<ReadonlyArray<TimelineEntry> | null>;
+  readonly pageSize: Ref.Ref<number>;
+  /** Runs once, just before the first read of the page after position 299. */
+  readonly beforeTail: Ref.Ref<Effect.Effect<void>>;
   readonly successor: Ref.Ref<boolean>;
   readonly launched: Ref.Ref<ThreadId | null>;
   readonly launchIds: Ref.Ref<ReadonlyArray<ThreadId>>;
@@ -188,6 +202,9 @@ interface BoxThread {
 
 const makeBoxThread = Effect.gen(function* () {
   return {
+    timeline: yield* Ref.make<ReadonlyArray<TimelineEntry> | null>(null),
+    pageSize: yield* Ref.make(1),
+    beforeTail: yield* Ref.make<Effect.Effect<void>>(Effect.void),
     successor: yield* Ref.make(false),
     launched: yield* Ref.make<ThreadId | null>(null),
     launchIds: yield* Ref.make<ReadonlyArray<ThreadId>>([]),
@@ -426,6 +443,9 @@ const boxToolkitLayer = (
       }),
     getTimelinePage: (threadId, options) =>
       Effect.gen(function* () {
+        if (options.afterPosition === 299 && options.itemId === undefined) {
+          yield* Ref.getAndSet(thread.beforeTail, Effect.void).pipe(Effect.flatten);
+        }
         if (yield* Ref.get(thread.holdRead)) {
           yield* Deferred.succeed(thread.readStarted, undefined);
           yield* Deferred.await(thread.releaseRead);
@@ -435,41 +455,43 @@ const boxToolkitLayer = (
         const error = yield* Ref.get(thread.error);
         const laterError = yield* Ref.get(thread.laterError);
         // One item per page, with errors available only in the activity view.
-        const replies = [
-          ...(reply === null
-            ? []
-            : [
-                {
-                  id: TurnItemId.make("item:reply"),
-                  runId,
-                  text: reply,
-                  type: "assistant_message",
-                },
-              ]),
-          ...(error === null
-            ? []
-            : [{ id: TurnItemId.make("item:error"), runId, text: error, type: "error" }]),
-          ...(later === null
-            ? []
-            : [
-                {
-                  id: TurnItemId.make("item:later-reply"),
-                  runId: boxLaterRunId,
-                  text: later,
-                  type: "assistant_message",
-                },
-              ]),
-          ...(laterError === null
-            ? []
-            : [
-                {
-                  id: TurnItemId.make("item:later-error"),
-                  runId: boxLaterRunId,
-                  text: laterError,
-                  type: "error",
-                },
-              ]),
-        ].map((entry, position) => ({ ...entry, position }));
+        const replies = (
+          (yield* Ref.get(thread.timeline)) ?? [
+            ...(reply === null
+              ? []
+              : [
+                  {
+                    id: TurnItemId.make("item:reply"),
+                    runId,
+                    text: reply,
+                    type: "assistant_message",
+                  },
+                ]),
+            ...(error === null
+              ? []
+              : [{ id: TurnItemId.make("item:error"), runId, text: error, type: "error" }]),
+            ...(later === null
+              ? []
+              : [
+                  {
+                    id: TurnItemId.make("item:later-reply"),
+                    runId: boxLaterRunId,
+                    text: later,
+                    type: "assistant_message",
+                  },
+                ]),
+            ...(laterError === null
+              ? []
+              : [
+                  {
+                    id: TurnItemId.make("item:later-error"),
+                    runId: boxLaterRunId,
+                    text: laterError,
+                    type: "error",
+                  },
+                ]),
+          ]
+        ).map((entry, position) => ({ ...entry, position }));
         const visible =
           options.itemId === undefined
             ? replies.filter(
@@ -478,7 +500,7 @@ const boxToolkitLayer = (
             : replies.filter((entry) => entry.id === options.itemId);
         const matching = visible
           .filter((entry) => entry.position > (options.afterPosition ?? -1))
-          .slice(0, 1);
+          .slice(0, yield* Ref.get(thread.pageSize));
         return {
           items: matching.map(({ id, runId: itemRunId, text, position, type }) => ({
             position,
@@ -4025,6 +4047,244 @@ it.effect("a task whose thread there has no run ends with its last reply", () =>
       expect((yield* taskResult(a, taskId))?.result).toBe("Done before it was followed.");
     }),
   ).pipe(Effect.provide(layerLoopbackServerTest)),
+);
+
+/** Every `t3_thread_read` the laptop sends the box, as its arguments. */
+const captureThreadReads = (nativeFetch: typeof globalThis.fetch) => {
+  const reads: Array<OrchestratorMcpThreadReadInput> = [];
+  const fetch: typeof globalThis.fetch = (input, init) => {
+    const body = init?.body instanceof Uint8Array ? new TextDecoder().decode(init.body) : null;
+    if (body?.startsWith("{")) {
+      const rpc: {
+        method?: string;
+        params?: { name?: string; arguments?: OrchestratorMcpThreadReadInput };
+      } = JSON.parse(body);
+      if (
+        rpc.method === "tools/call" &&
+        rpc.params?.name === "t3_thread_read" &&
+        rpc.params.arguments !== undefined
+      ) {
+        reads.push(rpc.params.arguments);
+      }
+    }
+    return nativeFetch(input, init);
+  };
+  return { reads, fetch };
+};
+
+/** An imported remote task, without lifecycle v1, so it is followed by reading its thread there. */
+const importBoxTask = (
+  a: Effect.Success<ReturnType<typeof makeLaptop>>,
+  thread: BoxThread,
+  commandId: string,
+) =>
+  Effect.gen(function* () {
+    const importedThread = ThreadId.make("imported-box-thread");
+    yield* Ref.set(thread.launched, importedThread);
+    const recorded = yield* a.orchestrator.dispatch({
+      type: "delegated_task.remote.request",
+      commandId: CommandId.make(commandId),
+      parentThreadId,
+      parentRunId,
+      parentNodeId: parentRootNode,
+      task: "Imported remote work",
+      driver: ProviderDriverKind.make("remote"),
+      remoteChild: { environmentId: box.environmentId, threadId: importedThread, label: "Box" },
+    });
+    const created = recorded.storedEvents.find(
+      (stored) => stored.event.type === "subagent.updated",
+    );
+    if (created?.event.type !== "subagent.updated")
+      return yield* Effect.die("Expected an imported task");
+    yield* a.remote.start();
+    return created.event.payload.id;
+  });
+
+const historyOf =
+  (text: string, errorAt?: (index: number) => boolean) =>
+  (count: number, runId: RunId, prefix: string): Array<TimelineEntry> =>
+    Array.from({ length: count }, (_, index) => ({
+      id: TurnItemId.make(`${prefix}:${index}`),
+      runId,
+      text,
+      type: errorAt?.(index) === true ? "error" : "assistant_message",
+    }));
+
+it.effect.each(["tail-error", "middle-error", "reply-fallback"] as const)(
+  "an imported task reads its failed run through full activity pages (%s)",
+  (scenario) =>
+    Effect.gen(function* () {
+      const { reads, fetch } = captureThreadReads(yield* FetchHttpClient.Fetch);
+      return yield* Effect.scoped(
+        Effect.gen(function* () {
+          const thread = yield* makeBoxThread;
+          const b = yield* serveBox(thread);
+          const offers = yield* SubscriptionRef.make<
+            ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+          >([]);
+          const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+          const a = yield* makeLaptop(database, offers);
+          yield* linkTo(a.links, b, "full-access");
+          yield* seedParent(a);
+          const result = `Provider details: ${"detail ".repeat(8_000)}end.`;
+          const middle = scenario !== "tail-error";
+          const ownType = scenario === "reply-fallback" ? "assistant_message" : "error";
+          const history = historyOf("discarded history ".repeat(120));
+          const timeline: Array<TimelineEntry> = [
+            ...history(middle ? 150 : 300, boxRunId, "before"),
+            { id: TurnItemId.make("selected"), runId: boxRunId, text: result, type: ownType },
+            ...(middle ? history(200, boxLaterRunId, "later") : []),
+            {
+              id: TurnItemId.make("other-error"),
+              runId: boxLaterRunId,
+              text: "Wrong run",
+              type: "error",
+            },
+          ];
+          yield* Ref.set(thread.timeline, timeline);
+          yield* Ref.set(thread.pageSize, 100);
+          yield* Ref.set(thread.status, "failed");
+          yield* Deferred.succeed(thread.finished, undefined);
+          const taskId = yield* importBoxTask(a, thread, `import:failed:${scenario}`);
+          expect(yield* taskResult(a, taskId)).toMatchObject({ status: "failed", result });
+          expect(yield* Ref.get(thread.waitedFor)).toEqual([undefined]);
+
+          const pages = reads.filter((read) => read.itemId === undefined && read.limit === 100);
+          // A page moves on by however many items the response budget left it.
+          const remaining = (read: OrchestratorMcpThreadReadInput) =>
+            timeline.length - 1 - (read.afterPosition ?? -1);
+          expect(pages[0]).toMatchObject({
+            view: "activity",
+            limit: 100,
+            maxCharsPerItem: 20_000,
+          });
+          expect(pages.slice(1).some((read) => remaining(read) > 100)).toBe(true);
+          for (const read of pages.slice(1))
+            expect(read.maxCharsPerItem).toBe(remaining(read) > 100 ? 1 : 20_000);
+          const forwards = pages.slice(1).map((read) => read.afterPosition ?? -1);
+          expect(forwards).toEqual([...forwards].sort((left, right) => left - right));
+          expect(new Set(forwards).size).toBe(forwards.length);
+          const refills = reads.filter((read) => read.itemId !== undefined);
+          expect(refills[0]).toMatchObject({ itemId: "selected", textOffset: middle ? 1 : 20_000 });
+          expect(refills).toHaveLength(middle ? 3 : 2);
+        }),
+      ).pipe(
+        Effect.provide(layerLoopbackServerTest),
+        Effect.provideService(FetchHttpClient.Fetch, fetch),
+      );
+    }),
+);
+
+it.effect.each([
+  "terminal",
+  "long",
+  "later-run",
+  "sparse",
+  "growing",
+  "shrinking",
+  "no-run",
+  "cancelled",
+  "interrupted",
+] as const)("an imported task reads its run with an aligned tail probe (%s)", (scenario) =>
+  Effect.gen(function* () {
+    const { reads, fetch } = captureThreadReads(yield* FetchHttpClient.Fetch);
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+        const result =
+          scenario === "long"
+            ? `Complete ${"detail ".repeat(12_000)}end.`
+            : "Authoritative result.";
+        const middle = scenario === "later-run" || scenario === "shrinking";
+        const history = historyOf(
+          "History",
+          scenario === "sparse" ? (index) => index % 2 === 0 : undefined,
+        );
+        const timeline: Array<TimelineEntry> = [
+          ...history(middle ? 150 : 300, boxRunId, "before"),
+          {
+            id: TurnItemId.make("selected"),
+            runId: scenario === "no-run" ? boxLaterRunId : boxRunId,
+            text: result,
+            type: "assistant_message",
+          },
+          ...(middle ? history(200, boxLaterRunId, "later") : []),
+        ];
+        yield* Ref.set(thread.timeline, timeline);
+        yield* Ref.set(thread.pageSize, 100);
+        if (scenario === "growing") {
+          yield* Ref.set(
+            thread.beforeTail,
+            Ref.set(thread.timeline, [...timeline, ...history(101, boxLaterRunId, "growth")]),
+          );
+        }
+        if (scenario === "shrinking") {
+          yield* Ref.set(thread.beforeTail, Ref.set(thread.timeline, timeline.slice(0, 151)));
+        }
+        // A thread there with no run is read for its latest reply, whatever run gave it.
+        if (scenario === "no-run") yield* Ref.set(thread.runless, true);
+        const status =
+          scenario === "cancelled" || scenario === "interrupted" ? scenario : "completed";
+        const modelNote = scenario === "terminal" || scenario === "long";
+        if (modelNote) yield* Ref.set(thread.executedModel, "gpt-5.4-mini");
+        yield* Ref.set(thread.status, status);
+        yield* Deferred.succeed(thread.finished, undefined);
+        const taskId = yield* importBoxTask(a, thread, `import:tail:${scenario}`);
+        expect(yield* taskResult(a, taskId)).toMatchObject({
+          status,
+          result: modelNote
+            ? `Requested model gpt-5.4; the provider reported running gpt-5.4-mini.\n\n${result}`
+            : result,
+        });
+
+        const pages = reads.filter((read) => read.itemId === undefined && read.limit === 100);
+        // The thread's final page starts at its canonical 100-item boundary.
+        const tailPosition = Math.floor((timeline.length - 1) / 100) * 100 - 1;
+        expect(pages.at(0)?.afterPosition ?? -1).toBe(-1);
+        expect(
+          pages.every(
+            (read) =>
+              read.view === "messages" && read.limit === 100 && read.maxCharsPerItem === 20_000,
+          ),
+        ).toBe(true);
+        if (scenario === "cancelled" || scenario === "interrupted") {
+          // A run that did not complete keeps the established scan, without the probe.
+          expect(pages.map((read) => read.afterPosition)).not.toContain(tailPosition);
+          const forwards = pages.slice(1).map((read) => read.afterPosition ?? -1);
+          expect(forwards.length).toBeGreaterThan(0);
+          expect(forwards).toEqual([...forwards].sort((left, right) => left - right));
+        } else {
+          expect(pages.at(1)?.afterPosition).toBe(tailPosition);
+          const rest = pages.slice(2);
+          if (scenario === "later-run" || scenario === "shrinking" || scenario === "growing") {
+            // An inconclusive tail falls back to scanning from where the first page ended.
+            expect(rest.length).toBeGreaterThan(0);
+            const resumed = rest.map((read) => read.afterPosition ?? -1);
+            expect(resumed[0]).toBeLessThan(tailPosition);
+            expect(resumed).toEqual([...resumed].sort((left, right) => left - right));
+          } else {
+            // A terminal page holding the run's last reply ends the read there.
+            expect(rest).toHaveLength(0);
+          }
+        }
+        const refills = reads.filter((read) => read.itemId !== undefined);
+        expect(refills).toHaveLength(scenario === "long" ? 4 : 0);
+        if (scenario === "long")
+          expect(refills.map((read) => read.textOffset)).toEqual([20_000, 40_000, 60_000, 80_000]);
+      }),
+    ).pipe(
+      Effect.provide(layerLoopbackServerTest),
+      Effect.provideService(FetchHttpClient.Fetch, fetch),
+    );
+  }),
 );
 
 it.effect("a local task runs in this thread's project", () =>
