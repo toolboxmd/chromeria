@@ -6,6 +6,8 @@ import {
   AuthMcpAuthorizationRequest,
   isRuntimeModeAbove,
   parseMcpApprovalCode,
+  AuthMcpOperation,
+  ProjectId,
 } from "@t3tools/contracts";
 import { managedRuntimeModeCeilingMessage } from "@t3tools/client-runtime/contract-labels";
 import { Radio as RadioPrimitive } from "@base-ui/react/radio";
@@ -162,6 +164,12 @@ export function McpConsent({
           loaded.status === "ready" ? loaded.details.runtimeModeCeiling : undefined,
           pairingCode.trim().length > 0,
         );
+  const [duration, setDuration] = useState<"30-days" | "until-revoked">("30-days");
+  const [projectId, setProjectId] = useState("");
+  const [scoped, setScoped] = useState(false);
+  const [operations, setOperations] = useState<ReadonlyArray<AuthMcpOperation>>(
+    AuthMcpOperation.literals,
+  );
   const [errorMessage, setErrorMessage] = useState("");
   const [pending, setPending] = useState<"approve" | "deny" | null>(null);
 
@@ -206,15 +214,28 @@ export function McpConsent({
   }, [loaded.status]);
 
   const decide = async (choice: "approve" | "deny", details: AuthMcpApprovalDetails) => {
-    const decision: AuthMcpApprovalDecision | null =
+    const approval =
       choice === "deny"
-        ? { _tag: "deny" }
+        ? null
         : access === null
           ? null
           : resolveApprovalDecision({ code: pairingCode, access, details });
-    if (decision === null) return;
+    if (choice === "approve" && approval === null) return;
     setPending(choice);
     setErrorMessage("");
+    const options = {
+      duration,
+      ...(scoped
+        ? {
+            limits: {
+              ...(projectId.trim() ? { projectId: ProjectId.make(projectId.trim()) } : {}),
+              operations,
+            },
+          }
+        : {}),
+    };
+    const decision: AuthMcpApprovalDecision =
+      approval === null ? { _tag: "deny" } : { ...approval, ...options };
     const answer = await transport.decide(authorization, decision);
     if (answer.kind === "redirect" && followRedirect(answer.url)) return;
     setPending(null);
@@ -271,7 +292,7 @@ export function McpConsent({
         description={
           environmentLabel ? (
             <T>
-              This agent wants to use the threads in every project on{" "}
+              Choose which threads this agent may use on{" "}
               <span className="font-medium text-foreground">
                 <Var>{environmentLabel}</Var>
               </span>{" "}
@@ -279,7 +300,7 @@ export function McpConsent({
             </T>
           ) : (
             <T>
-              This agent wants to use the threads in every project on{" "}
+              Choose which threads this agent may use on{" "}
               <span className="font-medium text-foreground">
                 <Var>{environmentLabel ?? details.environmentHost}</Var>
               </span>
@@ -392,6 +413,78 @@ export function McpConsent({
             </p>
           </div>
         )}
+
+        <fieldset className="space-y-2">
+          <legend className="text-sm font-medium">
+            <T>Sign-in duration</T>
+          </legend>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              name="duration"
+              checked={duration === "30-days"}
+              onChange={() => setDuration("30-days")}
+            />
+            <T>30 days</T>
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              name="duration"
+              checked={duration === "until-revoked"}
+              onChange={() => setDuration("until-revoked")}
+            />
+            <T>Until revoked</T>
+          </label>
+          <p className="text-xs text-muted-foreground">
+            <T>
+              Until revoked lets the agent renew its sign-in automatically. Revoke it in Settings →
+              Connections.
+            </T>
+          </p>
+        </fieldset>
+        <fieldset className="space-y-2">
+          <legend className="text-sm font-medium">
+            <T>Project and operations</T>
+          </legend>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={scoped}
+              onChange={(event) => setScoped(event.target.checked)}
+            />
+            <T>Limit this agent's access</T>
+          </label>
+          {scoped ? (
+            <>
+              <label className="text-sm" htmlFor="grant-project">
+                <T>Project id (leave empty for all projects)</T>
+              </label>
+              <Input
+                id="grant-project"
+                nativeInput
+                value={projectId}
+                onChange={(event) => setProjectId(event.target.value)}
+              />
+              {AuthMcpOperation.literals.map((operation) => (
+                <label key={operation} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={operations.includes(operation)}
+                    onChange={(event) =>
+                      setOperations((current) =>
+                        event.target.checked
+                          ? [...current, operation]
+                          : current.filter((value) => value !== operation),
+                      )
+                    }
+                  />
+                  {operation}
+                </label>
+              ))}
+            </>
+          ) : null}
+        </fieldset>
 
         {errorMessage ? (
           <Alert variant="error">
