@@ -3075,6 +3075,18 @@ describe("OrchestratorMcpService provider resolution", () => {
           instanceId: opencodeInstanceId,
           model: worktreeModel,
         });
+        const contradictory = yield* service
+          .delegateTask(scope, {
+            task: "Review the change.",
+            isolation: "worktree",
+            workspaceStrategy: { type: "existing_worktree", worktreePath: worktreeRoot },
+            target: { providerInstanceId: opencodeInstanceId, model: worktreeModel },
+            mode: "async",
+            clientRequestId: "isolation-with-existing-worktree",
+          })
+          .pipe(Effect.flip);
+        assert.equal(contradictory.code, "invalid_request");
+        assert.equal(commands.length, 3);
       }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
     }),
   );

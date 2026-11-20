@@ -3834,6 +3834,12 @@ const make = Effect.gen(function* () {
       };
     }),
     delegateTask: Effect.fn("OrchestratorMcpService.delegateTask")(function* (callerScope, input) {
+      if (input.isolation === "worktree" && input.workspaceStrategy?.type === "existing_worktree") {
+        return yield* failure(
+          "invalid_request",
+          'isolation "worktree" creates a new worktree, but workspaceStrategy names an existing one. Omit isolation to run in that worktree, or omit workspaceStrategy for a new one.',
+        );
+      }
       const environmentId =
         input.target === undefined
           ? undefined
