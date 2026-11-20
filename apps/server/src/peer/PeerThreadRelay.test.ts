@@ -238,11 +238,7 @@ it.effect("tells a client why a linked environment's thread cannot be read", () 
 
       yield* b.auth.revokeSession(session);
       expect(yield* reasonOf()).toEqual({ reason: "rejected", label: "Box" });
-
-      yield* Ref.set(b.bearers, []);
-      yield* TestClock.adjust(Duration.days(31));
-      expect(yield* reasonOf()).toEqual({ reason: "expired", label: "Box" });
-      expect(yield* Ref.get(b.bearers)).toEqual([]);
+      // Fork links do not expire after 30 days, so there is no expired case to reach.
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

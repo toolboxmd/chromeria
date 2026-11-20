@@ -14,6 +14,7 @@ const state = vi.hoisted(() => ({
   relatedShells: [] as unknown[],
   threadTitles: {} as Record<string, string>,
   archivedThreads: [] as unknown[],
+  hiddenKeys: new Set<string>(),
 }));
 
 vi.mock(import("../../state/query"), async (original) => ({
@@ -38,7 +39,8 @@ vi.mock(import("../../state/entities"), () => ({
       ? []
       : [(state.projection as { thread: unknown }).thread, ...state.relatedShells]) as never,
   useProjects: (() => []) as never,
-  useHiddenThreadKeys: (() => new Set()) as never,
+  useServerConfigs: (() => new Map()) as never,
+  useHiddenThreadKeys: (() => state.hiddenKeys) as never,
   useAnyEnvironmentHiding: (() => false) as never,
 }));
 vi.mock(import("../../state/environments"), () => ({
@@ -83,6 +85,7 @@ function setup() {
   state.relatedShells = [];
   state.threadTitles = { source: "Source" };
   state.archivedThreads = [];
+  state.hiddenKeys = new Set();
   state.projection = {
     thread: {
       id: threadId,
@@ -296,6 +299,14 @@ it("shows a remote subagent's full title in its tooltip even when its environmen
   const longTitle = "Investigate a remote subagent issue across linked environments";
   const remoteEnvId = EnvironmentId.make("remote-env");
   const remoteThreadId = ThreadId.make("remote-thread");
+  state.hiddenKeys = new Set([`${environmentId}\u0000${remoteThreadId}`]);
+  state.relatedShells = [
+    {
+      id: remoteThreadId,
+      title: "Hidden local side chat with the same ID",
+      lineage: { parentThreadId: threadId, relationshipToParent: "fork", sideChat: true },
+    },
+  ];
   const now = DateTime.makeUnsafe("2026-10-31T20:00:00.000Z");
   state.projection = {
     ...(state.projection as Record<string, unknown>),
@@ -354,9 +365,8 @@ it("shows a remote subagent's full title in its tooltip even when its environmen
   await vi.waitFor(() =>
     expect(document.querySelector('[data-slot="tooltip-popup"]')?.textContent).toContain(longTitle),
   );
-  // This client is not connected there, so the row reads the thread through this environment.
   expect(document.querySelector('[data-slot="tooltip-popup"]')?.textContent).toContain(
-    "Read the thread on Remote VM with a long machine name in the office",
+    "Runs on Remote VM with a long machine name in the office, which this client is not connected to",
   );
 
   await row.click({ force: true });

@@ -147,6 +147,7 @@ function threadRunStatusIsActive(status: ThreadRuntimeSummary["status"]): boolea
 }
 
 export interface EnvironmentThreadShell {
+  readonly purposeSelection?: import("@t3tools/contracts").PurposeSelection | undefined;
   readonly environmentId: EnvironmentId;
   readonly id: ThreadId;
   readonly projectId: ProjectId;
@@ -190,6 +191,7 @@ export interface EnvironmentThreadShell {
   readonly unsettledAt: string | null;
   readonly snoozedUntil: string | null;
   readonly snoozedAt: string | null;
+  readonly transportRecovery?: import("@t3tools/contracts").OrchestrationV2AppThread["transportRecovery"];
   readonly limitRecovery?: import("@t3tools/contracts").OrchestrationV2LimitRecovery | null;
   readonly pinnedAt: string | null;
   readonly autoSettleDisabledAt?: string | null;
@@ -269,6 +271,23 @@ export function scopeProject(
 
 export type PendingSubagentRequest = "approval" | "user_input";
 
+export function isThreadVisibleInNavigation(
+  thread: Pick<EnvironmentThreadShell, "lineage" | "delegatedFrom"> & {
+    readonly archivedAt:
+      | OrchestrationV2ThreadShell["archivedAt"]
+      | EnvironmentThreadShell["archivedAt"];
+  },
+  searchQuery = "",
+): boolean {
+  return (
+    thread.archivedAt === null &&
+    thread.lineage.relationshipToParent !== "subagent" &&
+    (thread.delegatedFrom == null ||
+      thread.lineage.relationshipToParent === "fork" ||
+      searchQuery.trim().length > 0)
+  );
+}
+
 export function presentThreadShell(
   environmentId: EnvironmentId,
   thread: OrchestrationV2ThreadShell,
@@ -306,6 +325,7 @@ export function presentThreadShell(
     interactionMode: thread.interactionMode,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
+    purposeSelection: thread.purposeSelection,
     pullRequests: threadPullRequestsOf(thread),
     linkedPullRequest: thread.linkedPullRequest ?? null,
     branchPullRequest: thread.branchPullRequest ?? null,
@@ -349,6 +369,7 @@ export function presentThreadShell(
     snoozedUntil: nullableIso(thread.snoozedUntil ?? null),
     snoozedAt: nullableIso(thread.snoozedAt ?? null),
     limitRecovery: thread.limitRecovery ?? null,
+    transportRecovery: thread.transportRecovery ?? null,
     pinnedAt: nullableIso(thread.pinnedAt ?? null),
     autoSettleDisabledAt: nullableIso(thread.autoSettleDisabledAt ?? null),
     pinOrderKey: thread.pinOrderKey ?? null,
