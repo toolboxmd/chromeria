@@ -1,7 +1,9 @@
 import { isListedThreadLineage, isWebhookDedupeTemplate } from "@t3tools/contracts";
+import { purposeScopeOfSavedIntent, type ExecutionPurposeScope } from "@t3tools/contracts";
 import {
   EnvironmentId,
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
+  isForkScheduledTaskSchedule,
   type ProjectId,
   ScheduledTaskId,
   type ScheduledTask,
@@ -15,6 +17,7 @@ import {
   type ServerSettings,
   type ThreadId,
 } from "@t3tools/contracts";
+import { forkScheduleLabel } from "@t3tools/client-runtime/scheduled-task-fork";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import {
   parseMaxDeliveryAge,
@@ -25,6 +28,7 @@ import {
 } from "@t3tools/client-runtime/scheduled-task-webhook";
 import { scheduleTimeZoneLabel } from "@t3tools/client-runtime/scheduled-task-time-zone";
 import { msg } from "gt-react";
+import * as ScheduledTaskForkLogic from "./scheduledTaskFork.logic";
 
 import {
   resolveProjectSettings,
@@ -57,8 +61,14 @@ export function scheduleLabel(
 ): string {
   if (schedule.type === "webhook") return resolve(msg("On webhook"));
   if (schedule.type === "once") {
-    return resolve(msg("Once, {time}", { time: ONCE_FORMATTER.format(new Date(schedule.runAt)) }));
+    return resolve(
+      msg("Once, {time}", {
+        time: ONCE_FORMATTER.format(new Date("runAt" in schedule ? schedule.runAt : schedule.at)),
+      }),
+    );
   }
+  // Chromeria (toolboxmd fork): fork schedule kinds label themselves.
+  if (isForkScheduledTaskSchedule(schedule)) return forkScheduleLabel(schedule);
   if (schedule.type === "interval") {
     const minutes = schedule.everyMs / 60_000;
     return Number.isInteger(minutes)
@@ -111,10 +121,11 @@ export function validateScheduledTasksSearch(raw: Record<string, unknown>) {
   };
 }
 
-export type ScheduleMode = "fixed" | "once" | "interval" | "webhook";
+export type ScheduleMode = "fixed" | "once" | "interval" | "webhook" | "preserved";
 export type WorkspaceMode = "root" | "worktree" | "existing_worktree";
 
 export interface DraftState {
+  readonly purposeScope?: ExecutionPurposeScope;
   readonly editingId: string | null;
   readonly title: string;
   readonly prompt: string;
@@ -154,6 +165,10 @@ export interface DraftState {
   readonly filters: ReadonlyArray<WebhookFilterDraft>;
   /** The filter rows the form opened with. */
   readonly savedFilters: ReadonlyArray<WebhookFilterDraft>;
+  /** A fork trigger saved back exactly as loaded. */
+  readonly preservedSchedule: ScheduledTaskUpsertSchedule | null;
+  /** Chromeria (toolboxmd fork): fixed_time's zone, extra times, month days and spreading. */
+  readonly fixedTimeFork: ScheduledTaskForkLogic.FixedTimeForkDraft;
 }
 
 export const WEBHOOK_SIGNATURE_DEFAULTS = {
@@ -182,6 +197,8 @@ export function scheduleDraftErrors(draft: DraftState, resolve: MessageResolver 
   }
   if (draft.scheduleMode === "fixed" && !draft.timeOfDay)
     return invalidRunTime(resolve(msg("Pick a time.")));
+  if (draft.scheduleMode === "fixed")
+    return ScheduledTaskForkLogic.fixedTimeForkErrors(draft.fixedTimeFork, resolve);
   if (draft.scheduleMode !== "webhook") return [];
   if (parseMaxDeliveryAge(draft.maxDeliveryAgeMinutes) === undefined)
     return [
@@ -242,6 +259,7 @@ export function webhookDeliveryLabel(
 }
 
 export function scheduleFromDraft(draft: DraftState): ScheduledTaskUpsertSchedule | null {
+  if (draft.scheduleMode === "preserved") return draft.preservedSchedule;
   if (scheduleDraftErrors(draft).length > 0) return null;
   if (draft.scheduleMode === "once") {
     const saved = draft.savedRunAt ? new Date(draft.savedRunAt) : null;
@@ -307,6 +325,7 @@ export function scheduleFromDraft(draft: DraftState): ScheduledTaskUpsertSchedul
     type: "fixed_time",
     timeOfDay: draft.timeOfDay,
     ...(selectedEveryDay ? {} : { weekdays: [...draft.weekdays].toSorted() }),
+    ...ScheduledTaskForkLogic.fixedTimeForkFields(draft.fixedTimeFork),
   };
 }
 
@@ -318,17 +337,31 @@ export function taskToDraft(task: ScheduledTask): DraftState {
       ? new Set(schedule.weekdays)
       : new Set([0, 1, 2, 3, 4, 5, 6]);
   return {
+    purposeScope: purposeScopeOfSavedIntent(task.purposeIntent),
     editingId: task.id,
     title: task.title,
     prompt: task.prompt,
     enabled: task.enabled,
-    scheduleMode: schedule.type === "fixed_time" ? "fixed" : schedule.type,
+    // Chromeria (toolboxmd fork): the form edits fixed_time's fork fields and keeps a fork one-shot.
+    scheduleMode:
+      schedule.type === "fixed_time"
+        ? "fixed"
+        : isForkScheduledTaskSchedule(schedule)
+          ? "preserved"
+          : schedule.type,
+    preservedSchedule:
+      schedule.type !== "fixed_time" && isForkScheduledTaskSchedule(schedule) ? schedule : null,
+    fixedTimeFork: ScheduledTaskForkLogic.fixedTimeForkDraft(schedule),
     intervalMinutes:
       schedule.type === "interval" ? String(Math.max(1, schedule.everyMs / 60_000)) : "15",
     // A time input shows nothing for an unpadded hour such as 9:05, which agents may save.
     timeOfDay: schedule.type === "fixed_time" ? schedule.timeOfDay.padStart(5, "0") : "09:00",
-    runAt: schedule.type === "once" ? toDateTimeLocalValue(new Date(schedule.runAt)) : "",
-    savedRunAt: schedule.type === "once" ? schedule.runAt : "",
+    runAt:
+      schedule.type === "once"
+        ? toDateTimeLocalValue(new Date("runAt" in schedule ? schedule.runAt : schedule.at))
+        : "",
+    savedRunAt:
+      schedule.type === "once" ? ("runAt" in schedule ? schedule.runAt : schedule.at) : "",
     weekdays,
     projectId: task.projectId,
     threadId: task.threadId ?? "",
