@@ -72,6 +72,7 @@ it("opens full command details for short labels and keeps pending tasks current"
         stopping: false,
         onStop: async () => undefined,
         onOpenThread: () => undefined,
+        reachableEnvironments: new Set(),
       })}
     />
   );
@@ -118,6 +119,7 @@ it("gives a subagent the same status as the background work line", async () => {
         stopping: false,
         onStop: async () => undefined,
         onOpenThread: () => undefined,
+        reachableEnvironments: new Set(),
       })}
     />,
   );

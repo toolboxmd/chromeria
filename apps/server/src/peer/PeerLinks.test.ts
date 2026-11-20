@@ -7,6 +7,7 @@ import { type ExecutionEnvironmentDescriptor, OrchestratorMcpFailure } from "@t3
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -39,6 +40,7 @@ import {
   servePeer,
   type ServedPeer,
 } from "./PeerLinks.testkit.ts";
+import { layerLoopbackServerTest } from "../testUtils/loopbackHttpServer.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
 
 import { layerReaderDatabase, traceSqlRouting } from "../persistence/testkit/SqliteRouting.ts";
@@ -118,7 +120,7 @@ const linkedSessions = (b: ServedPeer) => b.linkedSessions;
 
 /** Another environment on a socket of its own, answering as `descriptor`. */
 const serveApart = (descriptor: ExecutionEnvironmentDescriptor) =>
-  Layer.build(Layer.fresh(NodeHttpServer.layerTest)).pipe(
+  Layer.build(Layer.fresh(layerLoopbackServerTest)).pipe(
     Effect.flatMap((server) => serveB(descriptor).pipe(Effect.provideContext(server))),
   );
 
@@ -206,7 +208,7 @@ it.effect("links with a pairing code, and the peer holds its agents to the limit
       const notFound = yield* probe(a, undefined, "refuse").pipe(Effect.flip);
       expect(notFound).toMatchObject({ code: "thread_not_found", message: "No such thread." });
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect(
@@ -243,7 +245,7 @@ it.effect(
         yield* b.settings.updateSettings({ linkedEnvironmentsEnabled: true });
         expect(yield* probe(a)).toEqual({ caller: "T3 Code · Laptop", modes: "auto/default" });
       }),
-    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect("a link whose row cannot be stored keeps none of its token", () =>
@@ -283,7 +285,7 @@ it.effect("a link whose row cannot be stored keeps none of its token", () =>
       expect(failed.reason).toBe("storage");
       expect(yield* Ref.get(held)).toEqual(new Set());
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect("two links racing to one peer leave the stored access matching the token", () =>
@@ -309,7 +311,7 @@ it.effect("two links racing to one peer leave the stored access matching the tok
         stored!.access === "read-only" ? "approval-required/default" : "full-access/default",
       );
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 /** A bare HTTP server on a socket of its own, answering with `handle`. */
@@ -318,7 +320,7 @@ const serveRaw = <E, R>(
     request: HttpServerRequest.HttpServerRequest,
   ) => Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
 ) =>
-  Layer.build(Layer.fresh(NodeHttpServer.layerTest)).pipe(
+  Layer.build(Layer.fresh(layerLoopbackServerTest)).pipe(
     Effect.flatMap((server) =>
       Effect.gen(function* () {
         yield* HttpServer.serve(Effect.flatMap(HttpServerRequest.HttpServerRequest, handle)).pipe(
@@ -367,7 +369,7 @@ it.effect("never follows a peer's redirect with the pairing code", () =>
       expect(yield* Ref.get(received)).toEqual([]);
       expect(yield* a.links.list).toEqual([]);
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect("never sends a link's token to an address that stops answering as that peer", () =>
@@ -388,7 +390,7 @@ it.effect("never sends a link's token to an address that stops answering as that
       expect(yield* Ref.get(b.bearers)).toEqual([]);
       expect((yield* a.links.list).map((link) => link.status)).toEqual(["unreachable"]);
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect("lists a peer asleep at every address as unreachable within one probe budget", () =>
@@ -417,7 +419,7 @@ it.effect("lists a peer asleep at every address as unreachable within one probe 
       const listed = yield* Fiber.join(listing);
       expect(listed.map((link) => link.status)).toEqual(["unreachable"]);
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect("lists a peer as reachable at another address while its first one sleeps", () =>
@@ -444,7 +446,7 @@ it.effect("lists a peer as reachable at another address while its first one slee
       yield* Ref.set(b.asleep, true);
       expect((yield* a.links.list).map((link) => link.status)).toEqual(["reachable"]);
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect("resolves a link at its answering address without waiting out a sleeping first", () =>
@@ -476,7 +478,7 @@ it.effect("resolves a link at its answering address without waiting out a sleepi
       // The clock no longer moves: a resolve that probes the sleeping address first never returns.
       expect((yield* a.links.resolve(box.environmentId)).url).toBe(elsewhere);
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect("cancelling a descriptor probe aborts its request and leaves later resolves fresh", () =>
@@ -527,7 +529,7 @@ it.effect("cancelling a descriptor probe aborts its request and leaves later res
       expect(yield* Ref.get(requests)).toBe(2);
       expect(yield* Ref.get(b.bearers)).toEqual([]);
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.live("one dropped descriptor request does not list a live peer as unreachable", () =>
@@ -559,7 +561,7 @@ it.live("one dropped descriptor request does not list a live peer as unreachable
       yield* Ref.set(dropNext, true);
       expect((yield* a.links.list).map((link) => link.status)).toEqual(["reachable"]);
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect("reads one stored link without asking the peer", () =>
@@ -576,7 +578,7 @@ it.effect("reads one stored link without asking the peer", () =>
       expect(Option.isNone(yield* a.links.get(laptop.environmentId))).toBe(true);
       expect(yield* Ref.get(b.probes)).toBe(0);
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect("a linked peer that is renamed shows its new name", () =>
@@ -597,7 +599,7 @@ it.effect("a linked peer that is renamed shows its new name", () =>
       const storedAfterList = yield* a.links.get(box.environmentId);
       expect(Option.map(storedAfterList, (link) => link.label)).toEqual(Option.some("Box Studio"));
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect(
@@ -628,7 +630,7 @@ it.effect(
         const forgotten = yield* probe(a).pipe(Effect.flip);
         expect(forgotten.message).toContain("not linked to");
       }),
-    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect("tells the agent to link again once the peer revokes the link or it expires", () =>
@@ -640,6 +642,10 @@ it.effect("tells the agent to link again once the peer revokes the link or it ex
       yield* a.links.link({ url: b.url, pairingCode: pairing.credential, access: "auto" });
       yield* probe(a);
 
+      yield* TestClock.adjust(Duration.days(31));
+      expect(yield* probe(a)).toMatchObject({ caller: "T3 Code · Laptop" });
+      yield* TestClock.adjust(Duration.days(3653));
+      expect(yield* probe(a)).toMatchObject({ caller: "T3 Code · Laptop" });
       const [session] = yield* linkedSessions(b);
       yield* b.auth.revokeSession(session!.sessionId);
       const revoked = yield* probe(a).pipe(Effect.flip);
@@ -677,6 +683,11 @@ it.effect("tells the agent to link again once the peer revokes the link or it ex
       });
       yield* probe(a);
 
+      // Finite links issued by older peers still expire locally without sending a bearer.
+      yield* a.sql`UPDATE peer_environment_links SET expires_at = ${(yield* DateTime.now).pipe(
+        DateTime.add({ days: 30 }),
+        DateTime.formatIso,
+      )}`;
       yield* TestClock.adjust(Duration.days(31));
       expect((yield* a.links.list).map((link) => link.status)).toEqual(["expired"]);
       yield* Ref.set(b.bearers, []);
@@ -685,7 +696,7 @@ it.effect("tells the agent to link again once the peer revokes the link or it ex
       expect(expired.message).toContain("expired");
       expect(yield* Ref.get(b.bearers)).toEqual([]);
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect(
@@ -736,7 +747,7 @@ it.effect(
         // Neither attempt spent the pairing code on a session.
         expect(yield* linkedSessions(b)).toEqual([]);
       }),
-    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect(
@@ -786,7 +797,7 @@ it.effect(
           yield* a.links.link({ url: b.url, pairingCode: renewal.credential, access: "auto" }),
         ).toMatchObject({ urls: [b.url] });
       }),
-    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.effect("linking a picked machine that answers nowhere names it and links nothing", () =>
@@ -824,7 +835,7 @@ it.effect("linking a picked machine that answers nowhere names it and links noth
       expect(refused.message).toContain("could not reach Box");
       expect(refused.message).toContain("plain http");
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it.live("linking an address with nothing listening says so, unlike one that is not T3 Code", () =>
@@ -847,7 +858,7 @@ it.live("linking an address with nothing listening says so, unlike one that is n
       );
       expect(yield* a.links.list).toEqual([]);
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 /** An https listener whose certificate this machine does not trust. */
@@ -895,7 +906,7 @@ it.effect("names an untrusted certificate instead of calling the peer something 
       expect((yield* a.links.resolve(box.environmentId)).url).toBe(b.url);
       expect((yield* a.links.list).map((link) => link.status)).toEqual(["reachable"]);
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
 it("reads Node's TLS verification code from anywhere in a cause chain", () => {

@@ -1,3 +1,5 @@
+import { hasSourceRemoteTaskView } from "@t3tools/client-runtime/state/remote-tasks";
+import { RemoteTaskViewer } from "./RemoteTaskViewer";
 import { useAtomValue } from "@effect/atom-react";
 import { useGT, useMessages } from "gt-react-native";
 import { StackActions, useNavigation } from "@react-navigation/native";
@@ -8,6 +10,7 @@ import {
 } from "@t3tools/client-runtime/state/provider-instance-display";
 import { summarizeSubagentStatuses } from "@t3tools/client-runtime/state/subagent-display";
 import { isActiveSubagentStatus } from "@t3tools/client-runtime/state/subagentRuntime";
+import { subagentChildTarget } from "@t3tools/client-runtime/state/thread-relationships";
 import type {
   EnvironmentId,
   OrchestrationV2Subagent,
@@ -15,6 +18,7 @@ import type {
   ServerConfig,
 } from "@t3tools/contracts";
 import { Pressable, View, type ColorValue } from "react-native";
+import { useState } from "react";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { SymbolView } from "../../components/ui/AppSymbol";
@@ -110,6 +114,7 @@ export function ThreadSubagentGroup(props: {
 }) {
   const gt = useGT();
   const messages = useMessages();
+  const [remoteTaskId, setRemoteTaskId] = useState<string | null>(null);
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
   const navigation = useNavigation();
   const openInspector = useOpenThreadInspector();
@@ -133,8 +138,13 @@ export function ThreadSubagentGroup(props: {
       progress: live?.progress ?? item.progress,
       model: live?.model ?? null,
       modelSelection: live?.modelSelection,
+      // A remote launch attaches its thread on the live record after the
+      // turn item was first projected.
+      childThreadId: live?.childThreadId ?? item.childThreadId,
+      remoteChild: live?.remoteChild ?? item.remoteChild,
     };
   });
+  const selectedRemote = agents.find((agent) => agent.item.subagentId === remoteTaskId);
   const grouped = agents.length > 1;
   const label = gt("{count, plural, one {{count} subagent} other {{count} subagents}}", {
     count: agents.length,
@@ -150,6 +160,19 @@ export function ThreadSubagentGroup(props: {
     item.remoteChild === undefined ? config : serverConfigs.get(item.remoteChild.environmentId);
   return (
     <WorkLogBlock>
+      {selectedRemote ? (
+        <RemoteTaskViewer
+          environmentId={props.environmentId}
+          task={{
+            id: selectedRemote.item.subagentId,
+            threadId: selectedRemote.item.threadId,
+            title: selectedRemote.title,
+            result: selectedRemote.result,
+            remoteChild: selectedRemote.remoteChild,
+          }}
+          onClose={() => setRemoteTaskId(null)}
+        />
+      ) : null}
       {grouped ? (
         <Pressable
           accessibilityRole="button"
@@ -199,30 +222,53 @@ export function ThreadSubagentGroup(props: {
         <View className="mb-1 gap-px rounded-xl border border-border bg-card/30 p-1">
           {agents.map((agent) => {
             // A task in a linked environment opens there, if this app is connected to it.
-            const target = subagentThreadTarget(agent, props.environmentId, (id) =>
+            const localTarget = subagentThreadTarget(agent, props.environmentId, (id) =>
               presentationById.has(id),
             );
+            const remoteLabel = agent.remoteChild?.label ?? gt("another machine");
+            const resolvedTarget = subagentChildTarget(agent);
+            const unreachable =
+              resolvedTarget?.environmentId != null &&
+              !presentationById.has(resolvedTarget.environmentId);
+            const target = hasSourceRemoteTaskView(agent) ? resolvedTarget : localTarget;
             return (
               <Pressable
                 key={agent.item.id}
                 accessible
                 accessibilityRole={target === null ? undefined : "link"}
                 accessibilityHint={
-                  target !== null
-                    ? gt("Opens this agent's thread")
-                    : agent.remoteChild !== undefined
-                      ? gt("Runs on {label}", { label: agent.remoteChild.label })
-                      : gt("Provider-managed agent")
+                  unreachable
+                    ? !hasSourceRemoteTaskView(agent)
+                      ? gt("Runs on {label}, which this device is not connected to", {
+                          label: remoteLabel,
+                        })
+                      : gt("Runs on {label}, available through this conversation", {
+                          label: agent.remoteChild.label,
+                        })
+                    : target === null
+                      ? agent.remoteChild
+                        ? gt(
+                            "Running on {label}. Its thread opens once the launch there is attached",
+                            {
+                              label: agent.remoteChild.label,
+                            },
+                          )
+                        : gt("Provider-managed agent")
+                      : gt("Opens this agent's thread")
                 }
                 disabled={target === null}
                 onPress={() => {
+                  if (agent.remoteChild?.threadId !== undefined && hasSourceRemoteTaskView(agent)) {
+                    setRemoteTaskId(agent.item.subagentId);
+                    return;
+                  }
                   if (target === null) return;
                   if (
                     openInspector(
                       { environmentId: props.environmentId, threadId: members[0]!.threadId },
                       {
                         type: "thread",
-                        environmentId: target.environmentId,
+                        environmentId: target.environmentId ?? props.environmentId,
                         threadId: target.threadId,
                       },
                     )

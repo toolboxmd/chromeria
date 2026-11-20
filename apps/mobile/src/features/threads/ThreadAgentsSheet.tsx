@@ -1,3 +1,5 @@
+import { hasSourceRemoteTaskView } from "@t3tools/client-runtime/state/remote-tasks";
+import { RemoteTaskViewer } from "./RemoteTaskViewer";
 import { useAtomValue } from "@effect/atom-react";
 import {
   deriveWorkflowGroups,
@@ -17,7 +19,7 @@ import * as DateTime from "effect/DateTime";
 import { Atom } from "effect/reactivity";
 import * as Haptics from "expo-haptics";
 import { T, useGT, useMessages } from "gt-react-native";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -45,6 +47,15 @@ export function useThreadTurnSubagents(target: AgentsTarget | null): ThreadTurnS
     target === null
       ? EMPTY_TURN_SUBAGENTS_ATOM
       : environmentThreadDetails.turnSubagentsAtom(target),
+  );
+}
+
+const EMPTY_PENDING_REMOTE_TASKS = Atom.make<ReadonlyArray<OrchestrationV2Subagent>>([]);
+export function usePendingRemoteTasks(target: AgentsTarget | null) {
+  return useAtomValue(
+    target === null
+      ? EMPTY_PENDING_REMOTE_TASKS
+      : environmentThreadDetails.pendingRemoteTasksAtom(target),
   );
 }
 
@@ -145,6 +156,7 @@ function AgentRow(props: {
 }) {
   const { subagent } = props;
   const gt = useGT();
+  const [viewRemote, setViewRemote] = useState(false);
   const { presentationById } = useEnvironments();
   const target = subagentThreadTarget(subagent, props.environmentId, (id) =>
     presentationById.has(id),
@@ -161,6 +173,25 @@ function AgentRow(props: {
     </View>
   );
 
+  if (hasSourceRemoteTaskView(subagent))
+    return (
+      <>
+        <Pressable
+          accessibilityRole="link"
+          accessibilityHint={gt("Opens remote work through this conversation")}
+          onPress={() => setViewRemote(true)}
+        >
+          {row}
+        </Pressable>
+        {viewRemote ? (
+          <RemoteTaskViewer
+            environmentId={props.environmentId}
+            task={subagent}
+            onClose={() => setViewRemote(false)}
+          />
+        ) : null}
+      </>
+    );
   const content =
     target === null ? (
       <View
