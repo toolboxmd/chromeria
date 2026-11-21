@@ -1,5 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off - Effect has no incremental digest.
-import * as EffectNodeStream from "@effect/platform-node/NodeStream";
+// @effect-diagnostics nodeBuiltinImport:off - Effect has no incremental digest or no-follow open.
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -17,41 +16,54 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
+import * as NodeStreamConsumers from "node:stream/consumers";
+import * as NodeStreamPromises from "node:stream/promises";
+import type * as Yauzl from "yauzl";
 
 import * as ServerConfig from "../config.ts";
 import { openZipArchive } from "../zipArchive.ts";
 
-// Update the version, sizes and hashes from each chrome-headless-shell zip listed at
-// https://googlechromelabs.github.io/chrome-for-testing/known-good-versions-with-downloads.json
-// Never pin below 156.0.8078.70: the shell has no CRLSet and older SPKI blocklists trust
-// compromised eMudhra intermediates (crrev.com/c/8627687).
-export const VERSION = "158.0.8127.36";
+// Update version, sizes and hashes from each platform's full chrome zip in Chrome for Testing's
+// known-good-versions-with-downloads.json; sites fingerprint chrome-headless-shell as a bot. Never
+// pin below 156.0.8078.70: older builds lack the CRLSet that blocks compromised eMudhra intermediates.
+const VERSION = "158.0.8127.36";
+const MAC_EXECUTABLE = "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing";
 const ARCHIVES = {
   linux64: {
-    bytes: 132_087_165,
-    sha256: "2d3a23017323c54fd457a678e4351f895c4076d8050e39d5aa6247f93448b73a",
+    bytes: 208_062_943,
+    sha256: "dba9cc838e1ce269c33ea68170881127bd15d078fc3ca5891c90802819a4d7c7",
+    executable: "chrome",
   },
   "linux-arm64": {
-    bytes: 129_938_239,
-    sha256: "176ee5c55486c22de43128871189061365ea28e881fc96016fd18e7cb59437c8",
+    bytes: 205_790_900,
+    sha256: "f811b64a50cbc73f94fda7b3f3b3bf62be5d9409b3207e6ead9b61e6706afffe",
+    executable: "chrome",
   },
   "mac-arm64": {
-    bytes: 105_057_133,
-    sha256: "c24d40a3786322ff3a5e3ac6eed162226cbaf07ebe468715407827226b0f8897",
+    bytes: 200_339_070,
+    sha256: "b86d3b393def1f87d369b022abff0a51acb015d6fcb79ddfd1c379c9d72fbbe2",
+    executable: MAC_EXECUTABLE,
   },
   "mac-x64": {
-    bytes: 112_306_247,
-    sha256: "e0c5d07d8f5bcc5bdd5ef370e7daf3770856b585fcc9eecf441c7e3bb2e3d1cf",
+    bytes: 213_549_680,
+    sha256: "1390e9b1386a1fd8ec2c4940b9ff59cbbda71b896b85182d7efbd73c58213802",
+    executable: MAC_EXECUTABLE,
   },
   win32: {
-    bytes: 122_509_290,
-    sha256: "c1fc009622363bccbc1e5f60be654b90fa7b70ad83e642875da1fcb147ae430d",
+    bytes: 196_218_437,
+    sha256: "427a02beb8887ceca6a1847dc67445580741c8c40bd15af334993d3a59863943",
+    executable: "chrome.exe",
   },
   win64: {
-    bytes: 127_876_264,
-    sha256: "9655950dfeddf565561cd64cfe8ee716ccd6482fa3798503b632219efc65a71e",
+    bytes: 214_927_656,
+    sha256: "6a8ad290952cc612c7777ffb3eb62f345539a2a1a8d440cfac190c6d36b34d2c",
+    executable: "chrome.exe",
   },
 } as const;
+
+/** Installs live in `<baseDir>/tools/<this>/<platform>/<version>`. */
+export const PREVIEW_BROWSER_DIRECTORY = "chrome-for-testing";
 
 const chromePlatform = (platform: NodeJS.Platform, arch: NodeJS.Architecture) => {
   switch (platform) {
@@ -73,9 +85,11 @@ export interface PreviewBrowserRelease {
   readonly url: string;
   readonly bytes: number;
   readonly sha256: string;
+  /** `/`-separated path inside the archive's top directory. */
+  readonly executable: string;
 }
 
-const previewBrowserRelease = (
+export const previewBrowserRelease = (
   platform: NodeJS.Platform,
   arch: NodeJS.Architecture,
 ): PreviewBrowserRelease | null => {
@@ -85,7 +99,7 @@ const previewBrowserRelease = (
     : {
         version: VERSION,
         platform: chrome,
-        url: `https://storage.googleapis.com/chrome-for-testing-public/${VERSION}/${chrome}/chrome-headless-shell-${chrome}.zip`,
+        url: `https://storage.googleapis.com/chrome-for-testing-public/${VERSION}/${chrome}/chrome-${chrome}.zip`,
         ...ARCHIVES[chrome],
       };
 };
@@ -119,14 +133,18 @@ export class PreviewBrowserUnsupportedError extends Schema.TaggedError<PreviewBr
   { platform: Schema.String, arch: Schema.String },
 ) {
   override get message(): string {
-    return `T3's headless browser is not available on ${this.platform}-${this.arch}: Chrome for Testing has no headless shell for it.`;
+    return `T3's headless browser is not available on ${this.platform}-${this.arch}: Chrome for Testing has no build for it.`;
   }
 }
 
 export class PreviewBrowser extends Context.Service<
   PreviewBrowser,
   {
-    /** Starts installation on first call; returns progress after a bounded wait while installation continues. */
+    /**
+     * Path to the installed Chrome for Testing. The first call starts the
+     * install; callers wait for it up to a bound and then get its progress
+     * instead, while the install keeps running.
+     */
     readonly executable: Effect.Effect<
       string,
       PreviewBrowserInstallError | PreviewBrowserInstallingError | PreviewBrowserUnsupportedError
@@ -143,6 +161,14 @@ export interface PreviewBrowserOptions {
 }
 
 const DOWNLOAD_TIMEOUT = "15 minutes";
+const MAX_LINK_TARGET_BYTES = 1024;
+const MAX_LINK_HOPS = 40;
+const CREATE_NO_FOLLOW =
+  NodeFS.constants.O_CREAT |
+  NodeFS.constants.O_EXCL |
+  NodeFS.constants.O_WRONLY |
+  // Windows has no O_NOFOLLOW; its archives carry no links.
+  (NodeFS.constants.O_NOFOLLOW ?? 0);
 const STAGING_STALE_AFTER_MS = 60 * 60_000;
 
 const wrapFailure = (detail: string) => (cause: unknown) =>
@@ -173,17 +199,17 @@ export const makePreviewBrowser = Effect.fn("PreviewBrowser.make")(function* (
   const installRoot = path.join(
     options.baseDir,
     "tools",
-    "chrome-headless-shell",
+    PREVIEW_BROWSER_DIRECTORY,
     release?.platform ?? `${platform}-${arch}`,
   );
-  const executableName =
-    platform === "win32" ? "chrome-headless-shell.exe" : "chrome-headless-shell";
+  const executablePath = (release: PreviewBrowserRelease) =>
+    path.join(installRoot, release.version, ...release.executable.split("/"));
   const gate = yield* Semaphore.make(1);
   let state: InstallState = { _tag: "idle" };
   const progress = { downloadedBytes: 0, unpacking: false };
 
   const installedExecutable = (release: PreviewBrowserRelease) => {
-    const executable = path.join(installRoot, release.version, executableName);
+    const executable = executablePath(release);
     return fs.stat(executable).pipe(
       Effect.map((info) =>
         info.type === "File" && (platform === "win32" || (info.mode & 0o111) !== 0)
@@ -242,6 +268,44 @@ export const makePreviewBrowser = Effect.fn("PreviewBrowser.make")(function* (
     ),
   );
 
+  /**
+   * Whether `relative` resolves inside `root` through existing entries,
+   * following at most MAX_LINK_HOPS links and never stepping above `root`.
+   */
+  const resolvesInside = async (root: string, relative: string) => {
+    const pending = relative.split("/");
+    let resolved = root;
+    let hops = 0;
+    while (pending.length > 0) {
+      const part = pending.shift()!;
+      if (part === "" || part === ".") continue;
+      if (part === "..") {
+        if (resolved === root) return false;
+        resolved = path.dirname(resolved);
+        continue;
+      }
+      const candidate = path.join(resolved, part);
+      const info = await NodeFS.promises.lstat(candidate).catch(() => null);
+      if (info === null) return false;
+      if (info.isSymbolicLink()) {
+        hops += 1;
+        if (hops > MAX_LINK_HOPS) return false;
+        const target = await NodeFS.promises.readlink(candidate);
+        if (path.isAbsolute(target)) return false;
+        pending.unshift(...target.split("/"));
+        continue;
+      }
+      if (!info.isDirectory() && !(info.isFile() && pending.length === 0)) {
+        return false;
+      }
+      resolved = candidate;
+    }
+    return true;
+  };
+
+  // Every entry is checked before anything is written. Directories and files
+  // come first, opened without following links, and links only after them, so
+  // no write can pass through a link; the finished link graph must stay inside.
   const extract = Effect.fn("PreviewBrowser.extract")(
     function* (release: PreviewBrowserRelease, archivePath: string, destination: string) {
       const archive = yield* openZipArchive(
@@ -251,50 +315,105 @@ export const makePreviewBrowser = Effect.fn("PreviewBrowser.make")(function* (
       const unsafe = new PreviewBrowserInstallError({
         detail: "The archive contains an unexpected or unsafe entry.",
       });
-      const root = `chrome-headless-shell-${release.platform}/`;
-      yield* fs.makeDirectory(destination);
-      let foundExecutable = false;
+      const root = `chrome-${release.platform}/`;
+      const directories: Array<string> = [];
+      const files: Array<{ readonly relative: string; readonly entry: Yauzl.Entry }> = [];
+      const links: Array<{ readonly relative: string; readonly entry: Yauzl.Entry }> = [];
+      const names = new Set<string>();
       for (;;) {
         const entry = yield* archive.next;
         if (!entry) break;
-        const unixMode = entry.externalFileAttributes >>> 16;
-        const unixType = unixMode & 0o170000;
+        if (!entry.fileName.startsWith(root)) return yield* unsafe;
         const isDirectory = entry.fileName.endsWith("/");
-        const relative = entry.fileName.startsWith(root) ? entry.fileName.slice(root.length) : null;
-        const target = relative === null ? null : path.resolve(destination, relative);
+        const relative = entry.fileName.slice(root.length, isDirectory ? -1 : undefined);
+        if (relative === "" && isDirectory) continue;
+        const unixType = (entry.externalFileAttributes >>> 16) & 0o170000;
+        const kind =
+          unixType === 0
+            ? isDirectory
+              ? "directory"
+              : "file"
+            : unixType === 0o040000 && isDirectory
+              ? "directory"
+              : unixType === 0o100000 && !isDirectory
+                ? "file"
+                : unixType === 0o120000 && !isDirectory
+                  ? "link"
+                  : null;
         if (
-          relative === null ||
-          target === null ||
-          (relative !== "" && !target.startsWith(`${destination}${path.sep}`)) ||
-          relative.split("/").includes("..") ||
-          (unixType !== 0 && unixType !== (isDirectory ? 0o040000 : 0o100000)) ||
+          kind === null ||
+          relative.split("/").some((part) => ["", ".", ".."].includes(part)) ||
+          /[\\\0]/.test(relative) ||
+          names.has(relative) ||
           (entry.generalPurposeBitFlag & 1) !== 0 ||
-          ![0, 8].includes(entry.compressionMethod)
+          ![0, 8].includes(entry.compressionMethod) ||
+          (kind === "link" && entry.uncompressedSize > MAX_LINK_TARGET_BYTES)
         ) {
           return yield* unsafe;
         }
-        if (isDirectory) {
-          yield* fs.makeDirectory(target, { recursive: true });
-          continue;
+        names.add(relative);
+        if (kind === "directory") directories.push(relative);
+        else (kind === "file" ? files : links).push({ relative, entry });
+      }
+      const linkNames = new Set(links.map((link) => link.relative));
+      for (const name of names) {
+        const parts = name.split("/");
+        for (let depth = 1; depth < parts.length; depth++) {
+          if (linkNames.has(parts.slice(0, depth).join("/"))) return yield* unsafe;
         }
-        yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+      }
+      if (!files.some((file) => file.relative === release.executable)) {
+        return yield* new PreviewBrowserInstallError({
+          detail: "The archive does not contain Chrome.",
+        });
+      }
+
+      const target = (relative: string) => path.join(destination, ...relative.split("/"));
+      const unpackFailure = (cause: unknown) =>
+        new PreviewBrowserInstallError({ detail: "Could not unpack the browser.", cause });
+      yield* fs.makeDirectory(destination);
+      for (const directory of directories) {
+        yield* fs.makeDirectory(target(directory), { recursive: true });
+      }
+      for (const { relative, entry } of files) {
+        const file = target(relative);
+        const unixMode = (entry.externalFileAttributes >>> 16) & 0o777;
+        yield* fs.makeDirectory(path.dirname(file), { recursive: true });
         yield* Effect.gen(function* () {
           const readable = yield* archive.streamEntry(entry);
-          yield* EffectNodeStream.fromReadable<Uint8Array, PreviewBrowserInstallError>({
-            evaluate: () => readable,
-            onError: wrapFailure("Could not unpack the browser."),
-          }).pipe(Stream.run(fs.sink(target, { flag: "wx" })));
+          yield* Effect.tryPromise({
+            try: async () => {
+              const handle = await NodeFS.promises.open(file, CREATE_NO_FOLLOW, 0o600);
+              await NodeStreamPromises.pipeline(readable, handle.createWriteStream());
+            },
+            catch: unpackFailure,
+          });
         }).pipe(Effect.scoped);
         // The binary and its shared libraries carry exec bits in the archive.
-        if (platform !== "win32" && (unixMode & 0o777) !== 0) {
-          yield* fs.chmod(target, unixMode & 0o777);
-        }
-        if (relative === executableName) foundExecutable = true;
+        if (platform !== "win32" && unixMode !== 0) yield* fs.chmod(file, unixMode);
       }
-      if (!foundExecutable) {
-        return yield* new PreviewBrowserInstallError({
-          detail: "The archive does not contain chrome-headless-shell.",
+      for (const { relative, entry } of links) {
+        const linkTarget = yield* Effect.gen(function* () {
+          const readable = yield* archive.streamEntry(entry);
+          return yield* Effect.tryPromise({
+            try: () => NodeStreamConsumers.text(readable),
+            catch: unpackFailure,
+          });
+        }).pipe(Effect.scoped);
+        // Targets use `/` only; Windows would read a backslash as a separator the walk never checks.
+        if (linkTarget === "" || /[\\\0]/.test(linkTarget) || path.isAbsolute(linkTarget)) {
+          return yield* unsafe;
+        }
+        const link = target(relative);
+        yield* fs.makeDirectory(path.dirname(link), { recursive: true });
+        yield* fs.symlink(linkTarget, link);
+      }
+      for (const { relative } of links) {
+        const inside = yield* Effect.tryPromise({
+          try: () => resolvesInside(destination, relative),
+          catch: unpackFailure,
         });
+        if (!inside) return yield* unsafe;
       }
     },
     Effect.scoped,
@@ -348,7 +467,7 @@ export const makePreviewBrowser = Effect.fn("PreviewBrowser.make")(function* (
           ),
         { discard: true },
       );
-      return path.join(installRoot, release.version, executableName);
+      return executablePath(release);
     },
     Effect.mapError(wrapFailure("Could not save the browser in T3's home directory.")),
   );
