@@ -1,5 +1,6 @@
 import type { V2TurnStartParams__AdditionalContextEntry } from "effect-codex-app-server/schema";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
+import { T3_CODE_TOOL_USE_INSTRUCTIONS } from "@t3tools/shared/forkToolInstructions";
 
 import {
   T3_CODE_BROWSER_TOOL_INSTRUCTIONS,
@@ -53,8 +54,10 @@ export function buildCodexAdditionalContext(
     ),
     t3_code_runtime: {
       kind: "application",
-      value: buildRuntimeInstructions({ harness: "Codex", ...runtime }),
+      value: buildRuntimeInstructions({ harness: "Codex", ...runtime, toolUse: false }),
     },
+    // Fork: its own entry, so the runtime entry stays under Codex's per-entry cap.
+    t3_code_tool_use: { kind: "application", value: T3_CODE_TOOL_USE_INSTRUCTIONS },
     ...(tools ? { t3_code_tools: { kind: "application", value: tools } } : {}),
   };
 }

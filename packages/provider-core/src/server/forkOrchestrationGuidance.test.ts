@@ -1,0 +1,34 @@
+import { PRISM_DELEGATE_ROLES } from "@t3tools/contracts";
+import { T3_CODE_TOOL_USE_INSTRUCTIONS } from "@t3tools/shared/forkToolInstructions";
+import { describe, expect, it } from "vite-plus/test";
+
+import {
+  T3_CODE_ORCHESTRATION_INSTRUCTIONS,
+  T3_CODE_ORCHESTRATION_SECTIONS,
+} from "./orchestrationInstructions.ts";
+
+// Fork: Prism delegation guidance must survive upstream copy cuts.
+describe("fork orchestration guidance", () => {
+  it("names every Prism delegate role where agents read their guidance", () => {
+    for (const role of PRISM_DELEGATE_ROLES) {
+      expect(T3_CODE_ORCHESTRATION_INSTRUCTIONS).toContain(role);
+      expect(T3_CODE_TOOL_USE_INSTRUCTIONS).toContain(role);
+    }
+    expect(T3_CODE_ORCHESTRATION_INSTRUCTIONS).toContain(
+      "When the user assigns research, design, review, judging or roasting as a task",
+    );
+    expect(T3_CODE_ORCHESTRATION_INSTRUCTIONS).toContain(
+      'Delegate browser/desktop driving to `prismRole: "computer-use"` by default, including checks you start yourself',
+    );
+    expect(T3_CODE_ORCHESTRATION_INSTRUCTIONS).toContain(
+      "A page open plus one snapshot, read or screenshot stays inline",
+    );
+    expect(T3_CODE_ORCHESTRATION_INSTRUCTIONS).toContain("unless the user chose another tool");
+  });
+
+  it("keeps each orchestration section under Codex's entry limit", () => {
+    for (const section of T3_CODE_ORCHESTRATION_SECTIONS) {
+      expect(new TextEncoder().encode(section).length).toBeLessThan(4_000);
+    }
+  });
+});

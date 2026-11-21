@@ -1,3 +1,4 @@
+import { T3_CODE_TOOL_USE_INSTRUCTIONS } from "@t3tools/shared/forkToolInstructions";
 import type { ProviderAdapterV2RuntimePolicy } from "./ProviderAdapter.ts";
 
 /** Session-invariant; harnesses with a native system-prompt append can carry it once per session. */
@@ -16,6 +17,8 @@ export function buildRuntimeInstructions(runtime: {
   readonly pullRequestLinking?: boolean;
   /** Adds the folder list of a multi-folder thread. */
   readonly runtimePolicy?: Pick<ProviderAdapterV2RuntimePolicy, "cwd" | "workspace"> | undefined;
+  /** False when the harness carries the fork's tool-use block as its own entry. */
+  readonly toolUse?: boolean;
 }): string {
   const harness = toSingleLine(runtime.harness);
   const model = toSingleLine(runtime.model ?? "");
@@ -30,9 +33,12 @@ export function buildRuntimeInstructions(runtime: {
     runtime.runtimePolicy === undefined ? "" : buildWorkspaceInstructions(runtime.runtimePolicy);
   return [
     runtimeInfo,
-    ...(runtime.pullRequestLinking === false ? [] : [PULL_REQUEST_LINKING_INSTRUCTIONS]),
-    ...(workspace === "" ? [] : [workspace]),
-  ].join("\n\n");
+    runtime.pullRequestLinking === false ? "" : PULL_REQUEST_LINKING_INSTRUCTIONS,
+    workspace,
+    runtime.toolUse === false ? "" : T3_CODE_TOOL_USE_INSTRUCTIONS,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function toSingleLine(value: string): string {
