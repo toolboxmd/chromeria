@@ -1,5 +1,18 @@
+import * as CommandReceiptStore from "../../../orchestration-v2/CommandReceiptStore.ts";
+import * as Digest from "effect/crypto/Digest";
+import * as Hex from "effect/encoding/Hex";
+import { BareLaunchError } from "@t3tools/provider-core/server/bareLaunch";
+import { ToolPolicyError } from "@t3tools/provider-core/server/toolPolicy";
+import * as Schema from "effect/Schema";
+import { executionPurposeOf, executionPurposeWarnings } from "@t3tools/contracts";
+import * as AttachmentStaging from "../../../assets/AttachmentStaging.ts";
+import { CurrentRequest, McpRequestReceipts } from "../../McpRequestReceipts.ts";
+import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
+import * as Prism from "../../../prism/PrismService.ts";
+import { ProviderAdapterRegistryV2 } from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
 import {
   CommandId,
+  type EnvironmentId,
   MessageId,
   ThreadId,
   OrchestratorMcpFailure,
@@ -9,28 +22,34 @@ import {
   type Project as ProjectRecord,
   type ServerProvider,
   T3_PROJECT_FILE_NAME,
+  threadOwner,
+  isPrismRunGroupRole,
+  OrchestratorMcpRunGroupMember,
 } from "@t3tools/contracts";
-import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
-import * as Hex from "effect/encoding/Hex";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
+import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import { OrchestratorRuntimeModeAboveCeilingError } from "../../../orchestration-v2/Orchestrator.ts";
 import { outputRequestProblem } from "../../../orchestration-v2/runOutput.ts";
-import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
+import type { BareReadGrant } from "../../../orchestration-v2/bareReadGrant.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import * as ProjectCloneTracker from "../../../project/ProjectCloneTracker.ts";
+import {
+  agentProjectDeleteRequester,
+  agentThreadCleanup,
+} from "../../../fork/projectDeleteGuard.ts";
 import { mutateProjectWithClone } from "../../../project/ProjectMutation.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
+import * as PeerAuthority from "../../../peer/PeerAuthority.ts";
+import * as DelegatedWorktreeBase from "../../../peer/DelegatedWorktreeBase.ts";
+import { interactiveAuthority } from "../../../peer/PeerAuthorityRecord.ts";
+import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
-import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
-import * as DateTime from "effect/DateTime";
-import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import {
   resolveProjectFileBackedSetting,
   resolveProjectSettings,
@@ -41,10 +60,42 @@ import { resolveRuntimeMode } from "../../delegatedTaskModes.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as OrchestrationMcp from "../../OrchestratorMcpService.ts";
-import { newCommandId, readCaller, resolveProjectId, unavailable } from "../../threadAccess.ts";
+import {
+  dispatchFailure,
+  newCommandId,
+  readCaller,
+  resolveProjectId,
+  unavailable,
+} from "../../threadAccess.ts";
 import { ProjectToolkit } from "./tools.ts";
 
-const isAboveCeilingError = Schema.is(OrchestratorRuntimeModeAboveCeilingError);
+const isBareLaunchError = Schema.is(BareLaunchError);
+const isToolPolicyError = Schema.is(ToolPolicyError);
+const isRuntimeModeAboveCeilingError = Schema.is(OrchestratorRuntimeModeAboveCeilingError);
+
+const launchCommandId = Effect.fn("mcp.launchCommandId")(function* (
+  namespace: string,
+  key: string,
+) {
+  const receipts = yield* Effect.serviceOption(McpRequestReceipts);
+  if (Option.isSome(receipts)) return yield* receipts.value.launchCommandId(namespace, key);
+  const crypto = yield* Digest.Digest;
+  // @effect-diagnostics-next-line globalJsonInEffect:off - a JSON pair keeps the caller apart from the key.
+  const bytes = new TextEncoder().encode(JSON.stringify([namespace, key]));
+  const digest = yield* crypto.digest(Digest.sha256, bytes).pipe(Effect.mapError(unavailable));
+  return CommandId.make(`mcp:launch:${Hex.encode(digest)}`);
+});
+
+function launchFailure(error: ThreadLaunch.ThreadLaunchError) {
+  if (isRuntimeModeAboveCeilingError(error.cause)) return dispatchFailure(error.cause);
+  return new OrchestratorMcpFailure({
+    code:
+      isBareLaunchError(error.cause) || isToolPolicyError(error.cause)
+        ? "invalid_request"
+        : "orchestration_error",
+    message: error.message,
+  });
+}
 
 function projectFailure(error: Project.ProjectServiceError) {
   if (error._tag === "ProjectOperationError") return unavailable();
@@ -55,7 +106,9 @@ function projectFailure(error: Project.ProjectServiceError) {
         ? "The project was not found."
         : error._tag === "ProjectConflictError"
           ? "The workspace is already registered to a project."
-          : "The project is not empty; force=true is required to delete it.";
+          : error._tag === "ProjectHasOtherThreadsError"
+            ? `${error.message} ${agentThreadCleanup}`
+            : "The project is not empty; force=true is required to delete it.";
   return new OrchestratorMcpFailure({ code: "invalid_request", message });
 }
 
@@ -170,18 +223,6 @@ const defaultWorktreeStrategy = Effect.fn("mcp.defaultWorktreeStrategy")(functio
   return { type: "worktree" as const, baseRef: branch };
 });
 
-/** A fixed-length id, so a long key fits in the scratch folder name derived from it. */
-const launchCommandId = Effect.fn("mcp.launchCommandId")(function* (
-  namespace: string,
-  key: string,
-) {
-  const crypto = yield* Digest.Digest;
-  // @effect-diagnostics-next-line globalJsonInEffect:off - a JSON pair keeps the caller apart from the key.
-  const bytes = new TextEncoder().encode(JSON.stringify([namespace, key]));
-  const digest = yield* crypto.digest(Digest.sha256, bytes).pipe(Effect.mapError(unavailable));
-  return CommandId.make(`mcp:launch:${Hex.encode(digest)}`);
-});
-
 const access = Effect.gen(function* () {
   yield* readCaller();
   return yield* Project.ProjectService;
@@ -211,12 +252,53 @@ const withSavedProjectSettingsAfterCreate = withSavedProjectSettings.pipe(
   Effect.orElseSucceed(() => (project: ProjectRecord) => project),
 );
 
+/** The linked environment a call names, or nothing for this one. */
+const remoteTarget = (input: { readonly environmentId?: EnvironmentId | undefined }) =>
+  McpInvocationContext.McpInvocationContext.pipe(
+    Effect.map((scope) => ({
+      scope,
+      target: PeerForwarding.remoteTarget(scope, input.environmentId),
+    })),
+  );
+const decodeRunGroupMember = Schema.decodeUnknownOption(OrchestratorMcpRunGroupMember);
 export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   t3_thread_launch: McpToolAccess.startsThreads(
     (input) => input,
     (input, { runtimeMode, interactionMode, linkOrigin }) =>
       Effect.gen(function* () {
-        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const { scope, target } = yield* remoteTarget(input);
+        // Only a linked environment's delegation owner launches a Run group member, with the kit
+        // it read here when it recorded the group; an agent cannot supply one.
+        const runGroupMember =
+          input.runGroupMember === undefined
+            ? undefined
+            : Option.getOrUndefined(decodeRunGroupMember(input.runGroupMember));
+        if (
+          input.runGroupMember !== undefined &&
+          (runGroupMember === undefined ||
+            target !== undefined ||
+            scope.client?.linked !== true ||
+            input.delegatedFrom === undefined ||
+            interactiveAuthority(scope.authority)?.envelope.pair === undefined ||
+            input.prismRole === undefined ||
+            !isPrismRunGroupRole(input.prismRole) ||
+            input.modelSelection === undefined)
+        )
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "runGroupMember is set only by a linked environment's Run group launch.",
+          });
+        if (target !== undefined) {
+          // The call carries the caller's modes, so omitted modes inherit
+          // them there too, capped by the link's access.
+          const forwarding = yield* PeerForwarding.PeerForwarding;
+          return yield* forwarding.call(
+            scope,
+            ProjectToolkit.tools.t3_thread_launch,
+            target,
+            input,
+          );
+        }
         const context = yield* readCaller();
         const { caller } = context;
         // A retry with the same key replays the first launch: the ids derive
@@ -228,6 +310,15 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             : yield* launchCommandId(scope.requestNamespace, input.clientRequestId);
         const threadId = ThreadId.make(commandId);
         const messageId = MessageId.make(commandId);
+        if (scope.authority !== undefined) {
+          const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+          if (Option.isNone(authority)) return yield* unavailable();
+          yield* authority.value.bind(
+            scope.authority,
+            threadId,
+            scope.client?.linked === true ? true : undefined,
+          );
+        }
         const attachments = input.attachments ?? [];
         if (input.generateTitle === true && !input.message?.trim() && attachments.length === 0)
           return yield* new OrchestratorMcpFailure({
@@ -246,11 +337,16 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             code: "invalid_request",
             message: schemaProblem ?? "outputSchema needs a message that asks for the result.",
           });
-        if (attachments.some((attachment) => !Claims.attachmentIsPendingUpload(attachment)))
-          return yield* new OrchestratorMcpFailure({
-            code: "invalid_request",
-            message: "A new thread accepts only pending attachment uploads.",
-          });
+        for (const attachment of attachments) {
+          if (Claims.attachmentIsPendingUpload(attachment)) continue;
+          const staging = yield* Effect.serviceOption(AttachmentStaging.AttachmentStaging);
+          if (Option.isNone(staging))
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "A new thread accepts only ready app-owned attachment uploads.",
+            });
+          yield* staging.value.verify(scope, attachment);
+        }
         if (
           input.scratch === true &&
           (input.projectId !== undefined || input.workspaceStrategy !== undefined)
@@ -273,231 +369,350 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 ),
               )).projectId
             : yield* resolveProjectId(context, input.projectId);
-        // A retry of an accepted launch replays it: it keeps the model it started
-        // with and skips the checks only a new launch needs, which the project
-        // may no longer pass, such as a base branch deleted since.
-        const launched =
-          input.clientRequestId === undefined
-            ? null
-            : yield* context.threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
-        const launchedModel =
-          launched === null || launched.deletedAt !== null ? undefined : launched.modelSelection;
-        const replaying = launchedModel !== undefined;
-        if (launched !== null && replaying && launched.projectId !== projectId)
-          return yield* new OrchestratorMcpFailure({
-            code: "invalid_request",
-            message: "A launch retry must use the original project.",
-          });
-        const project =
-          replaying && input.workspaceStrategy?.type !== "existing_worktree"
-            ? undefined
-            : yield* Project.ProjectService.pipe(
-                Effect.flatMap((projects) => projects.getById(projectId)),
-                Effect.mapError(unavailable),
-                Effect.flatMap(
-                  Option.match({
-                    onNone: () =>
-                      Effect.fail(
-                        new OrchestratorMcpFailure({
-                          code: "invalid_request",
-                          message: "The project was not found.",
-                        }),
-                      ),
-                    onSome: Effect.succeed,
+        const readProject = Project.ProjectService.pipe(
+          Effect.flatMap((projects) => projects.getById(projectId)),
+          Effect.mapError(unavailable),
+          Effect.flatMap(
+            Option.match({
+              onNone: () =>
+                Effect.fail(
+                  new OrchestratorMcpFailure({
+                    code: "invalid_request",
+                    message: "The project was not found.",
                   }),
                 ),
-              );
-        if (project !== undefined && input.workspaceStrategy?.type === "existing_worktree")
-          yield* assertProjectWorktree(project.workspaceRoot, input.workspaceStrategy.worktreePath);
-        if (!replaying && input.modelSelection !== undefined) {
-          const { instanceId, model } = input.modelSelection;
-          const registry = yield* ProviderRegistry.ProviderRegistry;
-          // The thread runs in this folder, whose own provider config can add models.
-          const cwd =
-            input.workspaceStrategy?.type === "existing_worktree"
-              ? input.workspaceStrategy.worktreePath
-              : project?.workspaceRoot;
-          const requireModel = (
-            providers: ReadonlyArray<ServerProvider>,
-          ): Effect.Effect<void, OrchestratorMcpFailure> => {
-            const provider = OrchestrationMcp.withWorkspaceModels(providers, cwd).find(
-              (candidate) => candidate.instanceId === instanceId,
-            );
-            return provider === undefined
-              ? Effect.void
-              : OrchestrationMcp.requireAdvertisedModel(provider, model);
-          };
-          const checked = requireModel(yield* registry.getProviders);
-          yield* cwd === undefined
-            ? checked
-            : checked.pipe(
-                Effect.catchIf(
-                  (error) => error.code === "model_unavailable",
-                  () =>
-                    Project.ProjectService.pipe(
-                      Effect.flatMap((projects) => projects.workspaceScanDirectory(cwd)),
-                      Effect.flatMap((scanCwd) =>
-                        registry.refreshWorkspaceSnapshot({ instanceId, cwd, scanCwd }),
+              onSome: Effect.succeed,
+            }),
+          ),
+        );
+        // A retry replays its accepted launch, but may not name a checkout outside the project.
+        if (input.workspaceStrategy?.type === "existing_worktree")
+          yield* assertProjectWorktree(
+            (yield* readProject).workspaceRoot,
+            input.workspaceStrategy.worktreePath,
+          );
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const result = yield* launches
+          .replayOrLaunch(
+            {
+              commandId,
+              threadId,
+              projectId,
+              runtimeMode,
+              interactionMode,
+              createdBy: "agent",
+              purposeIntent: input.purposeIntent,
+              ...(caller?.activeRunId == null
+                ? {}
+                : { purposeParentRun: { threadId: caller.id, runId: caller.activeRunId } }),
+              ...(input.delegatedFrom === undefined ? {} : { delegatedFrom: input.delegatedFrom }),
+              ...(input.bare === undefined ? {} : { bare: input.bare }),
+              ...(input.tools === undefined ? {} : { tools: input.tools }),
+              ...(linkOrigin === undefined ? {} : { linkOrigin }),
+              ...(input.message === undefined && attachments.length === 0 ? {} : { messageId }),
+            },
+            Effect.gen(function* () {
+              const project = yield* readProject;
+              // The thread runs in this folder, whose own provider config can add models.
+              const cwd =
+                input.workspaceStrategy?.type === "existing_worktree"
+                  ? input.workspaceStrategy.worktreePath
+                  : project.workspaceRoot;
+              if (input.modelSelection !== undefined) {
+                const { instanceId, model } = input.modelSelection;
+                const registry = yield* ProviderRegistry.ProviderRegistry;
+                const requireModel = (
+                  providers: ReadonlyArray<ServerProvider>,
+                ): Effect.Effect<void, OrchestratorMcpFailure> => {
+                  const provider = OrchestrationMcp.withWorkspaceModels(providers, cwd).find(
+                    (candidate) => candidate.instanceId === instanceId,
+                  );
+                  return provider === undefined
+                    ? Effect.void
+                    : OrchestrationMcp.requireAdvertisedModel(provider, model);
+                };
+                yield* requireModel(yield* registry.getProviders).pipe(
+                  Effect.catchIf(
+                    (error) => error.code === "model_unavailable",
+                    () =>
+                      Project.ProjectService.pipe(
+                        Effect.flatMap((projects) => projects.workspaceScanDirectory(cwd)),
+                        Effect.flatMap((scanCwd) =>
+                          registry.refreshWorkspaceSnapshot({ instanceId, cwd, scanCwd }),
+                        ),
+                        Effect.flatMap(requireModel),
                       ),
-                      Effect.flatMap(requireModel),
-                    ),
-                ),
-              );
-        }
-        const projectSettings =
-          replaying || project === undefined
-            ? undefined
-            : yield* ServerSettings.ServerSettingsService.pipe(
+                  ),
+                );
+              }
+              const projectSettings = yield* ServerSettings.ServerSettingsService.pipe(
                 Effect.flatMap((settings) => settings.getSettings),
                 Effect.mapError(unavailable),
                 Effect.map(
                   (settings) => resolveProjectSettings(settings, projectId, project).settings,
                 ),
               );
-        // An outside caller that names no workspace follows the new-threads-in-a-worktree
-        // default, as the composer does.
-        const requestedStrategy =
-          input.workspaceStrategy === undefined &&
-          caller === undefined &&
-          project !== undefined &&
-          projectSettings !== undefined &&
-          (projectSettings.defaultThreadEnvMode ??
-            (yield* projectFileThreadEnvMode(project.workspaceRoot))) === "worktree"
-            ? yield* defaultWorktreeStrategy(project.workspaceRoot)
-            : input.workspaceStrategy;
-        // An omitted startFromOrigin follows the new-worktree setting, as the composer and
-        // t3_worktree_handoff do. Otherwise a stale local branch silently becomes the base.
-        const strategy =
-          projectSettings !== undefined &&
-          requestedStrategy?.type === "worktree" &&
-          requestedStrategy.startFromOrigin === undefined
-            ? {
-                ...requestedStrategy,
-                startFromOrigin: projectSettings.newWorktreesStartFromOrigin,
-              }
-            : requestedStrategy;
-        // Reject unresolved base refs and blocked branch names before accepting a launch; worktree provisioning happens later.
-        if (!replaying && strategy?.type === "worktree")
-          yield* ThreadLaunch.ThreadLaunchService.pipe(
-            Effect.flatMap((launches) =>
-              launches.checkWorktreeBase({ projectId, workspaceStrategy: strategy }),
-            ),
-            Effect.mapError(
-              (error) =>
-                new OrchestratorMcpFailure({
+              // An omitted startFromOrigin follows the new-worktree setting, as the composer and
+              // t3_worktree_handoff do. Otherwise a stale local branch silently becomes the base.
+              // An outside caller that names no workspace follows the new-threads-in-a-worktree
+              // default, as the composer does.
+              const requestedStrategy =
+                input.workspaceStrategy === undefined &&
+                caller === undefined &&
+                // Fork: a forwarded peer launch without isolation keeps the root checkout.
+                linkOrigin === undefined &&
+                (projectSettings.defaultThreadEnvMode ??
+                  (yield* projectFileThreadEnvMode(project.workspaceRoot))) === "worktree"
+                  ? yield* defaultWorktreeStrategy(project.workspaceRoot)
+                  : input.workspaceStrategy;
+              const strategy =
+                requestedStrategy?.type === "worktree" &&
+                requestedStrategy.startFromOrigin === undefined
+                  ? {
+                      ...requestedStrategy,
+                      startFromOrigin: projectSettings.newWorktreesStartFromOrigin,
+                    }
+                  : requestedStrategy;
+              // Fork: a linked parent's worktree starts at its pushed commit, maybe not yet fetched here.
+              // Refused here when still missing: preflight accepts any base in a repository
+              // without commits, and provisioning would then fall back to another commit.
+              if (
+                strategy?.type === "worktree" &&
+                strategy.startFromOrigin === false &&
+                linkOrigin !== undefined &&
+                !(yield* DelegatedWorktreeBase.fetchBase(project.workspaceRoot, strategy.baseRef))
+              )
+                return yield* new OrchestratorMcpFailure({
                   code: "invalid_request",
-                  message: `${error.message} No thread was created. ${worktreeCheckHint(error, strategy)}`,
+                  message: `${
+                    new ThreadLaunch.ThreadLaunchBaseRefError({
+                      projectId,
+                      projectTitle: project.title,
+                      workspaceRoot: project.workspaceRoot,
+                      baseRef: strategy.baseRef,
+                    }).message
+                  } No thread was created. ${DelegatedWorktreeBase.MISSING_BASE_REFUSAL}`,
+                });
+              // Reject unresolved base refs and blocked branch names before accepting a launch; worktree provisioning happens later.
+              if (strategy?.type === "worktree")
+                yield* ThreadLaunch.ThreadLaunchService.pipe(
+                  Effect.flatMap((launches) =>
+                    launches.checkWorktreeBase({ projectId, workspaceStrategy: strategy }),
+                  ),
+                  Effect.mapError(
+                    (error) =>
+                      new OrchestratorMcpFailure({
+                        code: "invalid_request",
+                        message: `${error.message} No thread was created. ${worktreeCheckHint(error, strategy)}`,
+                      }),
+                  ),
+                );
+              // A caller outside a thread has nothing to inherit, so it starts with the
+              // project's effective defaults, as the composer does. Its mode stays
+              // within the ceiling it was approved with.
+              const projectDefaults = caller === undefined ? projectSettings : undefined;
+              const inherited =
+                input.modelSelection ??
+                caller?.modelSelection ??
+                (projectDefaults
+                  ? yield* Prism.projectDefaultSelection(projectId, projectDefaults)
+                  : undefined);
+
+              const prism = yield* Prism.PrismService;
+              const adapters = yield* ProviderAdapterRegistryV2;
+              const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+              if (input.bare !== undefined && input.prismRole === "promachos")
+                return yield* new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message: "Promachos persona cannot be combined with bare launch.",
+                });
+              const { modelSelection, kitText } = yield* prism.resolve({
+                bare: input.bare !== undefined,
+                projectId,
+                role: input.prismRole ?? "planner",
+                lane: input.lane,
+                explicit: input.modelSelection,
+                inherited,
+                validate: (selection) =>
+                  Prism.validateLaunchSelection(selection, input.bare !== undefined).pipe(
+                    Effect.provideService(ProviderAdapterRegistryV2, adapters),
+                    Effect.provideService(ProviderRegistry.ProviderRegistry, {
+                      ...providerRegistry,
+                      getProviders: providerRegistry.getProviders.pipe(
+                        Effect.map((providers) =>
+                          OrchestrationMcp.withWorkspaceModels(providers, cwd),
+                        ),
+                      ),
+                    }),
+                  ),
+              });
+              if (modelSelection === undefined)
+                return yield* new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message:
+                    "Pass modelSelection: the project has no default model. orchestrator_capabilities lists providers and models.",
+                });
+              const inheritedRuntimeMode =
+                projectDefaults !== undefined && input.runtimeMode === undefined
+                  ? yield* resolveRuntimeMode(runtimeMode, projectDefaults.defaultRuntimeMode).pipe(
+                      Effect.orElseSucceed(() => runtimeMode),
+                    )
+                  : runtimeMode;
+              const providers = yield* providerRegistry.getProviders;
+              const startedRuntimeMode = yield* resolveRuntimeMode(
+                inheritedRuntimeMode,
+                input.runtimeMode,
+                {
+                  modelSelection,
+                  supportedRuntimeModes: providers.find(
+                    (provider) => provider.instanceId === modelSelection.instanceId,
+                  )?.supportedRuntimeModes,
+                },
+              );
+              let bareReadGrant: BareReadGrant | undefined;
+              if (input.bare !== undefined) {
+                if (context.limits.runtimeMode === "full-access") bareReadGrant = { type: "all" };
+                else {
+                  const callerRoot =
+                    caller?.worktreePath ??
+                    (caller === undefined
+                      ? undefined
+                      : yield* Project.ProjectService.pipe(
+                          Effect.flatMap((projects) => projects.getById(caller.projectId)),
+                          Effect.mapError(unavailable),
+                          Effect.map((project) => Option.getOrUndefined(project)?.workspaceRoot),
+                        ));
+                  bareReadGrant = {
+                    type: "roots",
+                    roots: callerRoot === undefined ? [] : [callerRoot],
+                  };
+                }
+              }
+              return yield* ThreadMessageIntake.launchThread({
+                purposeIntent: input.purposeIntent,
+                ...(caller?.activeRunId == null
+                  ? {}
+                  : { purposeParentRun: { threadId: caller.id, runId: caller.activeRunId } }),
+                commandId,
+                threadId,
+                ...(input.tools === undefined ? {} : { tools: input.tools }),
+                ...(input.bare === undefined
+                  ? {}
+                  : {
+                      bare: input.bare,
+                      bareReadGrant,
+                    }),
+                projectId,
+                title: input.title,
+                ...(input.generateTitle === undefined
+                  ? {}
+                  : { generateTitle: input.generateTitle }),
+                modelSelection,
+                runtimeMode: startedRuntimeMode,
+                interactionMode,
+                workspaceStrategy: strategy ?? { type: "root" },
+                ...(input.message === undefined && attachments.length === 0
+                  ? {}
+                  : {
+                      initialMessage: {
+                        messageId,
+                        ...(caller === undefined ? {} : { senderThreadId: caller.id }),
+                        text: [runGroupMember?.kitText ?? kitText, input.message ?? ""]
+                          .filter(Boolean)
+                          .join("\n\n"),
+                        attachments,
+                        ...(input.outputSchema === undefined
+                          ? {}
+                          : { outputSchema: input.outputSchema }),
+                      },
+                    }),
+                createdBy: "agent",
+                creationSource: "mcp",
+                // Fork: an agent's thread belongs to its caller's owner (toolboxmd/chromeria#170).
+                ...(caller === undefined ? {} : { owner: threadOwner(caller) }),
+                // An agent's launch never records the Promachos role: only the user's own
+                // Promachos conversations may answer for them (toolboxmd/chromeria#532).
+                ...(linkOrigin === undefined ? {} : { linkOrigin }),
+                // Kept only alongside linkOrigin: thread.create drops it otherwise.
+                ...(input.delegatedFrom === undefined
+                  ? {}
+                  : { delegatedFrom: input.delegatedFrom }),
+              }).pipe(
+                Effect.mapError((error) => {
+                  if (error._tag === "AttachmentClaimError") {
+                    return new OrchestratorMcpFailure({
+                      code: "orchestration_error",
+                      message: error.message,
+                    });
+                  }
+                  if (error._tag === "ThreadManagementProviderInstanceDisabledError") {
+                    return new OrchestratorMcpFailure({
+                      code: "invalid_request",
+                      message: error.message,
+                    });
+                  }
+                  if (error._tag === "ThreadLaunchError") return launchFailure(error);
+                  return unavailable();
                 }),
+              );
+            }).pipe(
+              Effect.catchTags({
+                OrchestratorMcpFailure: Effect.fn("mcp.confirmLaunchRefusal")(function* (
+                  error: OrchestratorMcpFailure,
+                ) {
+                  if (error.code === "orchestration_error" || error.code === "outcome_unknown")
+                    return yield* error;
+                  const receipts = yield* Effect.serviceOption(
+                    CommandReceiptStore.CommandReceiptStoreV2,
+                  );
+                  if (Option.isNone(receipts)) return yield* error;
+                  const receipt = yield* receipts.value
+                    .getByCommandId(commandId)
+                    .pipe(Effect.mapError(unavailable));
+                  return yield* new OrchestratorMcpFailure({
+                    code: error.code,
+                    message: error.message,
+                    ...(error.requestId === undefined ? {} : { requestId: error.requestId }),
+                    ...(error.lastConfirmedStage === undefined
+                      ? {}
+                      : { lastConfirmedStage: error.lastConfirmedStage }),
+                    ...(Option.isNone(receipt) ? { launchReceipt: "absent" as const } : {}),
+                  });
+                }),
+              }),
+            ),
+          )
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "ThreadLaunchError" ? launchFailure(error) : error,
             ),
           );
-        // A caller outside a thread has nothing to inherit, so it starts with the
-        // project's effective defaults, as the composer does. Its mode stays
-        // within the ceiling it was approved with.
-        const projectDefaults = caller === undefined ? projectSettings : undefined;
-        const modelSelection =
-          input.modelSelection ??
-          launchedModel ??
-          caller?.modelSelection ??
-          (projectDefaults
-            ? resolveNewThreadModelSelection({
-                defaultSelection: projectDefaults.defaultModelSelection,
-                fallbackSelection: projectDefaults.fallbackModelSelection,
-                providers: yield* ProviderRegistry.ProviderRegistry.pipe(
-                  Effect.flatMap((registry) => registry.getProviders),
-                ),
-                settings: projectDefaults,
-                projectId,
-                now: DateTime.toEpochMillis(yield* DateTime.now),
-              }).selection
-            : null) ??
-          undefined;
-        if (modelSelection === undefined)
-          return yield* new OrchestratorMcpFailure({
-            code: "invalid_request",
-            message:
-              "Pass modelSelection: the project has no default model. orchestrator_capabilities lists providers and models.",
-          });
-        let startedRuntimeMode =
-          projectDefaults !== undefined && input.runtimeMode === undefined
-            ? yield* resolveRuntimeMode(runtimeMode, projectDefaults.defaultRuntimeMode).pipe(
-                Effect.orElseSucceed(() => runtimeMode),
-              )
-            : runtimeMode;
-        if (!replaying) {
-          const providers = yield* (yield* ProviderRegistry.ProviderRegistry).getProviders;
-          startedRuntimeMode = yield* resolveRuntimeMode(startedRuntimeMode, input.runtimeMode, {
-            modelSelection,
-            supportedRuntimeModes: providers.find(
-              (provider) => provider.instanceId === modelSelection.instanceId,
-            )?.supportedRuntimeModes,
-          });
-        }
-        const result = yield* ThreadMessageIntake.launchThread({
-          commandId,
-          threadId,
-          projectId,
-          title: input.title,
-          ...(input.generateTitle === undefined ? {} : { generateTitle: input.generateTitle }),
-          modelSelection,
-          runtimeMode: startedRuntimeMode,
-          interactionMode,
-          workspaceStrategy: strategy ?? { type: "root" },
-          ...(input.message === undefined && attachments.length === 0
-            ? {}
-            : {
-                initialMessage: {
-                  messageId,
-                  ...(caller === undefined ? {} : { senderThreadId: caller.id }),
-                  text: input.message ?? "",
-                  attachments,
-                  ...(input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema }),
-                },
-              }),
-          createdBy: "agent",
-          creationSource: "mcp",
-          ...(linkOrigin === undefined ? {} : { linkOrigin }),
-          // Kept only alongside linkOrigin: thread.create drops it otherwise.
-          ...(input.delegatedFrom === undefined ? {} : { delegatedFrom: input.delegatedFrom }),
-        }).pipe(
-          Effect.mapError((error) => {
-            if (error._tag === "AttachmentClaimError") {
-              return new OrchestratorMcpFailure({
-                code: "orchestration_error",
-                message: error.message,
-              });
-            }
-            if (error._tag === "ThreadManagementProviderInstanceDisabledError") {
-              return new OrchestratorMcpFailure({
-                code: "invalid_request",
-                message: error.message,
-              });
-            }
-            // The administrator's ceiling refuses the mode; say so rather than "unavailable".
-            if (error._tag === "ThreadLaunchError" && isAboveCeilingError(error.cause)) {
-              return new OrchestratorMcpFailure({
-                code: "invalid_request",
-                message: error.cause.message,
-              });
-            }
-            return unavailable();
-          }),
-        );
         const thread = result.projection.thread;
         const run = result.projection.runs.find((run) => run.userMessageId === messageId);
         return {
           threadId: thread.id,
           link: McpInvocationContext.threadLinkFor(scope, thread.id, thread.title),
           projectId: thread.projectId,
-          modelSelection: thread.modelSelection,
+          modelSelection: run?.modelSelection ?? thread.modelSelection,
           runId: run?.id ?? null,
+          ...(run === undefined
+            ? {}
+            : {
+                purpose: executionPurposeOf(run),
+                warnings: executionPurposeWarnings(executionPurposeOf(run)),
+              }),
           status: run?.status ?? null,
         };
-      }),
-    // The launched thread carries the caller's link, if it has one.
+      }).pipe(Effect.provide(Prism.layer)),
     "stamped",
   ),
   t3_project_list: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
+      const { scope, target } = yield* remoteTarget(input);
+      if (target !== undefined) {
+        const forwarding = yield* PeerForwarding.PeerForwarding;
+        return yield* forwarding.call(scope, ProjectToolkit.tools.t3_project_list, target, input);
+      }
       const projects = yield* access;
       // Identities are resolved: linked environments find this side's project by repository.
       const page = yield* projects
@@ -519,11 +734,12 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
     }),
   ),
   t3_project_create: McpToolAccess.writesEnvironment(
-    ({ workspaceRoot, ...input }) =>
+    ({ workspaceRoot, clientRequestId: _key, ...input }, check) =>
       Effect.gen(function* () {
         const projects = yield* Project.ProjectService;
         if (workspaceRoot === undefined) {
-          // Only updates record model defaults; reject defaults that creation would silently drop.
+          // Project creation records no model default (only an update does), so
+          // reject what this mode would otherwise drop silently.
           if (
             input.scripts !== undefined ||
             input.trackedFolders !== undefined ||
@@ -536,15 +752,24 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 "A project started from its title takes only a title; set scripts or defaultModelSelection afterwards with t3_project_update.",
             });
           const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
-          const created = yield* folders.createNamedProject({ name: input.title }).pipe(
-            Effect.mapError(
-              (error) =>
-                new OrchestratorMcpFailure({
-                  code: "orchestration_error",
-                  message: error.message,
-                }),
-            ),
-          );
+          const request = yield* CurrentRequest;
+          const context = yield* Effect.context<Effect.Services<typeof check>>();
+          const created = yield* folders
+            .createNamedProject({
+              name: input.title,
+              ...(request === undefined ? {} : { request }),
+              recheck: check.pipe(Effect.provideContext(context), Effect.asVoid),
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                error._tag === "OrchestratorMcpFailure"
+                  ? error
+                  : new OrchestratorMcpFailure({
+                      code: "orchestration_error",
+                      message: error.message,
+                    }),
+              ),
+            );
           const project = yield* projects
             .getById(created.projectId)
             .pipe(
@@ -570,9 +795,6 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           .pipe(Effect.mapError(projectFailure));
         return (yield* withSavedProjectSettingsAfterCreate)(created);
       }),
-    // Linked work may bring the repository it works in; an existing
-    // registered workspace is still refused.
-    { linkedCallers: "allowed" },
   ),
   t3_project_update: McpToolAccess.writesEnvironment((input) =>
     Effect.gen(function* () {
@@ -585,16 +807,15 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   ),
   t3_project_delete: McpToolAccess.writesEnvironment((input) =>
     Effect.gen(function* () {
-      const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
-      if (yield* folders.isScratchProject(input.projectId))
-        return yield* new OrchestratorMcpFailure({
-          code: "invalid_request",
-          message:
-            '"No project" is the built-in scratch project and cannot be deleted through MCP. The user can remove it in Settings.',
-        });
+      const requester = yield* agentProjectDeleteRequester(input.projectId);
       const projects = yield* Project.ProjectService;
       const clones = yield* ProjectCloneTracker.ProjectCloneTracker;
-      return yield* mutateProjectWithClone(projects, clones, {
+      const agentProjects = {
+        ...projects,
+        delete: (deletion: Project.ProjectDeleteInput) =>
+          projects.delete({ ...deletion, requester }),
+      };
+      return yield* mutateProjectWithClone(agentProjects, clones, {
         ...input,
         type: "project.delete",
         commandId: yield* newCommandId(),
@@ -605,18 +826,23 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
     (input) =>
       Effect.gen(function* () {
         const repositories = yield* Repositories.SourceControlRepositoryService;
+        // cloneRepository owns preparation too, including parent-directory
+        // creation. It must run after the durable attempt, once per action.
         // Agents' MCP calls have their own long budget, and an aborted call interrupts git.
-        return yield* repositories.cloneRepository(input, { timeoutMs: null }).pipe(
-          Effect.mapError(
-            (error) =>
-              new OrchestratorMcpFailure({
-                code: "orchestration_error",
-                message: error.detail,
-              }),
+        return yield* externalDispatch(
+          repositories.cloneRepository(input, { timeoutMs: null }),
+        ).pipe(
+          Effect.mapError((error) =>
+            error._tag === "OrchestratorMcpFailure"
+              ? error
+              : new OrchestratorMcpFailure({
+                  code: "orchestration_error",
+                  message: error.detail,
+                }),
           ),
         );
       }),
-    // An existing destination is never adopted.
-    { linkedCallers: "allowed" },
+    "external-unknown",
   ),
 });
+import { externalDispatch } from "../../McpRequestReceipts.ts";
